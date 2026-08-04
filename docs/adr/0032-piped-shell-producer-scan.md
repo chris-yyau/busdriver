@@ -69,9 +69,9 @@ counting commands that the current classifier allows and the candidate would blo
 made and before nineteen further rounds of widening. It is listed because the ratio
 between the pair is what settled the scope, and it must NOT be read against the 1,561
 below it — they share no baseline. Rows one, two and four were measured against the
-shipped code.
+same commit as each other — the **last measurable** one, see "The trajectory" below.
 
-Against the final implementation the whole-corpus diff is **1,561 newly blocked** and
+Against that last-measured implementation the whole-corpus diff is **1,561 newly blocked** and
 **one** command newly allowed. Every earlier round held the diff at zero newly allowed, and
 that is still the rule; the single exception is named rather than rounded away.
 
@@ -160,8 +160,8 @@ escaped or quoted; a **general option-value peel** rather than an env-specific o
 extends both; and **both halves of the verdict** — verbs *and* redirects — applied to the
 producer, exactly as the depth cap above already had to learn.
 
-Each widening rule was measured by disabling it, rather than argued. Against the **shipped**
-code and the same 34,758-command corpus: **1,561** total, of which the indirection rule
+Each widening rule was measured by disabling it, rather than argued. Against the **last
+measurable** code and the same 34,758-command corpus: **1,561** total, of which the indirection rule
 accounts for **909**, group depth for **112**, and the newline/comment rule for **25**. Those
 do not sum to the total and are not meant to — a command caught by two rules is counted by
 each in isolation and once in the total. Every figure in this paragraph comes from one
@@ -187,8 +187,10 @@ counting is what keeps `grep -n done log` allowed.
 
 Those two comparisons are **paired historical measurements**: each was taken against the
 code as it stood at that round, and only the ratio between the pair is meaningful. The
-shipped total is the 1,561 above — **58% of issue option 1's 2,693**, which is the only
-comparison that should be quoted.
+last measured total is the 1,561 above — **58% of issue option 1's 2,693**, which is the only
+comparison that should be quoted. Two rules landed after it with the corpus already gone,
+so the SHIPPED total is unmeasured and no figure in this ADR describes it — see "The
+trajectory".
 
 **Two characters in the `name()` anchor accounted for 698 of the 1,105 total at round 14.**
 The NEWLINE cost **465** and the case-pattern `)` cost **233**, both measured then. It is kept because the shape it closes — a helper function defined on its own
@@ -314,6 +316,65 @@ bypass, and each of those three rounds was that guess being wrong in a new place
 | 25 | 1,439 (4.14%) | extglob receivers, `make`, and the unresolvable pattern forms — 26 |
 | 27 | 1,440 (4.14%) | the `hash` prefix grammar deleted, nested extglob unresolved — 1 |
 | pre-PR | 1,561 (4.49%) | wrapper-option receiver (0); `hash` option search deleted (69); substitution bodies given the full receiver test (52) |
+| post-PR | **unmeasured** | no-command shell LAUNCHERS (`script`, `su`, `runuser`, `chroot`, `unshare`, `nsenter`) in command position |
+| post-PR | **unmeasured** | the command-position walk in front of them: prefixes, assignments, redirections, compound stages, and an unknown-arity option marking the stage unresolved |
+
+Finding the launcher meant finding COMMAND POSITION, and several review rounds each found a
+spelling the walk stopped short of: an assignment or keyword prefix (`FOO=1 unshare`,
+`time script`), a leading redirection (`2>/dev/null unshare` — the fd number lexes apart
+from its operator, so both halves have to be stepped over), and a compound stage
+(`| { unshare; }`, `| if unshare; then :; fi`), which passes its stdin to the command
+inside it. Reserved words restore command position in command position ONLY, the same
+restriction the `name()` anchor above is built on, so `| grep for script` is untouched.
+
+The fourth round found the arity question wearing a new hat. Stepping over an option to
+reach the launcher behind it (`time -p unshare`) is only sound when the option takes no
+value — `/usr/bin/time -o timing.out unshare` reads `timing.out` as the command word and
+fails OPEN, which is precisely the failure mode this ADR refuses to build a table against.
+So an option in command position marks the stage **unresolved** and the whole stage is
+asked instead, the same arity-free move already made for wrappers. Its known cost is an
+English-word over-block: `| /usr/bin/time -o t.out grep -c su` blocks. `-p` is exempt
+because it is already modelled as `time`'s grouping connector, which keeps the common
+`| time -p <cmd>` shape precise.
+
+The same question came back a third time as **sudo and doas shell modes** — `sudo -s`,
+`sudo -i`, `sudo --shell`, and every abbreviation `getopt_long` accepts. These are
+wrappers, not launchers, until a flag turns them into one, and proving there is no command
+operand needs the arity table again. Three successive attempts to scope the search to the
+wrapper's own option run each lost to a spelling that hid the flag behind an operand
+(`sudo -u root -s`, `sudo --user root --shell`, `sudo -B -s`), so the search is now over
+the WHOLE stage — the regime a wrapper already selects everywhere else in this module,
+carrying the price that regime has always carried: a word in the wrapped command's data
+reads as the flag, so `| sudo grep -i needle` blocks exactly as `sudo grep rm notes.txt`
+already did. A short-option BUNDLE is read left to right and stops at the first flag that
+takes a value, so `-su root` counts and `-ualice` does not.
+
+**PERFORMANCE was a security finding twice in this family**, both times in a scan that
+restarted inside a payload it had already collected: operands that merely spell `-exec`
+made the `find` walk quadratic (1,400 of them measured 6.04s in the classifier; 1,900
+measured 11.0s in the gate's helper guard). The hook's timeout is 5s and a timed-out hook
+writes NO decision, which the harness reads as ALLOW — so an over-long scan is a bypass,
+not a slowdown. Both walks are index-controlled now and both shapes are pinned by tests,
+one of them with an explicit wall-clock assertion.
+
+Two over-blocks are left DELIBERATELY, pinned by tests so that changing either is a
+decision rather than a drift:
+
+- A launcher given an explicit program (`| unshare -- grep rm`) runs that program, and the
+  pipe is data. Proving there IS one puts the command in a different place per launcher
+  (`unshare -- CMD`, `chroot -- NEWROOT CMD`, `script -c CMD`) — the arity table again.
+- A brace group behind a wrapper (`| { env true; grep x; }`) is read as unresolved,
+  because `{` is a brace-expansion character in the glob set. This one predates the
+  launcher work and is a property of the wrapper-glob rule above, not of this family.
+
+**1,561 is the last measured total, NOT the shipped one.** The launcher rule landed during
+the post-PR grind, after the extracted 34,758-command corpus this table is built on was no
+longer available, so its cost was never quantified. It is scoped to command position
+precisely to keep that unmeasured cost small — these are ordinary English words, and the
+any-word test the rest of `_STDIN_SHELLS` uses would have flipped `grep script` to a block —
+but "small" here is an argument, not a measurement. Every other figure in this document is
+a measurement; this one is not, and the difference is deliberate rather than glossed. Re-run
+the extraction before quoting a shipped total.
 
 Every step closed a fail-open that was **verified executing**, and only one step ever moved
 a command from block to allow (named above). But the cost is now five times what the design

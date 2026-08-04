@@ -697,6 +697,222 @@ _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bos
                                      "sqlite3", "ed", "ex", "psql", "gdb",
                                      "source", "xargs", "make"))
 
+# LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell:
+# util-linux `script`, and `su` / `runuser` / `chroot` / `unshare` / `nsenter`, all of which
+# drop to `$SHELL` absent a command. Raised by Codex on #562 (verified there against
+# `script -q /dev/null`; NOT reproducible on macOS, where `script` wants a tty and hangs,
+# so the payload survived) and completed by the pre-commit review, which pointed out that
+# `runuser` is already modelled beside `su` in `_WRAPPERS`.
+#
+# Deliberately NOT in `_STDIN_SHELLS`: that set is matched against EVERY word in the stage,
+# and these are ordinary English words, so `echo x | grep script` would flip from allow to
+# block. This is the same reasoning that keeps `.` out of it -- putting `.` in the any-word
+# set cost 100 over-blocks. Tested in COMMAND POSITION only, which is the only position
+# where the launcher actually launches anything.
+_LAUNCHER_SHELLS = frozenset(("script", "su", "runuser", "chroot", "unshare",
+                              "nsenter", "newgrp", "sg"))
+# RESIDUAL, stated rather than pretended away, exactly as for `_STDIN_SHELLS`: this is
+# an ENUMERATION and the family does not close. `newgrp`/`sg` were added a round after
+# the first six, by a reviewer naming them rather than by any rule deriving them.
+# Adding a name is free and costs nothing outside command position, so add rather than
+# argue when one is found. Containment is the same as ADR 0006: an unlisted name only
+# helps an actor who already holds Bash, and every gated write still needs a logged lease.
+# Words that sit BEFORE the command without being it. An assignment prefix is any
+# `NAME=value` token; the rest are keyword prefixes bash allows ahead of a command. They are
+# skipped when looking for the launcher, because `FOO=1 unshare` and `time script` both put
+# a launcher in command position just as surely as a bare `unshare` does.
+# `busybox`/`toybox` are MULTI-CALL DISPATCHERS: the applet name after them is the real
+# command, and busybox's own unshare applet execs $SHELL when given no program, so
+# `busybox unshare` launches a shell exactly as a bare `unshare` does. Modelled as a
+# prefix rather than a launcher, so `busybox grep script` still reads as grep.
+_CMD_PREFIX_WORDS = frozenset(("time", "command", "exec", "nohup", "builtin", "!",
+                               "busybox", "toybox"))
+# A REDIRECTION may sit anywhere in a simple command, including AHEAD of the command word
+# (`2>/dev/null unshare` runs unshare), so the walk below steps over both halves of one.
+# `_REDIR_RE` above is REUSED rather than re-spelled: a second redirection expression in
+# this file would shadow it for every other parser walk, which is exactly the fail-open a
+# review round caught here. Note `_lex` runs shlex with punctuation_chars, so an fd number
+# is lexed APART from its operator -- `2>/dev/null` arrives as `2`, `>`, `/dev/null`, and
+# the bare digit is not a redirection by itself.
+# A COMPOUND stage hands the pipe to the command INSIDE it -- `| { unshare; }` and
+# `| if unshare; then :; fi` both do -- so the walk has to see past the introducer. The
+# reserved words are the same sets the grouping rules already use, and they count in
+# COMMAND POSITION ONLY: the rule that keeps `grep -n done log` allowed applies here too,
+# so `| grep for script` does not read `script` as a command.
+#
+# Splitting into simple commands is done by the CALLER, on the raw text, because doing it
+# from tokens is quote-blind: shlex erases the difference between a `;` that separates
+# commands and one that is an operand, so `| grep \; unshare` read `unshare` as a command
+# word and over-blocked.
+_COMPOUND_WORDS = _GROUP_OPEN | _GROUP_CLOSE | _GROUP_CONNECT
+# An assignment prefix needs a valid IDENTIFIER before the `=`. Testing for a bare `=`
+# anywhere read `./foo=bar unshare` as a prefix and then took `unshare` for the command.
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*(?:\[[^]]*\])?\+?=")
+# Compound openers whose next word is a VARIABLE or a SUBJECT rather than a command.
+_GROUP_HEADERS = frozenset(("for", "select", "case"))
+# `sudo` and `doas` are WRAPPERS, not launchers -- except in their shell modes, where a
+# flag and no command operand start a shell that then reads the pipe (`sudo -s`, `sudo -i`,
+# `sudo --shell`, `doas -s`). Proving there is no command operand needs the option-arity
+# table this module refuses, so the FLAG is what is matched. Only the lowercase letters
+# count: `-S` reads the PASSWORD from stdin, which consumes the pipe as data rather than as
+# a program, and the uppercase flags carry no shell mode.
+_SHELL_MODE_WRAPPERS = frozenset(("sudo", "doas"))
+# The flag is matched in the wrapper OWN option run only -- the run ends at the first word
+# that is not an option, so `sudo grep -i needle` never offers grep option to this test.
+# A BUNDLE counts only when every letter in it is a no-argument flag (`-ns`); a letter that
+# takes a VALUE means the rest of the token is that value, and reading `-ualice` as flags
+# blocked an ordinary `sudo -ualice grep needle`. That list is short, closed and documented
+# in the sudo and doas manuals, and being wrong about a letter costs a MISS on an exotic
+# spelling rather than a block on an ordinary one.
+#
+_SHELL_MODE_LONG = frozenset(("--shell", "--login"))
+_SHELL_MODE_NOARG = frozenset("AbEHKknPSsVvilL")
+
+
+def _has_shell_mode_flag(toks):
+    """Is a sudo/doas SHELL-MODE flag among these words?
+
+    No option run, no value skipping, no arity: every word is asked. Scoping it to the
+    wrapper own option run needed to know which options take a VALUE -- `sudo -u root -s`
+    hid the flag behind an operand, and `sudo --user root --shell` hid it behind a long
+    one -- and every attempt to model that was another row of the table this module
+    refuses. The whole-stage scan is the same regime a wrapper already selects everywhere
+    else here, with the same documented price: a word in the WRAPPED command data reads as
+    the flag, so `sudo grep -i needle` blocks exactly as `sudo grep rm notes.txt` already
+    did. A BUNDLE counts only when every letter is a no-argument flag, so `-ualice` is
+    `-u` with its value attached rather than five flags.
+    """
+    for t in toks:
+        if t.startswith("--"):
+            # getopt_long accepts any unambiguous ABBREVIATION, so `--shel` selects
+            # `--shell`. Every prefix is matched rather than the full spelling; an
+            # abbreviation too short to be unambiguous is rejected by sudo itself, so
+            # matching it costs a block on an invocation that would not have run.
+            if len(t) > 2 and any(n.startswith(t) for n in _SHELL_MODE_LONG):
+                return True
+            continue
+        if len(t) < 2 or not t.startswith("-"):
+            continue
+        # A BUNDLE is read left to right and stops at the first flag that takes a VALUE,
+        # because the rest of the token is that value. `-su root` is `-s -u root` and
+        # counts; `-ualice` is `-u` with its value attached and does not.
+        for _n, c in enumerate(t[1:]):
+            if c in "si":
+                return True
+            if c not in _SHELL_MODE_NOARG:
+                break
+    return False
+
+
+def _shell_mode_launch(words):
+    """A sudo/doas shell mode anywhere in this stage, wrapper-led or nested."""
+    return (any(_basename(w) in _SHELL_MODE_WRAPPERS for w in words)
+            and _has_shell_mode_flag(words))
+
+
+def _launcher_in_any_simple_command(text):
+    """Does any simple command in this text LEAD with a launcher?
+
+    The split is over the raw text and is quote-aware, so an operand that merely spells a
+    separator is not one. Unsplittable or unlexable text fails CLOSED, the same call the
+    substitution bodies make.
+
+    Each command is judged against its OWN words, LEXED. Sharing one flattened word list
+    across the whole text let a wrapper in one command pair with a launcher-shaped data
+    operand in another (`env true ; grep unshare notes`), and lexing matters because a raw
+    split leaves the quote characters attached to a quoted name, which no set holds.
+    """
+    segs, ok = _split_simple_commands(text)
+    if not ok:
+        return True
+    for s in segs:
+        t = _lex(s)
+        if t is None:
+            return True
+        if _leads_with_launcher(t, list(_stage_words(t))):
+            return True
+    return False
+
+
+def _leads_with_launcher(toks, words):
+    """Is a no-command shell LAUNCHER the thing this stage actually runs?
+
+    Command position only, so `grep script` is untouched. Prefixes are stepped over; the
+    first real command word decides. When that word is a WRAPPER it can hide the launcher
+    among its operands (`env -i script -q /dev/null`), which is the one case that has to
+    look at the whole stage -- the same shape `_starts_with_wrapper` is used for elsewhere.
+
+    An OPTION reached in command position is where the arity question the module refuses
+    to answer would come back: an unknown option may or may not swallow the word after it,
+    so `/usr/bin/time -o timing.out unshare` has NO locatable command word without a table
+    saying `-o` takes a value. Skipping the option and reading `timing.out` as the command
+    is a fail-OPEN. So an option in command position marks the stage UNRESOLVED and the
+    whole stage is asked instead -- the same arity-free move already made for wrappers,
+    with the same known cost: `| time -p grep -c su` over-blocks on the English word.
+    `-p` itself is exempt because it is already modelled as `time`'s grouping connector.
+    """
+    i, n = 0, len(toks)
+    at_start = True                       # in COMMAND POSITION of some simple command
+    unresolved = False
+    first_cmd = None                      # index of the first real command word seen
+    while i < n:
+        t = toks[i]
+        b = _basename(t)
+        if not at_start:                  # operands of a command already found not to be
+            i += 1                        # a launcher -- `grep script` is not `script`
+            continue
+        if t in _GROUP_HEADERS:
+            # A HEADER, not a command: `for script in a`, `select unshare in a`,
+            # `case script in`. The word after it is a variable or a subject, and reading
+            # it as a command word blocked ordinary loops over launcher-shaped names. The
+            # body is its own segment (`do grep x`), so nothing is lost by stopping here.
+            return False
+        if t in _COMPOUND_WORDS or b in _CMD_PREFIX_WORDS:
+            i += 1
+            continue
+        if _ASSIGN_RE.match(t):
+            i += 1                        # assignment prefix: `FOO=1 unshare`
+            continue
+        j = i + 1 if (t.isdigit() and i + 1 < n and _REDIR_RE.match(toks[i + 1])) else i
+        m = _REDIR_RE.match(toks[j])
+        if m:                             # `2` `>` `/dev/null`, or a bare `>` `file`
+            i = j + 1 + (m.end() == len(toks[j]))
+            continue
+        if t.startswith("-") and t != "-":
+            unresolved = True             # unknown arity: `/usr/bin/time -o FILE unshare`
+            i += 1
+            continue
+        if b in _LAUNCHER_SHELLS:
+            return True
+        if b in _SHELL_MODE_WRAPPERS and _has_shell_mode_flag(toks[i + 1:]):
+            return True
+        # An UNRESOLVED command word cannot be ruled out. It matters HERE and not only at
+        # the stage level because a prefix hides it from the peeled command word:
+        # `busybox "$APPLET"` peels to `busybox`, which is resolved and harmless, while
+        # the applet BusyBox actually dispatches is the word this walk is standing on.
+        if any(ch in t for ch in _UNRESOLVED_CW_CHARS):
+            return True
+        if first_cmd is None:
+            first_cmd = i
+        at_start = False
+        i += 1
+    if unresolved:
+        # An UNRESOLVED word among the candidates cannot be ruled out either -- the
+        # command word is already unlocatable here, so `time -o /dev/null "$APPLET"`
+        # offers no literal name to test and the expansion is the thing that runs.
+        return (any(_basename(w) in _LAUNCHER_SHELLS for w in words)
+                or any(ch in w for w in words for ch in _UNRESOLVED_CW_CHARS)
+                or _shell_mode_launch(words))
+    # The wrapper fallback is asked of the tokens FROM the command word, not from the
+    # front: `time env -i script` puts a prefix ahead of the wrapper, and a
+    # _starts_with_wrapper that does not model `time` reads `time` and answers no.
+    rest = toks if first_cmd is None else toks[first_cmd:]
+    return bool(_starts_with_wrapper(rest)) and (
+        any(_basename(w) in _LAUNCHER_SHELLS for w in words)
+        # ...and a NESTED shell mode: `env -i sudo -s` leads with a wrapper, so the real
+        # program is among its operands and the flag is there too.
+        or _shell_mode_launch(words))
+
 # Characters that mean a command word is not what it LOOKS like. `$` is expansion
 # (`| $SHELL`), the BACKTICK is the older substitution spelling (`| `printf bash``, which
 # really does run bash), and the glob characters matter for the same reason they do in the
@@ -738,7 +954,12 @@ def _group_delta(words):
     true` opens twice, `fi` closes once. Counting the keyword ANYWHERE instead was measured
     at 1,161 over-blocks against the 1,561 this shape costs, because `if`, `for` and `done` are
     ordinary words in ordinary commands (`grep -n done log`) and a stray one opened a depth
-    nothing closed. Both figures are against the same corpus and the same final code.
+    nothing closed. Both figures are against the same corpus, but they are a HISTORICAL
+    PAIR -- taken at the round the alternative was measured, not against the final code.
+    1,561 was the total at the last round that could be measured; the launcher names added
+    afterwards (see `_LAUNCHER_SHELLS`) are explicitly UNMEASURED, so no figure in this file
+    describes the shipped classifier exactly. ADR 0032's trajectory table says which round
+    produced which number and supersedes anything quoted here.
 
     CONNECTORS are stepped over rather than ended on. `then`, `do`, `else` and `elif` sit in
     command position without being commands, so stopping at them made the walk asymmetric:
@@ -805,7 +1026,18 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     for prog in _executed_operands(toks):
         if any(ch in prog for ch in _UNRESOLVED_CW_CHARS):
             return True
-        if any(_basename(w) in _STDIN_SHELLS for w in prog.split()):
+        # LEXED, not split: `env -S "env -i 'bash'"` splits into the word `'bash'`, whose
+        # quotes are part of the string, so the name test missed it. The lexer resolves
+        # the quoting the shell would; a lex failure falls back to the raw split, which is
+        # the wider of the two.
+        _pt = _lex(prog)
+        _pw = prog.split() if _pt is None else list(_stage_words(_pt))
+        if any(_basename(w) in _STDIN_SHELLS for w in _pw):
+            return True
+        # ...and the LAUNCHER question, which the first cut asked only of the stage.
+        # `find . -maxdepth 0 -exec unshare \;` does not read stdin itself, so the pipe
+        # is still unread when `unshare` execs a shell and that shell runs the payload.
+        if _launcher_in_any_simple_command(prog):
             return True
     cw = _effective_command_word(toks)
     # `.` is the POSIX spelling of `source`, and `. /dev/stdin` runs the piped text. It is
@@ -815,6 +1047,67 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     # word when it means anything.
     if cw and _basename(cw) == ".":
         return True
+    # Same command-position-only rule, same reason: a LAUNCHER with no program operand execs
+    # a shell that then reads this pipe. `grep script` is unaffected because `script` is not
+    # in command position there.
+    #
+    # It canNOT be asked of the PEELED command word, which is the trap the first cut fell
+    # into: `script`, `su`, `runuser` and `chroot` are themselves in `_WRAPPERS`, so peeling
+    # steps straight past them and `| su` read as harmless. So ask the LEADING token, plus
+    # the whole wrapper run when one leads -- the same shape `_starts_with_wrapper` already
+    # uses for unresolved words, and for the same reason: a wrapper hides the real program
+    # among its operands. `env -i script -q /dev/null` is why the second half is needed.
+    #
+    # Testing `toks[0]` alone was the first cut and it was wrong twice over: an ASSIGNMENT
+    # prefix (`FOO=1 unshare`) and a `time`/`exec`/`nohup` prefix both push the launcher off
+    # the front, and `unshare`/`nsenter` are not in `_WRAPPERS`, so neither branch fired.
+    # Walk the command-PREFIX run instead -- assignments and those keywords are prefixes,
+    # not commands -- and stop at the first real command word.
+    if _launcher_in_any_simple_command(segtext):
+        return True
+    # find hands `-exec` a command of its OWN to run, and find does not read stdin itself,
+    # so the pipe is still unread when that command execs a shell. The payload gets the
+    # same receiver questions the stage got -- the any-word shell test already saw
+    # `-exec bash ;`, but a LAUNCHER is command-position-only and was invisible there.
+    # Gated on `find` being named, exactly as the write-verb walk gates its own -exec
+    # extraction, so no other command pays for the scan.
+    # Anchored on find being the COMMAND, not merely a word in the stage: `grep -e find
+    # -e -exec -e unshare` names all three as PATTERNS and executes none of them. Same
+    # anchor the write-verb -exec extraction uses, for the same reason.
+    _fcw = _basename(cw) if cw else ""
+    if _depth < 4 and (_fcw == "find"
+                       or (_starts_with_wrapper(toks)
+                           and any(_basename(w) == "find" for w in words))
+                       # ...and through a MULTI-CALL dispatcher, whose find applet is the
+                       # same find: `busybox find . -exec unshare ;`.
+                       or (_fcw in ("busybox", "toybox")
+                           and any(_basename(w) == "find" for w in words))):
+        # INDEX-controlled, so a payload is never rescanned as predicates. Restarting the
+        # search from the token after each `-exec` re-read every operand of the payload
+        # just collected, so N `-exec`-looking OPERANDS cost O(N^2): a 1,400-operand
+        # command measured 6.04s, past the 5s hook timeout -- and a timed-out hook writes
+        # no decision, which the harness reads as ALLOW. Advance past the terminator.
+        _fi, _fn = 0, len(toks)
+        while _fi < _fn:
+            if toks[_fi] in ("-exec", "-execdir", "-ok", "-okdir"):
+                _payload, _fj = [], _fi + 1
+                while _fj < _fn:
+                    _ft2 = toks[_fj]
+                    if _ft2 == ";" or (_ft2 == "+" and _payload
+                                       and _payload[-1] == "{}"):
+                        break
+                    _payload.append(_ft2)
+                    _fj += 1
+                # REQUOTED, not space-joined: find execs the payload directly, so its
+                # argv boundaries are real and punctuation inside an operand is literal.
+                # A bare join turned `-exec grep "foo; unshare" ;` into two commands and
+                # blocked on grep data.
+                if _payload and _may_read_program_from_stdin(
+                        " ".join(shlex.quote(_p) for _p in _payload), _depth + 1):
+                    return True
+                _fi = _fj + 1
+                continue
+            _fi += 1
     if cw and any(ch in cw for ch in _UNRESOLVED_CW_CHARS):
         return True
     # A WRAPPER hides the real program among its operands, and peeling it can land on the
@@ -948,7 +1241,8 @@ def _piped_shell_producers(pairs):
     measured over 34,758 real commands, scanning the whole command on any shell name
     over-blocked 2,693 of them (7.7%, mostly `bash tests/foo.sh` beside an unrelated `git`)
     while the producer scan over-blocks 1,561 (4.49%). Both figures are against the SAME
-    corpus and the SAME final code; ADR 0032 carries the full table and the per-rule
+    corpus and the SAME code -- the LAST MEASURABLE commit, not the shipped one (see the
+    launcher note above and ADR 0032); ADR 0032 carries the full table and the per-rule
     isolation, and any number quoted here must match it.
 
     RESIDUAL, inherited rather than introduced: the raw scan misses a verb the producer
@@ -971,8 +1265,8 @@ def _piped_shell_producers(pairs):
     Widening the producer to the whole command prefix would close the same family without
     any of this, and was measured mid-development at 559 over-blocks (1.61%) against 43 for
     the pipeline scope at that same commit, because a multi-line command drags every earlier
-    line into the scan. The scope decision is what that comparison settled; the FINAL total
-    for the pipeline scope is 1,561, the rest being the grouping, indirection and newline rules
+    line into the scan. The scope decision is what that comparison settled; the LAST MEASURED
+    total for the pipeline scope is 1,561, the rest being the grouping, indirection and newline rules
     afterwards (isolated in ADR 0032).
 
     ONE producer per pipeline, from its LAST candidate stage. Every earlier candidate's
@@ -1849,7 +2143,9 @@ def _segment_is_mod(toks, depth=0):
             if t in ("-exec", "-execdir", "-ok", "-okdir"):
                 payload = []
                 for t2 in toks[i + 1:]:
-                    if t2 in (";", "+"):
+                    # `+` terminates only after `{}`; elsewhere it is an operand, and
+                    # breaking on it truncated the payload (`-o + unshare`).
+                    if t2 == ";" or (t2 == "+" and payload and payload[-1] == "{}"):
                         break
                     payload.append(t2)
                 if payload and _payload_is_mod(payload, depth):

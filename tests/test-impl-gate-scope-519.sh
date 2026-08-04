@@ -747,7 +747,7 @@ check "a bare . as an argument is not a receiver" allow \
 # word: `env -u X …` peels to `X`, the operand of `-u`, so the globbed receiver behind it
 # was never tested. Scoped to wrapper-led stages -- asking every stage costs 8.63%, worse
 # than the option the issue rejected, while this costs ZERO (1,440 either way at the round
-# it was measured; the shipped total is 1,561).
+# it was measured; 1,561 was the total at the last round that could be measured).
 check "a globbed receiver behind a wrapper OPTION is caught" block \
     "$(bash_decision "printf 'rm -rf src' | env -u X /bin/[b]ash")"
 check "a glob in an ordinary argument is still not a receiver" allow \
@@ -1041,6 +1041,265 @@ check "fish reads its program from stdin too" block \
     "$(bash_decision "printf 'rm -rf src' | fish")"
 check "a GLOBBED shell path on the receiving end still blocks" block \
     "$(bash_decision "printf 'rm -rf src' | /bin/[b]ash")"
+# LAUNCHERS with no command operand exec a shell, so the pipe feeds that shell. Raised by
+# Codex on #562 against util-linux `script`; the mechanism is the same for `su` and
+# `chroot`. Not reproducible on macOS, where `script` wants a tty and hangs instead of
+# running the payload -- so these are pinned here rather than resting on a local repro.
+check "a script launcher on the receiving end blocks" block \
+    "$(bash_decision "printf 'rm -rf src' | script -q /dev/null")"
+check "...and su with no command too" block \
+    "$(bash_decision "printf 'rm -rf src' | su")"
+check "...and chroot with no command too" block \
+    "$(bash_decision "printf 'rm -rf src' | chroot /jail")"
+# ...including for the unconditional helper protection, which is the other thing the
+# producer scan backs.
+check "the helper piped into a script launcher is blocked" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | script -q /dev/null")"
+# A launcher stays in COMMAND POSITION behind an assignment or a keyword prefix, and
+# `unshare`/`nsenter` are not wrappers, so a leading-token test alone missed both. The
+# prefix run is walked instead.
+check "an assignment prefix does not hide a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | FOO=1 unshare")"
+check "...nor does a time prefix" block \
+    "$(bash_decision "printf 'rm -rf src' | time script -q /dev/null")"
+check "...nor exec, nor several assignments" block \
+    "$(bash_decision "printf 'rm -rf src' | A=1 B=2 nsenter -t 1")"
+check "...and a WRAPPER can still hide one among its operands" block \
+    "$(bash_decision "printf 'rm -rf src' | env -i script -q /dev/null")"
+# A REDIRECTION and a prefix word's own connector sit in the same run, and the first cut
+# of the walk stopped on both. `2>/dev/null unshare` and `time -p unshare` each still put
+# the launcher in command position.
+check "a leading redirection does not hide a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | 2>/dev/null unshare")"
+check "...nor a redirection whose operand is a separate word" block \
+    "$(bash_decision "printf 'rm -rf src' | > /dev/null nsenter -t 1")"
+check "...nor an option belonging to the prefix word" block \
+    "$(bash_decision "printf 'rm -rf src' | time -p unshare")"
+check "...nor both at once" block \
+    "$(bash_decision "printf 'rm -rf src' | 2>/dev/null time -p script -q /dev/null")"
+check "the helper survives neither spelling" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | time -p script -q /dev/null")"
+check "a redirected non-launcher receiver stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | 2>/dev/null grep script")"
+check "...and time -p in front of a real command is not unresolved" allow \
+    "$(bash_decision "echo 'rm -rf src' | time -p grep -c su")"
+# An UNKNOWN option in command position is the arity question again: `-o` takes a value,
+# so skipping it reads `timing.out` as the command and the launcher behind it is missed.
+# Unresolved marks the stage and the WHOLE stage is asked, which is fail-closed and costs
+# the English-word precision the check below pins.
+check "an option of unknown arity cannot hide a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | /usr/bin/time -o timing.out unshare")"
+check "the known cost of that: an unresolved stage over-blocks the word" block \
+    "$(bash_decision "echo 'rm -rf src' | /usr/bin/time -o timing.out grep -c su")"
+# A COMPOUND stage passes its stdin to the command inside it, so command position has to
+# be restored after every separator and every reserved word -- in command position only,
+# which is what keeps the `grep for script` shape below allowed.
+check "a brace group does not hide a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | { unshare; }")"
+check "...nor does an if" block \
+    "$(bash_decision "printf 'rm -rf src' | if unshare; then :; fi")"
+check "...nor a while, nor the helper inside one" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | while unshare; do :; done")"
+check "a brace group around a NON-launcher stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | { grep script; }")"
+check "a reserved word as an ARGUMENT does not restore command position" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep for script")"
+# A SUBSTITUTION runs inside the pipeline, so it inherits the stdin the outer command
+# never reads. The body scan asked about shell names and `.` but not about launchers.
+check "a launcher inside a substitution body is caught" block \
+    "$(bash_decision "printf 'rm -rf src' | echo \"\$(unshare)\"")"
+check "...in the backtick spelling too" block \
+    "$(bash_decision "printf 'rm -rf src' | echo \`unshare\`")"
+check "...and for the helper, which is the guard that has no escape hatch" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | echo \"\$(unshare)\"")"
+# A PREFIX ahead of a WRAPPER: the fallback was asked of the whole token list, and this
+# copy of _starts_with_wrapper does not model `time`, so it answered no and the launcher
+# among the wrapper operands went unseen. Asked from the command word instead. These are
+# the gate-side spot checks for the composition the property below drives exhaustively.
+check "a prefix in front of a wrapper does not hide a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | time env -i script -q /dev/null")"
+check "...including for the helper" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | time env -i script -q /dev/null")"
+check "...and with the connector between them" block \
+    "$(bash_decision "printf 'rm -rf src' | time -p env -i unshare")"
+check "...and for sudo, which is the other wrapper regime" block \
+    "$(bash_decision "printf 'rm -rf src' | time sudo unshare")"
+# find hands -exec its own command, and find never reads the pipe itself, so the payload
+# is still unread when that command execs a shell.
+check "a launcher in a find -exec payload is caught" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -exec unshare ;")"
+check "...including for the helper" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | find . -maxdepth 0 -exec unshare ;")"
+check "a find that merely NAMES one stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | find . -name script")"
+# `+` ends an -exec only in the `{} +` form. Breaking on a BARE `+` truncated the payload
+# at an ordinary operand -- here the output file of `time -o` -- and the launcher behind
+# it was never read. The same truncation was in the write-verb extractor and the gate copy.
+check "a bare + does not truncate the -exec payload" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -exec /usr/bin/time -o + unshare ;")"
+check "...and the {} + form still terminates properly" block \
+    "$(bash_decision "find . -name '*.tmp' -exec rm -rf {} +")"
+# The simple-command split is done on the RAW TEXT, not on tokens: shlex erases the
+# difference between a separator `;` and an operand that merely spells one, so a
+# token-level split read `unshare` as a command word here and over-blocked.
+check "an ESCAPED separator is an operand, not a command boundary" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep \\; unshare")"
+check "...and a quoted paren likewise" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep '(' script")"
+# A MULTI-CALL dispatcher puts the applet name one word to the right, and busybox ships
+# its own unshare applet, which execs $SHELL when handed no program.
+check "busybox dispatching to a launcher applet is caught" block \
+    "$(bash_decision "printf 'rm -rf src' | busybox unshare")"
+check "...including for the helper" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | busybox unshare")"
+check "busybox dispatching to an ordinary applet stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | busybox grep -c script")"
+# The set is an ENUMERATION and does not close -- these two arrived a round after the
+# first six, named by a reviewer rather than derived. Pinned so a future trim is deliberate.
+check "newgrp with no command execs a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | newgrp")"
+check "...and sg does too" block \
+    "$(bash_decision "printf 'rm -rf src' | sg users")"
+check "...while the same names as data stay allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep -c newgrp")"
+# A dispatcher with a DYNAMIC applet: peeling lands on `busybox`, which is resolved and
+# harmless, while the word that decides what runs is the expansion behind it. Unresolved
+# in command position fails CLOSED, and the walk is the only place that word is visible.
+check "a dynamic busybox applet fails closed" block \
+    "$(bash_decision "printf 'rm -rf src' | busybox \"\$APPLET\"")"
+check "...including for the helper" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | busybox \"\$APPLET\"")"
+# The -exec scan is anchored on find being the COMMAND: naming find, -exec and a launcher
+# as grep PATTERNS executes none of them.
+check "find named only as grep data does not trigger the -exec scan" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep -e find -e -exec -e unshare")"
+# ...and through the dispatcher, whose find applet is the same find.
+check "busybox find -exec is scanned like a bare find" block \
+    "$(bash_decision "printf 'rm -rf src' | busybox find . -exec unshare ;")"
+# A find -exec payload carries REAL argv boundaries, so it is requoted before it is
+# re-read. Space-joining turned one grep pattern into a second command.
+check "punctuation inside an -exec operand is not shell syntax" allow \
+    "$(bash_decision "printf 'rm -rf src' | find . -exec grep \"foo; unshare\" ;")"
+check "...and the helper guard agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | find . -exec grep \"foo; unshare\" ;")"
+# sudo and doas are wrappers EXCEPT in their shell modes, where a flag and no command
+# operand start a shell. The flag is what is matched: proving the absence of a command
+# operand needs the option-arity table this module refuses. Lowercase only -- an uppercase
+# -S reads the PASSWORD from stdin, so the pipe is data there, not a program.
+check "sudo in shell mode is a launcher" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -n -s")"
+check "...and its login mode too" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -i")"
+check "...and doas likewise" block \
+    "$(bash_decision "printf 'rm -rf src' | doas -n -s")"
+check "...including for the helper" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -n -s")"
+check "...and the LONG spellings" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --shell")"
+check "...and the long login form" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --login")"
+check "...and a bundle of no-argument flags" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -ns")"
+# The flag is looked for in the WHOLE stage, not in an option run. Scoping it to the run
+# needed to know which options take a VALUE: `sudo -u root -s` hid the flag behind an
+# operand, `sudo --user root --shell` behind a long one, and `sudo -B -s` behind a flag
+# missing from the list -- three rounds, three rows of the arity table this module refuses.
+# The whole-stage scan is the regime a WRAPPER already selects everywhere else here, and
+# it carries the same documented PRICE, pinned below so it stays deliberate: a word in the
+# wrapped command DATA reads as the flag, exactly as `sudo grep rm notes.txt` already
+# blocks on a verb in grep data.
+check "a shell flag behind a value-taking option is still found" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -u root -s")"
+check "...and behind a LONG one" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --user root --shell")"
+check "...and nested behind another wrapper" block \
+    "$(bash_decision "printf 'rm -rf src' | env -i sudo -s")"
+check "the price of that regime: an option of the wrapped command (deliberate)" block \
+    "$(bash_decision "echo 'rm -rf src' | sudo grep -i needle")"
+check "...uniform under doas (deliberate)" block \
+    "$(bash_decision "echo 'rm -rf src' | doas grep -i needle")"
+# A bundle still counts only when every letter is a no-argument flag, so `-ualice` reads
+# as `-u` with its value attached rather than as five flags.
+check "a value attached to a short option is not a flag bundle" allow \
+    "$(bash_decision "echo 'rm -rf src' | sudo -ualice grep needle")"
+# ...and an unwrapped command is untouched by any of it.
+check "an ordinary -i outside a wrapper is not a shell mode" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep -i needle")"
+# getopt_long takes any unambiguous ABBREVIATION, so the long forms are matched by prefix.
+check "an abbreviated long shell flag is still a shell mode" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --shel")"
+check "...and the abbreviated login form" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --logi")"
+# A bundle is read LEFT TO RIGHT and stops at the first flag that takes a value, because
+# the rest of the token is that value: `-su root` is `-s -u root`, `-ualice` is not.
+check "a shell flag before a value-taking one in a bundle counts" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -su root")"
+check "...and after other no-argument flags" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -nsu root")"
+# When an option of unknown arity has already made command position unresolvable, an
+# EXPANSION among the remaining words is what runs, and there is no literal name to test.
+check "an expansion behind an unknown option fails closed" block \
+    "$(bash_decision "printf 'rm -rf src' | /usr/bin/time -o /dev/null \"\$APPLET\"")"
+# A for/select/case HEADER names a variable or a subject, never a command. Reading the
+# word after the opener as a command word blocked ordinary loops over these names.
+check "a for header naming a launcher is not a command" allow \
+    "$(bash_decision "printf 'rm -rf src' | for script in a; do grep x; done")"
+check "...nor is a select header" allow \
+    "$(bash_decision "printf 'rm -rf src' | select unshare in a; do :; done")"
+check "...nor a case subject" allow \
+    "$(bash_decision "printf 'rm -rf src' | case script in x) :;; esac")"
+check "...while the loop BODY is still a command" block \
+    "$(bash_decision "printf 'rm -rf src' | for x in a; do unshare; done")"
+# An executed OPERAND is lexed before the name tests, not split on whitespace: the shell
+# resolves the quoting, and a raw split leaves `'unshare'` carrying its quotes, which no
+# name set holds. Both the shell-name test and the launcher test read the same words.
+check "a quoted launcher inside an executed operand is caught" block \
+    "$(bash_decision "printf 'rm -rf src' | env -S \"env -i 'unshare'\"")"
+check "...and a quoted shell name likewise" block \
+    "$(bash_decision "printf 'rm -rf src' | env -S \"env -i 'bash'\"")"
+check "...and the same nested in a substitution" block \
+    "$(bash_decision "printf 'rm -rf src' | echo \"\$(env -S 'env -i unshare')\"")"
+# DELIBERATE over-block, pinned so that changing it is a decision rather than a drift: a
+# launcher given an explicit program (`unshare -- grep rm`) runs that program and the pipe
+# is data, but proving there IS one needs per-launcher operand arity -- `unshare --  CMD`
+# and `chroot -- NEWROOT CMD` put the command in different places, and `script -c` in a
+# third. That table is the thing this module refuses, because it fails OPEN wherever it is
+# wrong. Blocking a launcher that would have been harmless costs precision on one command.
+check "a launcher with an explicit program over-blocks (deliberate)" block \
+    "$(bash_decision "printf 'rm -rf src' | unshare -- grep rm")"
+# The helper guard reads the SAME words, so its copy has to lex them too -- it was still
+# splitting on whitespace after the classifier stopped.
+check "a quoted shell in an executed operand blocks for the helper too" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -S \"env -i 'bash'\"")"
+# PERFORMANCE is a security property here: the hook has a 5s timeout and a timed-out hook
+# writes NO decision, which the harness reads as ALLOW. Restarting the -exec search after
+# each hit re-read every operand of the payload already collected, so operands that merely
+# SPELL `-exec` cost O(N^2) -- 1,400 of them measured 6.04s. The scan is index-controlled
+# now; this pins the shape at a size that took seconds before and milliseconds after.
+_XP="$(python3 -c 'print("-exec foo " * 1400)')"
+check "operands that spell -exec do not make the find scan quadratic" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -exec grep $_XP unshare ;")"
+# The HELPER guard walks the same payloads through its own extractor, which emitted an
+# overlapping suffix per `-exec` operand -- 1,900 of them measured 11.0s, more than twice
+# the hook timeout. Timed against the same 5s ceiling the padded-command budget uses.
+_XP2="$(python3 -c 'print("-exec foo " * 1900)')"
+_T0="$(python3 -c 'import time; print(time.time())')"
+check "...and neither does the helper guard payload walk" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | find . -exec grep $_XP2 unshare ;")"
+_EL="$(python3 -c 'import sys,time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$_T0")"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.5 else 1)' "$_EL"; then
+    ok "the helper payload walk stays inside the hook timeout (${_EL}s < 3.5s)"
+else
+    no "helper payload walk timing" "${_EL}s >= 3.5s budget"
+fi
+# ...and the precision that buys: these are ordinary words, so they must only count in
+# command position. Matching them anywhere would flip every one of these to block.
+check "a launcher NAME as a grep pattern stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep script")"
+check "...including behind an assignment prefix" allow \
+    "$(bash_decision "echo 'rm -rf src' | FOO=1 grep script")"
+check "...and behind a time prefix" allow \
+    "$(bash_decision "echo 'rm -rf src' | time grep -c su")"
 check "the pipe is found inside an executed string too" block \
     "$(bash_decision "bash -c \"printf 'rm -rf src' | bash\"")"
 # The helper guard has to agree: the same invocation one transport apart was blocked as
@@ -1064,7 +1323,8 @@ check "a case pattern cannot truncate the body at the gate" block \
     "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "$(case x in x) . /dev/stdin;; esac)"')"
 # ...and the precision this keeps. Scanning the WHOLE command on any shell name was
 # measured against 34,758 real commands and over-blocked 2,693 of them (7.7%); scoping the
-# scan to the PRODUCER costs 1,561 (4.49%) as shipped -- ADR 0032 carries the breakdown and
+# scan to the PRODUCER cost 1,561 (4.49%) at the last round that could be measured -- two
+# rules landed after it with the corpus gone, so ADR 0032 carries the breakdown and
 # supersedes every earlier figure. These four are the shapes that difference is made
 # of -- a shell with a script operand on the receiving end of a pipe, a genuine -c, a
 # non-shell consumer, and `||`, which feeds the next segment nothing.
@@ -2709,11 +2969,63 @@ for _ in range(3000):
         print("P2-FAIL", repr(cmd)); break
     p2 += 1
 print("P2", "ok" if p2 == 3000 else "FAIL", p2)
+
+# P3 -- the command-position walk, COMPOSED rather than sampled. Four review rounds each
+# found a prefix spelling the hand-written cases had missed (an assignment, `time`, a
+# leading redirection, a compound container, an option of unknown arity), which is the
+# signature of coverage by enumeration. The composition is mechanical, so generate it:
+# every launcher against every prefix shape inside every container. Driven IN-PROCESS
+# rather than through the gate because 312 gate invocations cost ~200s of wall clock;
+# the gate-side spot checks above pin the twin.
+LAUNCH = ["script -q /dev/null", "su", "runuser", "chroot /jail", "unshare",
+          "nsenter -t 1", "newgrp", "sg users"]
+PREFIX = ["", "FOO=1 ", "A=1 B=2 ", "time ", "time -p ", "exec ", "nohup ",
+          "2>/dev/null ", "> /dev/null ", "env -i ", "sudo ", "time env -i ",
+          "/usr/bin/time -o t.out ", "busybox ", "toybox "]
+BOX = [("", ""), ("{ ", "; }"), ("if ", "; then :; fi"), ("while ", "; do :; done")]
+p3 = p3bad = 0
+for launcher in LAUNCH:
+    for pre in PREFIX:
+        for _open, _close in BOX:
+            cmd = "printf 'rm -rf src' | " + _open + pre + launcher + _close
+            if cmdword.is_file_mod(cmd):
+                p3 += 1
+            else:
+                p3bad += 1
+                print("P3-FAIL", repr(cmd))
+print("P3", "ok" if p3bad == 0 else "FAIL", p3)
+
+# P4 -- and the precision that has to survive it. These are ordinary English words, so
+# the same names as ARGUMENTS must stay allowed behind every prefix that is not itself a
+# wrapper. (`sudo`/`env -i` are excluded deliberately: a wrapper hides the real program
+# among its operands, so the whole stage is scanned there and the word cost is the
+# documented price of that regime, not a launcher regression.)
+NAMES = ["script", "su", "runuser", "chroot", "unshare", "nsenter", "newgrp", "sg"]
+SAFE = ["", "FOO=1 ", "A=1 B=2 ", "time ", "time -p ", "2>/dev/null ",
+        "> /dev/null ", "busybox "]
+p4 = p4bad = 0
+for nm in NAMES:
+    for pre in SAFE:
+        cmd = "echo 'rm -rf src' | " + pre + "grep -c " + nm
+        if cmdword.is_file_mod(cmd):
+            p4bad += 1
+            print("P4-FAIL", repr(cmd))
+        else:
+            p4 += 1
+print("P4", "ok" if p4bad == 0 else "FAIL", p4)
 PY
 )"
 case "$PROP_OUT" in
     *"P1 ok 3000"*) ok "property: the splitter is lossless over 3000 seeded compositions" ;;
     *) no "property: the splitter is lossless" "$PROP_OUT" ;;
+esac
+case "$PROP_OUT" in
+    *"P3 ok 480"*) ok "property: every launcher x prefix x container composition blocks (480)" ;;
+    *) no "property: launcher composition" "$PROP_OUT" ;;
+esac
+case "$PROP_OUT" in
+    *"P4 ok 64"*) ok "property: the same names as ARGUMENTS stay allowed (64)" ;;
+    *) no "property: launcher-name precision" "$PROP_OUT" ;;
 esac
 case "$PROP_OUT" in
     *"P2 ok 3000"*) ok "property: a written payload piped to a shell always blocks (3000 seeded)" ;;

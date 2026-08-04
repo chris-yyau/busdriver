@@ -1156,7 +1156,14 @@ def _exec_payloads(words):
     _seen_find = False
     # Only the FIRST watch word is expanded; see the branch below for why.
     _seen_watch = False
+    # Payload tokens are NOT re-read as predicates. Restarting the scan inside a payload
+    # emitted an overlapping suffix for every `-exec`-looking operand, so N of them cost
+    # O(N^2): 1,900 measured 11.0s here, past the 5s hook timeout -- and a timed-out hook
+    # writes no decision, which the harness reads as ALLOW. KEEP IN STEP WITH cmdword.
+    _skip_to = 0
     for i, w in enumerate(words):
+        if i < _skip_to:
+            continue
         # `less "+!<cmd>"` / `more "+!<cmd>"`: the pager runs the rest as a shell command.
         # A startup-command operand is an executed STRING wherever it appears, so it is
         # matched by its own shape rather than by knowing which pagers accept it.
@@ -1170,13 +1177,20 @@ def _exec_payloads(words):
         if _bn(w) == "find":
             _seen_find = True
         if _seen_find and w in ("-exec", "-execdir", "-ok", "-okdir"):
-            payload = []
-            for w2 in words[i + 1:]:
-                if w2 in (";", "+"):
+            payload, _j = [], i + 1
+            while _j < len(words):
+                w2 = words[_j]
+                # `+` terminates only in the `{} +` form -- anywhere else it is an
+                # ordinary operand, and treating it as a terminator TRUNCATED the
+                # payload: `-exec /usr/bin/time -o + unshare ;` kept only `time -o`
+                # and the launcher behind it was never seen. KEEP IN STEP WITH cmdword.
+                if w2 == ";" or (w2 == "+" and payload and payload[-1] == "{}"):
                     break
                 payload.append(w2)
+                _j += 1
             if payload:
                 _add_tok(payload)
+            _skip_to = _j + 1
             continue
         base = _bn(w)
         if base == "env":
@@ -1410,6 +1424,179 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
                 "awk", "gawk", "mawk", "nawk",
                 "sqlite3", "ed", "ex", "psql", "gdb",
                 "source", "xargs", "make")
+# LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell.
+# Matched in COMMAND POSITION only -- these are ordinary words, and the any-word test would
+# flip `grep script`. KEEP IN STEP WITH cmdword._LAUNCHER_SHELLS.
+_LAUNCHER_SHELLS = ("script", "su", "runuser", "chroot", "unshare", "nsenter",
+                    "newgrp", "sg")
+# Words that sit BEFORE the command without being it -- an assignment prefix, or a keyword
+# bash allows ahead of a command. Skipped when looking for a launcher, because `FOO=1
+# unshare` and `time script` put one in command position just as a bare `unshare` does.
+# The _starts_with_wrapper helper here does NOT skip `time`, which is why the walk handles
+# that word explicitly rather than leaning on the helper. KEEP IN STEP WITH cmdword.
+# busybox/toybox are MULTI-CALL DISPATCHERS -- the applet after them is the real
+# command, and the busybox unshare applet execs a shell with no program operand.
+# KEEP IN STEP WITH cmdword._CMD_PREFIX_WORDS.
+_CMD_PREFIX_WORDS = ("time", "command", "exec", "nohup", "builtin", "!",
+                     "busybox", "toybox")
+# A redirection may sit AHEAD of the command word: `2>/dev/null unshare` runs unshare.
+# `_REDIR_PREFIX_RE` above is REUSED rather than re-spelled -- a second copy would shadow
+# the one every other walk here consults. punctuation_chars lexing splits the fd number
+# off its operator, so `2>/dev/null` arrives as `2`, `>`, `/dev/null`.
+# A COMPOUND stage hands the pipe to the command INSIDE it: `| { unshare; }`. Reserved
+# words count in COMMAND POSITION ONLY. Splitting into simple commands is the CALLER task,
+# over the RAW text, because splitting from tokens is quote-blind -- shlex erases the
+# difference between a separator `;` and an operand one. KEEP IN STEP WITH cmdword.
+_COMPOUND_WORDS = _GROUP_OPEN + _GROUP_CLOSE + _GROUP_CONNECT
+# An assignment prefix needs a valid IDENTIFIER before the `=`. KEEP IN STEP WITH cmdword.
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*(?:\[[^]]*\])?\+?=")
+# Openers whose next word is a variable or a subject. KEEP IN STEP WITH cmdword.
+_GROUP_HEADERS = ("for", "select", "case")
+# sudo/doas shell MODES start a shell with no command operand. The flag is matched rather
+# than the absence of an operand, which would need option arity, and only inside the
+# wrapper OWN option run -- otherwise `sudo grep -i needle` blocked. A bundle counts only
+# when every letter is a no-argument flag. KEEP IN STEP WITH cmdword.
+_SHELL_MODE_WRAPPERS = ("sudo", "doas")
+_SHELL_MODE_LONG = ("--shell", "--login")
+_SHELL_MODE_NOARG = "AbEHKknPSsVvilL"
+
+
+def _has_shell_mode_flag(toks):
+    """A sudo/doas shell-mode flag among these words. No option run, no value skipping,
+    no arity -- scoping it to the wrapper own option run needed to know which options take
+    a VALUE (`sudo -u root -s`, `sudo --user root --shell` both hid the flag behind an
+    operand). The whole-stage scan is the regime a wrapper already selects here, and its
+    price is the same: a word in the WRAPPED command data reads as the flag.
+    KEEP IN STEP WITH cmdword.
+    """
+    for t in toks:
+        if t.startswith("--"):
+            # getopt_long accepts any unambiguous ABBREVIATION, so `--shel` selects
+            # `--shell`. Every prefix is matched rather than the full spelling; an
+            # abbreviation too short to be unambiguous is rejected by sudo itself, so
+            # matching it costs a block on an invocation that would not have run.
+            if len(t) > 2 and any(n.startswith(t) for n in _SHELL_MODE_LONG):
+                return True
+            continue
+        if len(t) < 2 or not t.startswith("-"):
+            continue
+        # A BUNDLE is read left to right and stops at the first flag that takes a VALUE,
+        # because the rest of the token is that value. `-su root` is `-s -u root` and
+        # counts; `-ualice` is `-u` with its value attached and does not.
+        for _n, c in enumerate(t[1:]):
+            if c in "si":
+                return True
+            if c not in _SHELL_MODE_NOARG:
+                break
+    return False
+
+
+def _shell_mode_launch(words):
+    """A sudo/doas shell mode anywhere in this stage. KEEP IN STEP WITH cmdword."""
+    return (any(_bn(w) in _SHELL_MODE_WRAPPERS for w in words)
+            and _has_shell_mode_flag(words))
+
+
+def _leads_with_launcher(toks, words):
+    """Is a no-command shell LAUNCHER what this stage actually runs?
+    Command position only, so `grep script` is untouched. An OPTION in command position
+    has unknowable arity (`/usr/bin/time -o FILE unshare`), so it marks the stage
+    UNRESOLVED and the whole stage is asked instead. KEEP IN STEP WITH cmdword.
+    """
+    i, n = 0, len(toks)
+    at_start = True
+    unresolved = False
+    first_cmd = None
+    while i < n:
+        t = toks[i]
+        b = _bn(t)
+        if not at_start:
+            i += 1
+            continue
+        if t in _GROUP_HEADERS:
+            # A header names a VARIABLE or a SUBJECT, not a command: `for script in a`.
+            # KEEP IN STEP WITH cmdword.
+            return False
+        if t in _COMPOUND_WORDS or b in _CMD_PREFIX_WORDS:
+            i += 1
+            continue
+        if _ASSIGN_RE.match(t):
+            i += 1
+            continue
+        j = i + 1 if (t.isdigit() and i + 1 < n
+                      and _REDIR_PREFIX_RE.match(toks[i + 1])) else i
+        m = _REDIR_PREFIX_RE.match(toks[j])
+        if m:
+            i = j + 1 + (m.end() == len(toks[j]))
+            continue
+        if t.startswith("-") and t != "-":
+            unresolved = True
+            i += 1
+            continue
+        if b in _LAUNCHER_SHELLS:
+            return True
+        if b in _SHELL_MODE_WRAPPERS and _has_shell_mode_flag(toks[i + 1:]):
+            return True
+        # An UNRESOLVED command word cannot be ruled out, and a prefix hides it from the
+        # peeled word: `busybox "$APPLET"` peels to busybox. KEEP IN STEP WITH cmdword.
+        if _UNRESOLVED_CW_RE.search(t):
+            return True
+        if first_cmd is None:
+            first_cmd = i
+        at_start = False
+        i += 1
+    if unresolved:
+        # An UNRESOLVED word cannot be ruled out either: the command word is already
+        # unlocatable, so an expansion is what runs. KEEP IN STEP WITH cmdword.
+        return (any(_bn(w) in _LAUNCHER_SHELLS for w in words)
+                or any(_UNRESOLVED_CW_RE.search(w) for w in words)
+                or _shell_mode_launch(words))
+    # From the command word, not from the front -- this copy of _starts_with_wrapper does
+    # not model `time`, so `time env -i script` answered no. KEEP IN STEP WITH cmdword.
+    rest = toks if first_cmd is None else toks[first_cmd:]
+    return bool(_starts_with_wrapper(rest)) and (
+        any(_bn(w) in _LAUNCHER_SHELLS for w in words)
+        # ...and a NESTED shell mode: `env -i sudo -s` leads with a wrapper.
+        or _shell_mode_launch(words))
+
+
+def _lexed_words(text):
+    """Words of `text` with the QUOTING RESOLVED, falling back to a raw split.
+
+    A raw split leaves the quote characters attached, so a quoted name matches no set --
+    the fail-open this exists to close. KEEP IN STEP WITH cmdword, whose executed-operand
+    loop lexes for the same reason.
+    """
+    try:
+        _l = shlex.shlex(text, posix=True, punctuation_chars=True)
+        _l.whitespace_split = True
+        _l.commenters = ""
+        return list(_stage_words(list(_l)))
+    except ValueError:
+        return text.split()
+
+
+def _launcher_in_any_simple_command(text):
+    """Does any simple command in this text LEAD with a launcher?
+    Quote-aware split over the raw text; unsplittable or unlexable fails CLOSED. Each
+    command is judged against its OWN lexed words -- one flattened list let a wrapper in
+    one command pair with a launcher-shaped operand in another, and a raw split leaves the
+    quote characters attached to a quoted name. KEEP IN STEP WITH cmdword.
+    """
+    segs, ok = _split_simple_commands(text)
+    if not ok:
+        return True
+    for s in segs:
+        try:
+            _sl = shlex.shlex(s, posix=True, punctuation_chars=True)
+            _sl.whitespace_split = True
+            _sl.commenters = ""
+            _st = list(_sl)
+        except ValueError:
+            return True
+        if _leads_with_launcher(_st, list(_stage_words(_st))):
+            return True
+    return False
 
 
 # Compound-command keyword sets -- see the definitions above _FUNC_NAME.
@@ -1564,7 +1751,16 @@ def _piped_shell_producers(pairs):
                 # position ONLY: a bare `.` is an ordinary argument (`find . -name x`), and
                 # putting it in _SHELL_NAMES -- matched against every word -- cost 100
                 # over-blocks. KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
-                if cw and _bn(cw) == ".":
+                # Same rule for LAUNCHERS that exec a shell with no program operand, so the
+                # pipe feeds that shell. Command position ONLY, for the same reason as `.`:
+                # these are ordinary words and any-word matching would flip `grep script`.
+                # KEEP IN STEP WITH cmdword._LAUNCHER_SHELLS.
+                # NOT asked of the PEELED command word: `script`, `su`, `runuser` and
+                # `chroot` are themselves wrappers, so peeling steps past them. Ask the
+                # LEADING token, plus the whole wrapper run when one leads (for
+                # `env -i script`). KEEP IN STEP WITH cmdword.
+                if (cw and _bn(cw) == ".") \
+                   or _launcher_in_any_simple_command(seg):
                     last = i
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
@@ -1600,9 +1796,27 @@ def _piped_shell_producers(pairs):
                             _bt = None
                         _bw = [] if _bt is None else list(_stage_words(_bt))
                         _bcw = None if _bt is None else _peel_wrappers(_bt)
+                        # The LAUNCHER question belongs here too: `$(unshare)` runs inside
+                        # the pipeline, so it inherits the stdin the outer `echo` never
+                        # reads and the payload reaches the shell it execs. Asking only
+                        # _SHELL_NAMES and `.` left that open. KEEP IN STEP WITH cmdword.
+                        # A body can also EXECUTE an operand of its own, and
+                        # _stage_words re-splits on whitespace, which leaves the quote
+                        # characters attached: `env -S "env -i <quoted launcher>"` inside
+                        # a substitution read as no launcher at all. The payloads are
+                        # extracted and lexed instead. KEEP IN STEP WITH cmdword, whose
+                        # _executed_operands loop covers the same ground.
+                        _btp, _bsp = _exec_payloads(_bt) if _bt is not None else ([], [])
+                        _bprogs = [" ".join(shlex.quote(_x) for _x in _p)
+                                   for _p in _btp] + list(_bsp)
                         if _bt is None \
                            or any(_bn(w) in _SHELL_NAMES for w in _bw) \
-                           or (_bcw and _bn(_bcw) == "."):
+                           or (_bcw and _bn(_bcw) == ".") \
+                           or _leads_with_launcher(_bt, _bw) \
+                           or any(_bn(w) in _SHELL_NAMES
+                                  for _p in _bprogs for w in _lexed_words(_p)) \
+                           or any(_launcher_in_any_simple_command(_p)
+                                  for _p in _bprogs):
                             _sub_unres = True
                             break
                     if _sub_unres:
@@ -1657,7 +1871,11 @@ def _piped_shell_producers(pairs):
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
                 _tokp, _strp = _exec_payloads(toks)
-                _progs = [" ".join(p) for p in _tokp] + list(_strp)
+                # REQUOTED, not space-joined: a token payload carries real argv
+                # boundaries, so `-exec grep "foo; unshare" ;` must not re-read as two
+                # commands. KEEP IN STEP WITH cmdword, which requotes for the same reason.
+                _progs = [" ".join(shlex.quote(_x) for _x in p)
+                          for p in _tokp] + list(_strp)
                 # A WRAPPER hides the real program among its operands, and peeling can land
                 # on the wrong word: `env -u X /bin/[b]ash` peels to `X`, the operand of
                 # `-u`, so the globbed receiver behind it is never tested. Asking the whole
@@ -1668,7 +1886,9 @@ def _piped_shell_producers(pairs):
                    or (_starts_with_wrapper(toks)
                        and any(_UNRESOLVED_CW_RE.search(w) for w in _sw)) \
                    or any(_UNRESOLVED_CW_RE.search(p) for p in _progs) \
-                   or any(_bn(w) in _SHELL_NAMES for p in _progs for w in p.split()):
+                   or any(_bn(w) in _SHELL_NAMES
+                          for p in _progs for w in _lexed_words(p)) \
+                   or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:

@@ -70,10 +70,20 @@ PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
 # Takes the MAX of the override and PER_TEST_TIMEOUT, not the override
 # alone — an operator-set SHELL_TEST_TIMEOUT larger than the override must
 # still win, otherwise this floor would silently shrink an explicit ask.
+#
+# 420 -> 900 (#562): the suite was sitting right on the old ceiling and #562's
+# regression fixtures tipped it over. The three PR heads bracket it -- shell-tests
+# took 11m55s at f97817c and 12m48s at 76d6b4f, both green, then the very next head
+# was hard-killed at 420s. Nothing got slower: the classifier itself measures 1.93s
+# per 1600 in-process calls against 1.97s before that round, so the cost is purely
+# the added `bash_decision` cases, each of which is three processes. Raised with
+# headroom above the observed runtime rather than tuned to it -- same reasoning as
+# the job-level ceiling in tests.yml, and for the same reason: a cap set at the
+# measurement reproduces this false failure on the next PR that adds a case.
 test_timeout() {   # <basename> -> prints the effective per-test timeout
   local override=0
   case "$1" in
-    test-impl-gate-scope-519) override=420 ;;
+    test-impl-gate-scope-519) override=900 ;;
   esac
   if [ "$override" -gt "$PER_TEST_TIMEOUT" ]; then
     printf '%s\n' "$override"

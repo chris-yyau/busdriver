@@ -1,0 +1,113 @@
+# TEMPORARY debug workflow for issue #557 / PR #562.
+#
+# `shell-tests` fails only on ubuntu-latest: ~30 assertions across three gate
+# suites flip `expected=block got=allow`, and one suite reports `got=` empty.
+# The suites pass locally on macOS under every Python (3.9/3.13/3.14) and Bash
+# (3.2/5.3) combination tried, including against the exact GitHub-computed merge
+# commit.
+#
+# The reason the failure is opaque is that the suites pipe the gate's stderr to
+# /dev/null — so a gate that CRASHES produces empty stdout, which the harness
+# scores as "allow". This workflow re-runs the suites with THAT redirection (and
+# only that one) stripped from a COPY of each test file, so the gate's stderr
+# reaches the job log.
+#
+# DELETE THIS FILE once the Linux divergence is identified.
+name: debug-shell-tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - issue-557-stdin-shell
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
+
+      - name: Runtime fingerprint
+        run: |
+          echo "bash:    $(bash --version | head -1)"
+          echo "sh ->    $(readlink -f /bin/sh)"
+          echo "python3: $(python3 --version)  ($(command -v python3))"
+          echo "locale:  LANG=${LANG:-unset} LC_ALL=${LC_ALL:-unset}"
+          python3 -c 'import sys,locale;print("fsencoding:",sys.getfilesystemencoding(),"preferred:",locale.getpreferredencoding())'
+
+      - name: Single gate invocation with stderr visible
+        # The narrowest possible probe: one command the CI run reports as
+        # `expected=block got=allow`, run straight through the gate with stderr
+        # kept. If the gate is raising, the traceback prints here.
+        run: |
+          set -x
+          printf '%s' '{"tool_name":"Bash","cwd":"'"$PWD"'","tool_input":{"command":"rm -rf .claude/.skip-design-review-lease.d"}}' \
+            | bash hooks/gate-scripts/pre-implementation-gate.sh
+          echo "exit=$?"
+
+      - name: cmdword.py import + classify probe
+        # Isolates the library half of the security twin from the shell half.
+        # `is_file_mod` is cmdword's ONLY public entry point — probing for any
+        # other name would silently no-op instead of exercising the classifier.
+        run: |
+          cat > /tmp/cmdword_probe.py <<'PY'
+          import sys, traceback
+          sys.path.insert(0, "hooks/gate-scripts/lib")
+          try:
+              import cmdword
+              print("import OK:", cmdword.__file__)
+          except Exception:
+              traceback.print_exc()
+              sys.exit(1)
+          if not hasattr(cmdword, "is_file_mod"):
+              print("FATAL: cmdword.is_file_mod is missing — probe cannot classify")
+              sys.exit(1)
+          for cmd in [
+              "rm -rf .claude/.skip-design-review-lease.d",
+              "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | script -q /dev/null",
+              "env -S 'script .claude/bypass-log.jsonl'",
+          ]:
+              try:
+                  print(repr(cmd), "-> is_file_mod =", cmdword.is_file_mod(cmd))
+              except Exception:
+                  print(repr(cmd), "-> RAISED")
+                  traceback.print_exc()
+          PY
+          python3 /tmp/cmdword_probe.py
+
+      - name: Re-run failing suites with gate stderr unmuted
+        # Strip ONLY the gate-invocation redirect. A blanket `s| 2>/dev/null||g`
+        # would also rewrite fixture commands that contain that text as part of
+        # the input under test (e.g. `printf 'rm -rf src' | 2>/dev/null unshare`
+        # at test-impl-gate-scope-519.sh:1073), changing what the suite asserts.
+        # The suites name the gate via TWO different variables, so all three
+        # anchored patterns below are needed:
+        #   test-impl-gate-scope-519     ... | (cd "$WORK" && bash "$GATE") 2>/dev/null
+        #   test-pre-implementation-gate ... | bash "$GATE" 2>/dev/null
+        #   test-design-marker-worktree  ... | bash "$PREIMPL" 2>/dev/null   (24 sites)
+        # Matching only $GATE would leave test-design-marker-worktree unchanged
+        # and still hide the crash this workflow exists to expose.
+        # Copies are written so the working tree stays pristine.
+        run: |
+          for t in test-impl-gate-scope-519 test-pre-implementation-gate test-design-marker-worktree; do
+            echo "::group::$t (gate stderr unmuted)"
+            sed -e 's|bash "\$GATE") 2>/dev/null|bash "$GATE")|g' \
+                -e 's|bash "\$GATE" 2>/dev/null|bash "$GATE"|g' \
+                -e 's|bash "\$PREIMPL" 2>/dev/null|bash "$PREIMPL"|g' \
+                "tests/$t.sh" > "tests/$t.debug.sh"
+            echo "-- redirects stripped: $(diff <(cat "tests/$t.sh") <(cat "tests/$t.debug.sh") | grep -c '^<') --"
+            chmod +x "tests/$t.debug.sh"
+            bash "tests/$t.debug.sh" 2>&1 | tail -120 || true
+            echo "::endgroup::"
+          done

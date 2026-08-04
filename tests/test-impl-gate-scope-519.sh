@@ -789,6 +789,20 @@ check "a quoted time before source over-blocks too (documented)" block \
 # Raised by Codex on #562, verified against a real lldb binary.
 check "lldb reads piped stdin as debugger commands too" block \
     "$(bash_decision "printf 'platform shell rm -rf src' | lldb")"
+# Same shape, different transports: `jshell -s -` documents `-` as standard input and runs
+# the Java it reads; `sftp -b -` takes its batch commands from stdin, where `!cmd` runs a
+# LOCAL shell command. Both raised by Codex on #562 against real binaries.
+# These pin NAME RECOGNITION on a shell-shaped payload -- deliberately, because that is
+# what adding a name buys. A payload in the interpreter's OWN language
+# (`new java.io.File(x).delete();`) is invisible to a shell-regex producer scan, for jshell
+# exactly as for the python and node entries that predate this change; see the residual
+# note on `_STDIN_SHELLS`. Do not read these as proving the language case is covered.
+check "jshell is recognized as a stdin receiver" block \
+    "$(bash_decision "printf 'rm -rf src' | jshell -s -")"
+check "sftp batch input executes local commands" block \
+    "$(bash_decision "printf '!rm -rf src' | sftp -b - host")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | jshell -s -")"
 # `.` is tested in COMMAND POSITION only: a bare `.` is an ordinary argument, and matching
 # it as a name anywhere in the stage cost 100 over-blocks for nothing.
 check "a bare . as an argument is not a receiver" allow \
@@ -1304,7 +1318,7 @@ check "an option value naming a dash-versioned debugger is data (#565)" allow \
 check "...while a known interpreter name there over-blocks (documented)" block \
     "$(bash_decision "printf 'rm -rf src' | grep --label=bash")"
 check "...and the marker classifier agrees" block \
-    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -iSlldb-19")"
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | grep --label=bash")"
 # env's short options are PARSED, not pattern-matched: `u` and `C` take the rest of the
 # word as their OWN operand, so an `S` inside one is data. And a word that merely LOOKS
 # like an env bundle is not one unless env is what runs.

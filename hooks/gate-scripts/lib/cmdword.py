@@ -704,6 +704,23 @@ def _lex(text):
 # (its own built-in help: "Run a shell command on the current platform"). Verified against
 # a real `lldb` binary (`printf 'platform shell touch <marker>\nquit\n' | lldb` executes
 # the marker touch). Raised by Codex on #562. KEEP IN STEP WITH marker_check._SHELL_NAMES.
+# `jshell` and `sftp` join the debuggers as programs whose stdin IS a command language:
+# `jshell -s -` documents `-` as standard input and runs the Java snippets it reads, and
+# `sftp -b -` reads its batch commands from stdin, where `!cmd` runs a LOCAL shell command.
+# Both raised by Codex on #562 against real binaries. Bare names, so they are answered
+# wherever a receiver is asked -- `sftp` without `-b` still reads stdin as commands when
+# stdin is not a tty, so the name rather than the flag is the honest condition.
+#
+# KNOWN RESIDUAL, PRE-EXISTING and not specific to these two names: the producer scan reads
+# the payload as SHELL TEXT. Every non-shell interpreter in this set takes a payload in its
+# OWN language, and that language's write idioms are invisible to shell regexes --
+# `import os; os.remove(x) | python3`, `require("fs").unlinkSync(x) | node` and
+# `new java.io.File(x).delete(); | jshell` all measure False, and measured False identically
+# at af82155, before this change. So adding a name here buys the SHELL-payload and
+# literal-helper cases, not the language ones. Closing those means treating a stdin-fed
+# non-shell interpreter as OPAQUE and failing closed, which would block every
+# `printf ... | python3` -- a policy change with a blast radius that deserves its own
+# change and its own decision, not a quiet ride-along here.
 _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bosh",
                                      "osh", "oil", "elvish", "xonsh", "nu",
                                      "python", "python2", "python3",
@@ -711,6 +728,7 @@ _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bos
                                      "tclsh", "wish", "lua", "php",
                                      "awk", "gawk", "mawk", "nawk",
                                      "sqlite3", "ed", "ex", "psql", "gdb", "lldb",
+                                     "jshell", "sftp",
                                      "xargs", "make"))
 
 # VERSION-QUALIFIED spellings of the interpreters above: `/usr/bin/python3.12` is a real

@@ -84,6 +84,17 @@ get_cli_install_hint() {
 # test-ultimate-config.sh force `_JSON_PARSER=python3` to exercise the
 # python3 normalization branch. Prod never sets it, so behavior is unchanged.
 _JSON_PARSER="${_JSON_PARSER:-}"
+
+# NOTE on hardening scope: this shared reader keeps its long-standing posture —
+# a bare `jq`/`python3` command word, which an attacker-controlled function table
+# can shadow (`BASH_FUNC_jq%%` via a committed settings.json, #325). That is the
+# documented accepted residual of the opencode arm below and the domain of
+# hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016); no construct inside
+# a bash process whose function table is already owned can undo it — `local`,
+# `return` and `printf` are shadowable too. The one value that must not rest on
+# that residual — `.auditor.model`, which picks the third party a review is
+# transmitted to — is therefore NOT read through this path at all;
+# `resolve_auditor_model` reads it in a clean `env -i` process instead.
 _detect_json_parser() {
   if [[ -n "$_JSON_PARSER" ]]; then return; fi
   if command -v jq &>/dev/null; then
@@ -206,35 +217,87 @@ _read_user_config_value() {
 # reviewed repo choose the model — i.e. choose where its own review is sent. Both
 # dispatch sites therefore call this as `HOME="$_oc_home" resolve_auditor_model`,
 # with `_oc_home` derived from the PASSWORD DATABASE, exactly as the opencode arm
-# already does for the binary lookup. `BUSDRIVER_STATE_DIR` is sanitized here (it
-# is a path segment under that home, so traversal is the risk, not the value).
+# already does for the binary lookup.
+#
+# The read runs in a CLEAN PROCESS, not through `_read_config_value`. Every other
+# config value tolerates the accepted BASH_FUNC_* residual (#325 / ADR 0016);
+# this one must not, because it names the third party the review is shipped to,
+# and no in-shell construct escapes an attacker-owned function table — `jq`,
+# `command`, `printf`, `local` and `return` are all shadowable. `env -i` is the
+# escape: exported functions ARE environment variables, so wiping the environment
+# wipes the function table, and the child's builtins are trustworthy again. Both
+# `/usr/bin/env` and `/bin/bash` are invoked by absolute path (bash refuses to
+# import a function whose name contains `/`), so the escape itself is unshadowable.
+#
+# The state dir is PINNED to `.claude` inside the child. `BUSDRIVER_STATE_DIR` is
+# repo-injectable, and no shape-check makes an injectable value safe: the reviewed
+# checkout normally lives UNDER the trusted home, so any accepted value — `../x`,
+# `projects/reviewed/.claude`, or a bare `reviewed` for a checkout at
+# `$HOME/reviewed` — reaches a busdriver.json the fork commits itself. Consequence:
+# a custom state dir does not move THIS key. `~/.claude` always.
+#
+# READ, VALIDATE, and DEFAULT all happen INSIDE the child. Anything the parent
+# runs after obtaining the value is a shadowable command word that could rewrite
+# it — `|| true`, an `echo` warning, even `printf` on the result line (each was a
+# separate live finding). So the child returns a value that is already final, and
+# the parent body is one assignment.
+#
+# jq first, python3 second — mirroring `_read_config_value`, so a host with only
+# one of them still honours an explicitly configured provider. Both are looked up
+# by absolute path, and the child always exits 0 so no `|| true` is needed.
 #
 # `opencode models` lists valid ids.
-BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
-resolve_auditor_model() {
-  local m
-  # PINNED, not sanitized. `BUSDRIVER_STATE_DIR` is repo-injectable (#325), and no
-  # amount of shape-checking makes an injectable value safe: the reviewed checkout
-  # normally lives under the trusted home, so ANY accepted value — `../x`,
-  # `projects/reviewed/.claude`, or a bare `reviewed` for a checkout at
-  # `$HOME/reviewed` — points at a busdriver.json the fork itself commits, and it
-  # then picks the provider its own review is shipped to. Shape rules chase the
-  # spelling; only pinning the location removes the class. Same reasoning that
-  # denies an env override for the opencode config path and binary below.
-  # Consequence: a custom state dir does not move THIS key — `~/.claude` always.
-  local BUSDRIVER_STATE_DIR=".claude"
-  m="$(_read_user_config_value '.auditor.model' "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
-  # The value becomes a single argv word after `-m`. No shell eval reaches it, so
-  # the only real hazards are option injection (a leading `-`) and whitespace/
-  # control characters. Require the `provider/model` shape opencode actually uses
-  # (at least one slash, each segment starting alphanumeric); colons are allowed
-  # because some providers tag variants `model:tag`. A bad value degrades to the
-  # default with a loud note rather than killing an AUXILIARY voice on a typo.
-  if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$ ]]; then
-    echo "busdriver: ignoring invalid .auditor.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using ${BUSDRIVER_AUDITOR_MODEL_DEFAULT}" >&2
-    m="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+_bd_read_auditor_model() {
+  /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" <<'CHILD'
+default="$1"
+cfg="$HOME/.claude/busdriver.json"
+m=""
+if [[ -f "$cfg" ]]; then
+  for b in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq /bin/jq; do
+    if [[ -x "$b" ]]; then m="$("$b" -r '.auditor.model // empty' "$cfg" 2>/dev/null)"; break; fi
+  done
+  if [[ -z "$m" ]]; then
+    for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+      if [[ -x "$b" ]]; then
+        m="$("$b" -I -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    v = (d.get("auditor") or {}).get("model")
+    print(v if isinstance(v, str) else "")
+except Exception:
+    pass' "$cfg" 2>/dev/null)"
+        break
+      fi
+    done
   fi
-  printf '%s' "$m"
+fi
+# The value becomes a single argv word after `-m`. No shell eval reaches it, so
+# the only real hazards are option injection (a leading `-`) and whitespace or
+# control characters. Require the `provider/model` shape opencode actually uses
+# (at least one slash, each segment starting alphanumeric); colons are allowed
+# because some providers tag variants `model:tag`. A bad value degrades to the
+# default with a loud note rather than killing an AUXILIARY voice on a typo.
+if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$ ]]; then
+  if [[ -n "$m" ]]; then
+    echo "busdriver: ignoring invalid .auditor.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
+  fi
+  m="$default"
+fi
+printf '%s' "$m"
+CHILD
+}
+
+BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
+
+# Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
+# `printf`/`echo` on the value's path, undoing the child (verified — an injected
+# BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
+# is `$( )`, `[[ ]]` and assignment: syntax and keywords, none overridable. The
+# only command word left is the absolute `/usr/bin/env` inside the reader.
+_BD_AUDITOR_MODEL=""
+resolve_auditor_model() {
+  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
+  [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────
@@ -1738,15 +1801,24 @@ execute_review() {
              # config reader shells out to comes from system dirs only, and with
              # the PASSWORD-DB home — never the repo-injectable $HOME, which would
              # let the reviewed repo choose where its own review is transmitted.
-             local _oc_model
-             _oc_model="$(HOME="$_oc_home" resolve_auditor_model)"
+             # PATH is restated rather than inherited from the arm's pin above:
+             # the config reader shells out to jq/python3, and leaving that on
+             # line ORDER inside a long case arm is a reordering away from being
+             # wrong. Stated here, the invariant is local and greppable.
+             # It is the TOOL path (_oc_trust's system half), not the arm's
+             # narrower utility pin: on a Mac whose jq/python3 come only from
+             # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
+             # configured model silently degrades to the default — i.e. the
+             # prompt goes to a provider they configured away from. These dirs
+             # are root-owned system install paths, not repo-writable.
+             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
              ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT   # best-effort cleanup even on grace-kill
                cd "$_oc_cwd" 2>/dev/null || exit 1
                _run_review_with_retries opencode "$prompt" "$duration" pipe \
                  env -i HOME="$_oc_home" PATH="$_oc_path" \
                    OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                  "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                   -m "$_oc_model" )
+                   -m "$_BD_AUDITOR_MODEL" )
              local _oc_rc=$?
              rm -rf "$_oc_cwd" 2>/dev/null || true
              return "$_oc_rc" ;;

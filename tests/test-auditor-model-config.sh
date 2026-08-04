@@ -44,7 +44,8 @@ resolve() {  # <json-or-empty> → stdout model, stderr dropped unless $2=keep-s
     # shellcheck source=/dev/null
     source "$LIB"
     if [[ "${2:-}" == "keep-stderr" ]]; then resolve_auditor_model 2>&1
-    else resolve_auditor_model 2>/dev/null; fi )
+    else resolve_auditor_model 2>/dev/null; fi
+    printf '%s' "$_BD_AUDITOR_MODEL" )
 }
 
 DEFAULT="$(grep -E '^BUSDRIVER_AUDITOR_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
@@ -68,7 +69,7 @@ eq "$(resolve 'not json at all')"                          "$DEFAULT"        "co
 # not escape the home dir into a path the reviewed repo can plant.
 printf '%s' '{"auditor":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="../$(basename "$FAKE_HOME")" bash -c \
-        'source "$0"; resolve_auditor_model 2>/dev/null' "$LIB" )"
+        'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "traversal in BUSDRIVER_STATE_DIR rejected"
 
 # A NESTED relative segment needs no traversal: the reviewed checkout normally
@@ -77,7 +78,7 @@ eq "$got" "$DEFAULT" "traversal in BUSDRIVER_STATE_DIR rejected"
 mkdir -p "$FAKE_HOME/projects/reviewed/.claude"
 printf '%s' '{"auditor":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/projects/reviewed/.claude/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="projects/reviewed/.claude" bash -c \
-        'source "$0"; resolve_auditor_model 2>/dev/null' "$LIB" )"
+        'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "nested BUSDRIVER_STATE_DIR (checkout under \$HOME) rejected"
 
 # And the shape a sanitizer cannot catch: a bare single segment naming a checkout
@@ -86,24 +87,33 @@ eq "$got" "$DEFAULT" "nested BUSDRIVER_STATE_DIR (checkout under \$HOME) rejecte
 mkdir -p "$FAKE_HOME/reviewed"
 printf '%s' '{"auditor":{"model":"zenmux/evil/model"}}' > "$FAKE_HOME/reviewed/busdriver.json"
 got="$( HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR="reviewed" bash -c \
-        'source "$0"; resolve_auditor_model 2>/dev/null' "$LIB" )"
+        'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 eq "$got" "$DEFAULT" "bare BUSDRIVER_STATE_DIR naming a checkout dir rejected"
 
-# `_JSON_PARSER=python3` is injectable the same way, and `python3 -c` imports from
-# the CWD — which on every review path is the reviewed checkout. A planted json.py
-# would run inside the reviewer and could print any model it liked.
-PLANT="$(mktemp -d)"
-cat > "$PLANT/json.py" <<'PY'
-print("zenmux/evil/model")
-raise SystemExit(0)
-PY
-# The config must EXIST, or _read_config_value returns before python3 ever runs
-# and the test proves nothing.
+# The whole BASH_FUNC_* class in one shot. An attacker-controlled function table
+# shadows every command word an in-shell reader could use — `jq`, `command`,
+# `printf`, and even `local`/`return` — so the read happens in an `env -i` child,
+# which drops the exported functions along with the rest of the environment.
+# `_JSON_PARSER*` are listed too: they steered the old in-shell reader.
 printf '%s' '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}' > "$FAKE_HOME/.claude/busdriver.json"
-got="$( cd "$PLANT" && HOME="$FAKE_HOME" _JSON_PARSER=python3 bash -c \
-        'source "$0"; resolve_auditor_model 2>/dev/null' "$LIB" )"
-rm -rf "$PLANT"
-eq "$got" "zenmux/deepseek/deepseek-v4-pro" "planted json.py in CWD cannot inject a model (python3 -I)"
+EVIL="$(mktemp -d)"; printf '#!/bin/sh\necho zenmux/evil/model\n' > "$EVIL/evil"; chmod +x "$EVIL/evil"
+got="$( cd "$EVIL" && HOME="$FAKE_HOME" _JSON_PARSER=jq _JSON_PARSER_BIN="$EVIL/evil" \
+        env "BASH_FUNC_jq%%=() { echo 'zenmux/evil/model'; }" \
+            "BASH_FUNC_command%%=() { echo '$EVIL/evil'; }" \
+            "BASH_FUNC_printf%%=() { echo 'zenmux/evil/model'; }" \
+        bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; builtin echo "$_BD_AUDITOR_MODEL"' "$LIB" 2>/dev/null )"
+rm -rf "$EVIL"
+eq "$got" "zenmux/deepseek/deepseek-v4-pro" "injected shell functions + _JSON_PARSER* cannot forge the model"
+
+# A host with python3 but no jq must still honour a configured provider — the
+# child tries jq first, python3 second. Simulated by pointing the jq loop at a
+# path that cannot exist.
+NOJQ="$(mktemp -d)/rc.sh"
+sed 's|for b in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq /bin/jq; do|for b in /nonexistent/jq; do|' "$LIB" > "$NOJQ"
+printf '%s' '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$NOJQ" )"
+rm -rf "$(dirname "$NOJQ")"
+eq "$got" "zenmux/deepseek/deepseek-v4-pro" "python3 fallback honours the config when jq is absent"
 
 # Captured, not piped: `grep -q` exits on first match and would SIGPIPE the
 # producer, which `pipefail` then reports as a failed pipeline.
@@ -119,7 +129,7 @@ PROJ="$(mktemp -d)"
 mkdir -p "$PROJ/.claude"
 printf '%s' '{"auditor":{"model":"zenmux/evil/model"}}' > "$PROJ/.claude/busdriver.json"
 got="$( cd "$PROJ" && HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR=".claude" bash -c \
-        'rm -f "$HOME/.claude/busdriver.json"; source "$0"; resolve_auditor_model 2>/dev/null' "$LIB" )"
+        'rm -f "$HOME/.claude/busdriver.json"; source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 rm -rf "$PROJ"
 eq "$got" "$DEFAULT" "project .claude/busdriver.json ignored (USER config only)"
 
@@ -130,10 +140,10 @@ else
   ok "neither dispatch site hardcodes a model id after -m"
 fi
 
-grep -qE '\-m "\$_oc_model"' "$LIB" \
+grep -qE '\-m "\$_BD_AUDITOR_MODEL"' "$LIB" \
   && ok "resolve-cli.sh opencode arm dispatches the resolved model" \
-  || fail "resolve-cli.sh opencode arm no longer uses \$_oc_model"
-grep -qE '\-m "\$\{MODEL:-\$\(HOME="\$_oc_home" resolve_auditor_model\)\}"' "$DISPATCH" \
+  || fail "resolve-cli.sh opencode arm no longer uses \$_BD_AUDITOR_MODEL"
+grep -qE '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "$DISPATCH" \
   && ok "dispatch.sh honors --model then the config resolver" \
   || fail "dispatch.sh no longer chains MODEL → resolve_auditor_model"
 
@@ -143,15 +153,18 @@ grep -qE '\-m "\$\{MODEL:-\$\(HOME="\$_oc_home" resolve_auditor_model\)\}"' "$DI
 for f in "$LIB" "$DISPATCH"; do
   # Every mention that is not a comment and not the definition/shim is a CALL,
   # and every call must carry the trusted home.
+  # PATH too: the reader shells out to jq/python3, so an ambient PATH could
+  # supply a planted binary. Both are stated at the call site rather than
+  # inherited from the arm's pin, so neither depends on line order.
   bad="$(grep -nE 'resolve_auditor_model' "$f" \
          | grep -vE '^[0-9]+:[[:space:]]*#' \
          | grep -v 'resolve_auditor_model()' \
          | grep -v 'type resolve_auditor_model' \
-         | grep -v 'HOME="\$_oc_home"' || true)"
+         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_oc_home" resolve_auditor_model' || true)"
   if [[ -n "$bad" ]]; then
-    fail "$(basename "$f") calls resolve_auditor_model without HOME=\"\$_oc_home\": $bad"
+    fail "$(basename "$f") calls resolve_auditor_model without pinned PATH+HOME: $bad"
   else
-    ok "$(basename "$f") resolves the model under the trusted home"
+    ok "$(basename "$f") resolves the model under pinned PATH + trusted home"
   fi
 done
 

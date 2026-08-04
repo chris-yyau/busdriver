@@ -41,7 +41,8 @@ fi
 # Ditto for the Auditor model resolver — without the library there is no config
 # reader, so the opencode arm falls back to the same built-in default.
 if ! type resolve_auditor_model &>/dev/null; then
-  resolve_auditor_model() { printf '%s' "zenmux/moonshotai/kimi-k3"; }
+  _BD_AUDITOR_MODEL=""
+  resolve_auditor_model() { _BD_AUDITOR_MODEL="zenmux/moonshotai/kimi-k3"; }
 fi
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
@@ -519,13 +520,20 @@ dispatch_one() {
                 # trap rm -rf's the neutral dir even on a council grace-period
                 # kill, and handles the case where opencode created files in it
                 # (a bare rmdir would leak a non-empty dir).
+                # Resolve OUTSIDE the subshell: the resolver returns its value in
+                # $_BD_AUDITOR_MODEL (see resolve-cli.sh — an stdout hand-off would
+                # be shadowable), and a subshell's assignment would not survive.
+                # PATH+HOME pinned at the call, not inherited from the arm's pin, so
+                # neither depends on line order within this long case arm.
+                PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+                  HOME="$_oc_home" resolve_auditor_model
                 ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT
                   cd "$_oc_cwd" 2>/dev/null || exit 1
                   _portable_timeout "$_budget" \
                     env -i HOME="$_oc_home" PATH="$_oc_path" \
                         OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                    -m "${MODEL:-$(HOME="$_oc_home" resolve_auditor_model)}" \
+                    -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
                 rm -rf "$_oc_cwd" 2>/dev/null || true
                 fi

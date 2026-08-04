@@ -1186,7 +1186,17 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
                 "tclsh", "wish", "lua", "php",
                 "awk", "gawk", "mawk", "nawk",
                 "sqlite3", "ed", "ex", "psql", "gdb",
-                "source", "xargs", "make")
+                "xargs", "make")
+# `source` is deliberately ABSENT, unlike the rest of this set. It is handled in COMMAND
+# POSITION ONLY, alongside `.` below -- an any-word match here cost a real over-block
+# (`printf 'rm -rf src' | grep source` blocked on the bare word `source` appearing as a
+# grep PATTERN, not a command). Raised by Codex on #562, verified. `xargs` stays IN this
+# set despite Codex raising the same "default command is harmless echo" argument for it:
+# `printf 'rm -rf src' | xargs` is PINNED to block by
+# tests/test-impl-gate-scope-519.sh ("xargs executes what it reads from stdin") and its
+# 3000-command property fixture, which both treat this as the deliberate fail-CLOSED
+# direction this module chooses throughout -- narrowing it here would regress a decision
+# the suite already locked in, not fix a bug. KEEP IN STEP WITH cmdword._STDIN_SHELLS.
 
 
 # A name this set already knows, wearing a version suffix: `python3.12` is python3. Without
@@ -1194,8 +1204,16 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
 # while this guard returned OK for the identical command, which is the keep-in-step defect
 # this pair exists to avoid. UNANCHORED so the attached-option-bundle check can use search
 # (`env -iSpython3.12`); whole-name callers use fullmatch.
+# EXTENDED beyond python: `/usr/bin/perl5.38.2` and `/usr/bin/tclsh8.6` are equally real,
+# packaged executable names that this exact-name set does not match. Raised by Codex on
+# #562 as a fresh case beyond the python fix; verified against real `perl5.38.2` and
+# `tclsh8.6` binaries. Covers the interpreter names above that ship version-qualified
+# spellings in practice (python/perl/ruby/node/lua/php/tclsh/wish) -- `wish` ships beside
+# `tclsh` from the same Tcl/Tk package and is version-qualified the same way
+# (`/usr/bin/wish8.5`), so omitting it left exactly the bypass its sibling closes.
 # KEEP IN STEP WITH cmdword._VERSIONED_INTERP_RE / cmdword._is_stdin_shell.
-_VERSIONED_INTERP_RE = re.compile(r"python[0-9]+(?:\.[0-9]+)*$")
+_VERSIONED_INTERP_RE = re.compile(
+    r"(?:python|perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*$")
 
 
 def _is_shell_name(name):
@@ -1524,10 +1542,14 @@ def _piped_shell_producers(pairs):
                 # cmdword._may_read_program_from_stdin, whose _executed_operands loop
                 # this mirrors -- the gate lacking it was a live fail-OPEN.
                 cw = _peel_wrappers(toks)
-                # `.` is the POSIX `source`, and `. /dev/stdin` runs the piped text. Command
-                # position ONLY: a bare `.` is an ordinary argument (`find . -name x`), and
-                # putting it in _SHELL_NAMES -- matched against every word -- cost 100
-                # over-blocks. KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
+                # `.` and `source` are the two POSIX/bash spellings of the same builtin, and
+                # `. /dev/stdin` / `source /dev/stdin` both run the piped text. Command
+                # position ONLY: a bare `.` is an ordinary argument (`find . -name x`) and a
+                # bare `source` is an ordinary word (`grep source` names it as a PATTERN, not
+                # a command) -- putting either in _SHELL_NAMES, matched against every word,
+                # cost 100 over-blocks for `.` and a further over-block for `source`
+                # (`printf 'rm -rf src' | grep source`, raised by Codex on #562). KEEP IN
+                # STEP WITH cmdword._may_read_program_from_stdin.
                 # Same rule for LAUNCHERS that exec a shell with no program operand, so the
                 # pipe feeds that shell. Command position ONLY, for the same reason as `.`:
                 # these are ordinary words and any-word matching would flip `grep script`.
@@ -1536,7 +1558,7 @@ def _piped_shell_producers(pairs):
                 # `chroot` are themselves wrappers, so peeling steps past them. Ask the
                 # LEADING token, plus the whole wrapper run when one leads (for
                 # `env -i script`). KEEP IN STEP WITH cmdword.
-                if (cw and _bn(cw) == ".") \
+                if (cw and _bn(cw) in (".", "source")) \
                    or _launcher_in_any_simple_command(seg):
                     last = i
                     kdepth = max(0, kdepth + _group_delta(_words))
@@ -1588,7 +1610,7 @@ def _piped_shell_producers(pairs):
                                    for _p in _btp] + list(_bsp)
                         if _bt is None \
                            or any(_is_shell_name(_bn(w)) for w in _bw) \
-                           or (_bcw and _bn(_bcw) == ".") \
+                           or (_bcw and _bn(_bcw) in (".", "source")) \
                            or _leads_with_launcher(_bt, _bw) \
                            or any(_is_shell_name(_bn(w))
                                   for _p in _bprogs for w in _lexed_words(_p)) \

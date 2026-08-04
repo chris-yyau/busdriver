@@ -214,6 +214,37 @@ else
     fi
 fi
 
+# B8: the NO-PYTHON CARVE-OUT CONTROL. B6/B7 assert the carve-out does NOT apply to
+# Bash; this asserts the carve-out DOES apply to a non-Bash tool with no pending
+# work, under the identical python3-absent PATH. Without this control, B6/B7 could
+# both pass vacuously for a reason unrelated to the carve-out itself (e.g. the gate
+# blocking EVERYTHING once python3 is missing, Bash included) and this file would
+# never notice — the carve-out exists precisely so a python3-less machine is not
+# bricked for every non-Bash tool call, and that side of the branch needs its own
+# assertion, not just the Bash side's negative.
+if PATH="$WORK/nopy" command -v python3 >/dev/null 2>&1; then
+    no "python3 absent + non-Bash, nothing pending -> allow" \
+        "probe setup failed: python3 still on PATH"
+else
+    # NO `|| true`: this is the ALLOW side, and allow is spelled "no block in the
+    # output" -- which a crashed or early-exited gate produces too. Swallowing the
+    # status would let this control pass without ever reaching the carve-out, the
+    # exact vacuous-pass failure it exists to rule out. Capture the status first,
+    # and only then read block-vs-allow out of a gate that actually ran.
+    OUT=$(printf '{"tool_name":"Read","cwd":"%s","tool_input":{"file_path":"%s/README.md"}}' "$WORK" "$WORK" \
+        | PATH="$WORK/nopy" bash "$GATE" 2>/dev/null)
+    STATUS=$?
+    if [[ "$STATUS" -ne 0 ]]; then
+        no "python3 absent + non-Bash, nothing pending -> allow" \
+            "gate exited $STATUS — it did not run to a decision, so allow is unproven"
+    elif printf '%s' "$OUT" | grep -q '"block"'; then
+        no "python3 absent + non-Bash, nothing pending -> allow" \
+            "got=${OUT:-<no decision>} — the python3-absent carve-out is not reached for a non-Bash tool"
+    else
+        ok "python3 absent + non-Bash, nothing pending -> allow"
+    fi
+fi
+
 echo "── C. normal operation is unchanged ──"
 assert_verdict allow "ls -la" "$GATE" \
     "benign command still allowed" "blocked — the fail-closed path is over-firing"

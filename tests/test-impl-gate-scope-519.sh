@@ -1139,6 +1139,37 @@ check "a bare + does not truncate the -exec payload" block \
     "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -exec /usr/bin/time -o + unshare ;")"
 check "...and the {} + form still terminates properly" block \
     "$(bash_decision "find . -name '*.tmp' -exec rm -rf {} +")"
+# A "-exec"-shaped TOKEN is answered by PRESENCE, deliberately. `-name` takes an
+# arbitrary word, so in `-name -exec` the `-exec` is a filename PATTERN and find runs
+# nothing -- but every attempt to be precise about that became a fail-OPEN, because an
+# operand-taking primary the table does not know (`-printf`) puts a primary NAME into
+# data position and lets it eat a REAL `-exec`. Presence alone costs nothing here: at
+# ordinary depth the payload is EXTRACTED, and a trailing `-exec` has none, so the
+# pattern spelling is allowed on the payload's merits rather than by parsing find. The
+# over-block is confined to the depth cap, where no payload is examined at all.
+check "a -exec-shaped filename pattern is allowed on an empty payload" allow \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -name -exec")"
+check "...and a primary eaten as data cannot hide a REAL -exec" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -name -name -exec unshare ;")"
+check "...nor can one hidden behind an unlisted primary" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -printf -name -exec unshare ;")"
+# VERSION-QUALIFIED interpreters are real packaged executables (`python3.12`, `perl5.38.2`,
+# `tclsh8.6`, `wish8.5`), and the exact-name receiver set does not match them. Each of
+# these read the piped text as a program while the classifier called it a plain read.
+check "a versioned python receiver is still a receiver" block \
+    "$(bash_decision "printf 'rm -rf src' | python3.12")"
+check "...and a versioned perl" block \
+    "$(bash_decision "printf 'rm -rf src' | perl5.38.2")"
+check "...and both halves of the Tcl/Tk pair" block \
+    "$(bash_decision "printf 'rm -rf src' | wish8.5")"
+check "...including wearing an attached option bundle" block \
+    "$(bash_decision "printf 'rm -rf src' | env -iStclsh8.6")"
+# `source` is the bash spelling of `.`, and like `.` it means something only in COMMAND
+# position: as any-word it flipped `grep source`, where the word is a PATTERN.
+check "source names a command only in command position" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep source")"
+check "...and there it is a receiver" block \
+    "$(bash_decision "printf 'rm -rf src' | source /dev/stdin")"
 # The simple-command split is done on the RAW TEXT, not on tokens: shlex erases the
 # difference between a separator `;` and an operand that merely spells one, so a
 # token-level split read `unshare` as a command word here and over-blocked.

@@ -293,9 +293,12 @@ not always say which applies.
 
 The fourth round did not add a fourth heuristic. `)#` is now reported as **unresolved**, and
 the caller answers it the way it already answers an unparseable command: the raw
-whole-command scan, fail-CLOSED. One command in the 34,758-command corpus contains the shape
-at all, so refusing to guess costs nothing measurable — and it ends a thread that three
-rounds of refinement had not.
+whole-command scan, best-effort. That scan performs the raw regex/redirect probe over the
+command text and blocks when it finds a matching write verb or redirect — it does not
+unconditionally block regardless of what the probe finds, so a command that is ambiguous AND
+carries no raw write signal still allows. One command in the 34,758-command corpus contains
+the shape at all, so refusing to guess costs nothing measurable — and it ends a thread that
+three rounds of refinement had not.
 
 A parser that cannot decide should say so. Guessing is what turns an ambiguity into a
 bypass, and each of those three rounds was that guess being wrong in a new place.

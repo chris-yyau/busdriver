@@ -688,6 +688,17 @@ def _lex(text):
 # reason below: _SHELLS asserts that `-c` means execute-this-string, which is a claim
 # this module ACTS on by recursing into the operand, and none of these inherit it.
 # Measured at 95 further over-blocks. KEEP IN STEP WITH the gate's _SHELL_NAMES.
+# `source` is deliberately ABSENT, unlike the rest of this set. It is handled in COMMAND
+# POSITION ONLY, alongside `.` below -- an any-word match here cost a real over-block
+# (`printf 'rm -rf src' | grep source` blocked on the bare word `source` appearing as a
+# grep PATTERN, not a command). Raised by Codex on #562, verified. `xargs` stays IN this
+# set despite Codex raising the same "default command is harmless echo" argument for it:
+# `printf 'rm -rf src' | xargs` is PINNED to block by tests/test-impl-gate-scope-519.sh
+# ("xargs executes what it reads from stdin") and its 3000-command property fixture, which
+# both treat this as the deliberate fail-CLOSED direction this module chooses throughout
+# (an unlisted or defaulted receiver blocks rather than reads clean) -- narrowing it here
+# would regress a decision the suite already locked in, not fix a bug. KEEP IN STEP WITH
+# marker_check._SHELL_NAMES.
 _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bosh",
                                      "osh", "oil", "elvish", "xonsh", "nu",
                                      "python", "python2", "python3",
@@ -695,19 +706,29 @@ _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bos
                                      "tclsh", "wish", "lua", "php",
                                      "awk", "gawk", "mawk", "nawk",
                                      "sqlite3", "ed", "ex", "psql", "gdb",
-                                     "source", "xargs", "make"))
+                                     "xargs", "make"))
 
 # VERSION-QUALIFIED spellings of the interpreters above: `/usr/bin/python3.12` is a real
 # executable name (`python3.12 --help` documents stdin as a program source, `[-c cmd |
 # -m mod | file | -]`), so `printf 'os.system(...)' | python3.12` runs it, and the exact-name
 # set above does not match it. Raised by Codex on #562, verified against a real
-# `python3.12` binary. Scoped to python for now, the same scope marker_check.py's sibling
-# `_INTERP_RE` already carries (`python[0-9.]*`) -- a name this exact-name set already
-# knows, wearing a version suffix, not a new interpreter family.
+# `python3.12` binary. A name this exact-name set already knows, wearing a version suffix,
+# not a new interpreter family -- the same scope marker_check.py's sibling `_INTERP_RE`
+# already carries (`python[0-9.]*`).
+# EXTENDED beyond python: `/usr/bin/perl5.38.2` and `/usr/bin/tclsh8.6` are equally real,
+# packaged executable names, and `is_file_mod` returned False for a piped write payload fed
+# to either -- verified against real `perl5.38.2` and `tclsh8.6` binaries. Raised by Codex
+# on #562 as a fresh case beyond the python fix. Covers the interpreter names above that
+# ship version-qualified spellings in practice (python/perl/ruby/node/lua/php/tclsh/wish);
+# the shell family (bash/zsh/csh/...) is not extended here because those are not commonly
+# packaged with a numeric suffix in PATH. `wish` ships beside `tclsh` from the same Tcl/Tk
+# package and is version-qualified the same way (`/usr/bin/wish8.5`), so omitting it left
+# exactly the bypass its sibling closes.
 # UNANCHORED on purpose: the attached-option-bundle check below asks whether a dash-word
 # ENDS WITH an interpreter name (`env -iSpython3.12`), which needs a search rather than a
 # whole-string match. Callers wanting the whole-name question use fullmatch.
-_VERSIONED_INTERP_RE = re.compile(r"python[0-9]+(?:\.[0-9]+)*$")
+_VERSIONED_INTERP_RE = re.compile(
+    r"(?:python|perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*$")
 
 
 def _is_stdin_shell(name):
@@ -1008,6 +1029,39 @@ def _carries_no_command(segtext):
     return stripped == "" or stripped.startswith("#")
 
 
+def _find_exec_positions(toks):
+    """Indices of every -exec/-execdir/-ok/-okdir TOKEN in `toks`. Returned as a set so
+    callers get O(1) membership, not another O(n) scan per lookup -- see the O(N^2) note
+    where this is walked below.
+
+    DELIBERATELY token presence, not find-expression parsing. `find . -name -exec` does
+    pass the literal word `-exec` as -name's filename PATTERN, so counting it as a
+    predicate over-blocks -- cubic raised exactly that on #562. Two successive attempts
+    to be precise about it BOTH turned the over-block into a fail-OPEN, each found by a
+    later reviewer:
+
+      1. "not preceded by a string primary" -- `find . -name -name -exec unshare ';'`,
+         where the first -name eats the second and the -exec IS real.
+      2. left-to-right consuming each KNOWN string primary's operand -- `find . -printf
+         -name -exec unshare ';'`, where the unlisted -printf eats -name, so the walk
+         reaches -name as a primary and lets it eat the real -exec.
+
+    (2) is the general shape: any operand-taking primary missing from the table puts a
+    listed primary NAME into data position, and the residual flips from over-block to
+    bypass. Getting it right needs find's whole primary/arity table across GNU and BSD,
+    re-verified as find grows -- an unbounded enumeration guarding a security boundary,
+    where every gap is a hole rather than a nuisance.
+
+    And it buys almost nothing, because the caller does not stop here. Below the depth
+    cap the payload after each position is EXTRACTED and judged on its own contents, so
+    a trailing `-exec` (a pattern, with nothing after it) is allowed for having no
+    payload -- no grammar needed. Only AT the cap, where no payload is examined at all,
+    does presence decide, and there over-blocking is the whole point. KEEP IT.
+    """
+    return frozenset(i for i, t in enumerate(toks)
+                     if t in ("-exec", "-execdir", "-ok", "-okdir"))
+
+
 def _may_read_program_from_stdin(segtext, _depth=0):
     """Could this pipeline stage be a shell, running whatever the producer wrote?
 
@@ -1062,12 +1116,15 @@ def _may_read_program_from_stdin(segtext, _depth=0):
         if _launcher_in_any_simple_command(prog):
             return True
     cw = _effective_command_word(toks)
-    # `.` is the POSIX spelling of `source`, and `. /dev/stdin` runs the piped text. It is
-    # tested in COMMAND POSITION only, unlike every other name here: a bare `.` is an
-    # ordinary argument (`find . -name x`), and putting it in the name set -- which matches
-    # any word in the stage -- cost 100 over-blocks for a shape that is always a command
-    # word when it means anything.
-    if cw and _basename(cw) == ".":
+    # `.` and `source` are the two POSIX/bash spellings of the same builtin, and
+    # `. /dev/stdin` / `source /dev/stdin` both run the piped text. Both are tested in
+    # COMMAND POSITION only, unlike every other name in `_STDIN_SHELLS`: a bare `.` is an
+    # ordinary argument (`find . -name x`) and a bare `source` is an ordinary word
+    # (`grep source` names it as a PATTERN, not a command) -- putting either in the
+    # any-word name set cost 100 over-blocks for `.` and a further over-block for `source`
+    # (`printf 'rm -rf src' | grep source`, raised by Codex on #562), for a shape that is
+    # always a command word when it means anything.
+    if cw and _basename(cw) in (".", "source"):
         return True
     # Same command-position-only rule, same reason: a LAUNCHER with no program operand execs
     # a shell that then reads this pipe. `grep script` is unaffected because `script` is not
@@ -1109,8 +1166,14 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     # `find . -name x` -- which has no payload to examine -- into a block. Require an
     # actual exec predicate, so the fail-closed answer covers only genuinely unexamined
     # payloads.
-    if _is_find_exec and _depth >= 4 \
-       and any(t in ("-exec", "-execdir", "-ok", "-okdir") for t in toks):
+    #
+    # `_find_exec_positions` answers that by TOKEN PRESENCE, not by parsing find's
+    # expression grammar -- see its docstring for why the two attempts to be precise
+    # about `find . -name -exec` (where `-exec` is a filename pattern, not a predicate)
+    # both became fail-OPENs. The residual is an over-block on a file literally named
+    # `-exec`, which is the direction this module chooses everywhere else.
+    _find_exec_pos = _find_exec_positions(toks) if _is_find_exec else frozenset()
+    if _is_find_exec and _depth >= 4 and _find_exec_pos:
         # DEPTH-CAPPED, and not silently skipped. The condition below used to gate on
         # `_depth < 4` alone, so reaching the cap fell through this branch entirely --
         # unlike the substitution recursion further down, which already fails CLOSED
@@ -1123,9 +1186,11 @@ def _may_read_program_from_stdin(segtext, _depth=0):
         # just collected, so N `-exec`-looking OPERANDS cost O(N^2): a 1,400-operand
         # command measured 6.04s, past the 5s hook timeout -- and a timed-out hook writes
         # no decision, which the harness reads as ALLOW. Advance past the terminator.
+        # `_find_exec_pos` membership is a SET lookup, so this stays O(1) per token and
+        # does not reopen that cost.
         _fi, _fn = 0, len(toks)
         while _fi < _fn:
-            if toks[_fi] in ("-exec", "-execdir", "-ok", "-okdir"):
+            if _fi in _find_exec_pos:
                 _payload, _fj = [], _fi + 1
                 while _fj < _fn:
                     _ft2 = toks[_fj]

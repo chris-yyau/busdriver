@@ -1007,15 +1007,93 @@ if [ -z "$STAGED_DIFF" ]; then
       printf '{"ts":"%s","event":"pr-excluded-only-autopass","gate":"pre-pr","diff_hash":"%s"}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR_REVIEWED_DIFF_HASH" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     else
-      # Commit mode: pre-commit gate accepts marker existence without hash
-      # verification due to TOCTOU constraints. Use a self-identifying
-      # PASS-EXCLUDED-<epoch> marker (not a bare PASS-<epoch>) so the dispatcher
-      # commit-block (#278) recognizes an excluded-only auto-pass and re-verifies
-      # the staged diff is genuinely all-excluded, instead of hard-bailing
-      # because the marker is not a 64-hex diff hash.
+      # Commit mode: emit the SAME diff-bound + age-bound shape PR mode uses
+      # above — PASS-EXCLUDED-<diff_hash>-<epoch>.
+      #
+      # This used to be epoch-only, on the stated grounds that "pre-commit gate
+      # accepts marker existence without hash verification due to TOCTOU
+      # constraints". That rationale is gone: the pre-commit gate now binds
+      # every marker to the staged diff (#545), and an epoch-only marker was
+      # the one remaining bearer token — obtain it for an excluded-only diff A,
+      # then commit unrelated diff B within the window. The hash closes that
+      # without relying on any predicate the gated repo can influence.
+      #
+      # The hash covers the FULL staged diff (not the post-exclusion one), which
+      # is what the gate recomputes; keep this expression identical to the two
+      # marker writes below and to write-review-marker.sh.
+      #
+      # #252 parity, strengthened: a fail-closed gate must not let an UNREVIEWED
+      # policy file certify that nothing needs review. Commit mode had no guard
+      # at all, so a widened review-exclude could mint a marker asserting its own
+      # diff was unreviewable.
+      #
+      # Checking only the STAGED set (or only `git ls-files`, which sees tracked
+      # paths) is not enough, and hash-binding the marker does not save us: an
+      # UNTRACKED review-exclude containing `*` empties STAGED_DIFF for arbitrary
+      # staged source, and the marker minted here would then be correctly bound
+      # to that very diff — a legitimate-looking marker for content no reviewer
+      # ever saw. So require the policy to match HEAD exactly.
+      # `git status --porcelain -uall --ignored` reports every divergence in one
+      # shot — staged add/modify/delete (including `git rm --cached`, which
+      # `git diff HEAD` misses because the worktree copy still matches HEAD),
+      # unstaged edits, and untracked (`??`). Any output at all ⇒ the policy in
+      # force is not the committed one ⇒ refuse. Same invariant
+      # dispatcher-commit-block.sh STEP 1 enforces for the same marker.
+      #
+      # --ignored is required, not belt-and-braces: without it a review-exclude
+      # hidden by a repo-committed .gitignore rule produces NO porcelain output,
+      # while exclude-generated.sh reads the file regardless. That silent file
+      # containing `*` suppresses arbitrary staged source, and the marker minted
+      # below would be correctly hash-bound to code no reviewer saw.
+      _policy_rel="$STATE_DIR/review-exclude"
+      _policy_state=$(git status --porcelain --untracked-files=all --ignored -- "$_policy_rel" 2>/dev/null) || _policy_state="?"
+      if [ -n "$_policy_state" ]; then
+        echo "❌ excluded-only commit: $_policy_rel diverges from HEAD (staged, unstaged, or untracked) — refusing auto-pass; review required" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
+      # ...and the porcelain check alone is not sufficient, because it validates
+      # the wrong bytes when a path COMPONENT is untrusted:
+      #   symlink — git tracks a symlink's target STRING, not the target's
+      #             content, so `.claude` → /elsewhere reports clean while
+      #             exclude-generated.sh follows the link and reads whatever
+      #             /elsewhere/review-exclude currently holds.
+      #   gitlink — a committed submodule is a directory, not a symlink, so a
+      #             `-L` test never fires, and `git status -- <path-inside>` does
+      #             not descend into it. Divergent bytes read straight through.
+      # Same reasoning and same rejection as dispatcher-commit-block.sh STEP 1
+      # (PR #280 / #281); walk every prefix and refuse on the first untrusted one.
+      _policy_untrusted=""
+      _policy_prefix=""
+      IFS=/ read -r -a _policy_segs <<< "$_policy_rel"
+      for _policy_seg in "${_policy_segs[@]}"; do
+        [ -z "$_policy_seg" ] || [ "$_policy_seg" = "." ] && continue
+        _policy_prefix="${_policy_prefix:+$_policy_prefix/}$_policy_seg"
+        if [ -L "$_policy_prefix" ]; then
+          _policy_untrusted="$_policy_prefix (symlink)"; break
+        fi
+        # A gitlink is the sole index entry whose path EQUALS the prefix; for an
+        # ordinary directory ls-files lists descendants instead, so match exactly.
+        _policy_mode=$(git ls-files --stage -- "$_policy_prefix" 2>/dev/null \
+          | awk -v p="$_policy_prefix" '{ split($0, a, "\t"); if (a[2] == p) m=$1 } END { print m }')
+        if [ "$_policy_mode" = "160000" ]; then
+          _policy_untrusted="$_policy_prefix (gitlink/submodule)"; break
+        fi
+      done
+      if [ -n "$_policy_untrusted" ]; then
+        echo "❌ excluded-only commit: path component $_policy_untrusted is not trustworthy — refusing auto-pass; review required" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
       mkdir -p "$STATE_DIR"
       _excluded_epoch=$(date +%s)
-      echo "PASS-EXCLUDED-$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
+      _excluded_hash=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+      if [ -z "$_excluded_hash" ]; then
+        echo "❌ excluded-only commit: could not hash the staged diff — refusing marker" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
+      printf 'PASS-EXCLUDED-%s-%s\n' "$_excluded_hash" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
     fi
     # Clean up state file and iteration history
     clear_iteration_history

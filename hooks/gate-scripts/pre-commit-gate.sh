@@ -51,6 +51,47 @@ block_emit() {
     fi
 }
 
+# ── Circuit-breaker-aware block helper (Gate 2 marker rejections) ───────
+# Every marker-specific rejection in Gate 2 (DEGRADED, stale PASS-MERGE,
+# stale PASS-EXCLUDED, mismatched BUILTIN/bare-hash, unrecognized content)
+# used to block via a bare `block_emit "$REASON"; exit 0`, bypassing the
+# stuck-gate circuit breaker entirely. A workflow that regenerates a stale
+# or invalid marker on every retry would then never receive the documented
+# "gate has blocked N times" warning (cubic P2, PR #577). Centralizing the
+# counter here keeps every marker-rejection call site consistent. Requires
+# REPO_DIR/STATE_DIR to already be resolved — only called from Gate 2
+# onward, well after gate_resolve_repo_dir has run.
+gate_record_block_and_emit() {
+    local reason="$1"
+    mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
+    local counter="$REPO_DIR/$STATE_DIR/.gate-block-count.local"
+    local count=0
+    if [[ -f "$counter" ]]; then
+        count=$(cat "$counter" 2>/dev/null || echo "0")
+    fi
+    # Normalize BEFORE any arithmetic. The counter file is ordinary on-disk
+    # state, so its contents are not guaranteed to be a number — a truncated
+    # write, a stray edit, or a leftover from another tool can leave `bad` or
+    # an empty string there. Bash does NOT run the ERR trap for an
+    # arithmetic-expansion error, so a bare `$((count + 1))` on garbage would
+    # abort this function BEFORE `block_emit` ever ran: the hook would exit
+    # without emitting a decision, which the harness reads as "no objection".
+    # That turns the circuit breaker — a control meant only to WARN — into a
+    # way to silently defeat the gate it reports on. Anything that is not a
+    # plain 1-9 digit run resets to 0, and `10#` forces decimal so a
+    # zero-padded value like `09` can never be read as a bad octal literal.
+    [[ "$count" =~ ^[0-9]{1,9}$ ]] || count=0
+    count=$((10#$count + 1))
+    echo "$count" > "$counter" 2>/dev/null || true
+    if [[ "$count" -ge 10 ]]; then
+        reason="$reason
+
+WARNING: This gate has blocked $count consecutive commits this session.
+If you believe the gate is stuck, the user can run: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
+    fi
+    block_emit "$reason"
+}
+
 # ── Shared repo-dir resolver ──────────────────────────────────────────
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
@@ -458,55 +499,284 @@ if [ -f "$MARKER" ]; then
     # DEGRADED markers (written when codex CLI is missing) must NOT pass the gate.
     # This prevents silent bypass of code review when codex is unavailable.
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
+
+    # The staged diff this commit would actually create. Every hash-bearing
+    # marker format is bound to it below (#545): the marker is written on review
+    # PASS and consumed only POST-commit, so between those two points an
+    # unbound marker is a bearer token for whatever happens to be staged. A
+    # marker minted for diff A must not authorize committing diff B — observed
+    # live on 2026-08-01, where a marker hours old would have authorized a diff
+    # whose own review had returned structured FAIL.
+    #
+    # Deliberately the BARE `git diff --cached`, byte-identical to every writer
+    # (run-review-loop.sh, litmus/scripts/write-review-marker.sh) AND to
+    # dispatcher-commit-block.sh, whose own comment already pins this coupling:
+    # "Match the marker writer's hash form exactly: bare `git diff --cached`".
+    # Four sites must agree; any one of them adding a flag makes the marker stop
+    # matching and blocks every commit.
+    #
+    # SCOPE — be precise about what "bound to the diff" means here. This runs in
+    # PreToolUse, BEFORE the command executes, so it binds the marker to the
+    # index as it stands at DISPATCH time, not to what the command ultimately
+    # commits. Two shapes still slip past and are NOT closed by this change:
+    #   git add B && git commit …   the marker for A matches at hook time; B is
+    #                               staged afterwards and committed unreviewed.
+    #   git commit -a               stages tracked modifications at commit time,
+    #                               likewise after this check has passed.
+    # Both were equally unreviewed before (the gate accepted ANY marker), so this
+    # is pre-existing exposure rather than a regression — but the binding must
+    # not be read as more than it is. Closing them needs the command's own shape
+    # to gate acceptance (refuse `-a`, refuse a compound that stages first);
+    # tracked in #576.
+    #
+    # Known residual, NOT fixed here: porcelain `git diff` honors
+    # GIT_EXTERNAL_DIFF and per-path textconv drivers, both reachable from
+    # repo-controlled config, so a driver emitting constant output could collapse
+    # two different diffs to one hash. PR mode already pins --no-ext-diff
+    # --no-textconv (run-review-loop.sh:942); commit mode cannot adopt them
+    # unilaterally — it is a coordinated change across all four sites and is
+    # tracked separately. This is pre-existing exposure that the binding above
+    # does not worsen.
+    #
+    # NOT computed here (Codex P2, PR #577): the two unconditional opt-outs
+    # below (DEGRADED, SKIPPED-NONE) must always succeed even when `git diff
+    # --cached` itself cannot run cleanly (a broken GIT_EXTERNAL_DIFF/textconv
+    # driver, or neither sha256sum nor shasum present) — under `set -euo
+    # pipefail` a failing pipeline here fires the script's ERR trap and blocks
+    # BEFORE either opt-out is honored, defeating the documented
+    # BUSDRIVER_REVIEW_CLI=none escape hatch. STAGED_HASH is computed lazily,
+    # right after those two opt-outs, only for the branches that actually
+    # bind to it.
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass.\"}" >&2
-        # Do NOT exit 0 — fall through to blocking logic below
-    elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        REASON="Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    elif [[ "$MARKER_CONTENT" =~ ^SKIPPED-NONE-[0-9]+$ ]]; then
         # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
         # Accept unconditionally. See design spec §4 for risk analysis.
+        # Carries no hash by construction: no review ran, so there is nothing
+        # to bind it to. The opt-out is the operator's, and it is logged.
+        #
+        # `[[ =~ ]]` (not `grep -qE`) deliberately: bash's `=~` anchors `^`/`$`
+        # against the WHOLE subject string, so a multi-line MARKER_CONTENT
+        # whose first line merely starts with SKIPPED-NONE, or trailing
+        # garbage after the epoch, fails the match. `grep` anchors per LINE,
+        # so `grep -qE '^SKIPPED-NONE-[0-9]+$'` would still honor a marker
+        # like "SKIPPED-NONE-123\nrm -rf /" because line 1 alone satisfies
+        # the pattern. The hash arms below are safe from this because they
+        # follow up with an exact `[ "$MARKER_CONTENT" = "$HASH" ]` compare;
+        # this arm has no such follow-up (it's an unconditional exit), so the
+        # anchor itself must be airtight.
         exit 0
-    elif echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
-        # Built-in agent review — accept for commit gate.
-        # Post-commit hook excludes from reviewed-commits.local (requires PR deep review).
+    fi
+
+    # Reached only for marker shapes that are not one of the two unconditional
+    # opt-outs above (DEGRADED, SKIPPED-NONE).
+    #
+    # Check PASS-MERGE BEFORE requiring a hasher (Codex P2 finding, PR #577
+    # round 5). This marker's acceptance condition is `git diff --cached
+    # --quiet` alone — it never needs STAGED_HASH — so it must not be forced
+    # through the hash-utility pipeline below. Ordering it after hash
+    # selection meant a host with neither sha256sum nor shasum on the hook
+    # PATH blocked a valid PASS-MERGE marker (an empty merge resolution that
+    # run-review-loop.sh intentionally minted) even though no hash was ever
+    # needed to validate it.
+    if [[ "$MARKER_CONTENT" =~ ^PASS-MERGE-[0-9]+$ ]]; then
+        # Merge commit whose resolution kept already-reviewed code unchanged
+        # (run-review-loop.sh:846). Its precondition IS `git diff --cached
+        # --quiet`, so bind it to that rather than to a hash: an empty staged
+        # diff is the only state this marker was ever minted for. A merge that
+        # resolved conflicts has a NON-empty diff, falls through to a real
+        # review, and gets a bare-hash marker instead — so a PASS-MERGE marker
+        # sitting in front of a non-empty diff is stale or forged, never valid.
+        #
+        # `[[ =~ ]]` (not `grep -qE`), same reasoning as SKIPPED-NONE above
+        # (CodeRabbit finding, PR #577): this arm's acceptance condition below
+        # is "staged diff is empty" — unlike PASS-EXCLUDED/BUILTIN/bare-hash,
+        # it has no secondary hash-equality check that would reject a
+        # multi-line MARKER_CONTENT whose first line merely starts with
+        # PASS-MERGE. A per-line `grep` match would let
+        # "PASS-MERGE-123\n<garbage>" through whenever the diff happened to
+        # be empty; `=~` anchors against the WHOLE string so trailing
+        # content after the epoch fails the match instead.
+        if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        REASON="PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    fi
+
+    # Select the hash utility BEFORE running the pipeline (CodeRabbit finding,
+    # PR #577). The prior `sha256sum 2>/dev/null || shasum -a 256` form let
+    # sha256sum consume part of stdin and then fail (e.g. mid-stream I/O
+    # error) — the `||` fallback would then run shasum on only the
+    # UNCONSUMED remainder of the pipe, silently hashing a truncated stream
+    # while the pipeline as a whole still reported success. Choosing the
+    # command by availability (not by runtime failure) means the diff is
+    # piped through exactly one hasher, once, so a failure downstream is a
+    # real failure, not a partial-consumption artifact.
+    #
+    # Reached only for marker shapes that DO bind to a hash (PASS-EXCLUDED,
+    # BUILTIN, bare-hash) — PASS-MERGE returned above without needing one.
+    #
+    # Fail-CLOSED, but through the circuit-breaker helper (cubic P1, PR #577):
+    # under `set -euo pipefail`, letting this assignment fail bare would fire
+    # the script's ERR trap (line 28) instead of `gate_record_block_and_emit`,
+    # so a broken external diff driver (or a host with neither sha256sum nor
+    # shasum) would block every commit WITHOUT ever incrementing the stuck-gate
+    # counter or emitting its escape-hatch warning. Disabling `set -e` for the
+    # single assignment (via `if ! STAGED_HASH=$(...); then`) lets a failure
+    # reach the helper explicitly while still blocking — same fail-closed
+    # outcome, but through the counted path.
+    #
+    # The marker is deliberately NOT deleted here. A broken diff driver or a
+    # host missing both hashing tools says nothing about whether the marker is
+    # valid — it only means we cannot check it right now. Deleting it would
+    # turn a transient environment fault into a destroyed review: once the
+    # driver is repaired the still-good marker is gone and the whole review has
+    # to be re-run. Every OTHER rejection arm below deletes the marker because
+    # it has PROVEN the marker wrong (mismatched hash, expired epoch,
+    # unrecognized shape); this arm has proven nothing. Blocking without
+    # deleting is the fail-closed outcome either way.
+    if command -v sha256sum >/dev/null 2>&1; then
+        HASH_CMD=(sha256sum)
+    elif command -v shasum >/dev/null 2>&1; then
+        HASH_CMD=(shasum -a 256)
+    else
+        HASH_CMD=()
+    fi
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+        REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    fi
+
+    if [[ "$MARKER_CONTENT" =~ ^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$ ]]; then
+        # Whole staged diff was excluded from review (lockfiles, minified
+        # bundles, sourcemaps): no reviewer ran because there was nothing
+        # reviewable. Diff-bound AND age-bound, the same shape pre-pr-gate.sh
+        # already honors for PR mode.
+        #
+        # `[[ =~ ]]` (not `grep -qE`), same reasoning as SKIPPED-NONE/PASS-MERGE
+        # above (Codex + cubic finding, PR #577 round 6): a per-line `grep`
+        # match only requires ONE line of a multi-line MARKER_CONTENT to match
+        # — a valid "PASS-EXCLUDED-<hash>-<epoch>" first line followed by any
+        # extra garbage line still entered this branch under the old `grep`
+        # form. The sed extractions below then carried that trailing garbage
+        # through as extra lines in EXCLUDED_HASH/EXCLUDED_EPOCH (sed only
+        # rewrites matching lines; a non-matching second line passes through
+        # unchanged), so `EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))` received a
+        # multi-line value and errored out during arithmetic expansion —
+        # which bash's ERR trap does NOT catch (documented elsewhere in this
+        # file) — before `gate_record_block_and_emit` ever ran. A no-decision
+        # exit reads as "no objection" in this hook protocol, so a malformed
+        # marker could fail OPEN instead of being rejected. `[[ =~ ]]` anchors
+        # `^`/`$` against the WHOLE string, so trailing content after a valid
+        # epoch now fails the match here and falls through to the
+        # unrecognized-marker arm below instead of ever reaching the
+        # arithmetic (the sed extraction two lines down is safe as a result —
+        # its input is now guaranteed single-line and well-formed).
+        #
+        # Commit mode used to write this epoch-only, on the grounds that the
+        # pre-commit gate "accepts marker existence without hash verification".
+        # That is no longer true, so run-review-loop.sh now emits the hash here
+        # too and the epoch-only form is retired — it falls to the unrecognized
+        # arm below rather than being honored, because it is precisely the
+        # bearer token the rest of this change removes.
+        #
+        # Binding on the hash also avoids re-deriving the exclusion pathspec in
+        # the gate. That was the tempting check — "is the staged diff still
+        # all-excluded?" — and it is the wrong one: exclude-generated.sh merges
+        # $STATE_DIR/review-exclude, which the working tree controls, so an
+        # UNSTAGED widening of that file (adding `*`) neutralizes the check
+        # while the marker stays valid. A hash over the staged diff cannot be
+        # widened by editing a policy file.
+        EXCLUDED_HASH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-([a-f0-9]{64})-[0-9]{1,15}$/\1/')
+        EXCLUDED_EPOCH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-[a-f0-9]{64}-([0-9]{1,15})$/\1/')
+        # `10#` forces base 10. A zero-padded epoch is all digits, so it passes
+        # the pattern above, but bash reads a leading zero as OCTAL and aborts
+        # on the digits 8 and 9 with "value too great for base". Measured, that
+        # still BLOCKS today — the ERR trap catches it — so this is not a live
+        # fail-open. Canonicalized anyway so the safety rests on an explicit
+        # conversion rather than on a trap firing: move this line inside any
+        # conditional (where `set -e` is suspended) and the accidental
+        # protection silently disappears.
+        #
+        # The `{1,10}` bound above (cubic P1 finding) closes a SEPARATE overflow
+        # path: bash's `$(( ))` does NOT error on 64-bit signed overflow for a
+        # plain decimal/`10#` literal, it silently WRAPS (measured:
+        # `$((10#18446744073709551616))` → 0). An unbounded `[0-9]+` epoch
+        # therefore let an attacker who can write the marker file choose an
+        # epoch of the form `real_target + k*2^64` that wraps to land inside
+        # the current 1h freshness window, forging a "fresh" marker regardless
+        # of its literal digit value. Ten digits caps the epoch at
+        # 9999999999 (year 2286), 16 orders of magnitude below the 2^63
+        # wraparound boundary, so the value reaching the arithmetic below is
+        # never large enough to overflow.
+        EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))
+        EXCLUDED_AGE=$(( $(date +%s) - EXCLUDED_EPOCH ))
+        if [ -n "$STAGED_HASH" ] && [ "$EXCLUDED_HASH" = "$STAGED_HASH" ] \
+            && [ "$EXCLUDED_AGE" -ge 0 ] && [ "$EXCLUDED_AGE" -le 3600 ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        REASON="Excluded-only review marker is stale (over 1h old) or names a different diff than the one staged. That marker only certifies a diff with nothing reviewable in it. Run /litmus."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    elif echo "$MARKER_CONTENT" | grep -qE '^BUILTIN-[a-f0-9]{64}$'; then
+        # Built-in agent review — accept for the commit gate, but only for the
+        # diff it reviewed. Post-commit hook excludes it from
+        # reviewed-commits.local (a PR still requires the deep review).
+        BUILTIN_HASH=${MARKER_CONTENT#BUILTIN-}
+        if [ -n "$STAGED_HASH" ] && [ "$BUILTIN_HASH" = "$STAGED_HASH" ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        REASON="Builtin review marker is for a different diff than the one staged. Re-run /litmus so the review covers what you are committing."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    elif echo "$MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
+        # Genuine external review pass. Approve only when the marker names the
+        # staged diff, and do NOT consume the marker — consumption is deferred
+        # to PostToolUse (post-commit-consume-marker.sh), which verifies the
+        # commit actually succeeded before deleting.
+        #
+        # Why defer: PreToolUse runs BEFORE git commit executes. If consumed
+        # here and the commit then fails (git hooks, conflicts, errors), the
+        # marker is lost — forcing a full re-review of unchanged code.
+        if [ -n "$STAGED_HASH" ] && [ "$MARKER_CONTENT" = "$STAGED_HASH" ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        REASON="Review marker is for a different diff than the one staged (marker ${MARKER_CONTENT:0:12}..., staged ${STAGED_HASH:0:12}...). A review of one diff cannot authorize committing another. Run /litmus."
+        gate_record_block_and_emit "$REASON"
         exit 0
     else
-        # Genuine external review pass — approve but DO NOT consume the marker.
-        # Consumption is deferred to PostToolUse (post-commit-consume-marker.sh)
-        # which verifies the commit actually succeeded before deleting.
-        #
-        # Why: PreToolUse runs BEFORE git commit executes. If consumed here
-        # and the commit subsequently fails (git hooks, conflicts, errors),
-        # the marker is lost — forcing a full re-review for unchanged code.
+        # Unrecognized marker content — reject, matching pre-pr-gate.sh:321.
+        # A gate that cannot prove the safe condition must block; "I do not
+        # recognize this" is the failure case, not the happy path. This arm is
+        # what closes the fail-open: every format the writers actually emit is
+        # enumerated above, so anything reaching here is stale, hand-written,
+        # or forged.
+        rm -f "$MARKER"
+        REASON="Review marker content not recognized: ${MARKER_CONTENT:0:30}... Rejecting rather than assuming a pass. Run /litmus."
+        gate_record_block_and_emit "$REASON"
         exit 0
     fi
 fi
 
-# Circuit breaker: detect repeated blocking that may indicate a stuck gate.
-# If blocked >10 times in this session, warn user about manual escape hatch.
-mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
-BLOCK_COUNTER="$REPO_DIR/$STATE_DIR/.gate-block-count.local"
-BLOCK_COUNT=0
-if [ -f "$BLOCK_COUNTER" ]; then
-    BLOCK_COUNT=$(cat "$BLOCK_COUNTER" 2>/dev/null || echo "0")
-fi
-BLOCK_COUNT=$((BLOCK_COUNT + 1))
-echo "$BLOCK_COUNT" > "$BLOCK_COUNTER" 2>/dev/null || true
-
-ESCAPE_HINT=""
-if [ "$BLOCK_COUNT" -ge 10 ]; then
-    ESCAPE_HINT="
-
-WARNING: This gate has blocked $BLOCK_COUNT consecutive commits this session.
-If you believe the gate is stuck, the user can run: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
-fi
-
-# No valid review marker → block commit
+# No valid review marker → block commit. Routed through the same
+# gate_record_block_and_emit helper as every Gate 2 marker rejection above
+# (single source of truth for the stuck-gate circuit breaker + escape hint —
+# cubic P2, PR #577).
 REASON="Code review required before committing.
 
 Run /litmus to review your staged changes. The review must pass before git commit is allowed.
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run litmus instead.
 If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local
-After the user creates the skip file, WAIT 30 SECONDS before retrying the commit (the gate rejects files newer than 30s to prevent self-bypass).${ESCAPE_HINT}"
-block_emit "$REASON"
+After the user creates the skip file, WAIT 30 SECONDS before retrying the commit (the gate rejects files newer than 30s to prevent self-bypass)."
+gate_record_block_and_emit "$REASON"

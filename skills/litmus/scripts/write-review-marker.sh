@@ -28,6 +28,11 @@ fi
 rm -f "$HANDOFF_FILE"
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
+# Bare `git diff --cached` — must stay byte-identical to pre-commit-gate.sh's
+# STAGED_HASH, the writes in run-review-loop.sh, and dispatcher-commit-block.sh.
+# Since #545 the gate COMPARES this hash to the staged diff instead of merely
+# checking the marker exists, so any flag added on one side and not the others
+# stops every marker from matching and blocks every commit.
 HASH=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"
 echo "Review marker written (builtin)"

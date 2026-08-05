@@ -324,13 +324,16 @@ TEMP_TARGET = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
 #   mktemp(){ echo /etc; }   a shell function shadows the binary
 #   PATH=... / printf -v PATH so does a prepended directory
 #   alias mktemp=...         and so does an alias, expanded on a later line
+#   hash -p /path mktemp     `help hash` documents `-p pathname` as using
+#                            that path as the full path for the command name,
+#                            so a later `mktemp` runs whatever this rebound
 #   source f / . f           the sourced file runs in THIS shell and can assign
 #   eval                     builds the assignment out of unreadable text
 #   if/while/case/...        the assignment may sit in a branch that never runs,
 #                            and the segment walk cannot see block nesting
 UNTRUSTED = re.compile(
     r"(?:^|[\s;&|(])(?:mktemp\s*\(\s*\)|function\s+mktemp\b|source\s"
-    r"|\.\s|eval\b|alias\s|PATH=|-v\s*[\"\x27]?PATH\b)"
+    r"|\.\s|eval\b|alias\s|hash\s|PATH=|-v\s*[\"\x27]?PATH\b)"
     # ...plus an INDIRECT write target, whose name this scan cannot resolve:
     r"|-v\s*[\"\x27]?\$")
 #
@@ -1239,11 +1242,22 @@ def is_temp(target, tmpvars, seg_idx, chunk=""):
 
 
 def recursive_targets(argv):
-    """(is_recursive, targets) for an rm argv starting at the command word."""
+    """(is_recursive, targets) for an rm argv starting at the command word.
+
+    Each entry after the command word is a (structural, raw) pair:
+    `structural` is expansion-stripped and decides whether the position is an
+    option or an operand, so a flag hidden behind a vanishing substitution
+    (`$(true)-rf`) still registers; `raw` is the UNSTRIPPED text and is what
+    an operand position contributes to `targets`, so a genuine `$VAR` prefix
+    survives into is_safe()/is_temp(). Collapsing an operand to its stripped
+    form here erased that `$` and let `${P}out` clear as the always-relative-
+    safe `out`, even though bash expands it to `${P}out`, e.g. `/important/out`.
+    """
     recursive = False
     targets = []
     opts = True
-    for tok in argv[1:]:
+    for structural, raw in argv[1:]:
+        tok = structural
         if opts and tok == "--":
             opts = False
         elif opts and len(tok) >= 3 and tok.startswith("--") \
@@ -1258,7 +1272,7 @@ def recursive_targets(argv):
             if "r" in tok[1:].lower():
                 recursive = True
         else:
-            targets.append(tok)
+            targets.append(raw)
     return recursive, targets
 
 
@@ -2194,9 +2208,25 @@ def unsafe(chunks, truncated):
                 fields = [f for f in _expansion_fields(tok) if f]
                 # ...and every OPTION token too. `rm $(true)-rf /etc` reads as
                 # a recursive delete once the substitution vanishes, and leaving
-                # the rest raw meant the flag never registered.
-                rest = [_strip_expansions(t) or t for t in toks[i + 1:]]
-                argv = fields + rest if len(fields) > 1 else [toks[i]] + rest
+                # the rest raw meant the flag never registered. But only the
+                # STRIPPED spelling decides option-vs-operand here — the RAW
+                # spelling still travels alongside it into recursive_targets,
+                # which hands the raw form back for anything it classifies as
+                # a target. Collapsing an operand to its stripped form erased
+                # a genuine `$VAR` prefix before is_safe()/is_temp() ever saw
+                # it, so `${P}out` cleared as the always-relative-safe `out`
+                # instead of the unexpanded, unproven path it actually is.
+                raw_rest = toks[i + 1:]
+                stripped_rest = [_strip_expansions(t) or t for t in raw_rest]
+                if len(fields) > 1:
+                    # tok itself only exists post-expansion (the whole argv
+                    # rode in on one substitution) - there is no "raw" form of
+                    # a field to preserve, so structural and raw are the same.
+                    argv = [(f, f) for f in fields] \
+                        + list(zip(stripped_rest, raw_rest))
+                else:
+                    argv = [(toks[i], toks[i])] \
+                        + list(zip(stripped_rest, raw_rest))
                 recursive, targets = recursive_targets(argv)
                 # A recursive rm with NO visible literal target takes its targets
                 # from elsewhere (xargs/stdin, "$@", a glob, a variable), e.g.

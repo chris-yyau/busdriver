@@ -27,7 +27,19 @@ print(json.dumps({"permission_mode": "bypassPermissions",
   # Read the exit status too — see the false-PASS note above.
   out=$("$GUARD" <<<"$payload"); rc=$?
   if [[ $rc -ne 0 ]]; then echo "ERROR(rc=$rc)"; return; fi
-  if [[ "$out" == *'"permissionDecision":"ask"'* ]]; then echo "ask"; else echo "allow"; fi
+  if [[ "$out" == *'"permissionDecision":"ask"'* ]]; then
+    echo "ask"
+  elif [[ "$out" == "{}" ]]; then
+    # The guard's allow path always emits exactly `{}` — never partial JSON,
+    # never a trailing newline inside the value. Anything else with rc=0
+    # (empty output, or unexpected JSON) is NOT a proven "allow"; treating it
+    # as one is the false-PASS this harness exists to prevent (a guard that
+    # printed nothing would otherwise match no "ask" and read as a clean
+    # "allow").
+    echo "allow"
+  else
+    echo "ERROR(out=$out)"
+  fi
 }
 
 check() { # name expected command

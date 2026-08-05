@@ -20,9 +20,14 @@
 # rather than a restatement of the implementation. A spelling bash cannot even
 # parse is a broken FIXTURE, and it fails here rather than quietly passing.
 #
-# BOUNDED on purpose: two transforms deep over a fixed seed set, so the run
-# stays a few seconds. It is a net, not a proof - a fuzzer with a budget large
-# enough to be a proof would not belong in a pre-commit suite.
+# BOUNDED on purpose: two transforms deep over a fixed seed set. Each of the
+# ~105 generated spellings spawns the full guard as its own subprocess, and
+# that adds up — measured at ~13s wall-clock (2026-08-05), not the "a few
+# seconds" this comment previously claimed. It is a net, not a proof - a
+# fuzzer with a budget large enough to be a proof would not belong in a
+# pre-commit suite, and this one is still well inside a pre-commit hook's
+# typical budget; if that stops being true, trim the seed×transform matrix
+# rather than let this comment drift further from measured reality.
 set -uo pipefail
 # Resolve the suite directory BEFORE cd-ing: a relative `dirname "$0"` read
 # after the cd points at the new cwd, the source silently finds nothing, `check`

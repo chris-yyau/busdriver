@@ -654,11 +654,31 @@ if [ -f "$MARKER" ]; then
         exit 0
     fi
 
-    if echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$'; then
+    if [[ "$MARKER_CONTENT" =~ ^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$ ]]; then
         # Whole staged diff was excluded from review (lockfiles, minified
         # bundles, sourcemaps): no reviewer ran because there was nothing
         # reviewable. Diff-bound AND age-bound, the same shape pre-pr-gate.sh
         # already honors for PR mode.
+        #
+        # `[[ =~ ]]` (not `grep -qE`), same reasoning as SKIPPED-NONE/PASS-MERGE
+        # above (Codex + cubic finding, PR #577 round 6): a per-line `grep`
+        # match only requires ONE line of a multi-line MARKER_CONTENT to match
+        # — a valid "PASS-EXCLUDED-<hash>-<epoch>" first line followed by any
+        # extra garbage line still entered this branch under the old `grep`
+        # form. The sed extractions below then carried that trailing garbage
+        # through as extra lines in EXCLUDED_HASH/EXCLUDED_EPOCH (sed only
+        # rewrites matching lines; a non-matching second line passes through
+        # unchanged), so `EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))` received a
+        # multi-line value and errored out during arithmetic expansion —
+        # which bash's ERR trap does NOT catch (documented elsewhere in this
+        # file) — before `gate_record_block_and_emit` ever ran. A no-decision
+        # exit reads as "no objection" in this hook protocol, so a malformed
+        # marker could fail OPEN instead of being rejected. `[[ =~ ]]` anchors
+        # `^`/`$` against the WHOLE string, so trailing content after a valid
+        # epoch now fails the match here and falls through to the
+        # unrecognized-marker arm below instead of ever reaching the
+        # arithmetic (the sed extraction two lines down is safe as a result —
+        # its input is now guaranteed single-line and well-formed).
         #
         # Commit mode used to write this epoch-only, on the grounds that the
         # pre-commit gate "accepts marker existence without hash verification".

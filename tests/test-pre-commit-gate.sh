@@ -507,6 +507,21 @@ run_marker_test "...and a zero-padded FRESH epoch is read as base 10, not octal"
 # arithmetic far below the wraparound boundary.
 run_marker_test "...and blocks an oversized epoch designed to overflow 64-bit arithmetic" \
     block 'PASS-EXCLUDED-@STAGED@-18446744073709551616' 2
+# Codex + cubic (PR #577 round 6): unlike PASS-MERGE, this arm DOES have a
+# secondary hash-equality compare — but it compares against EXCLUDED_HASH,
+# which is extracted from MARKER_CONTENT by a per-line `sed` substitution, not
+# against the whole MARKER_CONTENT string. A per-line `grep -qE` match only
+# requires ONE line to match, so a valid "PASS-EXCLUDED-<hash>-<epoch>" first
+# line followed by a second garbage line used to still enter this branch;
+# `sed` passes the unmatched second line through unchanged, so
+# EXCLUDED_HASH/EXCLUDED_EPOCH became multi-line values and
+# `EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))` errored during arithmetic expansion
+# — an error bash's ERR trap does NOT catch — before `gate_record_block_and_emit`
+# ever ran. A no-decision exit reads as "no objection" in this hook protocol:
+# a real fail-open. `[[ =~ ]]` anchors the WHOLE string, so this must now
+# block via the ordinary rejection path instead of erroring out silently.
+run_marker_test "...and a multi-line PASS-EXCLUDED marker with trailing garbage blocks even when it would otherwise name the staged diff" \
+    block "$(printf 'PASS-EXCLUDED-@STAGED@-@NOW@\nrm -rf /')" 2
 
 # Operator opt-out: no review ran, so there is no hash to bind.
 run_marker_test "SKIPPED-NONE is accepted unconditionally (operator opt-out)" \

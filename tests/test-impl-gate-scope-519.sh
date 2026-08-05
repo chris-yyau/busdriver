@@ -38,7 +38,7 @@ PASS=0; FAIL=0
 # committed CI config can set, which is how a guard stops guarding.
 # Full rationale for the value -- why 3.5 and not 2.5, 5, or a scaled budget -- sits with
 # the padded-command loop that first had to justify it; see `_BUDGET` there.
-HOOK_TIMING_BUDGET=3.5
+readonly HOOK_TIMING_BUDGET=3.5
 
 ok() { printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }
 no() { printf "  FAIL  %s (%s)\n" "$1" "$2"; FAIL=$((FAIL + 1)); }

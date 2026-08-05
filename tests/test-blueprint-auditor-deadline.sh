@@ -1,9 +1,9 @@
 #!/bin/bash
 # shellcheck disable=SC2016  # grep/awk patterns intentionally contain literal $ ( )
-# tests/test-blueprint-auditor-deadline.sh — guard for the Mechanism Witness (k3)
+# tests/test-blueprint-auditor-deadline.sh — guard for the Mechanism Witness
 # reap in blueprint-review (#506 / ADR 0030 residual 4).
 #
-# k3 is dispatched CONCURRENTLY with the three reviewers, but `_aud_grace` was
+# The witness is dispatched CONCURRENTLY with the three reviewers, but `_aud_grace` was
 # initialised only AFTER the reviewer `wait`s — so the reap could poll a fresh
 # `_AUD_TIMEOUT + 10` measured from the moment the reviewers finished, i.e. up to
 # R + T + 10 on the critical path ahead of the arbiter. The fix anchors an absolute

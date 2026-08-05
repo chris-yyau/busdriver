@@ -117,8 +117,125 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 # ── Read stdin once (shared by marker protection and design review) ───
-INPUT=$(cat 2>/dev/null || true)
+# BOUNDED. `INPUT=$(cat)` read the whole stream before any ceiling could look at it, and
+# then command substitution stripped every trailing newline -- so a small valid object
+# followed by an arbitrarily large newline run was READ in full and MEASURED as just the
+# object. The ceilings below all sit downstream of that read, which made them guards over
+# work already paid for; a large enough suffix re-creates the very timeout fail-open they
+# exist to close (a timeout kills this hook with NO decision on stdout, which the harness
+# reads as ALLOW). Measured: 256MB of trailing newlines cost 1.92s and reported 63 bytes.
+#
+# One byte past the HARD cap is all that ever needs reading -- anything longer is refused
+# by that cap regardless of tool, so reading further can only cost time. A payload that
+# fills the buffer is therefore over the hard cap by construction and blocks below.
+#
+# `-n`, not `-N`: -N arrived in bash 4.1 and this script runs under `env bash`, which on
+# macOS resolves to /bin/bash 3.2 whenever PATH is stripped -- and an unsupported option
+# would leave INPUT empty, which the next line turns into exit 0. That is a fail-OPEN in
+# the one place that must not have one. `-d ''` makes NUL the delimiter and JSON carries
+# no NUL, so -n stops only on the byte count or EOF. Verified identical on 3.2 and 5.3.
+# LC_ALL=C so the count is bytes, matching ${#INPUT} below.
+INPUT=""
+LC_ALL=C IFS= read -r -d '' -n 8388609 INPUT 2>/dev/null || true
 [ -z "$INPUT" ] && exit 0
+
+# ── Oversized Bash payload: block without parsing ─────────────────────
+# This hook is registered with a 5s timeout, and a timeout kills it with NO decision on
+# stdout — which the harness reads as ALLOW. So cost is a correctness property here, not
+# just a latency one. The python-side budgets (cmdword._MAX_SCAN_TOKENS / _MAX_CMD_CHARS
+# and _HELPER_MAX_TOKENS) bound the O(tokens^2) scans, but the gate decodes this payload
+# in several separate python3 blocks, and that per-block JSON cost alone reached ~7s at
+# 8MB. One length test before any of them bounds every downstream stage at once.
+#
+# TOOL-AGNOSTIC, and measured in BYTES. Both properties are deliberate, and the first
+# version of this guard got both wrong:
+#
+#   * It matched two literal spellings of `"tool_name":"Bash"` to scope itself to Bash.
+#     But the parsers below accept `d.get("tool_name", d.get("toolName", ""))`, and JSON
+#     permits whitespace before the colon and \u escapes in the key -- so `toolName`
+#     alone walked past the guard. The defect was not that it matched a spelling -- it is
+#     that an UNRECOGNIZED spelling relaxed the guard. The scoping is inverted below: the
+#     strict ceiling is the default, and only a recognized Write/Edit raises it. An
+#     unknown spelling now gets the STRICT limit, so guessing wrong over-blocks instead of
+#     waving through, and a Bash payload dressed as a Write buys nothing -- the Write path
+#     is gated on file_path and executes no command.
+#   * It compared ${#INPUT}, which counts CHARACTERS under a UTF-8 locale, against a
+#     threshold justified by per-byte cost. Four-byte characters make those differ by 4x.
+#     LC_ALL=C makes the SAME expansion count bytes.
+#
+# Counted with builtins only, deliberately. The obvious spelling is `wc -c`, and it was
+# tried: it fails-CLOSED-by-accident on the python3-missing path, where the gate runs
+# under a deliberately stripped PATH that carries no wc and no tr. The substitution came
+# back empty, `[ "" -gt N ]` raised, and the ERR trap turned "nothing pending" into a
+# block. printf and ${#} are builtins, so this survives an empty PATH.
+#
+# TWO ceilings, because the two payload shapes have genuinely different honest sizes. A
+# Write/Edit carries file CONTENT and is legitimately megabytes; the gate reads only its
+# file_path and never scans the body. Everything else -- a Bash COMMAND above all -- has
+# no honest form at 256KB, and the per-command budgets below cannot save it: they
+# short-circuit CLASSIFICATION, but the gate still JSON-decodes this payload in several
+# separate python3 blocks, and that alone measured 3.9s at 1MB. A single flat 4MB ceiling
+# was tried and is what let a 262130-character command sit at 7.8s, past the timeout.
+#
+# Sizes are of the RAW payload, so the Write ceiling is generous enough to cover JSON
+# escaping of the content (ensure_ascii turns one 4-byte character into 12 bytes).
+_INPUT_BYTES=$(LC_ALL=C; printf '%s' "${#INPUT}")
+# Unmeasurable is the failure case, not the happy path. A `${_INPUT_BYTES:-0}` default
+# would SKIP the guard on an empty value, which is a silent fail-open in the one branch
+# that exists to stop one. Builtins cannot actually return a non-number here; this is the
+# branch being pointed in the correct direction rather than a reachable path.
+case "$_INPUT_BYTES" in
+    ''|*[!0-9]*)
+        block_emit "Pre-implementation gate could not measure its own input size — blocking as precaution. If stuck, create $STATE_DIR/skip-design-review.local in your terminal."
+        exit 0
+        ;;
+esac
+# HARD cap first, applied to every payload with no discriminator at all, so the parse
+# below is itself bounded: nothing legitimate exceeds the most generous ceiling, and a
+# payload that does is refused before anything reads it.
+if [ "$_INPUT_BYTES" -gt 8388608 ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, hard limit 8388608). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
+# Which tool this is, from the TOP-LEVEL discriminator only. Substring matching over the
+# raw payload was tried twice and spoofed twice: `*'"Write"'*` matches the string anywhere,
+# so a Bash request carrying tool_input.description="Write" raised its own ceiling from
+# 256KB to 8MB and reached the marker and effective-CWD parsers with a megabyte of
+# command -- measured at 5.5s, past the timeout. Before that, matching two literal
+# `"tool_name":"Bash"` spellings missed the `toolName` alias. There is no glob that
+# reliably locates a top-level key in JSON (whitespace, key order, \u escapes), so this
+# stops guessing and asks the parser. One decode of an already-capped payload, and it is
+# the SAME accessor the classifier blocks below use, so the two cannot disagree.
+#
+# Anything that is not positively identified as Write/Edit/MultiEdit keeps the strict
+# ceiling: unparseable input, a missing python3, an unexpected shape. Each of those is a
+# large NON-write being refused, which is the safe direction; the cost is that a large
+# legitimate write is refused too while python3 is missing, and in that state the gate is
+# already degraded to its pure-shell path.
+_INPUT_CEILING=262144
+# -I (isolated), like every other stdin parser below. Without it the process CWD lands on
+# sys.path, and this gate runs with its CWD inside the repo it is gating -- so a repo-root
+# json.py would both execute inside the gate and be free to return tool_name "Write",
+# lifting a Bash payload from 256KB to 8MB and restoring the timeout fail-open this ceiling
+# exists to close. Pinned by a sentinel test; a convention alone did not hold it.
+if command -v python3 >/dev/null 2>&1; then
+    _TOOL="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    t = d.get("tool_name", d.get("toolName", "")) if isinstance(d, dict) else ""
+except Exception:
+    t = ""
+sys.stdout.write(t if isinstance(t, str) else "")
+' 2>/dev/null || true)"
+    case "$_TOOL" in
+        Write|Edit|MultiEdit) _INPUT_CEILING=8388608 ;;
+    esac
+fi
+if [ "$_INPUT_BYTES" -gt "$_INPUT_CEILING" ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, limit $_INPUT_CEILING). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
 
 # ── Unconditional gate marker protection ──────────────────────────────
 # These files control review gate bypass. Protect them ALWAYS, not just
@@ -129,359 +246,105 @@ INPUT=$(cat 2>/dev/null || true)
 # ran when design review was pending. Moved here to be unconditional.
 # See: "skip codex review" bypass incident 2026-04-01.
 # shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code, not shell expansion
-MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I -c '
-import sys
-sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json, re, shlex
-
-_SQ = chr(39)
-_DQ = chr(34)
-
-
-def _bn(t):
-    return t.rsplit("/", 1)[-1]
-
-
-def _refs(tok):
-    # Shell variable names referenced in a token: $name and ${name}.
-    return re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", tok)
-
-
-def _match_marker(tok, markers, simple_vars):
-    # Substring match WITHIN the token: robust to wrappers that leave the marker
-    # name embedded — parameter expansion (${V:-...}), ANSI-C quoting, path
-    # concatenation. Also resolves a write performed through a shell variable
-    # assigned earlier in the SAME command (m=.../marker; rm "$m") via
-    # simple_vars. Precision is preserved by only calling this on STRUCTURALLY
-    # dangerous positions (a redirect target, or a word in an rm/tee segment),
-    # so a marker merely mentioned in an unrelated quoted argument or read
-    # command is still allowed.
-    for mf in markers:
-        if _bn(mf) in tok:
-            return mf
-    for name in _refs(tok):
-        val = simple_vars.get(name, "")
-        for mf in markers:
-            if _bn(mf) in val:
-                return mf
-    return None
-
-
-def _is_redir(t):
-    # A redirect operator token: pure punctuation that includes < or > (so >, >>,
-    # <, <<, <<<, >|, >&, <&, <> all qualify). Bare ; | & ( ) are NOT redirects:
-    # after quote-aware segmentation (below) they only reach here as quoted or
-    # escaped LITERAL operands, so they must read as words, never operators. This
-    # is the fix for the quoted-separator bypass (rm ; .file with a quoted or
-    # escaped semicolon) — the old purity test treated ANY pure-punctuation token
-    # as an operator, so shlex-stripped quoting let a marker delete masquerade as
-    # a separate command.
-    return len(t) > 0 and all(c in "<>|&" for c in t) and ("<" in t or ">" in t)
-
-
-def _split_simple_commands(s):
-    # Split into simple-command segments on UNQUOTED, UNESCAPED control operators
-    # (; | & and grouping parens) with an explicit quote/escape state machine.
-    # This MUST happen before shlex: posix shlex strips quoting, which makes a
-    # quoted/escaped separator indistinguishable from a real one and lets a marker
-    # delete slip into a "different" command (rm ; .file). Clobber >| and dup >&
-    # embed | / & but are part of the redirect, so a | or & directly after > is
-    # kept attached rather than treated as a split. Returns (segments, ok); ok is
-    # False on an unterminated quote or dangling escape so the caller fails closed.
-    segs, buf = [], []
-    in_s = in_d = esc = False
-    for ch in s:
-        if esc:
-            buf.append(ch)
-            esc = False
-        elif in_s:
-            buf.append(ch)
-            if ch == _SQ:
-                in_s = False
-        elif in_d:
-            buf.append(ch)
-            if ch == "\\":
-                esc = True
-            elif ch == _DQ:
-                in_d = False
-        elif ch == "\\":
-            buf.append(ch)
-            esc = True
-        elif ch == _SQ:
-            buf.append(ch)
-            in_s = True
-        elif ch == _DQ:
-            buf.append(ch)
-            in_d = True
-        elif ch in "|&" and buf and buf[-1] == ">":
-            buf.append(ch)  # >| (clobber) or >& (dup) -> part of the redirect
-        elif ch in ";|&()":
-            segs.append("".join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    segs.append("".join(buf))
-    return segs, not (in_s or in_d or esc)
-
-
-def _scan_segment(segtext, markers, simple_vars, flags=None):
-    # Tokenize ONE already-separated simple command and decide block/allow.
-    # commenters is cleared because the newline->";" normalization (in
-    # _writes_marker) leaves a "#" with no terminating newline, so default shlex
-    # comment handling would swallow the rest of the line and hide a trailing
-    # marker delete. simple_vars is owned by the caller and persists across
-    # segments, so an assignment in one segment resolves a $var use in a later one
-    # (m=...; rm "$m"); it is updated in order as tokens are walked.
-    try:
-        lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        lex.commenters = ""
-        toks = list(lex)
-    except ValueError:
-        # Unparseable segment (e.g. unbalanced quote): a segment that does not
-        # even mention a marker basename cannot be a forge (allow); otherwise fail
-        # CLOSED (block).
-        #
-        # This is the SECOND could-not-parse path (the first is the ok=False branch
-        # in _writes_marker). Both must report the same TRUTH, or the #365 fix only
-        # half-lands: a hit here would still assert "you tried to write a marker"
-        # when all we really know is that the text could not be parsed. Signalled via
-        # `flags` rather than the return value because this function has several
-        # return sites and only one caller — widening them all would be a bigger,
-        # riskier diff than an out-param for a message-only distinction.
-        if flags is not None:
-            flags["unparseable"] = True
-        return next((mf for mf in markers if _bn(mf) in segtext), None)
-    seg = []
-    seg_has_cmd = False
-    seg_cmd_word = None  # first real command word (redirect ops/targets excluded)
-    i, n = 0, len(toks)
-    while i < n:
-        t = toks[i]
-        # A lone file-descriptor digit binding a redirect (2>/dev/null, 1>&2) is
-        # PART of the redirect, not a command word — skip it so it cannot masquerade
-        # as the command word (2>/dev/null touch <marker>) (#290 PR review). Safe
-        # even when the digit is really an echo arg (echo 2 >f): the command word
-        # is already captured, and a digit is never a marker basename.
-        if t.isdigit() and i + 1 < n and _is_redir(toks[i + 1]):
-            i += 1
-            continue
-        if _is_redir(t):
-            if ">" in t:  # write redirect; next word is its target
-                if i + 1 < n and not _is_redir(toks[i + 1]):
-                    nxt = toks[i + 1]
-                    m = _match_marker(nxt, markers, simple_vars)
-                    if m:
-                        return m
-                    # A redirect target is NOT a command word: leave seg_has_cmd
-                    # unset so a bare name=value in a redirect-only simple command
-                    # (> /dev/null m=.../marker) is still recorded as an assignment
-                    # and a later rm "$m" resolves to the marker.
-                    seg.append(nxt)
-                    i += 2
-                    continue
-                i += 1
-                continue
-            # "<" read redirect; skip operator AND its source (a read, not a write)
-            i += 2 if (i + 1 < n and not _is_redir(toks[i + 1])) else 1
-            continue
-        # Leading name=value tokens (before the command word) are real shell
-        # assignments; once a non-assignment word appears, later name=value tokens
-        # are arguments, not assignments. Both NAME=VALUE and bash/zsh NAME+=VALUE
-        # (append) are tracked — kept consistent with the +=-aware command-word skip
-        # below. Otherwise `M+=.claude/skip-litmus.local ; touch "$M"` would leave M
-        # unrecorded and the indirect marker write would slip through (#290 PR review).
-        assign_m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", t, re.DOTALL) if not seg_has_cmd else None
-        if assign_m:
-            name, plus, val = assign_m.group(1), assign_m.group(2), assign_m.group(3)
-            simple_vars[name] = (simple_vars.get(name, "") + val) if plus else val
-        else:
-            # First non-assignment word to reach here is the command word. Redirect
-            # operators AND their targets never reach this branch (handled+continued
-            # above), so a leading redirect (>/dev/null touch <marker>) cannot masquerade
-            # as the command word (#290 PR review — cursor/codex/devin).
-            if not seg_has_cmd:
-                seg_cmd_word = t
-            seg_has_cmd = True
-        seg.append(t)
-        i += 1
-    # A bare rm/tee co-occurring with a marker operand in THIS simple command is a
-    # delete / tee-write of the marker. Scanning ALL words (not a pinned command
-    # position) means wrapper preambles (sudo/env/nohup/timeout, with flags or
-    # leading assignments) cannot hide the rm/tee.
-    if any(_bn(w) in ("rm", "tee") for w in seg):
-        for w in seg:
-            m = _match_marker(w, markers, simple_vars)
-            if m:
-                return m
-    # #290 indirect-write verbs (touch/cp/mv/ln/install) that FORGE the skip/marker
-    # file. Unlike rm/tee, these are matched ONLY in COMMAND-WORD position (the
-    # first token after any leading name=value assignments), NOT scanned across all
-    # words — otherwise a marker READ whose args merely contain one of these words
-    # (grep touch <marker>, cat <marker> | grep cp) would be misread as a write.
-    # This closes the realistic self-bypass — a bare `touch .claude/skip-litmus.local`,
-    # incl. `touch -t` backdating that also defeats the pre-commit 30s age heuristic
-    # — while a wrapper-hidden `sudo touch <marker>` and the eval class stay in the
-    # ADR 0006 residual (a cooperative agent uses none of those to skip its own gate).
-    # seg_cmd_word is captured in the token loop, so leading assignments (NAME=/NAME+=)
-    # AND leading redirects (>/dev/null touch <marker>) are already excluded — a naive
-    # first-non-assignment scan of seg would mis-pick the redirect target as the verb.
-    cmd_word = seg_cmd_word
-    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install"):
-        for w in seg:
-            m = _match_marker(w, markers, simple_vars)
-            if m:
-                return m
-    return None
-
-
-def _writes_marker(cmd, markers):
-    # Decide block/allow by SEGMENTING then TOKENIZING the command instead of
-    # regex: a marker basename that is a redirect (>) target or a tee/rm operand
-    # is a write/forge attempt -> block; a marker that appears only as a read
-    # (cat / [ -f ] / < input) or a quoted string literal in an unrelated command
-    # is allowed.
-    #
-    # Out of scope (accepted defense-in-depth residual, ADR 0006 — the real
-    # anti-forge boundary is the trusted writers plus diff-hash binding, and
-    # Claude is the trusted dispatcher). The detector stops the DIRECT, common
-    # forms — redirect/tee/rm/touch/cp/mv/ln/install to a marker, plus quoting, ${IFS}, same-command
-    # variable, line-continuation, and ANSI-C-prefix obfuscation of them. It does
-    # NOT try to stop a dispatcher that runs an ARBITRARY STRING OR PROGRAM; that
-    # is an unbounded class, all equivalent to eval, and is left to the diff-hash
-    # backstop:
-    #   - execute-a-string: eval, sh/bash/zsh/dash -c "...", and interpreter
-    #     evaluation (python -c, perl -e, ruby -e, node -e, awk, xargs,
-    #     find -exec/-delete)
-    #   - command substitution: backticks and $(...)
-    #   - indirect writers NOT enumerated as command words: dd, and other
-    #     copy/convert tools (cp/mv/ln/install ARE now blocked — see #290 below)
-    #   - runtime name synthesis: pathname globbing (* ? [ ]) and brace expansion
-    #     ({a,b}) that expand to the marker (rm ...loca?, tee ...loca{l,})
-    #   - environment / nested / computed shell variables, ANSI-C escape
-    #     SEQUENCES (\x6c-style), and the nested single-quote idiom (which trips
-    #     the segmenter into its fail-closed substring fallback)
-    # These are one tier against a HOSTILE dispatcher: one that can eval can forge
-    # the marker directly, so blocking a subset is theater against that actor.
-    # #290 extended the blocked verbs (rm/tee → +touch/cp/mv/ln/install as command
-    # words) anyway, because the realistic threat is an accidental/lazy self-bypass
-    # by a COOPERATIVE agent (a bare `touch .claude/skip-litmus.local`); blocking the
-    # bare-command indirect-write forms removes the easy path and forces any bypass
-    # to be a deliberate wrapper-hidden or eval-forge a cooperative agent will not
-    # build. A human touch typed in a real terminal is unaffected — this hook only
-    # sees the Claude tool calls. See #227 and the ADR 0006 residual addendum.
-    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
-    # Bash removes an unquoted backslash-newline (line continuation) before
-    # execution; mirror that BEFORE splitting on newlines so a marker write or
-    # basename split across a continuation is rejoined, not broken into pieces.
-    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
-    # Bash ANSI-C ($'...') and locale ($"...") quoting: shlex does not model the
-    # leading $, so strip that prefix and let the quote tokenize to the literal
-    # path. (Escape SEQUENCES inside $'...' such as \x6c remain undecodable by
-    # shlex and stay out of scope per the residual note above.)
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
-    # ${IFS}/$IFS expand to whitespace — a classic field-splitting obfuscation
-    # (rm${IFS}<marker>); normalize to a separator so the rm/tee command word and
-    # redirect operands are recognized rather than glued into one token.
-    norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
-    # Returns (marker_or_None, unparseable). `unparseable` is TRUE only for the
-    # fail-CLOSED raw-substring path below, where the command could not be parsed
-    # at all and a marker WRITE is therefore indistinguishable from a mere MENTION.
-    # It changes NO decision -- both paths block -- it only lets the caller emit an
-    # accurate diagnostic instead of asserting a write that may not exist (#365).
-    segs, ok = _split_simple_commands(norm)
-    if not ok:
-        # Unterminated quote / dangling escape: fail CLOSED via raw substring.
-        return (next((mf for mf in markers if _bn(mf) in cmd), None), True)
-    # simple_vars persists across segments so a cross-segment assignment
-    # (m=.../marker ; rm "$m") resolves; updated in order, so a write sees the
-    # value assigned BEFORE it and a later reassignment cannot mask it.
-    simple_vars = {}
-    flags = {"unparseable": False}
-    for segtext in segs:
-        # Reset per segment: the flag must describe the segment that PRODUCED the
-        # hit, not some earlier one. Shared across the loop it would report
-        # "could not parse" for a genuine forge that merely FOLLOWED an unparseable
-        # segment — and that error runs the wrong way, telling the operator "nothing
-        # was necessarily being written" about a real write attempt. A security
-        # message may overstate; it must not understate.
-        #
-        # Defensive, not known-reachable: _split_simple_commands splits only on
-        # UNQUOTED separators, so each segment inherits balanced quote parity and the
-        # shlex ValueError below has nothing to reject — a real imbalance trips the
-        # whole-command ok=False path first. The reset costs one assignment and holds
-        # the invariant if the two parsers ever drift apart.
-        flags["unparseable"] = False
-        hit = _scan_segment(segtext, markers, simple_vars, flags)
-        if hit:
-            return (hit, flags["unparseable"])
-    return (None, False)
-
-
-try:
-    d = json.load(sys.stdin)
-    tool = d.get("tool_name", d.get("toolName", ""))
-    inp = d.get("tool_input", d.get("toolInput", {}))
-    if isinstance(inp, str):
-        inp = json.loads(inp)
-
-    MARKER_FILES = [
-        "litmus-passed.local",
-        "pr-review-passed.local",
-        # Dual-voice PR artifacts — writable ONLY by run-review-loop.sh: the
-        # backstop verdict via --run-backstop (a captured claude -p dispatch → an
-        # internal writer; no public writer subcommand — removes the easy #350 retype
-        # forge, though a Bash-holding dispatcher can still fabricate: accepted ADR
-        # 0006 residual), the Codex-lead verdict inline on an actual Codex PASS.
-        # Direct Write/Edit/MultiEdit/shell-redirect/rm against them is blocked so
-        # the hash re-derivation in the writer cannot be bypassed by a file forge.
-        # (Keystone for ADR 0006; .local.json suffix matched as a substring.)
-        "pr-codex-lead.local.json",
-        "pr-backstop-verdict.local.json",
-        "skip-litmus.local",
-        "skip-design-review.local",
-        "reviewed-commits.local",
-        "design-review-needed.local",
-    ]
-
-    if tool in ("Write", "Edit", "MultiEdit"):
-        fp = inp.get("file_path", inp.get("filePath", ""))
-        for mf in MARKER_FILES:
-            if mf in fp:
-                print("BLOCK_MARKER|" + mf)
-                sys.exit(0)
-
-    elif tool == "Bash":
-        cmd = inp.get("command", "")
-        # Block direct invocation of write-review-marker.sh UNLESS called via
-        # the canonical litmus plugin path. The script validates internally that
-        # a builtin review was actually triggered (checks handoff file existence).
-        # Without this allowlist, builtin fallback (exit 3) creates a catch-22:
-        # SKILL.md tells Claude to call the script, but the gate blocks it.
-        if "write-review-marker" in cmd:
-            if re.search(r"(?:ba)?sh\s+.*litmus/scripts/write-review-marker", cmd):
-                print("OK|")
-            else:
-                print("BLOCK_MARKER_SCRIPT|write-review-marker.sh")
-            sys.exit(0)
-        # Block shell redirects / tee / rm TARGETING marker files. ALWAYS
-        # tokenizes (see _writes_marker) rather than pre-filtering on the raw
-        # command, because shell quote concatenation can assemble a marker
-        # filename that no contiguous raw substring contains. Quoted, wrapped,
-        # and multi-operand targets are caught without false-positiving benign
-        # commands that merely mention a marker name in a non-write position.
-        hit, unparseable = _writes_marker(cmd, MARKER_FILES)
-        if hit:
-            print(("BLOCK_MARKER_UNPARSED|" if unparseable else "BLOCK_MARKER|") + hit)
-            sys.exit(0)
-
-    print("OK|")
-except Exception:
-    print("OK|")
-' 2>/dev/null || echo "OK|")
+# The classifier lives in lib/marker_check.py rather than inline: as a single
+# `python3 -c` argument it grew past the Linux 131072-byte MAX_ARG_STRLEN cap and
+# execve began failing with E2BIG (#557). A file has no such limit. The fallback
+# below fails CLOSED -- a classifier that cannot run has decided nothing.
+MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I "$_GATE_LIBDIR/marker_check.py" 2>/dev/null || echo "BLOCK_CLASSIFIER_ERROR|exec")
 
 MARKER_ACTION="${MARKER_CHECK%%|*}"
 MARKER_TARGET="${MARKER_CHECK#*|}"
+
+# Which tool is this, for the carve-out below ONLY. `_TOOL` is assigned inside a
+# `command -v python3` guard further up, so on the python3-absent path it is UNSET —
+# and unset is not "some other tool", it is "unknown". Treating unknown as non-Bash
+# let a genuine Bash call take the carve-out and pass unguarded, and a bare `$_TOOL`
+# expansion would instead abort the shell under `set -u` before block_emit ran,
+# leaving no decision at all (which the harness reads as ALLOW). So: identify the
+# tool from the raw payload text when python3 could not.
+#
+# A substring match is crude, but it errs toward BLOCK, which is the safe direction
+# here: a non-Bash payload that happens to contain this exact JSON fragment is merely
+# over-blocked, and only while python3 is missing.
+_TOOL_FOR_CARVEOUT="${_TOOL:-}"
+if [ -z "$_TOOL_FOR_CARVEOUT" ]; then
+    # Whitespace-tolerant: JSON permits `"tool_name" : "Bash"`, and a fixed-string
+    # match on the compact spelling alone would let that variant read as "not Bash"
+    # and take the carve-out.
+    if [[ "$INPUT" =~ \"(tool_name|toolName)\"[[:space:]]*:[[:space:]]*\"Bash\" ]]; then
+        _TOOL_FOR_CARVEOUT="Bash"
+    fi
+fi
+
+# Fail-CLOSED (#557) — the classifier itself could not produce a verdict, so this
+# gate knows NOTHING about the command. Both producers of this sentinel used to emit
+# OK| (= ALLOW): the python catch-all handler, and the shell fallback for a python
+# that never ran. The measured trigger was E2BIG on Linux (the classifier is passed
+# as a single python3 -c argument and crossed the 131072-byte MAX_ARG_STRLEN cap),
+# which allowed EVERY gated command with no diagnostic on stdout or stderr.
+#
+# Partial output followed by a failure. `$(cmd || echo fallback)` CONCATENATES the
+# classifier's partial stdout with the fallback, so a classifier that printed `OK|`
+# and then died yields `OK|BLOCK_CLASSIFIER_ERROR|exec` — and `%%|*` keeps `OK`,
+# allowing the command. Checking for a newline is NOT enough: the partial write may
+# carry none, and the two then concatenate on one line.
+#
+# A well-formed verdict is exactly one line containing exactly one pipe. Anything
+# else is a fault, which also covers a partial write with no pipe at all (the
+# concatenation then fails the allowlist below).
+_MC_PIPES="${MARKER_CHECK//[^|]/}"
+if [[ "$MARKER_CHECK" == *$'\n'* || "${#_MC_PIPES}" -ne 1 ]]; then
+    MARKER_ACTION="BLOCK_CLASSIFIER_ERROR"
+    MARKER_TARGET="partial"
+fi
+
+# Validate the verdict against an ALLOWLIST rather than checking for the empty case
+# alone. The branches below match specific action names, so ANY value outside the
+# known set — empty output, a truncated line, partial output followed by a crash,
+# stray text on stdout — matches nothing and falls through to ALLOW. Recognising only
+# the shapes the classifier can legitimately produce, and failing CLOSED on the rest,
+# is the difference between "no marker found" and "no answer", which is the whole
+# lesson of this bug. Keep in step with the print() sites in lib/marker_check.py.
+case "$MARKER_ACTION" in
+    OK | BLOCK_MARKER | BLOCK_MARKER_UNPARSED | BLOCK_MARKER_SCRIPT | BLOCK_UNSCANNABLE | BLOCK_CLASSIFIER_ERROR) ;;
+    *)
+        # Keep the offending value for the operator, bounded so a runaway classifier
+        # cannot push an unbounded string into the block reason.
+        MARKER_TARGET="$(printf '%s' "${MARKER_ACTION:-empty}" | head -c 80)"
+        MARKER_ACTION="BLOCK_CLASSIFIER_ERROR"
+        ;;
+esac
+
+if [ "$MARKER_ACTION" = "BLOCK_CLASSIFIER_ERROR" ] \
+   && ! { [ "$MARKER_TARGET" = "exec" ] && [ "$_TOOL_FOR_CARVEOUT" != "Bash" ] \
+          && ! command -v python3 >/dev/null 2>&1; }; then
+    # The one carve-out, deliberately narrow: python3 ENTIRELY ABSENT for a NON-Bash
+    # tool. That is an environment fault with an existing policy further up (block
+    # only while a review is pending), so a machine without python3 is not bricked
+    # for every file write.
+    #
+    # It does NOT extend to Bash. The classifier is what enforces the UNCONDITIONAL
+    # protections — direct helper invocation, writes to the lease ledger and bypass
+    # log — which apply whether or not a review is pending. Waving Bash through when
+    # the classifier cannot run would leave exactly the marker-forgery hole those
+    # guards exist to close.
+    #
+    # Everything else blocks: the classifier failed to produce a usable verdict (it
+    # raised, died mid-output, printed nothing, or printed something unrecognized).
+    # That is the shape that silently allowed every gated command on Linux.
+    block_emit "BLOCKED (fail-closed): the pre-implementation gate could not run its command classifier ($MARKER_TARGET), so it cannot tell whether this command is permitted.
+
+This is an infrastructure fault in the gate, NOT a judgement about your command.
+
+The classifier is hooks/gate-scripts/lib/marker_check.py. A fault of 'exec' means python could not run it (check the file exists and is readable); 'partial' means it produced no verdict at all (a truncated or damaged copy). Any other value is the exception class it raised — re-run the gate with the '2>/dev/null' removed from that invocation to see the traceback.
+
+Do NOT work around this by creating a skip file: it is a user-only escape hatch, and the gate is currently blind rather than merely strict."
+    # Same single-decision contract the sibling fail-closed branch observes: emit ONE
+    # verdict and stop. Falling through would continue into normal classification,
+    # emit a second JSON decision, and could spend an armed skip-lease use on a
+    # command that was already blocked.
+    exit 0
+fi
 
 # Fail-CLOSED fallback block (#365) — the command could not be PARSED (unbalanced
 # quote / dangling escape), so the detector cannot tell a marker WRITE from a mere
@@ -539,6 +402,13 @@ This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, 
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
+    exit 0
+fi
+
+if [ "$MARKER_ACTION" = "BLOCK_UNSCANNABLE" ]; then
+    block_emit "BLOCKED: this command is too large or too deeply nested for the gate to determine whether it invokes a gate-state helper.
+The check that guards those helpers runs on EVERY command, not only while a review is pending, so a scan it could not finish is refused rather than assumed safe.
+Split the command into smaller ones, or write long content to a file instead of passing it inline."
     exit 0
 fi
 
@@ -714,43 +584,156 @@ fi
 # SessionStart (load-orchestrator.sh) still warns about stale state for UX.
 # Escape hatch: $STATE_DIR/skip-design-review.local (user-created only).
 
-# Skip overrides — unified with pre-commit-gate.sh behavior
-# Both gates use the same pattern: single-use consumption + self-bypass detection
-# A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
-# (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
-# (resolve-repo-dir.sh is already sourced near the top of this script.)
-# Anchor the guard on the SAME path the `-f` check tests. That check is relative to
-# the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
-# committed subdir/.claude skip file could satisfy one check and evade the other.
-# FAIL-CLOSED: outside a git repo the helper returns "repo-controlled" → skip ignored.
-if [ -f "$STATE_DIR/skip-design-review.local" ] \
-   && ! gate_skip_file_repo_controlled "." "$STATE_DIR/skip-design-review.local"; then
-    # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
-    # A human-created skip file (via terminal) will typically be older.
-    FILE_AGE=999
-    _MTIME=$(stat -f %m "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=""
-    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
-    if [ "$FILE_AGE" -lt 30 ]; then
-        # Likely self-bypass — reject and warn
-        rm -f "$STATE_DIR/skip-design-review.local"
-        REASON="BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
+# ── Skip override: a LEASE, not a single use (#519 item 3) ────────────
+# Defined here (where the old single-use block lived) but INVOKED far below, only
+# once a write is known to be genuinely gated. Two changes from the old block:
+#
+#   1. LEASED, not consumed-on-first-use. The unit of work is a PLAN, not a write:
+#      implementing one approved sub-plan takes ~10 gated writes, so a single-use
+#      hatch cost ~10 operator `touch` cycles with a mandatory 30s wait each. That
+#      pressure pushed operators toward the WORSE exit — deleting marker tokens,
+#      i.e. destroying the gate's own audit trail. An escape hatch too expensive to
+#      use correctly is one that gets used incorrectly. One `touch` now authorizes
+#      $LEASE_MAX_USES gated writes inside a $LEASE_MAX_AGE window, and EVERY use
+#      appends to bypass-log.jsonl — strictly MORE audit signal than before, where
+#      the pressure-release valve was an unlogged `rm`.
+#
+#   2. Bounded in time as well as count. The old file had no maximum age, so a
+#      forgotten skip stayed armed indefinitely (the hazard #516 records for the
+#      sibling litmus skip). The lease now expires.
+#
+# UNCHANGED, deliberately: the >=30s anti-self-bypass check and the #325
+# repo-controlled rejection. Both are sound; #519 explicitly did not propose
+# weakening either, and a lease does not need them relaxed — it re-checks the
+# ORIGINAL file's mtime on every use, so an agent cannot extend a lease by
+# re-touching (that resets the counter but also resets the 30s clock, which then
+# rejects). Only a genuine operator touch, waited out, opens a new lease.
+LEASE_MAX_USES=20
+LEASE_MAX_AGE=3600
+_SKIP_FILE="$STATE_DIR/skip-design-review.local"
+# DISARMING IS NOT DONE HERE. lease_slot.py removes a refused skip file itself, through
+# the O_NOFOLLOW component walk, at the dir fd it has already validated. A shell `rm -f`
+# resolves the path afresh and follows a symlinked INTERMEDIATE component of the
+# repo-influenced state dir, so it could delete outside the repository — and it runs
+# BEFORE lease_slot.py validates anything, so the later safe resolution cannot undo it.
+# A `--unlink <dir> <name>` subcommand was the first fix and was worse: it took any
+# slash-free basename, so anything reaching it could delete the protected audit log.
+# Per-use lease slots live as immutable <mtime>.<n> directories in here, never
+# as a mutable counter file — see the claim block below for why.
+# Referenced only in messages/tests; every real operation on the ledger goes through
+# lease_slot.py, which resolves the path with O_NOFOLLOW at each component rather than
+# by string join.
+_LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
+
+# Exit: 0 = a lease use was granted (allow the write)
+#       1 = no usable skip file (fall through to the normal block)
+#       2 = a block decision has ALREADY been emitted on stdout (caller exits)
+_skip_lease_consume() {
+    local claimed
+    [[ -f "$_SKIP_FILE" ]] || return 1
+    # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
+    # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
+    # relative to the hook CWD, so resolve against the CWD too, or a committed
+    # subdir/.claude skip file could satisfy one check and evade the other.
+    # FAIL-CLOSED: outside a git repo the helper reports repo-controlled → refuse.
+    # `if`, not `&& return`: under `set -e` a naked `cmd && return 1` whose cmd fails
+    # makes the whole list non-zero and trips the ERR trap before the next line runs.
+    if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then return 1; fi
+
+    # ── Age checks AND the claim, from ONE stat ─────────────────────────────
+    # Both live in lease_slot.py. The shell used to stat the file for the 30s floor and
+    # the 3600s ceiling and then let the helper stat it AGAIN for the lease key, so a
+    # touch or replacement between the two produced a lease whose new mtime had passed
+    # neither check. One read, one decision.
+    #
+    # Every path component is opened with dir_fd + O_NOFOLLOW and every operation happens
+    # AT that fd, so the directory validated is the one written to. The shell version
+    # could not hold that: `-L "$STATE_DIR"` tests only the final name (a nested
+    # `link/state` with a symlinked PREFIX passes), the check was separated from the use,
+    # and a glob + `rm -rf` prune would follow such a symlink into a tree outside the
+    # repo — where slots are also outside the protected-marker guard, so they could be
+    # erased through the external name and the ceiling reset indefinitely.
+    #
+    # Exit 0 = claimed (slot on stdout); 2 = exhausted; 3 = too new; 4 = expired;
+    # anything else = could not record, which must REFUSE the bypass —
+    # unbounded-because-unrecordable is the fail-open this whole block exists to avoid.
+    _CLAIM_RC=0
+    # A missing/unreadable helper also exits 2 (CPython's own "can't open file"
+    # exit code), which the `2)` branch below would misreport as a spent lease --
+    # naming a use that was never granted and a file that was never removed. Route
+    # that case to the generic fail-closed refusal (`*)`) instead, before invoking
+    # python3, so exit code 2 stays exclusively the helper's own spent-lease signal.
+    [ -f "$_GATE_LIBDIR/lease_slot.py" ] || _CLAIM_RC=1
+    if [ "$_CLAIM_RC" -eq 0 ]; then
+        claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
+    fi
+    # The `-f` test above is a cheap early exit, NOT the discriminator: it cannot see an
+    # UNREADABLE regular file, and the helper can be removed between the test and the
+    # interpreter opening it. Both still exit 2. So exit 2 is re-verified rather than
+    # trusted -- if the helper is not openable now, that 2 was CPython refusing to open
+    # a file, not the helper reporting a spent lease. Costs one probe, and only on the
+    # exhausted path. Both branches BLOCK either way; what this buys is that the operator
+    # is told the truth, instead of being sent to re-touch a lease that was never spent
+    # and hunting for a skip file that was never removed.
+    if [ "$_CLAIM_RC" -eq 2 ] \
+       && ! python3 -I -c 'import sys; open(sys.argv[1], "rb").close()' \
+                    "$_GATE_LIBDIR/lease_slot.py" 2>/dev/null; then
+        _CLAIM_RC=1
+    fi
+    case "$_CLAIM_RC" in
+        0) : ;;
+        3)
+            # Created moments ago — likely a self-bypass, not operator consent.
+            # lease_slot.py has already disarmed it, and if it could NOT (an immutable
+            # file in a writable dir) it poisoned the lease instead, so aging past the
+            # floor buys nothing.
+            block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
-        block_emit "$REASON"
-        exit 0
-    fi
-    # Single-use: consume the skip file after allowing one bypass.
-    # This prevents stale skip files from permanently disabling review gates.
-    rm -f "$STATE_DIR/skip-design-review.local"
+            return 2 ;;
+        4)
+            # Disarmed by lease_slot.py. Slots are left in place for the same anti-TOCTOU
+            # reason as the exhausted branch; the mtime-keyed prune clears them when a new
+            # lease is armed.
+            block_emit "BLOCKED: the design-review skip lease has EXPIRED (the limit is ${LEASE_MAX_AGE}s).
+
+The file has been removed so it cannot stay armed and silently authorize a later session.
+Run /blueprint-review to clear the review properly. If the user still wants to bypass,
+they can create $STATE_DIR/skip-design-review.local again in their terminal."
+            return 2 ;;
+        2)
+            # lease_slot.py removed ONLY the skip file. Deleting the slots would be a
+            # TOCTOU: a concurrent gate that already passed the skip-file/mtime checks
+            # would recreate the directory, claim slot 1 under the same mtime, and be
+            # granted a 21st use. The slots are the exhaustion proof and must outlive the
+            # file that spent them; a later touch changes the mtime and lease_slot prunes
+            # them. (The ledger is a protected marker, so it cannot be wiped to reset.)
+            block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
+
+One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be
+implemented without re-arming per write — but not an unbounded number. The file has
+been removed.
+
+Run /blueprint-review to clear the pending review properly. To release ONE specific
+pending token with a recorded audit event instead, run scripts/design-clear.sh with no
+arguments to list what is pending. If the user wants another lease, they can re-create
+$STATE_DIR/skip-design-review.local in their terminal."
+            return 2 ;;
+        *) return 1 ;;   # FAIL-CLOSED: could not record a use → grant none
+    esac
+    case "$claimed" in ''|*[!0-9]*) return 1 ;; esac
+
+    # Exit 0 means the slot is durable on disk AND the bypass-telemetry event for it is
+    # durably logged — lease_slot.py mints that event inside the same call that created
+    # the slot, and reports ERROR (refuse, slot stays spent) if the append did not land.
+    # It is NOT a second command here, because a record-writing CLI is a forge primitive:
+    # it needs no protected path and no modification verb, so nothing else in the Bash
+    # detector would notice one, and post-commit-consume-marker.sh reads a recent
+    # `skip-review-consumed` line as proof that a bypass was sanctioned.
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry ──────────────────────────────────────────────
-    mkdir -p "$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-    exit 0
-fi
+    return 0
+}
 # (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)
 
 # ── Parse tool type and relevant input ─────────────────────────────────
@@ -776,6 +759,13 @@ try:
     from delib_gate import is_exempt
 except Exception:
     is_exempt = None
+# #519 item 4 — token-level file-mod classification. Import failure leaves it None
+# and the raw-string regexes below run instead, i.e. the pre-#519 behaviour, which
+# is strictly WIDER (blocks more). A missing lib can therefore never fail-OPEN here.
+try:
+    from cmdword import is_file_mod
+except Exception:
+    is_file_mod = None
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -786,8 +776,24 @@ try:
         print("WRITE_EDIT|" + inp.get("file_path", inp.get("filePath", "")))
     elif tool == "Bash":
         cmd = inp.get("command", "")
+        # KEEP IN STEP WITH cmdword._MAX_CMD_CHARS. Classifying a command costs time
+        # linear in its length even after the token budgets bound the quadratic part, and
+        # this hook is registered with a 5s timeout whose expiry emits NO decision -- read
+        # by the harness as allow. So size is checked FIRST, before any parsing, and an
+        # oversized command is called a modification without being read. Fail CLOSED: the
+        # padding is attacker-chosen, so anything cleverer here can be aimed.
+        if len(cmd) > 65536:
+            print("BASH_MOD|" + cmd[:500])
+            sys.exit(0)
+        # MUST stay in step with cmdword.FILE_MOD_PATTERNS: this list is the
+        # import-failure fallback, so a verb missing here fails OPEN on exactly the
+        # damaged-installation path the comment below promises is fail-CLOSED.
         FILE_MOD_PATTERNS = [
-            r"\bsed\s+-i",
+            # `sed` WHOLE, matching cmdword.FILE_MOD_PATTERNS. The classifier blocks
+            # arrangements `\bsed\s+-i` cannot see -- `sed -f -- -i file` writes in
+            # place, because the `--` is the script operand of -f -- and this list is
+            # the import-failure stand-in, so it has to be the WIDER of the two.
+            r"\bsed\s",
             r"\btee\s",
             r"\bpatch\s",
             r"\bcp\s",
@@ -795,8 +801,57 @@ try:
             r"\brm\s",
             r"\bln\s",
             r"\binstall\s",
+            r"\btruncate\s",
+            r"\bunlink\s",
+            r"\brmdir\s",
+            r"\bdd\s",
+            # `git` WHOLE, not per-subcommand. This list is the damaged-installation
+            # fallback and its one job is to be WIDER than the classifier it stands in
+            # for; the classifier blocks `git clean -fd`, `git restore .` and every
+            # unknown subcommand, and no verb pattern here matched any of them, so a
+            # missing cmdword.py made the fail-CLOSED gate fail OPEN.
+            r"\bgit\s",
+        # A verb at END OF STRING (`echo hi | xargs rm`) and find -delete. The `\s` in
+        # every pattern above requires something to follow the verb, and -delete names
+        # no verb at all, so the classifier blocked both while this list allowed them.
+        r"\b(?:tee|patch|cp|mv|rm|ln|install|truncate|unlink|rmdir|dd)$",
+        r"-delete\b",
         ]
-        has_explicit_mod = any(re.search(p, cmd) for p in FILE_MOD_PATTERNS)
+        # #519 item 4: these raw-string regexes match INSIDE quoted operands, so a
+        # read-only `grep -nE "rm |mv " f` or `echo "(mv FAILS)"` read as file-modifying
+        # and got blocked. cmdword.is_file_mod tokenizes first and compares token
+        # basenames for equality — a verb inside a quoted string is one token that
+        # equals no verb, while `sudo rm -rf src` still matches. It falls back to these
+        # same regexes on an unparseable command, so the failure mode is the old
+        # behaviour, never a new over-block. Kept here as the import-failure fallback.
+        # SQUEEZED as well as raw, matching cmdword._regex_fallback. Quotes and
+        # backslashes are the word-concatenation characters bash removes before it
+        # resolves the command word, so `g"it" clean -fd` matched no contiguous pattern
+        # while running git -- in the one path that exists for a damaged installation.
+        # Escapes are decoded at BASH digit widths, not Python ones: `unicode_escape`
+        # demands four digits after \u and eight after \U, so bash short forms passed
+        # through it untouched and a hex-spelled verb matched nothing.
+        _esc = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})"
+                          r"|U([0-9A-Fa-f]{1,8})|0?([0-7]{1,3}))")
+
+        def _dec(m):
+            hexit = m.group(1) or m.group(2) or m.group(3)
+            try:
+                return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+            except ValueError:
+                return ""
+
+        def _variants(t):
+            out = [t, _esc.sub(_dec, t)]
+            for base in list(out):
+                sq = base.replace(chr(92) + chr(10), "")
+                for _ch in (chr(39), chr(34), chr(92), "$"):
+                    sq = sq.replace(_ch, "")
+                out.append(sq)
+            return out
+        has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
+                            else any(re.search(p, v) for p in FILE_MOD_PATTERNS
+                                     for v in _variants(cmd)))
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).
@@ -1040,6 +1095,21 @@ fi
 # No file-path allowlist needed — Bash command parsing is unreliable for
 # extracting target paths, and the patterns (sed -i, tee, patch) are
 # unambiguous file-modification operations.
+
+# ── Spend a skip-lease use, if one is armed (#519 item 3) ──────────────
+# Invoked HERE, not before the classifier, and that placement is the fix for the
+# "any intervening tool call can consume it" sharp edge. The old block ran ahead of
+# the tool-type parse and every allowlist, so a read-only `ls`, a `git status`, or a
+# write to an already-EXEMPT path (a design doc, docs/reviews/, $STATE_DIR/) burned
+# the single use before the operator's intended write ever arrived. By this line the
+# operation is known to be genuinely gated — a real implementation write with a real
+# pending review — so a use is spent only on the thing the operator armed it for.
+_LEASE_RC=0; _skip_lease_consume || _LEASE_RC=$?
+case "$_LEASE_RC" in
+    0) exit 0 ;;   # lease use granted → allow this write
+    2) exit 0 ;;   # self-bypass / expired / exhausted — block already on stdout
+esac
+# 1 = no usable skip file → fall through and block normally.
 
 # ── Render the pending records (ADR-C) into the block message ──────────
 # _MK_CODE is 1 (>=1 pending) or 2 (enumerate/list failure) — this write is gated

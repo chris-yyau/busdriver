@@ -1,3 +1,38 @@
+## [1.101.1](https://github.com/chris-yyau/busdriver/compare/v1.101.0...v1.101.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* **blueprint-review:** skip codex command echoes when locating the verdict ([#554](https://github.com/chris-yyau/busdriver/issues/554)) ([#571](https://github.com/chris-yyau/busdriver/issues/571)) ([98c5f80](https://github.com/chris-yyau/busdriver/commit/98c5f80af0a282404298b9175c80c25857f84455)), closes [#524](https://github.com/chris-yyau/busdriver/issues/524) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#561](https://github.com/chris-yyau/busdriver/issues/561) [#551](https://github.com/chris-yyau/busdriver/issues/551) [#527](https://github.com/chris-yyau/busdriver/issues/527)
+
+# [1.101.0](https://github.com/chris-yyau/busdriver/compare/v1.100.15...v1.101.0) (2026-08-05)
+
+
+### Features
+
+* **auditor:** read the Mechanism Witness model from config, not source ([#567](https://github.com/chris-yyau/busdriver/issues/567)) ([ad8a997](https://github.com/chris-yyau/busdriver/commit/ad8a99775f3468f56d9bc9beac30fc01f4ac03e5)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#variant](https://github.com/chris-yyau/busdriver/issues/variant)
+
+## [1.100.15](https://github.com/chris-yyau/busdriver/compare/v1.100.14...v1.100.15) (2026-08-04)
+
+
+### Bug Fixes
+
+* **gate:** scan the producer when a pipeline stage might be a shell ([#557](https://github.com/chris-yyau/busdriver/issues/557)) ([#562](https://github.com/chris-yyau/busdriver/issues/562)) ([c34e500](https://github.com/chris-yyau/busdriver/commit/c34e500595c5e20e206deb9c6933b84f8233378f)), closes [pre-#519](https://github.com/pre-/issues/519) [pre-#519](https://github.com/pre-/issues/519) [#519](https://github.com/chris-yyau/busdriver/issues/519) [pre-#519](https://github.com/pre-/issues/519) [pre-#519](https://github.com/pre-/issues/519) [#519](https://github.com/chris-yyau/busdriver/issues/519) [#565](https://github.com/chris-yyau/busdriver/issues/565)
+
+## [1.100.14](https://github.com/chris-yyau/busdriver/compare/v1.100.13...v1.100.14) (2026-08-02)
+
+
+### Bug Fixes
+
+* **blueprint-review:** raise k3 witness budget clamp 600s to 1800s ([#559](https://github.com/chris-yyau/busdriver/issues/559)) ([c01726b](https://github.com/chris-yyau/busdriver/commit/c01726b2c73c6eff162a1133da31496d164b2fb6)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#506](https://github.com/chris-yyau/busdriver/issues/506) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#506](https://github.com/chris-yyau/busdriver/issues/506)
+
+## [1.100.13](https://github.com/chris-yyau/busdriver/compare/v1.100.12...v1.100.13) (2026-08-02)
+
+
+### Bug Fixes
+
+* **gate:** lease the design-review skip, classify file-mods by token ([#519](https://github.com/chris-yyau/busdriver/issues/519)) ([#548](https://github.com/chris-yyau/busdriver/issues/548)) ([fbb64bb](https://github.com/chris-yyau/busdriver/commit/fbb64bb52fe89f6a66773b0e59c0d984084f6b9c)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.100.12](https://github.com/chris-yyau/busdriver/compare/v1.100.11...v1.100.12) (2026-08-01)
 
 

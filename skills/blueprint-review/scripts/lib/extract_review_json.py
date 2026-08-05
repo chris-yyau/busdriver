@@ -113,6 +113,139 @@ _LOG_ECHO_PREFIX_RE = re.compile(
 )
 
 
+# Known CLI log framings that echo A COMMAND, not a payload. Same pinned-producer
+# discipline as _LOG_ECHO_PREFIX_RE, but a PREFIX match rather than an anchored
+# one: arbitrary shell text follows, and the brace in question is inside it.
+#
+# All four phrasings are measured, not guessed. Across the 17 codex transcripts on
+# hand, `Running command:` and `Command completed:` each echo the SAME command
+# text — the second is not a result line — and each hosts ~39 undecodable regions.
+# #554 named only the first, which is why the fix aimed at it did not rescue the
+# reported artifact: there the poisoning brace at byte 1746 sits on the
+# `Command completed:` twin of the line at 1622. `Command failed:` is the same
+# echo on the error path. `Searching:` hosted no region in the sample and is
+# included on shape: it echoes a search PATTERN, and the brace-carrying command
+# #554 opens with is a regex quantifier (`rg -n '"'^#{1,4...`).
+#
+# `Assistant message captured:` is deliberately NOT here. That line can carry the
+# verdict itself, so it needs _skip_log_echo's bookkeeping (record malformed_pos,
+# set own_line_only), not a silent skip — see _is_log_echo_fragment and #527.
+#
+# No `^` anchor: this is applied with `Pattern.match(raw, line_start, start)`,
+# which anchors at `pos` itself. A `^` would additionally demand position 0 and so
+# match only on the transcript's first line.
+_LOG_PROGRESS_PREFIX_RE = re.compile(
+    r"\s*\[(?:codex)\]\s+"
+    r"(?:Running command|Command completed|Command failed|Searching):\s"
+)
+
+# JSON allows any key character to arrive as a `\uXXXX` escape, so `"status"`
+# is the key `status` and a raw-text search for `"status"` misses it (codex, review
+# of this change). Decoded before the supersede check below — see _unescaped_line.
+_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _is_progress_line(raw: str, line_start: int, start: int) -> bool:
+    """Is `start` inside a CLI progress line, where no JSON region can exist?
+
+    Codex echoes each command before running it, cut to a display limit:
+
+        [codex] Running command: /bin/zsh -lc "rg -n \\"import \\{ en \\}|Locale p...
+
+    That brace belongs to the COMMAND. raw_decode anchors on it, cannot find where
+    the value ends because the line was cut, and the region is recorded as
+    unresolvable — after which `_resolve` refuses the complete verdict printed
+    below it (#554: verdict at byte 5426, first unresolvable region at byte 1622).
+
+    **Chronic, not incidental.** The poisoning brace came from grepping for
+    `import { en }`. Any review whose transcript echoes a command containing a
+    brace and is then truncated is discarded, whatever the verdict says — and
+    which commands codex runs varies per round, so the same document passes and
+    fails on consecutive rounds. One plan ran seven blueprint-review rounds and
+    never issued a PASS.
+
+    **Why recognition sits here and not in either resolver.** The two reported
+    runs died in different branches — `_resolve`'s `broken_pos < best_pos` check,
+    and `_handle_truncated`'s open-like-JSON test — from the same upstream cause.
+    Patching either leaves the other failing, so the line is declined as a
+    candidate region before `raw_decode` ever sees it.
+
+    **This direction is a rejection, not a rescue, and that inverts the threat
+    model of `_is_log_echo_fragment`.** There, recognizing the framing ADMITS a
+    verdict that would otherwise be refused, so a forged producer label buys real
+    power and the pin is the security property. Here it only removes a candidate.
+    A region skipped can never become the verdict, so no framing — forged or
+    genuine — can promote anything. The pin is kept because an unpinned phrasing
+    is not evidence codex emitted the line, and a reviewed document could then
+    suppress a real verdict by quoting the framing on the verdict's own line.
+
+    Skipping is also strictly SAFER than the status quo on the decoded path. An
+    echoed command may quote a complete review-shaped object — codex greps the
+    document under review, so the literal can come from the artifact itself — and
+    today that object decodes cleanly and last-verdict-wins promotes it over the
+    real FAIL above. Pinned regression test:
+    `test_a_verdict_shaped_object_inside_a_progress_line_is_never_the_verdict`.
+
+    KNOWN RESIDUAL: a command echo that spans lines (a heredoc, say) is recognized
+    only on its first line; a brace on a continuation line still poisons the sweep
+    exactly as before. Every observed transcript truncates to a single line.
+
+    `line_start` is SUPPLIED by the sweep, not recomputed here, and matching uses
+    `pos`/`endpos` against `raw` rather than a slice — the pattern carries no `^`
+    because `Pattern.match` anchors at `pos` on its own. Both avoid per-region work
+    proportional to the distance back to the line start, which is what makes one
+    long line quadratic: a slice copies a growing prefix, and `rfind("\\n", 0,
+    start)` scans a growing span backwards. Measured on 64,000 `{}` regions sharing
+    one line, this recognizer costs 1.8ms supplied against ~1000ms recomputed
+    (codex, review of this change).
+    """
+    return _LOG_PROGRESS_PREFIX_RE.match(raw, line_start, start) is not None
+
+
+def _unescape(text: str) -> str:
+    """`\\uXXXX` decoded, then remaining backslashes dropped. ORDER MATTERS.
+
+    Dropping backslashes first would turn `\\u0061` into the literal `u0061` and
+    lose the escape, so the Unicode pass runs first. `chr()` on a lone surrogate is
+    fine in a Python str, and this text is only ever pattern-matched, never
+    decoded as JSON, so an unpaired surrogate cannot raise here.
+    """
+    return _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text).replace(
+        "\\", ""
+    )
+
+
+def _unescaped_line(raw: str, start: int, end: int) -> str:
+    """The WHOLE line holding `start`, up to `end`, with escapes normalized.
+
+    Feeds the supersede check on the command-echo path, and both transforms matter
+    there (codex, review of this change).
+
+    Backslashes go because `_KEY_RE`'s `(?<!\\\\)` lookbehind is calibrated for the
+    OPPOSITE direction of risk. On its usual paths an escaped `\\"status\\":` really
+    is a value inside a string, and reading it as a key discards a good review — so
+    it must not match. Here a match only ever raises `malformed_pos`, which can
+    withhold a verdict but can never promote one, so under-matching is the harmful
+    error. A shell echo quotes its command, so the keys arrive escaped
+    (`echo {\\"status\\":\\"FAIL\\"}`) and the lookbehind skipped them, leaving a
+    stale earlier PASS standing — a direct variant of the bug this path exists to
+    close.
+
+    Normalizing rather than loosening the KEY SHAPE is the whole design. A weaker
+    test — bare `status` as a substring — would fire on `rg -n 'issues' docs/` and
+    withhold a perfectly good review, which is the DEGRADED-coverage failure #554
+    is about. Over-firing is not free here; it is just cheaper than under-firing.
+
+    The window is the whole line, not `raw[start:]`, because the region found first
+    can sit AFTER the keys: in `rg -n '\"status\":\"PASS\",\"issues\":[]'` the first
+    bracket is the `[` of `[]`, so a window opening there sees no keys at all.
+    Bounded by one line and reached only once per skipped line (the sweep resumes
+    past the line end), so the copy here cannot become the quadratic that
+    `_is_progress_line` had to avoid.
+    """
+    return _unescape(raw[raw.rfind("\n", 0, start) + 1 : end])
+
+
 def _is_log_echo_fragment(raw: str, start: int) -> bool:
     """Is this unclosed region a known CLI log echo rather than a real payload?
 
@@ -319,6 +452,26 @@ class _Sweep:
     broken_pos: int = -1
     unbalanced_scans: int = 0
     own_line_only: bool = False
+    # Line cursor, advanced FORWARD by `_seek_line` as the sweep moves. Regions are
+    # visited in increasing position, so tracking the current line costs one pass
+    # over the transcript in total — where recomputing `rfind("\n", 0, start)` per
+    # region costs a backward scan each time, which is quadratic on a long line.
+    line_start: int = 0
+    next_newline: int = -2  # -2 = not primed; -1 = no newline left
+
+
+def _seek_line(st: "_Sweep", start: int) -> int:
+    """Line start for `start`, advancing the cursor. Regions must arrive in order.
+
+    Invariant, asserted in the tests against every real transcript on hand: the
+    value returned always equals `raw.rfind("\\n", 0, start) + 1`.
+    """
+    if st.next_newline == -2:
+        st.next_newline = st.raw.find("\n")
+    while st.next_newline != -1 and st.next_newline < start:
+        st.line_start = st.next_newline + 1
+        st.next_newline = st.raw.find("\n", st.line_start)
+    return st.line_start
 
 
 def _skip_log_echo(st: "_Sweep", start: int, exc: json.JSONDecodeError) -> int:
@@ -558,6 +711,33 @@ def try_last_review_object(raw: str):
         start = _next_region(raw, i)
         if start < 0:
             break
+        if _is_progress_line(raw, _seek_line(st, start), start):
+            # Not a JSON region at all — a brace inside an echoed shell command
+            # (#554). Declined before raw_decode, so it can neither be recorded as
+            # unresolvable nor decoded into a verdict. Step over the whole line:
+            # the echo's extent IS its line, by construction.
+            #
+            # `own_line_only` is deliberately NOT set here, unlike `_skip_log_echo`.
+            # That flag guards against a LEXICAL parent — a truncated JSON payload
+            # whose unclosed braces swallow what follows. A shell command echo is
+            # not JSON, so there is nothing for a later object to be a child of,
+            # and setting the flag would discard prefixed verdicts for no gain.
+            i = max(_line_end(raw, start), start + 1)
+            # But a skipped line that CARRIES VERDICT KEYS must still supersede an
+            # earlier verdict, exactly as `_skip_log_echo` does (codex, review of
+            # this change). Without this, `{"status":"PASS"}` own-line followed by
+            # a command echo quoting a verdict hands back the PASS — a stale PASS
+            # standing in for something later, the #503 direction.
+            #
+            # The two readings of that shape are textually indistinguishable: an
+            # echo quoting a FORGED PASS after a real FAIL, and an echo quoting a
+            # real one after a stale PASS. Neither can be authenticated, so this
+            # refuses instead of guessing — a withheld review, never a fabricated
+            # verdict.
+            if _looks_like_verdict(_unescaped_line(raw, start, i)):
+                st.malformed_pos = start
+                _PARSE_ERRORS.append("verdict keys inside a CLI command echo")
+            continue
         try:
             obj, end = _DECODER.raw_decode(raw, start)
         except json.JSONDecodeError as exc:

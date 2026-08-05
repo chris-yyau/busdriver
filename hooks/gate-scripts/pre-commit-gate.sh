@@ -594,13 +594,29 @@ if [ -f "$MARKER" ]; then
     # it has PROVEN the marker wrong (mismatched hash, expired epoch,
     # unrecognized shape); this arm has proven nothing. Blocking without
     # deleting is the fail-closed outcome either way.
-    if ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1); then
-        REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
+    # Select the hash utility BEFORE running the pipeline (CodeRabbit finding,
+    # PR #577). The prior `sha256sum 2>/dev/null || shasum -a 256` form let
+    # sha256sum consume part of stdin and then fail (e.g. mid-stream I/O
+    # error) — the `||` fallback would then run shasum on only the
+    # UNCONSUMED remainder of the pipe, silently hashing a truncated stream
+    # while the pipeline as a whole still reported success. Choosing the
+    # command by availability (not by runtime failure) means the diff is
+    # piped through exactly one hasher, once, so a failure downstream is a
+    # real failure, not a partial-consumption artifact.
+    if command -v sha256sum >/dev/null 2>&1; then
+        HASH_CMD=(sha256sum)
+    elif command -v shasum >/dev/null 2>&1; then
+        HASH_CMD=(shasum -a 256)
+    else
+        HASH_CMD=()
+    fi
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+        REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0
     fi
 
-    if echo "$MARKER_CONTENT" | grep -qE '^PASS-MERGE-[0-9]+$'; then
+    if [[ "$MARKER_CONTENT" =~ ^PASS-MERGE-[0-9]+$ ]]; then
         # Merge commit whose resolution kept already-reviewed code unchanged
         # (run-review-loop.sh:846). Its precondition IS `git diff --cached
         # --quiet`, so bind it to that rather than to a hash: an empty staged
@@ -608,6 +624,16 @@ if [ -f "$MARKER" ]; then
         # resolved conflicts has a NON-empty diff, falls through to a real
         # review, and gets a bare-hash marker instead — so a PASS-MERGE marker
         # sitting in front of a non-empty diff is stale or forged, never valid.
+        #
+        # `[[ =~ ]]` (not `grep -qE`), same reasoning as SKIPPED-NONE above
+        # (CodeRabbit finding, PR #577): this arm's acceptance condition below
+        # is "staged diff is empty" — unlike PASS-EXCLUDED/BUILTIN/bare-hash,
+        # it has no secondary hash-equality check that would reject a
+        # multi-line MARKER_CONTENT whose first line merely starts with
+        # PASS-MERGE. A per-line `grep` match would let
+        # "PASS-MERGE-123\n<garbage>" through whenever the diff happened to
+        # be empty; `=~` anchors against the WHOLE string so trailing
+        # content after the epoch fails the match instead.
         if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
             exit 0
         fi

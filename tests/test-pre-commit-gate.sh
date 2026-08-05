@@ -457,6 +457,16 @@ run_marker_test "PASS-MERGE allows when the staged diff is empty" \
     allow 'PASS-MERGE-1754400000' 0
 run_marker_test "...and blocks once something is staged" \
     block 'PASS-MERGE-1754400000' 1
+# CodeRabbit (round 4 follow-up): PASS-MERGE's acceptance condition is purely
+# "staged diff is empty" — unlike PASS-EXCLUDED/BUILTIN/bare-hash, it has no
+# secondary hash-equality check that would reject trailing content. A per-line
+# `grep -qE '^PASS-MERGE-[0-9]+$'` match would honor a multi-line marker whose
+# FIRST line merely starts with PASS-MERGE, ignoring anything after it. Pin
+# that a well-formed PASS-MERGE line followed by a second, unrecognized line
+# blocks even when the staged diff is empty (the one condition that would
+# otherwise have let it through).
+run_marker_test "...and a multi-line PASS-MERGE marker with trailing garbage blocks even with an empty staged diff" \
+    block "$(printf 'PASS-MERGE-1754400000\nrm -rf /')" 0
 
 # PASS-EXCLUDED is diff-bound AND age-bound, matching the shape pre-pr-gate.sh
 # already honors. Binding on the hash rather than re-deriving "is the staged
@@ -679,6 +689,57 @@ else
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$hf_tmp"
+
+# CodeRabbit (round 4 follow-up): a hash utility that CONSUMES part of stdin
+# and then fails must not silently fall through to a fallback hasher running
+# on only the unconsumed remainder — that would hash a TRUNCATED stream while
+# the pipeline as a whole reports success (a fail-OPEN masquerading as a
+# fail-closed block). Shadow `sha256sum` on PATH with a stand-in that reads
+# all of stdin then exits 1, while the REAL `shasum` remains reachable
+# further down PATH. Under the old `sha256sum || shasum` fallback this would
+# have succeeded with a wrong-but-plausible hash; the fix selects the hash
+# command by availability (not by runtime failure), so choosing sha256sum
+# here means its failure is fatal — no silent fallback — and the gate must
+# block through the counted circuit-breaker path with the marker preserved,
+# exactly like the broken-diff-driver case above.
+TOTAL=$((TOTAL + 1))
+hu_tmp=$(mktemp -d)
+(
+    cd "$hu_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "initial" > file.txt
+    git add file.txt
+    git commit -qm "initial" --no-verify
+    echo "modified" >> file.txt
+    git add file.txt
+)
+mkdir -p "$hu_tmp/.claude" "$hu_tmp/fakebin"
+printf '%s\n' "$(printf 'a%.0s' {1..64})" > "$hu_tmp/.claude/litmus-passed.local"
+cat > "$hu_tmp/fakebin/sha256sum" <<'FAKESHA'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 1
+FAKESHA
+chmod +x "$hu_tmp/fakebin/sha256sum"
+hu_input=$(make_hook_input_cwd "git commit -m x" "$hu_tmp")
+hu_out=$(printf '%s' "$hu_input" | \
+    PATH="$hu_tmp/fakebin:$PATH" bash "$GATE_SCRIPT" 2>/dev/null || true)
+hu_count=$(cat "$hu_tmp/.claude/.gate-block-count.local" 2>/dev/null || echo "")
+hu_marker_kept=no
+[[ -f "$hu_tmp/.claude/litmus-passed.local" ]] && hu_marker_kept=yes
+if echo "$hu_out" | grep -q '"block"' 2>/dev/null \
+   && [[ "$hu_count" == "1" ]] \
+   && [[ "$hu_marker_kept" == "yes" ]]; then
+    printf "  PASS  a shadowed sha256sum that consumes stdin then fails blocks (no silent fallback to a truncated shasum hash) and preserves the marker\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  shadowed-hash-utility path not blocked-and-counted-and-preserved (out: %s, count: '%s', marker kept: %s)\n" "$hu_out" "$hu_count" "$hu_marker_kept"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$hu_tmp"
 
 # cubic P2: repeated marker-specific rejections (e.g. a stale hash marker
 # regenerated on every retry) must still feed the stuck-gate circuit

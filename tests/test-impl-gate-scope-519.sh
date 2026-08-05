@@ -28,6 +28,18 @@ GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
 
 PASS=0; FAIL=0
 
+# Wall-clock budget for every "the gate stays inside its hook timeout" assertion, against
+# the hook's real 5s timeout. ONE constant on purpose. It was a per-site literal and drifted
+# into three different values: #561/#551 flaked CI at 2.5s, #562 raised the padded and
+# spelled loops to 3.5s but missed a fourth 2.5s site, and three more sites sat at 3.0s.
+# Nothing about the payloads justified three numbers -- they all time the SAME gate against
+# the SAME 5s timeout -- so the spread was drift, and drift is what let the miss survive
+# review. Deliberately NOT env-overridable: a knob that relaxes a security margin is one a
+# committed CI config can set, which is how a guard stops guarding.
+# Full rationale for the value -- why 3.5 and not 2.5, 5, or a scaled budget -- sits with
+# the padded-command loop that first had to justify it; see `_BUDGET` there.
+HOOK_TIMING_BUDGET=3.5
+
 ok() { printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }
 no() { printf "  FAIL  %s (%s)\n" "$1" "$2"; FAIL=$((FAIL + 1)); }
 
@@ -959,7 +971,8 @@ HASH_T0=$(python3 -c 'import time; print(time.time())')
 HASH_OUT="$(bash_decision "$HASH_CMD")"
 HASH_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$HASH_T0")
 check "a 59KB command padded with hash still blocks" block "$HASH_OUT"
-if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$HASH_EL"; then
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
+       "$HASH_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$HASH_EL")s)"
 else
     no "...and returns well inside the 5s hook timeout" "took ${HASH_EL}s"
@@ -1069,7 +1082,8 @@ BANG_T0=$(python3 -c 'import time; print(time.time())')
 BANG_OUT="$(bash_decision "$BANG_CMD")"
 BANG_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$BANG_T0")
 check "4000 stacked ! prefixes still block" block "$BANG_OUT"
-if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$BANG_EL"; then
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
+       "$BANG_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and return well inside the 5s hook timeout ($(printf '%.2f' "$BANG_EL")s)"
 else
     no "...and return well inside the 5s hook timeout" "took ${BANG_EL}s"
@@ -1082,7 +1096,8 @@ PERF_T0=$(python3 -c 'import time; print(time.time())')
 PERF_OUT="$(bash_decision "$PERF_CMD")"
 PERF_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$PERF_T0")
 check "a 64KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
-if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$PERF_EL"; then
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
+       "$PERF_EL" "$HOOK_TIMING_BUDGET"; then
     ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$PERF_EL")s)"
 else
     no "...and returns well inside the 5s hook timeout" "took ${PERF_EL}s"
@@ -1491,10 +1506,11 @@ _T0="$(python3 -c 'import time; print(time.time())')"
 check "...and neither does the helper guard payload walk" block \
     "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | find . -exec grep $_XP2 unshare ;")"
 _EL="$(python3 -c 'import sys,time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$_T0")"
-if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.5 else 1)' "$_EL"; then
-    ok "the helper payload walk stays inside the hook timeout (${_EL}s < 3.5s)"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' \
+       "$_EL" "$HOOK_TIMING_BUDGET"; then
+    ok "the helper payload walk stays inside the hook timeout (${_EL}s < ${HOOK_TIMING_BUDGET}s)"
 else
-    no "helper payload walk timing" "${_EL}s >= 3.5s budget"
+    no "helper payload walk timing" "${_EL}s >= ${HOOK_TIMING_BUDGET}s budget"
 fi
 # ...and the precision that buys: these are ordinary words, so they must only count in
 # command position. Matching them anywhere would flip every one of these to block.
@@ -2748,7 +2764,7 @@ for _kb in 16 128 2048; do
         *) _TIMED_FAIL=$((_TIMED_FAIL + 1))
            printf "  FAIL  %sKB padded command was ALLOWED\n" "$_kb" ;;
     esac
-    _BUDGET=3.5
+    _BUDGET="$HOOK_TIMING_BUDGET"
     if [[ "$(python3 -c "print(1 if $_EL >= $_BUDGET else 0)")" == "1" ]]; then
         _TIMED_FAIL=$((_TIMED_FAIL + 1))
         printf "  FAIL  %sKB padded command took %ss (budget %ss; the hook timeout is 5s)\n" \
@@ -2804,9 +2820,9 @@ for _key in "tool_name" "toolName"; do
                 *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
                    printf "  FAIL  key=%s cp%s n=%s was ALLOWED\n" "$_key" "$_cp" "$_n" ;;
             esac
-            # Same 3.5s budget as the padded loop above, for the same reason: a flat 2.5s
+            # Same budget as the padded loop above, for the same reason: a flat 2.5s
             # was this laptop's speed masquerading as a universal constant.
-            _SBUDGET=3.5
+            _SBUDGET="$HOOK_TIMING_BUDGET"
             if [[ "$(python3 -c "print(1 if $_EL >= $_SBUDGET else 0)")" == "1" ]]; then
                 _SPELL_FAIL=$((_SPELL_FAIL + 1))
                 printf "  FAIL  key=%s cp%s n=%s took %ss (budget %ss; hook timeout is 5s)\n" \
@@ -2852,10 +2868,17 @@ sys.stdout.buffer.write(json.dumps(
             *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
                printf "  FAIL  %s=Bash with description=%s was ALLOWED\n" "$_key" "$_decoy" ;;
         esac
-        if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+        # Same 1MB 4-byte payload as the spelled loop above (chr(0x10000) * 262130), so it
+        # gets the same budget. It kept its own 2.5s literal when #562 raised the siblings.
+        # Not the site that was failing CI -- it measures 0.37s here, ~1.5s on a runner at
+        # the 4.2x ratio the padded loop documents, so it still had headroom at 2.5s. It is
+        # folded in because a fourth copy of the number is how the third one drifted.
+        # The regression this catches measured 5.5s -- far above 3.5s -- so the guard is
+        # whole at the shared value.
+        if [ "$(python3 -c "print(1 if $_EL >= $HOOK_TIMING_BUDGET else 0)")" = "1" ]; then
             _SPELL_FAIL=$((_SPELL_FAIL + 1))
-            printf "  FAIL  %s=Bash description=%s took %ss (budget 2.5s)\n" \
-                   "$_key" "$_decoy" "$_EL"
+            printf "  FAIL  %s=Bash description=%s took %ss (budget %ss)\n" \
+                   "$_key" "$_decoy" "$_EL" "$HOOK_TIMING_BUDGET"
         fi
     done
 done

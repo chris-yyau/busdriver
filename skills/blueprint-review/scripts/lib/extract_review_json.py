@@ -134,8 +134,17 @@ _LOG_ECHO_PREFIX_RE = re.compile(
 # No `^` anchor: this is applied with `Pattern.match(raw, line_start, start)`,
 # which anchors at `pos` itself. A `^` would additionally demand position 0 and so
 # match only on the transcript's first line.
+#
+# No leading `\s*` either, unlike `_LOG_ECHO_PREFIX_RE` — deliberately, and for a
+# performance reason that is really a correctness one (codex, PR review round 2).
+# This runs at EVERY candidate region, so on a deeply indented line `\s*` rescans
+# the whole indent per region: 64,000 `{}` regions behind a 4,000-space indent cost
+# 2052ms with it against 1422ms without. Measured on the transcripts on hand, 0 of
+# 694 framing lines carry any indentation — codex emits them at column 0 — so the
+# tolerance bought nothing. An indented framing simply is not recognized and the
+# sweep reverts to its pre-#554 behavior, which fails closed.
 _LOG_PROGRESS_PREFIX_RE = re.compile(
-    r"\s*\[(?:codex)\]\s+"
+    r"\[(?:codex)\]\s+"
     r"(?:Running command|Command completed|Command failed|Searching):\s"
 )
 
@@ -186,9 +195,36 @@ def _is_progress_line(raw: str, line_start: int, start: int) -> bool:
     real FAIL above. Pinned regression test:
     `test_a_verdict_shaped_object_inside_a_progress_line_is_never_the_verdict`.
 
+    ACCEPTED RESIDUAL — a forged framing can now buy ACCEPTANCE where the sweep
+    used to refuse, and no narrower rule removes it (codex, PR review). Reviewed
+    content reaches the transcript (codex prints command OUTPUT too), so a line
+    beginning `[codex] Running command: {` can be forged. Pre-#554 that unresolved
+    region set `broken_pos` and everything after it was refused; now it is skipped,
+    so a later own-line PASS is accepted.
+
+    This is UNFIXABLE without reinstating #554, because the two requirements are in
+    direct conflict and differ only in a fact the text cannot carry:
+
+        #554  a verdict after an unresolvable command-echo region must be ACCEPTED
+        forge a verdict after an unresolvable command-echo region must be REFUSED
+
+    What bounds it: the skip can only ever REMOVE a candidate, so no forged framing
+    promotes anything by itself — the attacker must already be able to place an
+    own-line review object in the transcript, and such an object wins on
+    last-verdict-wins with or without the forgery. The gain is narrow: it lets them
+    emit unresolvable junk beforehand without that junk defeating their own forgery.
+    Refusing instead would restore precisely the chronic DEGRADED-coverage failure
+    this path exists to remove. `malformed_pos` was measured as a middle road and
+    does not help — a later verdict outranks it by design, which is the point.
+    Note also that `_looks_like_verdict` below still fires on a skipped line
+    carrying verdict keys, so the forgery cannot both hide and be verdict-shaped.
+
     KNOWN RESIDUAL: a command echo that spans lines (a heredoc, say) is recognized
-    only on its first line; a brace on a continuation line still poisons the sweep
-    exactly as before. Every observed transcript truncates to a single line.
+    only on its first line; a brace on a continuation line still poisons the sweep.
+    Measured: ZERO multi-line echoes across the 17 transcripts on hand — codex
+    truncates each echo to one line with `...`, which is what makes single-line
+    recognition complete in practice. Behavior on a continuation line is UNCHANGED
+    by this path, so it is a pre-existing limit, not a regression introduced here.
 
     `line_start` is SUPPLIED by the sweep, not recomputed here, and matching uses
     `pos`/`endpos` against `raw` rather than a slice — the pattern carries no `^`

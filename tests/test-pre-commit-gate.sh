@@ -634,13 +634,34 @@ skn_tmp=$(mktemp -d)
 mkdir -p "$skn_tmp/.claude"
 printf 'SKIPPED-NONE-1754400000\n' > "$skn_tmp/.claude/litmus-passed.local"
 skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
-skn_out=$(cd "$skn_tmp" && printf '%s' "$skn_input" | \
-    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null || true)
-if ! echo "$skn_out" | grep -q '"block"' 2>/dev/null; then
+# cubic P3 (round 5 follow-up): assert the gate's exit status too, not just
+# the absence of "block" in its output. The SKIPPED-NONE arm exits 0 with no
+# stdout, so an unrelated crash before that arm (empty stdout, non-zero exit)
+# would also satisfy a bare "no block" check and be miscounted as PASS,
+# masking the exact fail-open this regression test exists to catch. The
+# capture is gated behind an `if` (rather than `... || true` discarding the
+# code) so `set -e` doesn't abort the script on the expected-0 exit path
+# while still letting us read the real status via `skn_rc`.
+#
+# Do NOT `cd "$skn_tmp"` before invoking the gate: $GATE_SCRIPT is a path
+# relative to the repo root (see its definition above), and every other
+# fixture in this file (e.g. hf_out just below) invokes it from the repo
+# root and lets the JSON payload's `cwd` field carry the target directory.
+# `cd`-ing first broke that relative lookup — bash reported "No such file
+# or directory" (rc=127) on every run, which the old `2>/dev/null || true`
+# silently swallowed as a false PASS (exactly the coverage gap the rc check
+# above now catches).
+if skn_out=$(printf '%s' "$skn_input" | \
+    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null); then
+    skn_rc=0
+else
+    skn_rc=$?
+fi
+if [ "$skn_rc" -eq 0 ] && ! echo "$skn_out" | grep -q '"block"' 2>/dev/null; then
     printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken external diff driver)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  SKIPPED-NONE blocked by a broken diff driver (out: %s)\n" "$skn_out"
+    printf "  FAIL  SKIPPED-NONE blocked by a broken diff driver (rc=%s, out: %s)\n" "$skn_rc" "$skn_out"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$skn_tmp"

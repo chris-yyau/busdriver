@@ -571,51 +571,17 @@ if [ -f "$MARKER" ]; then
         exit 0
     fi
 
-    # Reached only for marker shapes that bind to the staged diff (PASS-MERGE
-    # binds to emptiness instead, but is included here since it is not one of
-    # the two unconditional opt-outs above).
+    # Reached only for marker shapes that are not one of the two unconditional
+    # opt-outs above (DEGRADED, SKIPPED-NONE).
     #
-    # Fail-CLOSED, but through the circuit-breaker helper (cubic P1, PR #577):
-    # under `set -euo pipefail`, letting this assignment fail bare would fire
-    # the script's ERR trap (line 28) instead of `gate_record_block_and_emit`,
-    # so a broken external diff driver (or a host with neither sha256sum nor
-    # shasum) would block every commit WITHOUT ever incrementing the stuck-gate
-    # counter or emitting its escape-hatch warning. Disabling `set -e` for the
-    # single assignment (via `if ! STAGED_HASH=$(...); then`) lets a failure
-    # reach the helper explicitly while still blocking — same fail-closed
-    # outcome, but through the counted path.
-    #
-    # The marker is deliberately NOT deleted here. A broken diff driver or a
-    # host missing both hashing tools says nothing about whether the marker is
-    # valid — it only means we cannot check it right now. Deleting it would
-    # turn a transient environment fault into a destroyed review: once the
-    # driver is repaired the still-good marker is gone and the whole review has
-    # to be re-run. Every OTHER rejection arm below deletes the marker because
-    # it has PROVEN the marker wrong (mismatched hash, expired epoch,
-    # unrecognized shape); this arm has proven nothing. Blocking without
-    # deleting is the fail-closed outcome either way.
-    # Select the hash utility BEFORE running the pipeline (CodeRabbit finding,
-    # PR #577). The prior `sha256sum 2>/dev/null || shasum -a 256` form let
-    # sha256sum consume part of stdin and then fail (e.g. mid-stream I/O
-    # error) — the `||` fallback would then run shasum on only the
-    # UNCONSUMED remainder of the pipe, silently hashing a truncated stream
-    # while the pipeline as a whole still reported success. Choosing the
-    # command by availability (not by runtime failure) means the diff is
-    # piped through exactly one hasher, once, so a failure downstream is a
-    # real failure, not a partial-consumption artifact.
-    if command -v sha256sum >/dev/null 2>&1; then
-        HASH_CMD=(sha256sum)
-    elif command -v shasum >/dev/null 2>&1; then
-        HASH_CMD=(shasum -a 256)
-    else
-        HASH_CMD=()
-    fi
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
-        REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
-        gate_record_block_and_emit "$REASON"
-        exit 0
-    fi
-
+    # Check PASS-MERGE BEFORE requiring a hasher (Codex P2 finding, PR #577
+    # round 5). This marker's acceptance condition is `git diff --cached
+    # --quiet` alone — it never needs STAGED_HASH — so it must not be forced
+    # through the hash-utility pipeline below. Ordering it after hash
+    # selection meant a host with neither sha256sum nor shasum on the hook
+    # PATH blocked a valid PASS-MERGE marker (an empty merge resolution that
+    # run-review-loop.sh intentionally minted) even though no hash was ever
+    # needed to validate it.
     if [[ "$MARKER_CONTENT" =~ ^PASS-MERGE-[0-9]+$ ]]; then
         # Merge commit whose resolution kept already-reviewed code unchanged
         # (run-review-loop.sh:846). Its precondition IS `git diff --cached
@@ -641,7 +607,54 @@ if [ -f "$MARKER" ]; then
         REASON="PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus."
         gate_record_block_and_emit "$REASON"
         exit 0
-    elif echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$'; then
+    fi
+
+    # Select the hash utility BEFORE running the pipeline (CodeRabbit finding,
+    # PR #577). The prior `sha256sum 2>/dev/null || shasum -a 256` form let
+    # sha256sum consume part of stdin and then fail (e.g. mid-stream I/O
+    # error) — the `||` fallback would then run shasum on only the
+    # UNCONSUMED remainder of the pipe, silently hashing a truncated stream
+    # while the pipeline as a whole still reported success. Choosing the
+    # command by availability (not by runtime failure) means the diff is
+    # piped through exactly one hasher, once, so a failure downstream is a
+    # real failure, not a partial-consumption artifact.
+    #
+    # Reached only for marker shapes that DO bind to a hash (PASS-EXCLUDED,
+    # BUILTIN, bare-hash) — PASS-MERGE returned above without needing one.
+    #
+    # Fail-CLOSED, but through the circuit-breaker helper (cubic P1, PR #577):
+    # under `set -euo pipefail`, letting this assignment fail bare would fire
+    # the script's ERR trap (line 28) instead of `gate_record_block_and_emit`,
+    # so a broken external diff driver (or a host with neither sha256sum nor
+    # shasum) would block every commit WITHOUT ever incrementing the stuck-gate
+    # counter or emitting its escape-hatch warning. Disabling `set -e` for the
+    # single assignment (via `if ! STAGED_HASH=$(...); then`) lets a failure
+    # reach the helper explicitly while still blocking — same fail-closed
+    # outcome, but through the counted path.
+    #
+    # The marker is deliberately NOT deleted here. A broken diff driver or a
+    # host missing both hashing tools says nothing about whether the marker is
+    # valid — it only means we cannot check it right now. Deleting it would
+    # turn a transient environment fault into a destroyed review: once the
+    # driver is repaired the still-good marker is gone and the whole review has
+    # to be re-run. Every OTHER rejection arm below deletes the marker because
+    # it has PROVEN the marker wrong (mismatched hash, expired epoch,
+    # unrecognized shape); this arm has proven nothing. Blocking without
+    # deleting is the fail-closed outcome either way.
+    if command -v sha256sum >/dev/null 2>&1; then
+        HASH_CMD=(sha256sum)
+    elif command -v shasum >/dev/null 2>&1; then
+        HASH_CMD=(shasum -a 256)
+    else
+        HASH_CMD=()
+    fi
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+        REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
+        gate_record_block_and_emit "$REASON"
+        exit 0
+    fi
+
+    if echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$'; then
         # Whole staged diff was excluded from review (lockfiles, minified
         # bundles, sourcemaps): no reviewer ran because there was nothing
         # reviewable. Diff-bound AND age-bound, the same shape pre-pr-gate.sh

@@ -70,6 +70,24 @@ assert_mentions() {
   fi
 }
 
+# Same as assert_mentions but passes when ANY of the supplied needles appears.
+# Needed where the REFUSAL is what the test pins but the wording legitimately
+# differs between js-yaml major versions — e.g. an unknown scalar tag, which v4
+# resolved to a Uint8Array (refused later, by the non-scalar guard) and v5
+# rejects at parse time. Asserting one literal string there would pin the
+# js-yaml version rather than this repo's behavior. Every needle must still
+# describe a refusal; this is not a licence to accept success text.
+assert_mentions_any() {
+  local name="$1" dir="$2"; shift 2
+  local needle
+  for needle in "$@"; do
+    if grep -qF "$needle" "$dir/out.txt"; then
+      PASS=$((PASS + 1)); echo "  ok   $name"; return
+    fi
+  done
+  FAIL=$((FAIL + 1)); echo "  FAIL $name — output mentioned none of: $*"; sed 's/^/       /' "$dir/out.txt"
+}
+
 [[ -d "$REPO_ROOT/node_modules/js-yaml" ]] || {
   echo "FAIL: node_modules/js-yaml missing — run 'npm ci' first" >&2; exit 1; }
 
@@ -644,12 +662,31 @@ else
 fi
 
 
-echo "== E36: a YAML scalar that parses to an object is not read as an absent key =="
-# js-yaml resolves `2026-01-01` to a Date and `!!binary` to a Uint8Array. Both
-# satisfy `typeof v === "object" && !Array.isArray(v)` while carrying none of the
-# keys the caller reads, so a malformed `strategy:` of that shape read as "no
-# matrix" and the job emitted its bare name — a fail-OPEN in a file where every
-# other unresolvable shape refuses.
+echo "== E36: a non-mapping strategy/matrix is not read as an absent key =="
+# ORIGIN (#530): js-yaml 4 resolved `2026-01-01` to a Date and `!!binary` to a
+# Uint8Array. Both satisfy `typeof v === "object" && !Array.isArray(v)` while
+# carrying none of the keys the caller reads, so a malformed `strategy:` of that
+# shape read as "no matrix" and the job emitted its bare name — a fail-OPEN in a
+# file where every other unresolvable shape refuses.
+#
+# js-yaml 5 (#575) narrowed the default schema: `2026-01-01` is now an ordinary
+# string and `!!binary` throws at parse time. The guard those shapes exposed —
+# isPlainMapping — is not obsolete; only one of its triggers is.
+#
+# So the date cases STAY. While js-yaml 4 is the pinned dependency a Date is
+# still producible, and it is the only input here that a weakened predicate
+# (say `typeof v === "object" && !Array.isArray(v)`, the pre-#530 shape) would
+# wrongly accept — an integer is refused by that predicate too, so an
+# integer-only test would pass against the very regression this block exists to
+# catch. What changes for v5 is only the WORDING of the matrix refusal, so that
+# one assertion accepts either phrasing; the exit code, which is what actually
+# keeps the phantom name out, is asserted unconditionally in both.
+#
+# A plain integer is then added ALONGSIDE, not instead: it is non-string and
+# non-mapping under BOTH schemas, so it keeps pinning the `is not a mapping`
+# branch specifically once v5 makes the date a string and routes it elsewhere.
+# Together they cover the object-scalar path today and the non-mapping path
+# permanently. Do not collapse them into one case.
 #
 # The lock below deliberately CLASSIFIES `alpha`, so the malformed job is
 # invisible to every other surface: before the fix this repo exited 0, fully
@@ -666,6 +703,15 @@ mkrepo "$D" "$LOCK_ALPHA" 'jobs:
 assert_exit "date-valued strategy rejected" 2 "$D"
 assert_mentions "explains the non-mapping strategy" "non-mapping" "$D"
 
+D="$TMPROOT/e36-int"
+mkrepo "$D" "$LOCK_ALPHA" 'jobs:
+  alpha:
+    strategy: 42
+    runs-on: ubuntu-latest
+'
+assert_exit "non-mapping-valued strategy rejected" 2 "$D"
+assert_mentions "explains the non-mapping strategy (integer)" "non-mapping" "$D"
+
 D="$TMPROOT/e36b"
 mkrepo "$D" "$LOCK_ALPHA" 'jobs:
   alpha:
@@ -674,11 +720,30 @@ mkrepo "$D" "$LOCK_ALPHA" 'jobs:
     runs-on: ubuntu-latest
 '
 assert_exit "date-valued matrix rejected" 2 "$D"
-# NOTE: the matrix refuse() message is "is not a mapping" (line ~205), not
+# NOTE: the matrix refuse() message is "is not a mapping" (line ~216), not
 # "non-mapping" like the sibling strategy check's "has a non-mapping
-# 'strategy'" (line ~197) — different literal wording for the same defect
+# 'strategy'" (line ~208) — different literal wording for the same defect
 # class. Assert on the text the code actually emits.
-assert_mentions "explains the non-mapping matrix" "not a mapping" "$D"
+#
+# Both phrasings are accepted because the branch REACHED depends on the js-yaml
+# schema, while the refusal does not: under v4 the Date is neither string nor
+# mapping and lands on "is not a mapping"; under v5 it is a string, so the
+# `typeof matrix === "string"` test fires first and reports "is an expression".
+# Pinning one literal would pin the js-yaml version. The exit-2 assertion above
+# is the unconditional part, and the integer case below still pins the
+# "is not a mapping" branch by name under both.
+assert_mentions_any "explains the non-mapping matrix" "$D" \
+  "not a mapping" "is an expression, not a literal mapping"
+
+D="$TMPROOT/e36b-int"
+mkrepo "$D" "$LOCK_ALPHA" 'jobs:
+  alpha:
+    strategy:
+      matrix: 42
+    runs-on: ubuntu-latest
+'
+assert_exit "non-mapping-valued matrix rejected" 2 "$D"
+assert_mentions "explains the non-mapping matrix (integer)" "not a mapping" "$D"
 
 
 echo "== E37: a matrix VALUE that is not a scalar refuses, it does not render =="
@@ -703,9 +768,22 @@ echo "== E37: a matrix VALUE that is not a scalar refuses, it does not render ==
 # build exits 0, FULLY GREEN, on a repo whose real check name it never saw.
 # That is #530's shape exactly, and it is what the exit-2 assertion pins down.
 #
-# The mapping/null/date cases have no rendered form to classify — the regressed
+# The mapping/null cases have no rendered form to classify — the regressed
 # build dies on `v.includes` instead. They keep the default lock and assert the
 # same refusal; a crash is not a fail-open, but it is not a refusal either.
+#
+# js-yaml 5 (#575): the `2026-01-01` case that used to sit at the end of this
+# list is GONE, deliberately and not by relaxing an expectation. Under v5's
+# narrowed schema a bare date is an ordinary string, so the enumerator now
+# emits the real context `alpha (2026-01-01)` and exits 0 — which is CORRECT;
+# v4's refusal was compensating for js-yaml turning a legitimate matrix value
+# into a Date. Keeping the case would have meant asserting a refusal this repo
+# should not perform. Nothing is uncovered by the removal: `typeof v !==
+# "string"` is still pinned by the list, mapping and null cases below, all
+# three of which resolve to non-strings under BOTH schemas. There is no
+# remaining YAML that produces an object scalar under v5's core schema, so
+# there is nothing to substitute — that is why this is a deletion and not a
+# replacement.
 e37_case() {
   local label="$1" value="$2" slug="$3" phantom="${4:-alpha}" dir
   dir="$TMPROOT/e37-$slug"
@@ -721,10 +799,27 @@ e37_case() {
 }
 
 e37_case "nested-list matrix value refused"    '[a, b]'            "list"    'alpha (a,b)'
-e37_case "binary-scalar matrix value refused"  '!!binary SGVsbG8=' "binary"  'alpha (72,101,108,108,111)'
 e37_case "nested-mapping matrix value refused" '{a: b}'            "mapping"
 e37_case "null matrix value refused"           'null'              "null"
-e37_case "date-scalar matrix value refused"    '2026-01-01'        "date"
+
+# `!!binary` is refused under both schemas but at DIFFERENT layers: js-yaml 4
+# resolved it to a Uint8Array that the non-scalar guard then rejected, while
+# js-yaml 5 has no binary tag in its default schema and throws while parsing.
+# The exit code — the thing that actually keeps the phantom name out — is 2
+# either way, so it is asserted unconditionally; only the explanatory text is
+# allowed to differ. It gets its own block rather than an e37_case row because
+# that helper hardcodes the non-scalar wording.
+D="$TMPROOT/e37-binary"
+mkrepo "$D" '{"required":[],"advisory":[{"name":"alpha (72,101,108,108,111)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}]}' 'jobs:
+  alpha:
+    runs-on: x
+    strategy:
+      matrix:
+        os: [!!binary SGVsbG8=]
+'
+assert_exit "binary-scalar matrix value refused" 2 "$D"
+assert_mentions_any "explains the refused binary scalar" "$D" \
+  "non-scalar value" "cannot parse" "unknown scalar tag"
 
 
 echo

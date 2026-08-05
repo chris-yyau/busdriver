@@ -1,3 +1,10 @@
+## [1.100.15](https://github.com/chris-yyau/busdriver/compare/v1.100.14...v1.100.15) (2026-08-04)
+
+
+### Bug Fixes
+
+* **gate:** scan the producer when a pipeline stage might be a shell ([#557](https://github.com/chris-yyau/busdriver/issues/557)) ([#562](https://github.com/chris-yyau/busdriver/issues/562)) ([c34e500](https://github.com/chris-yyau/busdriver/commit/c34e500595c5e20e206deb9c6933b84f8233378f)), closes [pre-#519](https://github.com/pre-/issues/519) [pre-#519](https://github.com/pre-/issues/519) [#519](https://github.com/chris-yyau/busdriver/issues/519) [pre-#519](https://github.com/pre-/issues/519) [pre-#519](https://github.com/pre-/issues/519) [#519](https://github.com/chris-yyau/busdriver/issues/519) [#565](https://github.com/chris-yyau/busdriver/issues/565)
+
 ## [1.100.14](https://github.com/chris-yyau/busdriver/compare/v1.100.13...v1.100.14) (2026-08-02)
 
 

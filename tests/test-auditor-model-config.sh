@@ -67,6 +67,8 @@ eq "$(resolve '{"auditor":{"model":"zenmux/moonshotai/kimi-k2.7-code:free"}}')" 
    "zenmux/moonshotai/kimi-k2.7-code:free"                                  "colon-tagged variant accepted"
 eq "$(resolve '{"auditor":{"model":"google-vertex-anthropic/claude-sonnet-4@20250514"}}')" \
    "google-vertex-anthropic/claude-sonnet-4@20250514"                       "at-tagged variant (Vertex Anthropic) accepted"
+eq "$(resolve '{"auditor":{"model":"openai/gpt-5.2#high"}}')" \
+   "openai/gpt-5.2#high"                                                    "hash-tagged OpenCode variant accepted"
 eq "$(resolve '{"auditor":{"model":"--dangerously-x"}}')"  "$DEFAULT"        "leading-dash rejected"
 eq "$(resolve '{"auditor":{"model":"a b"}}')"              "$DEFAULT"        "whitespace rejected"
 eq "$(resolve '{"auditor":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"

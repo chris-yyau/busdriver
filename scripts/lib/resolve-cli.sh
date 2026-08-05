@@ -276,10 +276,14 @@ fi
 # control characters. Require the `provider/model` shape opencode actually uses
 # (at least one slash, each segment starting alphanumeric); colons and `@` are
 # allowed because some providers tag variants `model:tag` or `model@tag` (e.g.
-# Vertex Anthropic model ids like `claude-sonnet-4@20250514`). A bad value
-# degrades to the default with a loud note rather than killing an AUXILIARY
-# voice on a typo.
-if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+$ ]]; then
+# Vertex Anthropic model ids like `claude-sonnet-4@20250514`). An optional
+# trailing `#variant` is allowed too — OpenCode's model-reference docs
+# (https://v2.opencode.ai/docs/models) define references as `provider/model`
+# with an optional `#variant` (e.g. `openai/gpt-5.2#high`), and rejecting the
+# `#` silently dropped a valid user-selected reasoning/token variant. A bad
+# value degrades to the default with a loud note rather than killing an
+# AUXILIARY voice on a typo.
+if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$ ]]; then
   if [[ -n "$m" ]]; then
     echo "busdriver: ignoring invalid .auditor.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
   fi

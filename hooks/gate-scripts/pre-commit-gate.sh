@@ -474,6 +474,20 @@ if [ -f "$MARKER" ]; then
     # Four sites must agree; any one of them adding a flag makes the marker stop
     # matching and blocks every commit.
     #
+    # SCOPE — be precise about what "bound to the diff" means here. This runs in
+    # PreToolUse, BEFORE the command executes, so it binds the marker to the
+    # index as it stands at DISPATCH time, not to what the command ultimately
+    # commits. Two shapes still slip past and are NOT closed by this change:
+    #   git add B && git commit …   the marker for A matches at hook time; B is
+    #                               staged afterwards and committed unreviewed.
+    #   git commit -a               stages tracked modifications at commit time,
+    #                               likewise after this check has passed.
+    # Both were equally unreviewed before (the gate accepted ANY marker), so this
+    # is pre-existing exposure rather than a regression — but the binding must
+    # not be read as more than it is. Closing them needs the command's own shape
+    # to gate acceptance (refuse `-a`, refuse a compound that stages first);
+    # tracked in #576.
+    #
     # Known residual, NOT fixed here: porcelain `git diff` honors
     # GIT_EXTERNAL_DIFF and per-path textconv drivers, both reachable from
     # repo-controlled config, so a driver emitting constant output could collapse

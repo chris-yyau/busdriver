@@ -1,3 +1,10 @@
+# [1.101.0](https://github.com/chris-yyau/busdriver/compare/v1.100.15...v1.101.0) (2026-08-05)
+
+
+### Features
+
+* **auditor:** read the Mechanism Witness model from config, not source ([#567](https://github.com/chris-yyau/busdriver/issues/567)) ([ad8a997](https://github.com/chris-yyau/busdriver/commit/ad8a99775f3468f56d9bc9beac30fc01f4ac03e5)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#variant](https://github.com/chris-yyau/busdriver/issues/variant)
+
 ## [1.100.15](https://github.com/chris-yyau/busdriver/compare/v1.100.14...v1.100.15) (2026-08-04)
 
 

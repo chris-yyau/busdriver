@@ -1,3 +1,10 @@
+## [1.101.2](https://github.com/chris-yyau/busdriver/compare/v1.101.1...v1.101.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* **gate:** bind the pre-commit review marker to the diff it approved ([#545](https://github.com/chris-yyau/busdriver/issues/545)) ([#577](https://github.com/chris-yyau/busdriver/issues/577)) ([f1d649c](https://github.com/chris-yyau/busdriver/commit/f1d649c67c7c14cbd216521750fbb285138dbf60)), closes [#252](https://github.com/chris-yyau/busdriver/issues/252) [#576](https://github.com/chris-yyau/busdriver/issues/576)
+
 ## [1.101.1](https://github.com/chris-yyau/busdriver/compare/v1.101.0...v1.101.1) (2026-08-05)
 
 

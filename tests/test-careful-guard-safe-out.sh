@@ -10,36 +10,23 @@
 # The carve-out is basename-scoped like every other SAFE entry, so this pins both
 # directions: `out` is silent, anything merely STARTING with it is not.
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 1
+# Resolved BEFORE the cd: `$0` is relative, so a `dirname "$0"` read
+# afterwards points at the new cwd. Sourcing then silently found
+# nothing, `check` was undefined, and the suite exited 0 with fail=0 -
+# a false PASS in the files that exist to prevent one.
+_HERE=$(cd "$(dirname "$0")" && pwd) || exit 1
+cd "$_HERE/.." || exit 1
 
+# shellcheck disable=SC2034  # read by the sourced harness below
 GUARD="hooks/gate-scripts/careful-guard.sh"
 
 pass=0 fail=0
 
 # bypassPermissions: every check is live there, so nothing below is masked by
 # the auto-mode stand-down.
-verdict() {
-  local payload out rc
-  payload=$(python3 -c '
-import json, sys
-print(json.dumps({"permission_mode": "bypassPermissions",
-                  "tool_name": "Bash",
-                  "tool_input": {"command": sys.argv[1]}}))' "$1")
-  # Read the exit status too: a startup failure yields empty output, which
-  # matches no "ask" and would otherwise report a clean "allow" — a false PASS.
-  out=$("$GUARD" <<<"$payload"); rc=$?
-  if [[ $rc -ne 0 ]]; then echo "ERROR(rc=$rc)"; return; fi
-  if [[ "$out" == *'"permissionDecision":"ask"'* ]]; then echo "ask"; else echo "allow"; fi
-}
-
-check() { # name expected command
-  local got; got=$(verdict "$3")
-  if [[ "$got" == "$2" ]]; then
-    echo "PASS: $1"; pass=$((pass+1))
-  else
-    echo "FAIL: $1 — expected $2 got $got"; fail=$((fail+1))
-  fi
-}
+# shellcheck source=tests/lib/careful-guard-harness.sh
+# shellcheck disable=SC1091  # the source= path above needs `shellcheck -x`
+. "$_HERE/lib/careful-guard-harness.sh" || exit 1
 
 echo "--- out is a build artifact (must be silent) ---"
 # The exact shape that was 24% of all prompts.

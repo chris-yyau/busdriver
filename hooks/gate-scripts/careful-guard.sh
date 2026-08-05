@@ -142,7 +142,17 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # scanner itself did not run, which falls through to the grep fallbacks below.
 RM_VERDICT=""
 TRUNC_VERDICT=""
-if [[ "$AUTO_MODE" == 0 ]] && command -v python3 &>/dev/null; then
+SQL_VERDICT=""
+SQLOP_VERDICT=""
+SQLTAB_VERDICT=""
+# Run the scanner whenever python3 is there, auto mode INCLUDED. Auto mode stands
+# down the rm CLASSIFIER, not the whole parser — the SQL and coreutils checks
+# below are deliberately ungated (see the note above the DROP arm), and gating the
+# scanner on the mode quietly took their eyes away too: they fell through to the
+# raw-grep fallbacks, and `psql -c TR"UNC"ATE\ users` walked past a check that the
+# unquoted spelling fails. The stand-down is applied to RM_VERDICT alone, after
+# the scan, so it stays a decision about one classifier rather than about sight.
+if command -v python3 &>/dev/null; then
   _GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
   # shellcheck disable=SC2016  # python source: $-expansion must not happen in bash
   # ONE line, TWO verdicts: "<rm> <truncate>". Split below rather than spawning
@@ -152,6 +162,7 @@ import sys
 # Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a
 # repo-controlled gitcmd_detect.py or shadowed stdlib cannot run in the guard.
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import fnmatch
 import re
 import shlex
 # _all_chunks is private but deliberately reused: it expands $(...), backticks
@@ -243,7 +254,7 @@ def _mktemp_creates(rhs):
             break
     body = body.rstrip(chr(96)).rstrip(")")
     try:
-        toks = shlex.split(body, posix=True)
+        toks = shlex.split(_fold_ansi_c(body), posix=True)
     except ValueError:
         return False
     expect_arg = False
@@ -341,6 +352,709 @@ UNTRUSTED = re.compile(
 #
 # Not in UNTRUSTED (which voids the whole chunk): a block only makes assignments
 # that FOLLOW it conditional. `T=$(mktemp -d); for f in *; do ...; done` is fine.
+# `} |`, `} &` (but not `&&`), and coproc: a brace group whose executor is a
+# subshell, so assignments inside it never reach the parent.
+# Characters that TERMINATE a command word for bash but not for shlex: the
+# redirection metacharacters, and an expansion, which field-splits the word into
+# the command and its arguments (`truncate${IFS}-s${IFS}0`).
+TRUNCATE_SET = frozenset(("truncate",))
+RM_SET = frozenset(("rm",))
+
+# EVERY bracket expression, not the ones whose inner grammar we recognise.
+#
+# This started as a POSIX-class rule, then had to grow to composite classes, and
+# the next review found `[^x]`, `[[=e=]]` and `[[.e.]]` waiting behind those -
+# the whole of the bash bracket grammar, arriving one spelling per round. That
+# is the ladder this file has declined four times elsewhere, so decline it here
+# too: a bracket expression matches EXACTLY ONE character whatever is inside it,
+# so `?` is the faithful stand-in for all of them and fnmatch never has to
+# implement a grammar it does not have. The cost is over-warn on a bracket that
+# could not actually produce the name (`truncat[xyz]`), which is the direction
+# this guard errs in everywhere else.
+# `\\.` first: a bracket expression may contain an ESCAPED close, and
+# stopping at it read `truncat[e\\]]` as a pattern that matches nothing.
+#
+# The alternatives must be DISJOINT. Written as `\\.|[^]]` they overlap on
+# a backslash, which two branches can each consume - the classic
+# catastrophic-backtracking shape, and on an UNTERMINATED bracket it is
+# exponential: 22 repeated `\\a` pairs spent the whole 3s scan budget and
+# the guard emitted no verdict at all, which the bash arm reads as "no
+# python3" and answers with raw grep. Excluding the backslash from the
+# second branch makes the match linear and the shape unreachable.
+GLOB_BRACKET = re.compile(
+    r"\[[!^]?\]?(?:\\.|\[[:.=][^]]*[:.=]\]|[^]\\])*\]")
+# The wildcard ATOMS of a glob - what is left after removing them is the part
+# that actually spells a name.
+GLOB_ATOM = re.compile(r"\[[^]]*\]|[*?]")
+
+REDIR_CUT = re.compile(r"[<>]")
+EXPAND_CUT = re.compile(r"[$" + chr(96) + r"]")
+
+# One level of `{a,b}` alternation, and the cap on how many literals it may
+# produce before the word is treated as unreadable instead.
+BRACE_SPLIT = re.compile(r"\{([^{}]*(?:,|\.\.)[^{}]*)\}")
+BRACE_CAP = 256
+BRACE_DEPTH = 8
+# What a group too large, too deep, or too malformed to expand yields instead.
+# It could produce ANY name, so it produces a form every caller matches: the
+# command-word walks recognise the marker in _matches, and the embedded
+# `truncate` is what the SQL-keyword regex reads. Returning the half-expanded
+# form - or nothing at all - is a fail-OPEN, and it is what nine levels of
+# `t{{{{{{{{{run,x},x},x},x},x},x},x},x},x}cate` walked straight through.
+BRACE_OVERFLOW = "\x02truncate\x02"
+
+TRUNCATE_WORD = re.compile(r"\btruncate\b")
+TRUNCATE_TABLE = re.compile(r"\btruncate\s+table\b")
+
+UNESCAPED_SPACE = re.compile(r"(?<!\\)\s+")
+# Bash ANSI-C and locale quoting - a dollar sign immediately in front of a
+# quote pair, as in the escape-processing and translation forms. shlex implements
+# NEITHER, so it consumes the quote pair and leaves the `$` behind as an
+# ordinary character: `tr$\x27un\x27cate` arrives as `tr$uncate`, which the
+# command-word normaliser then cuts at the `$` and reads as `tr`. Bash reads
+# the same word as `truncate`. Dropping the `$` in front of the very quote pair
+# bash would consume is the one edit that makes the two agree - and it cannot
+# unbalance the quoting, because the pair itself is left untouched.
+ANSI_C_STRING = re.compile(r"\$\x27((?:[^\x27\\]|\\.)*)\x27")
+ANSI_C_LOCALE = re.compile(r"\$(?=\x22)")
+
+
+LINE_CONT = re.compile(r"\\\n")
+
+# The bash ANSI-C escape grammar, in full. The RANGES are the bash ones, not
+# the Python ones: one or two hex digits after x, one to four after u, one to
+# eight after U, one to three octal. An escape outside this table is left as
+# written, which is what bash does too.
+ANSI_C_ESCAPE = re.compile(
+    r"\\(?:([abeEfnrtv?" + chr(92) + chr(92) + chr(39) + chr(34) + r"])"
+    r"|x([0-9a-fA-F]{1,2})"
+    r"|u([0-9a-fA-F]{1,4})"
+    r"|U([0-9a-fA-F]{1,8})"
+    r"|c(.)"
+    r"|([0-7]{1,3}))")
+ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+                 "n": "\n", "r": "\r", "t": "\t", "v": "\v", "?": "?",
+                 chr(92): chr(92), chr(39): chr(39), chr(34): chr(34)}
+
+
+def _ansi_c_char(m):
+    """One ANSI-C escape as the CHARACTER bash would put in the word.
+
+    A decoded NUL is kept here and cut in _fold_ansi_c, which TRUNCATES the
+    decoded string at it - bash ends the value there, so a dollar-quoted
+    truncate\\0junk is the word truncate, and a \\0 between trunc and ate leaves
+    truncate as well. Keeping the byte spelled a name in no set at all, and
+    every numeric form of the escape (\\0, \\x00, \\u0000, \\c@) reached it.
+    """
+    simple, hexits, u4, u8, ctrl, octits = m.groups()
+    if simple is not None:
+        return ANSI_C_SIMPLE[simple]
+    try:
+        if ctrl is not None:
+            # `.upper()` is not length preserving - Python maps a lone `ss`
+            # to two characters, and `ord()` on the pair raised a TypeError
+            # that killed the whole scanner. Bash uppercases a BYTE, so a
+            # character that does not have a single-character upper form is
+            # taken as written.
+            upper = ctrl.upper()
+            got = chr(ord(upper if len(upper) == 1 else ctrl) ^ 0x40)
+        elif octits is not None:
+            got = chr(int(octits, 8) & 0xFF)
+        else:
+            got = chr(int(hexits or u4 or u8, 16))
+    except (ValueError, OverflowError):
+        return m.group(0)              # out of range: bash prints it as written
+    return got
+
+
+def _fold_ansi_c(text):
+    """Bash quoting rewritten into the plain forms shlex understands.
+
+    A LINE CONTINUATION goes first. Bash deletes a backslash-newline before it
+    tokenises anything, so `trun\\<newline>cate` is the single word `truncate`
+    - and every scanner here kept the newline and saw two halves that spell no
+    name. Removing it inside single quotes too is the over-warn direction and
+    costs a word that was never split in the first place.
+
+    shlex implements NEITHER form. The locale form only drops the dollar. The
+    escape form also DECODES, and that is the half a bare drop missed:
+    `\x24\x27trunc\\x61te\x27` is the word `truncate`, but leaving the escape
+    in place spells a name that is in no set at all. Decode, then re-quote so
+    the result still tokenises to exactly one word.
+
+    The decoding follows the BASH grammar rather than being handed to Python.
+    That grammar is CLOSED - a fixed table plus four numeric forms - so writing
+    it out is not the enumerate-the-spellings ladder; borrowing Python was,
+    because the two disagree. Python demands exactly four digits after a short
+    unicode escape and RAISES on the bash-legal `\\u74runcate`, whereupon the
+    handler left the word undecoded and the command allowed.
+
+    Fold BEFORE lowercasing. The escape yields a real character, so lowercasing
+    the text first leaves that character in whatever case the escape named -
+    `TRUNC\\x41TE` decoded to `truncAte` and matched nothing.
+    """
+    def _double_quote_map(text):
+        """One pass: True at each offset that sits inside a double-quoted span.
+
+        SINGLE quotes count, because a double quote inside them is ordinary
+        text - `X=SQ"SQ` opens nothing, and toggling on it made the rest of the
+        command look quoted, which switched the ANSI-C decoding off exactly
+        where an attacker would want it off.
+
+        Computed ONCE rather than rescanned per match: asking the question from
+        offset zero for every ANSI-C string is quadratic, and 2,000 of them in
+        one command spent the whole scan budget.
+        """
+        flags = [False] * (len(text) + 1)
+        dq = sq = False
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == chr(92) and not sq:
+                flags[i] = dq
+                if i + 1 < len(text):
+                    flags[i + 1] = dq
+                i += 2
+                continue
+            if c == chr(34) and not sq:
+                dq = not dq
+            elif c == chr(39) and not dq:
+                sq = not sq
+            flags[i] = dq
+            i += 1
+        flags[len(text)] = dq
+        return flags
+
+    _dq = _double_quote_map(text)
+
+    def one(m):
+        # Cut at the first decoded NUL: bash ENDS the value there, so
+        # `truncate\\0junk` is the word `truncate` and not `truncatejunk`.
+        # Inside DOUBLE quotes bash does NOT apply ANSI-C quoting - it prints
+        # the dollar and the quotes literally - so decoding there invented a
+        # command name the shell never runs. The quotes still stand in this
+        # RAW text, which is the one place that state is still readable.
+        if _dq[m.start()]:
+            return m.group(0)
+        decoded = ANSI_C_ESCAPE.sub(_ansi_c_char, m.group(1)).split("\x00", 1)[0]
+        return shlex.quote(decoded)
+    text = LINE_CONT.sub("", text)
+    return ANSI_C_LOCALE.sub("", ANSI_C_STRING.sub(one, text))
+
+# A simple expansion, removed so literal fragments either side can rejoin.
+# The SPECIAL parameters belong here beside the named ones. They are the most
+# reliably empty expansions bash has - a hook command runs with no positional
+# arguments at all, so `trun$@cate` is simply `truncate` - and leaving them out
+# meant the one form guaranteed to vanish was the one form never read. The set
+# is the documented table (`@ * # ? - $ ! 0` and a digit), not a growing list.
+# The BACKTICK substitution belongs beside `$( )`. It is the same construct in
+# the older spelling, and leaving it out meant the older spelling was the one
+# that rejoined nothing: an empty `trun`+backticks+`cate` ran coreutils truncate
+# while the scanners read two halves that spell no name.
+EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\([^()]*\)"
+                       r"|" + chr(96) + r"[^" + chr(96) + r"]*" + chr(96) +
+                       r"|\$[A-Za-z_][A-Za-z0-9_]*"
+                       r"|\$[@*#?$!0-9-]")
+
+
+
+def _ends_in_redirect(seg):
+    """True iff seg ends on an UNESCAPED redirection operator.
+
+    `echo \\> & psql ...` ends in a `>` that is a literal argument, not an
+    operator, so treating it as one made the next segment open with a phantom
+    redirection operand and swallowed the real command word.
+    """
+    seg = seg.rstrip()
+    if seg[-1:] not in ("<", ">"):
+        return False
+    head = seg[:-1]
+    return (len(head) - len(head.rstrip(chr(92)))) % 2 == 0
+
+
+def _brace_forms(word):
+    """Every literal a simple `{a,b}` brace expansion can produce.
+
+    Bash expands braces LONG after this scan, so `trun{ca,ca}te` is one token
+    here and its text is not a command name. Bounded on purpose: at most
+    BRACE_CAP results, and anything nested or larger is left to the unreadable
+    rule below rather than expanded.
+    """
+    forms = [word]
+    # Bash expands NESTED groups too (`tr{un,{xx,yy}}cate`), so re-run until no
+    # group is left. Bounded twice - by BRACE_CAP and by the depth - because an
+    # unbounded expansion is a denial of service on a 3s hook budget.
+    for _ in range(BRACE_DEPTH):
+        if not any(BRACE_SPLIT.search(f) for f in forms):
+            return forms
+        grown = []
+        for form in forms:
+            step = [""]
+            for i, part in enumerate(BRACE_SPLIT.split(form)):
+                alts = _brace_alts(part) if i % 2 else [part]
+                if not alts or len(step) * len(alts) > BRACE_CAP:
+                    return [BRACE_OVERFLOW]
+                step = [f + a for f in step for a in alts]
+            grown.extend(step)
+            if len(grown) > BRACE_CAP:
+                return [BRACE_OVERFLOW]
+        forms = grown
+    # Out of depth with braces still standing. The forms in hand are HALF
+    # expanded, so they spell a name only by accident - refuse them.
+    if any(BRACE_SPLIT.search(f) for f in forms):
+        return [BRACE_OVERFLOW]
+    return forms
+
+
+def _brace_alts(part):
+    """The literals one brace group yields: `a,b` alternation or `a..b` range.
+
+    ACCEPTED LIMIT on exhaustion: a group too large or nested deeper than the
+    caps is refused rather than expanded, and the caller then reads the word as
+    it stands. Failing CLOSED there means warning on any oversized brace group,
+    which is the measured-and-declined rule recorded in has_truncate. Writing
+    `tr{{{{{un,xx},yy},zz},aa},bb}cate` takes one command string that carries
+    the whole indirection - the same class as the other limits here, and the
+    caps exist because an unbounded expansion is a denial of service on a 3s
+    hook budget.
+
+    ACCEPTED LIMIT: extglob patterns (`@(truncat?|nope)`) are not expanded.
+    They require `shopt -s extglob` to be enabled in the same command, and
+    adding a second expander for them is the enumerate-the-spellings ladder
+    this file has declined three times already.
+
+    ACCEPTED OVER-WARN: shlex has already dropped quote provenance by the time
+    this runs, so `"trun{ca,ca}te"` - which bash leaves LITERAL - expands here
+    all the same and warns. Quote provenance is the one thing this scanner
+    fundamentally cannot recover (it is why the whole file reads command
+    POSITION rather than text), over-warning is its documented safe direction,
+    and the replay measured the cost at zero.
+    """
+    if "," in part:
+        return part.split(",")
+    lo, _, hi = part.partition("..")
+    hi = hi.split("..")[0]                      # ignore any step
+    if len(lo) == 1 and len(hi) == 1:
+        a, b = ord(lo), ord(hi)
+        step = 1 if b >= a else -1
+        if abs(b - a) + 1 > BRACE_CAP:
+            return []
+        return [chr(c) for c in range(a, b + step, step)]
+    try:
+        a, b = int(lo), int(hi)
+    except ValueError:
+        return []
+    step = 1 if b >= a else -1
+    if abs(b - a) + 1 > BRACE_CAP:
+        return []
+    return [str(n) for n in range(a, b + step, step)]
+
+
+def _has_payload(tok):
+    """True iff tok may CARRY a command rather than be one.
+
+    Literal whitespace is the obvious case (`sh -c "truncate -s 0 f"`), but an
+    expansion supplies the separators just as well once the payload runs:
+    `watch ${IFS}psql...` has no literal space at all. So does an operator -
+    `watch \x27true;psql<<<q\x27` is a two-command payload written without one
+    space. Any shell metacharacter therefore means "parse this", and the
+    recursion still terminates: a payload of a SINGLE token has no later tokens
+    for the wrapper branch to recurse on.
+
+    ACCEPTED LIMIT, MEASURED and declined: a NON-SHELL interpreter that execs
+    another program from inside its own runtime - a python3 -c whose script
+    calls execvp, or the perl/ruby/node/awk equivalents - is not read as a
+    payload carrier. That payload is a PROGRAM in another language, and deciding
+    what it runs needs that language rather than a shell tokeniser. The
+    fail-closed alternative is to refuse every interpreter -c / -e payload
+    unread; on the 35,918-command corpus that is 2,139 commands (6.0%), which
+    would more than TRIPLE this guard total of 624 prompts. Enumerating
+    interpreters and their exec spellings is the ladder this file declines
+    everywhere else, in a language where the spellings are unbounded. The SHELL
+    interpreters are covered, because a shell payload is what this can read.
+    """
+    return any(ch in tok for ch in
+               (" ", "\t", "\n", "$", chr(96), ";", "&", "|", "<", ">", "(", ")"))
+
+
+FIND_NAMED = ("-name", "-iname", "-path", "-ipath", "-wholename",
+              "-lname", "-ilname")
+# Selectors that pick a file by something OTHER than a literal pattern. A
+# regex would need a regex engine to decide, and -samefile names an inode.
+# The boolean operators are here for a different reason: `-name X -o -type f`
+# is a TREE, and reading a -name out of it as though it constrained the whole
+# expression is wrong - the other branch selects freely. That is the whole
+# documented operator table, `,` included: the comma joins two INDEPENDENT
+# expressions, so `-name "*.log" , -type f -exec {} ;` runs the placeholder over
+# everything the right side matched while a -name sat readable on the left.
+FIND_OPAQUE = frozenset(("-regex", "-iregex", "-samefile", "-inum",
+                         "-o", "-or", "-not", "!", "(", ")", ","))
+
+
+def _pattern_rest(tok):
+    """The case BODY carried in the pattern token, or None if none closes here.
+
+    The delimiter is the first `)` that is NOT inside a substitution. Neither
+    fixed choice works: splitting at the FIRST paren breaks `x$(true))`, whose
+    pattern carries its own pair, and splitting at the LAST one breaks
+    `x)psql$(true)`, whose BODY does - and that one discarded the body whole.
+    Counting the nesting is the only reading that answers both.
+    """
+    # bash allows an optional OPENING paren on a case pattern, and `(x)` is
+    # balanced - counting it as a group hid the body behind it.
+    body = tok[1:] if tok.startswith("(") else tok
+    depth = 0
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "$" and body[i + 1:i + 2] == "(":
+            depth += 1
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return body[i + 1:]
+            depth -= 1
+        i += 1
+    # Balanced, yet a paren is here. shlex has already dropped the quoting that
+    # would say whether the opener was a REAL substitution, so a QUOTED opener
+    # arrives balanced although its `)` is the delimiter. Close at the last one:
+    # reopening command position over-warns, while leaving the state stuck in
+    # "pattern" swallows the whole body and warns on nothing.
+    if ")" in body:
+        return body.rsplit(")", 1)[1]
+    return None
+
+
+def _exec_placeholder(toks, j):
+    """True iff `{}` holds the COMMAND slot of the -exec argv starting at j.
+
+    `-exec {} -s 0 f` RUNS the file that was found; `-exec chmod 644 {} ;`
+    merely passes it as an argument. A wrapper and its assignments may sit in
+    between (`-exec env FOO=1 {} ...`), so walk the slot the way the main walk
+    does. Peeking at a fixed offset missed every one of those.
+
+    Past a WRAPPER the walk stops reading and starts refusing. A wrapper option
+    takes an OPERAND - `sudo -u root {}` - and that operand is a bare word the
+    scan above cannot tell from a command word, so `-u root` used to end the
+    walk one token before the placeholder it was looking for. Learning the
+    option arity of every wrapper is the enumerate-the-spellings ladder;
+    refusing the unreadable is the inversion this file uses elsewhere. So once a
+    wrapper has been seen, any `{}` still standing before `;` or `+` is treated
+    as holding the slot, whatever sits in between.
+    """
+    wrapped = False
+    for t in toks[j + 1:]:
+        if t in (";", "+"):
+            return False             # argv ended without the placeholder
+        # CONTAINS the placeholder, not equals it. find substitutes `{}` anywhere
+        # in an argument, so `-execdir ./{} -s 0 f` runs the file it found just
+        # as `-exec {} ...` does, and an exact match read it as an operand.
+        if "{}" in t:
+            return True
+        # _matches_tok, not _reads_as: `/usr/bin/e?v` resolves to env, and
+        # an exact reading did not know a wrapper held the slot.
+        if _matches_tok(t, WRAPPERS):
+            wrapped = True
+            continue
+        if wrapped or t.startswith("-") \
+                or ("=" in t and not t.startswith("-")):
+            continue                 # still in front of the command word
+        return False                 # something else took the slot
+    return False
+
+
+def _find_selects(toks, names, action=None):
+    """Can `find ... -exec {}` end up running one of `names`?
+
+    The placeholder runs the file that was FOUND, so the SELECTION predicates
+    are what name the command. Read the ones carrying a literal pattern; when
+    NOTHING readable constrains the match - no name predicate at all
+    (`find /usr/bin -type f -exec {} ;`), or an opaque one alongside it - the
+    selected file is unconstrained, and an unconstrained file may be any of
+    them. Refusing the unreadable is the same inversion the rest of this file
+    uses; enumerating predicate spellings is the ladder that has no top.
+
+    Only what precedes THIS action, and only what is a predicate. find
+    evaluates left to right and stops at the first false term, so a `-name`
+    written after the action had not been tested when the placeholder ran. And
+    everything from an EARLIER action token to its `;` or `+` is that action
+    ARGV, where a `-name` is an argument to the command being run rather than a
+    constraint on the search: `-exec echo -name ;` narrows nothing. Truncating
+    at the FIRST action instead read only the first branch of
+    `-name never -exec echo {} ; -o -name truncate -exec {} ...`, which is the
+    branch that does not run.
+    """
+    readable = False
+    limit = len(toks) if action is None else action
+    i = 0
+    while i < limit:
+        t = toks[i]
+        if _reads_as(t, DISPATCH):
+            i += 1
+            while i < limit and toks[i] not in (";", "+"):
+                i += 1
+            i += 1
+            continue
+        if t in FIND_NAMED and i + 1 < len(toks):
+            pattern = toks[i + 1]
+            # A COMPUTED pattern reads as nothing and therefore constrains
+            # nothing: `-name "$C"` selects whatever C holds. Counting it as
+            # readable let a predicate that says nothing stand in for one that
+            # says the selection is safe - the same unreadable-command-word
+            # inversion the walks above already make, one argument along.
+            if "$" not in pattern and chr(96) not in pattern:
+                readable = True
+                # find drops a backslash before an ordinary character, so
+                # `-name SQtruncat\eSQ` selects truncate. Reading the escaped
+                # spelling literally concluded the predicate could not select
+                # it, and a readable predicate that cannot match is what says
+                # the selection is SAFE.
+                if _matches_tok(pattern, names) \
+                        or _matches_tok(pattern.replace(chr(92), ""), names):
+                    return True
+            i += 2
+            continue
+        i += 1
+    # Normalised: a computed operator (`-${EMPTY}o`) expands to a real one,
+    # and comparing raw tokens let it slip past as an unknown word - so the
+    # safe branch appeared to constrain a selection it never touched.
+    # ...over the same prefix. An operator written AFTER an action cannot
+    # retroactively unconstrain it, and scanning the whole argv made a settled
+    # `-name echo -exec {} ;` look unconstrained because a `,` followed it.
+    return not readable or any(t in FIND_OPAQUE
+                               or _strip_expansions(t) in FIND_OPAQUE
+                               for t in toks[:limit])
+
+
+def _matches(word, names):
+    """True iff word IS one of names, or is a GLOB that can expand to one.
+
+    Bash performs pathname expansion after this scan, so `/usr/bin/truncat?`
+    and `psq?` are command words that reach the real executable while spelling
+    a name that is in no set. fnmatch answers exactly, with no text bound and
+    therefore no false positive: a pattern that cannot produce the name does
+    not match.
+    """
+    if word in names:
+        return True
+    if BRACE_OVERFLOW in word:
+        return True                  # an unexpandable group may yield any name
+    # An EXTGLOB operator makes the pattern unreadable to fnmatch, which has no
+    # such syntax: `@(truncat?|nope)` reaches the real binary while fnmatch
+    # answers no. The operator set is the documented five, not a growing list,
+    # and refusing the unreadable is the inversion used throughout this file.
+    # ...but not in an ASSIGNMENT, whose value is data. A regex written into a
+    # variable carries `+(` and `*(` constantly (`RE="^[A-Za-z0-9_]+("`), and
+    # those are quantifiers, not pathname operators. Measured: this guard is
+    # what keeps the rule at a handful of prompts instead of dozens.
+    if not ASSIGN_PREFIX.match(word) \
+            and any(op in word for op in ("?(", "*(", "+(", "@(", "!(")):
+        return True
+    if not any(ch in word for ch in "*?["):
+        return False
+    # fnmatch implements a SUBSET of the bash bracket grammar. Every bracket
+    # expression matches exactly one character, so `?` is the faithful stand-in
+    # for all of them - see the note on GLOB_BRACKET for why the whole
+    # construct is replaced rather than the forms fnmatch happens to miss.
+    pattern = GLOB_BRACKET.sub("?", word)
+    # A `]` LEFT OVER after that substitution can only be there because shlex
+    # erased the backslash that made it part of the bracket: bash reads
+    # `truncat[e\]]` as one character from {e, ]}, while the token this scan
+    # receives is `truncat[e]]`, whose stray `]` spells a name one character
+    # too long. Dropping it is the same fail-closed reading the whole-bracket
+    # rule already takes - what it costs is a literal `]` in a command name.
+    pattern = pattern.replace("]", "")
+    # ACCEPTED OVER-WARN, pinned: a bare `*` matches every name in every set,
+    # so a glob operand at command position - `echo hi | docs/*`, or a case
+    # pattern whose chunk lost its `case` header to a newline - warns. A
+    # density rule that required the pattern to SPELL most of the name removed
+    # those two prompts and opened a fail-open in exchange:
+    # `[t][r][u][n][c][a][t][e]` spells the whole word in character classes and
+    # measures as zero literal characters. Counting brackets more cleverly is
+    # the enumerate-the-spellings ladder this file has declined four times, and
+    # the measured cost of the fail-CLOSED answer is 19 prompts in 26,454 -
+    # nearly all of them a multi-line `case` whose pattern alternatives the
+    # chunk splitter cuts at the `|`, leaving a bare `*` holding a slot.
+    return any(fnmatch.fnmatchcase(n, pattern) for n in names)
+
+
+def _after_unmatched_close(tok):
+    """The token past an unmatched `)`, or the token itself when it balances."""
+    depth = 0
+    cut = -1
+    for i, ch in enumerate(tok):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                cut = i
+            else:
+                depth -= 1
+    return tok[cut + 1:] if cut >= 0 and cut + 1 < len(tok) else tok
+
+
+def _cmd_word(tok):
+    """A token normalised to the command NAME it would run.
+
+    Strips attached grouping (`(psql`), the directory part of a path, and an
+    ATTACHED redirection or expansion - bash tokenises on `<`, `>` and a word
+    split, shlex does not, so `psql>out`, `truncate<<<q` and
+    `truncate${IFS}-s${IFS}0` all arrive as one token whose text is not a name.
+    """
+    # Order matters. Cut the redirection first (`truncate>/tmp/x` would
+    # otherwise basename to `x`), take the basename next (`$PWD/truncate` is a
+    # literal name behind an expansion), and only then cut at the expansion
+    # (`psql${IFS}-c`). Cutting at `$` first threw the basename away.
+    # Past an UNMATCHED `)` first. split_segments cuts a case at its `|`, so a
+    # later alternative arrives as its own segment with the pattern still glued
+    # to the body - `case y in x|y)truncate ...` hands the walk `y)truncate`,
+    # which is a word in no set at all while the command it runs is truncate.
+    # An unmatched close is the only shape that carries this: a substitution or
+    # a group balances, so `$(printf x)y` is untouched.
+    tok = _after_unmatched_close(tok)
+    # The FIRST NON-EMPTY field, not the first field. An expansion that SPLITS
+    # can also LEAD - `${IFS}truncate${IFS}-s` runs truncate - and taking field
+    # zero there yields the empty string, which is in no set and matches
+    # nothing. An empty command word names nothing in any case, so reading past
+    # it costs no precision: the fields after it are exactly the words bash
+    # would have gone on to read.
+    # Split on the expansions FIRST, take the basename of the chosen field
+    # SECOND. Basenaming the whole token instead read the last path component of
+    # the last FIELD: `${IFS}rm${IFS}-rf${IFS}/etc` basenamed to `etc`, a word in
+    # no set at all, while bash field-splits it into `rm -rf /etc`.
+    raw = REDIR_CUT.split(tok.lstrip("({"), 1)[0]
+    for field in _expansion_fields(raw):
+        field = EXPAND_CUT.split(field, 1)[0]
+        if field:
+            return field.rsplit("/", 1)[-1].lower()
+    return ""
+
+
+def _reads_as(tok, names):
+    """True iff tok reads as one of `names` in either _cmd_word reading.
+
+    The destructive NAMES have had the empty-expansion rejoin since _matches_tok;
+    the structural vocabulary - wrappers, dispatchers, control words - was still
+    compared against the first reading alone. That asymmetry is itself a bypass:
+    `e${EMPTY}nv truncate ...` runs env, but the walk did not see a wrapper and
+    so never looked past it for the command word it hides.
+
+    Narrow like _spells, and for the same reason: a glob must not match a
+    structural keyword, or a bare `*` would turn every operand into a wrapper.
+    """
+    return _cmd_word(tok) in names or _cmd_word(_strip_expansions(tok)) in names
+
+
+def _spells(tok, name):
+    """True iff tok spells exactly `name` in either reading _cmd_word takes.
+
+    The narrow sibling of _matches_tok, and narrow ON PURPOSE. Its caller walks
+    EVERY token of a segment rather than only command position, so admitting
+    globs there would let a bare `*` operand match any name at all. What this
+    adds is only the empty-expansion rejoin: `r${EMPTY}m`, `r$@m` and the
+    backtick spelling are all the word rm, and the inline basename comparison
+    that preceded it read none of them.
+    """
+    if _cmd_word(tok) == name or _cmd_word(_strip_expansions(tok)) == name:
+        return True
+    # The greedy reading too - see _matches_tok. A QUOTED close inside an
+    # expansion is gone by the time this runs, so the depth walk shuts at the
+    # first delimiter and orphans the rest of the name.
+    for opener, closer in (("$(", ")"), ("${", "}")):
+        at = tok.find(opener)
+        shut = tok.rfind(closer)
+        if at >= 0 and shut > at \
+                and _cmd_word(tok[:at] + tok[shut + 1:]) == name:
+            return True
+    return False
+
+
+def _matches_tok(tok, names):
+    """_matches over every command NAME a raw token can spell.
+
+    An expansion is two things at once and _cmd_word only reads one of them.
+    Cutting at the `$` is right when the expansion SEPARATES - `psql${IFS}-c`
+    runs psql - and blind when it expands to NOTHING and the literal fragments
+    rejoin: `${EMPTY}truncate` cut to the empty string and matched no name at
+    all, so the command ran unannounced.
+
+    Removing the expansions instead is the same reading the SQL scanner already
+    applies to its keyword, and it is bounded in the same way: the removed form
+    only ever matches when the LITERAL fragments themselves spell the name, so
+    `psql${IFS}-c` yields `psql-c` and matches nothing new. That makes this a
+    second reading of one token, not the fail-CLOSED "unreadable command word"
+    rule measured and declined below at 23 extra prompts.
+    """
+    if _matches(_cmd_word(tok), names):
+        return True
+    rejoined = _cmd_word(_strip_expansions(tok))
+    if rejoined and _matches(rejoined, names):
+        return True
+    # A third reading, for a close that was QUOTED. Bash treats the `)` in
+    # `$(x=SQ)SQ)` - and the `}` in `${x+SQ}SQ}` - as literal text inside the
+    # expansion; shlex drops the quotes before this scan sees them, so the depth
+    # walk closes at the FIRST delimiter and leaves the rest of the name
+    # orphaned. Removing everything from the first opener to the LAST close is
+    # the opposite reading, and it only matches when the fragments either side
+    # spell the name themselves.
+    for opener, closer in (("$(", ")"), ("${", "}")):
+        at = tok.find(opener)
+        shut = tok.rfind(closer)
+        if at >= 0 and shut > at:
+            greedy = _cmd_word(tok[:at] + tok[shut + 1:])
+            if greedy and _matches(greedy, names):
+                return True
+    return False
+
+# A command word REBOUND by name rather than by value - `alias db=psql`,
+# `hash -p /usr/bin/psql db`, an eval-built definition. The binding is static
+# text, so no expansion marks the call site as unreadable. Matched at COMMAND
+# position, never as text: `echo alias psql truncate` rebinds nothing.
+REBINDERS = {"alias", "hash", "eval"}
+
+# The only commands whose options dispatch a FURTHER command word.
+DISPATCHERS = {"find"}
+
+# Options whose VALUE is an executable rather than data. The generic rule
+# for `NAME=value` requires a payload, so `docker run --entrypoint=truncate`
+# read as an ordinary assignment and the command it names went unseen. This
+# is the documented option of the container launchers already listed in
+# WRAPPERS, not an open-ended table.
+EXEC_VALUE_OPTS = ("--entrypoint",)
+
+# `NAME=`, `NAME[i]=`, `NAME+=` - a prefix assignment, not a command word.
+ASSIGN_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
+
+
+def _assign_prefix(tok, word):
+    """True iff the token is a `NAME=value` prefix rather than a command word.
+
+    Read from the RAW token. _cmd_word takes a BASENAME, and a value holding a
+    path loses the assignment with it: `X=/tmp` normalised to `tmp`, which
+    carries no `=` at all, so the prefix took command position and the real
+    command word behind it was read as an operand. `PATH=/usr/bin psql` walked
+    through on exactly that.
+
+    The normalised form is still consulted, because it is the one that survives
+    an attached redirection or expansion.
+    """
+    return bool(ASSIGN_PREFIX.match(tok.lstrip("({"))) \
+        or ("=" in word and not word.startswith("-"))
+
+# Redirections may sit between the closing brace and the operator:
+# `{ ...; } >/dev/null | cat` is still a pipeline, so the group still subshells.
+SUBSHELL_GROUP = re.compile(
+    r"\}(?:\s*(?:\d*[<>]{1,3}[&|]?|&>)\s*"
+    r"(?:&\d+|\$\([^()]*\)|\"[^\"]*\"|\x27[^\x27]*\x27"
+    r"|\\.|[^\s;&|])+)*\s*"
+    r"(?:\|[^|]|&(?!&)|\|$|&$)"
+    r"|(?:^|[\s;&|])coproc(?=[\s;&|]|$)")
+
+FUNCTION_KEYWORD = re.compile(r"(?:^|[\s;&|(])function(?=[\s{])")
+
 BLOCK_KEYWORD = re.compile(
     r"(?:^|[\s;&|(])(?:if|then|elif|else|fi|while|until|case|esac|do|done)"
     r"(?=[\s;&|]|$)")
@@ -358,6 +1072,25 @@ def temp_vars(chunk):
     the rm still sees whatever T the parent inherited.
     """
     if UNTRUSTED.search(chunk):
+        return {}
+    # A COMPOUND command hides a subshell: in `( :; T=$(mktemp -d); ); rm -rf
+    # "$T"` split_segments hands the assignment a plain `;`, so it reads as a
+    # parent-shell binding when it only ever ran in the subshell. Segment
+    # operators cannot see that nesting, so any grouping paren OUTSIDE a
+    # substitution voids the carve-out. Substitutions are stripped first so the
+    # substitution. Substitutions are stripped first so the mktemp call in the
+    # assignment itself is not mistaken for one.
+    # A BRACE group is the same hazard whenever it runs in a subshell
+    # environment - a pipeline, a background job, or a coproc. `{ :; T=$(mktemp
+    # -d); } | cat; rm -rf "$T"` binds T in the subshell only, so the parent rm
+    # deletes whatever T it inherited. Braces are NOT voided outright (a plain
+    # `{ ...; }` group does run in the current shell, and function bodies are
+    # common), only where a subshell is what executes them.
+    # A `function` DEFINITION is the same hazard without the parens the void
+    # below catches: the body runs later, and `f | cat` runs it in a subshell.
+    if SUBSHELL_GROUP.search(chunk) or FUNCTION_KEYWORD.search(chunk):
+        return {}
+    if "(" in re.sub(r"\$\([^()]*\)", "", chunk):
         return {}
     from_mktemp = {}
     from_other = set()
@@ -379,7 +1112,7 @@ def temp_vars(chunk):
         if idx + 1 < len(segs) and segs[idx + 1][0] in ("|", "&"):
             continue
         try:
-            toks = shlex.split(seg, posix=True)
+            toks = shlex.split(_fold_ansi_c(seg), posix=True)
         except ValueError:
             toks = seg.split()
         # bash requires assignment prefixes to PRECEDE the command word, so
@@ -441,9 +1174,68 @@ def temp_vars(chunk):
     return names
 
 
-def is_temp(target, tmpvars, seg_idx):
+def is_temp(target, tmpvars, seg_idx, chunk=""):
     m = TEMP_TARGET.match(target)
-    return bool(m) and tmpvars.get(m.group(1), seg_idx) < seg_idx
+    if not m:
+        return False
+    name = m.group(1)
+    if tmpvars.get(name, seg_idx) >= seg_idx:
+        return False
+    # The expansion must be QUOTED. Unquoted, bash word-splits it, so with
+    # TMPDIR set to a path containing a space `rm -rf $T` removes more than the
+    # new directory. shlex has dropped the quotes, so this consults raw text -
+    # and it must be the SEGMENT holding THIS rm, never the whole chunk: a
+    # quoted use elsewhere (`echo "$T"; rm -rf $T`) is not proof about the rm.
+    # Every occurrence must be quoted, not merely one: `rm -rf $T "$T"` has a
+    # quoted second target that says nothing about the unquoted first. Strip the
+    # quoted forms, then any survivor is an unquoted use.
+    #
+    # DOUBLE quotes only. Bash does not expand inside single quotes, so
+    # `rm -rf SQ$T SQ` is not the temp directory at all - it is a literal path
+    # named for the variable, and clearing it is a fail-OPEN on a path this
+    # command never created. (SQ is the single-quote character, unwritable here:
+    # this block lives in a bash single-quoted string.)
+    #
+    # The quote must also not ABUT another: bash reads a doubled `""` as an
+    # empty word, so in `""$T""` the expansion between them is UNquoted and
+    # still word-splits. Matching the inner pair would strip it and clear.
+    esc = re.escape(name)
+    # A STANDALONE word, not merely a substring: bounded by whitespace or the
+    # ends of the segment. An assignment (`X="$T" rm -rf "$"T`) otherwise
+    # supplies the proof for a target that is a literal path, and so does any
+    # other neighbouring use.
+    # The braces must BALANCE. Written independently optional, the pattern
+    # accepted `"$T}"` - which bash expands to the directory PLUS a literal
+    # `}` - as proof about a target that is not the directory at all.
+    quoted = (r"(?:^|(?<=\s))\"(?:\$%s|\$\{%s\})\"(?=\s|$)"
+              % (esc, esc))
+    # PRESENCE, not merely absence of a counterexample. Quote concatenation
+    # (`rm -rf "$""T"`) puts no `$T` in the raw text at all, so a rule that only
+    # looked for an unquoted survivor found none and cleared a LITERAL path.
+    if not re.search(quoted, chunk):
+        return False
+    # A SINGLE quote anywhere in the segment voids the proof. shlex has already
+    # discarded quote provenance, so a genuine `"$T"` elsewhere in the segment
+    # cannot be told apart from a different token that merely COOKS to the same
+    # text: `X="$T" rm -rf SQ$SQSQTSQ` passes a literal path while a real quoted
+    # expansion sits beside it. Refusing the unreadable case is the same
+    # fail-CLOSED inversion the mktemp create-proof uses. A doubled DOUBLE
+    # quote voids it for the same reason: it is the concatenation signature, and
+    # `X="$T" rm -rf "$""T"` otherwise lets an assignment supply the proof for a
+    # target that is a literal path. (SQ is the single quote, unwritable here -
+    # this block is inside a bash single-quoted string.)
+    # A BACKSLASH voids it for exactly the same reason. Bash reads an escaped
+    # letter as itself, so `$` followed by a backslash and a letter is the
+    # LITERAL path spelled by the variable name - and the survivor search below
+    # looks for `$T`, which that spelling does not contain. `rm -rf "$T" $\T`
+    # therefore cleared on the real expansion while deleting a literal path the
+    # command never created. Refusing the whole segment is the same fail-CLOSED
+    # answer the single quote already gets, and for the same reason: shlex has
+    # discarded the provenance that would tell the two apart.
+    if chr(39) in chunk or chr(34) * 2 in chunk or chr(92) in chunk:
+        return False
+    stripped = re.sub(quoted, "", chunk)
+    return not re.search(r"\$\{?%s\}?" % esc, stripped)
 
 
 def recursive_targets(argv):
@@ -475,21 +1267,50 @@ def recursive_targets(argv):
 # and the truncate behind it reads as an operand. Add names here as they come up.
 # The alternative — treating every unrecognized command word as a wrapper — is
 # the any-token scan, which is what cost 11% of ALL prompts in false positives.
-WRAPPERS = {"sudo", "doas", "su", "runuser", "env", "xargs", "nohup", "timeout",
-            "command", "time", "stdbuf", "nice", "ionice", "exec", "setsid",
+# `builtin` STAYS, and the review finding that asked for its removal is
+# declined by the tests in this repo: it runs shell builtins, but two of
+# those reach an external binary - `builtin command psql ...` and
+# `builtin exec psql ...` both run the real client. Dropping it opened
+# exactly the two spellings pinned in the truncate-context suite. What it
+# costs is the documented wrapper-tail over-warn (`builtin echo truncate`),
+# the same trade every other wrapper here already makes.
+WRAPPERS = {"builtin",
+            "sudo", "doas", "su", "runuser", "env", "xargs", "nohup", "timeout",
+            "command", "time", "stdbuf", "nice", "ionice", "exec",
+            "setsid",
             "chroot", "unshare", "flock", "script", "watch", "parallel",
-            "caffeinate", "arch", "xcrun"}
+            "caffeinate", "arch", "xcrun",
+            # Remote and container dispatchers: the command they run is an
+            # operand, so without these the dispatcher name consumes the slot
+            # and `ssh dbhost psql -c ...` reads as if psql were an argument.
+            "ssh", "docker", "podman", "kubectl", "nerdctl", "lima", "distrobox",
+            "toolbox", "vagrant", "adb",
+            # `coproc` takes an OPTIONAL name before the command
+            # (`coproc worker psql ...`), so the slot after it is not reliably
+            # the command word. Scanning every later token is the safe read.
+            "coproc",
+            # An interpreter run by NAME carries its script in an operand
+            # (`sh -c "psql -c ..."`). At the top level the chunk splitter
+            # already lifts that payload out, but a nested one does not reach
+            # it - `find . -exec sh -c "..."` consumed the slot with `sh` and
+            # read the payload as an ordinary argument.
+            "sh", "bash", "zsh", "dash", "ksh", "ash", "busybox",
+            # `trap HANDLER SIGNAL` is the same shape wearing a builtin name:
+            # the handler is a command string that runs later, and treating it
+            # as data let `trap "psql -c ..." EXIT` through.
+            "trap"}
 
 
 # `if`/`while`/`until` introduce a CONDITION, which is an executed command:
 # `if truncate -s 0 audit.log; then :; fi` runs truncate. They belong here with
 # `then`/`do`, not treated as command words in their own right.
-# `case`/`in`/`esac` belong here for the same reason if/then do: `in` introduces
-# a case PATTERN, and the token after that pattern is a command word. Relying on
-# the pattern token ending in `)` instead was fragile - a pattern that is (or
-# merely looks like) a command substitution does not present as a closer.
 CONTROL = {"if", "while", "until", "then", "do", "else", "elif", "!", "{", "(",
-           "case", "in", "esac", "&&", "||", ";", "|", "&", "eval", "coproc"}
+           "&&", "||", ";", "|", "&", "eval"}
+# `case` is NOT a plain control token: its SUBJECT and its PATTERNS are data,
+# not commands. Treating the three words as unconditional control made
+# `echo in truncate` and `case truncate in x) echo no;; esac` prompt. The
+# construct is walked as a small state machine instead - see has_truncate.
+CASE_WORDS = {"case", "in", "esac"}
 # find/xargs style dispatch: the token AFTER these is a command word.
 DISPATCH = {"-exec", "-execdir", "-ok", "-okdir", "--exec"}
 
@@ -497,7 +1318,12 @@ DISPATCH = {"-exec", "-execdir", "-ok", "-okdir", "--exec"}
 DYN_FD = re.compile(r"^\{[A-Za-z_][A-Za-z0-9_]*\}[<>]")
 DYN_FD_NAME = re.compile(r"^\{[A-Za-z_][A-Za-z0-9_]*\}")
 # A redirection operator carrying no target takes the NEXT token as its target.
-BARE_REDIRECT = ("<", ">", ">>", "<<", "<<<", "&>", ">|", "<>", "&>>")
+# Operators that take their operand as the NEXT token when written separated.
+# `>&`, `<&` and `<<-` belong here for the same reason the rest do: bash allows
+# `>& out.log cmd`, and omitting them let the operand consume the command slot,
+# so the real command word read as an argument and went unseen.
+BARE_REDIRECT = ("<", ">", ">>", "<<", "<<<", "&>", ">|", "<>", "&>>",
+                 ">&", "<&", "<<-")
 
 
 def _is_redirect(tok):
@@ -508,6 +1334,152 @@ def _is_redirect(tok):
     """
     return (tok.lstrip("0123456789")[:1] in ("<", ">")
             or tok.startswith("&>") or bool(DYN_FD.match(tok)))
+
+
+def _expansion_fields(text):
+    """The literal fragments an expansion SEPARATES, nested ones included.
+
+    _strip_expansions answers "what if every expansion were empty"; this answers
+    "where would the fields fall if one of them were whitespace". Same walk, one
+    marker instead of nothing, because the one-level EXPANSION regex splits
+    neither `${x:-${IFS}}` nor `$($(printf " "))` - and a nested default is a
+    perfectly ordinary way to spell a separator.
+    """
+    return _strip_expansions(text, mark="\x01").split("\x01")
+
+
+def _strip_expansions(text, mark=""):
+    """Every expansion removed, NESTED ones included, in ONE left-to-right pass.
+
+    EXPANSION matches one level: its bodies are `[^{}]*` and `[^()]*`, so
+    `${x:-${y}}` and `$($(true))` match nothing at all and the literal fragments
+    either side never met. Re-applying the one-level rule to a fixpoint reaches
+    the right answer but rescans the whole string per level, which is quadratic:
+    an 8,000-deep nest spent the scanner 3s alarm before it could answer.
+
+    So walk the text once instead, matching each opener to its own closer by
+    DEPTH. Linear in the input, no pass count to blow past, and no regex asked
+    to balance its own delimiters. An opener that never closes takes the rest of
+    the text with it - it is unreadable either way, and _torn_substitution is
+    what reports that separately.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == chr(96):                    # `...` - no nesting, ends at the pair
+            close = text.find(chr(96), i + 1)
+            out.append(mark)
+            i = n if close < 0 else close + 1
+            continue
+        if ch != "$":
+            out.append(ch)
+            i += 1
+            continue
+        nxt = text[i + 1:i + 2]
+        if nxt in ("(", "{"):
+            shut = ")" if nxt == "(" else "}"
+            depth = 0
+            j = i + 1
+            while j < n:
+                if text[j] == nxt:
+                    depth += 1
+                elif text[j] == shut:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            out.append(mark)
+            if j >= n:
+                i = n
+                continue
+            j += 1
+            # ...and the RUN of closers behind it. A quoted close inside the
+            # body is a literal character bash keeps, but shlex has already
+            # dropped the quotes, so `$(x=SQ)SQ)` arrives as `$(x=))` and the
+            # depth walk stops one character early. Eating the run rejoins the
+            # fragments for as many composed expansions as the word carries,
+            # where a single first-to-last reading only ever handled one.
+            while j < n and text[j] == shut:
+                j += 1
+            i = j
+            continue
+        j = i + 1
+        if j < n and (text[j].isalpha() or text[j] == "_"):
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            out.append(mark)
+            i = j
+            continue
+        if j < n and text[j] in "@*#?$!-0123456789":
+            out.append(mark)
+            i = j + 1
+            continue
+        out.append(ch)                       # a lone `$` is literal
+        i += 1
+    return "".join(out)
+
+
+def _torn_substitution(tok):
+    """True iff tok carries a substitution OPENER that does not close in it.
+
+    A substitution can hold whitespace and nesting - `$(printf "")`,
+    `$(if true; then :; fi)` - and shlex splits the word at that whitespace, so
+    the halves of the real command name land in DIFFERENT tokens and no amount
+    of removing expansions from one of them puts the name back together.
+
+    Teaching EXPANSION to match nested, whitespace-bearing substitutions is the
+    enumerate-the-grammar ladder; this is the inversion. A token whose opener
+    does not close inside it is a command word this scan CANNOT read, and an
+    unreadable command word at command position is the case every walk here
+    already refuses. Narrow on purpose: it says nothing about the ordinary
+    `echo $(date)` operand, whose substitution closes in its own token.
+
+    LITERAL TEXT BEFORE THE OPENER is required, and that requirement is what
+    makes the rule affordable. A token that BEGINS with the opener is a whole
+    substitution standing in for a word - `bash script.sh "$(git rev-parse ...)"`
+    - which is unreadable for the older reason already measured and declined,
+    not torn in half by one. Firing on it too was measured at 240 extra prompts
+    over 26,454 replayed commands, nearly all of them that exact shape; with the
+    prefix required the same measurement is zero. A name split across a
+    substitution always has its first half in front of the opener.
+    """
+    at = tok.find("$(")
+    if at > 0:
+        # DEPTH, not the first `)`: a nested substitution closes itself first,
+        # so `trun$(true$(true)` looked closed while the word it opens runs on
+        # into the next token.
+        depth = 0
+        i = at
+        while i < len(tok):
+            if tok[i] == "(":
+                depth += 1
+            elif tok[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth > 0:
+            return True
+        # ...and a close that LANDS but leaves no literal suffix. Bash reads
+        # `trun$(x=SQ)SQ; :)cate` as one word, because the `)` inside the quotes
+        # is data; shlex drops the quotes and the depth walk stops at it, ending
+        # the token on `trun$(x=);`. A real command word does not end on its
+        # substitution with punctuation trailing - the word continues in the
+        # next token, which carries the unmatched close and the rest of the
+        # name. A token whose suffix is ordinary text (`e`+backticks+`cho`) is
+        # untouched, which is what keeps this off benign spellings.
+        suffix = tok[i + 1:] if i < len(tok) else ""
+        if not suffix or not suffix[0].isalnum():
+            return True
+    at = tok.find(chr(96))
+    # A backtick has no distinct closer, so PAIRING is all there is to read.
+    return at > 0 and tok.count(chr(96)) % 2 == 1
+
+
+def _expansion_only(tok):
+    """True iff removing every expansion leaves nothing of the token."""
+    return bool(tok) and not _strip_expansions(tok).strip("(){}")
 
 
 def _whole_substitution(tok):
@@ -535,6 +1507,366 @@ def _whole_substitution(tok):
             and tok.count("(") == 1 and tok.count(")") == 1)
 
 
+SQL_CLIENTS = {"psql", "pgcli", "mysql", "mysqlsh", "mycli", "mariadb",
+               "sqlite3", "litecli", "sqlcmd", "sqlplus", "snowsql", "usql",
+               "clickhouse-client", "clickhouse", "duckdb", "cockroach",
+               "cqlsh", "beeline", "trino", "presto", "impala-shell",
+               "spark-sql", "bq"}
+# Text form, used ONLY to bound the unreadable-command-word rule in
+# has_sql_client. Matched against a haystack with quotes and backslashes
+# REMOVED, so `p"s"ql` and `p\sql` are the same needle as `psql`.
+SQL_NAME_RE = re.compile(r"\b(%s)\b" % "|".join(
+    re.escape(n) for n in sorted(SQL_CLIENTS, key=len, reverse=True)))
+QUOTING = re.compile(r"[\"\x27\\]")
+
+
+def _command_word_in(chunks, names, unreadable=True):
+    """True iff any name runs as a COMMAND WORD.
+
+    Mirrors the has_truncate walk deliberately - a simplified copy missed
+    separated redirection operands, wrapper option arguments, and case bodies,
+    so `<<< q psql`, `sudo -u postgres psql` and a psql inside a case arm all
+    went unseen.
+    """
+    for chunk in chunks:
+        prev_seg = None
+        for _op, seg in split_segments(chunk):
+            try:
+                toks = shlex.split(_fold_ansi_c(seg), posix=True)
+            except ValueError:
+                toks = seg.split()
+            # split_segments cuts at `&`, which SPLITS the separated `>& file`
+            # and `2>& 1` redirection forms: the operand then lands at the head
+            # of the next segment and consumes the command slot, so the real
+            # command word reads as an argument. If the previous segment ended
+            # on a redirection operator, this segment opens with its operand.
+            # ANY operator, not just `&`. What carries the operand is the
+            # DANGLING redirection at the end of the previous segment, never the
+            # character that happened to split there: `>| file cmd` splits on the
+            # `|` of the clobber operator, leaving the same orphaned target.
+            carry_operand = (prev_seg is not None
+                             and _ends_in_redirect(prev_seg))
+            prev_seg = seg
+            cmd_pos = True
+            skip_next = carry_operand
+            case_state = None
+            seg_cmd = None
+            # The FIRST command word of the segment, never overwritten. A
+            # dispatcher stays the dispatcher for its whole argv, but seg_cmd
+            # follows the most RECENT command word - so `-exec` reopened the
+            # slot, the command it ran took seg_cmd, and a SECOND `-exec` in
+            # the same find no longer saw a find in front of it.
+            seg_head = None
+            for j, tok in enumerate(toks):
+                if skip_next:
+                    skip_next = False
+                    # ...but a redirection operand never swallows a
+                    # DISPATCH flag. shlex has erased the quoting, so a
+                    # quoted `>` used as DATA - `find . -name SQ>SQ` -
+                    # reads as the operator, and letting its operand eat
+                    # the `-exec` behind it hid the command find then
+                    # ran. A redirection target genuinely spelled -exec
+                    # is not a shape worth keeping quiet for.
+                    if tok not in DISPATCH:
+                        continue
+                word_raw = tok.lstrip("({")
+                word = _cmd_word(tok)
+                # Brace forms come from the RAW token: _cmd_word strips a
+                # leading `{`, which is the OPENER of `{psql,psql}`.
+                if cmd_pos and (_matches_tok(tok, names)
+                                or any(_matches_tok(f, names)
+                                       for f in _brace_forms(tok))):
+                    return True
+                # An UNREADABLE command word hides the name: `C=psql; "$C" -c`,
+                # `$(printf psql) -c` and the backtick spelling all run a client
+                # this walk cannot resolve. Fail CLOSED on it rather than
+                # resolving the value - see the has_sql_client docstring.
+                # Normalised the same way the exact match above is: an attached
+                # subshell (`("$C" -c ...)`) otherwise reads as unreadable-free.
+                # ANYWHERE in the word, not just at its start: `${IFS}` field-
+                # splits `psql${IFS}-c${IFS}...` into the client and its
+                # arguments, and shlex hands that over as one token whose first
+                # characters spell a name that is not in the set. An assignment
+                # PREFIX is exempt - `T=$(mktemp -d) cmd` is not a command word.
+                if unreadable and cmd_pos \
+                        and not ASSIGN_PREFIX.match(word_raw) \
+                        and ("$" in word_raw or "`" in word_raw):
+                    return True
+                if word == "case" and cmd_pos:
+                    case_state = "subject"
+                    cmd_pos = False
+                    continue
+                if case_state == "subject":
+                    case_state = "in"
+                    continue
+                if case_state == "in":
+                    if word == "in":
+                        case_state = "pattern"
+                    continue
+                if case_state == "pattern":
+                    # Bash does not require whitespace after the `)`, so the
+                    # body can begin inside this very token: `x)psql -c ...`.
+                    # The delimiter is the first paren OUTSIDE a
+                    # substitution - see _pattern_rest for why neither the
+                    # first nor the last one on its own is right.
+                    rest = _pattern_rest(tok)
+                    if rest is not None:
+                        # ACCEPTED OVER-WARN, raised three times in review
+                        # and declined three times: state is NOT carried to the
+                        # next `;;`, so a later spaced pattern (`truncate )
+                        # echo no`) reads as a command word and warns. A
+                        # `;;`-aware state machine was written to answer it and
+                        # reverted UNUSED - split_segments has already consumed
+                        # the `;;`, so the code could never fire, and a rule
+                        # that cannot fire is worse than none. Fixing it
+                        # properly means carrying state ACROSS segments, which
+                        # loses a truncate in a multi-command case BODY: a
+                        # fail-OPEN traded for an over-warn. Pinned in the
+                        # truncate-context suite.
+                        case_state = None
+                        cmd_pos = True
+                        if rest:
+                            # Hand the body back to the NORMAL walk rather than
+                            # judging it here: it can be a prefix, an assignment,
+                            # a wrapper with its own arguments, a redirection.
+                            # Re-deciding all of that inline is where every
+                            # spelling of `x)FOO=bar psql` slipped through.
+                            toks.insert(j + 1, rest)
+                    continue
+                if _is_redirect(tok):
+                    skip_next = (DYN_FD_NAME.sub("", tok).lstrip("0123456789")
+                                 in BARE_REDIRECT)
+                    continue
+                # Only AT command position: past it, `then`/`esac` are ordinary
+                # operands (`echo truncate then psql`) and reopening the slot on
+                # them is the very false-positive class this walk removes.
+                # DISPATCH is the exception - `-exec` reopens by definition, and
+                # it only ever appears inside find, whose own name has already
+                # consumed the slot - so it is scoped to that dispatcher instead.
+                # ...or the segment OPENS with the flag. split_segments cuts
+                # at `;`, which is exactly how a find action ENDS, so a second
+                # action begins a segment of its own with no `find` in front
+                # of it. The selection is then unreadable, which _find_selects
+                # answers by refusing - the same inversion, one level up.
+                if _reads_as(tok, DISPATCH) \
+                        and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0):
+                    # `-exec {}` runs the file that was FOUND, so the pattern
+                    # that selected it is what names the command.
+                    if _exec_placeholder(toks, j) \
+                            and _find_selects(toks, names, j):
+                        return True
+                if (cmd_pos and (word == "esac" or word in CONTROL)) \
+                        or (_reads_as(tok, DISPATCH)
+                            and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0)) \
+                        or tok in ("(", ")", "{", "}", ";;"):
+                    cmd_pos = True
+                    continue
+                if _whole_substitution(tok):
+                    continue
+                # A token made of NOTHING but expansions vanishes when they are
+                # empty, so it never held command position at all: with no
+                # positional parameters `$@ truncate ...` simply runs truncate.
+                # Consuming the slot for it read the real command word as an
+                # operand. Preserving the slot is also the safe direction when
+                # the expansion is NOT empty - the word is unreadable either way.
+                if cmd_pos and not word and _expansion_only(tok):
+                    continue
+                # A command word TORN across a substitution cannot be read at
+                # all - its halves are in different tokens - so refuse it here
+                # rather than teach EXPANSION the nested-substitution grammar.
+                # An ASSIGNMENT is exempt: `T=$(mktemp -d)` tears in exactly the
+                # same place, holds no command slot, and is the safe-artifact
+                # binding this guard goes out of its way to stay quiet about.
+                # ...and so is an OPTION: a backtick has no distinct closing
+                # character, so the TAIL of a torn one (`-d` plus a backtick)
+                # looks exactly like its head, and an option was never going to
+                # be the command word in the first place.
+                if cmd_pos and _torn_substitution(tok) \
+                        and not tok.startswith("-") \
+                        and not _assign_prefix(tok, word):
+                    return True
+                if tok.endswith(("{", ";;", ")")):
+                    cmd_pos = True       # `f(){ psql ...`, `x) psql ...`
+                    continue
+                if _assign_prefix(tok, word):
+                    continue
+                if cmd_pos and _matches_tok(tok, WRAPPERS):
+                    # Same reasoning as has_truncate: once a wrapper holds the
+                    # slot, its option ARGUMENTS make the real command word
+                    # unlocatable, so any later token counts.
+                    # A later token can also CARRY a command string rather than
+                    # be one: `watch "psql -c ..."` is ONE token after shlex, so
+                    # an exact-token match reads the payload as an operand. Same
+                    # recursion has_truncate uses; it terminates because a token
+                    # without whitespace never re-enters.
+                    for k, t in enumerate(toks[j + 1:], j + 1):
+                        # A wrapper does not hide a DISPATCHER. `env find ...
+                        # -exec {} ...` still runs the file find selected, and
+                        # scanning the wrapper tail token by token lost the
+                        # dispatcher semantics entirely - the placeholder read
+                        # as an ordinary operand.
+                        if _reads_as(t, DISPATCH) \
+                                and _exec_placeholder(toks, k) \
+                                and _find_selects(toks, names, k):
+                            return True
+                        # An ASSIGNMENT is data even here. _cmd_word takes a
+                        # BASENAME, so `env TOOL=/usr/bin/psql echo ok` reads as
+                        # the client itself unless the prefix is recognised
+                        # first - the same contract the main walk keeps.
+                        if ASSIGN_PREFIX.match(t.lstrip("({")):
+                            pass
+                        elif _matches_tok(t, names) \
+                                or any(_matches_tok(f, names)
+                                       for f in _brace_forms(t)):
+                            return True
+                        if _has_payload(t) \
+                                and _command_word_in([t], names, unreadable):
+                            return True
+                        # A wrapper OPTION can carry an executable VALUE:
+                        # `ssh -o ProxyCommand=...` runs it through a shell,
+                        # while the token reads as an assignment prefix.
+                        # A PAYLOAD is required, so an ordinary environment
+                        # assignment stays data: `env NOTE=psql echo ok` sets a
+                        # variable and runs echo, and reading its value as a
+                        # command made every mention of a name a warning.
+                        if "=" in t and _has_payload(t) and _command_word_in(
+                                [t.split("=", 1)[1]], names, unreadable):
+                            return True
+                        # ...and an EXEC-VALUED option needs no payload at all:
+                        # its value IS the command word by definition.
+                        if any(t.startswith(o + "=") for o in EXEC_VALUE_OPTS) \
+                                and _matches_tok(t.split("=", 1)[1], names):
+                            return True
+                    break
+                if cmd_pos:
+                    seg_cmd = word
+                    if seg_head is None:
+                        # The RAW token, so the dispatcher test reads it with
+                        # the same rejoin the destructive names get: an empty
+                        # expansion in `f${EMPTY}ind` left seg_head as `f`, and
+                        # the `-exec` behind it was never treated as a dispatch.
+                        seg_head = tok
+                cmd_pos = False
+    return False
+
+
+def _rebinds(chunks, pattern, names=frozenset()):
+    """True iff a rebinder RUNS in a segment whose text matches pattern.
+
+    Both halves are needed. Requiring only the rebinder makes `alias ll=ls`
+    beside an unrelated mention of psql warn; requiring only the name is the
+    match-anywhere rule this change removes. Scoped to the rebinding segment
+    because that is the one place the client name legitimately appears as text.
+    """
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            # unreadable=False: this asks whether a REBINDER runs, and the
+            # fail-closed unreadable rule answers True for any `"$C"` command
+            # word, which would make every expansion look like a rebind.
+            # Normalised the way the command walks normalise, not merely
+            # stripped of quotes. Dropping quoting alone leaves an ANSI-C escape
+            # and an empty expansion standing, so a `hash -p` whose path spells
+            # trunc-ate through a dollar-quote bound a name this search could
+            # not read although the command walks could read it perfectly well.
+            # Fold FIRST, then lowercase - a decoded escape yields a real
+            # character and lowercasing before it leaves that character cased.
+            folded = QUOTING.sub("", _fold_ansi_c(seg).lower())
+            # BRACE forms too. A binding path can carry a group, and
+            # `hash -p /usr/bin/trunc{a..a}te zap` completes to the real name
+            # only after the group expands - neither the raw text nor the
+            # expansion-stripped text spells it.
+            braced = " ".join(f for w in UNESCAPED_SPACE.split(folded)
+                              for f in _brace_forms(w))
+            # A GLOB in the bound path spells the name only after pathname
+            # expansion, and a regex search over the text finds nothing:
+            # `hash -p /usr/bin/truncat? zap` binds zap to the real binary.
+            # _matches_tok answers that exactly, with no text bound.
+            globbed = any(_matches_tok(w, names)
+                          for w in UNESCAPED_SPACE.split(folded)) if names \
+                else False
+            # A rebinder can also bind a LAUNCHER rather than the protected
+            # name: `hash -p /usr/bin/env e; e truncate ...` runs truncate
+            # through a name this scan has never heard of, and the same trick
+            # on find hides an `-exec` dispatch. The new name is unreadable
+            # either way, so the launcher binding is what is refused.
+            launcher = any(_reads_as(w, WRAPPERS) or _reads_as(w, DISPATCHERS)
+                           for w in UNESCAPED_SPACE.split(folded))
+            if _command_word_in([seg], REBINDERS, unreadable=False) \
+                    and (pattern.search(folded)
+                         or pattern.search(_strip_expansions(folded))
+                         or pattern.search(braced)
+                         or globbed
+                         or launcher):
+                return True
+    return False
+
+
+def has_sql_client(chunks):
+    """True iff a SQL client runs as a COMMAND, not merely appears as a word.
+
+    `grep truncate psql.log` and `echo truncate psql` name a client without
+    running one; matching the name anywhere kept exactly the class of false
+    prompt this change exists to remove.
+
+    Going semantic must not LOSE detection the raw text used to give, though:
+    the pre-change rule matched a client name anywhere, so it warned on
+    `C=psql; "$C" -c "TRUNCATE users"`, and reading position alone silently
+    cleared it. So an UNREADABLE command word counts too - fail CLOSED on a
+    command word this walk cannot resolve rather than resolving its value,
+    which is the ladder this file has already declined twice.
+
+    ACCEPTED OVER-WARN, declined deliberately: this answers "does a client RUN
+    here", not "does THAT client run the truncate". The bash arm pairs it with
+    the word `truncate` appearing anywhere in the command, so
+    `psql -c "SELECT 1"; echo truncate` warns. Attributing the word to a
+    particular command means modelling which argument of which invocation it is
+    - the pipeline case `printf TRUNCATE... | psql` puts them in different
+    segments on purpose - and this is a warn-only guard whose documented safe
+    direction is over-warning. Not one of the measured false positives had this
+    shape; all 20 were the bare english word with no client anywhere.
+
+    That rule is BOUNDED on a client name appearing in the text, and the bound
+    is load-bearing in the other direction: unbounded, every `"$GUARD" ...`
+    in a command whose text merely mentions truncate warns, which measured at
+    17 extra prompts across 356 replayed commands - the english-word false
+    positive this change exists to remove, in a narrower dress. The needle is
+    matched with quotes and backslashes stripped, so `p"s"ql` is not a spelling
+    to chase. A name ASSEMBLED at runtime (`$(printf p%sql s)`) still passes.
+    That is the same accepted limit as the variable-command-name and nameref
+    ones recorded above: reaching it needs ONE command string carrying the
+    setup, the indirection and the payload together - a session attacking its
+    own advisory guard, which merely prompts.
+    """
+    # Fold the ANSI-C dollar the same way the tokenizer does, or this prefilter
+    # is the tighter bound: `p$\x27s\x27ql` strips to `p$sql`, which spells no
+    # client, and the walk below never runs.
+    raw = _fold_ansi_c(" ".join(chunks)).lower()
+    text = QUOTING.sub("", raw)
+    if not SQL_NAME_RE.search(text):
+        # Braces are expanded by bash long after this scan, so `psq{l,l}` does
+        # not spell a name yet. Expand each word before giving up - the walk
+        # below does the same, and the bound must not be the tighter of the two.
+        # Split the RAW text on UNESCAPED whitespace and strip quoting only
+        # afterwards: stripping first turns `psq{l,l\ }` into two words and
+        # destroys the group before it can expand.
+        forms = [QUOTING.sub("", f)
+                 for w in UNESCAPED_SPACE.split(raw)
+                 for f in _brace_forms(w)]
+        if not SQL_NAME_RE.search(" ".join(forms)):
+            # A GLOB spells no name either, and fnmatch answers exactly, so
+            # this admits `/usr/bin/psq?` without admitting anything a glob
+            # cannot actually produce.
+            if not any(_matches_tok(f, SQL_CLIENTS) for f in forms):
+                return False
+    # A name can also be rebound STATICALLY - `alias db=psql`, `hash -p ... db`,
+    # an eval-built definition - and then the call site carries no expansion to
+    # mark it unreadable. Same fail-CLOSED answer as an unreadable command word,
+    # and reached only when a rebinder RUNS with a client already named.
+    if _rebinds(chunks, SQL_NAME_RE, SQL_CLIENTS):
+        return True
+    return _command_word_in(chunks, SQL_CLIENTS)
+
+
 def has_truncate(chunks):
     """True iff coreutils `truncate` appears as a COMMAND WORD.
 
@@ -550,12 +1882,31 @@ def has_truncate(chunks):
     absolute paths (`sudo truncate`, `env truncate`, `/usr/bin/truncate`) still
     expose theirs. Same walk the rm scanner below uses, same reasons.
     """
+    # A rebind hides the name here exactly as it does for a SQL client:
+    # `hash -p /usr/bin/truncate zap; zap -s 0 f` puts no truncate at command
+    # position. Same two-part rule - a rebinder must RUN, in a segment that
+    # also names truncate - so `alias ll=ls` beside the word does not warn.
+    if _rebinds(chunks, TRUNCATE_WORD, TRUNCATE_SET):
+        return True
     for chunk in chunks:
+        prev_seg = None
         for _op, seg in split_segments(chunk):
             try:
-                toks = shlex.split(seg, posix=True)
+                toks = shlex.split(_fold_ansi_c(seg), posix=True)
             except ValueError:
                 toks = seg.split()
+            # split_segments cuts at `&`, which SPLITS the separated `>& file`
+            # and `2>& 1` redirection forms: the operand then lands at the head
+            # of the next segment and consumes the command slot, so the real
+            # command word reads as an argument. If the previous segment ended
+            # on a redirection operator, this segment opens with its operand.
+            # ANY operator, not just `&`. What carries the operand is the
+            # DANGLING redirection at the end of the previous segment, never the
+            # character that happened to split there: `>| file cmd` splits on the
+            # `|` of the clobber operator, leaving the same orphaned target.
+            carry_operand = (prev_seg is not None
+                             and _ends_in_redirect(prev_seg))
+            prev_seg = seg
             # COMMAND WORD only, not any token: `truncate` is an ordinary
             # operand in `grep -F truncate script.sh` and `echo truncate`, so an
             # any-token scan fires on both. But "first token of the segment" is
@@ -564,21 +1915,110 @@ def has_truncate(chunks):
             # command POSITION closes that whole class at once, instead of
             # enumerating one more prefix each time another is found.
             cmd_pos = True      # the next non-prefix token runs
-            skip_next = False   # ...unless it is a redirection target
+            skip_next = carry_operand   # ...unless it is a redirection target
+            seg_cmd = None      # the command word this segment actually ran
+            seg_head = None     # ...and the FIRST one, which owns the argv
+            # None -> not in a case; then subject -> in -> pattern. Only the
+            # token AFTER a pattern closes is a command word.
+            case_state = None
             for j, tok in enumerate(toks):
                 if skip_next:
                     skip_next = False
-                    continue
-                word = tok.lstrip("({").rsplit("/", 1)[-1].lower()
-                if word == "truncate" and cmd_pos:
+                    # ...but a redirection operand never swallows a
+                    # DISPATCH flag. shlex has erased the quoting, so a
+                    # quoted `>` used as DATA - `find . -name SQ>SQ` -
+                    # reads as the operator, and letting its operand eat
+                    # the `-exec` behind it hid the command find then
+                    # ran. A redirection target genuinely spelled -exec
+                    # is not a shape worth keeping quiet for.
+                    if tok not in DISPATCH:
+                        continue
+                word = _cmd_word(tok)
+                # From the RAW token: _cmd_word strips a leading `{`, which is
+                # the OPENER of `{truncate,truncate}`, not grouping punctuation.
+                if cmd_pos and (_matches_tok(tok, TRUNCATE_SET)
+                                or any(_matches_tok(f, TRUNCATE_SET)
+                                       for f in _brace_forms(tok))):
                     return True
+                # ACCEPTED LIMIT, measured and declined: an UNREADABLE command
+                # word (a VALUED expansion like `$TRUNC`, a brace form too large
+                # to expand) cannot be compared at all. `${EMPTY}truncate` is no
+                # longer one of these - _matches_tok reads the fragments that
+                # rejoin when an expansion is empty, which costs nothing because
+                # it only matches when the literals spell the name themselves.
+                # Failing CLOSED on the rest - bounded on
+                # the text naming truncate, the mirror of what has_sql_client
+                # does - was built and MEASURED: 23 extra prompts over 368
+                # replayed commands, 6 of the 61 points, because a command that
+                # runs `"$GUARD"` and mentions truncate anywhere is the test
+                # loop of this very repo. Same call as the two indirection limits already
+                # recorded above, for the same reason: it needs one command
+                # string carrying setup, indirection and payload together.
+                # The SQL side pays no such cost, so it keeps the rule.
+                # The case construct: subject and patterns are DATA.
+                if word == "case" and cmd_pos:
+                    case_state = "subject"
+                    cmd_pos = False
+                    continue
+                if case_state == "subject":
+                    case_state = "in"            # the subject is an operand
+                    continue
+                if case_state == "in":
+                    if word == "in":
+                        case_state = "pattern"
+                    continue
+                if case_state == "pattern":
+                    # The body may begin in the SAME token as the pattern: bash
+                    # does not require whitespace after the `)`.
+                    # The delimiter is the first paren OUTSIDE a substitution
+                    # - see _pattern_rest for why neither the first nor the
+                    # last one on its own is right.
+                    rest = _pattern_rest(tok)
+                    if rest is not None:         # pattern closed; body follows
+                        # ACCEPTED OVER-WARN, raised three times in review
+                        # and declined three times: state is NOT carried to the
+                        # next `;;`, so a later spaced pattern (`truncate )
+                        # echo no`) reads as a command word and warns. A
+                        # `;;`-aware state machine was written to answer it and
+                        # reverted UNUSED - split_segments has already consumed
+                        # the `;;`, so the code could never fire, and a rule
+                        # that cannot fire is worse than none. Fixing it
+                        # properly means carrying state ACROSS segments, which
+                        # loses a truncate in a multi-command case BODY: a
+                        # fail-OPEN traded for an over-warn. Pinned in the
+                        # truncate-context suite.
+                        case_state = None
+                        cmd_pos = True
+                        if rest:
+                            # Re-read by the NORMAL walk: the body may open with
+                            # a prefix, an assignment or a wrapper.
+                            toks.insert(j + 1, rest)
+                    continue                     # patterns are data
                 if _is_redirect(tok):
                     # `>x` carries its target; a bare `>` takes the next token.
                     skip_next = (DYN_FD_NAME.sub("", tok).lstrip("0123456789")
                                  in BARE_REDIRECT)
                     continue                     # position is unchanged
-                if word in CONTROL or tok in DISPATCH:
-                    cmd_pos = True               # `then truncate`, `-exec truncate`
+                # Only AT command position, and DISPATCH only inside a real
+                # dispatcher: past the command word, `then`/`esac`/`-exec` are
+                # ordinary operands (`echo truncate then f`) and reopening the
+                # slot on them re-creates the bare-word false positive.
+                if cmd_pos and (word == "esac" or word in CONTROL):
+                    cmd_pos = True               # `then truncate`
+                    continue
+                # ...or the segment OPENS with the flag. split_segments cuts
+                # at `;`, which is exactly how a find action ENDS, so a second
+                # action begins a segment of its own with no `find` in front
+                # of it. The selection is then unreadable, which _find_selects
+                # answers by refusing - the same inversion, one level up.
+                if _reads_as(tok, DISPATCH) \
+                        and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0):
+                    # `-exec {}` runs the file that was FOUND, so the pattern
+                    # that selected it is what names the command.
+                    if _exec_placeholder(toks, j) \
+                            and _find_selects(toks, TRUNCATE_SET, j):
+                        return True
+                    cmd_pos = True               # `find . -exec truncate ...`
                     continue
                 # A token CLOSING a construct is followed by a command word: a
                 # case pattern (`x) truncate`), a function header (`f(){
@@ -620,12 +2060,34 @@ def has_truncate(chunks):
                 # both directions.
                 if _whole_substitution(tok):
                     continue
+                # A token made of NOTHING but expansions vanishes when they are
+                # empty, so it never held command position at all: with no
+                # positional parameters `$@ truncate ...` simply runs truncate.
+                # Consuming the slot for it read the real command word as an
+                # operand. Preserving the slot is also the safe direction when
+                # the expansion is NOT empty - the word is unreadable either way.
+                if cmd_pos and not word and _expansion_only(tok):
+                    continue
+                # A command word TORN across a substitution cannot be read at
+                # all - its halves are in different tokens - so refuse it here
+                # rather than teach EXPANSION the nested-substitution grammar.
+                # An ASSIGNMENT is exempt: `T=$(mktemp -d)` tears in exactly the
+                # same place, holds no command slot, and is the safe-artifact
+                # binding this guard goes out of its way to stay quiet about.
+                # ...and so is an OPTION: a backtick has no distinct closing
+                # character, so the TAIL of a torn one (`-d` plus a backtick)
+                # looks exactly like its head, and an option was never going to
+                # be the command word in the first place.
+                if cmd_pos and _torn_substitution(tok) \
+                        and not tok.startswith("-") \
+                        and not _assign_prefix(tok, word):
+                    return True
                 if tok.endswith(("{", ";;", ")")):
                     cmd_pos = True
                     continue
-                if "=" in word and not word.startswith("-"):
+                if _assign_prefix(tok, word):
                     continue                     # VAR=val prefix
-                if word in WRAPPERS:
+                if cmd_pos and _matches_tok(tok, WRAPPERS):
                     # A wrapper hides the command word behind its own options AND
                     # THEIR ARGUMENTS (`sudo -u root`, `env -u FOO`, `timeout 5`,
                     # `nice -n 10`). Skipping that correctly needs an arity table
@@ -643,12 +2105,45 @@ def has_truncate(chunks):
                     # Re-enter on any token holding whitespace — that is a payload
                     # to parse, and the recursion terminates because a token
                     # without whitespace never re-enters.
-                    for t in toks[j + 1:]:
-                        if t.lstrip("({").rsplit("/", 1)[-1].lower() == "truncate":
+                    for k, t in enumerate(toks[j + 1:], j + 1):
+                        # A wrapper does not hide a DISPATCHER - see the SQL
+                        # walk above for why the tail scan alone lost it.
+                        if _reads_as(t, DISPATCH) \
+                                and _exec_placeholder(toks, k) \
+                                and _find_selects(toks, TRUNCATE_SET, k):
                             return True
-                        if (" " in t or "\t" in t) and has_truncate([t]):
+                        # An ASSIGNMENT is data even here - see the SQL walk.
+                        # From the RAW token otherwise: _cmd_word strips the `{`
+                        # that OPENS `{truncate,truncate}`.
+                        if ASSIGN_PREFIX.match(t.lstrip("({")):
+                            pass
+                        elif _matches_tok(t, TRUNCATE_SET) \
+                                or any(_matches_tok(f, TRUNCATE_SET)
+                                       for f in _brace_forms(t)):
+                            return True
+                        if _has_payload(t) and has_truncate([t]):
+                            return True
+                        # A wrapper OPTION can carry an executable VALUE:
+                        # `ssh -o ProxyCommand=...` runs it through a shell.
+                        # A PAYLOAD is required - see the SQL walk above: a bare
+                        # `env NOTE=truncate echo ok` is data, not a command.
+                        if "=" in t and _has_payload(t) \
+                                and has_truncate([t.split("=", 1)[1]]):
+                            return True
+                        # ...and an EXEC-VALUED option needs no payload at all:
+                        # its value IS the command word by definition.
+                        if any(t.startswith(o + "=") for o in EXEC_VALUE_OPTS) \
+                                and _matches_tok(t.split("=", 1)[1], TRUNCATE_SET):
                             return True
                     break
+                if cmd_pos:
+                    seg_cmd = word
+                    if seg_head is None:
+                        # The RAW token, so the dispatcher test reads it with
+                        # the same rejoin the destructive names get: an empty
+                        # expansion in `f${EMPTY}ind` left seg_head as `f`, and
+                        # the `-exec` behind it was never treated as a dispatch.
+                        seg_head = tok
                 cmd_pos = False                  # a real command word, not truncate
     return False
 
@@ -672,7 +2167,7 @@ def unsafe(chunks, truncated):
         tmpvars = temp_vars(chunk)
         for seg_idx, (_op, seg) in enumerate(split_segments(chunk)):
             try:
-                toks = shlex.split(seg, posix=True)
+                toks = shlex.split(_fold_ansi_c(seg), posix=True)
             except ValueError:
                 toks = seg.split()
             for i, tok in enumerate(toks):
@@ -681,16 +2176,36 @@ def unsafe(chunks, truncated):
                 # command like `(rm -rf /etc)` still exposes its command word.
                 # lower() because a case-insensitive filesystem (macOS default)
                 # runs `RM` as /bin/rm — matches CMD_LOWER + the grep fallback.
-                if tok.lstrip("({").rsplit("/", 1)[-1].lower() != "rm":
+                # _spells, not an inline basename: an EMPTY expansion splits the
+                # name into halves that rejoin when it expands to nothing, and a
+                # basename comparison read `r${EMPTY}m` as a word in no set.
+                # _matches_tok, not _spells: at this point the token is a
+                # candidate COMMAND word, and `/bin/r?` reaches the real binary
+                # while spelling a name in no set. The glob reading is bounded
+                # by what follows - a match only WARNS when a recursive flag
+                # sits in the same argv, so an ordinary `*` operand is silent.
+                if not _matches_tok(tok, RM_SET) \
+                        and not any(_matches_tok(f, RM_SET)
+                                    for f in _brace_forms(tok)):
                     continue
-                recursive, targets = recursive_targets(toks[i:])
+                # An expansion supplies the field separators, so a token can
+                # carry the WHOLE argv: `${IFS}rm${IFS}-rf${IFS}/etc` is one
+                # token here and `-rf` never reached recursive_targets.
+                fields = [f for f in _expansion_fields(tok) if f]
+                # ...and every OPTION token too. `rm $(true)-rf /etc` reads as
+                # a recursive delete once the substitution vanishes, and leaving
+                # the rest raw meant the flag never registered.
+                rest = [_strip_expansions(t) or t for t in toks[i + 1:]]
+                argv = fields + rest if len(fields) > 1 else [toks[i]] + rest
+                recursive, targets = recursive_targets(argv)
                 # A recursive rm with NO visible literal target takes its targets
                 # from elsewhere (xargs/stdin, "$@", a glob, a variable), e.g.
                 # `... | xargs rm -rf` — we cannot prove those are safe artifacts,
                 # so warn. Otherwise warn iff any listed target is non-safe.
                 if recursive and (not targets
                                   or any(not is_safe(t)
-                                         and not is_temp(t, tmpvars, seg_idx)
+                                         and not is_temp(t, tmpvars, seg_idx,
+                                                         seg)
                                          for t in targets)):
                     return True
     return False
@@ -755,16 +2270,111 @@ try:
     # Same single pass, same bound: a second interpreter spawn on every Bash
     # call is what the SINGLE PASS note above exists to avoid.
     trunc = "truncate" if has_truncate(_chunks) else "notruncate"
-except TimeoutError:
-    verdict, trunc = "unsafe", "truncate"
+    sqlc = "sqlclient" if has_sql_client(_chunks) else "nosqlclient"
+    # The SQL KEYWORD, read the way bash reads it. The bash arm below used to
+    # grep the raw command for it, which `TR"UNC"ATE users` walks straight past:
+    # quoting is invisible to a text match but not to the shell. Quotes and
+    # backslashes are removed here for the same reason they are in the command
+    # word - bash strips them before the word exists.
+    # ACCEPTED OVER-WARN: backslashes are removed without tracking quote state,
+    # which shlex has already discarded, so `psql -c SQ TRUN\CATE users SQ` -
+    # invalid SQL, since a backslash is literal inside single quotes - reads as
+    # the keyword and warns. The opposite choice loses `TR\UNC\ATE`, a real
+    # destructive spelling; over-warning is the documented direction here.
+    #
+    # ACCEPTED LIMIT: removing an expansion assumes it yields NOTHING, so
+    # `C=C; psql -c "TRUN${C}ATE users"` still reads as `trunate`. Resolving the
+    # VALUE is the variable-resolution ladder this file has already deleted
+    # twice, and the raw-grep rule that preceded this verdict missed the same
+    # command for the same reason - it is not a regression, it is the same
+    # unresolved indirection recorded with the other limits.
+    #
+    # An expansion can also SPLIT the keyword rather than hide it:
+    # `TRUN${EMPTY}CATE` rejoins once it expands to nothing. Removing simple
+    # expansions lets the literal fragments meet. Deliberately NOT the same as
+    # returning sqlop for any expansion beside a client - that would fire on
+    # every `psql -c "$QUERY"`, which names no operation at all.
+    # ACCEPTED LIMIT, OUT OF SCOPE here: a script fed to an interpreter through
+    # stdin or a here-string (`... | bash`, `bash <<< ...`) is not among the
+    # chunks at all, so neither scanner sees it. That is chunk EXTRACTION, in
+    # the shared gitcmd_detect library, and it is issue #557 - being fixed in
+    # its own worktree. Closing it here would mean editing that library
+    # concurrently with the change that owns it.
+    # From the RAW command, not the chunks: chunks_and_truncation drops a
+    # QUOTED heredoc body as inert shell data, and `psql <<SQ SQL SQ ... SQ` is
+    # exactly where the statement lives. Harmless here - the keyword only
+    # matters when a client also runs.
+    _sqlraw = _fold_ansi_c(_cmd + " " + " ".join(_chunks)).lower()
+    _sqltext = QUOTING.sub("", _sqlraw)
+    # The SAME text with the quoting turned into a SPACE rather than deleted.
+    # Deleting is what lets `TR"UNC"ATE` rejoin, and it is also what glues an
+    # ATTACHED short option to the keyword: a psql -c whose quoted query starts
+    # with no space between them collapses to `-ctruncate`, where the word
+    # boundary the search needs no longer exists. The two readings answer
+    # opposite halves of the same question, so both are searched rather than one
+    # being chosen over the other.
+    _sqlspaced = QUOTING.sub(" ", _sqlraw)
+    # Split the RAW text on UNESCAPED whitespace and strip the quoting only
+    # afterwards, exactly as the client prefilter does. Stripping first leaves a
+    # bare space where an escaped one stood, which tore `TRUN{C,C\ }ATE` into
+    # pieces no brace form could rejoin.
+    _sqlforms = " ".join(
+        QUOTING.sub("", f)
+        for w in UNESCAPED_SPACE.split(_strip_expansions(_sqlraw))
+        for f in _brace_forms(w))
+    # The client-INDEPENDENT phrase, read the same normalised way. The bash arm
+    # grepped raw text for it, so `TR"UNC"ATE\ TABLE\ users` reached an
+    # unlisted client untouched - the very residual the allowlist limit below
+    # says this backstop covers.
+    _sqlreadings = (_sqltext, _strip_expansions(_sqltext), _sqlforms,
+                    _sqlspaced, _strip_expansions(_sqlspaced))
+    sqltab = "sqltable" if any(TRUNCATE_TABLE.search(t)
+                               for t in _sqlreadings) else "nosqltable"
+    # A GLOB in the query text spells the keyword only after pathname expansion
+    # (`TRUNCAT?` reaches it when a file named `TRUNCATE users` sits in the
+    # working directory), and a word-boundary search finds nothing. fnmatch
+    # answers it exactly - but only for a pattern carrying a LITERAL letter: a
+    # bare `*` matches every name there is, and `SELECT * FROM t` is the most
+    # ordinary query in the language. What that leaves unread is a pattern
+    # spelled ENTIRELY in wildcards, the same residual the density rule left on
+    # the command-word side and for the same reason.
+    _sqlglob = any(_matches(GLOB_BRACKET.sub("?", w), TRUNCATE_SET)
+                   for w in UNESCAPED_SPACE.split(_sqlforms)
+                   if any(c.isalpha() for c in GLOB_BRACKET.sub("", w)))
+    sqlop = "sqlop" if _sqlglob or any(TRUNCATE_WORD.search(t)
+                                       for t in _sqlreadings) else "nosqlop"
+except Exception:
+    # Conservative on every axis. Computing sqlc AFTER this block would raise
+    # UnboundLocalError here (_chunks never got assigned), the scanner would
+    # print nothing, and the whole verdict would silently degrade to raw grep.
+    #
+    # EVERY exception, not just the SIGALRM TimeoutError this handler was
+    # written for. A parser fault is the same event as a timeout - the scan did
+    # not finish - but it used to end the process instead, and the bash arm
+    # reads a missing verdict as "no python3" and falls back to grepping the RAW
+    # text, which `tr"unc"ate` walks straight past. One malformed escape was
+    # therefore a general bypass primitive rather than a bug in one word. This
+    # is the fail-CLOSED answer, so a future parser fault costs a prompt rather
+    # than the whole check; it is deliberately NOT a reason to stop fixing the
+    # faults themselves.
+    verdict, trunc, sqlc, sqlop, sqltab = (
+        "unsafe", "truncate", "sqlclient", "sqlop", "sqltable")
 finally:
     try:
         signal.alarm(0)
     except (ValueError, AttributeError):
         pass
-print(verdict, trunc)
+print(verdict, trunc, sqlc, sqlop, sqltab)
 ' 2>/dev/null || true)
-  read -r RM_VERDICT TRUNC_VERDICT <<<"$_SCAN_OUT" || true
+  read -r RM_VERDICT TRUNC_VERDICT SQL_VERDICT SQLOP_VERDICT SQLTAB_VERDICT <<<"$_SCAN_OUT" || true
+  # The auto-mode stand-down, applied to the ONE classifier it was written for.
+  # "safe", not empty: an empty verdict means the scanner did not run, and the
+  # recursive-rm grep fallback below is armed by exactly that.
+  # An `if`, not `[[ ]] &&`: under `set -e` a false test as the last command of
+  # this block returns non-zero, trips the ERR trap, and fails the guard OPEN.
+  if [[ "$AUTO_MODE" == 1 ]]; then
+    RM_VERDICT="safe"
+  fi
 fi
 
 if [[ "$AUTO_MODE" == 0 && "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
@@ -816,6 +2426,11 @@ fi
 # Add names here as they come up rather than reverting to the bare word, which
 # cost 11% of ALL prompts in false positives.
 #
+# The KEYWORD comes from the scanner (SQLOP_VERDICT), which reads it the way
+# bash does: `TR"UNC"ATE users` is TRUNCATE once quoting is applied, and a raw
+# grep on the command text never sees it. The grep survives only as the
+# scanner-absent fallback, where over-warning is the required direction.
+#
 # `truncate table` is matched WHEREVER it appears, including inside a quoted
 # string, and that is deliberate: it is the operation phrase, not the english
 # word, and `psql -c "TRUNCATE TABLE t"` puts real SQL inside quotes too. So
@@ -826,10 +2441,16 @@ fi
 # Deliberately NOT gated on AUTO_MODE, same as DROP above: the classifier does
 # not name either, so both stay live in every mode.
 if [[ -z "$WARN" ]]; then
-  if printf '%s' "$CMD_LOWER" | grep -qE 'truncate[[:space:]]+table\b' 2>/dev/null \
-     || { printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null \
-          && printf '%s' "$CMD_LOWER" \
-             | grep -qE '\b(psql|pgcli|mysql|mysqlsh|mycli|mariadb|sqlite3|litecli|sqlcmd|sqlplus|snowsql|usql|clickhouse-client|clickhouse|duckdb|cockroach|cqlsh|beeline|trino|presto|impala-shell|spark-sql|bq)\b' 2>/dev/null; }; then
+  if [[ "$SQLTAB_VERDICT" == "sqltable" ]] \
+     || { [[ -z "$SQLTAB_VERDICT" ]] \
+          && printf '%s' "$CMD_LOWER" | grep -qE 'truncate[[:space:]]+table\b' 2>/dev/null; } \
+     || { { [[ "$SQLOP_VERDICT" == "sqlop" ]] \
+          || { [[ -z "$SQLOP_VERDICT" ]] \
+               && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null; }; } \
+          && { [[ "$SQL_VERDICT" == "sqlclient" ]] \
+               || { [[ -z "$SQL_VERDICT" ]] \
+                    && printf '%s' "$CMD_LOWER" \
+                       | grep -qE '\b(psql|pgcli|mysql|mysqlsh|mycli|mariadb|sqlite3|litecli|sqlcmd|sqlplus|snowsql|usql|clickhouse-client|clickhouse|duckdb|cockroach|cqlsh|beeline|trino|presto|impala-shell|spark-sql|bq)\b' 2>/dev/null; }; }; }; then
     WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
   # Command-word detection is delegated to the quote-aware scanner above
   # (has_truncate), not grepped. Every regex attempt here was bypassable in one

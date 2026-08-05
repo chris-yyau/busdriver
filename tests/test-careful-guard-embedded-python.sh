@@ -86,6 +86,27 @@ else
   pass=$((pass+1))
 fi
 
+# Compilation is not execution: a NameError on a branch only some commands
+# reach dies at RUNTIME, its stderr is swallowed, and the guard degrades to the
+# grep path — which warns, so a test asserting "ask" would still pass. This
+# command is one the degraded path WARNS on (it contains the word) and the real
+# scanner CLEARS, so it can only pass when the find branch actually executed.
+payload=$(python3 -c '
+import json
+print(json.dumps({"permission_mode": "bypassPermissions", "tool_name": "Bash",
+                  "tool_input": {"command": "find . -name \"truncate.log\" -exec ls {} ;"}}))')
+guard_out=$("$GUARD" <<<"$payload"); guard_rc=$?
+if [[ $guard_rc -ne 0 ]]; then
+  echo "FAIL guard exited $guard_rc on the find branch"
+  fail=$((fail+1))
+elif [[ "$guard_out" != "{}" ]]; then
+  echo "FAIL find branch degraded to grep: ${guard_out:-<empty>}"
+  fail=$((fail+1))
+else
+  echo "PASS find branch executed without dying"
+  pass=$((pass+1))
+fi
+
 echo
 echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

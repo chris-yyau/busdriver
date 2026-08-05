@@ -500,13 +500,25 @@ if [ -f "$MARKER" ]; then
 
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass.\"}" >&2
-        # Do NOT exit 0 — fall through to blocking logic below
-    elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        REASON="Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass."
+        block_emit "$REASON"
+        exit 0
+    elif [[ "$MARKER_CONTENT" =~ ^SKIPPED-NONE-[0-9]+$ ]]; then
         # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
         # Accept unconditionally. See design spec §4 for risk analysis.
         # Carries no hash by construction: no review ran, so there is nothing
         # to bind it to. The opt-out is the operator's, and it is logged.
+        #
+        # `[[ =~ ]]` (not `grep -qE`) deliberately: bash's `=~` anchors `^`/`$`
+        # against the WHOLE subject string, so a multi-line MARKER_CONTENT
+        # whose first line merely starts with SKIPPED-NONE, or trailing
+        # garbage after the epoch, fails the match. `grep` anchors per LINE,
+        # so `grep -qE '^SKIPPED-NONE-[0-9]+$'` would still honor a marker
+        # like "SKIPPED-NONE-123\nrm -rf /" because line 1 alone satisfies
+        # the pattern. The hash arms below are safe from this because they
+        # follow up with an exact `[ "$MARKER_CONTENT" = "$HASH" ]` compare;
+        # this arm has no such follow-up (it's an unconditional exit), so the
+        # anchor itself must be airtight.
         exit 0
     elif echo "$MARKER_CONTENT" | grep -qE '^PASS-MERGE-[0-9]+$'; then
         # Merge commit whose resolution kept already-reviewed code unchanged
@@ -520,8 +532,10 @@ if [ -f "$MARKER" ]; then
             exit 0
         fi
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus.\"}" >&2
-    elif echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]+$'; then
+        REASON="PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus."
+        block_emit "$REASON"
+        exit 0
+    elif echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]{1,15}$'; then
         # Whole staged diff was excluded from review (lockfiles, minified
         # bundles, sourcemaps): no reviewer ran because there was nothing
         # reviewable. Diff-bound AND age-bound, the same shape pre-pr-gate.sh
@@ -541,8 +555,8 @@ if [ -f "$MARKER" ]; then
         # UNSTAGED widening of that file (adding `*`) neutralizes the check
         # while the marker stays valid. A hash over the staged diff cannot be
         # widened by editing a policy file.
-        EXCLUDED_HASH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-([a-f0-9]{64})-[0-9]+$/\1/')
-        EXCLUDED_EPOCH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-[a-f0-9]{64}-([0-9]+)$/\1/')
+        EXCLUDED_HASH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-([a-f0-9]{64})-[0-9]{1,15}$/\1/')
+        EXCLUDED_EPOCH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-[a-f0-9]{64}-([0-9]{1,15})$/\1/')
         # `10#` forces base 10. A zero-padded epoch is all digits, so it passes
         # the pattern above, but bash reads a leading zero as OCTAL and aborts
         # on the digits 8 and 9 with "value too great for base". Measured, that
@@ -551,6 +565,18 @@ if [ -f "$MARKER" ]; then
         # conversion rather than on a trap firing: move this line inside any
         # conditional (where `set -e` is suspended) and the accidental
         # protection silently disappears.
+        #
+        # The `{1,10}` bound above (cubic P1 finding) closes a SEPARATE overflow
+        # path: bash's `$(( ))` does NOT error on 64-bit signed overflow for a
+        # plain decimal/`10#` literal, it silently WRAPS (measured:
+        # `$((10#18446744073709551616))` → 0). An unbounded `[0-9]+` epoch
+        # therefore let an attacker who can write the marker file choose an
+        # epoch of the form `real_target + k*2^64` that wraps to land inside
+        # the current 1h freshness window, forging a "fresh" marker regardless
+        # of its literal digit value. Ten digits caps the epoch at
+        # 9999999999 (year 2286), 16 orders of magnitude below the 2^63
+        # wraparound boundary, so the value reaching the arithmetic below is
+        # never large enough to overflow.
         EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))
         EXCLUDED_AGE=$(( $(date +%s) - EXCLUDED_EPOCH ))
         if [ -n "$STAGED_HASH" ] && [ "$EXCLUDED_HASH" = "$STAGED_HASH" ] \
@@ -558,7 +584,9 @@ if [ -f "$MARKER" ]; then
             exit 0
         fi
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Excluded-only review marker is stale (over 1h old) or names a different diff than the one staged. That marker only certifies a diff with nothing reviewable in it. Run /litmus.\"}" >&2
+        REASON="Excluded-only review marker is stale (over 1h old) or names a different diff than the one staged. That marker only certifies a diff with nothing reviewable in it. Run /litmus."
+        block_emit "$REASON"
+        exit 0
     elif echo "$MARKER_CONTENT" | grep -qE '^BUILTIN-[a-f0-9]{64}$'; then
         # Built-in agent review — accept for the commit gate, but only for the
         # diff it reviewed. Post-commit hook excludes it from
@@ -568,7 +596,9 @@ if [ -f "$MARKER" ]; then
             exit 0
         fi
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Builtin review marker is for a different diff than the one staged. Re-run /litmus so the review covers what you are committing.\"}" >&2
+        REASON="Builtin review marker is for a different diff than the one staged. Re-run /litmus so the review covers what you are committing."
+        block_emit "$REASON"
+        exit 0
     elif echo "$MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
         # Genuine external review pass. Approve only when the marker names the
         # staged diff, and do NOT consume the marker — consumption is deferred
@@ -582,7 +612,9 @@ if [ -f "$MARKER" ]; then
             exit 0
         fi
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Review marker is for a different diff than the one staged (marker ${MARKER_CONTENT:0:12}..., staged ${STAGED_HASH:0:12}...). A review of one diff cannot authorize committing another. Run /litmus.\"}" >&2
+        REASON="Review marker is for a different diff than the one staged (marker ${MARKER_CONTENT:0:12}..., staged ${STAGED_HASH:0:12}...). A review of one diff cannot authorize committing another. Run /litmus."
+        block_emit "$REASON"
+        exit 0
     else
         # Unrecognized marker content — reject, matching pre-pr-gate.sh:321.
         # A gate that cannot prove the safe condition must block; "I do not
@@ -591,7 +623,9 @@ if [ -f "$MARKER" ]; then
         # enumerated above, so anything reaching here is stale, hand-written,
         # or forged.
         rm -f "$MARKER"
-        echo "{\"decision\":\"block\",\"reason\":\"Review marker content not recognized: ${MARKER_CONTENT:0:30}... Rejecting rather than assuming a pass. Run /litmus.\"}" >&2
+        REASON="Review marker content not recognized: ${MARKER_CONTENT:0:30}... Rejecting rather than assuming a pass. Run /litmus."
+        block_emit "$REASON"
+        exit 0
     fi
 fi
 

@@ -23,6 +23,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Neutralize BUSDRIVER_STATE_DIR for the whole file: the gate resolves its
+# marker directory from this var, but every test here hardcodes ".claude" as
+# the marker path it writes to (see run_marker_test below). If a developer or
+# CI job exports BUSDRIVER_STATE_DIR, the gate would read a DIFFERENT
+# directory, find no marker there, and take a different path — every
+# expected-`allow` test would fail, and every expected-`block` test would
+# pass for the wrong reason. No test in this file exercises the override
+# itself, so unsetting it once here (rather than per-test) is safe.
+unset BUSDRIVER_STATE_DIR
+
 PASS=0
 FAIL=0
 TOTAL=0
@@ -356,7 +366,11 @@ echo "── marker is bound to the diff it approved (#545) ──────�
 #   <64hex>                 run-review-loop.sh:1341,1654   → bind to staged diff
 #   BUILTIN-<64hex>         write-review-marker.sh:32      → bind to staged diff
 #   PASS-MERGE-<epoch>      run-review-loop.sh:848         → bind to EMPTY diff
-#   PASS-EXCLUDED-<epoch>   run-review-loop.sh:1018        → epoch-only by design
+#   PASS-EXCLUDED-<64hex>-<epoch>
+#                           run-review-loop.sh:1096        → bind to staged diff
+#                                                            AND to age (≤1h);
+#                                                            the epoch-only form
+#                                                            is retired
 #   SKIPPED-NONE-<epoch>    run-review-loop.sh:829         → operator opt-out
 run_marker_test() {
     # $1=name $2=expected(allow|block) $3=marker-content-template
@@ -458,7 +472,7 @@ run_marker_test "...and blocks when it names a different diff" \
     block 'PASS-EXCLUDED-0000000000000000000000000000000000000000000000000000000000000000-@NOW@' 1
 run_marker_test "...and blocks when the marker is over an hour old" \
     block 'PASS-EXCLUDED-@STAGED@-1754400000' 2
-run_marker_test "...and blocks on a future-dated marker" \
+run_marker_test "...and blocks an 11+ digit epoch outright (digit-count cap, see cubic P1 below)" \
     block 'PASS-EXCLUDED-@STAGED@-99999999999' 2
 # The retired epoch-only form is the bearer token this change removes. It must
 # now fall to the unrecognized arm, not be honored.
@@ -473,6 +487,16 @@ run_marker_test "...and blocks a zero-padded stale epoch (digit 9)" \
     block 'PASS-EXCLUDED-@STAGED@-09' 2
 run_marker_test "...and a zero-padded FRESH epoch is read as base 10, not octal" \
     allow 'PASS-EXCLUDED-@STAGED@-0@NOW@' 2
+# cubic P1: bash's `$(( ))` does not error on 64-bit signed overflow for a
+# `10#`-prefixed decimal literal — it silently wraps (e.g.
+# `$((10#18446744073709551616))` → 0). An unbounded `[0-9]+` epoch match let
+# an attacker who can write the marker file pick an epoch of the form
+# `real_target + k*2^64` that wraps into the current 1h freshness window,
+# forging a "fresh" marker from an arbitrarily large digit string. Capping the
+# epoch at 10 digits (year 2286) keeps every value that reaches the age
+# arithmetic far below the wraparound boundary.
+run_marker_test "...and blocks an oversized epoch designed to overflow 64-bit arithmetic" \
+    block 'PASS-EXCLUDED-@STAGED@-18446744073709551616' 2
 
 # Operator opt-out: no review ran, so there is no hash to bind.
 run_marker_test "SKIPPED-NONE is accepted unconditionally (operator opt-out)" \

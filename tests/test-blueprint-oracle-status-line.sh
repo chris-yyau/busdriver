@@ -55,7 +55,7 @@ else
   fail "no guarded log_info emit — the line is either unconditional or missing"
 fi
 
-# The tag that keeps an auxiliary from being read as a fourth lens. k3 carries the
+# The tag that keeps an auxiliary from being read as a fourth lens. The witness carries the
 # same marker; losing it is how an advisory silently becomes "independent agreement".
 if grep -qE 'UltraOracle \(ChatGPT Pro\): ran .*AUXILIARY, not a reviewer' "$LOOP"; then
   ok "success line carries the AUXILIARY-not-a-reviewer tag"

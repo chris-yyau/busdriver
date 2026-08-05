@@ -600,6 +600,159 @@ mutation_test "a one-character mutation at the START of a valid hash blocks" 0
 mutation_test "...in the MIDDLE blocks" 31
 mutation_test "...at the END blocks" 63
 
+echo ""
+echo "── PR #577 follow-up: opt-out ordering + circuit breaker ───"
+
+# Codex P2: SKIPPED-NONE (and DEGRADED) must be honored BEFORE the staged
+# diff is hashed, so a broken diff driver cannot block the unconditional
+# operator opt-out. Force `git diff --cached` to fail via a GIT_EXTERNAL_DIFF
+# that errors out, and confirm SKIPPED-NONE still allows.
+TOTAL=$((TOTAL + 1))
+skn_tmp=$(mktemp -d)
+(
+    cd "$skn_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "initial" > file.txt
+    git add file.txt
+    git commit -qm "initial" --no-verify
+    echo "modified" >> file.txt
+    git add file.txt
+)
+mkdir -p "$skn_tmp/.claude"
+printf 'SKIPPED-NONE-1754400000\n' > "$skn_tmp/.claude/litmus-passed.local"
+skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
+skn_out=$(cd "$skn_tmp" && printf '%s' "$skn_input" | \
+    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null || true)
+if ! echo "$skn_out" | grep -q '"block"' 2>/dev/null; then
+    printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken external diff driver)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  SKIPPED-NONE blocked by a broken diff driver (out: %s)\n" "$skn_out"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$skn_tmp"
+
+# cubic P1 (round 3 follow-up): a broken diff driver must still BLOCK, but
+# through gate_record_block_and_emit so the stuck-gate circuit breaker
+# counts it (and its escape-hatch warning eventually fires). Reuse the same
+# GIT_EXTERNAL_DIFF=/bin/false fixture that proves SKIPPED-NONE bypasses this
+# failure, but this time with a real hash marker (a shape that DOES reach
+# the STAGED_HASH assignment), and assert both that the commit is blocked
+# AND that the circuit-breaker counter incremented.
+#
+# It also asserts the marker SURVIVES. A failed hash proves nothing about the
+# marker's validity — only that we could not check it — so destroying it would
+# turn a transient environment fault into a discarded review. Every other
+# rejection arm deletes the marker precisely because it has proven it wrong.
+TOTAL=$((TOTAL + 1))
+hf_tmp=$(mktemp -d)
+(
+    cd "$hf_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "initial" > file.txt
+    git add file.txt
+    git commit -qm "initial" --no-verify
+    echo "modified" >> file.txt
+    git add file.txt
+)
+mkdir -p "$hf_tmp/.claude"
+printf '%s\n' "$(printf 'a%.0s' {1..64})" > "$hf_tmp/.claude/litmus-passed.local"
+hf_input=$(make_hook_input_cwd "git commit -m x" "$hf_tmp")
+hf_out=$(printf '%s' "$hf_input" | \
+    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null || true)
+hf_count=$(cat "$hf_tmp/.claude/.gate-block-count.local" 2>/dev/null || echo "")
+hf_marker_kept=no
+[[ -f "$hf_tmp/.claude/litmus-passed.local" ]] && hf_marker_kept=yes
+if echo "$hf_out" | grep -q '"block"' 2>/dev/null \
+   && [[ "$hf_count" == "1" ]] \
+   && [[ "$hf_marker_kept" == "yes" ]]; then
+    printf "  PASS  hash-marker commit blocks, increments the circuit-breaker counter, and PRESERVES the marker when the staged-diff hash cannot be computed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  hashing-failure path not blocked-and-counted-and-preserved (out: %s, count: '%s', marker kept: %s)\n" "$hf_out" "$hf_count" "$hf_marker_kept"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$hf_tmp"
+
+# cubic P2: repeated marker-specific rejections (e.g. a stale hash marker
+# regenerated on every retry) must still feed the stuck-gate circuit
+# breaker, not just the no-marker fallback path.
+TOTAL=$((TOTAL + 1))
+cb_tmp=$(mktemp -d)
+(
+    cd "$cb_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "initial" > file.txt
+    git add file.txt
+    git commit -qm "initial" --no-verify
+    echo "modified" >> file.txt
+    git add file.txt
+)
+mkdir -p "$cb_tmp/.claude"
+# A hash marker for a DIFFERENT diff — the "...and a marker for a DIFFERENT
+# diff blocks" case, repeated here specifically to inspect the counter file.
+printf '0000000000000000000000000000000000000000000000000000000000000000\n' \
+    > "$cb_tmp/.claude/litmus-passed.local"
+cb_input=$(make_hook_input_cwd "git commit -m x" "$cb_tmp")
+printf '%s' "$cb_input" | bash "$GATE_SCRIPT" >/dev/null 2>&1 || true
+cb_count=$(cat "$cb_tmp/.claude/.gate-block-count.local" 2>/dev/null || echo "")
+if [[ "$cb_count" = "1" ]]; then
+    printf "  PASS  a mismatched-hash marker rejection increments the stuck-gate counter\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  stuck-gate counter not incremented by marker-specific block (got: '%s')\n" "$cb_count"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$cb_tmp"
+
+# A malformed counter file must NOT be able to defeat the gate. The counter is
+# ordinary on-disk state, and Bash does not run the ERR trap on an
+# arithmetic-expansion error — so before normalization, garbage like `bad` (or
+# a zero-padded `09`, read as a bad octal literal) aborted
+# gate_record_block_and_emit BEFORE block_emit, and the hook exited emitting no
+# decision at all. A control that only WARNS must never become a way to silence
+# the gate it reports on. Each case pairs the bad counter with a mismatched
+# marker, so a correct gate has to block.
+for bad_count in "bad" "09" "" "-5" "999999999999999999999999"; do
+    TOTAL=$((TOTAL + 1))
+    bc_tmp=$(mktemp -d)
+    (
+        cd "$bc_tmp"
+        git init -q -b main 2>/dev/null || git init -q
+        git config commit.gpgsign false
+        git config user.email "test@test.com"
+        git config user.name "Test"
+        echo "initial" > file.txt
+        git add file.txt
+        git commit -qm "initial" --no-verify
+        echo "modified" >> file.txt
+        git add file.txt
+    )
+    mkdir -p "$bc_tmp/.claude"
+    printf '0000000000000000000000000000000000000000000000000000000000000000\n' \
+        > "$bc_tmp/.claude/litmus-passed.local"
+    printf '%s\n' "$bad_count" > "$bc_tmp/.claude/.gate-block-count.local"
+    bc_input=$(make_hook_input_cwd "git commit -m x" "$bc_tmp")
+    bc_out=$(printf '%s' "$bc_input" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    if echo "$bc_out" | grep -q '"block"' 2>/dev/null; then
+        printf "  PASS  a malformed circuit-breaker counter (%s) still blocks a mismatched marker\n" "${bad_count:-<empty>}"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  malformed counter (%s) produced a non-blocking hook result (out: '%s')\n" "${bad_count:-<empty>}" "$bc_out"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$bc_tmp"
+done
+
 # ── Results ───────────────────────────────────────────────────────────
 
 echo ""

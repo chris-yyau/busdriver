@@ -51,6 +51,12 @@ resolve() {  # <json-or-empty> → stdout model, stderr dropped unless $2=keep-s
 DEFAULT="$(grep -E '^BUSDRIVER_AUDITOR_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
 [[ -n "$DEFAULT" ]] && ok "default constant present → $DEFAULT" || fail "no BUSDRIVER_AUDITOR_MODEL_DEFAULT in $LIB"
 
+# dispatch.sh's library-missing shim repeats the default literal (no config
+# reader exists without the library). Nothing else catches drift between the
+# two, so assert equality directly.
+SHIM_DEFAULT="$(grep -E 'resolve_auditor_model\(\) \{ _BD_AUDITOR_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
+eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh shim default matches BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+
 eq "$(resolve '')"                                        "$DEFAULT"        "no config → default"
 eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → default"
 eq "$(resolve '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}')" \
@@ -59,6 +65,8 @@ eq "$(resolve '{"auditor":{"model":"opencode-go/kimi-k3"}}')" \
    "opencode-go/kimi-k3"                                                    "provider switch honored"
 eq "$(resolve '{"auditor":{"model":"zenmux/moonshotai/kimi-k2.7-code:free"}}')" \
    "zenmux/moonshotai/kimi-k2.7-code:free"                                  "colon-tagged variant accepted"
+eq "$(resolve '{"auditor":{"model":"google-vertex-anthropic/claude-sonnet-4@20250514"}}')" \
+   "google-vertex-anthropic/claude-sonnet-4@20250514"                       "at-tagged variant (Vertex Anthropic) accepted"
 eq "$(resolve '{"auditor":{"model":"--dangerously-x"}}')"  "$DEFAULT"        "leading-dash rejected"
 eq "$(resolve '{"auditor":{"model":"a b"}}')"              "$DEFAULT"        "whitespace rejected"
 eq "$(resolve '{"auditor":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"
@@ -132,6 +140,34 @@ got="$( cd "$PROJ" && HOME="$FAKE_HOME" BUSDRIVER_STATE_DIR=".claude" bash -c \
         'rm -f "$HOME/.claude/busdriver.json"; source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 rm -rf "$PROJ"
 eq "$got" "$DEFAULT" "project .claude/busdriver.json ignored (USER config only)"
+
+# P1 regression: an inherited/exported function named resolve_auditor_model
+# must not be trusted merely because `type` finds it — only a successfully-
+# sourced resolve-cli.sh should skip the library-missing shim. Simulate a
+# missing library (BUSDRIVER_PLUGIN_ROOT with no scripts/lib/resolve-cli.sh),
+# export a poisoned resolve_auditor_model ahead of time, and confirm the
+# shim's built-in default still wins rather than the exported function.
+EMPTY_ROOT="$(mktemp -d)"
+mkdir -p "$EMPTY_ROOT/scripts/lib"
+# Anchor on markers rather than line numbers (fragile against future edits):
+# from `set -euo pipefail` through the resolve_auditor_model shim's own
+# defining line (the line that assigns the built-in default literal), then
+# through that block's closing `fi`.
+PREAMBLE="$(awk '
+  /^set -euo pipefail$/ { p = 1 }
+  p { print }
+  /resolve_auditor_model\(\) \{/ { seen = 1 }
+  seen && /^fi$/ { exit }
+' "$DISPATCH")"
+got="$( BUSDRIVER_PLUGIN_ROOT="$EMPTY_ROOT" bash -c "
+  resolve_auditor_model() { _BD_AUDITOR_MODEL='zenmux/evil/model'; }
+  export -f resolve_auditor_model
+  $PREAMBLE
+  resolve_auditor_model
+  printf '%s' \"\$_BD_AUDITOR_MODEL\"
+" )"
+rm -rf "$EMPTY_ROOT"
+eq "$got" "zenmux/moonshotai/kimi-k3" "exported resolve_auditor_model cannot bypass the library-missing shim (P1)"
 
 # ── Golden-grep: no model id hardcoded at either dispatch site ───
 if grep -nE '^[^#]*-m +[A-Za-z0-9][A-Za-z0-9._/-]*/' "$LIB" "$DISPATCH"; then

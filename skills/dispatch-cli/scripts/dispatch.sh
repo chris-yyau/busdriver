@@ -30,8 +30,12 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export so the sourced resolve-cli.sh reads the sanitized value when it
 # builds its $STATE_DIR config/log paths rather than a raw BUSDRIVER_STATE_DIR.
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
+_BD_RESOLVE_CLI_SOURCED=0
 if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
+  # shellcheck source=scripts/lib/resolve-cli.sh
+  # shellcheck disable=SC1091  # runtime-resolved plugin root; not followable without -x
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
+  _BD_RESOLVE_CLI_SOURCED=1
 fi
 
 # Fallback if resolve-cli.sh not found
@@ -39,8 +43,13 @@ if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
 # Ditto for the Auditor model resolver — without the library there is no config
-# reader, so the opencode arm falls back to the same built-in default.
-if ! type resolve_auditor_model &>/dev/null; then
+# reader, so the opencode arm falls back to the same built-in default. Gate on
+# whether the trusted library was actually sourced (_BD_RESOLVE_CLI_SOURCED),
+# not on `type resolve_auditor_model` — an inherited/exported function of that
+# name in the caller's environment would satisfy the `type` check and silently
+# stand in for the real resolver, defeating the model-selection hardening this
+# function exists to provide.
+if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_AUDITOR_MODEL=""
   resolve_auditor_model() { _BD_AUDITOR_MODEL="zenmux/moonshotai/kimi-k3"; }
 fi

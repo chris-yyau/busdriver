@@ -699,6 +699,39 @@ def _resolve(st: "_Sweep"):
     return st.best
 
 
+def _handle_progress_line(st: "_Sweep", raw: str, start: int) -> int:
+    """Step over an echoed shell-command line that only LOOKS like a JSON
+    region — a brace inside `[codex] Running command: {...}` (#554).
+
+    Declined before raw_decode, so it can neither be recorded as unresolvable
+    nor decoded into a verdict. Step over the whole line: the echo's extent
+    IS its line, by construction.
+
+    `own_line_only` is deliberately NOT set here, unlike `_skip_log_echo`.
+    That flag guards against a LEXICAL parent — a truncated JSON payload
+    whose unclosed braces swallow what follows. A shell command echo is
+    not JSON, so there is nothing for a later object to be a child of, and
+    setting the flag would discard prefixed verdicts for no gain.
+
+    But a skipped line that CARRIES VERDICT KEYS must still supersede an
+    earlier verdict, exactly as `_skip_log_echo` does (codex, review of
+    this change). Without this, `{"status":"PASS"}` own-line followed by a
+    command echo quoting a verdict hands back the PASS — a stale PASS
+    standing in for something later, the #503 direction.
+
+    The two readings of that shape are textually indistinguishable: an
+    echo quoting a FORGED PASS after a real FAIL, and an echo quoting a
+    real one after a stale PASS. Neither can be authenticated, so this
+    refuses instead of guessing — a withheld review, never a fabricated
+    verdict.
+    """
+    i = max(_line_end(raw, start), start + 1)
+    if _looks_like_verdict(_unescaped_line(raw, start, i)):
+        st.malformed_pos = start
+        _PARSE_ERRORS.append("verdict keys inside a CLI command echo")
+    return i
+
+
 def try_last_review_object(raw: str):
     """Last TOP-LEVEL object in the transcript that looks like a review.
 
@@ -748,31 +781,10 @@ def try_last_review_object(raw: str):
         if start < 0:
             break
         if _is_progress_line(raw, _seek_line(st, start), start):
-            # Not a JSON region at all — a brace inside an echoed shell command
-            # (#554). Declined before raw_decode, so it can neither be recorded as
-            # unresolvable nor decoded into a verdict. Step over the whole line:
-            # the echo's extent IS its line, by construction.
-            #
-            # `own_line_only` is deliberately NOT set here, unlike `_skip_log_echo`.
-            # That flag guards against a LEXICAL parent — a truncated JSON payload
-            # whose unclosed braces swallow what follows. A shell command echo is
-            # not JSON, so there is nothing for a later object to be a child of,
-            # and setting the flag would discard prefixed verdicts for no gain.
-            i = max(_line_end(raw, start), start + 1)
-            # But a skipped line that CARRIES VERDICT KEYS must still supersede an
-            # earlier verdict, exactly as `_skip_log_echo` does (codex, review of
-            # this change). Without this, `{"status":"PASS"}` own-line followed by
-            # a command echo quoting a verdict hands back the PASS — a stale PASS
-            # standing in for something later, the #503 direction.
-            #
-            # The two readings of that shape are textually indistinguishable: an
-            # echo quoting a FORGED PASS after a real FAIL, and an echo quoting a
-            # real one after a stale PASS. Neither can be authenticated, so this
-            # refuses instead of guessing — a withheld review, never a fabricated
-            # verdict.
-            if _looks_like_verdict(_unescaped_line(raw, start, i)):
-                st.malformed_pos = start
-                _PARSE_ERRORS.append("verdict keys inside a CLI command echo")
+            # Not a JSON region at all — see _handle_progress_line for why this
+            # is stepped over rather than decoded, and why a verdict-shaped echo
+            # still supersedes an earlier verdict.
+            i = _handle_progress_line(st, raw, start)
             continue
         try:
             obj, end = _DECODER.raw_decode(raw, start)

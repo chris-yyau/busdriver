@@ -458,6 +458,32 @@ if [ -f "$MARKER" ]; then
     # DEGRADED markers (written when codex CLI is missing) must NOT pass the gate.
     # This prevents silent bypass of code review when codex is unavailable.
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
+
+    # The staged diff this commit would actually create. Every hash-bearing
+    # marker format is bound to it below (#545): the marker is written on review
+    # PASS and consumed only POST-commit, so between those two points an
+    # unbound marker is a bearer token for whatever happens to be staged. A
+    # marker minted for diff A must not authorize committing diff B — observed
+    # live on 2026-08-01, where a marker hours old would have authorized a diff
+    # whose own review had returned structured FAIL.
+    #
+    # Deliberately the BARE `git diff --cached`, byte-identical to every writer
+    # (run-review-loop.sh, litmus/scripts/write-review-marker.sh) AND to
+    # dispatcher-commit-block.sh, whose own comment already pins this coupling:
+    # "Match the marker writer's hash form exactly: bare `git diff --cached`".
+    # Four sites must agree; any one of them adding a flag makes the marker stop
+    # matching and blocks every commit.
+    #
+    # Known residual, NOT fixed here: porcelain `git diff` honors
+    # GIT_EXTERNAL_DIFF and per-path textconv drivers, both reachable from
+    # repo-controlled config, so a driver emitting constant output could collapse
+    # two different diffs to one hash. PR mode already pins --no-ext-diff
+    # --no-textconv (run-review-loop.sh:942); commit mode cannot adopt them
+    # unilaterally — it is a coordinated change across all four sites and is
+    # tracked separately. This is pre-existing exposure that the binding above
+    # does not worsen.
+    STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
         echo "{\"decision\":\"block\",\"reason\":\"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass.\"}" >&2
@@ -465,20 +491,93 @@ if [ -f "$MARKER" ]; then
     elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
         # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
         # Accept unconditionally. See design spec §4 for risk analysis.
+        # Carries no hash by construction: no review ran, so there is nothing
+        # to bind it to. The opt-out is the operator's, and it is logged.
         exit 0
-    elif echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
-        # Built-in agent review — accept for commit gate.
-        # Post-commit hook excludes from reviewed-commits.local (requires PR deep review).
-        exit 0
-    else
-        # Genuine external review pass — approve but DO NOT consume the marker.
-        # Consumption is deferred to PostToolUse (post-commit-consume-marker.sh)
-        # which verifies the commit actually succeeded before deleting.
+    elif echo "$MARKER_CONTENT" | grep -qE '^PASS-MERGE-[0-9]+$'; then
+        # Merge commit whose resolution kept already-reviewed code unchanged
+        # (run-review-loop.sh:846). Its precondition IS `git diff --cached
+        # --quiet`, so bind it to that rather than to a hash: an empty staged
+        # diff is the only state this marker was ever minted for. A merge that
+        # resolved conflicts has a NON-empty diff, falls through to a real
+        # review, and gets a bare-hash marker instead — so a PASS-MERGE marker
+        # sitting in front of a non-empty diff is stale or forged, never valid.
+        if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        echo "{\"decision\":\"block\",\"reason\":\"PASS-MERGE review marker present but the staged diff is not empty. That marker is only minted for a merge whose resolution changed nothing; a merge with real resolutions must be reviewed. Run /litmus.\"}" >&2
+    elif echo "$MARKER_CONTENT" | grep -qE '^PASS-EXCLUDED-[a-f0-9]{64}-[0-9]+$'; then
+        # Whole staged diff was excluded from review (lockfiles, minified
+        # bundles, sourcemaps): no reviewer ran because there was nothing
+        # reviewable. Diff-bound AND age-bound, the same shape pre-pr-gate.sh
+        # already honors for PR mode.
         #
-        # Why: PreToolUse runs BEFORE git commit executes. If consumed here
-        # and the commit subsequently fails (git hooks, conflicts, errors),
-        # the marker is lost — forcing a full re-review for unchanged code.
-        exit 0
+        # Commit mode used to write this epoch-only, on the grounds that the
+        # pre-commit gate "accepts marker existence without hash verification".
+        # That is no longer true, so run-review-loop.sh now emits the hash here
+        # too and the epoch-only form is retired — it falls to the unrecognized
+        # arm below rather than being honored, because it is precisely the
+        # bearer token the rest of this change removes.
+        #
+        # Binding on the hash also avoids re-deriving the exclusion pathspec in
+        # the gate. That was the tempting check — "is the staged diff still
+        # all-excluded?" — and it is the wrong one: exclude-generated.sh merges
+        # $STATE_DIR/review-exclude, which the working tree controls, so an
+        # UNSTAGED widening of that file (adding `*`) neutralizes the check
+        # while the marker stays valid. A hash over the staged diff cannot be
+        # widened by editing a policy file.
+        EXCLUDED_HASH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-([a-f0-9]{64})-[0-9]+$/\1/')
+        EXCLUDED_EPOCH=$(printf '%s' "$MARKER_CONTENT" | sed -E 's/^PASS-EXCLUDED-[a-f0-9]{64}-([0-9]+)$/\1/')
+        # `10#` forces base 10. A zero-padded epoch is all digits, so it passes
+        # the pattern above, but bash reads a leading zero as OCTAL and aborts
+        # on the digits 8 and 9 with "value too great for base". Measured, that
+        # still BLOCKS today — the ERR trap catches it — so this is not a live
+        # fail-open. Canonicalized anyway so the safety rests on an explicit
+        # conversion rather than on a trap firing: move this line inside any
+        # conditional (where `set -e` is suspended) and the accidental
+        # protection silently disappears.
+        EXCLUDED_EPOCH=$((10#$EXCLUDED_EPOCH))
+        EXCLUDED_AGE=$(( $(date +%s) - EXCLUDED_EPOCH ))
+        if [ -n "$STAGED_HASH" ] && [ "$EXCLUDED_HASH" = "$STAGED_HASH" ] \
+            && [ "$EXCLUDED_AGE" -ge 0 ] && [ "$EXCLUDED_AGE" -le 3600 ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        echo "{\"decision\":\"block\",\"reason\":\"Excluded-only review marker is stale (over 1h old) or names a different diff than the one staged. That marker only certifies a diff with nothing reviewable in it. Run /litmus.\"}" >&2
+    elif echo "$MARKER_CONTENT" | grep -qE '^BUILTIN-[a-f0-9]{64}$'; then
+        # Built-in agent review — accept for the commit gate, but only for the
+        # diff it reviewed. Post-commit hook excludes it from
+        # reviewed-commits.local (a PR still requires the deep review).
+        BUILTIN_HASH=${MARKER_CONTENT#BUILTIN-}
+        if [ -n "$STAGED_HASH" ] && [ "$BUILTIN_HASH" = "$STAGED_HASH" ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        echo "{\"decision\":\"block\",\"reason\":\"Builtin review marker is for a different diff than the one staged. Re-run /litmus so the review covers what you are committing.\"}" >&2
+    elif echo "$MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
+        # Genuine external review pass. Approve only when the marker names the
+        # staged diff, and do NOT consume the marker — consumption is deferred
+        # to PostToolUse (post-commit-consume-marker.sh), which verifies the
+        # commit actually succeeded before deleting.
+        #
+        # Why defer: PreToolUse runs BEFORE git commit executes. If consumed
+        # here and the commit then fails (git hooks, conflicts, errors), the
+        # marker is lost — forcing a full re-review of unchanged code.
+        if [ -n "$STAGED_HASH" ] && [ "$MARKER_CONTENT" = "$STAGED_HASH" ]; then
+            exit 0
+        fi
+        rm -f "$MARKER"
+        echo "{\"decision\":\"block\",\"reason\":\"Review marker is for a different diff than the one staged (marker ${MARKER_CONTENT:0:12}..., staged ${STAGED_HASH:0:12}...). A review of one diff cannot authorize committing another. Run /litmus.\"}" >&2
+    else
+        # Unrecognized marker content — reject, matching pre-pr-gate.sh:321.
+        # A gate that cannot prove the safe condition must block; "I do not
+        # recognize this" is the failure case, not the happy path. This arm is
+        # what closes the fail-open: every format the writers actually emit is
+        # enumerated above, so anything reaching here is stale, hand-written,
+        # or forged.
+        rm -f "$MARKER"
+        echo "{\"decision\":\"block\",\"reason\":\"Review marker content not recognized: ${MARKER_CONTENT:0:30}... Rejecting rather than assuming a pass. Run /litmus.\"}" >&2
     fi
 fi
 

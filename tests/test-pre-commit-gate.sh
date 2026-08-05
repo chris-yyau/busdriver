@@ -342,6 +342,240 @@ else
 fi
 rm -rf "$sitec_tmp"
 
+echo ""
+echo "── marker is bound to the diff it approved (#545) ──────────"
+# The marker is written on review PASS and consumed only POST-commit, so
+# between those points an UNBOUND marker is a bearer token for whatever is
+# staged. Before this, every hash-bearing format was accepted without ever
+# being compared to the staged diff, and any unrecognized content fell through
+# a blanket `else` to exit 0 — so a marker minted for diff A authorized
+# committing diff B (observed live 2026-08-01).
+#
+# Each format the writers actually emit is asserted in BOTH directions, because
+# a marker check that cannot reject is not a check. Formats and their writers:
+#   <64hex>                 run-review-loop.sh:1341,1654   → bind to staged diff
+#   BUILTIN-<64hex>         write-review-marker.sh:32      → bind to staged diff
+#   PASS-MERGE-<epoch>      run-review-loop.sh:848         → bind to EMPTY diff
+#   PASS-EXCLUDED-<epoch>   run-review-loop.sh:1018        → epoch-only by design
+#   SKIPPED-NONE-<epoch>    run-review-loop.sh:829         → operator opt-out
+run_marker_test() {
+    # $1=name $2=expected(allow|block) $3=marker-content-template
+    # $4=staged: 0=nothing, 1=an ordinary reviewable file, 2=an EXCLUDED file
+    #            (package-lock.json — matched by exclude-generated.sh's defaults)
+    # In $3, @STAGED@ is replaced with the sha256 of the staged diff (computed
+    # after staging) so a test can name the RIGHT hash without hardcoding one,
+    # and @NOW@ with the current epoch. Any other content is written verbatim.
+    local name="$1" expected="$2" content="$3" staged_setup="$4"
+    TOTAL=$((TOTAL + 1))
+
+    local tmp_dir; tmp_dir=$(mktemp -d)
+    (
+        cd "$tmp_dir"
+        git init -q -b main 2>/dev/null || git init -q
+        git config commit.gpgsign false
+        git config user.email "test@test.com"
+        git config user.name "Test"
+        echo "initial" > file.txt
+        git add file.txt
+        git commit -qm "initial" --no-verify
+        if [ "$staged_setup" = "1" ]; then
+            echo "modified" >> file.txt
+            git add file.txt
+        elif [ "$staged_setup" = "2" ]; then
+            # NESTED on purpose. exclude-generated.sh builds ':(exclude)**/…'
+            # WITHOUT git's `glob` pathspec magic, and a bare '**/' does not
+            # match at the repo root — measured: ':(exclude)**/package-lock.json'
+            # leaves a root-level package-lock.json in the diff, while
+            # ':(exclude,glob)**/…' or a nested path both exclude it. So a
+            # root-level lockfile is NOT actually excluded from review today.
+            # That is a pre-existing litmus bug, filed separately; this test
+            # pins the gate against the exclusion behavior that really exists,
+            # not the one the pattern list appears to promise.
+            mkdir -p sub
+            echo '{"lockfileVersion":3}' > sub/package-lock.json
+            git add sub/package-lock.json
+        fi
+    )
+
+    # Resolve @STAGED@ against the same expression the gate and writers use.
+    local staged_hash
+    staged_hash=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    content=${content//@STAGED@/$staged_hash}
+    content=${content//@NOW@/$(date +%s)}
+
+    mkdir -p "$tmp_dir/.claude"
+    printf '%s\n' "$content" > "$tmp_dir/.claude/litmus-passed.local"
+
+    local input output got
+    input=$(make_hook_input_cwd "git commit -m x" "$tmp_dir")
+    output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    got="allow"
+    echo "$output" | grep -q '"block"' 2>/dev/null && got="block"
+
+    if [ "$got" = "$expected" ]; then
+        printf "  PASS  %s\n" "$name"; PASS=$((PASS + 1))
+    else
+        printf "  FAIL  %s (expected=%s got=%s)\n    output: %s\n" \
+            "$name" "$expected" "$got" "$output"; FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$tmp_dir"
+}
+
+# The core fix: a hash marker authorizes ONLY the diff it names.
+run_marker_test "external-review marker matching the staged diff allows" \
+    allow '@STAGED@' 1
+run_marker_test "...and a marker for a DIFFERENT diff blocks" \
+    block '0000000000000000000000000000000000000000000000000000000000000000' 1
+# The 2026-08-01 shape exactly: a real marker, minted for a real review, that
+# simply predates the staged diff. Nothing about it is malformed.
+run_marker_test "...including a well-formed marker minted for an empty diff" \
+    block 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' 1
+
+# Same binding for the builtin-agent marker, which was previously accepted on
+# its prefix alone with no hash comparison at all.
+run_marker_test "builtin marker matching the staged diff allows" \
+    allow 'BUILTIN-@STAGED@' 1
+run_marker_test "...and a builtin marker for a different diff blocks" \
+    block 'BUILTIN-0000000000000000000000000000000000000000000000000000000000000000' 1
+
+# PASS-MERGE's precondition is an EMPTY staged diff, so that is what binds it.
+run_marker_test "PASS-MERGE allows when the staged diff is empty" \
+    allow 'PASS-MERGE-1754400000' 0
+run_marker_test "...and blocks once something is staged" \
+    block 'PASS-MERGE-1754400000' 1
+
+# PASS-EXCLUDED is diff-bound AND age-bound, matching the shape pre-pr-gate.sh
+# already honors. Binding on the hash rather than re-deriving "is the staged
+# diff still all-excluded?" is deliberate: the exclusion list merges
+# $STATE_DIR/review-exclude, which the working tree controls, so an UNSTAGED
+# widening of it would neutralize a pathspec-based check while leaving the
+# marker valid. A hash cannot be widened by editing a policy file.
+run_marker_test "PASS-EXCLUDED allows a fresh marker naming the staged diff" \
+    allow 'PASS-EXCLUDED-@STAGED@-@NOW@' 2
+# The reviewer's scenario: a legitimately-minted excluded-only marker reused to
+# wave through an ordinary, unreviewed source change.
+run_marker_test "...and blocks when it names a different diff" \
+    block 'PASS-EXCLUDED-0000000000000000000000000000000000000000000000000000000000000000-@NOW@' 1
+run_marker_test "...and blocks when the marker is over an hour old" \
+    block 'PASS-EXCLUDED-@STAGED@-1754400000' 2
+run_marker_test "...and blocks on a future-dated marker" \
+    block 'PASS-EXCLUDED-@STAGED@-99999999999' 2
+# The retired epoch-only form is the bearer token this change removes. It must
+# now fall to the unrecognized arm, not be honored.
+run_marker_test "...and the retired epoch-only form is no longer honored" \
+    block 'PASS-EXCLUDED-@NOW@' 2
+# Zero-padded epochs are all-digit, so they reach the arithmetic. Without the
+# `10#` base prefix bash reads them as octal and dies on 8/9. That still blocked
+# (via the ERR trap), but only by accident; these pin the explicit handling.
+run_marker_test "...and blocks a zero-padded stale epoch (octal trap, digit 8)" \
+    block 'PASS-EXCLUDED-@STAGED@-08' 2
+run_marker_test "...and blocks a zero-padded stale epoch (digit 9)" \
+    block 'PASS-EXCLUDED-@STAGED@-09' 2
+run_marker_test "...and a zero-padded FRESH epoch is read as base 10, not octal" \
+    allow 'PASS-EXCLUDED-@STAGED@-0@NOW@' 2
+
+# Operator opt-out: no review ran, so there is no hash to bind.
+run_marker_test "SKIPPED-NONE is accepted unconditionally (operator opt-out)" \
+    allow 'SKIPPED-NONE-1754400000' 1
+
+# DEGRADED must keep blocking — no review actually happened.
+run_marker_test "DEGRADED still blocks" \
+    block 'DEGRADED-no-cli' 1
+
+# The blanket `else → exit 0` this change removes. Anything not enumerated
+# above is stale, hand-written, or forged, and must not read as a pass.
+run_marker_test "unrecognized marker content is rejected, not assumed a pass" \
+    block 'abc123hash' 1
+run_marker_test "an empty marker file is rejected" \
+    block '' 1
+# A hash of the right SHAPE but the wrong case is not the writers' output.
+run_marker_test "uppercase-hex marker is not accepted" \
+    block 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855' 1
+
+# Fixed examples prove the enumerated arms; they do not prove there is no
+# near-miss that slips through. Mutate the CORRECT hash one character at a time
+# and require every mutant to block — the comparison must be exact equality,
+# not a prefix, substring, or glob match. Positions cover both ends and the
+# middle; a `case`-style or `grep`-style comparison fails at least one of them.
+mutation_test() {
+    # $1=name $2=0-based index to mutate
+    local name="$1" idx="$2"
+    TOTAL=$((TOTAL + 1))
+    local tmp_dir; tmp_dir=$(mktemp -d)
+    (
+        cd "$tmp_dir"
+        git init -q -b main 2>/dev/null || git init -q
+        git config commit.gpgsign false
+        git config user.email "test@test.com"; git config user.name "Test"
+        echo "initial" > file.txt; git add file.txt
+        git commit -qm "initial" --no-verify
+        echo "modified" >> file.txt; git add file.txt
+    )
+    local real mutant orig repl
+    real=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    orig=${real:idx:1}
+    # Flip to a different hex digit so the mutant stays a well-formed 64-hex
+    # string — the point is a VALID-shaped hash for the wrong diff, not a
+    # malformed one (that is already covered above).
+    if [ "$orig" = "a" ]; then repl="b"; else repl="a"; fi
+    mutant="${real:0:idx}${repl}${real:idx+1}"
+
+    mkdir -p "$tmp_dir/.claude"
+    printf '%s\n' "$mutant" > "$tmp_dir/.claude/litmus-passed.local"
+    local input output got
+    input=$(make_hook_input_cwd "git commit -m x" "$tmp_dir")
+    output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    got="allow"; echo "$output" | grep -q '"block"' 2>/dev/null && got="block"
+    if [ "$got" = "block" ]; then
+        printf "  PASS  %s\n" "$name"; PASS=$((PASS + 1))
+    else
+        printf "  FAIL  %s (mutant %s was ACCEPTED)\n" "$name" "$mutant"; FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$tmp_dir"
+}
+# Binary changes render as "Binary files a/x and b/x differ" with no content, so
+# it is worth pinning that two blobs at the SAME path are still distinguished.
+# They are: measured, the `index <old>..<new>` line carries per-content blob
+# SHAs. Note that is a 7-char ABBREVIATION, so the binding here is strong but
+# not exact; `--binary` (⇒ --full-index) would make it exact and is tracked with
+# the other diff-flag hardening, which has to change all four hash sites at once.
+binary_collision_test() {
+    TOTAL=$((TOTAL + 1))
+    local tmp_dir; tmp_dir=$(mktemp -d)
+    (
+        cd "$tmp_dir"
+        git init -q -b main 2>/dev/null || git init -q
+        git config commit.gpgsign false
+        git config user.email "test@test.com"; git config user.name "Test"
+        echo "initial" > file.txt; git add file.txt
+        git commit -qm "initial" --no-verify
+        printf 'AAAA\000\001\002BBBB' > blob.bin; git add blob.bin
+    )
+    # Hash the diff for blob A — the marker a real review of A would have left.
+    local hash_a
+    hash_a=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    # Now swap in DIFFERENT binary content at the SAME path.
+    ( cd "$tmp_dir"; printf 'ZZZZ\003\004\005YYYY' > blob.bin; git add blob.bin )
+
+    mkdir -p "$tmp_dir/.claude"
+    printf '%s\n' "$hash_a" > "$tmp_dir/.claude/litmus-passed.local"
+    local input output got
+    input=$(make_hook_input_cwd "git commit -m x" "$tmp_dir")
+    output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    got="allow"; echo "$output" | grep -q '"block"' 2>/dev/null && got="block"
+    if [ "$got" = "block" ]; then
+        printf "  PASS  a marker for binary blob A does not authorize blob B\n"; PASS=$((PASS + 1))
+    else
+        printf "  FAIL  binary blobs collided — a marker for A authorized B\n"; FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$tmp_dir"
+}
+binary_collision_test
+
+mutation_test "a one-character mutation at the START of a valid hash blocks" 0
+mutation_test "...in the MIDDLE blocks" 31
+mutation_test "...at the END blocks" 63
+
 # ── Results ───────────────────────────────────────────────────────────
 
 echo ""

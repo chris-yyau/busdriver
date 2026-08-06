@@ -51,9 +51,38 @@ clear_terminal_status() {
     # mktemp, not "${STATE_FILE}.tmp.$$": a predictable temp path can be pre-created as
     # a symlink, and then the redirect writes through it and the mv installs it AS the
     # state file. mktemp refuses an existing path and creates with a private mode.
+    # Never propagate a non-zero return to the caller: the bare call site below is
+    # `clear_terminal_status` with no `||`, and under `set -e` (already on by the time
+    # this runs, well after the lock is held) a non-zero return here would abort the
+    # whole script — silently, with no diagnostic, and with terminal_status left
+    # uncleared. That is the exact wedged-state condition this change exists to
+    # remove. mktemp failing is reported and treated as "leave the field in place"
+    # rather than fatal; `grep -v` finding nothing to keep (every line in the file
+    # matched `^terminal_status:`, which `grep -v` reports as exit 1) is treated as
+    # "nothing to write back", not an error.
     local tmp
-    tmp=$(mktemp "${STATE_FILE}.XXXXXX") || return 1
-    grep -v '^terminal_status:' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    tmp=$(mktemp "${STATE_FILE}.XXXXXX") || {
+        echo "⚠️  clear_terminal_status: mktemp failed in $(dirname "$STATE_FILE"); leaving terminal_status in place" >&2
+        return 0
+    }
+    # `set -e` is suspended only for the `if` CONDITION, not for its body — so an
+    # unguarded `mv` here would abort the run on failure (read-only dir, cross-device
+    # rename, a directory installed at STATE_FILE), which is the exact fatal-abort this
+    # function promises never to do. Guard it like the mktemp above: report, keep the
+    # field, carry on.
+    # Every command on these paths is guarded, `rm -f` included: `rm -f` still fails on
+    # an unlink it is not permitted to make (an unwritable directory, an immutable
+    # flag), and an unguarded failure here aborts under `set -e` exactly as an
+    # unguarded `mv` would — for a temp file whose loss is not worth a dead review.
+    if grep -v '^terminal_status:' "$STATE_FILE" > "$tmp"; then
+        mv "$tmp" "$STATE_FILE" || {
+            echo "⚠️  clear_terminal_status: mv into $STATE_FILE failed; leaving terminal_status in place" >&2
+            rm -f "$tmp" || true
+        }
+    else
+        rm -f "$tmp" || true
+    fi
+    return 0
 }
 
 write_terminal_status() {
@@ -117,9 +146,10 @@ _LOCK_RC=0
 review_lock_acquire || _LOCK_RC=$?
 if [ "$_LOCK_RC" = "2" ]; then
   echo "❌ Cannot use the litmus state directory: $STATE_DIR" >&2
-  echo "   The review lock could not be created there, and nothing occupies its path," >&2
-  echo "   so this is a missing or unwritable directory — NOT a concurrent review." >&2
-  echo "   Reporting it as contention would send you hunting for a lock that does not exist." >&2
+  echo "   The lock could not be created: $(review_lock_path)" >&2
+  echo "   Inspect that path — a file or directory may already occupy it, a stale" >&2
+  echo "   symlink may point at an unreadable target, or the directory may reject" >&2
+  echo "   symlink creation." >&2
   exit 1
 fi
 if [ "$_LOCK_RC" != "0" ]; then

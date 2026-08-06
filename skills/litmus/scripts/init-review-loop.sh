@@ -53,7 +53,10 @@ _INIT_LOCK_RC=0
 review_lock_acquire || _INIT_LOCK_RC=$?
 if [ "$_INIT_LOCK_RC" = "2" ]; then
     echo "❌ Cannot use the litmus state directory: $STATE_DIR" >&2
-    echo "   The review lock could not be created there and nothing occupies its path." >&2
+    echo "   The lock could not be created: $(review_lock_path)" >&2
+    echo "   Inspect that path — a file or directory may already occupy it, a stale" >&2
+    echo "   symlink may point at an unreadable target, or the directory may reject" >&2
+    echo "   symlink creation." >&2
     exit 1
 fi
 if [ "$_INIT_LOCK_RC" != "0" ]; then

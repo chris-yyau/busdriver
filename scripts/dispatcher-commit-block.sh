@@ -303,7 +303,7 @@ PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
 LITMUS_LOCK_RC=0
 review_lock_acquire || LITMUS_LOCK_RC=$?
 if [ "$LITMUS_LOCK_RC" = "2" ]; then
-    emit_bail "env" "dispatcher-commit-block: cannot use the litmus state directory $BUSDRIVER_STATE_DIR — the review lock could not be created there and nothing occupies its path, so this is a missing or unwritable directory, not a concurrent review."
+    emit_bail "env" "dispatcher-commit-block: cannot use the litmus state directory $BUSDRIVER_STATE_DIR — the lock could not be created: $(review_lock_path). Inspect that path — a file or directory may already occupy it, a stale symlink may point at an unreadable target, or the directory may reject symlink creation."
 fi
 if [ "$LITMUS_LOCK_RC" != "0" ]; then
     emit_bail "env" "dispatcher-commit-block: the litmus review lock $(review_lock_path) is held by pid $(review_lock_owner) ($(review_lock_owner_state)). If it is running, wait; if not, that review was killed and the lock is an orphan a human must remove (reclaiming it automatically cannot be made race-free in shell — see lib/review-lock.sh)."
@@ -500,6 +500,23 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
         # the garbage line is the one in effect under last-key-wins, yet the old order
         # returned `true` and authorized --force. Pick the line by KEY, validate that
         # one, and let a malformed final declaration resolve to empty.
+        #
+        # KNOWN DISAGREEMENT (tracked, not fixed here — see the linked issue): this
+        # last-key-wins + strict-validate read can disagree with
+        # validation.sh's get_yaml_value(), which init-review-loop.sh calls to decide
+        # whether to refuse — get_yaml_value takes the FIRST `^active:` match with NO
+        # format validation (naive `tr -d '"'` quote-stripping). Given a duplicated
+        # `active: true` followed by a later, differently-valued `active: false`, or a
+        # first line malformed in a way get_yaml_value's lenient stripping still
+        # resolves to "true"/"false", the two readers can reach different verdicts
+        # about whether the prior run was active — and this classifier's bail message
+        # can then misdescribe why init-review-loop.sh actually refused. Reconciling
+        # the two exactly requires either hardening get_yaml_value with the same
+        # strict validation this block applies (a shared-library change touching every
+        # get_yaml_value caller) or teaching this block to replicate get_yaml_value's
+        # specific leniency — both larger than a one-line parity fix, and getting it
+        # wrong risks the opposite regression (test_aj_trailing_garbage_is_not_valid_state
+        # exists specifically to pin the last-key-wins + strict-validate contract).
         STATE_ACTIVE_LINE=$(grep -E '^active:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
         STATE_TERMINAL_LINE=$(grep -E '^terminal_status:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
         STATE_ACTIVE=$(printf '%s\n' "$STATE_ACTIVE_LINE" | sed -nE \
@@ -616,11 +633,32 @@ case "$LITMUS_EXIT" in
         # the FAIL and the STALL path — parse that instead of the lossy stored copy.
         # Bounded on both axes (10 findings, 1500 chars) so one verbose review cannot
         # produce an envelope the dispatcher chokes on.
+        #
+        # NO length-slice is safe on its own. `cut -c1-1500` counts BYTES in a
+        # non-UTF-8 locale, and so does `${var:0:1500}` — bash counts characters only
+        # when the locale says the encoding is multibyte, so under the `LC_ALL=C` this
+        # gate runs with, the 1500-byte boundary can still land inside a multibyte
+        # sequence. Litmus findings are model-generated text and routinely contain
+        # non-ASCII characters. Measured, not assumed: under `LC_ALL=C`, slicing
+        # "abc\xC3\xA9xyz" at 4 leaves a dangling \xC3, and `emit_bail`'s `jq --arg`
+        # accepts it — substituting U+FFFD — rather than failing (jq 1.7, exit 0). So
+        # the cost is a corrupted character in the one diagnostic the operator has,
+        # NOT a lost envelope; other jq builds may be stricter.
+        # So slice first, then REPAIR: `iconv -c` drops any byte that is not part of a
+        # valid sequence, which is exactly the dangling head the slice can leave. Where
+        # iconv is absent, fall back to dropping every non-ASCII byte — lossier for the
+        # diagnostic text, but it cannot emit an invalid sequence either. Both branches
+        # only ever remove bytes, so neither can grow the string past the bound.
         LITMUS_FINDINGS=$(grep -E '^[[:space:]]+\[(high|medium|low)\] ' "$LITMUS_OUT" 2>/dev/null \
             | head -n 10 \
             | sed -e 's/^[[:space:]]*//' -e 's/$/;/' \
-            | tr '\n' ' ' \
-            | cut -c1-1500 || true)
+            | tr '\n' ' ' || true)
+        LITMUS_FINDINGS="${LITMUS_FINDINGS:0:1500}"
+        if command -v iconv >/dev/null 2>&1; then
+            LITMUS_FINDINGS=$(printf '%s' "$LITMUS_FINDINGS" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)
+        else
+            LITMUS_FINDINGS=$(printf '%s' "$LITMUS_FINDINGS" | LC_ALL=C tr -d '\200-\377' || true)
+        fi
         [ -n "$LITMUS_FINDINGS" ] || LITMUS_FINDINGS="(none parsed from litmus stdout)"
 
         case "$LITMUS_STATUS" in

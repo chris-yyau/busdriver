@@ -1086,13 +1086,25 @@ test_ae_live_review_lock_bails() {
 # as cleanup is the same race by another name.
 test_af_orphaned_review_lock_bails_with_remedy() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
-    local dispatcher_output dispatcher_exit dispatcher_json dead_pid
+    local dispatcher_output dispatcher_exit dispatcher_json dead_pid _candidate
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
 
-    sleep 0 &
-    dead_pid=$!
-    wait "$dead_pid" 2>/dev/null || true
+    # A REAPED pid is not a guaranteed-dead value — the OS can hand it to a brand-new
+    # process before this test's assertions run, and on a busy host that reports a
+    # lock-implementation defect that does not exist. Search for a pid that fails
+    # `kill -0` instead.
+    dead_pid=""
+    for _candidate in 999999 999998 999997 999996 999995; do
+        if ! kill -0 "$_candidate" 2>/dev/null; then
+            dead_pid="$_candidate"
+            break
+        fi
+    done
+    if [ -z "$dead_pid" ]; then
+        echo "test_af: SKIP — could not find a pid that fails kill -0"
+        return 0
+    fi
 
     mkdir -p "$sandbox/.claude"
     ln -s "pid-$dead_pid" "$sandbox/.claude/litmus-review.lock"
@@ -1121,13 +1133,26 @@ test_af_orphaned_review_lock_bails_with_remedy() {
 # initializes one state file while the reviewer consumes another.
 test_ag_unsafe_state_dir_normalized() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
-    local dispatcher_output dispatcher_exit dispatcher_json escape_dir
+    local dispatcher_output dispatcher_exit dispatcher_json escape_dir escape_parent
     make_dispatcher_fixture
-    # The escape path is the artifact under test, so it is also the one this test must
-    # not leave behind: a run that (wrongly) creates it would otherwise make EVERY later
-    # run fail on a directory nothing recreates. Registered before the run, not after.
-    escape_dir="$(dirname "$sandbox")/escape"
-    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote" "$escape_dir"' RETURN
+    # `../escape` resolves against the sandbox's PARENT, and `mktemp -d` puts the sandbox
+    # straight into the shared TMPDIR — so the escape target would be a FIXED path
+    # (/tmp/escape) this test can neither own nor safely clean. Snapshotting its
+    # pre-existence does NOT fix that: another process can create the path after the
+    # snapshot and still lose its data to the RETURN trap's `rm -rf`, and no probe can
+    # close a race whose whole problem is that the path is shared.
+    #
+    # So don't share it. Re-root the sandbox under a private mktemp parent, and the
+    # traversal lands somewhere only this test can reach — ownership by construction,
+    # no snapshot, no conditional assertion, and a cleanup that can only ever delete
+    # this test's own tree. `WORKTREE_DIR` is read from `$sandbox` at capture time and
+    # the origin remote is an absolute path elsewhere, so the move is invisible to the
+    # dispatcher.
+    escape_parent=$(mktemp -d)
+    mv "$sandbox" "$escape_parent/repo"
+    sandbox="$escape_parent/repo"
+    escape_dir="$escape_parent/escape"
+    trap 'cd "$original_dir"; rm -rf "$escape_parent" "$plugin_root" "$shimdir" "$remote"' RETURN
 
     # A traversal value. Both sides must collapse it to `.claude`; the marker the
     # reviewer writes there is what the dispatcher then has to find.
@@ -1139,10 +1164,13 @@ test_ag_unsafe_state_dir_normalized() {
         echo "test_ag expected success with normalized state dir; output: $dispatcher_output"
         return 1
     }
-    [ ! -e "$escape_dir" ] || {
+    # Unconditional — the private parent means nothing but this run can put anything
+    # here. `-L` as well as `-e`, because `-e` follows symlinks and would read a
+    # dangling one as absent.
+    if [ -e "$escape_dir" ] || [ -L "$escape_dir" ]; then
         echo "test_ag: traversal state dir was honoured — created $escape_dir"
         return 1
-    }
+    fi
 }
 
 # test_ah: classify → init → review must be ONE transaction. The block holds the lock
@@ -1394,8 +1422,8 @@ EOF
     wait "$dispatcher_pid" 2>/dev/null || dispatcher_status=$?
     dispatcher_pid=""
     sleep 0.3
-    # 128+SIGINT, not a blanket 143 — an exit status that names the wrong signal
-    # misleads whoever reads it.
+    # 128+SIGHUP (129), not a blanket 143 — an exit status that names the wrong
+    # signal misleads whoever reads it.
     [ "$dispatcher_status" = "129" ] || {
         echo "test_ak: expected exit 129 for SIGHUP, got $dispatcher_status"
         return 1

@@ -337,39 +337,56 @@ if [ ! -L .claude/litmus-review.lock ]; then
     exit 1
 fi
 
-# Same lock, now owned by a reaped pid. An orphan is NOT auto-reclaimed: no shell
+# Same lock, now owned by a dead pid. An orphan is NOT auto-reclaimed: no shell
 # reclaim is race-free (see lib/review-lock.sh), so the run refuses, leaves the lock
 # alone, and tells the operator to unlink it. Refusing here is the fail-CLOSED trade —
 # a rare visible stall after a SIGKILL, instead of silent double-review corruption.
+#
+# A REAPED pid (spawn + wait, as this used to do) is not a guaranteed-dead value —
+# the OS can hand that pid to a brand-new process before this assertion runs, and on
+# a busy host the test would then report a lock-implementation defect that does not
+# exist. Search for a pid that fails `kill -0` instead; skip the orphan half if none
+# can be found (should not happen on any real host, but fail toward "skip", not
+# toward "false failure").
+dead_holder=""
+for _candidate in 999999 999998 999997 999996 999995; do
+    if ! kill -0 "$_candidate" 2>/dev/null; then
+        dead_holder="$_candidate"
+        break
+    fi
+done
 rm -f .claude/litmus-review.lock "$RAN_SENTINEL"
-sleep 0 &
-dead_holder=$!
-wait "$dead_holder" 2>/dev/null || true
-ln -s "pid-$dead_holder" .claude/litmus-review.lock
-
-set +e
-orphan_stderr=$(run_fixture2_review_loop 2>&1 >/dev/null)
-set -e
-
-if [ -e "$RAN_SENTINEL" ]; then
-    echo "FAIL Fixture 2e: review ran despite an orphaned lock"
-    teardown_fixture2_sandbox
-    exit 1
+if [ -z "$dead_holder" ]; then
+    echo "SKIP Fixture 2e: could not find a pid that fails kill -0; skipping orphan-lock assertion"
+else
+    ln -s "pid-$dead_holder" .claude/litmus-review.lock
 fi
-if [ ! -L .claude/litmus-review.lock ]; then
-    echo "FAIL Fixture 2e: refusing on an orphan removed a lock it does not own"
-    teardown_fixture2_sandbox
-    exit 1
-fi
-case "$orphan_stderr" in
-    *"not running"*"rm -f"*) ;;
-    *)
-        echo "FAIL Fixture 2e: orphan refusal must name the dead owner and the remedy"
-        printf '%s\n' "$orphan_stderr"
+
+if [ -n "$dead_holder" ]; then
+    set +e
+    orphan_stderr=$(run_fixture2_review_loop 2>&1 >/dev/null)
+    set -e
+
+    if [ -e "$RAN_SENTINEL" ]; then
+        echo "FAIL Fixture 2e: review ran despite an orphaned lock"
         teardown_fixture2_sandbox
         exit 1
-        ;;
-esac
+    fi
+    if [ ! -L .claude/litmus-review.lock ]; then
+        echo "FAIL Fixture 2e: refusing on an orphan removed a lock it does not own"
+        teardown_fixture2_sandbox
+        exit 1
+    fi
+    case "$orphan_stderr" in
+        *"not running"*"rm -f"*) ;;
+        *)
+            echo "FAIL Fixture 2e: orphan refusal must name the dead owner and the remedy"
+            printf '%s\n' "$orphan_stderr"
+            teardown_fixture2_sandbox
+            exit 1
+            ;;
+    esac
+fi
 teardown_fixture2_sandbox
 
 # ────────────────────────────────────────────────────────────

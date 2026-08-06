@@ -68,7 +68,7 @@ review_lock_owner_state() {
 # unusable. Distinguishing 2 matters: reporting an unwritable or missing state dir as
 # contention tells the operator to remove a lock that does not exist.
 review_lock_acquire() {
-    local lock owner
+    local lock owner lock_probe
     lock=$(review_lock_path)
     mkdir -p "$(dirname "$lock")" 2>/dev/null || return 2
 
@@ -100,9 +100,44 @@ review_lock_acquire() {
         [ "$owner" = "${BUSDRIVER_REVIEW_LOCK_OWNER:-}" ] && return 0
         return 1
     fi
-    # ln failed and yet nothing occupies the path: not contention, an unusable dir.
-    [ -L "$lock" ] || [ -e "$lock" ] || return 2
-    return 1
+    # Nothing occupies the path, yet ln failed. Retry once — the holder may simply have
+    # released between the two.
+    if ln -s "pid-$$" "$lock" 2>/dev/null; then
+        [ "$(readlink "$lock" 2>/dev/null || true)" = "pid-$$" ] || return 2
+        return 0
+    fi
+
+    # Still failing. Do NOT infer "unusable" from that: rapid contention — another
+    # process acquiring and releasing around each of our probes — looks exactly the
+    # same, and no number of retries separates them.
+    #
+    # Prove the capability instead, by exercising it. Not `-d && -w`: those are
+    # permission bits, and a filesystem can report a directory writable while still
+    # rejecting symlinks, being out of space, or exceeding a path limit. Create a
+    # symlink at a UNIQUE sibling path — same directory, same operation, no collision
+    # with the lock itself. If that works, the environment is fine and whatever beat
+    # us to the lock was contention.
+    # Borrow a collision-free NAME from mktemp -d, then take the directory away and use
+    # that path for a symlink. Two constraints have to hold at once:
+    #
+    #   - The probe must be a SIBLING of the lock, not a symlink inside a child dir. A
+    #     directory ACL can permit adding subdirectories while denying symlinks in the
+    #     parent, so probing a child would report "usable" for a location where the
+    #     real lock cannot be created.
+    #   - The name must not be pid-derived. "${lock}.probe.$$" survives a SIGKILL
+    #     between creation and cleanup, and when that pid is reused the leftover makes
+    #     `ln` fail — a usable directory then reports unusable and blocks every review.
+    #     mktemp never returns an existing name, so an orphan is inert litter.
+    #
+    # Nothing else can claim the name between rmdir and ln: mktemp just proved it was
+    # ours alone.
+    lock_probe=$(mktemp -d "${lock}.probe.XXXXXX" 2>/dev/null) || return 2
+    rmdir "$lock_probe" 2>/dev/null || { rm -rf "$lock_probe"; return 2; }
+    if ln -s probe "$lock_probe" 2>/dev/null; then
+        rm -f "$lock_probe"
+        return 1
+    fi
+    return 2
 }
 
 # Publish the lock's ownership to children so they inherit it rather than deadlock.

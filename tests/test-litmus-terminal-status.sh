@@ -571,4 +571,63 @@ if [ "$exported" != "$real_owner" ]; then
 fi
 teardown_fixture2_sandbox
 
-echo "All litmus terminal-status tests passed (Fixture 1, 2a, 2b, 2c, 2d, 2e, 2f, 2g, 2h, 2i, 2j)"
+# ────────────────────────────────────────────────────────────
+# Fixture 2k: pins the rc contract — an unwritable state dir is rc=2 (environment),
+# a held lock in a valid dir is rc=1 (contention). Telling the operator to remove a
+# lock that does not exist is the failure this distinction prevents.
+#
+# Scope, stated honestly: this pins the CONTRACT, not the mechanism behind it. The
+# classifier has been an inference from a failed `ln`, then a `-d && -w` permission
+# check, and now a symlink probe at a unique sibling path — and all three return these
+# same two codes for these two cases. They diverge only under rapid contention, or on
+# a filesystem that reports a directory writable while rejecting symlinks; neither can
+# be staged deterministically here. The probe is defensible on reasoning (exercising
+# the capability cannot be fooled the way inferring it can), and this fixture guards
+# the contract that reasoning lives under.
+# ────────────────────────────────────────────────────────────
+setup_fixture2_sandbox
+cp "$REPO_ROOT/skills/litmus/scripts/lib/review-lock.sh" skills/litmus/scripts/lib/
+
+# chmod cannot restrict root, so this half is meaningless in a root-run container
+# (which CI images often are) — review_lock_acquire would simply succeed and return 0.
+# Skip rather than fail: a test that cannot hold its precondition is not evidence.
+if [ "$(id -u)" = "0" ]; then
+    echo "  (Fixture 2k: skipping the unwritable-dir half — running as root, chmod does not bind)"
+else
+    mkdir -p unwritable-state
+    chmod 500 unwritable-state
+    rc_unwritable=0
+    (
+        BUSDRIVER_STATE_DIR=unwritable-state
+        export BUSDRIVER_STATE_DIR
+        # shellcheck source=/dev/null
+        . skills/litmus/scripts/lib/review-lock.sh
+        review_lock_acquire
+    ) || rc_unwritable=$?
+    chmod 700 unwritable-state
+
+    if [ "$rc_unwritable" -ne 2 ]; then
+        echo "FAIL Fixture 2k: unwritable state dir returned $rc_unwritable, expected 2 (environment)"
+        teardown_fixture2_sandbox
+        exit 1
+    fi
+fi
+
+# A writable dir whose lock is held is contention (1), never environment (2).
+rc_contended=0
+ln -s "pid-4242424" .claude/litmus-review.lock
+(
+    BUSDRIVER_STATE_DIR=.claude
+    export BUSDRIVER_STATE_DIR
+    # shellcheck source=/dev/null
+    . skills/litmus/scripts/lib/review-lock.sh
+    review_lock_acquire
+) || rc_contended=$?
+if [ "$rc_contended" -ne 1 ]; then
+    echo "FAIL Fixture 2k: contended lock in a valid dir returned $rc_contended, expected 1"
+    teardown_fixture2_sandbox
+    exit 1
+fi
+teardown_fixture2_sandbox
+
+echo "All litmus terminal-status tests passed (Fixture 1, 2a, 2b, 2c, 2d, 2e, 2f, 2g, 2h, 2i, 2j, 2k)"

@@ -295,8 +295,13 @@ PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
 # shellcheck source=/dev/null
 . "$LITMUS_SCRIPTS/lib/review-lock.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source review-lock.sh"
-review_lock_acquire
-LITMUS_LOCK_RC=$?
+# `|| LITMUS_LOCK_RC=$?`, not a bare call. errexit is off here (line 1 sets only
+# `-uo pipefail`) but this script TOGGLES it mid-file, so a bare non-zero call is a
+# latent hazard: move that `set -e` earlier and this acquire would abort the script
+# before either bail below could emit its envelope — a silent exit where the contract
+# promises JSON. The `||` form is correct under either setting.
+LITMUS_LOCK_RC=0
+review_lock_acquire || LITMUS_LOCK_RC=$?
 if [ "$LITMUS_LOCK_RC" = "2" ]; then
     emit_bail "env" "dispatcher-commit-block: cannot use the litmus state directory $BUSDRIVER_STATE_DIR — the review lock could not be created there and nothing occupies its path, so this is a missing or unwritable directory, not a concurrent review."
 fi
@@ -353,11 +358,20 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
             STATE_FINISHED=0
             ;;
     esac
-    if [ "$STATE_ACTIVE" = "true" ] && [ "$STATE_FINISHED" != "1" ]; then
+    # Force ONLY on the one refusal --force is the documented answer to: an active
+    # state that provably finished. Every other reason the plain init can fail — not a
+    # git repo, bad arguments, an unwritable state dir, an inactive or unreadable file
+    # — has nothing to do with the active-state guard, and forcing there would paper
+    # over the real error with an unrelated remedy. Bail and say what the state looked
+    # like instead.
+    if [ "$STATE_ACTIVE" = "true" ] && [ "$STATE_FINISHED" = "1" ]; then
+        bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
+            emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"
+    elif [ "$STATE_ACTIVE" = "true" ]; then
         emit_bail "judgment" "litmus state is active with no recognized terminal_status (saw '${STATE_TERMINAL}') — a review running now, one initialized and not yet started, or one killed before it could record its outcome. Refusing to force-reset it; resolve with 'init-review-loop.sh --force' if it is genuinely dead."
+    else
+        emit_bail "judgment" "litmus init-review-loop.sh failed for a reason the state file does not explain (active='${STATE_ACTIVE}', terminal_status='${STATE_TERMINAL}'). --force answers only the active-state guard, so forcing here would mask the real failure."
     fi
-    bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
-        emit_bail "judgment" "litmus init-review-loop.sh failed"
 fi
 
 # --- Step 4: Invoke litmus (capture stdout + exit code) ---

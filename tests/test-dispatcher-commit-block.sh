@@ -57,6 +57,11 @@ EOF
 if [ -n "${INIT_EVENT_LOG:-}" ]; then
     printf 'init:%s\n' "$*" >> "$INIT_EVENT_LOG"
 fi
+# Stand in for the failures that have nothing to do with the active-state guard —
+# not a git repo, bad arguments, an unwritable state dir. --force is not their remedy.
+if [ "${INIT_ALWAYS_FAILS:-0}" = "1" ]; then
+    exit 1
+fi
 for _arg in "$@"; do
     [ "$_arg" = "--force" ] && exit 0
 done
@@ -232,6 +237,7 @@ run_dispatcher_capture() {
     if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
     if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
     if [ -n "${init_event_log+x}" ]; then env_args+=("INIT_EVENT_LOG=$init_event_log"); fi
+    if [ -n "${init_always_fails+x}" ]; then env_args+=("INIT_ALWAYS_FAILS=$init_always_fails"); fi
     if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
     if [ -n "${result_ack_tiers+x}" ]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
 
@@ -1193,6 +1199,38 @@ EOF
         echo "test_ah: lock survived the block's exit"
         return 1
     }
+}
+
+# test_ai: --force is the documented answer to exactly ONE refusal — the active-state
+# guard. When init fails for any other reason (not a git repo, bad args, unwritable
+# state dir) there is no active state to explain it, and forcing would paper over the
+# real error with an unrelated remedy.
+test_ai_no_force_when_state_does_not_explain_failure() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log init_always_fails
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    init_always_fails=1
+    # No state file at all: nothing here is an active-state refusal.
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_ai expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("does not explain"))' || {
+        echo "test_ai dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    if grep -q -- '--force' "$init_event_log"; then
+        echo "test_ai: --force attempted against a failure it cannot remedy"
+        cat "$init_event_log"
+        return 1
+    fi
 }
 
 failed=0

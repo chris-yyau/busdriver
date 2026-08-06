@@ -36,7 +36,14 @@
 # because every script that writes litmus-state.md does.
 
 review_lock_path() {
-    printf '%s/litmus-review.lock' "${BUSDRIVER_STATE_DIR:-.claude}"
+    local dir="${BUSDRIVER_STATE_DIR:-.claude}"
+    # Normalize HERE, not only in the callers: this library is the single choke point
+    # every lock path flows through, and init-review-loop.sh reads the env var raw.
+    # The leading-hyphen case is the one that bites hardest — `-state` satisfies a
+    # character-class check, and then dirname, mkdir, ln, mktemp and rm all read the
+    # path as OPTIONS, so every acquisition fails as an unusable directory.
+    case "$dir" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) dir=".claude" ;; esac
+    printf '%s/litmus-review.lock' "$dir"
 }
 
 # The link target is "pid-<n>", not a bare number, so it can never name a real path

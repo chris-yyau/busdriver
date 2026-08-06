@@ -1233,6 +1233,57 @@ test_ai_no_force_when_state_does_not_explain_failure() {
     fi
 }
 
+# test_aj: trailing garbage must not parse as a valid state. A value expression ending
+# in `.*$` swallows it — `terminal_status: "review_findings"x` reads as the recognized
+# value and authorizes --force against state that is by definition malformed.
+test_aj_trailing_garbage_is_not_valid_state() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log init_always_fails
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    # The plain init must REFUSE, or the classification block is never reached and this
+    # asserts nothing — the stub's own `^active: true` match does not fire on the
+    # malformed line below, which is exactly why the first draft of this test passed
+    # against a parser that accepted the garbage.
+    init_always_fails=1
+    mkdir -p "$sandbox/.claude"
+    # Three malformations that each defeated a different parser generation:
+    #   1. valid line FOLLOWED by a malformed duplicate — filtering-then-tail skips the
+    #      garbage and resurrects the earlier valid value, though last-key-wins makes
+    #      the garbage the one in effect;
+    #   2. trailing content — a value expression ending in `.*$` swallows it;
+    #   3. unbalanced quotes — `"?…"?` accepts them, the two quotes being independent.
+    {
+        printf 'active: true\n'
+        printf 'terminal_status: review_findings\n'
+        printf 'active: "true"JUNK\n'
+        printf 'terminal_status: "review_findings"JUNK\n'
+        printf 'active: "true\n'
+        printf 'terminal_status: review_findings"\n'
+    } > "$sandbox/.claude/litmus-state.md"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_aj expected bail on malformed state, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    # A lax parser reads these as active=true / terminal=review_findings and runs
+    # --force; the strict one yields empty values and bails as unexplained.
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("does not explain"))' || {
+        echo "test_aj dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    if grep -q -- '--force' "$init_event_log"; then
+        echo "test_aj: --force authorized by malformed state"
+        cat "$init_event_log"
+        return 1
+    fi
+}
+
 failed=0
 for t in $(declare -F | awk '/test_/{print $3}' | sort); do
     if "$t"; then

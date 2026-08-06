@@ -85,7 +85,7 @@ LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
 # resumed to review base...HEAD instead of the staged diff. Re-export so every path
 # derived below, here and in the children, is built from the same value.
 BUSDRIVER_STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
-case "$BUSDRIVER_STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) BUSDRIVER_STATE_DIR=".claude" ;; esac
+case "$BUSDRIVER_STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) BUSDRIVER_STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR
 LITMUS_STATE_FILE="${BUSDRIVER_STATE_DIR}/litmus-state.md"
 
@@ -340,10 +340,33 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     STATE_ACTIVE=""
     STATE_TERMINAL=""
     if [ -f "$LITMUS_STATE_FILE" ]; then
-        STATE_ACTIVE=$(grep -E '^active:' "$LITMUS_STATE_FILE" 2>/dev/null \
-            | sed -E 's/^active:[[:space:]]*"?([^"]*)"?.*$/\1/' | tail -n 1 || true)
-        STATE_TERMINAL=$(grep -E '^terminal_status:' "$LITMUS_STATE_FILE" 2>/dev/null \
-            | sed -E 's/^terminal_status:[[:space:]]*"?([^"]*)"?.*$/\1/' | tail -n 1 || true)
+        # Anchor the value to the END of the line. The previous expressions ended in
+        # `.*$`, which SWALLOWED trailing content: `terminal_status: "review_findings"x`
+        # parsed as the recognized value `review_findings`, and `active: "true"x` as
+        # `true` — malformed state authorizing --force, the exact opposite of the
+        # fail-closed rule this classification exists to enforce. `sed -n …p` emits
+        # nothing when the line does not match exactly, so garbage now yields an empty
+        # value, which no allowlist accepts and no active check reads as true.
+        # Two BALANCED alternatives per field — quoted or bare — never `"?…"?`, whose
+        # independently optional quotes accept `active: "true` and
+        # `terminal_status: review_findings"`. Those are malformed by construction, and
+        # a parser that resolves them to `true` / `review_findings` authorizes --force
+        # on exactly the input the fail-closed rule exists to reject.
+        # Select the last DECLARATION, then validate it — not the last line that
+        # happens to validate. `sed -n …p` emits only matches, so filtering first and
+        # taking the tail silently skips a malformed duplicate and resurrects an
+        # earlier valid value: given `active: true` followed by `active: "true"JUNK`,
+        # the garbage line is the one in effect under last-key-wins, yet the old order
+        # returned `true` and authorized --force. Pick the line by KEY, validate that
+        # one, and let a malformed final declaration resolve to empty.
+        STATE_ACTIVE_LINE=$(grep -E '^active:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_TERMINAL_LINE=$(grep -E '^terminal_status:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_ACTIVE=$(printf '%s\n' "$STATE_ACTIVE_LINE" | sed -nE \
+            -e 's/^active:[[:space:]]*(true|false)[[:space:]]*$/\1/p' \
+            -e 's/^active:[[:space:]]*"(true|false)"[[:space:]]*$/\1/p' || true)
+        STATE_TERMINAL=$(printf '%s\n' "$STATE_TERMINAL_LINE" | sed -nE \
+            -e 's/^terminal_status:[[:space:]]*([a-z_]+)[[:space:]]*$/\1/p' \
+            -e 's/^terminal_status:[[:space:]]*"([a-z_]+)"[[:space:]]*$/\1/p' || true)
     fi
     # Match the VALUE against run-review-loop.sh's own allowlist, not merely the
     # presence of a `terminal_status:` line. An empty, null, unknown, or malformed

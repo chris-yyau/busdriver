@@ -5,6 +5,14 @@
 set -euo pipefail
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Same normalization run-review-loop.sh and the pr-grind commit block apply — this
+# script has to agree with them, not merely be safe on its own. Normalizing the lock
+# path alone (in lib/review-lock.sh) would leave this script locking `.claude/…` while
+# reading and REWRITING a different state file, which is worse than either doing it or
+# not: the lock would guard the wrong thing. A leading hyphen is rejected because the
+# path reaches dirname/mkdir/ln/mktemp as an OPTION otherwise.
+case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 
 # Parse arguments
 FORCE=false

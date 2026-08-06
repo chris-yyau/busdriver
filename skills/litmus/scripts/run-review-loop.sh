@@ -7,7 +7,7 @@ set -euo pipefail
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # repo-root joins like "$REPO_TOP/$STATE_DIR" resolve to the configured state dir.
-case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export the sanitized value so the helper libs this script sources
 # (validation.sh, log-metrics.sh, iteration-history.sh, …) — each of which
 # re-reads BUSDRIVER_STATE_DIR — inherit the constrained value rather than a raw

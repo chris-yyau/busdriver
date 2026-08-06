@@ -377,8 +377,14 @@ if [ -n "$dead_holder" ]; then
         teardown_fixture2_sandbox
         exit 1
     fi
+    # Bind the OWNER LINE, not the prose. run-review-loop.sh prints its whole refusal
+    # block — including the sentence "If it is NOT running, ... the lock is an orphan"
+    # and the `rm -f` remedy — for a LIVE holder too; only `Owner: pid N (<state>)`
+    # varies. So a pattern matching that prose passes on a live-owner refusal and
+    # asserts nothing about orphans. Pin the dead pid and its state together, which is
+    # what "names the dead owner" means and what only the orphan path can produce.
     case "$orphan_stderr" in
-        *"not running"*"rm -f"*) ;;
+        *"pid $dead_holder (not running)"*"rm -f"*) ;;
         *)
             echo "FAIL Fixture 2e: orphan refusal must name the dead owner and the remedy"
             printf '%s\n' "$orphan_stderr"

@@ -319,7 +319,7 @@ chmod +x "$BINDIR2/agy"
 
 sleep 60 &
 live_holder=$!
-ln -s "$live_holder" .claude/litmus-review.lock
+ln -s "pid-$live_holder" .claude/litmus-review.lock
 
 set +e
 run_fixture2_review_loop >/dev/null 2>&1
@@ -345,7 +345,7 @@ rm -f .claude/litmus-review.lock "$RAN_SENTINEL"
 sleep 0 &
 dead_holder=$!
 wait "$dead_holder" 2>/dev/null || true
-ln -s "$dead_holder" .claude/litmus-review.lock
+ln -s "pid-$dead_holder" .claude/litmus-review.lock
 
 set +e
 orphan_stderr=$(run_fixture2_review_loop 2>&1 >/dev/null)
@@ -387,7 +387,7 @@ printf 'AUTO_PR_FIXTURE_SENTINEL\n' >> .claude/litmus-state.md
 
 sleep 60 &
 autopr_holder=$!
-ln -s "$autopr_holder" .claude/litmus-review.lock
+ln -s "pid-$autopr_holder" .claude/litmus-review.lock
 
 set +e
 PATH="$BINDIR2:$PATH" \
@@ -419,7 +419,7 @@ printf 'INIT_LOCK_FIXTURE_SENTINEL\n' >> .claude/litmus-state.md
 
 sleep 60 &
 init_holder=$!
-ln -s "$init_holder" .claude/litmus-review.lock
+ln -s "pid-$init_holder" .claude/litmus-review.lock
 
 set +e
 PATH="$BINDIR2:$PATH" bash skills/litmus/scripts/init-review-loop.sh --force >/dev/null 2>&1

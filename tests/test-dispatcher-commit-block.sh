@@ -1180,7 +1180,7 @@ EOF
     # satisfies the inverted match regardless of what `exported=` says — so the
     # handoff could break silently. Extract both and require they name the same pid.
     local probe_owner probe_exported
-    probe_owner=$(sed -n 's/^owner=pid-//p' "$lock_probe")
+    probe_owner=$(sed -n 's/^owner=//p' "$lock_probe")
     probe_exported=$(sed -n 's/^exported=//p' "$lock_probe")
     [ -n "$probe_owner" ] || {
         echo "test_ah: lock was not held while the reviewer ran"

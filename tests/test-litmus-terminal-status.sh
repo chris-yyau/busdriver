@@ -419,7 +419,8 @@ printf 'INIT_LOCK_FIXTURE_SENTINEL\n' >> .claude/litmus-state.md
 
 sleep 60 &
 init_holder=$!
-ln -s "pid-$init_holder" .claude/litmus-review.lock
+init_token="pid-$init_holder-fixture2g"
+ln -s "$init_token" .claude/litmus-review.lock
 
 set +e
 PATH="$BINDIR2:$PATH" bash skills/litmus/scripts/init-review-loop.sh --force >/dev/null 2>&1
@@ -442,7 +443,7 @@ fi
 # Same lock, but now we declare ourselves its owner the way a holding parent does.
 # init must proceed — and must NOT release a lock it merely inherited.
 set +e
-PATH="$BINDIR2:$PATH" BUSDRIVER_REVIEW_LOCK_OWNER="$init_holder" \
+PATH="$BINDIR2:$PATH" BUSDRIVER_REVIEW_LOCK_OWNER="$init_token" \
     bash skills/litmus/scripts/init-review-loop.sh --force >/dev/null 2>&1
 init_inherited_exit=$?
 set -e
@@ -541,6 +542,12 @@ teardown_fixture2_sandbox
 
 # ────────────────────────────────────────────────────────────
 # Fixture 2j: ownership propagates unchanged down a chain.
+#
+# Scope: 2g and 2j exercise the token MECHANISM — inheritance and propagation — which
+# is the observable contract. They cannot demonstrate why a bare pid is an insufficient
+# credential: that needs two live processes sharing one pid (subshells, separate PID
+# namespaces over a shared state dir, or a reused orphan pid), none of which a local
+# fixture can stage. The token is adopted on that reasoning, not on a test.
 # A process that acquired by INHERITANCE does not own the lock — its parent does — so
 # re-exporting its own pid would make a grandchild compare against a non-owner and
 # reject the real holder's lock, deadlocking the very chain the export exists to allow.
@@ -548,8 +555,8 @@ teardown_fixture2_sandbox
 setup_fixture2_sandbox
 cp "$REPO_ROOT/skills/litmus/scripts/lib/review-lock.sh" skills/litmus/scripts/lib/
 
-real_owner=4242424
-ln -s "pid-$real_owner" .claude/litmus-review.lock
+real_owner="pid-4242424-fixture2j"
+ln -s "$real_owner" .claude/litmus-review.lock
 
 exported=$(
     BUSDRIVER_STATE_DIR=.claude

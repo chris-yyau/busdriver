@@ -78,7 +78,7 @@ fi
 # transaction: acquire the lock yourself, call review_lock_export_owner, then invoke
 # both scripts as children. They will inherit rather than re-acquire, and neither will
 # release what it did not take.
-if [ "$(review_lock_owner)" = "$$" ]; then
+if review_lock_minted_here; then
     trap 'review_lock_release' EXIT
 fi
 

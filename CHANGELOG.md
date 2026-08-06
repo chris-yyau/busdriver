@@ -1,3 +1,10 @@
+## [1.101.3](https://github.com/chris-yyau/busdriver/compare/v1.101.2...v1.101.3) (2026-08-06)
+
+
+### Bug Fixes
+
+* **litmus:** serialize state writers and record run-end status ([#569](https://github.com/chris-yyau/busdriver/issues/569)) ([#581](https://github.com/chris-yyau/busdriver/issues/581)) ([bf87b5b](https://github.com/chris-yyau/busdriver/commit/bf87b5b3f284e56e65549e2fc1ab111bce41d81e))
+
 ## [1.101.2](https://github.com/chris-yyau/busdriver/compare/v1.101.1...v1.101.2) (2026-08-05)
 
 

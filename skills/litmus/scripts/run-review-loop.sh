@@ -35,7 +35,18 @@ clear_terminal_status() {
     # Guarding here — rather than at the call site — is what lets the call sit before
     # the setup steps, which is the whole point: the window this closes is the one
     # BETWEEN deciding to run and the field being cleared.
-    grep -qE '^active:[[:space:]]*"?true"?[[:space:]]*$' "$STATE_FILE" || return 0
+    # Read `active` through get_yaml_value — the SAME reader the rest of this script
+    # uses. An independently stricter parse here made the two disagree about one file:
+    # get_yaml_value takes the FIRST declaration, so on a file with `active: true`
+    # followed by `active: false` the loop below proceeds on true while a
+    # last-declaration parse here saw false and declined to clear — leaving a stale
+    # terminal_status in place for the whole run, which is precisely what this function
+    # exists to prevent. Agreeing with the consumer matters more than being strict
+    # alone; a file with contradictory declarations is refused outright by the
+    # dispatcher's own classification, which is where that call belongs.
+    local _cts_active
+    _cts_active=$(get_yaml_value "active" "$STATE_FILE" 2>/dev/null || echo "")
+    [ "$_cts_active" = "true" ] || return 0
     grep -q '^terminal_status:' "$STATE_FILE" || return 0
     # mktemp, not "${STATE_FILE}.tmp.$$": a predictable temp path can be pre-created as
     # a symlink, and then the redirect writes through it and the mv installs it AS the

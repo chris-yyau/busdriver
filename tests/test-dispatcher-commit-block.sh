@@ -1284,6 +1284,139 @@ test_aj_trailing_garbage_is_not_valid_state() {
     fi
 }
 
+# test_ak: the lock is held for the LIFETIME of the review, including under a signal.
+# If TERM reaches only the dispatcher, a foreground reviewer keeps writing
+# litmus-state.md while the EXIT trap drops the lock — and the next invocation acquires
+# one that guards nothing. The reviewer must be stopped before the lock is released.
+test_ak_signal_stops_reviewer_before_releasing_lock() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_pid child_pid_file grandchild_pid_file waited child_pid grandchild_pid
+    local dispatcher_status
+    make_dispatcher_fixture
+    dispatcher_pid=""
+    # KILL, not TERM: these fixtures ignore TERM on purpose, so a TERM-based cleanup
+    # would leave them running for their full sleep and bleed into later tests. Routed
+    # through a function that always returns 0 — a RETURN trap ending on a failed kill
+    # (already-dead pid) propagates under `set -e` and aborts the entire suite.
+    _ak_cleanup() {
+        local f pid
+        if [ -n "$dispatcher_pid" ]; then
+            kill -KILL "$dispatcher_pid" 2>/dev/null || true
+        fi
+        for f in "$sandbox/child.pid" "$sandbox/grandchild.pid"; do
+            [ -s "$f" ] || continue
+            pid=$(cat "$f" 2>/dev/null) || continue
+            if [ -n "$pid" ]; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        done
+        cd "$original_dir" || return 0
+        rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"
+        return 0
+    }
+    trap '_ak_cleanup' RETURN
+
+    child_pid_file="$sandbox/child.pid"
+    grandchild_pid_file="$sandbox/grandchild.pid"
+    # Assert on LIVENESS, not on a marker a slow child would not have written yet
+    # either — a timing window that cannot distinguish the two outcomes proves nothing.
+    # INIT is the child under test, not the reviewer: it runs first, and covering only
+    # the reviewer is precisely the gap that shipped last round.
+    # The grandchild stands in for codex/git, which a kill of the immediate shell alone
+    # leaves running. All three assertions discriminate: reverting a call site to
+    # foreground kills the first, swapping the group kill for a bare-pid kill kills the
+    # grandchild check, and dropping the release kills the third.
+    #
+    # NOT covered here: a signal recorded after a fast child has already exited, where
+    # the PGID probe fails for "already gone" rather than "no group". The handler
+    # distinguishes those via a liveness snapshot taken before it signals; staging it
+    # needs the signal to land inside a window this fixture cannot open deterministically
+    # (it deliberately keeps the child alive). The neighbouring invariant IS covered —
+    # test_ah asserts a clean run leaves no lock behind.
+    #
+    # The grandchild check was inert until the SIG_IGN inheritance bug was fixed —
+    # `trap '' SIG` left the child with TERM ignored, so it ran to completion and
+    # everything looked dead by the time the unbounded wait returned. Two defects
+    # hiding each other is the reason the wait below is bounded.
+    # The grandchild IGNORES TERM. `wait` covers only the direct child, so a descendant
+    # that refuses to die outlives it — and without escalation the lock is released
+    # while it is still running. This is the shape of a real reviewer: codex and git
+    # both install their own signal handling.
+    # BOTH the direct child and the grandchild ignore TERM. Only the grandchild ignoring
+    # it left the direct child dying promptly, so a blocking `wait` on it still
+    # returned — and an unbounded wait against a TERM-ignoring DIRECT child (which hangs
+    # the dispatcher forever holding the lock) went unnoticed.
+    cat > "$plugin_root/skills/litmus/scripts/init-review-loop.sh" <<EOF
+#!/usr/bin/env bash
+trap "" TERM
+bash -c 'trap "" TERM; sleep 30' &
+echo \$! > "$grandchild_pid_file"
+echo \$\$ > "$child_pid_file"
+wait
+EOF
+    chmod +x "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+
+    env "PATH=$shimdir:$PATH" "WORKTREE_DIR=$sandbox" "CLAUDE_PLUGIN_ROOT=$plugin_root" \
+        "PR_NUMBER=1" "RESULT_STATUS=needs_more" "RESULT_FIXES=signal test" \
+        "BUSDRIVER_ALLOW_NO_COMMITLINT=1" \
+        bash "$SCRIPT" >/dev/null 2>&1 &
+    dispatcher_pid=$!
+
+    waited=0
+    until [ -s "$child_pid_file" ] && [ -s "$grandchild_pid_file" ]; do
+        sleep 0.2
+        waited=$((waited + 1))
+        [ "$waited" -lt 50 ] || { echo "test_ak: init child never started"; return 1; }
+    done
+    child_pid=$(cat "$child_pid_file")
+    grandchild_pid=$(cat "$grandchild_pid_file")
+
+    # HUP, not INT: a non-interactive shell sets SIGINT to IGNORE for background jobs,
+    # and a signal ignored at entry cannot be trapped — so an INT here would test
+    # nothing. HUP carries no such rule and exercises the non-default exit mapping.
+    kill -HUP "$dispatcher_pid" 2>/dev/null || true
+    # BOUNDED wait. An unbounded `wait` blocks until the dispatcher exits — which, if
+    # the signal never reached the child, means waiting out the child's natural
+    # completion and then finding everything dead. The test would then pass on a
+    # timeout rather than on the behaviour under test, which is how the SIG_IGN
+    # inheritance bug slipped through this very test.
+    waited=0
+    while kill -0 "$dispatcher_pid" 2>/dev/null; do
+        sleep 0.2
+        waited=$((waited + 1))
+        [ "$waited" -lt 60 ] || {
+            echo "test_ak: dispatcher still alive 12s after HUP — the signal did not take"
+            kill -KILL "$dispatcher_pid" 2>/dev/null || true
+            return 1
+        }
+    done
+    dispatcher_status=0
+    wait "$dispatcher_pid" 2>/dev/null || dispatcher_status=$?
+    dispatcher_pid=""
+    sleep 0.3
+    # 128+SIGINT, not a blanket 143 — an exit status that names the wrong signal
+    # misleads whoever reads it.
+    [ "$dispatcher_status" = "129" ] || {
+        echo "test_ak: expected exit 129 for SIGHUP, got $dispatcher_status"
+        return 1
+    }
+
+    kill -0 "$child_pid" 2>/dev/null && {
+        echo "test_ak: init child (pid $child_pid) outlived the signalled dispatcher"
+        kill -KILL "$child_pid" 2>/dev/null || true
+        return 1
+    }
+    kill -0 "$grandchild_pid" 2>/dev/null && {
+        echo "test_ak: GRANDCHILD (pid $grandchild_pid) survived — the kill reached only the immediate shell"
+        kill -KILL "$grandchild_pid" 2>/dev/null || true
+        return 1
+    }
+    [ ! -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_ak: lock still held after the dispatcher exited"
+        return 1
+    }
+}
+
 failed=0
 for t in $(declare -F | awk '/test_/{print $3}' | sort); do
     if "$t"; then

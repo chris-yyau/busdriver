@@ -313,7 +313,148 @@ fi
 review_lock_export_owner
 # Extend the RUN_DIR trap rather than replacing it. review_lock_release is a no-op
 # unless we still own the lock, so this cannot unlink a successor's.
-trap 'review_lock_release; rm -rf "$RUN_DIR"' EXIT
+# The release is CONDITIONAL: a signal path that could not prove the child group is
+# gone sets LITMUS_LOCK_UNSAFE_TO_RELEASE, and an orphan a human removes beats handing
+# the next invocation a lock over a file something may still be writing.
+LITMUS_LOCK_UNSAFE_TO_RELEASE=0
+trap 'if [ "$LITMUS_LOCK_UNSAFE_TO_RELEASE" != "1" ]; then review_lock_release; fi; rm -rf "$RUN_DIR"' EXIT
+
+# Every child that mutates litmus-state.md — both init calls and the reviewer — runs
+# through here, backgrounded and waited on. A FOREGROUND child cannot honour the lock's
+# lifetime guarantee under a signal: TERM/INT/HUP reaching this process alone fires the
+# EXIT trap, dropping the lock while the child keeps writing, and the next invocation
+# then acquires a lock that guards nothing. Backgrounding lets bash service the traps
+# below immediately (it does so while in `wait`), so the child is stopped BEFORE the
+# lock is released. Installed here, before the first such child, because covering only
+# the reviewer would leave the same race open across the two init calls.
+LITMUS_CHILD_PID=""
+LITMUS_CHILD_PGID=""
+run_locked_child() {
+    local rc=0
+    # `set -m` makes the child lead its OWN process group, which is what lets the
+    # handler signal the whole tree. Without it, a background job in a non-interactive
+    # shell shares our group, `kill -PID` reaches only the immediate shell, and its
+    # descendants — codex, git, the review CLI — keep running and keep writing state
+    # after the lock is gone.
+    set -m
+    # Close the launch/capture window with a RECORDING trap, never `trap '' SIG`.
+    # An ignored signal is SIG_IGN, and SIG_IGN is INHERITED across fork+exec — the
+    # child would start with TERM ignored, so the handler's kill below would do nothing
+    # and the child would run to natural completion while we blocked waiting for it.
+    # A trap bound to a COMMAND is reset to SIG_DFL in the child, so the child stays
+    # killable; the flag then lets us react the moment the pid is known.
+    LITMUS_PENDING_SIGNAL=""
+    trap 'LITMUS_PENDING_SIGNAL=TERM' TERM
+    trap 'LITMUS_PENDING_SIGNAL=INT' INT
+    trap 'LITMUS_PENDING_SIGNAL=HUP' HUP
+    "$@" &
+    LITMUS_CHILD_PID=$!
+    # `set -m` USUALLY makes the child a process-group leader, but verify rather than
+    # assume: where it does not, every group-based operation below degrades to a no-op
+    # that looks like success. Empty means "no group — use the bare pid".
+    #
+    # Residual, stated rather than papered over: on the bare-pid path we can stop the
+    # direct child but cannot reach its descendants, so a grandchild may outlive the
+    # dispatcher. That path is now reached ONLY when the kernel says no such group
+    # exists — not when a helper binary happens to be missing — so it is as narrow as
+    # this layer can make it. It is untestable here because this platform always does
+    # give the child its own group, so it is documented rather than covered.
+    # Probe with the SAME primitive the handler will use, not with `ps`. Asking `ps`
+    # adds a dependency that can be absent or denied in a container — and when it is,
+    # the answer degrades to "no group", silently dropping back to a bare-pid kill that
+    # cannot reach descendants. `kill -0 -PID` asks the kernel the exact question that
+    # matters: does a process group with this id exist and may we signal it? Signal 0
+    # checks existence and permission without delivering anything.
+    if kill -0 -"$LITMUS_CHILD_PID" 2>/dev/null; then
+        LITMUS_CHILD_PGID="$LITMUS_CHILD_PID"
+    else
+        LITMUS_CHILD_PGID=""
+    fi
+    trap '_dispatcher_signal_exit TERM' TERM
+    trap '_dispatcher_signal_exit INT' INT
+    trap '_dispatcher_signal_exit HUP' HUP
+    set +m
+    if [ -n "$LITMUS_PENDING_SIGNAL" ]; then
+        _dispatcher_signal_exit "$LITMUS_PENDING_SIGNAL"
+    fi
+    wait "$LITMUS_CHILD_PID" || rc=$?
+    LITMUS_CHILD_PID=""
+    return "$rc"
+}
+# Poll a target (a pid, or "-pgid" for a whole group) until nothing answers. Returns 1
+# if it is still alive after $2 tenth-of-a-second ticks.
+_dispatcher_await_dead() {
+    local _target="$1" _limit="$2" _i=0
+    while kill -0 "$_target" 2>/dev/null; do
+        _i=$((_i + 1))
+        [ "$_i" -ge "$_limit" ] && return 1
+        sleep 0.1
+    done
+    return 0
+}
+
+_dispatcher_signal_exit() {
+    # Conventional 128+signo, not a blanket 143: reporting Ctrl-C and HUP as SIGTERM
+    # misleads whoever reads the exit status.
+    local _sig="${1:-TERM}" _target _child_was_alive=0
+    if [ -n "$LITMUS_CHILD_PID" ]; then
+        # Snapshot liveness BEFORE signalling: afterwards every child looks dead, and
+        # "was there anything to lose" is the question the no-group branch below needs
+        # answered.
+        kill -0 "$LITMUS_CHILD_PID" 2>/dev/null && _child_was_alive=1
+        # Signal the whole group when we actually HAVE one. LITMUS_CHILD_PGID is set
+        # only after confirming `set -m` gave the child its own group — assuming it did
+        # is how both the kill and the liveness poll become silent no-ops: `kill -0
+        # -PID` against a non-group fails instantly, which reads as "already dead".
+        if [ -n "$LITMUS_CHILD_PGID" ]; then
+            _target="-$LITMUS_CHILD_PGID"
+        else
+            _target="$LITMUS_CHILD_PID"
+        fi
+        kill -TERM "$_target" 2>/dev/null || true
+        if ! _dispatcher_await_dead "$_target" 20; then
+            # kill(2) only QUEUES a signal; a descendant can still be completing a
+            # state-file write, which is exactly what the lock excludes.
+            kill -KILL "$_target" 2>/dev/null || true
+            if ! _dispatcher_await_dead "$_target" 50; then
+                # Unkillable (uninterruptible sleep, or a pid we cannot signal). We
+                # cannot prove nothing is writing, so do NOT drop the lock: an orphan a
+                # human removes is the fail-CLOSED outcome, and the block message
+                # already names that remedy.
+                LITMUS_LOCK_UNSAFE_TO_RELEASE=1
+            fi
+        fi
+        if [ -z "$LITMUS_CHILD_PGID" ] && [ "$_child_was_alive" = "1" ]; then
+            # No group AND the child was still running when the signal landed: we can
+            # stop the child, but its descendants are unreachable from here and may
+            # still be writing litmus-state.md — the concurrent-writer race the lock
+            # exists to exclude. Hold the lock and let a human clear it; proving the
+            # child dead is NOT proving the tree dead.
+            #
+            # The liveness half matters as much as the group half. An empty PGID also
+            # means "the child had already exited when we probed", and flagging THAT
+            # would strand a permanent orphan lock over a run that finished cleanly —
+            # turning a successful round into a wedge.
+            LITMUS_LOCK_UNSAFE_TO_RELEASE=1
+        fi
+        # Reap ONLY once it is provably gone. `wait` on a live TERM-ignoring child
+        # blocks forever, and the dispatcher would then hold the lock indefinitely —
+        # a worse failure than the race this handler exists to prevent.
+        if ! kill -0 "$LITMUS_CHILD_PID" 2>/dev/null; then
+            wait "$LITMUS_CHILD_PID" 2>/dev/null || true
+        fi
+    fi
+    # The EXIT trap fires after this — and frees the lock unless the group could not be
+    # confirmed dead, which is the one case where holding it is correct.
+    case "$_sig" in
+        INT) exit 130 ;;
+        HUP) exit 129 ;;
+        *)   exit 143 ;;
+    esac
+}
+trap '_dispatcher_signal_exit TERM' TERM
+trap '_dispatcher_signal_exit INT' INT
+trap '_dispatcher_signal_exit HUP' HUP
 
 # --- Step 3b: try the ORDINARY init first ---
 # --force is only ever needed to get past init-review-loop.sh's active-state guard, so
@@ -321,7 +462,7 @@ trap 'review_lock_release; rm -rf "$RUN_DIR"' EXIT
 # completed one, the plain call succeeds and this round never carries the force's
 # overwrite risk at all. That keeps the widened window — where --force overrides a
 # refusal the plain call would have honoured — off the common path entirely.
-if bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
+if run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
     LITMUS_INIT_DONE=1
 else
     LITMUS_INIT_DONE=0
@@ -388,7 +529,7 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # over the real error with an unrelated remedy. Bail and say what the state looked
     # like instead.
     if [ "$STATE_ACTIVE" = "true" ] && [ "$STATE_FINISHED" = "1" ]; then
-        bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
+        run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
             emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"
     elif [ "$STATE_ACTIVE" = "true" ]; then
         emit_bail "judgment" "litmus state is active with no recognized terminal_status (saw '${STATE_TERMINAL}') — a review running now, one initialized and not yet started, or one killed before it could record its outcome. Refusing to force-reset it; resolve with 'init-review-loop.sh --force' if it is genuinely dead."
@@ -412,9 +553,17 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # another invocation could take the lock and replace the state we had just
 # initialized.) The child will not release what it did not take, and our EXIT trap
 # frees it once the review returns.
+# Run the reviewer in the BACKGROUND and `wait`, rather than as a foreground command.
+# The lock's guarantee is "held for the lifetime of the review", and a foreground
+# invocation cannot honour that under a signal: if TERM/INT/HUP reaches this process
+# alone, the EXIT trap releases the lock while the child is still writing
+# litmus-state.md — and the next invocation acquires a lock that guards nothing.
+# Backgrounding lets the signal traps below run immediately (bash services traps while
+# in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
 LITMUS_EXIT=0
 set +e
-LITMUS_SHORTCIRCUIT_DISABLED=1 bash "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
+run_locked_child env LITMUS_SHORTCIRCUIT_DISABLED=1 \
+    bash "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
 LITMUS_EXIT=$?
 set -e
 

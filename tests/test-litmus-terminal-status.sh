@@ -630,4 +630,45 @@ if [ "$rc_contended" -ne 1 ]; then
 fi
 teardown_fixture2_sandbox
 
-echo "All litmus terminal-status tests passed (Fixture 1, 2a, 2b, 2c, 2d, 2e, 2f, 2g, 2h, 2i, 2j, 2k)"
+# ────────────────────────────────────────────────────────────
+# Fixture 2l: clear_terminal_status must agree with the reader the rest of the script
+# uses. get_yaml_value takes the FIRST declaration, so on a file with `active: true`
+# followed by `active: false` the loop proceeds on true — and this function must clear
+# on that same true, or a stale terminal_status survives the whole run.
+#
+# The first draft of this fixture eval'd the function body alone, without sourcing
+# validation.sh. get_yaml_value was then undefined, the `|| echo ""` fallback returned
+# empty, and the function declined to clear — so the fixture passed on a missing
+# function rather than on the logic. Source the real reader.
+# ────────────────────────────────────────────────────────────
+setup_fixture2_sandbox
+cp "$REPO_ROOT/skills/litmus/scripts/lib/review-lock.sh" skills/litmus/scripts/lib/
+
+{
+    printf -- '---\n'
+    printf 'active: true\n'
+    printf 'terminal_status: "review_findings"\n'
+    printf 'active: false\n'
+    printf -- '---\n'
+} > .claude/litmus-state.md
+
+(
+    STATE_DIR=.claude
+    # shellcheck disable=SC2034  # consumed by the clear_terminal_status body eval'd below
+    STATE_FILE=.claude/litmus-state.md
+    export BUSDRIVER_STATE_DIR="$STATE_DIR"
+    # shellcheck source=/dev/null
+    . skills/litmus/scripts/lib/validation.sh
+    eval "$(sed -n '/^clear_terminal_status() {/,/^}/p' skills/litmus/scripts/run-review-loop.sh)"
+    clear_terminal_status
+)
+
+if grep -q '^terminal_status:' .claude/litmus-state.md; then
+    echo "FAIL Fixture 2l: did not clear terminal_status although get_yaml_value reads active as true"
+    cat .claude/litmus-state.md
+    teardown_fixture2_sandbox
+    exit 1
+fi
+teardown_fixture2_sandbox
+
+echo "All litmus terminal-status tests passed (Fixture 1, 2a, 2b, 2c, 2d, 2e, 2f, 2g, 2h, 2i, 2j, 2k, 2l)"

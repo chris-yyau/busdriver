@@ -7,7 +7,7 @@ set -euo pipefail
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # repo-root joins like "$REPO_TOP/$STATE_DIR" resolve to the configured state dir.
-case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export the sanitized value so the helper libs this script sources
 # (validation.sh, log-metrics.sh, iteration-history.sh, …) — each of which
 # re-reads BUSDRIVER_STATE_DIR — inherit the constrained value rather than a raw
@@ -21,15 +21,84 @@ STATE_FILE="$STATE_DIR/litmus-state.md"
 # Backward-compatible — interactive /litmus callers see no behavior change.
 # Pre-condition: $STATE_FILE is set. If the file or its parent dir is missing
 # (early-exit / setup-error paths), create them before writing.
+# clear_terminal_status: drop the field at the START of a run, so its presence means
+# "THIS run ended" rather than "some run once ended". A resumed loop (status=FAIL,
+# operator fixed the findings, ran this script again) otherwise carries the previous
+# iteration's terminal_status for the whole of the next review — and a reader that
+# treats the field as proof of a finished run would classify a LIVE review as stale.
+# No-op when the file or the field is absent.
+clear_terminal_status() {
+    [[ -f "$STATE_FILE" ]] || return 0
+    # Only an ACTIVE loop is ours to touch. An inactive state file (e.g. a completed
+    # max_iterations run) belongs to whoever reads it next; this script exits without
+    # reviewing in that case, so mutating it would be a side effect of a no-op run.
+    # Guarding here — rather than at the call site — is what lets the call sit before
+    # the setup steps, which is the whole point: the window this closes is the one
+    # BETWEEN deciding to run and the field being cleared.
+    # Read `active` through get_yaml_value — the SAME reader the rest of this script
+    # uses. An independently stricter parse here made the two disagree about one file:
+    # get_yaml_value takes the FIRST declaration, so on a file with `active: true`
+    # followed by `active: false` the loop below proceeds on true while a
+    # last-declaration parse here saw false and declined to clear — leaving a stale
+    # terminal_status in place for the whole run, which is precisely what this function
+    # exists to prevent. Agreeing with the consumer matters more than being strict
+    # alone; a file with contradictory declarations is refused outright by the
+    # dispatcher's own classification, which is where that call belongs.
+    local _cts_active
+    _cts_active=$(get_yaml_value "active" "$STATE_FILE" 2>/dev/null || echo "")
+    [ "$_cts_active" = "true" ] || return 0
+    grep -q '^terminal_status:' "$STATE_FILE" || return 0
+    # mktemp, not "${STATE_FILE}.tmp.$$": a predictable temp path can be pre-created as
+    # a symlink, and then the redirect writes through it and the mv installs it AS the
+    # state file. mktemp refuses an existing path and creates with a private mode.
+    # Never propagate a non-zero return to the caller: the bare call site below is
+    # `clear_terminal_status` with no `||`, and under `set -e` (already on by the time
+    # this runs, well after the lock is held) a non-zero return here would abort the
+    # whole script — silently, with no diagnostic, and with terminal_status left
+    # uncleared. That is the exact wedged-state condition this change exists to
+    # remove. mktemp failing is reported and treated as "leave the field in place"
+    # rather than fatal; `grep -v` finding nothing to keep (every line in the file
+    # matched `^terminal_status:`, which `grep -v` reports as exit 1) is treated as
+    # "nothing to write back", not an error.
+    local tmp
+    tmp=$(mktemp "${STATE_FILE}.XXXXXX") || {
+        echo "⚠️  clear_terminal_status: mktemp failed in $(dirname "$STATE_FILE"); leaving terminal_status in place" >&2
+        return 0
+    }
+    # `set -e` is suspended only for the `if` CONDITION, not for its body — so an
+    # unguarded `mv` here would abort the run on failure (read-only dir, cross-device
+    # rename, a directory installed at STATE_FILE), which is the exact fatal-abort this
+    # function promises never to do. Guard it like the mktemp above: report, keep the
+    # field, carry on.
+    # Every command on these paths is guarded, `rm -f` included: `rm -f` still fails on
+    # an unlink it is not permitted to make (an unwritable directory, an immutable
+    # flag), and an unguarded failure here aborts under `set -e` exactly as an
+    # unguarded `mv` would — for a temp file whose loss is not worth a dead review.
+    if grep -v '^terminal_status:' "$STATE_FILE" > "$tmp"; then
+        mv "$tmp" "$STATE_FILE" || {
+            echo "⚠️  clear_terminal_status: mv into $STATE_FILE failed; leaving terminal_status in place" >&2
+            rm -f "$tmp" || true
+        }
+    else
+        rm -f "$tmp" || true
+    fi
+    return 0
+}
+
 write_terminal_status() {
     local status="$1"
     case "$status" in
-        review_findings|stall|max_iterations|infra_failure|setup_error) ;;
+        review_findings|stall|max_iterations|infra_failure|setup_error|too_large) ;;
         *) printf 'write_terminal_status: invalid %s\n' "$status" >&2; return 1 ;;
     esac
     mkdir -p "$(dirname "$STATE_FILE")"
     [[ -f "$STATE_FILE" ]] || touch "$STATE_FILE"
-    local tmp="${STATE_FILE}.tmp.$$"
+    # Same mktemp reasoning as clear_terminal_status above: a predictable
+    # "${STATE_FILE}.tmp.$$" can be pre-created as a symlink, and every branch below
+    # ends in `mv "$tmp" "$STATE_FILE"`. Pre-existing pattern, fixed here rather than
+    # left as the one writer still carrying it.
+    local tmp
+    tmp=$(mktemp "${STATE_FILE}.XXXXXX") || return 1
     if grep -q '^terminal_status:' "$STATE_FILE"; then
         # Update existing field in-place (works on macOS BSD sed and GNU sed)
         sed -E "s/^terminal_status:.*/terminal_status: \"${status}\"/" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -55,6 +124,50 @@ write_terminal_status() {
             && mv "$tmp" "$STATE_FILE"
     fi
 }
+
+# Take the review lock for the lifetime of this run — BEFORE every subcommand branch,
+# not just the review path. All of them write litmus-state.md: --auto-pr-review runs
+# `init-review-loop.sh --force`, and --write-pr-marker and --run-backstop each call
+# write_terminal_status on failure. Acquiring after any one of them would let that
+# branch mutate the state file out from under a review that already owns the lock, and
+# fail only once the damage was done. "Every writer takes the lock" has to mean every
+# entry point, or it means nothing.
+#
+# This lock is also the only thing that lets another reader distinguish "a review is in
+# flight" from "a review died". Released via the EXIT trap on every path.
+#
+# `|| _LOCK_RC=$?`, not a bare call: this script runs under `set -e`, so a bare
+# `review_lock_acquire` returning non-zero aborts here and the diagnostics below never
+# print. The refusal would still happen — silently, with no way for the operator to
+# learn that a concurrent review is the reason.
+# shellcheck source=lib/review-lock.sh
+source "$SCRIPT_DIR/lib/review-lock.sh"
+_LOCK_RC=0
+review_lock_acquire || _LOCK_RC=$?
+if [ "$_LOCK_RC" = "2" ]; then
+  echo "❌ Cannot use the litmus state directory: $STATE_DIR" >&2
+  echo "   The lock could not be created: $(review_lock_path)" >&2
+  echo "   Inspect that path — a file or directory may already occupy it, a stale" >&2
+  echo "   symlink may point at an unreadable target, or the directory may reject" >&2
+  echo "   symlink creation." >&2
+  exit 1
+fi
+if [ "$_LOCK_RC" != "0" ]; then
+  echo "❌ Another litmus review holds the review lock in $STATE_DIR" >&2
+  echo "   Owner: pid $(review_lock_owner) ($(review_lock_owner_state))" >&2
+  echo "   Lock:  $(review_lock_path)" >&2
+  echo "" >&2
+  echo "   If the owner is running, wait — two reviews share one state file." >&2
+  echo "   If it is NOT running, that review was killed; the lock is an orphan." >&2
+  echo "   Remove it yourself: rm -f $(review_lock_path)" >&2
+  echo "   (Reclaiming it automatically cannot be made race-free in shell; see" >&2
+  echo "    lib/review-lock.sh for why a human does it.)" >&2
+  exit 1
+fi
+trap 'review_lock_release' EXIT
+# Children that take the lock themselves — init-review-loop.sh, invoked directly below
+# and again from the loop — must see this lock as theirs, not deadlock against it.
+review_lock_export_owner
 
 # Load metrics persistence
 # shellcheck source=lib/log-metrics.sh
@@ -743,6 +856,20 @@ source "$SCRIPT_DIR/lib/iteration-history.sh"
 # Determine review mode from state file or env var
 REVIEW_MODE="${LITMUS_MODE:-commit}"
 
+# Drop any terminal_status the PREVIOUS iteration left behind, BEFORE the setup steps
+# below (CLI resolution, git and diff checks, state validation). Those are quick but not
+# instant, and until the field is gone a resumed live review still advertises the last
+# run's outcome — so a concurrent reader treating terminal_status as proof of a finished
+# run would classify THIS run as stale and force-reset it. Clearing here makes the field
+# mean "this run ended" for the whole lifetime of the run. No-op unless the loop is
+# active; see clear_terminal_status.
+#
+# Every exit path below either records a fresh terminal_status or deletes the state file
+# outright, so an active file with NO terminal_status now says exactly one thing: a
+# review is in flight, or was killed before it could record its outcome.
+clear_terminal_status
+
+
 # Validate prerequisites
 echo "🔍 Validating prerequisites..."
 validate_git_repo || { write_terminal_status setup_error; exit 1; }
@@ -1228,9 +1355,15 @@ else
     echo "                      LITMUS_MAX_TOTAL_LINES=$((ADDITION_LINES + DELETION_LINES + 100))"
     echo "                      LITMUS_MAX_STAGED_FILES=$((STAGED_FILE_COUNT + 2))"
     echo ""
+    # Record the outcome BEFORE the advisory helper below. This script runs under
+    # `set -e`, so a suggest-split.sh failure would exit right here — leaving the one
+    # non-PASS path that used to record no terminal_status still recording none, and
+    # wedging every later reader on a run that is demonstrably finished. The status is
+    # the load-bearing part; the split advice is not.
+    write_terminal_status too_large
     # Run suggest-split helper to show grouping advice (only useful for multi-file diffs)
     if [ "$STAGED_FILE_COUNT" -gt 1 ]; then
-      bash "$SCRIPT_DIR/suggest-split.sh"
+      bash "$SCRIPT_DIR/suggest-split.sh" || true
       echo ""
     fi
     echo "EXIT_CODE=2 (TOO_LARGE: split into smaller commits before reviewing)"

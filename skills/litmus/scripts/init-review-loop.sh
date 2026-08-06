@@ -5,6 +5,14 @@
 set -euo pipefail
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Same normalization run-review-loop.sh and the pr-grind commit block apply — this
+# script has to agree with them, not merely be safe on its own. Normalizing the lock
+# path alone (in lib/review-lock.sh) would leave this script locking `.claude/…` while
+# reading and REWRITING a different state file, which is worse than either doing it or
+# not: the lock would guard the wrong thing. A leading hyphen is rejected because the
+# path reaches dirname/mkdir/ln/mktemp as an OPTION otherwise.
+case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 
 # Parse arguments
 FORCE=false
@@ -31,6 +39,51 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/iteration-history.sh
 source "$SCRIPT_DIR/lib/iteration-history.sh"
+
+# This script REWRITES litmus-state.md — with --force, unconditionally. That makes it a
+# writer, so it takes the review lock like every other writer; a mutual-exclusion
+# contract that some writers opt out of is not a contract. Without this, an operator
+# running init directly could reset the state file out from under a review that owns
+# the lock. Callers that already hold it (run-review-loop.sh, the pr-grind commit block)
+# export their pid, and review_lock_acquire treats an inherited owner as ours rather
+# than deadlocking against the parent.
+# shellcheck source=lib/review-lock.sh
+source "$SCRIPT_DIR/lib/review-lock.sh"
+_INIT_LOCK_RC=0
+review_lock_acquire || _INIT_LOCK_RC=$?
+if [ "$_INIT_LOCK_RC" = "2" ]; then
+    echo "❌ Cannot use the litmus state directory: $STATE_DIR" >&2
+    echo "   The lock could not be created: $(review_lock_path)" >&2
+    echo "   Inspect that path — a file or directory may already occupy it, a stale" >&2
+    echo "   symlink may point at an unreadable target, or the directory may reject" >&2
+    echo "   symlink creation." >&2
+    exit 1
+fi
+if [ "$_INIT_LOCK_RC" != "0" ]; then
+    echo "❌ A litmus review holds the review lock in $STATE_DIR" >&2
+    echo "   Owner: pid $(review_lock_owner) ($(review_lock_owner_state))" >&2
+    echo "   Lock:  $(review_lock_path)" >&2
+    echo "" >&2
+    echo "   Re-initializing now would reset the state file underneath it." >&2
+    echo "   If the owner is running, wait. If it is NOT running, that review was" >&2
+    echo "   killed and the lock is an orphan: rm -f $(review_lock_path)" >&2
+    exit 1
+fi
+# Release on exit unless we inherited the lock — a child must never unlink its
+# parent's, which is still held for the rest of the parent's run.
+#
+# Note the handoff this leaves for a STANDALONE caller: init releases, and whatever runs
+# the review next must acquire again, so a third party could slip in between. That gap
+# is inherent to invoking init and run as two separate commands — an interactive
+# operator has always had it, and this script cannot close it alone.
+#
+# The contract for closing it, for any caller that wants init→review to be one
+# transaction: acquire the lock yourself, call review_lock_export_owner, then invoke
+# both scripts as children. They will inherit rather than re-acquire, and neither will
+# release what it did not take.
+if review_lock_minted_here; then
+    trap 'review_lock_release' EXIT
+fi
 
 # Guard: prevent re-init while a review loop is active.
 #

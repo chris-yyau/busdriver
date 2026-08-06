@@ -76,7 +76,18 @@ SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
 ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
-LITMUS_STATE_FILE="${BUSDRIVER_STATE_DIR:-.claude}/litmus-state.md"
+
+# Constrain BUSDRIVER_STATE_DIR to a safe relative name with the SAME rule
+# run-review-loop.sh applies to it (see its header). This is not defence in depth — it
+# is agreement. If the two normalize differently, an absolute or traversal value makes
+# this script classify and initialize one state file while the reviewer it invokes
+# consumes another, and a leftover PR-mode state in the real `.claude` would then be
+# resumed to review base...HEAD instead of the staged diff. Re-export so every path
+# derived below, here and in the children, is built from the same value.
+BUSDRIVER_STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+case "$BUSDRIVER_STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) BUSDRIVER_STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR
+LITMUS_STATE_FILE="${BUSDRIVER_STATE_DIR}/litmus-state.md"
 
 cd "$WORKTREE_DIR" || \
     emit_bail "env" "dispatcher-commit-block: cd to WORKTREE_DIR ($WORKTREE_DIR) failed"
@@ -241,8 +252,308 @@ PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list pre-litmus staged paths"
 
 # --- Step 3: Initialize litmus loop ---
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1 || \
-    emit_bail "judgment" "litmus init-review-loop.sh failed"
+# run-review-loop.sh deletes litmus-state.md ONLY on PASS. Every other terminal
+# status (review_findings, stall, infra_failure, setup_error) leaves the file behind
+# with `active: true` — and init-review-loop.sh then refuses for EVERY active state,
+# because `active: true` alone cannot tell a KILLED or PAUSED loop from a LIVE one
+# (see the guard's own comment block). So a single non-PASS review wedged this script
+# for every LATER invocation: the observed "litmus init-review-loop.sh failed" bail
+# was never an infra failure, it was the previous round's state never being cleared
+# (#569). The same leak crosses the `gh pr create` → pr-grind boundary, where the
+# pre-PR gate leaves a pr-MODE file — and run-review-loop.sh lets a state-file
+# review_mode OVERRIDE $LITMUS_MODE, so resuming that would silently review
+# base...HEAD instead of this round's staged diff.
+#
+# Supply the discriminator the guard lacks: `terminal_status`. run-review-loop.sh
+# deletes the state file on PASS, records a terminal_status on every non-PASS exit, and
+# CLEARS the field when a run starts — so its PRESENCE proves the most recent run
+# reached its end, the exact fact `active: true` cannot express. (The clear is what
+# makes it trustworthy: without it a resumed loop carries the previous iteration's
+# terminal_status for the whole of the next review, and a live review reads as
+# finished.) Forcing on that proof is sound for this caller
+# specifically: the block owns one self-contained review per invocation against a fresh
+# staged diff, and a litmus FAIL ends the grind, so no iteration history is ever worth
+# carrying forward.
+#
+# Scope note — this is a STALENESS fix, not a concurrency fix. Nothing here serializes
+# against a reviewer running in the same state dir, and nothing did before either: two
+# invocations that both find no state file have always both initialized. That is
+# unchanged, unobserved in practice (pr-grind reviews inside its own ephemeral
+# worktree, so the state dir has one writer by construction), and genuinely unclosable
+# from this side — an interactive /litmus takes no lock, so real mutual exclusion needs
+# run-review-loop.sh itself to participate. An earlier draft carried a pid lock and a
+# pgrep probe for it; both were removed as speculative guards whose failure modes cost
+# more than the race they chased. See the ADR.
+#
+# Rationale and the alternatives weighed: docs/adr/0033-commit-block-stale-litmus-state.md
+
+# --- Step 3a: hold the review lock across classify-and-init ---
+# Classifying the state and then acting on it is check-then-act; nothing about reading
+# `terminal_status` more carefully makes the answer survive to the next line. The lock
+# is what does: run-review-loop.sh takes the same one for the lifetime of a run, so
+# while we hold it no review can start, resume, or clear the status we just read.
+# shellcheck source=/dev/null
+. "$LITMUS_SCRIPTS/lib/review-lock.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source review-lock.sh"
+# `|| LITMUS_LOCK_RC=$?`, not a bare call. errexit is off here (line 1 sets only
+# `-uo pipefail`) but this script TOGGLES it mid-file, so a bare non-zero call is a
+# latent hazard: move that `set -e` earlier and this acquire would abort the script
+# before either bail below could emit its envelope — a silent exit where the contract
+# promises JSON. The `||` form is correct under either setting.
+LITMUS_LOCK_RC=0
+review_lock_acquire || LITMUS_LOCK_RC=$?
+if [ "$LITMUS_LOCK_RC" = "2" ]; then
+    emit_bail "env" "dispatcher-commit-block: cannot use the litmus state directory $BUSDRIVER_STATE_DIR — the lock could not be created: $(review_lock_path). Inspect that path — a file or directory may already occupy it, a stale symlink may point at an unreadable target, or the directory may reject symlink creation."
+fi
+if [ "$LITMUS_LOCK_RC" != "0" ]; then
+    emit_bail "env" "dispatcher-commit-block: the litmus review lock $(review_lock_path) is held by pid $(review_lock_owner) ($(review_lock_owner_state)). If it is running, wait; if not, that review was killed and the lock is an orphan a human must remove (reclaiming it automatically cannot be made race-free in shell — see lib/review-lock.sh)."
+fi
+# init-review-loop.sh takes the lock too. Export our ownership so it inherits rather
+# than deadlocking against us.
+review_lock_export_owner
+# Extend the RUN_DIR trap rather than replacing it. review_lock_release is a no-op
+# unless we still own the lock, so this cannot unlink a successor's.
+# The release is CONDITIONAL: a signal path that could not prove the child group is
+# gone sets LITMUS_LOCK_UNSAFE_TO_RELEASE, and an orphan a human removes beats handing
+# the next invocation a lock over a file something may still be writing.
+LITMUS_LOCK_UNSAFE_TO_RELEASE=0
+trap 'if [ "$LITMUS_LOCK_UNSAFE_TO_RELEASE" != "1" ]; then review_lock_release; fi; rm -rf "$RUN_DIR"' EXIT
+
+# Every child that mutates litmus-state.md — both init calls and the reviewer — runs
+# through here, backgrounded and waited on. A FOREGROUND child cannot honour the lock's
+# lifetime guarantee under a signal: TERM/INT/HUP reaching this process alone fires the
+# EXIT trap, dropping the lock while the child keeps writing, and the next invocation
+# then acquires a lock that guards nothing. Backgrounding lets bash service the traps
+# below immediately (it does so while in `wait`), so the child is stopped BEFORE the
+# lock is released. Installed here, before the first such child, because covering only
+# the reviewer would leave the same race open across the two init calls.
+LITMUS_CHILD_PID=""
+LITMUS_CHILD_PGID=""
+run_locked_child() {
+    local rc=0
+    # `set -m` makes the child lead its OWN process group, which is what lets the
+    # handler signal the whole tree. Without it, a background job in a non-interactive
+    # shell shares our group, `kill -PID` reaches only the immediate shell, and its
+    # descendants — codex, git, the review CLI — keep running and keep writing state
+    # after the lock is gone.
+    set -m
+    # Close the launch/capture window with a RECORDING trap, never `trap '' SIG`.
+    # An ignored signal is SIG_IGN, and SIG_IGN is INHERITED across fork+exec — the
+    # child would start with TERM ignored, so the handler's kill below would do nothing
+    # and the child would run to natural completion while we blocked waiting for it.
+    # A trap bound to a COMMAND is reset to SIG_DFL in the child, so the child stays
+    # killable; the flag then lets us react the moment the pid is known.
+    LITMUS_PENDING_SIGNAL=""
+    trap 'LITMUS_PENDING_SIGNAL=TERM' TERM
+    trap 'LITMUS_PENDING_SIGNAL=INT' INT
+    trap 'LITMUS_PENDING_SIGNAL=HUP' HUP
+    "$@" &
+    LITMUS_CHILD_PID=$!
+    # `set -m` USUALLY makes the child a process-group leader, but verify rather than
+    # assume: where it does not, every group-based operation below degrades to a no-op
+    # that looks like success. Empty means "no group — use the bare pid".
+    #
+    # Residual, stated rather than papered over: on the bare-pid path we can stop the
+    # direct child but cannot reach its descendants, so a grandchild may outlive the
+    # dispatcher. That path is now reached ONLY when the kernel says no such group
+    # exists — not when a helper binary happens to be missing — so it is as narrow as
+    # this layer can make it. It is untestable here because this platform always does
+    # give the child its own group, so it is documented rather than covered.
+    # Probe with the SAME primitive the handler will use, not with `ps`. Asking `ps`
+    # adds a dependency that can be absent or denied in a container — and when it is,
+    # the answer degrades to "no group", silently dropping back to a bare-pid kill that
+    # cannot reach descendants. `kill -0 -PID` asks the kernel the exact question that
+    # matters: does a process group with this id exist and may we signal it? Signal 0
+    # checks existence and permission without delivering anything.
+    if kill -0 -"$LITMUS_CHILD_PID" 2>/dev/null; then
+        LITMUS_CHILD_PGID="$LITMUS_CHILD_PID"
+    else
+        LITMUS_CHILD_PGID=""
+    fi
+    trap '_dispatcher_signal_exit TERM' TERM
+    trap '_dispatcher_signal_exit INT' INT
+    trap '_dispatcher_signal_exit HUP' HUP
+    set +m
+    if [ -n "$LITMUS_PENDING_SIGNAL" ]; then
+        _dispatcher_signal_exit "$LITMUS_PENDING_SIGNAL"
+    fi
+    wait "$LITMUS_CHILD_PID" || rc=$?
+    LITMUS_CHILD_PID=""
+    return "$rc"
+}
+# Poll a target (a pid, or "-pgid" for a whole group) until nothing answers. Returns 1
+# if it is still alive after $2 tenth-of-a-second ticks.
+_dispatcher_await_dead() {
+    local _target="$1" _limit="$2" _i=0
+    while kill -0 "$_target" 2>/dev/null; do
+        _i=$((_i + 1))
+        [ "$_i" -ge "$_limit" ] && return 1
+        sleep 0.1
+    done
+    return 0
+}
+
+_dispatcher_signal_exit() {
+    # Conventional 128+signo, not a blanket 143: reporting Ctrl-C and HUP as SIGTERM
+    # misleads whoever reads the exit status.
+    local _sig="${1:-TERM}" _target _child_was_alive=0
+    if [ -n "$LITMUS_CHILD_PID" ]; then
+        # Snapshot liveness BEFORE signalling: afterwards every child looks dead, and
+        # "was there anything to lose" is the question the no-group branch below needs
+        # answered.
+        kill -0 "$LITMUS_CHILD_PID" 2>/dev/null && _child_was_alive=1
+        # Signal the whole group when we actually HAVE one. LITMUS_CHILD_PGID is set
+        # only after confirming `set -m` gave the child its own group — assuming it did
+        # is how both the kill and the liveness poll become silent no-ops: `kill -0
+        # -PID` against a non-group fails instantly, which reads as "already dead".
+        if [ -n "$LITMUS_CHILD_PGID" ]; then
+            _target="-$LITMUS_CHILD_PGID"
+        else
+            _target="$LITMUS_CHILD_PID"
+        fi
+        kill -TERM "$_target" 2>/dev/null || true
+        if ! _dispatcher_await_dead "$_target" 20; then
+            # kill(2) only QUEUES a signal; a descendant can still be completing a
+            # state-file write, which is exactly what the lock excludes.
+            kill -KILL "$_target" 2>/dev/null || true
+            if ! _dispatcher_await_dead "$_target" 50; then
+                # Unkillable (uninterruptible sleep, or a pid we cannot signal). We
+                # cannot prove nothing is writing, so do NOT drop the lock: an orphan a
+                # human removes is the fail-CLOSED outcome, and the block message
+                # already names that remedy.
+                LITMUS_LOCK_UNSAFE_TO_RELEASE=1
+            fi
+        fi
+        if [ -z "$LITMUS_CHILD_PGID" ] && [ "$_child_was_alive" = "1" ]; then
+            # No group AND the child was still running when the signal landed: we can
+            # stop the child, but its descendants are unreachable from here and may
+            # still be writing litmus-state.md — the concurrent-writer race the lock
+            # exists to exclude. Hold the lock and let a human clear it; proving the
+            # child dead is NOT proving the tree dead.
+            #
+            # The liveness half matters as much as the group half. An empty PGID also
+            # means "the child had already exited when we probed", and flagging THAT
+            # would strand a permanent orphan lock over a run that finished cleanly —
+            # turning a successful round into a wedge.
+            LITMUS_LOCK_UNSAFE_TO_RELEASE=1
+        fi
+        # Reap ONLY once it is provably gone. `wait` on a live TERM-ignoring child
+        # blocks forever, and the dispatcher would then hold the lock indefinitely —
+        # a worse failure than the race this handler exists to prevent.
+        if ! kill -0 "$LITMUS_CHILD_PID" 2>/dev/null; then
+            wait "$LITMUS_CHILD_PID" 2>/dev/null || true
+        fi
+    fi
+    # The EXIT trap fires after this — and frees the lock unless the group could not be
+    # confirmed dead, which is the one case where holding it is correct.
+    case "$_sig" in
+        INT) exit 130 ;;
+        HUP) exit 129 ;;
+        *)   exit 143 ;;
+    esac
+}
+trap '_dispatcher_signal_exit TERM' TERM
+trap '_dispatcher_signal_exit INT' INT
+trap '_dispatcher_signal_exit HUP' HUP
+
+# --- Step 3b: try the ORDINARY init first ---
+# --force is only ever needed to get past init-review-loop.sh's active-state guard, so
+# reach for it only once that guard has actually fired. With no state file, or a
+# completed one, the plain call succeeds and this round never carries the force's
+# overwrite risk at all. That keeps the widened window — where --force overrides a
+# refusal the plain call would have honoured — off the common path entirely.
+if run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
+    LITMUS_INIT_DONE=1
+else
+    LITMUS_INIT_DONE=0
+fi
+
+# --- Step 3c: force only against a state file that PROVES a run reached its end ---
+# An absent terminal_status means one of three things, all of which must NOT be forced:
+# a review running right now, an interactive /litmus that has run init-review-loop.sh
+# and not yet started the loop, or a run killed before it could record its outcome.
+# They are indistinguishable without a clock, and forcing would erase a review somebody
+# is running or is about to — a regression, since refusing on `active: true` did protect
+# those, however bluntly. So refuse too, but say which remedy applies. The
+# FAIL → terminal_status: review_findings case — every occurrence observed in #569 —
+# stays fully automatic.
+if [ "$LITMUS_INIT_DONE" != "1" ]; then
+    STATE_ACTIVE=""
+    STATE_TERMINAL=""
+    if [ -f "$LITMUS_STATE_FILE" ]; then
+        # Anchor the value to the END of the line. The previous expressions ended in
+        # `.*$`, which SWALLOWED trailing content: `terminal_status: "review_findings"x`
+        # parsed as the recognized value `review_findings`, and `active: "true"x` as
+        # `true` — malformed state authorizing --force, the exact opposite of the
+        # fail-closed rule this classification exists to enforce. `sed -n …p` emits
+        # nothing when the line does not match exactly, so garbage now yields an empty
+        # value, which no allowlist accepts and no active check reads as true.
+        # Two BALANCED alternatives per field — quoted or bare — never `"?…"?`, whose
+        # independently optional quotes accept `active: "true` and
+        # `terminal_status: review_findings"`. Those are malformed by construction, and
+        # a parser that resolves them to `true` / `review_findings` authorizes --force
+        # on exactly the input the fail-closed rule exists to reject.
+        # Select the last DECLARATION, then validate it — not the last line that
+        # happens to validate. `sed -n …p` emits only matches, so filtering first and
+        # taking the tail silently skips a malformed duplicate and resurrects an
+        # earlier valid value: given `active: true` followed by `active: "true"JUNK`,
+        # the garbage line is the one in effect under last-key-wins, yet the old order
+        # returned `true` and authorized --force. Pick the line by KEY, validate that
+        # one, and let a malformed final declaration resolve to empty.
+        #
+        # KNOWN DISAGREEMENT (tracked, not fixed here — see the linked issue): this
+        # last-key-wins + strict-validate read can disagree with
+        # validation.sh's get_yaml_value(), which init-review-loop.sh calls to decide
+        # whether to refuse — get_yaml_value takes the FIRST `^active:` match with NO
+        # format validation (naive `tr -d '"'` quote-stripping). Given a duplicated
+        # `active: true` followed by a later, differently-valued `active: false`, or a
+        # first line malformed in a way get_yaml_value's lenient stripping still
+        # resolves to "true"/"false", the two readers can reach different verdicts
+        # about whether the prior run was active — and this classifier's bail message
+        # can then misdescribe why init-review-loop.sh actually refused. Reconciling
+        # the two exactly requires either hardening get_yaml_value with the same
+        # strict validation this block applies (a shared-library change touching every
+        # get_yaml_value caller) or teaching this block to replicate get_yaml_value's
+        # specific leniency — both larger than a one-line parity fix, and getting it
+        # wrong risks the opposite regression (test_aj_trailing_garbage_is_not_valid_state
+        # exists specifically to pin the last-key-wins + strict-validate contract).
+        STATE_ACTIVE_LINE=$(grep -E '^active:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_TERMINAL_LINE=$(grep -E '^terminal_status:' "$LITMUS_STATE_FILE" 2>/dev/null | tail -n 1 || true)
+        STATE_ACTIVE=$(printf '%s\n' "$STATE_ACTIVE_LINE" | sed -nE \
+            -e 's/^active:[[:space:]]*(true|false)[[:space:]]*$/\1/p' \
+            -e 's/^active:[[:space:]]*"(true|false)"[[:space:]]*$/\1/p' || true)
+        STATE_TERMINAL=$(printf '%s\n' "$STATE_TERMINAL_LINE" | sed -nE \
+            -e 's/^terminal_status:[[:space:]]*([a-z_]+)[[:space:]]*$/\1/p' \
+            -e 's/^terminal_status:[[:space:]]*"([a-z_]+)"[[:space:]]*$/\1/p' || true)
+    fi
+    # Match the VALUE against run-review-loop.sh's own allowlist, not merely the
+    # presence of a `terminal_status:` line. An empty, null, unknown, or malformed
+    # value is not evidence a run finished — treating any such line as proof would let
+    # corrupted state authorize a force, which is a fail-OPEN on the one check standing
+    # between this script and overwriting a live review.
+    case "$STATE_TERMINAL" in
+        review_findings|stall|max_iterations|infra_failure|setup_error|too_large)
+            STATE_FINISHED=1
+            ;;
+        *)
+            STATE_FINISHED=0
+            ;;
+    esac
+    # Force ONLY on the one refusal --force is the documented answer to: an active
+    # state that provably finished. Every other reason the plain init can fail — not a
+    # git repo, bad arguments, an unwritable state dir, an inactive or unreadable file
+    # — has nothing to do with the active-state guard, and forcing there would paper
+    # over the real error with an unrelated remedy. Bail and say what the state looked
+    # like instead.
+    if [ "$STATE_ACTIVE" = "true" ] && [ "$STATE_FINISHED" = "1" ]; then
+        run_locked_child bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
+            emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"
+    elif [ "$STATE_ACTIVE" = "true" ]; then
+        emit_bail "judgment" "litmus state is active with no recognized terminal_status (saw '${STATE_TERMINAL}') — a review running now, one initialized and not yet started, or one killed before it could record its outcome. Refusing to force-reset it; resolve with 'init-review-loop.sh --force' if it is genuinely dead."
+    else
+        emit_bail "judgment" "litmus init-review-loop.sh failed for a reason the state file does not explain (active='${STATE_ACTIVE}', terminal_status='${STATE_TERMINAL}'). --force answers only the active-state guard, so forcing here would mask the real failure."
+    fi
+fi
 
 # --- Step 4: Invoke litmus (capture stdout + exit code) ---
 # Litmus's inner loop owns review iteration. The dispatcher invokes it once per
@@ -252,9 +563,24 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # LITMUS_SHORTCIRCUIT_DISABLED=1 is load-bearing for the pr-grind commit path:
 # small staged diffs must still receive external review rather than the local
 # hash-only short-circuit used by interactive litmus flows.
+# Keep holding the lock through the review. run-review-loop.sh inherits it via the
+# exported owner rather than acquiring its own, so classify → init → review is ONE
+# uninterrupted transaction with no handover gap for a third party to win. (An earlier
+# draft released here and let the reviewer re-acquire; that left a window in which
+# another invocation could take the lock and replace the state we had just
+# initialized.) The child will not release what it did not take, and our EXIT trap
+# frees it once the review returns.
+# Run the reviewer in the BACKGROUND and `wait`, rather than as a foreground command.
+# The lock's guarantee is "held for the lifetime of the review", and a foreground
+# invocation cannot honour that under a signal: if TERM/INT/HUP reaches this process
+# alone, the EXIT trap releases the lock while the child is still writing
+# litmus-state.md — and the next invocation acquires a lock that guards nothing.
+# Backgrounding lets the signal traps below run immediately (bash services traps while
+# in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
 LITMUS_EXIT=0
 set +e
-LITMUS_SHORTCIRCUIT_DISABLED=1 bash "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
+run_locked_child env LITMUS_SHORTCIRCUIT_DISABLED=1 \
+    bash "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
 LITMUS_EXIT=$?
 set -e
 
@@ -295,12 +621,52 @@ case "$LITMUS_EXIT" in
             fi
         fi
 
+        # Lift the blocking findings into the bail reason. Without this the envelope
+        # named a status and nothing else, and there was nowhere to go read the
+        # detail: litmus only writes /tmp/litmus-raw-output.* when it CANNOT parse
+        # the reviewer, so a parseable FAIL left an older, unrelated raw file as the
+        # newest on disk — actively misleading. The state file's own `last_result` is
+        # no better: it is a JSON document stored as a YAML double-quoted scalar and
+        # is not round-trip-safe (a suggestion containing \" terminates the scalar
+        # early, so a parser fails on it). Litmus's stdout, which we already captured,
+        # renders each blocking issue as `  [severity] file:line - description` on both
+        # the FAIL and the STALL path — parse that instead of the lossy stored copy.
+        # Bounded on both axes (10 findings, 1500 chars) so one verbose review cannot
+        # produce an envelope the dispatcher chokes on.
+        #
+        # NO length-slice is safe on its own. `cut -c1-1500` counts BYTES in a
+        # non-UTF-8 locale, and so does `${var:0:1500}` — bash counts characters only
+        # when the locale says the encoding is multibyte, so under the `LC_ALL=C` this
+        # gate runs with, the 1500-byte boundary can still land inside a multibyte
+        # sequence. Litmus findings are model-generated text and routinely contain
+        # non-ASCII characters. Measured, not assumed: under `LC_ALL=C`, slicing
+        # "abc\xC3\xA9xyz" at 4 leaves a dangling \xC3, and `emit_bail`'s `jq --arg`
+        # accepts it — substituting U+FFFD — rather than failing (jq 1.7, exit 0). So
+        # the cost is a corrupted character in the one diagnostic the operator has,
+        # NOT a lost envelope; other jq builds may be stricter.
+        # So slice first, then REPAIR: `iconv -c` drops any byte that is not part of a
+        # valid sequence, which is exactly the dangling head the slice can leave. Where
+        # iconv is absent, fall back to dropping every non-ASCII byte — lossier for the
+        # diagnostic text, but it cannot emit an invalid sequence either. Both branches
+        # only ever remove bytes, so neither can grow the string past the bound.
+        LITMUS_FINDINGS=$(grep -E '^[[:space:]]+\[(high|medium|low)\] ' "$LITMUS_OUT" 2>/dev/null \
+            | head -n 10 \
+            | sed -e 's/^[[:space:]]*//' -e 's/$/;/' \
+            | tr '\n' ' ' || true)
+        LITMUS_FINDINGS="${LITMUS_FINDINGS:0:1500}"
+        if command -v iconv >/dev/null 2>&1; then
+            LITMUS_FINDINGS=$(printf '%s' "$LITMUS_FINDINGS" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)
+        else
+            LITMUS_FINDINGS=$(printf '%s' "$LITMUS_FINDINGS" | LC_ALL=C tr -d '\200-\377' || true)
+        fi
+        [ -n "$LITMUS_FINDINGS" ] || LITMUS_FINDINGS="(none parsed from litmus stdout)"
+
         case "$LITMUS_STATUS" in
             review_findings)
-                emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually"
+                emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually. Findings: ${LITMUS_FINDINGS}"
                 ;;
             stall|max_iterations|infra_failure|setup_error)
-                emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS})"
+                emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS}). Findings: ${LITMUS_FINDINGS}"
                 ;;
             *)
                 emit_bail "judgment" "litmus exit 1: unrecognized terminal_status '$LITMUS_STATUS'"

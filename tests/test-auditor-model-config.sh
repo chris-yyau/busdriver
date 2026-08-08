@@ -213,6 +213,11 @@ done
 # actively lying about what ran. Allowed: the default constant, dispatch.sh's
 # library-missing shim, and the config example next to it. docs/adr + CHANGELOG
 # are historical records and are not swept.
+# The same rule now also covers the pi read lane's `.pi.model`
+# (PI_MODEL_DEFAULT + its library-missing shim): two configurable model keys,
+# one invariant — an id may appear at its default constant and nowhere else, so
+# rationale comments say "the shipped default" instead of naming a model and
+# going stale next to it.
 # Scoped to the files that HOST the witness — a model name elsewhere (e.g. the
 # agent-tools catalog listing LLMs) is not this invariant's business.
 leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai' \
@@ -222,7 +227,7 @@ leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai' \
            "$ROOT/skills/dispatch-cli/scripts/dispatch.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"' || true)"
+         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"|PI_MODEL_DEFAULT|resolve_pi_model\(\)' || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

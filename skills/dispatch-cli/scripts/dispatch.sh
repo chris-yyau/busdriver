@@ -52,6 +52,8 @@ fi
 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_AUDITOR_MODEL=""
   resolve_auditor_model() { _BD_AUDITOR_MODEL="zenmux/moonshotai/kimi-k3"; }
+  _BD_PI_MODEL=""
+  resolve_pi_model() { _BD_PI_MODEL="opencode-go/deepseek-v4-flash"; }
 fi
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
@@ -134,14 +136,20 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi CLI
 
 FLAGS:
-  --cli     codex|agy|droid|grok|opencode|both|all|auto  (default: auto)
+  --cli     codex|agy|droid|grok|opencode|pi|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
+
+NOTE: `pi` is the repo-READING lane — unlike opencode (confined to an empty
+dir), it runs in the working tree so it can trace real code, with an
+allowlisted read-only toolset. It is read-only by construction and is skipped
+in `--cli all --mode auto`. Model comes from ~/.claude/busdriver.json
+`{"pi": {"model": "provider/id"}}`; `pi --list-models` enumerates ids.
 USAGE
             exit 0 ;;
         *) echo "Unknown: $1" >&2; exit 1 ;;
@@ -189,8 +197,8 @@ if [[ "$CLI" == "auto" ]]; then
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|opencode|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|opencode|pi|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -231,11 +239,17 @@ if [[ "$CLI" == "all" ]]; then
     # in auto/write MODE — its read-only isolation harness (see dispatch_one's
     # opencode) case) has no write posture, so including it in a write batch
     # would produce a read-only voice masquerading as a write attempt.
-    for c in codex agy droid grok opencode; do
+    # pi is excluded from auto/write MODE for the same reason: its arm pins an
+    # allowlisted read-only toolset (`--tools read`) and ignores --mode, so a
+    # write batch would carry a read-only voice pretending to be a writer.
+    # Cap raised 5 → 6 alongside the sixth candidate; pi is last in the list, so
+    # leaving it at 5 would have made a full house silently drop pi.
+    for c in codex agy droid grok opencode pi; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         [[ "$c" == "opencode" && "$MODE" == "auto" ]] && continue
+        [[ "$c" == "pi" && "$MODE" == "auto" ]] && continue
         _has_cli "$c" && ALL_CLIS+=("$c")
-        [[ ${#ALL_CLIS[@]} -ge 5 ]] && break
+        [[ ${#ALL_CLIS[@]} -ge 6 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -547,6 +561,197 @@ dispatch_one() {
                 rm -rf "$_oc_cwd" 2>/dev/null || true
                 fi
             fi ;;
+        pi)
+            # THE READ LANE — deliberately the mirror image of the opencode arm
+            # above. opencode is confined to an EMPTY dir precisely so it cannot
+            # see the tree; this arm runs IN THE WORKING TREE, because tracing
+            # real code is the entire point of the voice. That inverts the
+            # isolation problem rather than removing it: the repo is now on the
+            # INSIDE, so every repo-controlled surface pi would otherwise load
+            # has to be switched off by name, and the toolset must be an
+            # ALLOWLIST. Both are below; neither is optional.
+            #
+            # WHY ALLOWLIST, NOT DENYLIST (this is the fail-closed hinge):
+            # `--exclude-tools edit,write` looks read-only and is NOT — it leaves
+            # pi's built-in `bash` enabled, which writes files, runs git, and
+            # reaches the network. Probed on 0.84.1: the full tool surface also
+            # carried a SECOND shell (`hypa_shell`), web fetch/search (`exa_*`),
+            # and a `subagent` spawner. No denylist enumerates that safely, and
+            # the set grows with every extension the operator installs. So the
+            # toolset is pinned positively to `read`. Probed and relied upon:
+            # an unrecognised name in `--tools` yields NO tools rather than
+            # falling back to the default set, so this fails CLOSED on a typo.
+            #
+            # The six --no-* flags reduce the surface to the built-ins before
+            # the allowlist even applies (verified: with them, pi reports
+            # exactly `read, bash, edit, write`; without them it reported 45
+            # tools including the shells and network reach above). --no-approve
+            # is the load-bearing one for an in-tree run: it makes pi ignore
+            # project-local files, so the repo being audited cannot redefine the
+            # auditor through its own .pi/ config, AGENTS.md, or extensions.
+            #
+            # MODE NOTE: --mode is deliberately ignored, exactly as in the
+            # opencode arm. This lane is read-only by construction and
+            # `--mode auto` cannot loosen it; a writing pi would be a different
+            # arm with its own worktree semantics and its own review.
+            local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+            local _pi_bin _pi_trust _pi_home _pi_user _pi_path
+            # Trusted home from the PASSWORD DATABASE, not $HOME (repo-injectable
+            # via a fork's settings.json). Same contract as the opencode arm, and
+            # required twice here: to resolve the binary, and because
+            # resolve_pi_model reads ~/.claude/busdriver.json — the key that names
+            # which third party repo source is shipped to.
+            _pi_user="$(id -un 2>/dev/null)"
+            _pi_home="$(eval echo "~${_pi_user}" 2>/dev/null)"
+            if [[ -z "$_pi_home" || ! -d "$_pi_home" ]]; then
+                # NO $HOME fallback — fail closed rather than trust an injected one.
+                echo "Error: could not derive a trusted home from the password database — refusing to resolve pi from a possibly-injected \$HOME." >&2
+                exit_code=1
+            else
+                _pi_trust="${_pi_home}/.local/bin:${_pi_home}/.pi/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+                # `|| true` — a nonzero `command -v` inside the assignment would
+                # exit under `set -e`, skipping the not-found branch below.
+                _pi_bin="$(PATH="$_pi_trust" command -v pi 2>/dev/null)" || true
+                if [[ -z "$_pi_bin" || "$_pi_bin" != /* || ! -x "$_pi_bin" ]]; then
+                    echo "Error: pi binary not found on the trusted install path." >&2
+                    exit_code=1
+                else
+                    _pi_path="$(CDPATH='' cd -- "$(dirname -- "$_pi_bin")" && pwd -P)"
+                    _pi_path="${_pi_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                    # PATH+HOME pinned AT THE CALL, not inherited from the arm's
+                    # pin, so neither depends on line order in this case arm.
+                    PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+                      HOME="$_pi_home" resolve_pi_model
+                    # ── Credential projection ───────────────────────────────
+                    # `--tools read` stops WRITES; it does NOT confine READS.
+                    # Demonstrated on 0.84.1: pi read ~/.pi/agent/auth.json and
+                    # enumerated every provider credential in it. This lane
+                    # ingests repo content for a living, which is precisely
+                    # where a prompt injection lives — so handing it the real
+                    # $HOME puts ~/.ssh, ~/.aws, ~/.claude and every other
+                    # provider's key one instruction away from the model.
+                    #
+                    # So the child gets a PRIVATE HOME carrying exactly one
+                    # thing: the auth entry for the provider named by the
+                    # resolved model. Everything else under ~ disappears.
+                    #
+                    # RESIDUAL, stated plainly because it is NOT closed: pi's
+                    # read tool accepts ABSOLUTE paths, so a determined
+                    # injection can still name a file outside this HOME and be
+                    # read (verified — the real auth.json is still reachable by
+                    # full path). This shrinks blast radius; it is not
+                    # containment. Closing it needs OS-enforced read confinement
+                    # (sandbox-exec/seatbelt) — see ADR 0034's revisit trigger.
+                    local _pi_prov _pi_jail _pi_py _b
+                    # TARGETED cleanup, never `rm -rf "$_pi_jail"`. The jail path
+                    # comes from a shadowable `mktemp`, so a recursive delete on
+                    # it is a loaded gun aimed at whatever that returned. `rmdir`
+                    # removes ONLY empty directories: if the path is not the empty
+                    # temp dir we created, every call here fails harmlessly
+                    # instead of destroying the operator's files. Removes exactly
+                    # what the projection created, innermost first.
+                    _pi_wipe() {
+                        [[ -n "${_pi_jail:-}" && "$_pi_jail" == /* ]] || return 0
+                        # `|| true` on BOTH: under `set -e` a failing rmdir aborts
+                        # the whole script, and rmdir failing is NORMAL here — pi
+                        # writes cache files into its HOME, so the directories are
+                        # not empty by the time we clean up. Without this the
+                        # dispatch died silently with no output at all.
+                        # The CREDENTIAL is what must go, and that is the rm -f;
+                        # a leftover cache dir under $TMPDIR is cosmetic.
+                        rm -f "$_pi_jail/.pi/agent/auth.json" 2>/dev/null || true
+                        rmdir "$_pi_jail/.pi/agent" "$_pi_jail/.pi" "$_pi_jail" 2>/dev/null || true
+                        return 0
+                    }
+                    _pi_prov="${MODEL:-$_BD_PI_MODEL}"
+                    _pi_prov="${_pi_prov%%/*}"
+                    if [[ -z "$_pi_prov" || "$_pi_prov" == "${MODEL:-$_BD_PI_MODEL}" ]]; then
+                        # No `provider/` prefix ⇒ we cannot tell which credential
+                        # to project, and projecting ALL of them is the thing this
+                        # block exists to prevent. Fail closed.
+                        echo "Error: could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store." >&2
+                        exit_code=1
+                    elif ! _pi_jail="$(umask 077; mktemp -d 2>/dev/null)" \
+                         || [[ -z "$_pi_jail" || "$_pi_jail" != /* || ! -d "$_pi_jail" ]] \
+                         || [[ -n "$(ls -A "$_pi_jail" 2>/dev/null)" ]]; then
+                        # `mktemp` is a command word and therefore shadowable by an
+                        # exported function (the whole reason this arm reaches for
+                        # `env -i` later). A shadowed mktemp returning an EXISTING
+                        # populated path — say the operator's ~/.ssh — would make
+                        # everything below operate on it. Two defences: reject any
+                        # non-absolute or NON-EMPTY result here, and never use
+                        # `rm -rf` on the result (see the targeted cleanup below).
+                        echo "Error: could not create a private empty HOME for pi — refusing to dispatch with the operator's real credential store exposed." >&2
+                        exit_code=1
+                    elif ! _pi_py="$(for _b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+                                         [[ -x "$_b" ]] && { printf '%s' "$_b"; break; }
+                                     done)" || [[ -z "$_pi_py" ]]; then
+                        # This arm pins PATH to system dirs only, so a bare
+                        # `python3` misses a Homebrew-only install and would fail
+                        # EVERY dispatch on such a host. Probe absolute paths in
+                        # the same order the config reader does.
+                        echo "Error: no python3 found on the trusted paths — cannot project the pi credential, refusing to dispatch with the full credential store exposed." >&2
+                        _pi_wipe
+                        exit_code=1
+                    elif ! ( umask 077
+                             mkdir -p "$_pi_jail/.pi/agent" \
+                             && "$_pi_py" -I -c 'import json, sys
+src, dst, prov = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(src))
+if prov not in d:
+    raise SystemExit("provider not in auth store")
+entry = d[prov]
+# REFUSE refreshable credentials. pi rewrites auth.json in place when it
+# refreshes an OAuth token — inside the jail, which is discarded. For a provider
+# that ROTATES refresh tokens that silently invalidates the credential still
+# sitting in the real store, and the operator has to re-authenticate for reasons
+# they cannot see. Copying the jail copy back is not the fix: it would put a
+# write to the real credential store on the far side of an untrusted-input run.
+# Static API keys have no such lifecycle, so project those and fail closed on
+# anything else.
+# ALLOWLIST of known-static credential types (pi 0.84.1 stores API keys as
+# type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
+# unrecognised future type fails closed rather than being projected on the
+# assumption it has no refresh lifecycle.
+if not isinstance(entry, dict) or entry.get("type") not in ("api_key", "api"):
+    raise SystemExit("refreshable or unrecognised credential type")
+json.dump({prov: entry}, open(dst, "w"))' \
+                                "$_pi_home/.pi/agent/auth.json" \
+                                "$_pi_jail/.pi/agent/auth.json" "$_pi_prov" 2>/dev/null ); then
+                        # Includes the "provider has no stored credential" case —
+                        # dispatching anyway would silently fall back to whatever
+                        # pi finds, so this fails closed too.
+                        echo "Error: could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either the provider is not authenticated (try: pi auth check --provider ${_pi_prov}) or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi.model at an API-key provider." >&2
+                        _pi_wipe
+                        exit_code=1
+                    else
+                    # `env -i` wipes PI_* and any injected environment (exported
+                    # bash functions included) while KEEPING the inherited CWD —
+                    # which is the repo, and is the one thing this lane needs.
+                    # Prompt via stdin, not argv: prompts here quote source and
+                    # would otherwise hit ARG_MAX (verified pi reads fd 0).
+                    # stderr is merged into $outfile ON PURPOSE: the configured
+                    # model can be region-gated (the shipped default returns
+                    # HTTP 403 RegionError without its provider workspace's
+                    # opt-in), and that must surface as a readable provider
+                    # error instead of an empty, silently-dead voice.
+                    # HOME is the JAIL, not the operator's home. The subshell
+                    # trap removes the projected credential even if the timeout
+                    # kills the child or the caller interrupts the batch; the
+                    # unconditional rm after it covers a normal return.
+                    ( trap '_pi_wipe' EXIT TERM INT
+                      _portable_timeout "$_budget" \
+                        env -i HOME="$_pi_jail" PATH="$_pi_path" \
+                        "$_pi_bin" --model "${MODEL:-$_BD_PI_MODEL}" \
+                          --print --no-session \
+                          --no-approve --no-context-files --no-skills \
+                          --no-extensions --no-prompt-templates --no-themes \
+                          --tools read \
+                          < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                    _pi_wipe
+                    fi
+                fi
+            fi ;;
         grok)
             # Flags actually passed (see invocation at the end of this case):
             #   --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing
@@ -674,8 +879,16 @@ dispatch_one() {
     # On failure the witness is simply absent (its arm emits an error JSON the
     # arbiter reads as an unavailable auxiliary).
     local escalated=0
+    # pi is exempt for a reason opencode's exemption does not cover: the operator
+    # PICKS pi's provider at `.pi.model`, and that key exists precisely to control
+    # WHICH third party sees repo source. Escalating a failed pi to droid would
+    # ship the same prompt to a DIFFERENT provider than the one chosen, silently.
+    # It would also overwrite the pi error in $outfile, defeating the stderr
+    # surfacing this lane relies on to make a region-gated 403 diagnosable
+    # instead of an empty answer.
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
        && [[ "$name" != "opencode" ]] \
+       && [[ "$name" != "pi" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
        && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then

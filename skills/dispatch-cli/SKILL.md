@@ -35,9 +35,57 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
+| **Repo tracing / "how does X work"** | **`pi`** | **Reads the working tree and returns a cited summary — see below** |
 | High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | Top 3 available CLIs in parallel |
 | Quick analysis (either) | `auto` | Uses whichever is available |
+
+### `pi` — the in-tree read lane
+
+Every other read-only lane is confined to an empty directory so the checkout
+cannot redefine the reviewer. `pi` is the exception: it runs **in the working
+tree**, because tracing real code is the point. Use it to answer "how does X
+work", map a subsystem, or triage a diff — then verify the `file:line` citations
+it returns rather than reading the files yourself. That is the whole saving:
+reading is ~86% of a Claude session's token consumption.
+
+Containment moves to the toolset instead of the directory: a positive allowlist
+(`--tools read`) plus six project-config kill switches. It is read-only by
+construction — `--mode` is ignored and `pi` is skipped in `--cli all --mode auto`.
+
+```bash
+skills/dispatch-cli/scripts/dispatch.sh --cli pi \
+  --prompt "trace how the pr-grind dispatcher decides fix vs wait round"
+```
+
+**Model** — set once in `~/.claude/busdriver.json`:
+
+```json
+{ "pi": { "model": "<provider>/<model-id>" } }
+```
+
+Same trust rules as `.auditor.model` (USER config only, no env override): the
+value names the third party your repo's source is shipped to. `pi --list-models`
+enumerates ids; `pi auth check --provider <name>` confirms one is reachable. If a
+run returns an empty answer, read the transcript — provider errors (e.g. a
+region-gated model returning HTTP 403) are surfaced there, not swallowed.
+
+**⚠️ Read confinement — know this before use.** `--tools read` blocks writes
+(verified in both directions). It does **not** confine reads: pi's read tool
+accepts absolute paths. The arm therefore runs pi under a projected private
+`$HOME` containing only the selected provider's credential, so `~/.ssh`,
+`~/.aws`, `~/.claude` and your other provider keys are not reachable via `~`.
+That shrinks blast radius — it does not close the hole. **Assume an injection in
+repo content can reach any file your user account can read**: absolute paths are
+served, and `/etc/passwd` discloses your real home, making `~/.ssh/id_rsa` and
+`~/.aws/credentials` predictable from inside the jail. **Do not point this lane
+at a checkout you would not run.**
+
+A failed pi never escalates to droid (unlike other voices): you chose the
+provider at `.pi.model`, so a silent re-send elsewhere would defeat that choice.
+
+Rationale, the residual, and the removed-as-vacuous injection test:
+`docs/adr/0034-pi-in-tree-read-lane.md`.
 
 ## Execution Modes
 
@@ -57,6 +105,7 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
+| pi | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
 
 **Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
 

@@ -114,6 +114,36 @@ else
   pass=$((pass+1))
 fi
 
+# The inner SIGALRM must leave headroom under the OUTER hook timeout, or the
+# scanner never gets to print the conservative verdict it arms the alarm for:
+# the outer timer starts earlier (command extraction, two Python startups) and
+# kills the hook with NO decision, which the harness reads as allow. Both were
+# 3s, so the outer always won. A comment cannot hold this - the two numbers sit
+# in different files and only this assertion couples them.
+inner=$(grep -oE 'signal\.alarm\([0-9]+\)' "$GUARD" | grep -oE '[0-9]+' | head -1)
+outer=$(python3 - hooks/hooks.json <<'PY'
+import json, sys
+for event in json.load(open(sys.argv[1])).get("hooks", {}).values():
+    for group in event:
+        for h in group.get("hooks", []):
+            if "careful-guard.sh" in h.get("command", ""):
+                print(h.get("timeout", "")); raise SystemExit
+PY
+)
+if [[ -z "$inner" || -z "$outer" ]]; then
+  echo "FAIL could not read the timeouts (inner=${inner:-<none>} outer=${outer:-<none>})"
+  fail=$((fail+1))
+elif (( outer <= inner )); then
+  echo "FAIL hook timeout ${outer}s does not clear the ${inner}s scan alarm — the conservative verdict cannot be printed"
+  fail=$((fail+1))
+elif (( outer - inner < 2 )); then
+  echo "FAIL only $((outer-inner))s between the ${inner}s alarm and the ${outer}s hook timeout — too tight for startup"
+  fail=$((fail+1))
+else
+  echo "PASS scan alarm ${inner}s clears the ${outer}s hook timeout"
+  pass=$((pass+1))
+fi
+
 echo
 echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

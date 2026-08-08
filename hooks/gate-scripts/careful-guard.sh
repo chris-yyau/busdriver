@@ -1935,6 +1935,19 @@ _cmd = sys.stdin.read()
 # could make this PreToolUse hook slow. Cap wall time with SIGALRM and, on
 # timeout, WARN (the safe direction for an advisory guard: "could not finish
 # analyzing" is not "safe"). Signals are Unix-only, which is fine for this hook.
+#
+# The alarm below MUST leave headroom under the hook timeout registered in
+# hooks/hooks.json for careful-guard.sh, or it buys nothing: this handler warns
+# only if the process survives to PRINT that verdict, and the outer timer starts
+# EARLIER - it covers command extraction and two Python startups before the
+# alarm is even armed. With both set to 3s the outer kill always won, the hook
+# emitted no decision at all, and a payload slow enough to reach the documented
+# worst case was ALLOWED rather than warned. That mattered from the moment this
+# scan stopped being gated on AUTO_MODE, which is when auto mode began running
+# it too. The outer value is now 10s against this 3s: raising the outer rather
+# than lowering this one keeps the analysis budget intact, and the inner alarm
+# still bounds the real wait, so the outer only ever acts as a backstop.
+# Changing either number without the other reopens the fail-open.
 import signal
 
 

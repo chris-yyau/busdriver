@@ -32,7 +32,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" careful-guard.sh",
-            "timeout": 3
+            "timeout": 10
           }
         ],
         "description": "[GUARD] Warn before destructive commands (rm -rf, force-push, DROP TABLE, git reset --hard)"

@@ -74,7 +74,15 @@ echo "── SQL live in every mode ──"
 for m in auto bypassPermissions default acceptEdits plan dontAsk; do
   check_v "$m: DROP TABLE"  ask "$m" 'psql -c "DROP TABLE users"'
   check_v "$m: TRUNCATE"    ask "$m" 'psql -c "TRUNCATE users"'
+  # Live means live in the SAME spellings, not just the plain one. The scanner
+  # used to be gated on the mode, so in auto these checks kept their arm and
+  # lost their eyes: they fell through to raw grep, and a spelling bash
+  # reassembles walked past a check the plain form fails.
+  check_v "$m: quoted TRUNCATE"   ask "$m" 'psql -c TR"UNC"ATE\ users'
+  check_v "$m: quoted coreutils"  ask "$m" 'tr"unc"ate -s 0 audit.log'
 done
+# ...and the stand-down it replaced still applies to the classifier it names.
+check_v "auto: recursive rm still silent" allow auto 'rm -rf /var/log'
 
 # ── 3. bypassPermissions has no classifier — nothing stands down ─────────────
 echo "── bypassPermissions keeps every check ──"

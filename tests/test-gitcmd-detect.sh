@@ -1241,6 +1241,21 @@ check('stacked-opt- env -- -i is a terminator',
 check("stacked-opt~ (accepted, matches main) env -u -x echo",
       g.git_commit('env -u -x echo git commit -m x')[0], True)
 
+# A real executable name may carry punctuation the debris test rejects. `c++` and
+# `g++` are ordinary programs, so calling their argv[0] unreadable said the walk
+# was lost and recovered a payload that the compiler never runs. `+` is in the
+# name class now, but a token made ONLY of punctuation is still refused -- a bare
+# `+` is precisely the debris shlex leaves when it tears `X=$((1 + 2))`, and the
+# fallback gate depends on rejecting it.
+for _c in ('c++ bash -c "git commit"',
+           'g++ bash -c "git commit"',
+           '/usr/bin/c++ bash -c "git commit"'):
+    check(f"readable-name- {_c!r}", g.git_commit(_c)[0], False)
+for _t, _want in ((':', True), ('[', True), ('c++', True), ('/usr/bin/c++', True),
+                  ('+', False), ('2))', False), ('b}', False), ('y)', False),
+                  ('-', False), ('--', False)):
+    check(f"readable-name unit {_t!r}", bool(g._READABLE_NAME.match(_t)), _want)
+
 # KNOWN LIMIT: an `eval` behind speculative debris is missed. The subset
 # argument that justifies keeping only the earliest candidate holds for an
 # interpreter but NOT for eval, which joins every following token into one

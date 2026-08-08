@@ -405,14 +405,16 @@ def _command_argv(seg, target, with_raw=False):
     # aligned at all (see _raw_tokens); callers then fail CLOSED.
     # Only when the caller asked: _raw_tokens re-lexes the segment, so computing
     # it unconditionally made every ordinary _command_argv call ~2x slower.
-    # ...or when an assignment VALUE carries a paren or backtick, where the
-    # DEQUOTED token cannot answer whether a substitution is open: `X=$((1` is a
-    # real tear that must be rejoined, while `X="("` is a complete assignment
-    # whose paren is data. Reading the dequoted form conflates them, and both
-    # readings are fail-OPEN on the other case (one swallows `bash -c` and its
-    # payload, the other stops the walk at the tear). Computed here rather than
-    # lazily inside the loop so it stays in LOCKSTEP with the token deletions
-    # below. The hint is rare, so this keeps the ~2x re-lex off the common path.
+    #
+    # It is deliberately NOT consulted for an assignment VALUE. An earlier draft
+    # did exactly that -- raw tokens carry quote provenance, so `X=$((1` (a real
+    # tear) could be told from `X="("` (a paren that is data) by BALANCING
+    # delimiters on the raw spelling. That scanner was reverted: it has to be
+    # context-SENSITIVE where bash is, and two review rounds produced five
+    # verified bypasses in it, more than the single bug it fixed. The span is
+    # not rejoined at all now; a torn value merely SIGNALS that the walk may be
+    # lost, and the any-position scan that follows needs no span. See
+    # _torn_assignment and _shell_payloads.
     raw_toks = _raw_tokens(seg) if with_raw else None
     toks, raw_toks = _strip_leading_groups(toks, raw_toks)
     i = 0
@@ -432,20 +434,17 @@ def _command_argv(seg, target, with_raw=False):
         # — a fail-OPEN in every gate sharing this detector (pre-commit, pre-pr,
         # pre-merge). Found via #505.
         if _ASSIGN_TOK_RE.match(t):
-            # ...and consume a VALUE that tore across tokens. shlex splits at
-            # whitespace with no idea that a substitution is open, so
-            # `X=$((1 + 2)) bash -c "rm -rf /etc"` arrives as `X=$((1` / `+` /
-            # `2))` / `bash` / ... . Advancing by one left `+` in the command
-            # slot, the walk broke there, and the payload was never extracted:
-            # `_shell_payloads` returned [] and every gate sharing this detector
-            # saw a command with no rm in it. Fail-OPEN, found on PR #555.
-            #
-            # Tracked by BALANCE, not by learning which substitution spellings
-            # can hold whitespace - counting is not a spelling ladder. A literal
-            # paren inside the value closes it EARLY, which only resumes the
-            # walk sooner (safe: more of the command is read); one that holds it
-            # open runs to the end of the token run, which reads as "no command
-            # found" exactly as before this branch existed.
+            # ONE token, and that is the whole of it. A VALUE can tear across
+            # tokens -- shlex splits at whitespace with no idea a substitution is
+            # open, so `X=$((1 + 2)) bash -c "rm -rf /etc"` arrives as `X=$((1` /
+            # `+` / `2))` / `bash` / ... and advancing by one leaves `+` in the
+            # command slot, where the walk breaks. This branch does NOT try to
+            # rejoin that span: an earlier draft consumed it by BALANCING
+            # delimiters on the raw token, and that scanner was reverted after
+            # producing five verified bypasses of its own (see the raw_toks note
+            # above). The tear is handled downstream instead -- `_torn_assignment`
+            # notices the walk may be lost and `_shell_payloads` falls back to a
+            # scan that needs no span at all.
             i += 1
             prev_dash = False
         elif t == '!':
@@ -574,12 +573,13 @@ def _command_argv(seg, target, with_raw=False):
             # assignment prefix keeps the stricter identifier rule and a target
             # executable can never be consumed as an assignment.
             #
-            # Consumed by the SAME span rule as a bash assignment prefix, not by
-            # a bare `i += 1`: an env(1) operand can carry a whitespace-bearing
-            # expansion too, and `env A-B=$((1 + 2)) bash -c '<s>'` really does
-            # run the child (verified). Advancing one token left `+` in the
-            # command slot, the walk broke there, and the payload was never
-            # extracted - the same fail-OPEN one branch over.
+            # Consumed the SAME way as a bash assignment prefix -- one token, no
+            # span. An env(1) operand can carry a whitespace-bearing expansion
+            # too, and `env A-B=$((1 + 2)) bash -c '<s>'` really does run the
+            # child (verified), so advancing one token leaves `+` in the command
+            # slot and the walk breaks there. As above, that tear is not rejoined
+            # here: `_torn_assignment` matches this looser spelling as well, so
+            # the fallback in _shell_payloads recovers the payload without one.
             i += 1
             prev_dash = False
         else:
@@ -2275,7 +2275,13 @@ _ASSIGN_TOK_RE = re.compile(r'^\w+(?:\[.*\])?\+?=')
 # `:` and `[` are real command NAMES (the no-op builtin and test), not debris, so
 # rejecting them said "the walk got lost" about a walk that read its command word
 # perfectly -- `: git commit` then recovered a commit that only the no-op runs.
-_READABLE_NAME = re.compile(r'^/?[\w.@:-]+(?:/[\w.@:-]+)*$|^\[$')
+# `+` is in the class but a token made ONLY of punctuation is still refused: `c++`
+# and `g++` are real executables, while a bare `+` is the debris shlex leaves when
+# it tears `X=$((1 + 2))`. The lookahead is what separates them -- a name must
+# carry at least one word character -- so widening the class for real compiler
+# names cannot also bless the tear debris this gate depends on rejecting. `:` and
+# `[` are spelled out because they are real command names with no word character.
+_READABLE_NAME = re.compile(r'^:$|^\[$|^(?=.*\w)/?[\w.@:+-]+(?:/[\w.@:+-]+)*$')
 
 # An env(1) `name=value` OPERAND, which carries no shell-identifier rule -- see
 # the branch in _command_argv that uses it. Deliberately separate from

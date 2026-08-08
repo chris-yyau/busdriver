@@ -130,6 +130,91 @@ grep -qE "trap '_pi_wipe' EXIT TERM INT" <<<"$ARM" \
   && ok "projected credential is removed by trap (survives timeout/interrupt)" \
   || fail "no trap wiping the jail — a killed dispatch leaves a credential on disk"
 
+# _pi_wipe runs back in the INHERITED shell, so every command word in it is
+# shadowable by an exported function — and it is the one function that must
+# still work when an injection has already landed. Absolute paths are the only
+# defence that holds (a function name cannot contain `/`). This asserts the
+# doctrine mechanically instead of trusting the comment above it: no bare
+# command word in command position anywhere in the body.
+WIPE_ALL="$(awk '/^[[:space:]]*_pi_wipe\(\) \{$/{inb=1} inb{print} inb && /^[[:space:]]*\}$/{exit}' <<<"$ARM_RAW" \
+            | grep -vE '^[[:space:]]*#')"
+# The heredoc body is EXEMPT from the bare-command rule and only from it: it runs
+# inside `env -i`, where the function table is empty, so a bare `rm` there is
+# genuinely `rm`. Split it off rather than exempting the whole function — the
+# parent-side lines must still obey the rule.
+WIPE_BODY="$(awk '/<<.CHILD./{inh=1; next} inh && /^CHILD$/{inh=0; next} !inh' <<<"$WIPE_ALL")"
+WIPE_CHILD="$(awk '/<<.CHILD./{inh=1; next} inh && /^CHILD$/{exit} inh' <<<"$WIPE_ALL")"
+
+if [[ -z "$WIPE_CHILD" ]] || ! grep -qE '/usr/bin/env -i /bin/bash --noprofile --norc' <<<"$WIPE_ALL"; then
+  fail "_pi_wipe does not remove the jail inside a sterile env -i child — a hostile function table reaches the removal"
+elif ! grep -qE '^if \[ -e "\$d" \] \|\| \[ -L "\$d" \]; then exit 1; fi$' <<<"$WIPE_CHILD"; then
+  fail "the wipe child verifies with -e alone — a dangling symlink survives and still reports success"
+else
+  ok "_pi_wipe removes the jail in a sterile env -i child and verifies symlink-aware"
+fi
+
+# THE STEP THAT TERMINATES THE SHADOWING REGRESS. Every command word in this
+# function is shadowable by something (see the arm's comment); a bare redirection
+# is not a command, so nothing can intercept it. It must come FIRST — after the
+# unlink it would be pointless, and the unlink is the step that can be subverted.
+# `>|` not `>` so `set -C` cannot refuse it. Verified live: with rm, echo and
+# printf all shadowed, `>| f` still took the credential from 32 bytes to 0.
+if ! grep -qE '^\s*&& ! >\| "\$_pi_jail/\.pi/agent/auth\.json"; then$' <<<"$WIPE_ALL"; then
+  fail "credential is not zeroed by a bare redirection — every removal path left is command-shadowable"
+elif [[ "$(grep -n '>|' <<<"$WIPE_ALL" | head -1 | cut -d: -f1)" -gt "$(grep -n 'usr/bin/env -i' <<<"$WIPE_ALL" | head -1 | cut -d: -f1)" ]]; then
+  fail "the bare-redirection zeroing runs AFTER the unlink child — a subverted unlink then leaves a live credential"
+else
+  ok "credential is zeroed by unshadowable grammar (>|) before any command runs"
+fi
+
+if [[ -z "$WIPE_BODY" ]]; then
+  fail "could not extract the _pi_wipe body — this assertion is not running"
+elif grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(rm|echo|printf|mktemp|rmdir|command|builtin|eval)[[:space:]]' <<<"$WIPE_BODY"; then
+  fail "_pi_wipe uses a bare command word — an exported function shadows it inside the cleanup path"
+else
+  ok "_pi_wipe uses only absolute-path commands (unshadowable)"
+fi
+
+# BUILTINS ARE NOT SAFE EITHER, which is the trap the absolute-path rule above
+# does not cover on its own. Verified against bash 5.3 and 3.2: `export -f return`
+# is accepted, the child imports BASH_FUNC_return%%, and a function body's
+# `return 0` then runs the ATTACKER'S code and does NOT return — so a guard
+# clause written as `[[ ... ]] || return 0` both executes and falls through.
+# `true` and `:` are shadowable the same way. The function must end on an
+# assignment (syntax, status 0) instead.
+if grep -qE '(^|\||&&|;|then|else|do)[[:space:]]*(return|true|:)([[:space:]]|$)' <<<"$WIPE_BODY"; then
+  fail "_pi_wipe uses a shadowable builtin (return/true/:) — exported functions override builtins"
+elif ! grep -qE '^[[:space:]]*_pi_wipe_rc=0[[:space:]]*$' <<<"$WIPE_BODY"; then
+  fail "_pi_wipe does not end on an assignment — its exit status is whatever cleanup left behind"
+else
+  ok "_pi_wipe avoids shadowable builtins and closes on an assignment"
+fi
+
+# THE ASSUMPTION UNDER THE ABSOLUTE-PATH RULE, checked against the live bash
+# rather than asserted in a comment. `function /bin/rm { ...; }` IS definable
+# in-shell — so the rule buys nothing unless bash also refuses to carry such a
+# name through the ENVIRONMENT, which is the only vector reaching a script from
+# outside. Today it refuses twice over (`export: /bin/rm: cannot export`, and
+# `error importing function definition`). If a future bash relaxes either, this
+# fails and the doctrine above needs rewriting — do not delete this to get green.
+_IMPORT_PROBE="$(env "BASH_FUNC_/bin/rm%%=() { echo SHADOWED; }" \
+                 bash --noprofile --norc -c '/bin/rm -f /nonexistent-busdriver-probe && echo CLEAN' 2>/dev/null)"
+if [[ "$_IMPORT_PROBE" == "CLEAN" ]]; then
+  ok "bash refuses to import a slash-named function — /bin/rm is unreachable from the environment"
+else
+  fail "bash imported BASH_FUNC_/bin/rm%% (got '$_IMPORT_PROBE') — absolute paths no longer contain the shadowing vector"
+fi
+
+# Every removal and every warning is TESTED (`if !` / `|| assignment`). An
+# untested failure inside _pi_wipe trips the script's `set -e`, which skips the
+# remaining cleanup — that is how a credential gets left on disk on the very
+# path meant to remove it, and how a finished dispatch once died in its trap.
+if grep -qE '^[[:space:]]*/bin/(rm|echo)[^|]*$' <<<"$WIPE_BODY"; then
+  fail "_pi_wipe has an untested command — set -e can abort before cleanup finishes"
+else
+  ok "_pi_wipe cleanup and warnings are all set -e safe (tested)"
+fi
+
 # The jail IS removed recursively (pi writes cache files, so rmdir alone leaked
 # a temp tree every dispatch). What makes that safe is upstream, not the delete:
 # the jail is accepted at creation ONLY if absolute AND empty, which is what
@@ -196,13 +281,21 @@ grep -qE '^mkdir "\$D"( \|\||$)' <<<"$ARM" \
   && ok "jail created with non-idempotent mkdir (proves this dispatch made it)" \
   || fail "jail uses mkdir -p or similar — cannot prove the directory was created here"
 
-grep -qE '\[\[ "\$_pi_jail" == /\* && "\$_pi_jail" != "/" && -d "\$_pi_jail" \]\]' <<<"$ARM" \
+# The path shape is re-asserted TWICE, and both halves matter. The parent gates
+# on `[[ ]]` (a reserved word, so unshadowable) before spending a fork; the child
+# re-checks the argument it was handed, so the `rm -rf` is guarded at the delete
+# site itself even if the parent-side gate is later moved or weakened.
+grep -qE '\[\[ -n "\$\{_pi_jail:-\}" && "\$_pi_jail" == /\* && "\$_pi_jail" != "/" \]\]' <<<"$ARM" \
+  && ok "jail path shape is gated in the parent before the wipe child is spawned" \
+  || fail "parent does not shape-check the jail path before spawning the wipe"
+
+grep -qE "^case \"\\\$d\" in /\|'') exit 1 ;; /\*\) ;; \*\) exit 1 ;; esac$" <<<"$WIPE_CHILD" \
   && ok "jail path shape is re-asserted at the point of deletion" \
   || fail "recursive delete is not guarded by a path-shape re-check at the delete site"
 
 # The credential must be removed on its own line BEFORE the tree delete, so it
 # is gone even if the recursive removal fails.
-grep -qE 'rm -f "\$_pi_jail/\.pi/agent/auth\.json"' <<<"$ARM" \
+grep -qE '^rm -f "\$d/\.pi/agent/auth\.json"$' <<<"$WIPE_CHILD" \
   && ok "credential is removed independently of the tree delete" \
   || fail "no standalone credential removal — a failed tree delete would leave the projected key on disk"
 
@@ -226,7 +319,15 @@ fi
 # Runs the real heredoc from the arm, not a copy — a copy would drift and then
 # certify code that is no longer shipped. Needs python3 and a pi auth store; no
 # model call, so this is a mandatory check rather than an opt-in one.
-CHILD_BODY="$(awk '/\/bin\/bash --noprofile --norc <<.CHILD.$/{f=1;next} f&&/^CHILD$/{exit} f' "$DISPATCH")"
+# Pick the PROJECTION heredoc specifically. The arm now contains two `<<'CHILD'`
+# bodies — preflight comes first — so "extract the first one" silently tested the
+# wrong code and passed. Select by content: only the projection child consumes
+# $PROV. A body that no longer does is a real regression, not a lookup miss.
+CHILD_BODY="$(awk '
+  /\/bin\/bash --noprofile --norc <<.CHILD.$/ {inb=1; body=""; next}
+  inb && /^CHILD$/ {if (body ~ /PROV/) {printf "%s", body; exit} inb=0; next}
+  inb {body = body $0 "\n"}
+' "$DISPATCH")"
 if [[ -z "$CHILD_BODY" ]]; then
   fail "could not extract the projection child from the pi arm"
 elif ! command -v python3 >/dev/null 2>&1; then

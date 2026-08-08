@@ -645,7 +645,12 @@ done
 # too, and the parent would then report "could not derive a trusted home" for a
 # machine that simply has no pi installed. Two independent facts, reported
 # independently, so each error branch is reachable.
-printf '%s\n%s\n' "$h" "$b"
+# Trailing "END" is load-bearing. Command substitution strips TRAILING newlines,
+# so a missing binary emitted "home\n\n" and arrived as just "home" — the
+# expansion below then found no delimiter and assigned the HOME to _pi_bin.
+# A searchable directory satisfies -x, so the "pi not found" branch was skipped
+# and the operator got a misleading version-unreadable error instead.
+printf '%s\n%s\nEND\n' "$h" "$b"
 CHILD
             )"; then _pi_pre=""; fi
             # Split with PARAMETER EXPANSION only. The obvious
@@ -738,32 +743,128 @@ CHILD
                     # Safe to call on ANY path through the branch chain below,
                     # including ones where the jail was never created — the shape
                     # checks make it a no-op rather than an error.
+                    # CONTAINMENT FUNCTION. It runs back in the INHERITED shell,
+                    # after pi has already read whatever the tree told it to — so
+                    # assume every command word here is shadowable, and lean on the
+                    # shell GRAMMAR, which is not.
+                    #
+                    #   * THE SECRET IS DESTROYED BY GRAMMAR, NOT BY A COMMAND. Chasing
+                    #     shadowing with better command names has no fixed point: a
+                    #     bare `rm` loses to an imported function; `/bin/rm` cannot be
+                    #     IMPORTED (the suite probes bash to keep that true) but CAN be
+                    #     defined in-shell, and this script calls bare `type`/`source`
+                    #     at startup, so an imported function of one of those names
+                    #     gets to define it; escaping through `/usr/bin/env` merely
+                    #     moves the same problem one word along. A bare redirection
+                    #     has NO command word at all, so `>|` ends the regress — it is
+                    #     parsed, never resolved. That is step 1, and it is the only
+                    #     step the credential's secrecy depends on.
+                    #   * THE UNLINK RUNS IN A STERILE `env -i` CHILD (step 2), whose
+                    #     empty environment imports no functions, so its bare `rm` is
+                    #     genuinely `rm`. It is hygiene: by the time it runs the
+                    #     credential is already zeroed. /bin/echo stays absolute but is
+                    #     only ever a REPORTING path.
+                    #   * NO `return`, `true` or `:`. All three are shadowable —
+                    #     verified: bash imports `BASH_FUNC_return%%` and resolves it
+                    #     ahead of the builtin, so `|| return 0` would run attacker
+                    #     code AND fail to return, falling straight through the very
+                    #     guard it forms. This function therefore ends on an
+                    #     ASSIGNMENT: syntax, not a command, and its status is 0.
+                    #     (`|| true` was worse still — it fired on every SUCCESSFUL
+                    #     dispatch, the jail already being gone.)
+                    #   * EVERY command TESTED (`if !` / `|| assignment`). `-f` and
+                    #     `-rf` exit 0 on a MISSING path but not on a permission or
+                    #     filesystem error, and an `if` BODY is not tested — so an
+                    #     untested failure trips `set -e`, skipping the rest of the
+                    #     cleanup and killing finished dispatches from inside a trap.
+                    #   * Failures WARN. A credential left on disk is the one outcome
+                    #     this function exists to prevent; swallowing it is worse
+                    #     than the leaked tree.
+                    #
+                    # OUT OF SCOPE, deliberately: an attacker who already has code
+                    # execution IN THIS SHELL. Nothing here defends against that —
+                    # they would simply redefine `_pi_wipe`. The lane's threat model
+                    # is repo content pi READS, and pi's output is written to a file
+                    # and never evaluated, so it has no path into this shell at all.
+                    #
+                    # tests/test-pi-dispatch-arm.sh asserts each of these against this
+                    # body, so they survive the next edit.
                     _pi_wipe() {
-                        [[ -n "${_pi_jail:-}" && "$_pi_jail" == /* ]] || return 0
-                        # ORDER MATTERS. The credential goes first and on its own,
-                        # so it is gone even if the tree removal below fails.
-                        # `|| true` on every step: under `set -e` a failing cleanup
-                        # command aborts the whole script, which once made a failed
-                        # dispatch exit silently with no output at all.
-                        # ABSOLUTE /bin/rm, not a bare `rm`: this cleanup runs back
-                        # in the inherited shell, where an exported `rm` function
-                        # could intercept it — retaining the projected credential
-                        # on disk, or running arbitrary code. A function name
-                        # cannot contain `/`.
-                        /bin/rm -f "$_pi_jail/.pi/agent/auth.json" 2>/dev/null || true
-                        # Then the whole tree. `rmdir` alone is not enough — pi
-                        # writes cache files into its HOME, so the directories are
-                        # never empty and every dispatch leaked a temp tree.
-                        # `rm -rf` is safe HERE, and only here, because this path
-                        # was NAMED BY THE PARENT under $TMPDIR with builtin-only
-                        # randomness, checked not to pre-exist, and then created by
-                        # a bare `mkdir` that would have failed had it existed. It
-                        # is never a path some other process chose. Re-assert the
-                        # shape at the delete site so that stays true if any of
-                        # those guards is later moved or weakened.
-                        [[ "$_pi_jail" == /* && "$_pi_jail" != "/" && -d "$_pi_jail" ]] \
-                            && /bin/rm -rf "$_pi_jail" 2>/dev/null || true
-                        return 0
+                        # The shape checks stay in the PARENT because `[[` is a
+                        # reserved word — the grammar, not a command — so nothing can
+                        # intercept them. The removal itself does NOT stay here.
+                        if [[ -n "${_pi_jail:-}" && "$_pi_jail" == /* && "$_pi_jail" != "/" ]]; then
+                            # Both removals run inside ONE STERILE CHILD, for the same
+                            # reason projection does. `env -i` gives bash an empty
+                            # environment, so the child imports no functions at all and
+                            # its bare `rm` is genuinely `rm`. That matters: absolute
+                            # paths alone do NOT survive a hostile function table here,
+                            # because this script calls bare `type`/`source` during
+                            # startup, and an imported function of one of THOSE names
+                            # can define `/bin/rm` on the way past. Slash-named
+                            # functions cannot be IMPORTED (the suite probes bash for
+                            # that), but they can be DEFINED in-shell, so second-stage
+                            # definition is the live vector and this closes it.
+                            # `/usr/bin/env` is now the whole trust anchor — the same
+                            # one the projection child already rests on, so the wipe is
+                            # no weaker than the write it undoes.
+                            #
+                            # Credential first and ALONE, so it is gone even if the
+                            # tree removal fails. `rm -rf` on the tree is safe HERE and
+                            # only here: the PARENT named this path under $TMPDIR with
+                            # builtin-only randomness and created it with a bare
+                            # `mkdir` that would have failed had it existed, so it is
+                            # never a path another process chose. `rmdir` would not do
+                            # — pi writes cache files into its HOME, so the directories
+                            # are never empty and every dispatch leaked one.
+                            #
+                            # The child VERIFIES the jail is gone before reporting
+                            # success, so the warning below means what it says.
+                            # STEP 1 — ZERO THE SECRET WITH PURE GRAMMAR. A bare
+                            # redirection has NO COMMAND WORD, so there is nothing for
+                            # a function to intercept: `>|` is parsed, not resolved.
+                            # This is the one step that terminates the regress every
+                            # other approach here runs into (`/bin/rm` is shadowable
+                            # in-shell, and so is the `/usr/bin/env` that would escape
+                            # it, and so on without a fixed point). Verified with
+                            # `rm`, `echo` and `printf` all shadowed: 32 bytes -> 0.
+                            # `>|` rather than `>` so `set -C` cannot refuse it, and
+                            # `[[ -f ]]` — grammar again — so an already-wiped jail is
+                            # not spuriously recreated or warned about. Truncation is
+                            # not unlinking, but the credential is CONTENT: zeroing it
+                            # is the security-critical outcome, and step 2 is then
+                            # merely hygiene.
+                            # SC2188 (redirection with no command) is the POINT here,
+                            # not an oversight — and shellcheck's suggested remedy,
+                            # "use 'true' as a no-op", would reintroduce exactly the
+                            # shadowable command word this construct exists to avoid.
+                            # shellcheck disable=SC2188
+                            if [[ -f "$_pi_jail/.pi/agent/auth.json" ]] \
+                               && ! >| "$_pi_jail/.pi/agent/auth.json"; then
+                                /bin/echo "WARNING: could not zero the projected pi credential at $_pi_jail/.pi/agent/auth.json — remove it by hand." >&2 || _pi_wipe_warn=1
+                            fi
+                            # STEP 2 — unlink the file and the tree. Best-effort by
+                            # comparison: if this is subverted the credential is
+                            # already empty. `-e` alone would MISS a dangling symlink
+                            # (verified), so the check is `-e || -L` and the child
+                            # cannot report success over a surviving path.
+                            if ! /usr/bin/env -i /bin/bash --noprofile --norc -s "$_pi_jail" <<'CHILD' 2>/dev/null
+d="$1"
+case "$d" in /|'') exit 1 ;; /*) ;; *) exit 1 ;; esac
+rm -f "$d/.pi/agent/auth.json"
+if [ -e "$d/.pi/agent/auth.json" ] || [ -L "$d/.pi/agent/auth.json" ]; then exit 1; fi
+rm -rf "$d"
+if [ -e "$d" ] || [ -L "$d" ]; then exit 1; fi
+exit 0
+CHILD
+                            then
+                                # A shadowed `echo` here can only MISREPORT, never
+                                # retain the credential — the destructive work is
+                                # already done and verified in the sterile child.
+                                /bin/echo "WARNING: pi jail $_pi_jail was not fully removed (the credential was zeroed first, so this is a leftover directory, not a live key)." >&2 || _pi_wipe_warn=1
+                            fi
+                        fi
+                        _pi_wipe_rc=0
                     }
                     _pi_prov="${MODEL:-$_BD_PI_MODEL}"
                     _pi_prov="${_pi_prov%%/*}"

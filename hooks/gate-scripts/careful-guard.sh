@@ -302,11 +302,15 @@ def _mktemp_creates(rhs):
 
 # Routes that rebind a name WITHOUT a command-prefix assignment. The first is the
 # ${VAR:=default} expansion; the second is any word-binding builtin, whose
-# operands are read out and disqualified.
+# operands are read out and disqualified. `let` belongs in the list for the
+# same reason: `let T++` (or `T+=1`, `T=5`) rewrites T through arithmetic
+# evaluation without ever producing a plain `T=` assignment token, so the
+# textual "NAME=" scan below never sees it and the carve-out stayed armed
+# after the value changed.
 REBIND_EXPANSION = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:?=")
 REBIND_BUILTIN = re.compile(
     r"\b(?:for|select|read|export|unset|declare|local|typeset|getopts"
-    r"|mapfile|readarray)"
+    r"|mapfile|readarray|let)"
     r"\b([^;&|\n]*)")
 # ONLY the bare expansions `$V` and `${V}` - nothing appended. A suffix cannot be
 # proven to stay inside the directory: it can carry its own expansion
@@ -1151,6 +1155,33 @@ def temp_vars(chunk):
                 return {}
             for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
                 names.pop(word, None)
+            # A short-option cluster can carry its OPERAND attached with no
+            # separating space - bash reads `read -aT` exactly like
+            # `read -a T`, assigning into T, but the identifier scan above
+            # sees the joined token as one word ("aT") and never isolates T.
+            # Popping any tracked name that is a SUFFIX of a `-`-prefixed
+            # option token catches that shape for every builtin above, not
+            # just `read -a`, without hand-parsing the flag table of each.
+            #
+            # The token class is Bash IDENTIFIER characters, NOT letters:
+            # `read -aT2` binds T2 and `read -aT_X` binds T_X exactly as
+            # `read -aT` binds T, so a letters-only class let every name
+            # carrying a digit or an underscore straight through. Surrounding
+            # quotes come off for the same reason - `read "-aT"` is the same
+            # option wearing quotes. The quote pair is spelled via chr()
+            # because this Python is embedded in a bash single-quoted string,
+            # where a literal apostrophe would end the block (see header).
+            #
+            # The direction is fail-safe either way it misses: it can only
+            # drop an exemption that was still valid (one extra prompt, the
+            # ordinary failure mode of an advisory guard), never keep one
+            # alive past an actual rebind.
+            for tok in m.group(1).split():
+                tok = tok.strip(chr(34) + chr(39))
+                if re.match(r"^-[A-Za-z0-9_]+$", tok):
+                    for name in list(names):
+                        if tok.endswith(name):
+                            names.pop(name, None)
     for name in list(names):
         # Spellings that rebind a name WITHOUT producing a plain `NAME=` token,
         # so neither the prefix walk nor the builtin scan above sees them:
@@ -2490,9 +2521,11 @@ if [[ -z "$WARN" ]]; then
   # audit-log erasure #519 tests for — while any text match fired on
   # `grep -F 'truncate -s'`. shlex resolves both at once.
   #
-  # The fallback fires only when the scanner did NOT run (no python3, AUTO_MODE):
-  # there, the original broad bare-word match is restored deliberately, because a
-  # degraded path must over-warn rather than under-detect.
+  # The fallback fires only when the scanner did NOT run (no python3, an import
+  # failure, or a crash). Auto mode does NOT reach it: the scanner runs in every
+  # mode and the stand-down applies to RM_VERDICT alone. On the degraded path the
+  # original broad bare-word match is restored deliberately, because that path
+  # must over-warn rather than under-detect.
   elif [[ "$TRUNC_VERDICT" == "truncate" ]] \
        || { [[ "$TRUNC_VERDICT" != "notruncate" ]] \
             && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null; }; then

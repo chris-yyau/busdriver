@@ -345,6 +345,35 @@ check "read with a computed name"   ask   'T=$(mktemp -d); N=T; read "$N" <<< /e
 check "read rebinds the name"       ask   'T=$(mktemp -d); read T < paths.txt; rm -rf "$T"'
 # shellcheck disable=SC2016
 check "default-assign expansion"    ask   'T=$(mktemp -d); rm -rf "${T:=/etc}"'
+# `let` rewrites the name through arithmetic evaluation, so `let T++` never
+# produces a plain `T=` token for the textual scan to catch.
+# shellcheck disable=SC2016
+check "let arithmetic increment"    ask   'T=$(mktemp -d); let T++; rm -rf "$T"'
+# shellcheck disable=SC2016
+check "let arithmetic assignment"   ask   'T=$(mktemp -d); let T=5; rm -rf "$T"'
+# `read -aT` (no space) assigns into T exactly like `read -a T` does; the
+# identifier scan alone would see the joined token "aT" and miss it.
+# shellcheck disable=SC2016
+check "read attached array flag"    ask   'T=$(mktemp -d); read -aT <<< /etc; rm -rf "$T"'
+# Attached form with a SPACE-separated name still warns via the ordinary path.
+# shellcheck disable=SC2016
+check "read -a with a separate name" ask  'T=$(mktemp -d); read -a T <<< /etc; rm -rf "$T"'
+# The attached-flag match runs over Bash IDENTIFIER characters, not letters. A
+# letters-only class shipped first and let every one of these through: the name
+# is what follows the flag, and names carry digits and underscores.
+# shellcheck disable=SC2016
+check "attached flag, digit in name" ask  'T2=$(mktemp -d); read -aT2 <<< /etc; rm -rf "$T2"'
+# shellcheck disable=SC2016
+check "attached flag, underscore"    ask  'T_X=$(mktemp -d); read -aT_X <<< /etc; rm -rf "$T_X"'
+# shellcheck disable=SC2016
+check "attached flag in a cluster"   ask  'T2=$(mktemp -d); read -raT2 <<< /etc; rm -rf "$T2"'
+# Quotes around the option do not change which name it binds.
+# shellcheck disable=SC2016
+check "attached flag, quoted option" ask  'T=$(mktemp -d); read "-aT" <<< /etc; rm -rf "$T"'
+# The carve-out must SURVIVE for a digit-carrying name nothing rebinds - the
+# widened class must not turn into a blanket over-warn.
+# shellcheck disable=SC2016
+check "digit name, never rebound"    allow 'T2=$(mktemp -d); rm -rf "$T2"'
 
 echo "--- ONLY the bare expansion clears; any suffix warns ---"
 # If mktemp FAILED, T is empty - so "$T/" is / and "$T/etc" is /etc. No suffix can

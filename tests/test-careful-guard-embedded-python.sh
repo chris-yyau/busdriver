@@ -95,6 +95,13 @@ payload=$(python3 -c '
 import json
 print(json.dumps({"permission_mode": "bypassPermissions", "tool_name": "Bash",
                   "tool_input": {"command": "find . -name \"truncate.log\" -exec ls {} ;"}}))')
+if [[ -z "$payload" ]]; then
+  echo "FAIL could not build the guard payload for the find branch"
+  fail=$((fail+1))
+  echo
+  echo "passed=$pass failed=$fail"
+  exit 1
+fi
 guard_out=$("$GUARD" <<<"$payload"); guard_rc=$?
 if [[ $guard_rc -ne 0 ]]; then
   echo "FAIL guard exited $guard_rc on the find branch"

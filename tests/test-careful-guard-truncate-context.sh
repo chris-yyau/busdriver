@@ -464,7 +464,18 @@ check "entrypoint naming a shell"       allow 'docker run --entrypoint=sh alpine
 # An unterminated bracket used to backtrack exponentially and spend the whole
 # scan budget, leaving no verdict at all — which the bash arm reads as
 # "no python3" and answers with raw grep.
-check "unterminated bracket is fast"    allow "$(python3 -c 'print("[" + "\\\\a"*25 + " -s 0 f")')"
+#
+# The fixture command itself is GENERATED, and unchecked: if this python3 call
+# failed, the substitution is empty and `check` would run "allow" against an
+# EMPTY command, which the guard's no-command branch clears unconditionally —
+# a vacuous pass that never exercises the bracket path it names.
+bracket_fixture=$(python3 -c 'print("[" + "\\\\a"*25 + " -s 0 f")')
+if [[ -z "$bracket_fixture" ]]; then
+  echo "FAIL could not build the unterminated-bracket fixture"
+  fail=$((fail+1))
+else
+  check "unterminated bracket is fast"  allow "$bracket_fixture"
+fi
 # ACCEPTED LIMIT, pinned and OUT OF SCOPE: a script fed to an interpreter over
 # stdin is not among the extracted chunks. That is gitcmd_detect chunk
 # extraction — issue #557, being fixed in its own worktree.

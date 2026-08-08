@@ -95,9 +95,16 @@ ansic_spelling() { # <command-word> -> $'\x..<rest>'
 }
 
 # The `bash -n` oracle, wrapping the shared harness check. A fixture bash cannot
-# parse proves nothing about the guard, so it fails as a fixture error.
-_raw_check=$(declare -f check)
-eval "_harness_check() ${_raw_check#*"()"}"
+# parse proves nothing about the guard, so it fails as a fixture error. This
+# suite's whole point is that every seed IS meant to stay valid bash across
+# each transform, unlike some other suites' deliberately-fragmentary fixtures
+# (see the note in careful-guard-harness.sh for why this oracle is not the
+# harness default).
+#
+# `_harness_check` is the harness's comparison logic, exposed by name, so this
+# override delegates to it directly instead of re-deriving it from
+# `declare -f check` (a text-surgery coupling that breaks if that function
+# body ever gains a literal `()` of its own).
 check() { # name expected command
   if ! bash -n <<<"$3" 2>/dev/null; then
     echo "FAIL: $1 — fixture is not valid bash"; fail=$((fail+1)); return

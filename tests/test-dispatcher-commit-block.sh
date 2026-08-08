@@ -30,6 +30,10 @@ write_default_plugin_root() {
     # PASS-EXCLUDED markers (#278).
     ln -s "$REPO_ROOT/skills/litmus/scripts/lib/exclude-generated.sh" \
         "$plugin_root/skills/litmus/scripts/lib/exclude-generated.sh"
+    # Real lock primitive — the dispatcher and run-review-loop.sh must contend on the
+    # same one, so stubbing it would test nothing.
+    ln -s "$REPO_ROOT/skills/litmus/scripts/lib/review-lock.sh" \
+        "$plugin_root/skills/litmus/scripts/lib/review-lock.sh"
 
     cat > "$plugin_root/scripts/fetch-pr-state.sh" <<'EOF'
 FETCH_OK=1
@@ -43,8 +47,28 @@ export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES
 return 0
 EOF
 
+    # Mirrors the two parts of the real init-review-loop.sh contract this script
+    # depends on (#569): it REFUSES while a state file says `active: true`, and
+    # `--force` is the documented override. Logged separately from
+    # DISPATCHER_EVENT_LOG so the litmus-before-commit ordering assertions stay
+    # about litmus and commit only.
     cat > "$plugin_root/skills/litmus/scripts/init-review-loop.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${INIT_EVENT_LOG:-}" ]; then
+    printf 'init:%s\n' "$*" >> "$INIT_EVENT_LOG"
+fi
+# Stand in for the failures that have nothing to do with the active-state guard —
+# not a git repo, bad arguments, an unwritable state dir. --force is not their remedy.
+if [ "${INIT_ALWAYS_FAILS:-0}" = "1" ]; then
+    exit 1
+fi
+for _arg in "$@"; do
+    [ "$_arg" = "--force" ] && exit 0
+done
+_state="${BUSDRIVER_STATE_DIR:-.claude}/litmus-state.md"
+if [ -f "$_state" ] && grep -q '^active: true' "$_state"; then
+    exit 1
+fi
 exit 0
 EOF
     chmod +x "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
@@ -75,9 +99,16 @@ case "${LITMUS_MODE:-pass}" in
         write_marker
         ;;
     review_findings)
+        # Shape matches what the real script leaves behind on FAIL: the state file
+        # SURVIVES with active: true (only PASS deletes it), and the blocking issues
+        # are rendered to stdout as "  [severity] file:line - description".
         mkdir -p .claude
-        printf 'terminal_status: review_findings\n' > .claude/litmus-state.md
+        printf 'active: true\nreview_status: "FAIL"\nterminal_status: review_findings\n' \
+            > .claude/litmus-state.md
         printf 'FAIL - Issues found\n'
+        printf 'Issues:\n'
+        printf '  [high] scripts/foo.sh:42 - unvalidated counter aborts before block_emit\n'
+        printf '  [medium] scripts/foo.sh:88 - unquoted expansion in the retry path\n'
         exit 1
         ;;
     stall)
@@ -205,6 +236,8 @@ run_dispatcher_capture() {
     if [ -n "${pre_dispatch_baseline+x}" ]; then env_args+=("PRE_DISPATCH_BASELINE=$pre_dispatch_baseline"); fi
     if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
     if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
+    if [ -n "${init_event_log+x}" ]; then env_args+=("INIT_EVENT_LOG=$init_event_log"); fi
+    if [ -n "${init_always_fails+x}" ]; then env_args+=("INIT_ALWAYS_FAILS=$init_always_fails"); fi
     if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
     if [ -n "${result_ack_tiers+x}" ]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
 
@@ -864,6 +897,550 @@ EOF
     post_bail_head=$(git -C "$sandbox" rev-parse HEAD)
     [ "$post_bail_head" = "$initial_sha" ] || {
         echo "test_u expected HEAD unchanged after env-bail; initial=$initial_sha post=$post_bail_head"
+        return 1
+    }
+}
+
+# --- #569: stale litmus state must not wedge the block ---
+
+# test_v: a state file left behind by an EARLIER non-PASS review (active: true) is
+# stale by construction once no reviewer is running. The block must discard it and
+# proceed, not bail "litmus init-review-loop.sh failed" on every later invocation.
+test_v_stale_litmus_state_is_forced() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    mkdir -p "$sandbox/.claude"
+    printf 'active: true\nreview_status: "FAIL"\nterminal_status: review_findings\n' \
+        > "$sandbox/.claude/litmus-state.md"
+
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_v expected success despite stale state; output: $dispatcher_output"
+        return 1
+    }
+    grep -q -- '--force' "$init_event_log" || {
+        echo "test_v expected init-review-loop.sh --force; log: $(cat "$init_event_log")"
+        return 1
+    }
+}
+
+# test_x: a FAIL bail must carry the findings. "operator must address them manually"
+# with no findings attached pointed at nothing — litmus keeps no parseable copy.
+test_x_review_findings_bail_carries_findings() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=review_findings
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_x expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment"
+         and (.bail_reason | contains("review_findings"))
+         and (.bail_reason | contains("[high] scripts/foo.sh:42"))
+         and (.bail_reason | contains("[medium] scripts/foo.sh:88"))' || {
+        echo "test_x dispatcher_json: $dispatcher_json"
+        return 1
+    }
+}
+
+# test_ab: an active state file with NO terminal_status is a review that was killed
+# before it could record one — or, the case that matters, an interactive /litmus that
+# has run init and not yet run the loop. There is no process for pgrep to see, so
+# forcing here would erase a review somebody is about to run.
+test_ab_active_without_terminal_status_bails() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Exactly what init-review-loop.sh writes before run-review-loop.sh is invoked.
+    mkdir -p "$sandbox/.claude"
+    printf 'active: true\niteration: 1\nreview_mode: "commit"\nreview_status: "PENDING"\n' \
+        > "$sandbox/.claude/litmus-state.md"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_ab expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("no recognized terminal_status"))' || {
+        echo "test_ab dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    # The lock must not be left behind by the bail — that would wedge the next round.
+    # -L, and the real path. `litmus-dispatch.lock` was the name of a deleted mkdir-based
+    # draft, so this assertion used to check a path that never exists and passed
+    # unconditionally. And -e follows the link: the lock is DELIBERATELY a dangling
+    # symlink (target "pid-<n>" names no file), so -e reports false while the symlink is
+    # still sitting there. Only -L sees it.
+    [ ! -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_ab: lock leaked on bail"
+        return 1
+    }
+}
+
+# test_ac: an unrecognized terminal_status value is not evidence a run finished.
+# Matching on the mere PRESENCE of a `terminal_status:` line would let empty, null, or
+# corrupted state authorize --force — a fail-open on the one check standing between
+# this script and overwriting a live review.
+test_ac_unrecognized_terminal_status_bails() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    mkdir -p "$sandbox/.claude"
+    printf 'active: true\nreview_status: "PENDING"\nterminal_status: ""\n' \
+        > "$sandbox/.claude/litmus-state.md"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_ac expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("no recognized terminal_status"))' || {
+        echo "test_ac dispatcher_json: $dispatcher_json"
+        return 1
+    }
+}
+
+# test_ad: --force exists only to override the active-state guard, so it must not be
+# reached when that guard never fires. On the common path (no state file) the plain
+# init succeeds and no force is involved — which is what keeps the force's overwrite
+# window off every ordinary round.
+test_ad_no_force_when_plain_init_succeeds() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    # No pre-existing state file: init-review-loop.sh has nothing to refuse over.
+
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_ad expected success; output: $dispatcher_output"
+        return 1
+    }
+    if grep -q -- '--force' "$init_event_log"; then
+        echo "test_ad: --force used even though the plain init succeeded"
+        cat "$init_event_log"
+        return 1
+    fi
+}
+
+# test_ae: a review lock held by a LIVE owner must stop the dispatcher before it
+# classifies anything. This is what makes the terminal_status read meaningful — without
+# it the classification is check-then-act and can be invalidated before the force lands.
+test_ae_live_review_lock_bails() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json holder_pid
+    make_dispatcher_fixture
+    holder_pid=""
+    trap 'kill "$holder_pid" 2>/dev/null || true; cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    sleep 60 &
+    holder_pid=$!
+    mkdir -p "$sandbox/.claude"
+    ln -s "pid-$holder_pid" "$sandbox/.claude/litmus-review.lock"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_ae expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    # "(running)" with the parens, not "running": the orphan message says "not running",
+    # which contains it — a loose match here would pass on the wrong branch entirely.
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env" and (.bail_reason | contains("(running)"))' || {
+        echo "test_ae dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    # A live owner's lock must survive our bail — releasing only ever unlinks our own.
+    [ -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_ae: bail released a lock it does not own"
+        return 1
+    }
+}
+
+# test_af: a lock orphaned by a SIGKILLed run is NOT auto-reclaimed — no shell reclaim
+# is race-free (see lib/review-lock.sh), so the block bails and names the remedy rather
+# than racing for it. The bail must also leave the orphan in place: a reclaim disguised
+# as cleanup is the same race by another name.
+test_af_orphaned_review_lock_bails_with_remedy() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json dead_pid _candidate
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # A REAPED pid is not a guaranteed-dead value — the OS can hand it to a brand-new
+    # process before this test's assertions run, and on a busy host that reports a
+    # lock-implementation defect that does not exist. Search for a pid that fails
+    # `kill -0` instead.
+    dead_pid=""
+    for _candidate in 999999 999998 999997 999996 999995; do
+        if ! kill -0 "$_candidate" 2>/dev/null; then
+            dead_pid="$_candidate"
+            break
+        fi
+    done
+    if [ -z "$dead_pid" ]; then
+        echo "test_af: SKIP — could not find a pid that fails kill -0"
+        return 0
+    fi
+
+    mkdir -p "$sandbox/.claude"
+    ln -s "pid-$dead_pid" "$sandbox/.claude/litmus-review.lock"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_af expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env"
+         and (.bail_reason | contains("not running"))
+         and (.bail_reason | contains("orphan"))' || {
+        echo "test_af dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    [ -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_af: bail removed the orphan instead of reporting it"
+        return 1
+    }
+}
+
+# test_ag: BUSDRIVER_STATE_DIR is repo-injectable. The dispatcher must normalize it with
+# the same rule run-review-loop.sh uses — if they disagree, this script classifies and
+# initializes one state file while the reviewer consumes another.
+test_ag_unsafe_state_dir_normalized() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json escape_dir escape_parent
+    make_dispatcher_fixture
+    # `../escape` resolves against the sandbox's PARENT, and `mktemp -d` puts the sandbox
+    # straight into the shared TMPDIR — so the escape target would be a FIXED path
+    # (/tmp/escape) this test can neither own nor safely clean. Snapshotting its
+    # pre-existence does NOT fix that: another process can create the path after the
+    # snapshot and still lose its data to the RETURN trap's `rm -rf`, and no probe can
+    # close a race whose whole problem is that the path is shared.
+    #
+    # So don't share it. Re-root the sandbox under a private mktemp parent, and the
+    # traversal lands somewhere only this test can reach — ownership by construction,
+    # no snapshot, no conditional assertion, and a cleanup that can only ever delete
+    # this test's own tree. `WORKTREE_DIR` is read from `$sandbox` at capture time and
+    # the origin remote is an absolute path elsewhere, so the move is invisible to the
+    # dispatcher.
+    escape_parent=$(mktemp -d)
+    mv "$sandbox" "$escape_parent/repo"
+    sandbox="$escape_parent/repo"
+    escape_dir="$escape_parent/escape"
+    trap 'cd "$original_dir"; rm -rf "$escape_parent" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # A traversal value. Both sides must collapse it to `.claude`; the marker the
+    # reviewer writes there is what the dispatcher then has to find.
+    export BUSDRIVER_STATE_DIR="../escape"
+    run_dispatcher_capture
+    unset BUSDRIVER_STATE_DIR
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_ag expected success with normalized state dir; output: $dispatcher_output"
+        return 1
+    }
+    # Unconditional — the private parent means nothing but this run can put anything
+    # here. `-L` as well as `-e`, because `-e` follows symlinks and would read a
+    # dangling one as absent.
+    if [ -e "$escape_dir" ] || [ -L "$escape_dir" ]; then
+        echo "test_ag: traversal state dir was honoured — created $escape_dir"
+        return 1
+    fi
+}
+
+# test_ah: classify → init → review must be ONE transaction. The block holds the lock
+# across all of it and hands ownership to the reviewer by export, rather than releasing
+# and letting it re-acquire — a release would open a window for another invocation to
+# take the lock and replace the state just initialized.
+test_ah_lock_held_through_review() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json lock_probe
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    lock_probe="$sandbox/lock-during-review.txt"
+    # Record the lock as the REVIEWER sees it — i.e. mid-transaction.
+    cat > "$plugin_root/skills/litmus/scripts/run-review-loop.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'owner=%s\n' "\$(readlink .claude/litmus-review.lock 2>/dev/null || echo NONE)"
+  printf 'exported=%s\n' "\${BUSDRIVER_REVIEW_LOCK_OWNER:-NONE}"
+} > "$lock_probe"
+mkdir -p .claude
+git diff --cached | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > .claude/litmus-passed.local
+EOF
+    chmod +x "$plugin_root/skills/litmus/scripts/run-review-loop.sh"
+
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_ah expected success; output: $dispatcher_output"
+        return 1
+    }
+    # Compare the two recorded VALUES rather than grepping for patterns. `grep -qv
+    # 'exported=NONE'` on this two-line probe always succeeded — the `owner=` line
+    # satisfies the inverted match regardless of what `exported=` says — so the
+    # handoff could break silently. Extract both and require they name the same pid.
+    local probe_owner probe_exported
+    probe_owner=$(sed -n 's/^owner=//p' "$lock_probe")
+    probe_exported=$(sed -n 's/^exported=//p' "$lock_probe")
+    [ -n "$probe_owner" ] || {
+        echo "test_ah: lock was not held while the reviewer ran"
+        cat "$lock_probe"
+        return 1
+    }
+    [ "$probe_exported" = "$probe_owner" ] || {
+        echo "test_ah: exported owner '$probe_exported' != lock owner '$probe_owner'"
+        cat "$lock_probe"
+        return 1
+    }
+    # And it must be released once the block exits. -L, not -e: the lock is a dangling
+    # symlink by design, so -e follows the missing target and reports false even while
+    # the link remains — an assertion that cannot fail is not an assertion.
+    [ ! -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_ah: lock survived the block's exit"
+        return 1
+    }
+}
+
+# test_ai: --force is the documented answer to exactly ONE refusal — the active-state
+# guard. When init fails for any other reason (not a git repo, bad args, unwritable
+# state dir) there is no active state to explain it, and forcing would paper over the
+# real error with an unrelated remedy.
+test_ai_no_force_when_state_does_not_explain_failure() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log init_always_fails
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    init_always_fails=1
+    # No state file at all: nothing here is an active-state refusal.
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_ai expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("does not explain"))' || {
+        echo "test_ai dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    if grep -q -- '--force' "$init_event_log"; then
+        echo "test_ai: --force attempted against a failure it cannot remedy"
+        cat "$init_event_log"
+        return 1
+    fi
+}
+
+# test_aj: trailing garbage must not parse as a valid state. A value expression ending
+# in `.*$` swallows it — `terminal_status: "review_findings"x` reads as the recognized
+# value and authorizes --force against state that is by definition malformed.
+test_aj_trailing_garbage_is_not_valid_state() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json init_event_log init_always_fails
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    init_event_log="$sandbox/init-events.log"
+    # The plain init must REFUSE, or the classification block is never reached and this
+    # asserts nothing — the stub's own `^active: true` match does not fire on the
+    # malformed line below, which is exactly why the first draft of this test passed
+    # against a parser that accepted the garbage.
+    init_always_fails=1
+    mkdir -p "$sandbox/.claude"
+    # Three malformations that each defeated a different parser generation:
+    #   1. valid line FOLLOWED by a malformed duplicate — filtering-then-tail skips the
+    #      garbage and resurrects the earlier valid value, though last-key-wins makes
+    #      the garbage the one in effect;
+    #   2. trailing content — a value expression ending in `.*$` swallows it;
+    #   3. unbalanced quotes — `"?…"?` accepts them, the two quotes being independent.
+    {
+        printf 'active: true\n'
+        printf 'terminal_status: review_findings\n'
+        printf 'active: "true"JUNK\n'
+        printf 'terminal_status: "review_findings"JUNK\n'
+        printf 'active: "true\n'
+        printf 'terminal_status: review_findings"\n'
+    } > "$sandbox/.claude/litmus-state.md"
+
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_aj expected bail on malformed state, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    # A lax parser reads these as active=true / terminal=review_findings and runs
+    # --force; the strict one yields empty values and bails as unexplained.
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("does not explain"))' || {
+        echo "test_aj dispatcher_json: $dispatcher_json"
+        return 1
+    }
+    if grep -q -- '--force' "$init_event_log"; then
+        echo "test_aj: --force authorized by malformed state"
+        cat "$init_event_log"
+        return 1
+    fi
+}
+
+# test_ak: the lock is held for the LIFETIME of the review, including under a signal.
+# If TERM reaches only the dispatcher, a foreground reviewer keeps writing
+# litmus-state.md while the EXIT trap drops the lock — and the next invocation acquires
+# one that guards nothing. The reviewer must be stopped before the lock is released.
+test_ak_signal_stops_reviewer_before_releasing_lock() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_pid child_pid_file grandchild_pid_file waited child_pid grandchild_pid
+    local dispatcher_status
+    make_dispatcher_fixture
+    dispatcher_pid=""
+    # KILL, not TERM: these fixtures ignore TERM on purpose, so a TERM-based cleanup
+    # would leave them running for their full sleep and bleed into later tests. Routed
+    # through a function that always returns 0 — a RETURN trap ending on a failed kill
+    # (already-dead pid) propagates under `set -e` and aborts the entire suite.
+    _ak_cleanup() {
+        local f pid
+        if [ -n "$dispatcher_pid" ]; then
+            kill -KILL "$dispatcher_pid" 2>/dev/null || true
+        fi
+        for f in "$sandbox/child.pid" "$sandbox/grandchild.pid"; do
+            [ -s "$f" ] || continue
+            pid=$(cat "$f" 2>/dev/null) || continue
+            if [ -n "$pid" ]; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        done
+        cd "$original_dir" || return 0
+        rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"
+        return 0
+    }
+    trap '_ak_cleanup' RETURN
+
+    child_pid_file="$sandbox/child.pid"
+    grandchild_pid_file="$sandbox/grandchild.pid"
+    # Assert on LIVENESS, not on a marker a slow child would not have written yet
+    # either — a timing window that cannot distinguish the two outcomes proves nothing.
+    # INIT is the child under test, not the reviewer: it runs first, and covering only
+    # the reviewer is precisely the gap that shipped last round.
+    # The grandchild stands in for codex/git, which a kill of the immediate shell alone
+    # leaves running. All three assertions discriminate: reverting a call site to
+    # foreground kills the first, swapping the group kill for a bare-pid kill kills the
+    # grandchild check, and dropping the release kills the third.
+    #
+    # NOT covered here: a signal recorded after a fast child has already exited, where
+    # the PGID probe fails for "already gone" rather than "no group". The handler
+    # distinguishes those via a liveness snapshot taken before it signals; staging it
+    # needs the signal to land inside a window this fixture cannot open deterministically
+    # (it deliberately keeps the child alive). The neighbouring invariant IS covered —
+    # test_ah asserts a clean run leaves no lock behind.
+    #
+    # The grandchild check was inert until the SIG_IGN inheritance bug was fixed —
+    # `trap '' SIG` left the child with TERM ignored, so it ran to completion and
+    # everything looked dead by the time the unbounded wait returned. Two defects
+    # hiding each other is the reason the wait below is bounded.
+    # The grandchild IGNORES TERM. `wait` covers only the direct child, so a descendant
+    # that refuses to die outlives it — and without escalation the lock is released
+    # while it is still running. This is the shape of a real reviewer: codex and git
+    # both install their own signal handling.
+    # BOTH the direct child and the grandchild ignore TERM. Only the grandchild ignoring
+    # it left the direct child dying promptly, so a blocking `wait` on it still
+    # returned — and an unbounded wait against a TERM-ignoring DIRECT child (which hangs
+    # the dispatcher forever holding the lock) went unnoticed.
+    cat > "$plugin_root/skills/litmus/scripts/init-review-loop.sh" <<EOF
+#!/usr/bin/env bash
+trap "" TERM
+bash -c 'trap "" TERM; sleep 30' &
+echo \$! > "$grandchild_pid_file"
+echo \$\$ > "$child_pid_file"
+wait
+EOF
+    chmod +x "$plugin_root/skills/litmus/scripts/init-review-loop.sh"
+
+    env "PATH=$shimdir:$PATH" "WORKTREE_DIR=$sandbox" "CLAUDE_PLUGIN_ROOT=$plugin_root" \
+        "PR_NUMBER=1" "RESULT_STATUS=needs_more" "RESULT_FIXES=signal test" \
+        "BUSDRIVER_ALLOW_NO_COMMITLINT=1" \
+        bash "$SCRIPT" >/dev/null 2>&1 &
+    dispatcher_pid=$!
+
+    waited=0
+    until [ -s "$child_pid_file" ] && [ -s "$grandchild_pid_file" ]; do
+        sleep 0.2
+        waited=$((waited + 1))
+        [ "$waited" -lt 50 ] || { echo "test_ak: init child never started"; return 1; }
+    done
+    child_pid=$(cat "$child_pid_file")
+    grandchild_pid=$(cat "$grandchild_pid_file")
+
+    # HUP, not INT: a non-interactive shell sets SIGINT to IGNORE for background jobs,
+    # and a signal ignored at entry cannot be trapped — so an INT here would test
+    # nothing. HUP carries no such rule and exercises the non-default exit mapping.
+    kill -HUP "$dispatcher_pid" 2>/dev/null || true
+    # BOUNDED wait. An unbounded `wait` blocks until the dispatcher exits — which, if
+    # the signal never reached the child, means waiting out the child's natural
+    # completion and then finding everything dead. The test would then pass on a
+    # timeout rather than on the behaviour under test, which is how the SIG_IGN
+    # inheritance bug slipped through this very test.
+    waited=0
+    while kill -0 "$dispatcher_pid" 2>/dev/null; do
+        sleep 0.2
+        waited=$((waited + 1))
+        [ "$waited" -lt 60 ] || {
+            echo "test_ak: dispatcher still alive 12s after HUP — the signal did not take"
+            kill -KILL "$dispatcher_pid" 2>/dev/null || true
+            return 1
+        }
+    done
+    dispatcher_status=0
+    wait "$dispatcher_pid" 2>/dev/null || dispatcher_status=$?
+    dispatcher_pid=""
+    sleep 0.3
+    # 128+SIGHUP (129), not a blanket 143 — an exit status that names the wrong
+    # signal misleads whoever reads it.
+    [ "$dispatcher_status" = "129" ] || {
+        echo "test_ak: expected exit 129 for SIGHUP, got $dispatcher_status"
+        return 1
+    }
+
+    kill -0 "$child_pid" 2>/dev/null && {
+        echo "test_ak: init child (pid $child_pid) outlived the signalled dispatcher"
+        kill -KILL "$child_pid" 2>/dev/null || true
+        return 1
+    }
+    kill -0 "$grandchild_pid" 2>/dev/null && {
+        echo "test_ak: GRANDCHILD (pid $grandchild_pid) survived — the kill reached only the immediate shell"
+        kill -KILL "$grandchild_pid" 2>/dev/null || true
+        return 1
+    }
+    [ ! -L "$sandbox/.claude/litmus-review.lock" ] || {
+        echo "test_ak: lock still held after the dispatcher exited"
         return 1
     }
 }

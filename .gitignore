@@ -20,6 +20,11 @@ skills/skill-comply/uv.lock
 .claude/*.local
 .claude/*.local.*
 .claude/litmus-state.md
+# Held for the lifetime of a review (#569). A SIGKILLed run leaves the lock behind for
+# a human to remove, and can leave an inert mktemp probe dir — neither belongs in git,
+# and a committed lock would wedge every clone.
+.claude/litmus-review.lock
+.claude/litmus-review.lock.probe.*
 .claude/bypass-log.jsonl
 .claude/review-metrics.jsonl
 .claude/*.log

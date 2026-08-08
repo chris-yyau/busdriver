@@ -877,7 +877,11 @@ echo "--- an assignment VALUE that tears across shlex tokens must not hide the p
 # `X=$((1 + 2))` arrives as `X=$((1` / `+` / `2))`, and advancing one token left
 # `+` in the command slot: the walk stopped there, _shell_payloads returned [],
 # and every gate sharing this detector saw a command with no rm in it. The span
-# is rejoined by BALANCE, counted on the RAW token so a QUOTED paren stays data.
+# is NOT rejoined -- an earlier draft balanced delimiters on the RAW token so a
+# quoted paren stayed data, and that scanner produced five verified bypasses of
+# its own. The span question is dropped instead: a torn value merely SIGNALS
+# that the walk may be lost, and an any-position scan for interpreter NAMES
+# needs no span at all. See _torn_assignment / _shell_payloads.
 # shellcheck disable=SC2016
 check "arithmetic value hides bash -c"  ask   'X=$((1 + 2)) bash -c "rm -rf /etc"'
 # shellcheck disable=SC2016

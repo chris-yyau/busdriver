@@ -1212,6 +1212,49 @@ for _c in ('env -u bash -c "git commit"',
            'command -p X=$(true) echo bash -c "git commit"'):
     check(f"nonexec-prefix~ (accepted) {_c!r}", g.git_commit(_c)[0], True)
 
+# An OPTION is not an option's ARGUMENT. Stacked wrapper options collapsed
+# without that: `env -i -u FOO bash -c '<s>'` read `-u` as the value of `-i`, so
+# both readings stopped on the readable word `FOO`, the any-position fallback
+# stayed gated off, and the payload was missed. Verified against main, which
+# DOES detect this -- the option-argument branch introduced the fail-OPEN, so
+# this is a regression guard, not a new capability.
+for _c in ('env -i -u FOO bash -c "git commit -m x"',
+           'env -i -u FOO -u BAR bash -c "git commit -m x"',
+           'sudo -n -u nobody bash -c "git commit -m x"',
+           # `--` is the ONE dash-token that is a legitimate option ARGUMENT:
+           # `env -u -- -i bash -c '<s>'` really does run the child (verified),
+           # and reading its `--` as the option terminator left `-i` looking
+           # like the command word -- the same fail-OPEN, one spelling over.
+           'env -u -- -i bash -c "git commit -m x"'):
+    check(f"stacked-opt+ {_c!r}", g.git_commit(_c)[0], True)
+# ...while a `--` that really IS the terminator still ends option parsing, so
+# env tries to EXECUTE `-i` and nothing behind it runs.
+check('stacked-opt- env -- -i is a terminator',
+      g.git_commit('env -- -i bash -c "git commit"')[0], False)
+# The DUAL, pinned because it is the same undecidable position. `-x` here is
+# `-u`'s OPERAND -- a variable literally named `-x` -- so only echo runs
+# (verified: it prints `git commit -m x`). Reading it as an operand instead
+# would fix this over-warn and reopen the `env -i -u FOO` fail-OPEN above: the
+# same token, and no reading answers both. main reports it too, so this is
+# neither new nor a regression, and over-detection is the direction this file
+# has always taken -- a stuck session beats a skipped review.
+check("stacked-opt~ (accepted, matches main) env -u -x echo",
+      g.git_commit('env -u -x echo git commit -m x')[0], True)
+
+# KNOWN LIMIT: an `eval` behind speculative debris is missed. The subset
+# argument that justifies keeping only the earliest candidate holds for an
+# interpreter but NOT for eval, which joins every following token into one
+# payload -- so with `foo` unset the first command below runs the commit unseen.
+# Promoting the first LITERAL `eval` as a second candidate was tried and
+# REVERTED: `eval` is an ordinary ARGUMENT too, and the second command below
+# then reported a commit that printf only PRINTS (verified: it prints
+# `evalecho RAN`). The miss is pre-existing on main; the false block would have
+# been new, and a new false block in three fail-CLOSED gates is worse.
+check("eval~ (known limit) speculative shadows literal",
+      g.git_commit('X=$(printf %s $foo bar baz) eval "git commit -m x"')[0], False)
+check("eval- an eval ARGUMENT is not a command word",
+      g.git_commit('X=$(printf %s $foo bar baz) printf %s eval "git commit -m x"')[0], False)
+
 # ── Property-based: {leading operators} × {wrappers} × git-commit should ALL
 #    detect; the same form as an ARGUMENT to a non-git command must NOT. ──────
 import itertools

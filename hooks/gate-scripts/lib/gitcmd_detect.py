@@ -496,7 +496,8 @@ def _command_argv(seg, target, with_raw=False):
             # redirection prefix (>, >>, 2>, &>, N<, >file, 2>/dev/null, ...)
             i += _redirection_span(t, toks, i)
             prev_dash = False
-        elif saw_wrap and prev_dash and not is_target:
+        elif (saw_wrap and prev_dash and not is_target
+                and (t == '--' or not t.startswith('-'))):
             # BEFORE the wrapper branch: this token is the ARGUMENT of the
             # preceding wrapper option, whatever it is named. Letting the
             # wrapper branch claim it first cleared `saw_env`, so
@@ -504,6 +505,21 @@ def _command_argv(seg, target, with_raw=False):
             # git commit behind it never reached the gate (verified: it runs).
             # `not is_target` still protects the executable we must never
             # swallow, so a real `git`/`gh` cannot be eaten as an option value.
+            #
+            # ...and an OPTION is not an option's argument, with `--` the one
+            # exception. Without the exclusion, STACKED options collapsed:
+            # `env -i -u FOO bash -c '<s>'` read `-u` as the value of `-i`, so
+            # both readings stopped on the readable word `FOO`, the any-position
+            # fallback stayed gated off, and the payload was missed -- a
+            # fail-OPEN this branch INTRODUCED, since the pre-change walk
+            # detected that command (verified against main).
+            # `--` is exempt because it is a legitimate operand: `env -u -- -i
+            # bash -c '<s>'` really does run the child (verified), and reading
+            # its `--` as the option TERMINATOR instead left `-i` looking like
+            # the command word and missed the payload -- the same fail-OPEN, one
+            # spelling over. Reading 1 still loses `bash` to `-i` there; the
+            # PROTECTED second reading is what recovers it, which is exactly the
+            # union this ambiguity is handled by everywhere else in this walk.
             i += 1
             prev_dash = False
         elif base in _WRAPPERS:
@@ -1812,14 +1828,28 @@ def _shell_payloads(cmd):
                 if first_eval < 0 and (_norm_cmd_word(tok) == 'eval'
                                        or name == 'sh' and _unreadable_word(tok)):
                     first_eval = k
+                # KNOWN LIMIT, deliberately not closed here. The subset argument
+                # below does not hold for eval - an eval reading joins every
+                # following token into one payload, so an earlier SPECULATIVE
+                # candidate PREPENDS debris rather than containing a later real
+                # `eval`. With `foo` unset,
+                # `X=$(printf %s $foo bar baz) eval "git commit"` therefore runs
+                # the commit unseen. Promoting the first LITERAL `eval` as a
+                # second candidate was tried and reverted: `eval` is a perfectly
+                # ordinary ARGUMENT, so `X=$(...) printf %s eval "git commit"`
+                # then reported a commit that printf only PRINTS (verified).
+                # Telling those apart is the command-word position question this
+                # scan exists to avoid answering. The miss is pre-existing on
+                # main; the false block would have been new, and a new false
+                # block in three fail-CLOSED gates is the worse of the two.
                 if first_interp >= 0 and first_eval >= 0:
                     break
-            # ONLY the earliest of each, which is exact rather than a cap:
-            # _interpreter_payloads returns every token after the first
-            # `c`-cluster at or past its start, so a later candidate's payloads
-            # are a SUBSET of the earliest one's. Taking all of them re-scanned
-            # overlapping tails and measured 5.37s on 9,600 `bash x` pairs, past
-            # the guard 3s alarm.
+            # ONLY the earliest of each, which is exact rather than a cap FOR AN
+            # INTERPRETER: _interpreter_payloads returns every token after the
+            # first `c`-cluster at or past its start, so a later candidate's
+            # payloads are a SUBSET of the earliest one's. Taking all of them
+            # re-scanned overlapping tails and measured 5.37s on 9,600 `bash x`
+            # pairs, past the guard 3s alarm.
             for k, canon_default in ((first_interp, None),
                                      (first_eval, 'eval')):
                 if k >= 0:

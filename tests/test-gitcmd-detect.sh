@@ -1141,9 +1141,22 @@ for _c in ('echo bash -c "git commit"',
            "X=$(printf x y) echo -c 'git commit'",     # `y)` is debris, not a shell
            "X=${foo:-a b} echo -c 'git commit'",       # `b}` likewise
            ': git commit',
-           '[ -f x ] && echo hi',
+           # `&&` splits into a separate segment (split_segments), so a payload
+           # in the SECOND segment can never make the `[` row load-bearing --
+           # same-segment placement is required for a misclassified `[` to
+           # actually flip this row (verified: dropping `[` from
+           # _READABLE_NAME leaves the `&&`-split form False either way).
+           '[ -f x ] -c "git commit"',
            "printf '%s' 'X=$(x)' bash -c 'git commit'"):
     check(f"torn-nested- {_c!r}", g.git_commit(_c)[0], False)
+# `.` (source) is a real command name with no word character, like `:` and `[`
+# above. Misclassifying it as unreadable sent `. /dev/null bash -c 'git
+# commit'` into the any-position fallback scan, which extracted `bash -c
+# 'git commit'` as a live payload though the sourced (empty) /dev/null never
+# runs its positional arguments (verified: bash/-c/git/commit are just $1..$4
+# to a no-op sourced script). cubic-dev-ai #587.
+check("readable-name~ (fixed) '. /dev/null bash -c git commit' does not run",
+      g.git_commit(". /dev/null bash -c 'git commit'")[0], False)
 # ACCEPTED LIMIT, pinned so the trade stays visible: the DIRECT route is not
 # recovered. `X=$(printf x y) git commit` runs the commit (verified) and is
 # missed, exactly as on main -- closing it means synthesizing an argv for a
@@ -1251,9 +1264,9 @@ for _c in ('c++ bash -c "git commit"',
            'g++ bash -c "git commit"',
            '/usr/bin/c++ bash -c "git commit"'):
     check(f"readable-name- {_c!r}", g.git_commit(_c)[0], False)
-for _t, _want in ((':', True), ('[', True), ('c++', True), ('/usr/bin/c++', True),
+for _t, _want in ((':', True), ('[', True), ('.', True), ('c++', True), ('/usr/bin/c++', True),
                   ('+', False), ('2))', False), ('b}', False), ('y)', False),
-                  ('-', False), ('--', False)):
+                  ('-', False), ('--', False), ('..', False)):
     check(f"readable-name unit {_t!r}", bool(g._READABLE_NAME.match(_t)), _want)
 
 # KNOWN LIMIT: an `eval` behind speculative debris is missed. The subset

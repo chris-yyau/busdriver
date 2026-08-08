@@ -1673,7 +1673,7 @@ def _torn_assignment(toks, upto=None):
     return False
 
 
-def toks_once(seg, _cache={}):
+def toks_once(seg, _cache={}):  # noqa: B006 - deliberate per-scan memo, see below
     """_tokenize(seg) memoised for the length of one scan.
 
     The any-position walk below asks for the same token list repeatedly; the
@@ -1686,8 +1686,13 @@ def toks_once(seg, _cache={}):
             _cache.clear()
         try:
             got = _tokenize(seg)
-        except Exception:
-            got = []
+        except Exception:               # noqa: BLE001 - fail CLOSED, never []
+            # An empty list would gate the any-position scan OFF for this
+            # segment, hiding a payload behind it. _tokenize already handles
+            # ValueError internally; this only covers an unexpected failure,
+            # so degrade to the same quote-stripping split _tokenize itself
+            # falls back to rather than silently disabling the scan.
+            got = [t.strip('\047\042') for t in seg.split()]
         _cache[seg] = got
     return got
 
@@ -2279,9 +2284,14 @@ _ASSIGN_TOK_RE = re.compile(r'^\w+(?:\[.*\])?\+?=')
 # and `g++` are real executables, while a bare `+` is the debris shlex leaves when
 # it tears `X=$((1 + 2))`. The lookahead is what separates them -- a name must
 # carry at least one word character -- so widening the class for real compiler
-# names cannot also bless the tear debris this gate depends on rejecting. `:` and
-# `[` are spelled out because they are real command names with no word character.
-_READABLE_NAME = re.compile(r'^:$|^\[$|^(?=.*\w)/?[\w.@:+-]+(?:/[\w.@:+-]+)*$')
+# names cannot also bless the tear debris this gate depends on rejecting. `:`,
+# `[` and `.` are spelled out because they are real command names with no word
+# character -- `.` is the `source` builtin, and rejecting it as unreadable sent
+# `. /dev/null bash -c 'git commit'` (a no-op source; bash/-c/git/commit are
+# just $1..$4 the sourced empty script never runs) into the any-position
+# fallback scan, which then extracted `bash -c 'git commit'` as a live payload
+# and blocked a commit that never happens (verified; cubic-dev-ai #587).
+_READABLE_NAME = re.compile(r'^:$|^\[$|^\.$|^(?=.*\w)/?[\w.@:+-]+(?:/[\w.@:+-]+)*$')
 
 # An env(1) `name=value` OPERAND, which carries no shell-identifier rule -- see
 # the branch in _command_argv that uses it. Deliberately separate from

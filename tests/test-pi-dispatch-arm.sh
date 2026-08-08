@@ -291,6 +291,39 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
   fi
 fi
 
+# ── 2d. Preflight (home + binary resolution) is also sandboxed ──
+# These ran in the inherited shell once, where `eval`, `command -v`, `dirname`,
+# `cd` and `pwd` are shadowable: an exported function could execute code at eval
+# time, or steer the resolved binary and PATH so a fake `node` reports the probed
+# version. PATH pinning does not reach shell functions; only env -i does.
+if grep -qE 'command -v pi' <<<"$ARM"; then
+  fail "pi binary resolved via command -v — shadowable; use explicit absolute candidates inside env -i"
+else
+  ok "pi binary is not resolved through command -v"
+fi
+
+grep -qE 'if ! _pi_pre="\$\(/usr/bin/env -i' <<<"$ARM" \
+  && ok "preflight (home + binary) runs inside an env -i child" \
+  || fail "preflight runs in the inherited shell — eval/command -v/dirname remain shadowable"
+
+# The child's OUTPUT must be split with parameter expansion only. A
+# `printf | sed` split puts shadowable command words on the path of the very
+# values the clean child exists to protect, so an exported function could forge
+# both the home and the binary and the boundary buys nothing.
+_split="$(grep -E '^ *_pi_(home|bin)="\$' <<<"$ARM" || true)"
+if grep -qE 'printf|sed|awk|cut|head|tail' <<<"$_split"; then
+  fail "preflight output is split with external commands — forgeable by an exported function: $_split"
+else
+  ok "preflight output is split with parameter expansion only"
+fi
+
+# pi ships `#!/usr/bin/env node`; a pi under ~/.local/bin still needs Homebrew
+# Node on Apple Silicon. Omitting it made the version probe unreadable, which —
+# now that a mismatch BLOCKS — bricked the lane entirely.
+grep -qE '_pi_path="\$\{_pi_bin%/\*\}:/opt/homebrew/bin:' <<<"$ARM" \
+  && ok "child PATH always includes Homebrew (node lookup for pi's shebang)" \
+  || fail "child PATH omits /opt/homebrew/bin unless pi lives there — pi's node shebang may not resolve"
+
 # ── 3. --mode cannot loosen the lane ────────────────────────────
 # The arm must not branch on MODE at all: a `--mode auto` branch here would be
 # a write posture with no worktree semantics and no review.

@@ -602,42 +602,79 @@ dispatch_one() {
             # `--mode auto` cannot loosen it; a writing pi would be a different
             # arm with its own worktree semantics and its own review.
             local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-            local _pi_bin _pi_trust _pi_home _pi_user _pi_path
+            local _pi_bin _pi_home _pi_path _pi_pre
             # Trusted home from the PASSWORD DATABASE, not $HOME (repo-injectable
             # via a fork's settings.json). Same contract as the opencode arm, and
             # required twice here: to resolve the binary, and because
             # resolve_pi_model reads ~/.claude/busdriver.json — the key that names
             # which third party repo source is shipped to.
-            # ABSOLUTE path, not a bare `id`: this value is interpolated into
-            # `eval` below (the only way to expand `~user`, which reads the
-            # password DB), and a bare `id` is shadowable by an exported function
-            # that could return shell SYNTAX for eval to execute — before the
-            # `env -i` boundary that would have wiped it. A function name cannot
-            # contain `/`, so an absolute path cannot be shadowed.
-            _pi_user="$(/usr/bin/id -un 2>/dev/null)"
-            # Belt and braces: only a plain username shape ever reaches eval.
-            # Anything carrying shell metacharacters is dropped, not expanded.
-            if [[ -n "$_pi_user" && ! "$_pi_user" =~ ^[A-Za-z0-9._][A-Za-z0-9._-]*$ ]]; then
-                echo "Error: implausible username from the password database — refusing to expand it." >&2
-                _pi_user=""
-            fi
-            _pi_home=""
-            [[ -n "$_pi_user" ]] && _pi_home="$(eval echo "~${_pi_user}" 2>/dev/null)"
-            if [[ -z "$_pi_home" || ! -d "$_pi_home" ]]; then
+            # PREFLIGHT RUNS IN A CLEAN CHILD TOO. Deriving the trusted home and
+            # resolving the binary used to happen right here, in the inherited
+            # shell, where `eval`, `command -v`, `dirname`, `cd` and `pwd` are all
+            # command words an exported function can shadow — which meant an
+            # attacker could execute code at `eval` time, or steer `_pi_bin` and
+            # `_pi_path` at their own binaries and have a fake `node` report the
+            # probed version. PATH pinning never touched that: it does not reach
+            # shell functions. So the whole preflight moves inside `env -i`, which
+            # deletes the function table, with `/usr/bin/env` and `/bin/bash`
+            # absolute so the escape itself cannot be shadowed.
+            #
+            # Emits exactly two lines — home, then binary — and nothing on any
+            # failure, so a partial read cannot be mistaken for success.
+            if ! _pi_pre="$(/usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                       /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
+u="$(/usr/bin/id -un)" || exit 1
+# Only a plain username shape reaches eval — `~user` is the one way to read the
+# password DB, and eval on anything else is arbitrary execution.
+case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+h="$(eval echo "~$u")" || exit 1
+case "$h" in /*) ;; *) exit 1 ;; esac
+[ -d "$h" ] || exit 1
+# Explicit candidates, never `command -v`: the operator install dirs first, then
+# system dirs. NO $HOME fallback — a repo-injectable home must not pick the
+# binary that reads the repo.
+b=""
+for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
+  # -f as well as -x: a DIRECTORY (or a symlink to one) named `pi` is "executable"
+  # to the shell, would win over a later valid candidate, and then fail at the
+  # version probe — disabling the lane over something that is not a program.
+  [ -f "$c" ] && [ -x "$c" ] && { b="$c"; break; }
+done
+# Home on line 1, binary on line 2 — and line 2 may be EMPTY. Exiting nonzero
+# when only the binary is missing would discard the successfully derived home
+# too, and the parent would then report "could not derive a trusted home" for a
+# machine that simply has no pi installed. Two independent facts, reported
+# independently, so each error branch is reachable.
+printf '%s\n%s\n' "$h" "$b"
+CHILD
+            )"; then _pi_pre=""; fi
+            # Split with PARAMETER EXPANSION only. The obvious
+            # `printf '%s\n' "$x" | sed -n 1p` puts three shadowable command words
+            # (`printf`, `sed`, and the `true` in a trailing `|| true`) on the path
+            # of the very values the clean child exists to protect — an exported
+            # function could forge both the home and the binary, defeating the
+            # boundary entirely. `${x%%...}` / `${x#...}` are pure shell syntax:
+            # there is no command word left to shadow. Likewise the `if !` above
+            # replaces `|| true` — a failing command in an `if` CONDITION is
+            # already exempt from `set -e`, so no builtin is needed at all.
+            _pi_home="${_pi_pre%%$'\n'*}"
+            _pi_bin="${_pi_pre#*$'\n'}"
+            _pi_bin="${_pi_bin%%$'\n'*}"
+            if [[ -z "$_pi_home" || "$_pi_home" != /* || ! -d "$_pi_home" ]]; then
                 # NO $HOME fallback — fail closed rather than trust an injected one.
                 echo "Error: could not derive a trusted home from the password database — refusing to resolve pi from a possibly-injected \$HOME." >&2
                 exit_code=1
             else
-                _pi_trust="${_pi_home}/.local/bin:${_pi_home}/.pi/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                # `|| true` — a nonzero `command -v` inside the assignment would
-                # exit under `set -e`, skipping the not-found branch below.
-                _pi_bin="$(PATH="$_pi_trust" command -v pi 2>/dev/null)" || true
                 if [[ -z "$_pi_bin" || "$_pi_bin" != /* || ! -x "$_pi_bin" ]]; then
                     echo "Error: pi binary not found on the trusted install path." >&2
                     exit_code=1
                 else
-                    _pi_path="$(CDPATH='' cd -- "$(dirname -- "$_pi_bin")" && pwd -P)"
-                    _pi_path="${_pi_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                    # /opt/homebrew/bin is ALWAYS present, not only when pi lives
+                    # there: pi ships `#!/usr/bin/env node`, so a pi installed under
+                    # ~/.local/bin still needs to find Node — which on Apple Silicon
+                    # is normally Homebrew. Omitting it made the version probe
+                    # unreadable and the lane refused to run at all.
+                    _pi_path="${_pi_bin%/*}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
                     # This lane's read-only posture rests on OBSERVED behaviour of
                     # `--tools read` and the six --no-* flags, probed on the version
                     # below — and the test that proves write-denial semantically is

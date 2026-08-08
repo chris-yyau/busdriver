@@ -375,6 +375,51 @@ check "attached flag, quoted option" ask  'T=$(mktemp -d); read "-aT" <<< /etc; 
 # shellcheck disable=SC2016
 check "digit name, never rebound"    allow 'T2=$(mktemp -d); rm -rf "$T2"'
 
+echo "--- names bash owns are never exempt ---"
+# Assigning RANDOM SEEDS the generator, so the expansion is a number and the
+# created directory survives under its own name.
+# shellcheck disable=SC2016
+check "RANDOM is a PRNG seed"       ask   'RANDOM=$(mktemp -d TXXXXXXXXXX); rm -rf "$RANDOM"'
+# shellcheck disable=SC2016
+check "SECONDS is a clock"          ask   'SECONDS=$(mktemp -d); rm -rf "$SECONDS"'
+# `cd` rewrites both of these without naming either.
+# shellcheck disable=SC2016
+check "PWD moved by cd"             ask   'PWD=$(mktemp -d); cd /etc; rm -rf "$PWD"'
+# shellcheck disable=SC2016
+check "OLDPWD moved by cd"          ask   'OLDPWD=$(mktemp -d); cd /etc; rm -rf "$OLDPWD"'
+# Namespaces bash reserves are refused WHOLESALE, so a variable added by a
+# later bash - BASH_MONOSECONDS landed in 5.3 - needs no edit here.
+# shellcheck disable=SC2016
+check "BASH_ namespace, 5.3 member"  ask  'BASH_MONOSECONDS=$(mktemp -d); rm -rf "$BASH_MONOSECONDS"'
+# shellcheck disable=SC2016
+check "BASH_ namespace, invented"    ask  'BASH_NOT_YET_INVENTED=$(mktemp -d); rm -rf "$BASH_NOT_YET_INVENTED"'
+# shellcheck disable=SC2016
+check "READLINE_ namespace"          ask  'READLINE_LINE=$(mktemp -d); rm -rf "$READLINE_LINE"'
+# `_` is rewritten after every foreground command, naming nothing.
+# shellcheck disable=SC2016
+check "underscore, last argument"    ask  '_=$(mktemp -d); printf important; rm -rf "$_"'
+# Documented-but-not-magic names are refused too - membership is the manual,
+# not a per-name judgement about whether bash happens to rewrite it.
+# shellcheck disable=SC2016
+check "HOME is in the manual"        ask  'HOME=$(mktemp -d); rm -rf "$HOME"'
+# A caller name that merely STARTS like one must still clear - the prefix rule
+# is a namespace test, not a substring test.
+# shellcheck disable=SC2016
+check "BASHFUL is not BASH_"         allow 'BASHFUL=$(mktemp -d); rm -rf "$BASHFUL"'
+# Ownership disqualifies at the SOURCE, so it holds with no builtin in sight -
+# these two asserted `allow` while the fix was a per-write-site invalidation.
+# shellcheck disable=SC2016
+check "REPLY, no read in sight"     ask   'REPLY=$(mktemp -d); rm -rf "$REPLY"'
+# shellcheck disable=SC2016
+check "OPTARG, no getopts"          ask   'OPTARG=$(mktemp -d); rm -rf "$OPTARG"'
+# ...and a second assignment cannot re-arm an owned name.
+# shellcheck disable=SC2016
+check "owned name reassigned"       ask   'REPLY=/tmp/x; REPLY=$(mktemp -d); rm -rf "$REPLY"'
+# A name the CALLER chose still earns the exemption - ownership must not
+# degrade into an unconditional over-warn.
+# shellcheck disable=SC2016
+check "caller-chosen name"          allow 'MYTMP=$(mktemp -d); rm -rf "$MYTMP"'
+
 echo "--- destinations bash writes without naming them ---"
 # A bare `read` fills REPLY and `getopts` fills OPTARG/OPTIND on every call, so
 # the name never appears in the invocation for the operand scan to find.
@@ -390,12 +435,6 @@ check "mapfile fills MAPFILE"       ask   'MAPFILE=$(mktemp -d); mapfile < /etc/
 # from the builtin list entirely.
 # shellcheck disable=SC2016
 check "wait -p names the target"    ask   'T=$(mktemp -d); sleep 0 & wait -p T; rm -rf "$T"'
-# These names must keep the exemption when the builtin that writes them never
-# runs, or the map degrades into an unconditional over-warn.
-# shellcheck disable=SC2016
-check "REPLY, no read in sight"     allow 'REPLY=$(mktemp -d); rm -rf "$REPLY"'
-# shellcheck disable=SC2016
-check "OPTARG, no getopts"          allow 'OPTARG=$(mktemp -d); rm -rf "$OPTARG"'
 # A read that writes SOMEWHERE ELSE must not disturb an unrelated temp dir.
 # shellcheck disable=SC2016
 check "read into another name"      allow 'T=$(mktemp -d); read other < /etc/hosts; rm -rf "$T"'

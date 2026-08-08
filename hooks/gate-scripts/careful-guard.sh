@@ -309,31 +309,80 @@ def _mktemp_creates(rhs):
 # after the value changed.
 REBIND_EXPANSION = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:?=")
 REBIND_BUILTIN = re.compile(
-    r"\b(for|select|read|export|unset|declare|local|typeset|getopts"
+    r"\b(?:for|select|read|export|unset|declare|local|typeset|getopts"
     r"|mapfile|readarray|let|wait|coproc)"
     r"\b([^;&|\n]*)")
-# Destinations bash writes that are NOT spelled anywhere in the invocation, so
-# the operand scan below cannot see them: a bare `read` fills REPLY, `getopts`
-# fills OPTARG and OPTIND on every call, and so on. Without this a name that
-# happens to BE one of them kept its mktemp exemption across a write -
-# `REPLY=$(mktemp -d); read <<< /important/data; rm -rf "$REPLY"` deleted a
-# non-tempdir with no prompt (verified).
+# Names BASH owns. A tracked name must hand its value back verbatim, and for
+# these it does not - so none of them is ever exempt, whatever the RHS said.
 #
-# This map is CLOSED, and that is the point. It is not another rung of the
-# enumerate-the-next-spelling ladder that the identifier-class and
-# attached-flag fixes above exist to stop climbing: the set of variables bash
-# writes implicitly is fixed by the language, not by how a caller chooses to
-# spell something, so it can be listed once and finished. `wait -p VAR` and
-# `coproc NAME` name their destination explicitly and need only the
-# alternation entry - they are here because both were simply absent from it.
-IMPLICIT_DEST = {
-    "read":      ("REPLY",),
-    "select":    ("REPLY",),
-    "mapfile":   ("MAPFILE",),
-    "readarray": ("MAPFILE",),
-    "getopts":   ("OPTARG", "OPTIND"),
-    "coproc":    ("COPROC",),
-}
+# Two ways ownership breaks the exemption, and this ONE set closes both:
+#
+#   assignment does not survive to the read
+#       `RANDOM=$(mktemp -d); rm -rf "$RANDOM"` - assigning RANDOM SEEDS the
+#       generator, so the expansion is a number while the created directory
+#       still exists. If a relative directory has that numeric name it is
+#       deleted unprompted (Codex reproduced 20814 on bash 5.2.21).
+#
+#   a builtin writes it WITHOUT naming it, so no operand scan can see it
+#       `REPLY=$(mktemp -d); read <<< /important/data; rm -rf "$REPLY"` -
+#       a bare `read` fills REPLY, `getopts` fills OPTARG and OPTIND on every
+#       call, `mapfile` fills MAPFILE.
+#
+# Refusing to TRACK these is strictly stronger than invalidating them at each
+# write site, and it is why there is no per-builtin destination map here: it
+# does not matter which construct mutates the name, or whether this scanner can
+# even see that construct - a name bash owns never earns the exemption in the
+# first place.
+#
+# `wait -p VAR` and `coproc NAME` are NOT here: they write a name the CALLER
+# chose, which the operand scan does see. They needed only the alternation
+# entry above, which both were simply missing.
+#
+# The list is NOT claimed to be complete, and that claim was already wrong once:
+# it shipped without PWD and OLDPWD (both rewritten by any `cd`) and without
+# BASH_MONOSECONDS, which exists only from bash 5.3 - so the set grows with the
+# language, not just with this file. The PREFIXES below are what keeps that
+# growth from becoming a rung: bash adds new magic variables under BASH_,
+# READLINE_ and COMP_, so those namespaces are refused wholesale rather than
+# enumerated one release at a time. A caller who names a temp dir inside a
+# namespace bash reserves loses the exemption, which is the correct direction.
+# Membership is DOCUMENTED-BY-BASH, not observed-to-be-magic, and that is the
+# whole point. Picking out only the names with known magic is what produced
+# three consecutive review rounds each supplying one more - RANDOM, then PWD
+# and OLDPWD, then `_` - because "does bash rewrite this one?" has to be
+# re-answered per name and per release. "Is this name in the manual?" does not.
+# Names with no magic at all (HOME, PATH, PS1) cost nothing by being here: the
+# only effect is one prompt on an `rm -rf "$HOME"` that nobody writes on
+# purpose, which is the direction an advisory guard should err in anyway.
+_OWNED_PREFIXES = ("BASH_", "READLINE_", "COMP_", "LC_")
+SHELL_OWNED = frozenset({
+    # `_` - bash rewrites it after every foreground command, naming nothing
+    "_",
+    # magic on READ - the assignment does not survive to the expansion
+    "RANDOM", "SRANDOM", "SECONDS", "LINENO", "EPOCHSECONDS", "EPOCHREALTIME",
+    "HISTCMD", "BASHPID", "PPID", "EUID", "UID",
+    # rewritten by ordinary commands - `cd` alone moves both of these
+    "PWD", "OLDPWD",
+    # written by a builtin WITHOUT being named in the invocation
+    "REPLY", "MAPFILE", "OPTARG", "OPTIND", "COPROC", "COMPREPLY",
+    # maintained by the shell as execution state
+    "FUNCNAME", "DIRSTACK", "PIPESTATUS", "GROUPS", "SHLVL", "SHELLOPTS",
+    "BASHOPTS", "BASH", "LINES", "COLUMNS",
+    # the rest of the manual, magic or not - see the note above
+    "CDPATH", "HOME", "IFS", "MAIL", "MAILPATH", "MAILCHECK", "PATH",
+    "PS0", "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND", "PROMPT_DIRTRIM",
+    "EMACS", "ENV", "EXECIGNORE", "FCEDIT", "FIGNORE", "FUNCNEST",
+    "GLOBIGNORE", "GLOBSORT", "HISTCONTROL", "HISTFILE", "HISTFILESIZE",
+    "HISTIGNORE", "HISTSIZE", "HISTTIMEFORMAT", "HOSTFILE", "HOSTNAME",
+    "HOSTTYPE", "IGNOREEOF", "INPUTRC", "INSIDE_EMACS", "LANG", "MACHTYPE",
+    "OPTERR", "OSTYPE", "POSIXLY_CORRECT", "SHELL", "TIMEFORMAT", "TMOUT",
+    "TMPDIR", "histchars",
+})
+
+
+def _shell_owned(name):
+    """True iff bash owns this name, so its value never returns verbatim."""
+    return name in SHELL_OWNED or name.startswith(_OWNED_PREFIXES)
 # ONLY the bare expansions `$V` and `${V}` - nothing appended. A suffix cannot be
 # proven to stay inside the directory: it can carry its own expansion
 # (backtick, brace) and, more basically, if mktemp FAILED then V is empty and
@@ -1159,7 +1208,13 @@ def temp_vars(chunk):
             m = ASSIGN.match(tok)
             if not m:
                 break
-            if MKTEMP_RHS.match(m.group(2)) and idx < block_at:
+            if _shell_owned(m.group(1)):
+                # Disqualified at the SOURCE, not invalidated later: bash owns
+                # the name, so the value never comes back verbatim no matter
+                # what the RHS was. from_other, so a second assignment cannot
+                # re-arm it either.
+                from_other.add(m.group(1))
+            elif MKTEMP_RHS.match(m.group(2)) and idx < block_at:
                 from_mktemp.setdefault(m.group(1), idx)
             else:
                 from_other.add(m.group(1))
@@ -1173,13 +1228,10 @@ def temp_vars(chunk):
             # Chosen at runtime and therefore unreadable here: an expansion, a
             # substitution, or a GLOB - bash expands `read d*` against filenames
             # before running it, so a `docs` directory makes it `read docs`.
-            if any(ch in m.group(2) for ch in "$`*?["):
+            if any(ch in m.group(1) for ch in "$`*?["):
                 return {}
-            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(2)):
+            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
                 names.pop(word, None)
-            # The destinations this builtin writes without naming them.
-            for dest in IMPLICIT_DEST.get(m.group(1), ()):
-                names.pop(dest, None)
             # A short-option cluster can carry its OPERAND attached with no
             # separating space - bash reads `read -aT` exactly like
             # `read -a T`, assigning into T, but the identifier scan above
@@ -1201,7 +1253,7 @@ def temp_vars(chunk):
             # drop an exemption that was still valid (one extra prompt, the
             # ordinary failure mode of an advisory guard), never keep one
             # alive past an actual rebind.
-            for tok in m.group(2).split():
+            for tok in m.group(1).split():
                 tok = tok.strip(chr(34) + chr(39))
                 if re.match(r"^-[A-Za-z0-9_]+$", tok):
                     for name in list(names):

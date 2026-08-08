@@ -45,6 +45,45 @@ for f in "$LIB" "$DISPATCH"; do
   [[ -f "$f" ]] || { fail "missing $f"; echo "Results: $passed passed, $failed failed"; exit 1; }
 done
 
+# ── Fixture cleanup, armed ONCE and up front ────────────────────
+# The projection test below copies a REAL API credential into a temp jail, and it
+# runs before any later fixture setup — so the trap has to exist now, not when
+# those fixtures appear. Variables are read at trap time via ${VAR:-}, so one
+# handler covers every fixture whether or not it was created.
+# Paths are shape-checked before deletion for the same reason the production arm
+# does it: `mktemp` is shadowable, and these handlers delete recursively.
+_wipe_fixtures() {
+  local p
+  for p in "${_j:-}" "${_j2:-}" "${FIX:-}"; do
+    [[ -n "$p" && "$p" == /* && "$p" != "/" && -d "$p" ]] && /bin/rm -rf "$p" 2>/dev/null
+  done
+  # FAKE_HOME now holds synthetic auth fixtures and several jail directories, so
+  # rmdir cannot clear it. Recursive removal is justified by the same reasoning
+  # the production arm uses: this path was validated absolute, non-symlink and
+  # EMPTY before anything was written into it, so it is ours.
+  if [[ -n "${FAKE_HOME:-}" && "$FAKE_HOME" == /* && "$FAKE_HOME" != "/" && -d "$FAKE_HOME" ]]; then
+    /bin/rm -rf "$FAKE_HOME" 2>/dev/null
+  fi
+  return 0
+}
+trap '_wipe_fixtures' EXIT INT TERM HUP
+
+# Created UP FRONT: the projection test writes its synthetic fixtures here and
+# runs well before the resolver section that used to own this directory.
+#
+# Named the same way the production arm names its jail, and for the same reason:
+# the EXIT handler removes this path RECURSIVELY, and `mktemp` is a shadowable
+# command word — an exported function could return an existing empty directory
+# that passes every check and then gets rm -rf'd. `$$` and `$RANDOM` are shell
+# builtins, so the name cannot be steered; `mkdir` without -p then fails if the
+# path somehow exists, which is what makes it ours.
+_t="${TMPDIR:-/tmp}"; [[ "$_t" == /* ]] || _t="/tmp"
+FAKE_HOME="${_t%/}/busdriver-pitest-$$-${RANDOM}${RANDOM}"
+if [[ -e "$FAKE_HOME" ]] || ! mkdir "$FAKE_HOME" 2>/dev/null; then
+  fail "could not create a fresh private fixture directory — refusing to write or delete fixtures"
+  echo "Results: $passed passed, $failed failed"; exit 1
+fi
+
 # ── The arm's text, sliced out once ─────────────────────────────
 ARM_RAW="$(awk '/^        pi\)$/{f=1} f{print} f && /^        grok\)$/{exit}' "$DISPATCH")"
 [[ -n "$ARM_RAW" ]] || { fail "could not locate the pi) arm in dispatch.sh"; echo "Results: $passed passed, $failed failed"; exit 1; }
@@ -91,18 +130,81 @@ grep -qE "trap '_pi_wipe' EXIT TERM INT" <<<"$ARM" \
   && ok "projected credential is removed by trap (survives timeout/interrupt)" \
   || fail "no trap wiping the jail — a killed dispatch leaves a credential on disk"
 
-# NEVER `rm -rf` the jail. Its path comes from `mktemp`, a shadowable command
-# word; a recursive delete on an attacker-chosen path (say ~/.ssh) is
-# destructive. Cleanup uses rmdir, which refuses non-empty directories.
-if grep -qE 'rm -rf "\$_pi_jail"' <<<"$ARM"; then
-  fail "arm recursively deletes \$_pi_jail — a shadowed mktemp turns cleanup into data loss"
+# The jail IS removed recursively (pi writes cache files, so rmdir alone leaked
+# a temp tree every dispatch). What makes that safe is upstream, not the delete:
+# the jail is accepted at creation ONLY if absolute AND empty, which is what
+# rules out a shadowed `mktemp` handing back a populated path like ~/.ssh.
+# Assert the guard, and assert the shape is re-checked at the delete itself, so
+# moving or weakening the creation guard cannot silently arm the rm -rf.
+# Jail creation + credential projection must happen inside an `env -i` child.
+# In the caller's shell, mktemp/mkdir/rm/python3 are all command words an
+# exported function can shadow, and PATH pinning does not reach shell functions.
+# Anchored on the PROJECTION child specifically. A bare `/usr/bin/env -i` match
+# would now be satisfied by the version probe alone, so removing env -i from the
+# credential path would slip past — the exact hole this assertion exists to hold.
+# Scoped to the PROJECTION invocation itself. Two independent greps over the
+# whole arm would pass on the version probe's `env -i` alone, letting projection
+# regress to the inherited environment while keeping its SRC assignment — which
+# is precisely the hole this assertion exists to hold shut.
+_projinv="$(tr '\n' ' ' <<<"$ARM" | sed -n 's/.*elif ! \(.*--noprofile --norc\).*/\1/p')"
+if [[ -n "$_projinv" && "$_projinv" == */usr/bin/env\ -i* && "$_projinv" == *SRC=* ]]; then
+  ok "credential projection invocation itself carries env -i"
 else
-  ok "jail cleanup avoids rm -rf (rmdir cannot remove a populated directory)"
+  fail "projection invocation does not run under env -i — mktemp/mkdir/rm remain function-shadowable: ${_projinv:-<not found>}"
 fi
 
-grep -qE 'ls -A "\$_pi_jail"' <<<"$ARM" \
-  && ok "jail is rejected unless freshly created and empty" \
-  || fail "no empty-directory check on the mktemp result — a shadowed mktemp could hand back a populated path"
+# The credential path must reach the child as an ENV VAR, never on argv. grep is
+# line-oriented and this invocation spans continuation lines, so flatten first —
+# a line-by-line check here is vacuous (values simply sit on different lines).
+# Scope to the INVOCATION only: everything between the child shell and the
+# heredoc marker. Inside the heredoc, "$SRC" is the env var being consumed.
+_inv="$(tr '\n' ' ' <<<"$ARM" | sed -n 's/.*--noprofile --norc\(.*\)<<.CHILD.*/\1/p')"
+if [[ -n "$_inv" && "$_inv" == *auth.json* ]]; then
+  fail "credential path appears on the child's argv, not its environment: $_inv"
+else
+  ok "child receives the credential path via environment, not argv"
+fi
+
+# The PARENT must fix the jail path before the child runs. When the child chose
+# it and printed it back, cleanup raced: the child had to disarm its own trap
+# before the final printf, and a signal in that window stranded a written API key
+# the parent could not name. Parent-owned path ⇒ every failure branch can clean.
+grep -qE '_pi_jail="\$\{_pi_tmp%/\}/busdriver-pi-\$\$-\$\{RANDOM\}\$\{RANDOM\}"' <<<"$ARM" \
+  && ok "parent names the jail from builtins before the child runs" \
+  || fail "jail path is not parent-assigned — cleanup races the child on signal paths"
+
+# $$ and $RANDOM are builtins; mktemp is a command word an exported function can
+# shadow. Regressing to mktemp here reopens the shadowing hole env -i exists for.
+if grep -qE 'mktemp' <<<"$ARM"; then
+  fail "pi arm calls mktemp — use builtin-derived naming so the path cannot be steered by a shadowed function"
+else
+  ok "pi arm derives the jail path without mktemp"
+fi
+
+grep -qE '\[\[ -e "\$_pi_jail" \]\]' <<<"$ARM" \
+  && ok "parent refuses a pre-existing jail path" \
+  || fail "no pre-existence check on the parent-chosen jail path"
+
+grep -qE '/bin/bash --noprofile --norc' <<<"$ARM" \
+  && ok "child shell is invoked by absolute path (unshadowable)" \
+  || fail "child shell is not absolute — a function could stand in for it"
+
+# `mkdir` WITHOUT -p is the check that the tree is OURS: it fails if the path
+# already exists. "Absolute and currently empty" never proved authorship.
+grep -qE '^mkdir "\$D"( \|\||$)' <<<"$ARM" \
+  && grep -qE '^mkdir "\$D/\.pi" "\$D/\.pi/agent"( \|\||$)' <<<"$ARM" \
+  && ok "jail created with non-idempotent mkdir (proves this dispatch made it)" \
+  || fail "jail uses mkdir -p or similar — cannot prove the directory was created here"
+
+grep -qE '\[\[ "\$_pi_jail" == /\* && "\$_pi_jail" != "/" && -d "\$_pi_jail" \]\]' <<<"$ARM" \
+  && ok "jail path shape is re-asserted at the point of deletion" \
+  || fail "recursive delete is not guarded by a path-shape re-check at the delete site"
+
+# The credential must be removed on its own line BEFORE the tree delete, so it
+# is gone even if the recursive removal fails.
+grep -qE 'rm -f "\$_pi_jail/\.pi/agent/auth\.json"' <<<"$ARM" \
+  && ok "credential is removed independently of the tree delete" \
+  || fail "no standalone credential removal — a failed tree delete would leave the projected key on disk"
 
 # Fail closed when the provider cannot be derived: projecting the WHOLE auth
 # store is exactly what this must never do. --model bypasses the config regex,
@@ -118,6 +220,75 @@ if command -v pi >/dev/null 2>&1; then
     || fail "no fail-closed guard for a model reference without a provider/ prefix: $out_np"
 else
   skip "provider-derivation guard (pi not installed on this host)"
+fi
+
+# ── 2c. EXECUTED: the projection child actually projects one entry ──
+# Runs the real heredoc from the arm, not a copy — a copy would drift and then
+# certify code that is no longer shipped. Needs python3 and a pi auth store; no
+# model call, so this is a mandatory check rather than an opt-in one.
+CHILD_BODY="$(awk '/\/bin\/bash --noprofile --norc <<.CHILD.$/{f=1;next} f&&/^CHILD$/{exit} f' "$DISPATCH")"
+if [[ -z "$CHILD_BODY" ]]; then
+  fail "could not extract the projection child from the pi arm"
+elif ! command -v python3 >/dev/null 2>&1; then
+  skip "projection child execution (python3 unavailable)"
+else
+  # SYNTHETIC auth store. The earlier version read the operator's real
+  # ~/.pi/agent/auth.json, which (a) skipped on any clean CI runner, leaving this
+  # security-sensitive path unexercised exactly where it matters most, and (b)
+  # copied a live API key around on local runs for no benefit. Fixture data
+  # exercises the same code and runs everywhere.
+  _AS="$FAKE_HOME/synthetic-auth.json"
+  cat > "$_AS" <<'JSON'
+{
+  "goodprov":  {"type": "api_key", "key": "FAKE-NOT-A-REAL-KEY"},
+  "otherprov": {"type": "api_key", "key": "FAKE-ALSO-NOT-REAL"},
+  "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS"}
+}
+JSON
+  _runchild() { # $1=provider $2=target dir → exit status of the child
+    /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "SRC=$_AS" "PROV=$1" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
+  }
+
+  _j="$FAKE_HOME/jail-ok"
+  if _runchild goodprov "$_j" && [[ -f "$_j/.pi/agent/auth.json" ]]; then
+    _n="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi/agent/auth.json" 2>/dev/null || echo "err")"
+    [[ "$_n" == "1:goodprov" ]] \
+      && ok "projection writes exactly ONE provider entry (the requested one)" \
+      || fail "jail auth store is '$_n' — expected exactly 1:goodprov, so projection is not narrowing the credential set"
+  else
+    fail "projection child failed for a valid static api-key provider"
+  fi
+
+  # An OAuth/refreshable credential must be refused: pi would refresh it inside
+  # the jail, the update would be discarded, and a rotating provider would
+  # invalidate the operator's real credential.
+  _j3="$FAKE_HOME/jail-oauth"
+  if _runchild oauthprov "$_j3"; then
+    fail "refreshable (oauth) credential was projected — in-jail refresh would be discarded"
+  else
+    ok "refreshable (oauth) credential is refused"
+  fi
+
+  # Unknown provider must fail closed rather than projecting the whole store.
+  _j2="$FAKE_HOME/jail-unknown"
+  if _runchild __nosuch__ "$_j2"; then
+    fail "unknown provider still produced a jail"
+  else
+    [[ -f "$_j2/.pi/agent/auth.json" ]] \
+      && fail "unknown provider left a credential file behind" \
+      || ok "unknown provider fails closed with no credential written"
+  fi
+
+  # A pre-existing target must be refused — that is what proves the mkdir is the
+  # freshness check and not a formality.
+  _j4="$FAKE_HOME/jail-exists"; mkdir -p "$_j4"
+  if _runchild goodprov "$_j4"; then
+    fail "child accepted a pre-existing directory — mkdir is not proving freshness"
+  else
+    ok "pre-existing target directory is refused"
+  fi
 fi
 
 # ── 3. --mode cannot loosen the lane ────────────────────────────
@@ -172,19 +343,11 @@ for f in "$LIB" "$DISPATCH"; do
 done
 
 # ── 7. Resolver behaviour under a fake HOME ─────────────────────
-FAKE_HOME="$(mktemp -d)"
-# Targeted cleanup, for the same reason the production arm refuses `rm -rf` on a
-# mktemp result: `mktemp` is a shadowable command word, and a recursive delete on
-# whatever it returns (an exported function could hand back ~/.ssh) is data loss.
-# `rmdir` removes only empty directories, so a wrong path fails harmlessly.
-# A test that ships the pattern its own assertions forbid is not a guard.
-_wipe_fake_home() {
-  [[ -n "${FAKE_HOME:-}" && "$FAKE_HOME" == /* ]] || return 0
-  rm -f "$FAKE_HOME/.claude/busdriver.json" 2>/dev/null || true
-  rmdir "$FAKE_HOME/.claude" "$FAKE_HOME" 2>/dev/null || true
-  return 0
-}
-trap '_wipe_fake_home' EXIT
+# NO trap is (re)installed here. An earlier revision re-armed EXIT with a
+# FAKE_HOME-only handler, which silently REPLACED the single _wipe_fixtures trap
+# armed at the top — so on a normal run the real cleanup never fired, and the
+# replacement could not remove a FAKE_HOME that now holds the synthetic auth
+# store and several jail directories. Every run leaked. One trap, one owner.
 mkdir -p "$FAKE_HOME/.claude"
 
 read_pi() ( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_model 2>/dev/null; printf "%s" "$_BD_PI_MODEL"' "$LIB" )
@@ -247,7 +410,13 @@ elif [[ -z "$_TO" ]]; then
 elif ! command -v pi >/dev/null 2>&1; then
   skip "live checks need pi installed"
 else
-  FIX="$(mktemp -d)"
+  # Same naming rule as FAKE_HOME: the EXIT handler removes this recursively, so
+  # the path must come from builtins rather than a shadowable mktemp.
+  FIX="${_t%/}/busdriver-pifix-$$-${RANDOM}${RANDOM}"
+  if [[ -e "$FIX" ]] || ! mkdir "$FIX" 2>/dev/null; then
+    fail "could not create a fresh private directory for the live fixture"
+    echo "Results: $passed passed, $failed failed, $skipped skipped"; exit 1
+  fi
   # DELIBERATELY ABSENT: a project-local AGENTS.md injection assertion.
   # It was written, and then removed for being VACUOUS. The negative controls
   # are on record: a hostile AGENTS.md in the CWD produced a clean answer with

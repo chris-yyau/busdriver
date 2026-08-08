@@ -309,9 +309,31 @@ def _mktemp_creates(rhs):
 # after the value changed.
 REBIND_EXPANSION = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:?=")
 REBIND_BUILTIN = re.compile(
-    r"\b(?:for|select|read|export|unset|declare|local|typeset|getopts"
-    r"|mapfile|readarray|let)"
+    r"\b(for|select|read|export|unset|declare|local|typeset|getopts"
+    r"|mapfile|readarray|let|wait|coproc)"
     r"\b([^;&|\n]*)")
+# Destinations bash writes that are NOT spelled anywhere in the invocation, so
+# the operand scan below cannot see them: a bare `read` fills REPLY, `getopts`
+# fills OPTARG and OPTIND on every call, and so on. Without this a name that
+# happens to BE one of them kept its mktemp exemption across a write -
+# `REPLY=$(mktemp -d); read <<< /important/data; rm -rf "$REPLY"` deleted a
+# non-tempdir with no prompt (verified).
+#
+# This map is CLOSED, and that is the point. It is not another rung of the
+# enumerate-the-next-spelling ladder that the identifier-class and
+# attached-flag fixes above exist to stop climbing: the set of variables bash
+# writes implicitly is fixed by the language, not by how a caller chooses to
+# spell something, so it can be listed once and finished. `wait -p VAR` and
+# `coproc NAME` name their destination explicitly and need only the
+# alternation entry - they are here because both were simply absent from it.
+IMPLICIT_DEST = {
+    "read":      ("REPLY",),
+    "select":    ("REPLY",),
+    "mapfile":   ("MAPFILE",),
+    "readarray": ("MAPFILE",),
+    "getopts":   ("OPTARG", "OPTIND"),
+    "coproc":    ("COPROC",),
+}
 # ONLY the bare expansions `$V` and `${V}` - nothing appended. A suffix cannot be
 # proven to stay inside the directory: it can carry its own expansion
 # (backtick, brace) and, more basically, if mktemp FAILED then V is empty and
@@ -1151,10 +1173,13 @@ def temp_vars(chunk):
             # Chosen at runtime and therefore unreadable here: an expansion, a
             # substitution, or a GLOB - bash expands `read d*` against filenames
             # before running it, so a `docs` directory makes it `read docs`.
-            if any(ch in m.group(1) for ch in "$`*?["):
+            if any(ch in m.group(2) for ch in "$`*?["):
                 return {}
-            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
+            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(2)):
                 names.pop(word, None)
+            # The destinations this builtin writes without naming them.
+            for dest in IMPLICIT_DEST.get(m.group(1), ()):
+                names.pop(dest, None)
             # A short-option cluster can carry its OPERAND attached with no
             # separating space - bash reads `read -aT` exactly like
             # `read -a T`, assigning into T, but the identifier scan above
@@ -1176,7 +1201,7 @@ def temp_vars(chunk):
             # drop an exemption that was still valid (one extra prompt, the
             # ordinary failure mode of an advisory guard), never keep one
             # alive past an actual rebind.
-            for tok in m.group(1).split():
+            for tok in m.group(2).split():
                 tok = tok.strip(chr(34) + chr(39))
                 if re.match(r"^-[A-Za-z0-9_]+$", tok):
                     for name in list(names):
@@ -2226,9 +2251,18 @@ def unsafe(chunks, truncated):
                 # basename comparison read `r${EMPTY}m` as a word in no set.
                 # _matches_tok, not _spells: at this point the token is a
                 # candidate COMMAND word, and `/bin/r?` reaches the real binary
-                # while spelling a name in no set. The glob reading is bounded
-                # by what follows - a match only WARNS when a recursive flag
-                # sits in the same argv, so an ordinary `*` operand is silent.
+                # while spelling a name in no set.
+                #
+                # KNOWN over-warn, tracked as issue #585: this loop reads EVERY
+                # token as a candidate command word, unlike the cmd_pos-gated
+                # caller above, so a glob OPERAND is read as a command name too.
+                # `grep SQ*SQ -r src` prompts, because `*` fnmatches `rm` and a
+                # recursive flag sits in the same argv. Do not "fix" it by
+                # dropping pure-wildcard tokens: `/bin/*` reduces to the same
+                # bare `*` and IS a real command word, so that trade buys a
+                # false negative. The fix is command-position gating, which
+                # belongs in its own change - this is an over-warn on an
+                # advisory guard, the safe direction.
                 if not _matches_tok(tok, RM_SET) \
                         and not any(_matches_tok(f, RM_SET)
                                     for f in _brace_forms(tok)):

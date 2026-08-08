@@ -375,6 +375,31 @@ check "attached flag, quoted option" ask  'T=$(mktemp -d); read "-aT" <<< /etc; 
 # shellcheck disable=SC2016
 check "digit name, never rebound"    allow 'T2=$(mktemp -d); rm -rf "$T2"'
 
+echo "--- destinations bash writes without naming them ---"
+# A bare `read` fills REPLY and `getopts` fills OPTARG/OPTIND on every call, so
+# the name never appears in the invocation for the operand scan to find.
+# shellcheck disable=SC2016
+check "bare read fills REPLY"       ask   'REPLY=$(mktemp -d); read <<< /important/data; rm -rf "$REPLY"'
+# shellcheck disable=SC2016
+check "getopts fills OPTARG"        ask   'OPTARG=$(mktemp -d); getopts "a:" o; rm -rf "$OPTARG"'
+# shellcheck disable=SC2016
+check "getopts fills OPTIND"        ask   'OPTIND=$(mktemp -d); getopts "a:" o; rm -rf "$OPTIND"'
+# shellcheck disable=SC2016
+check "mapfile fills MAPFILE"       ask   'MAPFILE=$(mktemp -d); mapfile < /etc/hosts; rm -rf "$MAPFILE"'
+# `wait -p` and `coproc` DO name their destination - they were simply missing
+# from the builtin list entirely.
+# shellcheck disable=SC2016
+check "wait -p names the target"    ask   'T=$(mktemp -d); sleep 0 & wait -p T; rm -rf "$T"'
+# These names must keep the exemption when the builtin that writes them never
+# runs, or the map degrades into an unconditional over-warn.
+# shellcheck disable=SC2016
+check "REPLY, no read in sight"     allow 'REPLY=$(mktemp -d); rm -rf "$REPLY"'
+# shellcheck disable=SC2016
+check "OPTARG, no getopts"          allow 'OPTARG=$(mktemp -d); rm -rf "$OPTARG"'
+# A read that writes SOMEWHERE ELSE must not disturb an unrelated temp dir.
+# shellcheck disable=SC2016
+check "read into another name"      allow 'T=$(mktemp -d); read other < /etc/hosts; rm -rf "$T"'
+
 echo "--- ONLY the bare expansion clears; any suffix warns ---"
 # If mktemp FAILED, T is empty - so "$T/" is / and "$T/etc" is /etc. No suffix can
 # be proven to stay inside the directory, and none was ever observed in the log.

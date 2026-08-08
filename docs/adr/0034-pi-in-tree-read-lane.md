@@ -122,6 +122,20 @@ instead of introducing a second config grammar.
   OS-enforced read confinement — see the revisit trigger. Until then this lane
   sits in the same disclosed category as `droid` (no strict sandbox), and must
   not be pointed at a checkout you would not run.
+- **Credential teardown is done by grammar, not by a command.** `_pi_wipe` runs
+  back in the inherited shell, where every command word is shadowable by an
+  exported function — inside the one function that must still work after an
+  injection. There is no fixed point in commands: a bare `rm` loses to an
+  imported function; `/bin/rm` cannot be *imported* (bash refuses it at
+  `export -f` and again at import — the suite probes the live bash so this fails
+  loudly if that ever changes) but *can* be defined in-shell, and the arm calls
+  bare `type`/`source` at startup, which hands an attacker that opportunity;
+  escaping through `/usr/bin/env` only moves the problem one word along. A bare
+  redirection has no command word, so `>|` terminates the regress — parsed,
+  never resolved. Verified with `rm`, `echo` and `printf` all shadowed: 32 bytes
+  → 0. The subsequent unlink runs in a sterile `env -i` child and is hygiene
+  only; by then the credential is already zeroed. Truncation is not unlinking,
+  and that is the right trade: the credential is *content*.
 - **Known gap, deliberately not papered over:** a project-local `AGENTS.md`
   injection assertion was written and removed for being vacuous — it passed with
   the flags, without them, and with `--approve`. No failing case could be

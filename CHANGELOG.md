@@ -1,3 +1,10 @@
+## [1.101.4](https://github.com/chris-yyau/busdriver/compare/v1.101.3...v1.101.4) (2026-08-08)
+
+
+### Bug Fixes
+
+* **careful-guard:** stop warning on three shapes that were never destructive ([#555](https://github.com/chris-yyau/busdriver/issues/555)) ([7757807](https://github.com/chris-yyau/busdriver/commit/77578074c1f7fc9c295e54f4e44cae3ecc1beff5)), closes [#519](https://github.com/chris-yyau/busdriver/issues/519) [#585](https://github.com/chris-yyau/busdriver/issues/585)
+
 ## [1.101.3](https://github.com/chris-yyau/busdriver/compare/v1.101.2...v1.101.3) (2026-08-06)
 
 

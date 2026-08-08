@@ -866,6 +866,79 @@ CHILD
                         fi
                         _pi_wipe_rc=0
                     }
+                    # CREATING THE JAIL IS ITS OWN STEP, separate from writing the
+                    # credential, and that separation is what makes teardown
+                    # decidable. Every attempt to infer ownership from a combined
+                    # child's EXIT STATUS failed on the same case: a signal replaces
+                    # whatever code the child would have returned, so 128+n is
+                    # ambiguous no matter how the codes are arranged — reading it as
+                    # "ours" can delete a path another process created, and reading it
+                    # as "not ours" can strand a written credential.
+                    #
+                    # Split, the ambiguity survives only where it is harmless. This
+                    # child's LAST statement is the `mkdir`, so success is the parent
+                    # OBSERVING creation rather than deducing it. A signal before the
+                    # mkdir yields failure and no wipe (correct — nothing was made); a
+                    # signal after it leaks an EMPTY directory, because the credential
+                    # is not written until the next step. Ownership is never in doubt
+                    # at a moment when a secret is on disk.
+                    #
+                    # No -p: it must FAIL if the path already exists, which is exactly
+                    # what proves this dispatch created it.
+                    _pi_mkjail() {
+                        /usr/bin/env -i "D=$_pi_jail" \
+                            /bin/bash --noprofile --norc <<'CHILD'
+umask 077
+case "$D" in /*) ;; *) exit 1 ;; esac
+mkdir "$D"
+CHILD
+                    }
+                    # Runs only after _pi_mkjail succeeded, so the jail is known to be
+                    # ours and ANY failure here authorises teardown — no exit-code
+                    # taxonomy, nothing for a signal to make ambiguous.
+                    _pi_project() {
+                        /usr/bin/env -i \
+                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                            "SRC=$_pi_home/.pi/agent/auth.json" \
+                            "PROV=$_pi_prov" \
+                            "D=$_pi_jail" \
+                            /bin/bash --noprofile --norc <<'CHILD'
+umask 077
+mkdir "$D/.pi" "$D/.pi/agent" || exit 1
+py=""
+for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
+  [ -x "$b" ] && { py="$b"; break; }
+done
+[ -n "$py" ] || exit 1
+# NO CLEANUP TRAP IN THE CHILD, deliberately. The PARENT owns this pathname from
+# before the child starts until after it exits, and a second owner is worse than
+# an imperfect one: a child trap and the parent's INT/TERM/HUP handler both fire
+# on a process-group signal, the child removes $D, and the parent then re-derives
+# a name it no longer owns and deletes whatever took its place. One owner, one
+# deletion. The child's only job is to report failure; the parent decides.
+"$py" -I -c 'import json, sys
+src, dst, prov = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(src))
+if prov not in d:
+    raise SystemExit("provider not in auth store")
+entry = d[prov]
+# REFUSE refreshable credentials. pi rewrites auth.json in place when it
+# refreshes an OAuth token — inside the jail, which is discarded. For a provider
+# that ROTATES refresh tokens that silently invalidates the credential still
+# sitting in the real store, and the operator has to re-authenticate for reasons
+# they cannot see. Copying the jail copy back is not the fix: it would put a
+# write to the real credential store on the far side of an untrusted-input run.
+# Static API keys have no such lifecycle, so project those and fail closed on
+# anything else.
+# ALLOWLIST of known-static credential types (pi 0.84.1 stores API keys as
+# type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
+# unrecognised future type fails closed rather than being projected on the
+# assumption it has no refresh lifecycle.
+if not isinstance(entry, dict) or entry.get("type") not in ("api_key", "api"):
+    raise SystemExit("refreshable or unrecognised credential type")
+json.dump({prov: entry}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" 2>/dev/null || exit 1
+CHILD
+                    }
                     _pi_prov="${MODEL:-$_BD_PI_MODEL}"
                     _pi_prov="${_pi_prov%%/*}"
                     # THE PARENT NAMES THE JAIL, before anything is created. The
@@ -920,63 +993,51 @@ CHILD
                     # the parent beforehand. So every failure — no python3, mkdir
                     # refused, provider absent, refreshable credential — lands on a
                     # branch that can still name and remove the jail.
-                    elif [[ -e "$_pi_jail" ]]; then
+                    # `-e` alone would MISS a dangling symlink pointing outside the
+                    # jail, and a dangling symlink is precisely what an attacker
+                    # would plant here.
+                    elif [[ -e "$_pi_jail" || -L "$_pi_jail" ]]; then
                         echo "Error: refusing to reuse an existing path for pi's private HOME." >&2
                         exit_code=1
-                    elif ! /usr/bin/env -i \
-                            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-                            "SRC=$_pi_home/.pi/agent/auth.json" \
-                            "PROV=$_pi_prov" \
-                            "D=$_pi_jail" \
-                            /bin/bash --noprofile --norc <<'CHILD'
-umask 077
-py=""
-for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
-  [ -x "$b" ] && { py="$b"; break; }
-done
-[ -n "$py" ] || exit 1
-case "$D" in /*) ;; *) exit 1 ;; esac
-# No -p: fails if the path already exists, which is what proves this dispatch
-# created it. No trap needed — the parent has owned this path since before the
-# child started, so its cleanup covers every exit path including a signal.
-mkdir "$D" || exit 1
-mkdir "$D/.pi" "$D/.pi/agent" || exit 1
-"$py" -I -c 'import json, sys
-src, dst, prov = sys.argv[1], sys.argv[2], sys.argv[3]
-d = json.load(open(src))
-if prov not in d:
-    raise SystemExit("provider not in auth store")
-entry = d[prov]
-# REFUSE refreshable credentials. pi rewrites auth.json in place when it
-# refreshes an OAuth token — inside the jail, which is discarded. For a provider
-# that ROTATES refresh tokens that silently invalidates the credential still
-# sitting in the real store, and the operator has to re-authenticate for reasons
-# they cannot see. Copying the jail copy back is not the fix: it would put a
-# write to the real credential store on the far side of an untrusted-input run.
-# Static API keys have no such lifecycle, so project those and fail closed on
-# anything else.
-# ALLOWLIST of known-static credential types (pi 0.84.1 stores API keys as
-# type="api_key"). An allowlist, not a denylist of oauth-ish field names: an
-# unrecognised future type fails closed rather than being projected on the
-# assumption it has no refresh lifecycle.
-if not isinstance(entry, dict) or entry.get("type") not in ("api_key", "api"):
-    raise SystemExit("refreshable or unrecognised credential type")
-json.dump({prov: entry}, open(dst, "w"))' "$SRC" "$D/.pi/agent/auth.json" "$PROV" 2>/dev/null || exit 1
-CHILD
-                    then
+                    # NO WIPE ON THIS BRANCH. Creation failed, so either the path was
+                    # never made or a signal killed the child around the `mkdir` — and
+                    # in the latter case the only thing that can be left is an EMPTY
+                    # directory, never a credential. Deleting on an unproven claim of
+                    # ownership is the worse trade; leaking an empty temp directory is
+                    # the acceptable one.
+                    elif ! _pi_mkjail; then
+                        echo "Error: could not create a private HOME for pi at $_pi_jail — refusing to dispatch with the full credential store exposed." >&2
+                        exit_code=1
+                    elif ! _pi_project; then
                         # Covers every failure the child can hit: no python3 on the
-                        # trusted paths, mktemp/mkdir refused, the provider absent
+                        # trusted paths, mkdir refused, the provider absent
                         # from the auth store, or a refreshable/OAuth credential.
                         # All of them fail closed — dispatching anyway would let pi
                         # fall back to whatever it finds, which is the operator's
                         # full credential store.
-                        echo "Error: could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi.model at an API-key provider." >&2
-                        # MUST wipe here. The child can fail AFTER creating the jail
-                        # or part-writing auth.json, and the dispatch trap below is
-                        # armed only on the success branch — so without this a
-                        # failed projection leaves the tree, and possibly a
-                        # partially written credential, on disk.
+                        #
+                        # TEARDOWN RUNS BEFORE THE MESSAGE, not after. The child may
+                        # have part-written auth.json, and `echo` is a command word:
+                        # a failing write to stderr trips `set -e`, and a shadowed
+                        # one can do worse — either way the credential would still be
+                        # on disk when the script left. Nothing is allowed to come
+                        # between a possible credential and its removal.
+                        #
+                        # THE WIPE IS UNCONDITIONAL, and it is only allowed to be
+                        # because `_pi_mkjail` already succeeded above — the parent
+                        # OBSERVED the jail being created rather than deducing it from
+                        # an exit status. No code is consulted here, so there is
+                        # nothing a signal can make ambiguous: 128+n means the same as
+                        # any other failure, namely "we own this and a credential may
+                        # be on disk". Every earlier attempt to encode ownership in the
+                        # projection child's exit codes broke on exactly that case.
+                        #
+                        # Teardown runs BEFORE the message: `echo` is a command word,
+                        # so a failing write to stderr trips `set -e` and a shadowed
+                        # one can do worse. Nothing comes between a possibly written
+                        # credential and its removal.
                         _pi_wipe
+                        echo "Error: could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi.model at an API-key provider." >&2
                         exit_code=1
                     else
                     # `env -i` wipes PI_* and any injected environment (exported

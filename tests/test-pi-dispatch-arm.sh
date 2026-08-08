@@ -231,7 +231,12 @@ fi
 # whole arm would pass on the version probe's `env -i` alone, letting projection
 # regress to the inherited environment while keeping its SRC assignment — which
 # is precisely the hole this assertion exists to hold shut.
-_projinv="$(tr '\n' ' ' <<<"$ARM" | sed -n 's/.*elif ! \(.*--noprofile --norc\).*/\1/p')"
+# Scope the match to the _pi_project block BEFORE flattening. Matching across the
+# whole arm let a greedy `.*` run past this invocation to the dispatch `env -i`
+# further down, so the assertion could still pass with projection itself having
+# lost `env -i` — the exact hole it exists to hold shut.
+_projblock="$(awk '/_pi_project\(\) \{/{inb=1} inb{print} inb && /^CHILD$/{exit}' <<<"$ARM")"
+_projinv="$(tr '\n' ' ' <<<"$_projblock" | sed -n 's/.*_pi_project()\(.*--noprofile --norc\).*/\1/p')"
 if [[ -n "$_projinv" && "$_projinv" == */usr/bin/env\ -i* && "$_projinv" == *SRC=* ]]; then
   ok "credential projection invocation itself carries env -i"
 else
@@ -266,9 +271,79 @@ else
   ok "pi arm derives the jail path without mktemp"
 fi
 
-grep -qE '\[\[ -e "\$_pi_jail" \]\]' <<<"$ARM" \
-  && ok "parent refuses a pre-existing jail path" \
-  || fail "no pre-existence check on the parent-chosen jail path"
+# `-e` alone misses a DANGLING symlink, which is exactly what an attacker would
+# plant at a predicted jail path — so the check must be `-e || -L`.
+grep -qE '\[\[ -e "\$_pi_jail" \|\| -L "\$_pi_jail" \]\]' <<<"$ARM" \
+  && ok "parent refuses a pre-existing jail path, dangling symlinks included" \
+  || fail "no symlink-aware pre-existence check on the parent-chosen jail path"
+
+# The pre-check is racy by construction, so the CHILD's non-idempotent mkdir is
+# the real proof of ownership — and its distinct exit 3 is what stops the parent
+# from deleting a path it did not create.
+# Ownership must be reported POSITIVELY. Inferring it from "any code but 3" let
+# a pre-mkdir failure (no python3, non-absolute path) authorise deleting a jail
+# a racing process had created after the parent's pre-check.
+_mkjail_child="$(awk '/_pi_mkjail\(\) \{/{inb=1} inb{print} inb && /^CHILD$/{exit}' <<<"$ARM")"
+if [[ -z "$_mkjail_child" ]]; then
+  fail "jail creation is not a separate step — ownership is being inferred from a combined child's exit status"
+elif [[ "$(grep -c . <<<"$(awk '/^mkdir "\$D"$/{f=1} f' <<<"$_mkjail_child" | grep -vE '^CHILD$')")" -ne 1 ]]; then
+  fail "mkdir is not the LAST statement of the creation child — a later failure makes ownership ambiguous again"
+elif grep -qE '_pi_proj_rc' <<<"$ARM"; then
+  fail "ownership is still decided from the projection child's exit code — a signal (128+n) overwrites it"
+elif grep -qE "^trap 'rm -rf \"\\\$D\"'" <<<"$ARM"; then
+  fail "projection child arms its own cleanup trap — two owners race to delete the same path"
+else
+  ok "jail creation is observed, not inferred (mkdir is the creation child's last statement)"
+fi
+
+# Once creation is observed, projection failure must wipe UNCONDITIONALLY. Any
+# `if` around it reintroduces an exit-code judgement, and a signal death (128+n)
+# overwrites whatever code the child meant to return — stranding a credential
+# exactly when teardown matters most.
+_proj_fail="$(awk '/elif ! _pi_project; then/{inb=1} inb{print} inb && /exit_code=1/{exit}' <<<"$ARM")"
+if grep -qE '^\s*if .*_pi_wipe|_pi_wipe.*\bif\b' <<<"$_proj_fail"; then
+  fail "projection teardown is conditional — a signal death can skip it"
+else
+  ok "projection failure tears the jail down unconditionally"
+fi
+
+# The creation branch must NOT wipe: creation failing means either nothing was
+# made, or a signal hit around the mkdir — and the worst that can survive that is
+# an EMPTY directory, never a credential. Deleting on unproven ownership is the
+# worse trade.
+_mkjail_fail="$(awk '/elif ! _pi_mkjail; then/{inb=1} inb{print} inb && /exit_code=1/{exit}' <<<"$ARM")"
+if [[ -z "$_mkjail_fail" ]]; then
+  fail "could not extract the jail-creation failure branch — this assertion is not running"
+elif grep -q '_pi_wipe' <<<"$_mkjail_fail"; then
+  fail "jail-creation failure wipes a path it never proved it created"
+else
+  ok "jail-creation failure does not delete a path of unproven ownership"
+fi
+
+# The PROJECTION child must never create the jail itself — that is the creation
+# child's job, and splitting them is what keeps ownership observable.
+_proj_child="$(awk '/_pi_project\(\) \{/{inb=1} inb{print} inb && /^CHILD$/{exit}' <<<"$ARM")"
+if [[ -z "$_proj_child" ]]; then
+  fail "could not extract the projection child — this assertion is not running"
+elif grep -qE '^mkdir "\$D"$|^mkdir "\$D" ' <<<"$_proj_child"; then
+  fail "projection child creates the jail too — creation and credential-writing must stay separate"
+else
+  ok "projection child writes the credential only; creation is a separate observed step"
+fi
+
+# Teardown must precede the error message: `echo` is a command word, so a failing
+# write to stderr trips `set -e` and a shadowed one can do worse. Nothing may come
+# between a possibly part-written credential and its removal.
+_fail_branch="$(awk '/elif ! _pi_project; then/{inb=1} inb{print} inb && /exit_code=1/{exit}' <<<"$ARM")"
+_wipe_at="$(grep -n '_pi_wipe' <<<"$_fail_branch" | head -1 | cut -d: -f1)"
+_echo_at="$(grep -n 'echo "Error: could not project' <<<"$_fail_branch" | head -1 | cut -d: -f1)"
+if [[ -z "$_fail_branch" || -z "$_wipe_at" || -z "$_echo_at" ]]; then
+  fail "could not extract the projection-failure branch — this assertion is not running"
+elif [[ "$_wipe_at" -lt "$_echo_at" ]]; then
+  ok "projection failure tears down the credential before it reports the error"
+else
+  fail "the error message runs before teardown — a failing echo strands the credential"
+fi
 
 grep -qE '/bin/bash --noprofile --norc' <<<"$ARM" \
   && ok "child shell is invoked by absolute path (unshadowable)" \
@@ -324,7 +399,7 @@ fi
 # wrong code and passed. Select by content: only the projection child consumes
 # $PROV. A body that no longer does is a real regression, not a lookup miss.
 CHILD_BODY="$(awk '
-  /\/bin\/bash --noprofile --norc <<.CHILD.$/ {inb=1; body=""; next}
+  /\/bin\/bash --noprofile --norc <<.CHILD./ {inb=1; body=""; next}
   inb && /^CHILD$/ {if (body ~ /PROV/) {printf "%s", body; exit} inb=0; next}
   inb {body = body $0 "\n"}
 ' "$DISPATCH")"
@@ -346,7 +421,22 @@ else
   "oauthprov": {"type": "oauth", "refresh": "FAKE-REFRESH", "access": "FAKE-ACCESS"}
 }
 JSON
-  _runchild() { # $1=provider $2=target dir → exit status of the child
+  # Jail creation is now its own child, so drive both exactly as the arm does.
+  MKJAIL_BODY="$(awk '
+    /_pi_mkjail\(\) \{/ {inf=1}
+    inf && /\/bin\/bash --noprofile --norc <<.CHILD./ {inb=1; next}
+    inb && /^CHILD$/ {exit}
+    inb {print}
+  ' "$DISPATCH")"
+  [[ -n "$MKJAIL_BODY" ]] \
+    && ok "jail-creation child extracted for live exercise" \
+    || fail "could not extract the jail-creation child — the live projection checks below are not running"
+
+  _runmkjail() { # $1=target dir → exit status of the creation child
+    /usr/bin/env -i "D=$1" /bin/bash --noprofile --norc <<<"$MKJAIL_BODY" 2>/dev/null
+  }
+  _runchild() { # $1=provider $2=target dir → status of create-then-project
+    _runmkjail "$2" || return 1
     /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
       "SRC=$_AS" "PROV=$1" "D=$2" /bin/bash --noprofile --norc <<<"$CHILD_BODY" 2>/dev/null
   }
@@ -382,10 +472,10 @@ d=json.load(open(sys.argv[1])); print("%d:%s" % (len(d), ",".join(d)))' "$_j/.pi
       || ok "unknown provider fails closed with no credential written"
   fi
 
-  # A pre-existing target must be refused — that is what proves the mkdir is the
-  # freshness check and not a formality.
+  # A pre-existing target must be refused by the CREATION child — that refusal is
+  # the freshness proof the parent's teardown decision rests on.
   _j4="$FAKE_HOME/jail-exists"; mkdir -p "$_j4"
-  if _runchild goodprov "$_j4"; then
+  if _runmkjail "$_j4"; then
     fail "child accepted a pre-existing directory — mkdir is not proving freshness"
   else
     ok "pre-existing target directory is refused"

@@ -1120,6 +1120,98 @@ for _q in ('', '"', "'"):
         _c = _tpl.format(a=f'{_q}GH_REPO=other/repo{_q}')
         check(f"gen override+ {_c!r}", g.gh_pr_repo_override(_c, 'merge'), True)
 
+# ── NESTED route: a payload reached past an assignment value that TORE ───────
+# shlex splits at whitespace with no idea a substitution is open, so the walk
+# stops on the debris and never reaches the interpreter. Every positive below is
+# verified to execute the commit inside the child.
+for _c in ('X=$((1 + 2)) bash -c "git commit -m x"',
+           'X=${foo:-a b} bash -c "git commit -m x"',
+           'X=$(printf x y) bash -c "git commit -m x"',
+           'X=<(printf x y) bash -c "git commit -m x"',
+           'env A-B=$((1 + 2)) bash -c "git commit -m x"',
+           'env "BASH_FUNC_x%%=() { echo /etc; }" bash -c "git commit -m x"',
+           'env -u x X=$(printf x y) bash -c "git commit -m x"',
+           'ba{s..s}h -c "git commit -m x"',
+           '/bin/@(ba)sh -c "git commit -m x"'):
+    check(f"torn-nested+ {_c!r}", g.git_commit(_c)[0], True)
+# ...and a walk that read a real command word is BELIEVED, so these stay silent.
+# A lone CLOSER is tear debris, not a command name; `:` and `[` are real names.
+for _c in ('echo bash -c "git commit"',
+           "printf '%s' bash -c 'git commit'",
+           "X=$(printf x y) echo -c 'git commit'",     # `y)` is debris, not a shell
+           "X=${foo:-a b} echo -c 'git commit'",       # `b}` likewise
+           ': git commit',
+           '[ -f x ] && echo hi',
+           "printf '%s' 'X=$(x)' bash -c 'git commit'"):
+    check(f"torn-nested- {_c!r}", g.git_commit(_c)[0], False)
+# ACCEPTED LIMIT, pinned so the trade stays visible: the DIRECT route is not
+# recovered. `X=$(printf x y) git commit` runs the commit (verified) and is
+# missed, exactly as on main -- closing it means synthesizing an argv for a
+# scanner that derives target_dir, `-C` authority and cd trust from argv
+# POSITION, a far larger blast radius than payload extraction. This change's
+# invariant is that it introduces no NEW fail-open, not that it closes every one.
+for _c in ('X=$(printf x y) git commit -m x',
+           'X=$((1 + 2)) git commit -m x'):
+    check(f"torn-direct~ (known limit) {_c!r}", g.git_commit(_c)[0], False)
+
+# `--` ENDS a wrapper's option processing, so the token after it is an OPERAND,
+# never an option argument. Leaving the arity guess on swallowed the real
+# utility: `env -- printf A-B=1 bash -c '<s>'` read `printf` as `--`'s value, so
+# argv[0] became `bash` and a payload came out of a command that only PRINTS
+# (verified) -- a false positive in three fail-CLOSED gates.
+for _c in ('env -- printf A-B=1 bash -c "git commit"',
+           'env -- A=1 printf bash -c "git commit"',
+           # ...and a dash-prefixed OPERAND after `--` is not an option either:
+           # env tries to EXECUTE `-i` and fails ("No such file or directory",
+           # verified), so nothing behind it runs.
+           'env -- -i bash -c "git commit"'):
+    check(f"dashdash- {_c!r}", g.git_commit(_c)[0], False)
+# ...while an operand that really IS the utility still resolves, and assignment
+# operands after `--` keep working -- only the arity guess was dropped.
+for _c in ('env -- bash -c "git commit"',
+           'env -- A=1 bash -c "git commit"'):
+    check(f"dashdash+ {_c!r}", g.git_commit(_c)[0], True)
+
+# ACCEPTED OVER-WARN, pinned so the trade stays visible: `_torn_assignment` asks
+# whether a value contains substitution syntax AT ALL, reading the DEQUOTED
+# token, so a quoted literal opener reads as a tear. `X="$(" echo bash -c ...`
+# is therefore recovered and reports a commit that only `echo` prints. Restoring
+# quote provenance means the delimiter counting this file abandoned after it
+# produced five verified bypasses -- more defects than the bug it fixed. The
+# direction of harm decides it: this over-warn stalls a gate VISIBLY, where the
+# alternative reading lets an unreviewed commit through SILENTLY.
+check('quoted-opener~ (accepted) X="$(" echo bash -c',
+      g.git_commit('X="$(" echo bash -c "git commit"')[0], True)
+
+# An EXPANSION can be the command word even though it contains an `=`. The env(1)
+# operand rule is the loose `^[^=]+=`, with no identifier rule, so it also matched
+# `${X:=bash}` and skipped it as an assignment -- while bash, with X unset,
+# expands it to bash and runs the payload (verified). Only a loose match this
+# scan can READ is skipped now; an unreadable one stays a candidate.
+check("assign-default expansion is a command word",
+      g.git_commit('${X:=bash} -c "git commit -m x"')[0], True)
+
+# ACCEPTED OVER-WARN, the FAMILY -- pinned so the trade stays visible rather than
+# being rediscovered one member at a time. Present in this change's first draft
+# and unchanged by any hardening since; both are verified to execute NOTHING:
+#   env -u bash -c 'echo RAN'                 -> env prints its usage
+#   command -p X=$(true) echo bash -c 'echo RAN' -> "command not found: X="
+# Both still report a commit, for two reasons the file has already settled:
+#   1. wrapper-option arity is undecidable statically, so BOTH readings are taken
+#      and unioned -- the reading that protects `bash` from being eaten by `-i`
+#      is the same one that mistakes `-u`'s argument for the utility;
+#   2. `_torn_assignment` asks only whether a value contains substitution syntax,
+#      because counting delimiters needs quote provenance shlex has dropped.
+# Answering either precisely means the delimiter/arity grammar this file
+# abandoned after two review rounds produced five verified bypasses in it -- more
+# defects than the single bug it fixed. The direction of harm settles it: these
+# stall a gate VISIBLY on shapes that do not occur in practice (measured: zero
+# newly-tripped fail-CLOSED gates across 29,563 recorded agent commands), where
+# the precise-parsing alternative lets an unreviewed commit through SILENTLY.
+for _c in ('env -u bash -c "git commit"',
+           'command -p X=$(true) echo bash -c "git commit"'):
+    check(f"nonexec-prefix~ (accepted) {_c!r}", g.git_commit(_c)[0], True)
+
 # ── Property-based: {leading operators} × {wrappers} × git-commit should ALL
 #    detect; the same form as an ARGUMENT to a non-git command must NOT. ──────
 import itertools

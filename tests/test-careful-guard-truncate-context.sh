@@ -848,6 +848,298 @@ check "setsid"                           ask  'setsid truncate -s 0 audit.log'
 check "flock"                            ask  'flock /tmp/l truncate -s 0 audit.log'
 check "unshare"                          ask  'unshare -r truncate -s 0 audit.log'
 
+# A wrapper OPTION whose arity is ambiguous must not swallow the interpreter.
+# `env -i` takes NO argument while `env -u FOO` takes one, so a single reading
+# of the launcher run has to guess - and guessing "takes an argument" consumed
+# `bash`, left no interpreter to recognise, and dropped the `-c` payload from
+# the scan entirely. `env -i bash -c "rm -rf /etc"` then scanned as though it
+# contained no rm at all: a fail-OPEN the pre-rewrite text grep did NOT have,
+# found while grinding PR #555. _shell_payloads now reads the run BOTH ways and
+# unions the payloads, the same fail-CLOSED treatment _consumer_words already
+# applied. Ground truth for the arities: `env -i bash -c "echo hi"` prints hi,
+# and `env -u FOO bash -c "echo hi"` prints hi, so bash really is the utility
+# in both - only the token OFFSET differs.
+echo "--- ambiguous wrapper-option arity must not hide a payload (must warn) ---"
+check "env -i hides bash -c"             ask  'env -i bash -c "rm -rf /etc"'
+check "env -u FOO hides bash -c"         ask  'env -u FOO bash -c "rm -rf /etc"'
+check "env -i sh -c"                     ask  'env -i sh -c "rm -rf /etc"'
+check "env -i with assignment too"       ask  'env -i FOO=1 bash -c "rm -rf /etc"'
+# ...and the same reading must not start warning on a harmless payload.
+check "env -i benign payload"            allow 'env -i bash -c "echo hi"'
+check "env -u FOO benign payload"        allow 'env -u FOO bash -c "echo hi"'
+
+# env(1) puts no shell-identifier rule on the NAME, and the shell has already
+# removed the quotes by the time env reads the operand. Ground truth:
+#   env 'A B=x' bash -c 'echo hi'   -> prints hi, so the child really does run.
+# Requiring an identifier (or forbidding whitespace) stopped the launcher walk
+# at that operand and dropped the payload -- fail-OPEN, found by litmus on #555.
+echo "--- an assignment VALUE that tears across shlex tokens must not hide the payload ---"
+# `X=$((1 + 2))` arrives as `X=$((1` / `+` / `2))`, and advancing one token left
+# `+` in the command slot: the walk stopped there, _shell_payloads returned [],
+# and every gate sharing this detector saw a command with no rm in it. The span
+# is rejoined by BALANCE, counted on the RAW token so a QUOTED paren stays data.
+# shellcheck disable=SC2016
+check "arithmetic value hides bash -c"  ask   'X=$((1 + 2)) bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "backtick value hides bash -c"    ask   'X=`printf x` bash -c "rm -rf /etc"'
+check "quoted paren is DATA, not an opener" ask 'X="(" bash -c "rm -rf /etc"'
+check "quoted backtick is data too"     ask   'X="`" bash -c "rm -rf /etc"'
+check "paren inside a quoted value"     ask   'X="ordinary(value" bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "multiple assignment prefixes"    ask   'A=1 B=$((2 + 3)) bash -c "rm -rf /etc"'
+check "torn value, benign payload"      allow 'X="(" bash -c "echo hi"'
+# An unquoted `${...}` tears at the space inside it exactly as `$(( ))` does, and
+# `X=${foo:-a b} bash -c "..."` really does run the child (verified). Tracking
+# only parens and backticks left the walk stopped at `b}` with the payload unread.
+# shellcheck disable=SC2016
+check "brace expansion value tears"     ask   'X=${foo:-a b} bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "brace tear, benign payload"      allow 'X=${foo:-a b} bash -c "echo hi"'
+# A BARE brace is a brace group or a brace expansion, neither of which tears, so
+# it must not hold the span open over the words that follow.
+check "bare brace value does not tear"  ask   'X=a{1,2} bash -c "rm -rf /etc"'
+# An env(1) OPERAND can tear too, and its name obeys no shell-identifier rule,
+# so the `\w+=` hint never fired for it. Ground truth: the child really runs.
+# shellcheck disable=SC2016
+check "torn env operand hides payload"  ask   'env A-B=$((1 + 2)) bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "torn env operand, benign"        allow 'env A-B=$((1 + 2)) bash -c "echo hi"'
+# When adjacent-quote concatenation makes the raw and cooked token streams
+# unalignable, the assignment span cannot be delimited at all — quote provenance
+# is exactly what was lost. Both guesses hide the payload (extending swallows the
+# interpreter, not extending stops at the tear), so no span is guessed: every
+# resumption point is tried and the results unioned. Ground truth: bash runs it.
+# shellcheck disable=SC2016
+check "unalignable assignment is read"  ask   'X=foo"bar ( baz"$((1 + 2)) bash -c "rm -rf /etc"'
+# The two round-2 findings the delimiter scanner could not reach. Both pass now
+# with NO code that knows these syntaxes exist, which is the whole claim: `(` is
+# structure inside `$((` and data inside `${x:-(}`, and `$[...]` is a delimiter
+# context of its own. A scanner has to know that; a scan for interpreter NAMES
+# does not. Ground truth: bash runs the child in both.
+# shellcheck disable=SC2016
+check "paren is data inside \${...}"     ask   'X=${x:-(} bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "\$[...] arithmetic tears too"     ask   'X=$[1 + 2] bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "\$[...] tear, benign payload"     allow 'X=$[1 + 2] bash -c "echo hi"'
+# A quoted interpreter run inside an ARGUMENT stays one shlex token, so it is not
+# a separate-token interpreter run and does not fire. This is what keeps the
+# over-extraction population narrow.
+check "quoted bash -c in an argument"    allow 'echo "bash -c rm -rf /etc"'
+
+echo "--- the any-position fallback is GATED, and what that buys ---"
+# `eval` runs its argument as much as any interpreter does; leaving it out of the
+# candidate set let a torn assignment carry a deletion straight through.
+# shellcheck disable=SC2016
+check "torn assignment before eval"     ask   'X=$((1 + 2)) eval "rm -rf /etc"'
+# shlex does not know ANSI-C quoting and hands back `$bash`, which bash runs as
+# bash. Normalised before the membership test, and again as argv[0] so the
+# consumer derives the same name.
+check "ANSI-C quoted interpreter"       ask   "env -i \$'bash' -c 'rm -rf /etc'"
+# ...and the GATE: when the conservative walk lands on a real command NAME it is
+# believed, so a name that only PRINTS its arguments keeps its payload unread.
+# Ground truth: `echo bash -c "echo X"` prints the words, it does not run them.
+# Without this gate the first warns for nothing and the second could stall a
+# fail-CLOSED gate on a `git commit` that never executes.
+check "echo does not run its arguments" allow 'echo bash -c "rm -rf /etc"'
+check "printf does not run them either" allow 'printf "%s" bash -c "git commit"'
+# The fallback still fires when the walk lands on debris no command is named:
+# shlex tears `X=$((1 + 2))` and leaves `+` in the command slot.
+# shellcheck disable=SC2016
+check "debris in the command slot"      ask   'X=$((1 + 2)) bash -c "rm -rf /etc"'
+
+echo "--- the fallback gate needs a SIGNAL, not a shape (must warn) ---"
+# `X=$(printf x y)` tears and leaves the perfectly name-shaped `x` in the command
+# slot, so a "does argv0 look like a name" test said the walk had succeeded and
+# suppressed the fallback. Ground truth: bash runs the commit. The gate now also
+# asks whether a token READ AS AN ASSIGNMENT opens something it never closes.
+# shellcheck disable=SC2016
+check "substitution debris looks like a name" ask 'X=$(printf x y) bash -c "rm -rf /etc"'
+# ...and the interpreter NAME may be spelled in ways shlex does not resolve.
+# Both verified to execute bash.
+check "ANSI-C escaped interpreter"      ask   "X=1 \$'ba\\x73h' -c 'rm -rf /etc'"
+check "globbed interpreter path"        ask   'X=1 /bin/ba?h -c "rm -rf /etc"'
+check "globbed interpreter, benign"     allow 'X=1 /bin/ba?h -c "echo hi"'
+# A word that merely CONTAINS an interpreter name is not one.
+check "name containing bash is not bash" allow 'X=1 rebash -c "rm -rf /etc"'
+
+echo "--- an UNREADABLE command word may be an interpreter (must warn) ---"
+# Decoding how a name can be spelled is the ladder: $\'...\' concatenation, \\x,
+# \\0, \\u, \\U, and the next one after that. So a command word this scan cannot
+# READ is refused rather than decoded -- the same inversion careful-guard applies
+# at command position. Both of these are verified to execute bash.
+check "ANSI-C spliced into the name"    ask   "b\$'a'sh -c 'rm -rf /etc'"
+check "unicode escape in the name"      ask   "\$'ba\\u0073h' -c 'rm -rf /etc'"
+# ...and an expansion that merely MIGHT be a shell is refused the same way.
+# shellcheck disable=SC2016
+check "expansion as the command word"   ask   '$SHELL -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "expansion command word, benign"  allow '$SHELL -c "echo hi"'
+
+echo "--- every opener tears a token, not just parens (must warn) ---"
+# `${foo:-x y z}` splits into `X=${foo:-x` / `y` / `z}`, leaving the NAME-SHAPED
+# `y` in the command slot -- the shape a shape-test cannot catch.
+# shellcheck disable=SC2016
+check "brace expansion with two words"  ask   'X=${foo:-x y z} bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "brace expansion, benign payload" allow 'X=${foo:-x y z} bash -c "echo hi"'
+
+echo "--- the last discriminators removed (must warn) ---"
+# A QUOTED literal closer cancels a live opener once shlex drops quote
+# provenance, so `X=$(printf")" x y)` arrives balanced and apparently complete
+# while bash runs the payload behind it. Delimiter counting was the last grammar
+# in this file; the test is now PRESENCE of substitution syntax, which cannot be
+# fooled that way and can only over-scan.
+# shellcheck disable=SC2016
+check "quoted closer fakes a balance"   ask   'X=$(printf")" x y) bash -c "rm -rf /etc"'
+# fnmatch has no POSIX bracket CLASSES, so this expands to /bin/bash for the
+# shell and to nothing for fnmatch. An unresolved glob is refused, not decoded.
+check "POSIX class in the interpreter"  ask   '/bin/ba[[:alpha:]]h -c "rm -rf /etc"'
+# An unreadable word may be a shell OR eval, and the two are read differently --
+# eval executes its ARGUMENTS, a shell its -c payload. Classifying it as only a
+# shell left the eval branch unreachable.
+check "ANSI-C spelled eval"             ask   "\$'eval' 'rm -rf /etc'"
+check "spliced eval"                    ask   "e\$'va'l 'rm -rf /etc'"
+check "ANSI-C eval, benign"             allow "\$'eval' 'echo hi'"
+# shellcheck disable=SC2016
+check "unalignable, benign payload"     allow 'X=foo"bar ( baz"$((1 + 2)) bash -c "echo hi"'
+# A subshell paren rides on the RAW token after group-stripping, so balancing the
+# whole token instead of the VALUE added a depth that never closed.
+# shellcheck disable=SC2016
+check "grouped torn assignment"         ask   '(X=$((1 + 2)) bash -c "rm -rf /etc")'
+# A wrapper-shaped token can be an OPTION ARGUMENT rather than the wrapper:
+# `env -u command ...` passes `command` to -u. Arity is undecidable statically,
+# so both readings are offered and unioned rather than one being chosen.
+check "env -u command hides a payload"  ask   'env -u command A-B=1 bash -c "rm -rf /etc"'
+check "env -C command hides a payload"  ask   'env -C command A-B=1 bash -c "rm -rf /etc"'
+check "env -u command, benign"          allow 'env -u command A-B=1 bash -c "echo hi"'
+
+echo "--- env operands bash would reject, env accepts (must warn) ---"
+check "env name with a space"            ask  'env "A B=x" bash -c "rm -rf /etc"'
+check "env name with punctuation"        ask  'env "A-B=x" bash -c "rm -rf /etc"'
+# ACCEPTED OVER-WARN, and the one the grammar-free scan buys with. Ground truth:
+#   command A-B=1 bash -c 'echo RAN'  -> "A-B=1: command not found", nothing runs.
+# The payload is extracted anyway, because the scan finds interpreters BY NAME at
+# any position and never asks whether the wrapper in front of them actually
+# execs. Answering that is shell SEMANTICS, one layer worse than the delimiter
+# grammar this scan exists to stop enumerating. Priced before it was accepted:
+# diffed against the previous implementation over 29,563 recorded agent commands,
+# 361 (1.22%) yield an extra payload, ZERO would newly trip any of the three
+# fail-CLOSED gates, and the advisory guard's prompt rate is UNCHANGED --
+# 27 of 1,200 sampled commands before and after. The extra payloads are inert.
+check "non-env wrapper over-warns (accepted)" ask 'command A-B=1 bash -c "rm -rf /etc"'
+
+echo "--- brace expansion spells a name too (must warn) ---"
+# The unreadable-word refusal covered substitutions and globs but not brace
+# expansion, and bash expands `ba{s..s}h` to bash and runs it (verified: it
+# prints). A name this scan cannot READ is refused, not guessed - the brace
+# belongs with the other spellings, not outside them.
+check "brace-expanded interpreter"      ask   'ba{s..s}h -c "rm -rf /etc"'
+check "brace-expanded, benign payload"  allow 'ba{s..s}h -c "echo hi"'
+check "brace-expanded eval"             ask   'ev{a..a}l "rm -rf /etc"'
+# ...and a brace that is not a command word must not start warning on its own.
+# shellcheck disable=SC2016
+check "brace in an argument is not one" allow 'awk "{print \$1}" access.log'
+
+echo "--- the fallback gate must not read ARGUMENTS as assignments (must allow) ---"
+# `_torn_assignment` scanned the whole segment, so an assignment-SHAPED argument
+# to a command that only prints its arguments tripped the fallback, the payload
+# behind it was extracted, and a fail-CLOSED gate blocked a commit that never
+# runs. Ground truth: `printf '%s\n' 'X=$(x)' bash -c 'echo RAN'` prints the
+# words, it does not run them. The scan now stops at the token the walk stopped
+# on, which is the only place debris can be.
+# shellcheck disable=SC2016
+check "assignment-shaped argument"      allow 'printf "%s" "X=$(x)" bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "assignment-shaped arg to echo"   allow 'echo "X=$(x)" bash -c "rm -rf /etc"'
+# ...while a real tear in the PREFIX is still caught, which is the case the
+# bound must not cost us.
+# shellcheck disable=SC2016
+check "prefix tear still caught"        ask   'X=$(printf x y) bash -c "rm -rf /etc"'
+
+echo "--- an OPENER names a command, a lone CLOSER is tear debris (must allow) ---"
+# The unreadable set takes openers only, for the same reason it never took `]`.
+# A tear LEAVES a closer: `X=${foo:-a b}` splits to `X=${foo:-a` / `b}` and
+# `X=$(printf x y)` to `X=$(printf` / `x` / `y)`. Reading `b}` / `y)` as
+# unreadable command words made the debris its own stand-in shell and the next
+# `-c` its option, so a fail-CLOSED gate blocked a command bash never runs.
+# Ground truth: `X=$(printf x y) echo -c 'RAN'` prints `-c RAN`, it runs nothing.
+# shellcheck disable=SC2016
+check "paren debris is not a command"   allow 'X=$(printf x y) echo -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "brace debris is not a command"   allow 'X=${foo:-a b} echo -c "rm -rf /etc"'
+# ...and the opener that DOES name a command still resolves. extglob prefixes
+# carry neither `*` nor `?`, and whether extglob is enabled is runtime state this
+# scan cannot see, so the paren itself is the signal.
+check "extglob interpreter"             ask   '/bin/@(ba)sh -c "rm -rf /etc"'
+# No benign twin for this spelling: a PAREN in the command word is refused by
+# careful-guard's own command-word rule before any payload is read, so it warns
+# whatever the payload says. Verified pre-existing on main, where the extglob
+# payload is not extracted at all and the prompt comes from that rule alone.
+
+echo "--- the prefix bound must follow the WALK, not a matching value (must warn) ---"
+# The bound was recovered by searching the token list for argv[0]'s VALUE, which
+# finds the FIRST equal token rather than the occurrence the walk stopped on. In
+# `env -u x X=$(printf x y) bash -c '<s>'` the earlier option ARGUMENT is also
+# `x`, so the scan covered `env -u x` alone, saw no assignment, suppressed the
+# fallback, and missed a payload bash really runs (verified). It is arithmetic
+# now -- _command_argv returns a SUFFIX, so len(toks) - len(argv) is the index.
+# shellcheck disable=SC2016
+check "option arg repeats argv0"        ask   'env -u x X=$(printf x y) bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "option arg repeats argv0, benign" allow 'env -u x X=$(printf x y) bash -c "echo hi"'
+# Process substitution tears exactly like the others and carries no `$`, so the
+# opener list had to name it. Ground truth: the child really runs.
+# shellcheck disable=SC2016
+check "process substitution value"      ask   'X=<(printf x y) bash -c "rm -rf /etc"'
+# shellcheck disable=SC2016
+check "process substitution, benign"    allow 'X=<(printf x y) bash -c "echo hi"'
+# shellcheck disable=SC2016
+check "output process substitution"     ask   'X=>(cat) bash -c "rm -rf /etc"'
+
+echo "--- property matrix: prefix x interpreter spelling x payload ---"
+# The example rows above are hand-picked, and twice now a reviewer found a
+# combination none of them covered (extglob, and `echo -c` behind a tear). This
+# varies the three axes independently instead: every way the walk can be torn,
+# crossed with every way the interpreter can be spelled, crossed with a
+# destructive and a benign payload. The invariant is the one the whole change
+# rests on -- the payload is read no matter how the launcher run is written --
+# and it holds in BOTH directions, so a rule that warns by over-extracting
+# everything fails the benign half.
+# shellcheck disable=SC2016  # the literal `$` IS the input under test
+_prefixes=(
+  ''                          # no prefix at all
+  'X=1 '                      # an ordinary, untorn assignment
+  'X=$((1 + 2)) '             # arithmetic tear
+  'X=${foo:-a b} '            # brace-expansion tear
+  'X=$(printf x y) '          # tear leaving a NAME-shaped token
+  'env A-B=$((1 + 2)) '       # env(1) operand, torn, not an identifier
+  'env -i '                   # no-arg wrapper option
+  'env -u FOO '               # value-taking wrapper option
+)
+_interps=(
+  'bash'                      # named outright
+  'sh'
+  '/bin/bash'                 # by path
+  '/bin/ba?h'                 # by glob
+  'ba{s..s}h'                 # by brace expansion
+  '/bin/@(ba)sh'              # by extglob
+)
+for _p in "${_prefixes[@]}"; do
+  for _i in "${_interps[@]}"; do
+    check "warns: ${_p}${_i}"  ask   "${_p}${_i} -c \"rm -rf /etc\""
+    # The benign half is skipped for a PAREN spelling, and only for it. A paren
+    # at command-word position is refused by careful-guard's own rule before any
+    # payload is read (pre-existing on main), so that row would assert which
+    # rule spoke rather than whether the payload was extracted -- and a tearing
+    # prefix moves the paren off command position, flipping the answer for a
+    # reason this matrix is not about. The destructive half still covers every
+    # prefix for this spelling.
+    case $_i in *'('*) continue ;; esac
+    check "quiet: ${_p}${_i}"  allow "${_p}${_i} -c \"echo hi\""
+  done
+done
+
 # ACCEPTED LIMIT, pinned so the trade stays visible: a command word held in a
 # VARIABLE is not resolved. Detecting it means emulating bash assignment
 # semantics - `export`/`declare`/`typeset`/`readonly`, stacked and interleaved,

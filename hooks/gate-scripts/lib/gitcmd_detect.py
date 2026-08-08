@@ -39,6 +39,7 @@ deliberate evader.
 """
 import os
 import re
+import fnmatch
 import shlex
 
 # Command wrappers that transparently precede the real command. Basename-matched
@@ -404,10 +405,20 @@ def _command_argv(seg, target, with_raw=False):
     # aligned at all (see _raw_tokens); callers then fail CLOSED.
     # Only when the caller asked: _raw_tokens re-lexes the segment, so computing
     # it unconditionally made every ordinary _command_argv call ~2x slower.
+    # ...or when an assignment VALUE carries a paren or backtick, where the
+    # DEQUOTED token cannot answer whether a substitution is open: `X=$((1` is a
+    # real tear that must be rejoined, while `X="("` is a complete assignment
+    # whose paren is data. Reading the dequoted form conflates them, and both
+    # readings are fail-OPEN on the other case (one swallows `bash -c` and its
+    # payload, the other stops the walk at the tear). Computed here rather than
+    # lazily inside the loop so it stays in LOCKSTEP with the token deletions
+    # below. The hint is rare, so this keeps the ~2x re-lex off the common path.
     raw_toks = _raw_tokens(seg) if with_raw else None
     toks, raw_toks = _strip_leading_groups(toks, raw_toks)
     i = 0
     saw_wrap = False
+    saw_env = False
+    opts_done = False
     prev_dash = False
     case_state = None
     while i < len(toks):
@@ -421,6 +432,20 @@ def _command_argv(seg, target, with_raw=False):
         # — a fail-OPEN in every gate sharing this detector (pre-commit, pre-pr,
         # pre-merge). Found via #505.
         if _ASSIGN_TOK_RE.match(t):
+            # ...and consume a VALUE that tore across tokens. shlex splits at
+            # whitespace with no idea that a substitution is open, so
+            # `X=$((1 + 2)) bash -c "rm -rf /etc"` arrives as `X=$((1` / `+` /
+            # `2))` / `bash` / ... . Advancing by one left `+` in the command
+            # slot, the walk broke there, and the payload was never extracted:
+            # `_shell_payloads` returned [] and every gate sharing this detector
+            # saw a command with no rm in it. Fail-OPEN, found on PR #555.
+            #
+            # Tracked by BALANCE, not by learning which substitution spellings
+            # can hold whitespace - counting is not a spelling ladder. A literal
+            # paren inside the value closes it EARLY, which only resumes the
+            # walk sooner (safe: more of the command is read); one that holds it
+            # open runs to the end of the token run, which reads as "no command
+            # found" exactly as before this branch existed.
             i += 1
             prev_dash = False
         elif t == '!':
@@ -471,15 +496,74 @@ def _command_argv(seg, target, with_raw=False):
             # redirection prefix (>, >>, 2>, &>, N<, >file, 2>/dev/null, ...)
             i += _redirection_span(t, toks, i)
             prev_dash = False
-        elif base in _WRAPPERS:
-            saw_wrap = True
+        elif saw_wrap and prev_dash and not is_target:
+            # BEFORE the wrapper branch: this token is the ARGUMENT of the
+            # preceding wrapper option, whatever it is named. Letting the
+            # wrapper branch claim it first cleared `saw_env`, so
+            # `env -u command A-B=1 git commit` read `A-B=1` as argv[0] and the
+            # git commit behind it never reached the gate (verified: it runs).
+            # `not is_target` still protects the executable we must never
+            # swallow, so a real `git`/`gh` cannot be eaten as an option value.
             i += 1
             prev_dash = False
-        elif saw_wrap and t.startswith('-'):
+        elif base in _WRAPPERS:
+            saw_wrap = True
+            # Only env(1) itself takes `name=value` OPERANDS. Tracked separately
+            # from saw_wrap so the loose assignment rule below cannot fire after
+            # an unrelated wrapper: bash does NOT run `command A-B=1 bash -c
+            # '<s>'` (it tries to execute `A-B=1` and exits 127, verified), so
+            # treating that operand as an assignment and walking on to the child
+            # payload over-warns on a command that never runs one.
+            # Set unconditionally, not only on the way UP: the rule belongs to
+            # the wrapper currently being parsed, so consuming a NEW wrapper as
+            # env's utility must also END env's operand run. Leaving it latched
+            # let `env command A-B=1 bash -c '<s>'` read `A-B=1` as an
+            # assignment and walk on to the payload, although `command` exits
+            # 127 there and the child never runs (verified).
+            saw_env = base == 'env'
+            opts_done = False   # a new wrapper restarts option parsing
             i += 1
-            prev_dash = True
-        elif saw_wrap and prev_dash and not is_target:
-            # a single option-ARGUMENT to the preceding wrapper option
+            prev_dash = False
+        elif saw_wrap and not opts_done and t.startswith('-'):
+            i += 1
+            # `--` ENDS the wrapper's option processing, so everything after it
+            # is an OPERAND. Two ways that mattered, and clearing only the first
+            # left the second: the option-ARGUMENT branch above swallowed the
+            # real utility (`env -- printf A-B=1 bash -c '<s>'` read `printf` as
+            # `--`'s value, so argv[0] became `bash` and a payload came out of a
+            # command that only PRINTS), and this branch kept reading later
+            # dash-prefixed operands as options (`env -- -i bash -c '<s>'`, where
+            # env tries to EXECUTE `-i` and exits 127, so nothing runs). Both are
+            # false positives in three fail-CLOSED gates. Operand parsing itself
+            # continues, so a `name=value` after `--` is still an assignment.
+            if t == '--':
+                opts_done, prev_dash = True, False
+            else:
+                prev_dash = True
+        elif saw_env and not is_target and _ENV_ASSIGN_TOK_RE.match(t):
+            # An environment assignment by env(1) rules rather than bash ones.
+            # `_ASSIGN_TOK_RE` above requires a valid shell identifier, which is
+            # right for a bash assignment PREFIX but too strict for a wrapper
+            # operand: env(1) adds any `name=value` operand to the environment
+            # and treats the FIRST operand without an `=` as the utility, with
+            # no identifier rule on `name`. Bash itself exports functions under
+            # names that are not identifiers -- `BASH_FUNC_mktemp%%=() { ... }`
+            # -- so `env "BASH_FUNC_mktemp%%=() { echo /etc; }" bash -c '<s>'`
+            # left that operand looking like the command word, argv[0] was not
+            # an interpreter, and the `-c` payload was never extracted: the same
+            # fail-OPEN class as the ambiguous-arity one, reached by a different
+            # route. Ground truth: that command really does make `mktemp -d`
+            # return /etc inside the child. Found while grinding PR #555.
+            # Scoped to `saw_wrap` and guarded by `not is_target`, so a bash
+            # assignment prefix keeps the stricter identifier rule and a target
+            # executable can never be consumed as an assignment.
+            #
+            # Consumed by the SAME span rule as a bash assignment prefix, not by
+            # a bare `i += 1`: an env(1) operand can carry a whitespace-bearing
+            # expansion too, and `env A-B=$((1 + 2)) bash -c '<s>'` really does
+            # run the child (verified). Advancing one token left `+` in the
+            # command slot, the walk broke there, and the payload was never
+            # extracted - the same fail-OPEN one branch over.
             i += 1
             prev_dash = False
         else:
@@ -1454,20 +1538,307 @@ def _env_S_payload(a, toks, k):
     return None
 
 
+def _norm_cmd_word(tok):
+    """The command word reduced to a basename, with a leading `$` dropped."""
+    return tok.lstrip('$').rsplit('/', 1)[-1]
+
+
+def _interpreter_name(tok):
+    """The interpreter this token may name, or None. Canonical, never the token.
+
+    Canonical because the caller puts the result in argv[0] and the payload
+    reader re-tests membership literally, so the token's own spelling would fail
+    the very test that selected it.
+
+    THREE ways to qualify, and the third is the one that terminates:
+
+      bash                 named outright
+      /bin/ba?h            a GLOB reaching the real binary - the literal names
+                           are matched against the token read as a pattern
+      b$'a'sh, $'ba\\u0073h'  UNREADABLE - shlex hands back `b$ash` and
+                           `$ba\\u0073h`, and bash runs both as bash
+
+    The third case is deliberately NOT decoded. Decoding means enumerating how a
+    name can be spelled - `$'...'` concatenation, `\\x`, `\\0`, `\\u`, `\\U`, the
+    next one after that - which is the ladder this file exists to stop climbing.
+    So a command word this scan cannot READ is treated as possibly-an-interpreter
+    instead, the same inversion careful-guard applies at command position: an
+    unreadable command word is refused rather than guessed.
+
+    The stand-in name is `sh` because _interpreter_payloads is shell-AGNOSTIC -
+    it returns the whole tail after the first `c`-cluster precisely so it never
+    has to model per-shell option arity - so which shell it is does not change
+    what gets scanned.
+    """
+    name = _norm_cmd_word(tok)
+    if name in _INTERPRETERS:
+        return name
+    if any(ch in name for ch in '*?['):
+        for i in _INTERPRETERS:
+            if fnmatch.fnmatchcase(i, name):
+                return i
+        # fnmatch is not bash: it has no POSIX bracket CLASSES, so
+        # `/bin/ba[[:alpha:]]h` expands to /bin/bash for the shell and to
+        # nothing here. Teaching it the class grammar is the ladder one more
+        # time, so an unresolved GLOB is refused exactly like an unreadable
+        # word - it might name a shell, and this scan cannot say it does not.
+        return 'sh'
+    if _unreadable_word(tok):
+        return 'sh'                     # unreadable - refuse, do not decode
+    return None
+
+
+def _unreadable_word(tok):
+    """True iff this command word cannot be resolved statically.
+
+    Brace expansion belongs here with the substitutions and globs: bash expands
+    `ba{s..s}h` to `bash` and runs it (verified), and no reading of the literal
+    token says so. Left out of the first cut, which is exactly the shape the
+    refusal exists to cover -- a name this scan cannot READ is refused, not
+    guessed. Deciding whether a brace really expands (a `,` or `..` inside, and
+    unquoted -- provenance shlex has already dropped) is the grammar this file
+    stopped enumerating, so PRESENCE of a brace is enough.
+
+    Parens are here for extglob, whose `+(`/`@(`/`!(` prefixes carry neither `*`
+    nor `?`: with the option set, `/bin/@(ba)sh` expands to /bin/bash and runs
+    (verified under `bash -O extglob`). Listing the five prefixes would be the
+    ladder again -- and whether extglob is even ENABLED is runtime state this
+    scan cannot see -- so the paren itself is the signal.
+
+    OPENERS only, which is why `]` was never in this set either. A lone CLOSER
+    is what a tear LEAVES: shlex splits `X=${foo:-a b}` into `X=${foo:-a` / `b}`
+    and `X=$(printf x y)` into `X=$(printf` / `x` / `y)`, so reading `b}`/`y)`
+    as unreadable command words made the debris its own stand-in shell and any
+    later `-c` its option -- `X=$(printf x y) echo -c 'git commit'` then blocked
+    a commit bash never runs. An expansion that really names a command carries
+    its opener; debris carries only the tail.
+    """
+    return '$' in tok or '`' in tok or any(c in tok for c in '*?[{(')
+
+
+def _torn_assignment(toks, upto=None):
+    """True iff a token read as an assignment opens something it does not close.
+
+    ONE token, no span. `X=$(printf` carries an opener with no closer, so the
+    walk that consumed it as a complete assignment cannot have found the real
+    command word - whatever it landed on next is debris. Deliberately blind to
+    WHERE the value ends: computing that is the delimiter grammar this file
+    stopped enumerating, and the answer here only decides whether to look again.
+
+    `upto` bounds the scan to the PREFIX the walk actually crossed. Scanning the
+    whole segment read ARGUMENTS as assignments, so
+    `printf '%s\n' 'X=$(x)' bash -c 'git commit'` tripped the fallback and the
+    gate blocked a commit that printf only PRINTS (verified: it prints). Over-
+    firing is the safe direction for an advisory warning but NOT here - these
+    payloads also feed three fail-CLOSED gates, where a false positive is a
+    stalled session. Debris can only appear at or before the token the walk
+    stopped on, so bounding there loses no real tear.
+    """
+    for tok in toks[:upto]:
+        if not _ASSIGN_TOK_RE.match(tok) and not _ENV_ASSIGN_TOK_RE.match(tok):
+            continue
+        value = tok.partition('=')[2]
+        # PRESENCE, not balance. Counting delimiters was the last piece of
+        # grammar left in here and it failed the same way everything else did:
+        # shlex removes quote provenance, so a QUOTED literal closer cancels a
+        # live opener and the counts balance on a token that is still torn.
+        # `X=$(printf")" x y) bash -c ...` arrives as `X=$(printf)` - balanced,
+        # apparently complete, and bash runs the payload behind it (verified).
+        #
+        # So the question is weakened until it cannot be wrong: does this value
+        # contain substitution syntax AT ALL? If it does, the walk may have been
+        # torn, and looking again is cheap. This can only over-fire, and
+        # over-firing costs one extra scan of a segment.
+        # Process substitution belongs with the rest: `X=<(printf x y)` tears the
+        # same way and bash runs the command behind it (verified). It carries no
+        # `$`, so the substitution list had to name it.
+        if any(o in value for o in ('$(', '${', '$[', '`', '<(', '>(')):
+            return True
+    return False
+
+
+def toks_once(seg, _cache={}):
+    """_tokenize(seg) memoised for the length of one scan.
+
+    The any-position walk below asks for the same token list repeatedly; the
+    quadratic suffix-rebuild it replaces measured 4.58s on a 2,400-token
+    segment, past the guard 3s alarm, and re-lexing per token would restore it.
+    """
+    got = _cache.get(seg)
+    if got is None:
+        if len(_cache) > 256:
+            _cache.clear()
+        try:
+            got = _tokenize(seg)
+        except Exception:
+            got = []
+        _cache[seg] = got
+    return got
+
+
 def _shell_payloads(cmd):
     """Strings an interpreter/eval will itself execute — `bash -c '<s>'`,
     `sh -c '<s>'`, `eval '<s>' '<t>'`, etc. — for recursive scanning."""
     out = []
     for _op, seg in split_segments(cmd):
         out.extend(_env_split_string_payloads(seg))
-        argv = _command_argv(seg, '')  # '' = no exe guard, just strip launchers
-        if not argv:
-            continue
-        base = argv[0].rsplit('/', 1)[-1]
-        if base in _INTERPRETERS:
-            out.extend(_interpreter_payloads(argv))
-        elif base == 'eval':
-            out.append(' '.join(argv[1:]))
+        # TWO readings of the launcher run, for the reason _consumer_words
+        # spells out above: wrapper-option arity is genuinely ambiguous
+        # statically. `env -i bash -c '<s>'` has a NO-ARG option, while
+        # `env -u FOO bash -c '<s>'` has a value-taking one, and a single
+        # reading must guess. The '' reading guesses "takes a value", so on
+        # `env -i bash -c ...` it consumed `bash` as the argument of `-i`,
+        # argv[0] became `-c`, no interpreter was recognised, and the payload
+        # was never extracted at all -- so `env -i bash -c 'rm -rf /etc'`
+        # scanned as if it contained no rm. That is fail-OPEN, and it is what
+        # the `target` parameter of _command_argv exists to prevent: naming the
+        # interpreters protects them from being swallowed by a preceding
+        # option. Read BOTH ways and union the results, which is fail-CLOSED:
+        # one reading always lands on the real interpreter.
+        # Duplicates are possible when the two readings agree; they are deduped
+        # only to avoid rescanning the same string, never for correctness --
+        # _all_chunks already documents that an over-count merely blocks while
+        # an under-count is a bypass.
+        seen = set()
+        _first_reading = _command_argv(seg, '')
+        readings = [_first_reading,
+                    _command_argv(seg, tuple(_INTERPRETERS) + ('eval',))]
+        # ...plus a GRAMMAR-FREE reading: every interpreter token, wherever it
+        # sits. This is the terminating move (PR #555, 2026-08-06 council).
+        #
+        # Locating the command word means deciding where an assignment VALUE
+        # ends, and shlex tears `X=$((1 + 2))` into `X=$((1` / `+` / `2))`
+        # without knowing a substitution is open. Rebuilding that span by
+        # counting delimiters was tried and abandoned: it has to be
+        # context-SENSITIVE where bash is, so `(` is structure in `$((`, data in
+        # `${x:-(}`, and there is always one more context (`$[1 + 2]`,
+        # `${x[(e)]}`). Two review rounds produced five verified bypasses in
+        # that scanner alone - more defects than the single bug it fixed.
+        #
+        # So the position question is not answered, it is DROPPED. An
+        # interpreter names itself; scanning for the name needs no grammar and
+        # has no next case to enumerate. The residual failure surface moves down
+        # to shlex tokenization itself, which no span heuristic could reach.
+        #
+        # SCOPE, pinned so the remaining hole stays visible: this recovery is
+        # here, so it covers the NESTED route (a payload an interpreter runs).
+        # The DIRECT route still walks unaided - `_scan_commit` calls
+        # _command_argv(seg, 'git') - so `X=$(printf x y) git commit` is missed
+        # and the commit really does run (verified). That is NOT a regression:
+        # main misses it identically, and closing it means synthesizing an argv
+        # for a scanner that derives `target_dir`, `-C` authority and cd trust
+        # from argv POSITION, which is the marker-scoping logic the gates rely
+        # on - a different and much larger blast radius than payload extraction.
+        # Tracked separately rather than absorbed here; this change's invariant
+        # is that it introduces no new fail-open, not that it closes every one.
+        #
+        # MEASURED COST, because "over-extraction is the safe direction" is
+        # true only for the advisory guard - these payloads also feed three
+        # FAIL-CLOSED gates, where a false positive is a stalled session. Run
+        # against 29,563 recorded agent commands, diffed against the previous
+        # implementation: 361 commands (1.22%) yield an extra payload, the
+        # number that would NEWLY trip a fail-closed gate is ZERO, and - the
+        # measurement that actually prices this for the operator - the advisory
+        # guard\x27s prompt rate is UNCHANGED: 27 of 1,200 sampled commands
+        # before and after. The extra payloads are inert; they get scanned and
+        # contain nothing worth warning about.
+        # (Ungated it was 61; the gate below halves the over-read as well as
+        # closing the echo/printf false positives.)
+        # Quoted runs stay single shlex tokens, so a `bash -c "git commit"`
+        # sitting inside an argument never fires; only a real, separate-token
+        # interpreter run does, which is what keeps that population narrow.
+        #
+        # GATED, so it is a fallback and not a second opinion. It runs when the
+        # conservative walk cannot have read the command word: either it landed
+        # on nothing, or on a token no command is named (`+`, `2))` - the debris
+        # shlex leaves when it tears an assignment), or the walk CONSUMED an
+        # assignment whose own token opens a substitution that does not close in
+        # it. That last signal is what a shape test alone could not give:
+        # `X=$(printf x y) bash -c "git commit"` leaves the perfectly
+        # name-shaped `x` in the command slot, and bash runs the commit.
+        #
+        # Note it is a ONE-TOKEN openness test, not a span: it asks only whether
+        # this token starts something it does not finish, never where the value
+        # ends. Over-firing is the safe direction, so `X=${x:-(}` (balanced in
+        # bash, unbalanced to a paren count) merely scans twice.
+        # The tear can only lie in the prefix the walk crossed, so the scan stops
+        # at the token it stopped on - see _torn_assignment. By ARITHMETIC, not
+        # by locating argv[0]'s value: _command_argv returns a SUFFIX of this
+        # same token list, so `len(toks) - len(argv)` is the command word's
+        # index even when the walk dropped leading group punctuation (both strip
+        # helpers only delete tokens ahead of it or edit one in place, and a
+        # deletion shifts both lengths together). Searching by value picked the
+        # FIRST equal token instead of the occurrence the walk used, so
+        # `env -u x X=$(printf x y) bash -c '<s>'` matched the earlier option
+        # ARGUMENT `x`, scanned a prefix too short to contain the tear, and the
+        # payload was missed - the fail-OPEN this bound exists to avoid.
+        upto = (len(toks_once(seg)) - len(_first_reading) + 1
+                if _first_reading else None)
+        if not _first_reading or not _READABLE_NAME.match(_first_reading[0]) \
+                or _torn_assignment(toks_once(seg), upto):
+            toks = toks_once(seg)
+            first_interp = first_eval = -1
+            canon = {}
+            for k, tok in enumerate(toks):
+                # An assignment is never a command word, so it is never the
+                # interpreter. Without this the torn token that TRIPPED the gate
+                # was itself read as the stand-in shell -- it contains a `$`, so
+                # `_interpreter_name` refused it -- and any later `-c` became its
+                # option: `X=$(printf x y) echo -c 'git commit'` extracted a
+                # payload and a fail-CLOSED gate blocked a commit bash never
+                # runs (verified: it prints `-c git commit`). Both spellings,
+                # because an env(1) operand is an assignment by env's rules and
+                # is equally not a command word.
+                # The env(1) spelling is the LOOSE one (`^[^=]+=`, no identifier
+                # rule), so it also matches an EXPANSION that merely contains an
+                # `=`: `${X:=bash} -c '<s>'` runs bash when X is unset
+                # (verified), and skipping it hid the payload. Only skip a loose
+                # match this scan can READ -- an unreadable token stays a
+                # candidate, which is the fail-CLOSED direction. The strict bash
+                # form needs no such guard: `^\w+=` cannot match `${...}`.
+                if _ASSIGN_TOK_RE.match(tok) or (
+                        _ENV_ASSIGN_TOK_RE.match(tok) and not _unreadable_word(tok)):
+                    continue
+                name = _interpreter_name(tok)
+                if name is not None and first_interp < 0:
+                    first_interp, canon[k] = k, name
+                # BOTH, not elif. An unreadable word resolves to the `sh`
+                # stand-in, which used to consume the token and leave the eval
+                # branch unreachable - so `$'eval' "git commit"` produced no
+                # payload while bash ran the commit (verified). Unreadable means
+                # unreadable: it may be a shell OR eval, and the two are read
+                # differently (eval executes its ARGUMENTS, a shell its `-c`
+                # payload), so both readings are offered.
+                if first_eval < 0 and (_norm_cmd_word(tok) == 'eval'
+                                       or name == 'sh' and _unreadable_word(tok)):
+                    first_eval = k
+                if first_interp >= 0 and first_eval >= 0:
+                    break
+            # ONLY the earliest of each, which is exact rather than a cap:
+            # _interpreter_payloads returns every token after the first
+            # `c`-cluster at or past its start, so a later candidate's payloads
+            # are a SUBSET of the earliest one's. Taking all of them re-scanned
+            # overlapping tails and measured 5.37s on 9,600 `bash x` pairs, past
+            # the guard 3s alarm.
+            for k, canon_default in ((first_interp, None),
+                                     (first_eval, 'eval')):
+                if k >= 0:
+                    head = canon[k] if canon_default is None else canon_default
+                    readings.append([head] + toks[k + 1:])
+        for argv in readings:
+            if not argv:
+                continue
+            base = argv[0].rsplit('/', 1)[-1]
+            if base in _INTERPRETERS:
+                found = _interpreter_payloads(argv)
+            elif base == 'eval':
+                found = [' '.join(argv[1:])]
+            else:
+                continue
+            for payload in found:
+                if payload not in seen:
+                    seen.add(payload)
+                    out.append(payload)
     return out
 
 
@@ -1865,6 +2236,28 @@ _GH_ENV_ASSIGN_RE = re.compile(r'^(?:GH_REPO|GH_HOST)\+?=')
 # command after it went undetected by every gate using _command_argv.
 _ASSIGN_TOK_RE = re.compile(r'^\w+(?:\[.*\])?\+?=')
 
+
+# A token that could be the NAME of a command - a bare word or a path. Used only
+# to ask whether the conservative walk landed on a command word at all: `+` and
+# `2))` (the debris shlex leaves when it tears `X=$((1 + 2))`) are not names, and
+# neither is a `NAME=value` operand. Deliberately not a validity check on the
+# command - a name this rejects means the walk got lost, nothing more.
+# `:` and `[` are real command NAMES (the no-op builtin and test), not debris, so
+# rejecting them said "the walk got lost" about a walk that read its command word
+# perfectly -- `: git commit` then recovered a commit that only the no-op runs.
+_READABLE_NAME = re.compile(r'^/?[\w.@:-]+(?:/[\w.@:-]+)*$|^\[$')
+
+# An env(1) `name=value` OPERAND, which carries no shell-identifier rule -- see
+# the branch in _command_argv that uses it. Deliberately separate from
+# _ASSIGN_TOK_RE: a bash assignment PREFIX must keep the stricter identifier
+# form, and only a token following a WRAPPER is read by these looser rules.
+# `name` here is any non-empty run of characters up to the first `=`, INCLUDING
+# whitespace: env(1) reads its operand after the shell has already removed the
+# quotes, so `env 'A B=x' bash -c '<s>'` really does set a variable named `A B`
+# and really does run the child (verified). An earlier `[^\s=]+` spelling
+# excluded whitespace and therefore stopped the launcher walk at that operand,
+# so the payload was never extracted -- the same fail-OPEN one layer down.
+_ENV_ASSIGN_TOK_RE = re.compile(r'^[^=]+=')
 
 def _env_selector_in_prefix(seg):
     """True iff `seg` carries a `GH_REPO=` / `GH_HOST=` assignment in its PREFIX.

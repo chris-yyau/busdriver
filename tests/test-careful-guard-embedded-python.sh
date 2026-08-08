@@ -117,9 +117,9 @@ fi
 # The inner SIGALRM must leave headroom under the OUTER hook timeout, or the
 # scanner never gets to print the conservative verdict it arms the alarm for:
 # the outer timer starts earlier (command extraction, two Python startups) and
-# kills the hook with NO decision, which the harness reads as allow. Both were
-# 3s, so the outer always won. A comment cannot hold this - the two numbers sit
-# in different files and only this assertion couples them.
+# kills the hook before it emits that decision. Both were 3s, so the outer
+# always won and the scan produced nothing. A comment cannot hold this - the two
+# numbers sit in different files and only this assertion couples them.
 inner=$(grep -oE 'signal\.alarm\([0-9]+\)' "$GUARD" | grep -oE '[0-9]+' | head -1)
 outer=$(python3 - hooks/hooks.json <<'PY'
 import json, sys

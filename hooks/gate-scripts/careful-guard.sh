@@ -910,6 +910,38 @@ def recursive_targets(argv):
         tok = structural
         if opts and tok == "--":
             opts = False
+        elif opts and tok.startswith("-") \
+                and any(ch in raw for ch in "$" + chr(96)):
+            # An option carrying an expansion is refused, not read.
+            #
+            # Stripping the expansion is only sound when it VANISHES, which is
+            # the case it was added for: `$(true)-rf` leaves `-rf` and the flag
+            # still registers. But an expansion can equally SUPPLY the letter -
+            # `R=r; rm -${R}f` strips to `-f`, so this read a non-recursive
+            # delete while bash ran `rm -rf` (verified: main warns on it, and
+            # this branch did not until now). `--${R}ecursive` is the same
+            # defect in the long form: it strips to `--ecursive`, which fails
+            # the unambiguous-prefix test below and falls through as an
+            # unrecognised long option.
+            #
+            # Vanishing and supplying are indistinguishable without expanding,
+            # so the unreadable spelling is refused rather than guessed - the
+            # same inversion applied at command position. It can only over-warn
+            # (`rm -${X}f` with X=v prompts), which is the correct direction for
+            # an advisory guard.
+            #
+            # No length floor: `-${R}` strips to a bare `-`, and requiring more
+            # than one character let exactly that shape through while bash ran
+            # `rm -r`.
+            #
+            # KNOWN residual, NOT introduced here - both are allowed on main
+            # too, so they are recorded rather than folded into a regression
+            # fix: an expansion supplying the leading dash (`R=-rf; rm ${R}`)
+            # never reaches this branch because the stripped token is not an
+            # option at all, and `--${R}` strips to `--`, which the option
+            # TERMINATOR branch above claims first. Both need the terminator
+            # and operand paths to consult `raw`, which is a wider change.
+            recursive = True
         elif opts and len(tok) >= 3 and tok.startswith("--") \
                 and "recursive".startswith(tok[2:]):
             # GNU rm accepts any unambiguous prefix of --recursive (--r, --rec,

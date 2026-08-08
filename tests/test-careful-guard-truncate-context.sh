@@ -613,6 +613,26 @@ check "separated client stays readable"  allow 'psql${IFS}-c${IFS}"SELECT 1"'
 # way to spell a separator — so the whole argv hid inside one token.
 # shellcheck disable=SC2016
 check "nested separator expansion"       ask  '${x:-${IFS}}truncate${x:-${IFS}}-s${x:-${IFS}}0${x:-${IFS}}/tmp/x'
+
+# An expansion in an OPTION is stripped to decide option-vs-operand, which is
+# sound only when it VANISHES. It can equally SUPPLY the letter, and the two are
+# indistinguishable without expanding, so the unreadable spelling is refused.
+# shellcheck disable=SC2016
+check "expansion supplies the r"         ask  'R=r; rm -${R}f /important/data'
+# The same defect in the long form: `--${R}ecursive` strips to `--ecursive`,
+# which fails the unambiguous-prefix test and read as an unknown long option.
+# shellcheck disable=SC2016
+check "expansion supplies long r"        ask  'R=r; rm --${R}ecursive /important/data'
+# The VANISHING case is why stripping exists and must keep working.
+# shellcheck disable=SC2016
+check "expansion vanishes, flag stays"   ask  'rm $(true)-rf /etc'
+# ...including when the expansion supplies the WHOLE short cluster, so the
+# stripped token is a bare `-`. A length floor here let this one through.
+# shellcheck disable=SC2016
+check "expansion is the whole cluster"   ask  'R=r; rm -${R} /important/data'
+# Refusing the unreadable must not swallow the non-recursive case outright: a
+# plain `-f` with no expansion in it still clears.
+check "plain -f stays non-recursive"     allow 'rm -f /important/data'
 # shellcheck disable=SC2016
 check "nested separator, benign"         allow '${x:-${IFS}}echo${x:-${IFS}}hello'
 # The SPECIAL parameters are expansions too, and the most reliably empty ones

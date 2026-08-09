@@ -217,6 +217,15 @@ _has_cli() {
 # shortcut, a pi anywhere on PATH got added to a `--cli all` batch and then
 # failed preflight, which fails the WHOLE batch. The candidate list is the
 # contract; duplicating it loosely here is what broke it.
+# NOT VERSION-GATED, deliberately. dispatch_one's pi arm refuses any binary
+# whose `--version` doesn't match the pinned $BUSDRIVER_PI_PROBED_VERSION, and
+# that preflight is the SINGLE authority on eligibility. Duplicating the check
+# here was tried on PR #591 and removed: the copy had to be bounded (a hang
+# during discovery has no deadline above it), which needed a capture file, a
+# race-free name, and a size cap — and the size cap reintroduced the divergence
+# the copy existed to close, because a truncated version string can match in one
+# place and not the other. Selection is therefore optimistic — see the KNOWN
+# LIMITATION below for what that currently costs.
 _pi_available() {
   /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
@@ -225,6 +234,23 @@ case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
 h="$(eval echo "~$u")" || exit 1
 case "$h" in /*) ;; *) exit 1 ;; esac
 [ -d "$h" ] || exit 1
+# PATH CHECK ONLY — NO VERSION PROBE. Selection deliberately does not try to
+# predict the preflight's verdict. It used to: a version probe was duplicated
+# here so `--cli all` would not pick a pi the preflight would reject. That
+# duplicate then had to be bounded (a hang here has no deadline above it), which
+# needed a capture file, which needed a safe name, which needed a size limit —
+# and the size limit reintroduced the very divergence the duplicate existed to
+# remove, since a truncated version string can match here and not there. Every
+# bound on a second implementation of a check spawns the next gap between them.
+#
+# KNOWN LIMITATION, stated rather than papered over: because a deterministic
+# setup failure still reports `error`, a stale or version-mismatched pi on the
+# trusted path DOES still fail an otherwise successful `--cli all` batch. The
+# proper fix is a `skipped` status, which changes the shared batch loop's
+# semantics for every CLI (retry interaction, audit log, exit code) and belongs
+# in its own change rather than riding along here. What this function guarantees
+# today is narrower and still worth having: there is exactly ONE version probe in
+# the codebase, so selection and preflight cannot disagree about eligibility.
 for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
   [ -f "$c" ] && [ -x "$c" ] && exit 0
 done
@@ -778,7 +804,16 @@ CHILD
                     # shell, and an exported `tr` function could print the expected
                     # version and wave a mismatched pi through. Bash parameter
                     # expansion strips the whitespace with no command word at all.
-                    _pi_ver="$(/usr/bin/env -i PATH="$_pi_path" "$_pi_bin" --version 2>/dev/null)" || true
+                    # THE EXIT STATUS COUNTS. This is the ONLY version probe in the
+                    # codebase (`_pi_available` is a path check by design — see its
+                    # header), so it has to be right on its own: a pi that prints
+                    # 0.84.1 and then exits nonzero has not answered the question,
+                    # and treating matching stdout from a failing probe as proof
+                    # would admit a binary whose `--version` does not work. A blank
+                    # `_pi_ver` fails the gate below.
+                    _pi_ver_rc=0
+                    _pi_ver="$(/usr/bin/env -i PATH="$_pi_path" "$_pi_bin" --version 2>/dev/null)" || _pi_ver_rc=$?
+                    [[ "$_pi_ver_rc" -eq 0 ]] || _pi_ver=""
                     _pi_ver="${_pi_ver//[[:space:]]/}"
                     # FAIL CLOSED on drift or an unreadable version. This lane's
                     # write denial is observed behaviour of `--tools read` and the
@@ -1178,8 +1213,12 @@ CHILD
                         # one can do worse. Nothing comes between a possibly written
                         # credential and its removal.
                         _pi_wipe
-                        echo "Error: could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi.model at an API-key provider." >&2
-                        exit_code=1
+                        # Routed through _pi_setup_fail (not a bare echo+exit_code=1)
+                        # so this deterministic failure also lands in $outfile and
+                        # sets _pi_setup_failed — otherwise the shared retry loop
+                        # sees an empty outfile and pays the full 5s/10s/20s backoff
+                        # retrying a projection that cannot succeed on any attempt.
+                        _pi_setup_fail "could not project a static API credential for '${_pi_prov}' into a private HOME for pi — refusing to dispatch with the full credential store exposed. Either python3 is unavailable, or the provider is not authenticated (try: pi auth check --provider ${_pi_prov}), or it uses a refreshable/OAuth credential, which this lane will not project because pi's in-jail token refresh would be discarded and could invalidate your real one. Point .pi.model at an API-key provider."
                     else
                     # `env -i` wipes PI_* and any injected environment (exported
                     # bash functions included) while KEEPING the inherited CWD —
@@ -1438,6 +1477,12 @@ CHILD
     [[ $exit_code -eq 124 ]] && status="timeout"
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
     [[ "$escalated" -eq 1 ]] && status="droid-fallback"
+    # NOTE: a deterministic setup failure (unprobed pi version, no python3,
+    # provider not authenticated) still reports `error` and so fails a `--cli all`
+    # batch for every other voice. That is worth fixing, but NOT here — a
+    # `skipped` status changes the shared batch loop's semantics for every CLI
+    # (retry interaction, audit log, exit code), which is a change that needs its
+    # own review rather than a rider on the pi lane. Tracked separately.
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }

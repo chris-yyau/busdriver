@@ -141,6 +141,34 @@ else
   ok "_pi_available resolves the home dir inside a sterile child (eval cannot be shadowed there)"
 fi
 
+# SELECTION MUST NOT RE-IMPLEMENT THE PREFLIGHT. `_pi_available` answers "could
+# pi plausibly run here", not "will the preflight accept it". A version probe was
+# duplicated here on PR #591 and removed: bounding the copy needed a capture file,
+# a race-free name and a size cap, and the size cap reintroduced the very
+# divergence the copy existed to close — a truncated version string can match in
+# one place and not the other. One probe, in the preflight, is the invariant.
+if grep -qF 'PI_PROBED_VERSION' <<<"$_AVAIL_FN"; then
+  fail "_pi_available re-implements the preflight's version check — the two WILL diverge; let the preflight decide"
+else
+  ok "selection is a path check only; the preflight is the single authority on eligibility"
+fi
+
+# The version gate must judge on the probe's EXIT STATUS, not stdout alone: a pi
+# that prints the pinned version and then exits nonzero has a broken `--version`
+# and has not answered the question. Asserted STATICALLY, against the production
+# lines. An earlier attempt here replayed the logic against fake binaries inside
+# the test — which proved nothing, because it would have passed unchanged if
+# production reverted to `|| true`. A test that re-implements the code under test
+# is not a behavioural test; it is a second implementation with no assertion
+# between them.
+if grep -qE '_pi_ver="\$\(.*--version 2>/dev/null\)" \|\| true' "$DISPATCH"; then
+  fail "version probe discards its exit status (|| true) — matching stdout from a FAILING --version passes the gate"
+elif ! grep -qF '[[ "$_pi_ver_rc" -eq 0 ]] || _pi_ver=""' "$DISPATCH"; then
+  fail "version probe does not blank _pi_ver on a nonzero exit — a broken --version can satisfy the pin"
+else
+  ok "version gate requires a clean --version exit, not just matching output"
+fi
+
 # The dispatch invocation must use the ABSOLUTE /usr/bin/env, like every other
 # sterile-child escape in this arm — a bare `env` command word is a shell
 # command word an exported function can shadow, which would defeat the HOME
@@ -425,18 +453,32 @@ else
   ok "projection child writes the credential only; creation is a separate observed step"
 fi
 
-# Teardown must precede the error message: `echo` is a command word, so a failing
-# write to stderr trips `set -e` and a shadowed one can do worse. Nothing may come
-# between a possibly part-written credential and its removal.
-_fail_branch="$(awk '/elif ! _pi_project; then/{inb=1} inb{print} inb && /exit_code=1/{exit}' <<<"$ARM")"
-_wipe_at="$(grep -n '_pi_wipe' <<<"$_fail_branch" | head -1 | cut -d: -f1)"
-_echo_at="$(grep -n 'echo "Error: could not project' <<<"$_fail_branch" | head -1 | cut -d: -f1)"
-if [[ -z "$_fail_branch" || -z "$_wipe_at" || -z "$_echo_at" ]]; then
+# Teardown must precede the error message: the message is now routed through
+# `_pi_setup_fail`, which itself `echo`s (a command word), so a failing write to
+# stderr trips `set -e` and a shadowed one can do worse. Nothing may come between
+# a possibly part-written credential and its removal. The branch is bounded at
+# the following `else`, not by hunting for a literal `exit_code=1` inside it —
+# `_pi_setup_fail` sets that flag internally, so it no longer appears verbatim
+# in this branch's own text.
+_fail_branch="$(awk '/elif ! _pi_project; then/{inb=1} inb{print} inb && /^ *else$/{exit}' <<<"$ARM")"
+_wipe_at="$(grep -n '_pi_wipe' <<<"$_fail_branch" | head -1 | cut -d: -f1 || true)"
+_setup_fail_at="$(grep -n '_pi_setup_fail "could not project' <<<"$_fail_branch" | head -1 | cut -d: -f1 || true)"
+if [[ -z "$_fail_branch" || -z "$_wipe_at" || -z "$_setup_fail_at" ]]; then
   fail "could not extract the projection-failure branch — this assertion is not running"
-elif [[ "$_wipe_at" -lt "$_echo_at" ]]; then
+elif [[ "$_wipe_at" -lt "$_setup_fail_at" ]]; then
   ok "projection failure tears down the credential before it reports the error"
 else
   fail "the error message runs before teardown — a failing echo strands the credential"
+fi
+
+# The projection-failure branch must be routed through `_pi_setup_fail`, not a
+# bare `echo ...; exit_code=1` — otherwise the shared retry loop sees an empty
+# $outfile on this deterministic failure and pays the full 5s/10s/20s backoff
+# retrying a projection that cannot succeed on any attempt (PR #591 review).
+if grep -qE '^ *echo "Error: could not project a static API credential' <<<"$ARM"; then
+  fail "projection failure still uses a bare echo — not routed through _pi_setup_fail, so the retry loop will retry a deterministic failure"
+else
+  ok "projection failure is routed through _pi_setup_fail (no bare echo, no un-flagged retry)"
 fi
 
 grep -qE '/bin/bash --noprofile --norc' <<<"$ARM" \
@@ -494,16 +536,19 @@ fi
 
 # The generic primary-CLI retry loop (shared by every --cli arm) retries
 # whenever $outfile is empty, on the assumption an empty file means the CLI
-# died before writing anything transient. pi's four deterministic setup
+# died before writing anything transient. pi's five deterministic setup
 # failures (untrusted home, binary missing, version mismatch, provider
-# underivable) are never a call to pi at all, so a bare `echo ... >&2` left
-# $outfile empty and the loop retried a failure that cannot succeed on a
-# retry — full 5s+10s+20s backoff for nothing. All four must route through
-# _pi_setup_fail, which mirrors the message into $outfile too.
+# underivable, credential-projection failure) are never a call to pi at all,
+# so a bare `echo ... >&2` left $outfile empty and the loop retried a failure
+# that cannot succeed on a retry — full 5s+10s+20s backoff for nothing. All
+# five must route through _pi_setup_fail, which mirrors the message into
+# $outfile too. (Raised from 4 to 5 on PR #591 review: the credential-
+# projection failure branch was the one deterministic setup error still using
+# a bare echo + exit_code=1.)
 _pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
-[[ "$_pi_setup_fail_count" -eq 4 ]] \
-  && ok "all four deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
-  || fail "expected 4 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
+[[ "$_pi_setup_fail_count" -eq 5 ]] \
+  && ok "all five deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
+  || fail "expected 5 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
 
 grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
   && grep -qE '>> "\$outfile" 2>/dev/null' <<<"$ARM" \
@@ -760,8 +805,16 @@ if [[ "${BUSDRIVER_PI_LIVE:-0}" != "1" ]]; then
 # run the certification is a failure of the certification.
 elif [[ -z "$_TO" ]]; then
   fail "live certification requested but timeout/gtimeout is missing (macOS: brew install coreutils) — allowlist NOT certified"
-elif ! command -v pi >/dev/null 2>&1; then
-  fail "live certification requested but pi is not on PATH — allowlist NOT certified"
+# NO `command -v pi` PRECONDITION HERE (deliberately removed — PR #591 review).
+# dispatch.sh resolves pi from trusted-path candidates, not the inherited PATH
+# (see _pi_available's comment on why `command -v` is the wrong eligibility
+# check), so a `command -v pi` guard here could reject a host where pi is only
+# reachable via the trusted path and never on PATH — a false "NOT certified"
+# for a setup dispatch.sh itself would happily run. Let the live dispatch below
+# be the single source of truth: it already fails with a full diagnostic if pi
+# could not be resolved or dispatched at all (see the "no successful dispatch"
+# branch), so there is no need for a second, looser eligibility check to agree
+# with dispatch.sh's own.
 else
   # Same naming rule as FAKE_HOME: the EXIT handler removes this recursively, so
   # the path must come from builtins rather than a shadowable mktemp.

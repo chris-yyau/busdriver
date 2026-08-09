@@ -162,6 +162,32 @@ grok|grok-edit)
 
 *) die "unknown \$PROVIDER: $PROVIDER" ;;
 esac
+
+# file(1) succeeds on missing paths, on text, and through symlinks — none of which is
+# an image. Require a real regular file AND a raster magic number.
+[ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
+# Providers ignore the extension you ask for — image_edit returned a JPEG named .png.
+# Require the magic number to match $OUT's extension; consumers pick decoding and
+# transparency behaviour from the filename, so a mislabelled file is a live bug.
+case "$(file -b "$ASSET")___${OUT##*.}" in
+  PNG\ image*___png|JPEG\ image*___jpg|JPEG\ image*___jpeg) ;;
+  *) die "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate";;
+esac
+
+# Only then publish. -n so a file that appeared during the dispatch is never clobbered.
+# There is no race-free pre-check for "$OUT became a directory" with POSIX tools — mv
+# would put asset.png INSIDE it — so the destination test AFTER the move is the
+# authority, not any check before it.
+mv -n "$ASSET" "$OUT"
+# mv -n exits 0 when it SKIPS, so the destination is the only trustworthy signal — and
+# if $OUT turned into a directory after the test above, mv moved the file INTO it.
+# Keep $WORK on any failure (it may hold the only copy) and return non-zero, or a
+# caller reads "not published" as success.
+if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
+  rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
+else
+  die "NOT published at $OUT — look in $(dirname "$ASSET"), and in $OUT/ if it became a directory"
+fi
 ```
 
 ## Threat model — what the flags do and don't confine
@@ -203,37 +229,10 @@ allow-list, the remaining controls are procedural — real, but not enforced:
 Dropping a sandbox flag to "make it work" is not a fix; it removes the one
 write confinement you have.
 
-## Verify every result — the reply is not evidence
+## Why the verification in that block is not optional
 
-```bash
-# file(1) succeeds on missing paths, on text, and through symlinks — none of which is
-# an image. Require a real regular file AND a raster magic number.
-[ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
-# Providers ignore the extension you ask for — image_edit returned a JPEG named .png.
-# Require the magic number to match $OUT's extension; consumers pick decoding and
-# transparency behaviour from the filename, so a mislabelled file is a live bug.
-case "$(file -b "$ASSET")___${OUT##*.}" in
-  PNG\ image*___png|JPEG\ image*___jpg|JPEG\ image*___jpeg) ;;
-  *) die "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate";;
-esac
-
-# Only then publish. -n so a file that appeared during the dispatch is never clobbered.
-# There is no race-free pre-check for "$OUT became a directory" with POSIX tools — mv
-# would put asset.png INSIDE it — so the destination test AFTER the move is the
-# authority, not any check before it.
-mv -n "$ASSET" "$OUT"
-# mv -n exits 0 when it SKIPS, so the destination is the only trustworthy signal — and
-# if $OUT turned into a directory after the test above, mv moved the file INTO it.
-# Keep $WORK on any failure (it may hold the only copy) and return non-zero, or a
-# caller reads "not published" as success.
-if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
-  rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
-else
-  die "NOT published at $OUT — look in $(dirname "$ASSET"), and in $OUT/ if it became a directory"
-fi
-```
-
-Verify in `$WORK`, before the `mv`. That directory was empty a moment ago, so a
+The reply is not evidence. Verification happens in `$WORK`, before the `mv`:
+that directory was empty a moment ago, so a
 file existing there at all is evidence this dispatch produced it. Verifying
 `$OUT` instead proves nothing when something already lived at that path — a
 provider that fails without writing leaves the old file passing the check, and

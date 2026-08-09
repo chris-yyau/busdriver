@@ -288,17 +288,21 @@ POSTWAIT_LEDGER_COUNT=$(grep -cE "$POSTWAIT_LEDGER" "$SKILL" || true)
 # with it while the post-wait recomputation is deleted — and content alone cannot
 # distinguish that compound regression. The matching line must sit INSIDE the
 # post-wait shell block: after the block's own doc comment (`# Recompute the
-# ENTIRE ledger` marker) AND before the closing ``` fence (a line in later
-# Markdown/prose — e.g. a copy of the assignment after the fence — is not
-# executable, so it must not satisfy the guard).
-POSTWAIT_ANCHOR_LINE=$(grep -n '# Recompute the ENTIRE ledger on the post-wait sources' "$SKILL" | head -1 | cut -d: -f1)
-POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL")
-POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1)
-if [ -n "$POSTWAIT_MATCH_LINE" ] && [ -n "$POSTWAIT_ANCHOR_LINE" ] && [ -n "$POSTWAIT_FENCE_CLOSE" ] \
-   && [ "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_ANCHOR_LINE" ] && [ "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_FENCE_CLOSE" ]; then
-  ok "post-wait ledger line sits inside the post-wait shell block (positional tie)"
+# ENTIRE ledger` marker), BEFORE the `STALE_BOTS=` consumer that derives the
+# stale-bot gate from the refreshed ledger (a recompute moved below its consumer
+# would gate on pre-wait data), and before the closing ``` fence (a line in
+# later Markdown/prose is not executable, so it must not satisfy the guard).
+POSTWAIT_ANCHOR_LINE=$(grep -n '# Recompute the ENTIRE ledger on the post-wait sources' "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_CONSUMER_LINE=$(grep -n "^[[:space:]]*STALE_BOTS=\$(echo \"\$FRESH_ACKS\"" "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
+POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
+if [[ -n "$POSTWAIT_MATCH_LINE" && -n "$POSTWAIT_ANCHOR_LINE" && -n "$POSTWAIT_CONSUMER_LINE" && -n "$POSTWAIT_FENCE_CLOSE" \
+   && "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_ANCHOR_LINE" \
+   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_CONSUMER_LINE" \
+   && "$POSTWAIT_CONSUMER_LINE" -lt "$POSTWAIT_FENCE_CLOSE" ]]; then
+  ok "post-wait ledger line precedes its STALE_BOTS consumer inside the shell block (positional tie)"
 else
-  fail "post-wait ledger line not inside the post-wait shell block — discriminator carried by another assignment or non-executable text (#606/PR #609)"
+  fail "post-wait ledger line not positioned before its STALE_BOTS consumer in the shell block (#606/PR #609)"
 fi
 # Deletion proof (issue #606, fixed per cubic + Codex review on PR #609): strip the
 # post-wait line by an INDEPENDENT selector — the `${CODEX_REGRACE}` discriminator

@@ -374,6 +374,57 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 \
   && ok "council nonzero+empty → retried (3 invocations)" \
   || bad "council nonzero+empty → retried (got $(cat "$C"))"
 
+# C7: primary fails AND droid rescue fails → the rescue's output is folded into
+#     $outfile (delimited, in order) BEFORE ${outfile}.droid is unlinked, so the
+#     LAST failure survives for log_event's archive (#597). The .droid temp must
+#     be gone afterwards and the visible output must carry BOTH failures in
+#     order, plus the delimiter marker naming the rescue's exit code.
+mkdir -p "$TMP/run7"
+cat > "$STUB/agy" <<'EOF'
+#!/usr/bin/env bash
+# --version is a capability probe, not a review attempt — see make_flaky.
+if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
+printf 'PRIMARY_ERROR: the primary voice failed\n'
+exit 1
+EOF
+chmod +x "$STUB/agy"
+cat > "$STUB/droid" <<'EOF'
+#!/usr/bin/env bash
+printf 'DROID_RESCUE_ERROR: the rescue also failed\n'
+exit 1
+EOF
+chmod +x "$STUB/droid"
+O="$TMP/c7.out"
+TMPDIR="$TMP/run7" PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+p1=$(grep -n 'PRIMARY_ERROR' "$O" | head -1 | cut -d: -f1)
+p2=$(grep -n 'DROID_RESCUE_ERROR' "$O" | head -1 | cut -d: -f1)
+{ [[ "$rc" -ne 0 ]] \
+  && [[ -n "$p1" && -n "$p2" ]] && [[ "$p1" -lt "$p2" ]] \
+  && grep -q 'droid rescue also failed (exit 1)' "$O" \
+  && [[ -z "$(find "$TMP/run7" -name '*.droid' -print -quit)" ]]; } \
+  && ok "rescue fail → both failures folded into outfile, in order, .droid unlinked" \
+  || bad "rescue fail → fold into outfile (rc=$rc p1=${p1:-none} p2=${p2:-none}, out=[$(tr -d '\n' <"$O")], leftover=$(find "$TMP/run7" -name '*.droid' -print -quit 2>/dev/null || echo none))"
+
+# C8: primary exits 0 with EMPTY output and the rescue ALSO fails → the run
+#     still reports failure (never a silent success), and the rescue's output is
+#     still folded into $outfile (#597). Locks the false-success contract the
+#     fold must not disturb: the failure mark is applied before the fold, so
+#     appending the rescue's output can never read as primary output.
+mkdir -p "$TMP/run8"
+cat > "$STUB/agy" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
+exit 0   # clean exit, NEVER any output
+EOF
+chmod +x "$STUB/agy"
+O="$TMP/c8.out"
+TMPDIR="$TMP/run8" PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?
+{ [[ "$rc" -ne 0 ]] && grep -q 'droid rescue also failed' "$O" && grep -q 'DROID_RESCUE_ERROR' "$O"; } \
+  && ok "exit-0 empty primary + rescue fail → still failure, rescue output preserved" \
+  || bad "exit-0 empty primary + rescue fail (rc=$rc, out=[$(tr -d '\n' <"$O")])"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 [[ "$FAIL" -gt 0 ]] && { echo "   $FAIL FAILED"; exit 1; }

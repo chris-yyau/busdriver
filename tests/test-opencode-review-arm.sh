@@ -414,6 +414,21 @@ if (
   mkfifo "$_home/.opencode/opencode.json" 2>/dev/null || { echo "  ✗ (i5) mkfifo unavailable"; ok=0; }
   if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5) FIFO config accepted (unvalidated)"; ok=0; fi
 
+  # (i5b) a SYMLINK at the config path must be REFUSED (O_NOFOLLOW): opencode
+  # follows the link, so a retarget between validation and opencode's open
+  # would serve different content to each reader.
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode-target.json"
+  ln -s opencode-target.json "$_home/.opencode/opencode.json"
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5b) symlink config accepted"; ok=0; fi
+  rm -f "$_home/.opencode/opencode-target.json"
+
+  # (i5c) a DANGLING symlink must ALSO be refused (not skipped by `[[ -e ]]`,
+  # which follows links and returns false): the target can appear after
+  # validation but before opencode opens the path.
+  ln -s opencode-target-absent.json "$_home/.opencode/opencode.json"
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5c) dangling symlink skipped validation"; ok=0; fi
+
   # (j) seeded property sweep: random key subsets x {strict, JSONC} over the
   # allowlist, plus non-object roots. Oracle: PASS iff the parsed root is an
   # object whose keys are ⊆ {provider, $schema}. Seeded RNG → deterministic.

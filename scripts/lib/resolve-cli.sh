@@ -336,26 +336,19 @@ validate_opencode_home_config() {
   # Fail closed if the trusted interpreter is absent (macOS CLT provides it).
   [[ -x "$_voh_py" ]] || { echo "busdriver: cannot validate the operator ~/.opencode home config — $_voh_py not found; refusing to dispatch unconfined." >&2; return 1; }
   for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc"; do
-    # A NON-REGULAR file (FIFO, socket, device) at the config path is refused
-    # outright: opencode opens the path regardless of file type, and a FIFO
-    # writer can serve DIFFERENT content to each open (provider-only to this
-    # validator, `mcp` to opencode) — validating one read can never close that
-    # race. -f follows symlinks, so a symlink-to-FIFO is caught too.
-    if [[ -e "$_voh_cfg" ]] && [[ ! -f "$_voh_cfg" ]]; then
-      echo "busdriver: $_voh_cfg exists but is not a regular file — refusing to dispatch unconfined (opencode opens it regardless of type; FIFO content can differ per read)." >&2
-      return 1
-    fi
-    [[ -f "$_voh_cfg" ]] || continue
-    # STERILE CHILD + absolute interpreter + -I. /usr/bin/env -i strips every
-    # env var — including BASH_FUNC_* — so an inherited/exported function
-    # shadow of `python3` (or any name) cannot run here (verified: absolute
-    # paths bypass function lookup, env -i strips imported functions on 3.2).
-    # -I keeps the reviewed CWD's planted json.py off sys.path (same class as
-    # _read_config_value; verified there). JSONC-tolerant parse: opencode
-    # accepts comments/trailing commas (esp. in .jsonc), and a valid
-    # provider-only JSONC file must not false-refuse the lane.
-    if ! /usr/bin/env -i PATH="/usr/bin:/bin" "$_voh_py" -I - "$_voh_cfg" <<'PY' 2>/dev/null
-import json, os, sys
+    # Existence OR link here — `[[ -e ]]` alone follows a symlink and returns
+    # false for a DANGLING one, skipping the python O_NOFOLLOW refusal; -L
+    # keeps every symlink (live or dangling) on the python path.
+    [[ -e "$_voh_cfg" || -L "$_voh_cfg" ]] || continue
+    # Direct absolute interpreter, NO env -i wrapper: `-I` implies -E (ignores
+    # PYTHONPATH/PYTHONHOME — a hostile env cannot redirect python imports),
+    # and the absolute path defeats normal-name function shadows (verified:
+    # absolute paths bypass function lookup on 3.2/5.x). The remaining
+    # slash-named shadowing (BASH_FUNC_/usr/bin/python3%%) is rejected at
+    # import time by the Shellshock-patched bash (verified: "error importing
+    # function definition") and is total compromise on unpatched builds.
+    if ! /usr/bin/python3 -I - "$_voh_cfg" <<'PY' 2>/dev/null
+import json, os, stat, sys
 
 def strip_jsonc(s):
     # String-aware comment + trailing-comma stripping: //, /* */, and a comma
@@ -427,11 +420,19 @@ def strip_jsonc(s):
     return "".join(out)
 
 def parse(path):
-    # O_NONBLOCK: a named pipe here would otherwise hang the validator.
+    # Open ONCE with the type check atomic to the read: O_NOFOLLOW refuses a
+    # symlink (opencode would follow it), O_NONBLOCK refuses a FIFO (which
+    # would otherwise hang, and whose content can differ per open), and fstat
+    # after open confirms a REGULAR file — no separate check-then-read gap.
     # Reads are capped at 1 MiB + 1; a longer read REFUSES (truncation would
     # let a padded valid prefix hide invalid trailing content).
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        sys.exit(1)  # missing, symlink, or unreadable — refuse
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            sys.exit(1)  # FIFO / socket / device — refuse
         raw = os.read(fd, (1 << 20) + 1)
     finally:
         os.close(fd)
@@ -474,7 +475,7 @@ if [k for k in d if k not in ("provider", "$schema")]:
 sys.exit(0)
 PY
     then
-      echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and contains keys beyond provider/\$schema (or is unparseable) — refusing to dispatch unconfined." >&2
+      echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and is not a safe provider-only config (unparseable, keys beyond provider/\$schema, non-regular file, or an npm package reference) — refusing to dispatch unconfined." >&2
       return 1
     fi
   done

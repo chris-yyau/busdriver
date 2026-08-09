@@ -390,6 +390,22 @@ if (
   # still be dropped (JSONC stripper lookahead must skip comments).
   printf '{\n  "provider": {}, // trailing\n}\n' > "$_home/.opencode/opencode.jsonc"
   validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i2) trailing comma before a comment refused a valid provider-only jsonc"; ok=0; }
+  # (i3) unterminated block comment must refuse (not silently truncate)
+  printf '{"provider":{}}/*\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i3) unterminated block comment accepted"; ok=0; }
+  # (i4) comment removal must not merge tokens (1/*x*/2 must stay invalid)
+  printf '{"provider":{"a":1/*x*/2}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4) token-merged malformed jsonc accepted"; ok=0; }
+  # (i4b) CR line terminator: "//c\r \"mcp\":{}" — the comment ends at the CR
+  # (as opencode parses it), so mcp must remain visible → refuse.
+  printf '{"provider":{}, //c\r "mcp":{}\n}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4b) CR-terminated comment hid an mcp key"; ok=0; }
+  # (i5) a non-regular file (named pipe) at the config path must be REFUSED,
+  # not validated (a FIFO writer can serve different content to each open,
+  # so validating one read cannot close the race) — and must not hang.
+  rm -f "$_home/.opencode/opencode.json"
+  mkfifo "$_home/.opencode/opencode.json" 2>/dev/null || { echo "  ✗ (i5) mkfifo unavailable"; ok=0; }
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5) FIFO config accepted (unvalidated)"; ok=0; fi
 
   # (j) seeded property sweep: random key subsets x {strict, JSONC} over the
   # allowlist, plus non-object roots. Oracle: PASS iff the parsed root is an
@@ -552,6 +568,11 @@ if (
   out8="$(_bd_nonce=known X='BASH_FUNC__bd_sentinel%%' bash "$DP" _bd_priv_known --help 2>&1)"; rc8=$?
   [[ "$rc8" -ne 0 ]] || { echo "  ✗ (j-h) substring-forge bypassed the boundary (rc=0)"; exit 1; }
   printf '%s' "$out8" | grep -q "refusing to continue" || { echo "  ✗ (j-h) missing abort on substring-forge attempt"; exit 1; }
+  # (i) env-NAME forge with a NON-function value (via `env`): the sentinel
+  # value check (must start with "() {") refuses it.
+  out9="$(env '_bd_nonce=known' 'BASH_FUNC__bd_sentinel%%=x' bash "$DP" _bd_priv_known --help 2>&1)"; rc9=$?
+  [[ "$rc9" -ne 0 ]] || { echo "  ✗ (j-i) env-NAME forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out9" | grep -q "refusing to continue" || { echo "  ✗ (j-i) missing abort on env-NAME forge"; exit 1; }
   exit 0
 ); then
   pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"

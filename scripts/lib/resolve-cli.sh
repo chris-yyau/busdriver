@@ -336,6 +336,15 @@ validate_opencode_home_config() {
   # Fail closed if the trusted interpreter is absent (macOS CLT provides it).
   [[ -x "$_voh_py" ]] || { echo "busdriver: cannot validate the operator ~/.opencode home config — $_voh_py not found; refusing to dispatch unconfined." >&2; return 1; }
   for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc"; do
+    # A NON-REGULAR file (FIFO, socket, device) at the config path is refused
+    # outright: opencode opens the path regardless of file type, and a FIFO
+    # writer can serve DIFFERENT content to each open (provider-only to this
+    # validator, `mcp` to opencode) — validating one read can never close that
+    # race. -f follows symlinks, so a symlink-to-FIFO is caught too.
+    if [[ -e "$_voh_cfg" ]] && [[ ! -f "$_voh_cfg" ]]; then
+      echo "busdriver: $_voh_cfg exists but is not a regular file — refusing to dispatch unconfined (opencode opens it regardless of type; FIFO content can differ per read)." >&2
+      return 1
+    fi
     [[ -f "$_voh_cfg" ]] || continue
     # STERILE CHILD + absolute interpreter + -I. /usr/bin/env -i strips every
     # env var — including BASH_FUNC_* — so an inherited/exported function
@@ -346,12 +355,16 @@ validate_opencode_home_config() {
     # accepts comments/trailing commas (esp. in .jsonc), and a valid
     # provider-only JSONC file must not false-refuse the lane.
     if ! /usr/bin/env -i PATH="/usr/bin:/bin" "$_voh_py" -I - "$_voh_cfg" <<'PY' 2>/dev/null
-import json, sys
+import json, os, sys
 
 def strip_jsonc(s):
     # String-aware comment + trailing-comma stripping: //, /* */, and a comma
     # directly before } or ] are dropped ONLY outside strings, so a provider
-    # value containing e.g. "http://x//y" or "a,}" is never corrupted.
+    # value containing e.g. "http://x//y" or "a,}" is never corrupted. A
+    # removed comment is replaced by a SPACE so tokens cannot merge
+    # (1/*x*/2 must stay invalid, not become 12). An unterminated block
+    # comment returns the input UNCHANGED so the strict parse fails (the
+    # guard refuses malformed documents rather than silently truncating).
     out = []
     i, n = 0, len(s)
     in_str = False
@@ -368,12 +381,26 @@ def strip_jsonc(s):
         if c == '"':
             in_str = True; out.append(c); i += 1; continue
         if s.startswith("//", i):
-            j = s.find("\n", i)
-            i = n if j == -1 else j + 1
+            # JSONC treats CR as a line terminator too (not just LF): a
+            # mixed-ending doc like "//c\r \"mcp\":{}" must end the comment at
+            # the CR, exactly as opencode's parser does — otherwise the
+            # validator strips "mcp" while opencode still sees it.
+            j = i
+            while j < n and s[j] not in "\n\r":
+                j += 1
+            if j == n:
+                i = n
+            else:
+                out.append(" ")
+                i = j + 1
+                if s[j] == "\r" and i < n and s[i] == "\n":
+                    i += 1  # consume the LF of a CRLF pair too
             continue
         if s.startswith("/*", i):
             j = s.find("*/", i + 2)
-            i = n if j == -1 else j + 2
+            if j == -1:
+                return s  # unterminated — let the strict parse fail
+            out.append(" "); i = j + 2
             continue
         if c == ",":
             j = i + 1
@@ -383,8 +410,10 @@ def strip_jsonc(s):
                     j += 1
                     continue
                 if s.startswith("//", j):
-                    k = s.find("\n", j)
-                    j = n if k == -1 else k + 1
+                    k = j
+                    while k < n and s[k] not in "\n\r":
+                        k += 1
+                    j = n if k == n else k + 1
                     continue
                 if s.startswith("/*", j):
                     k = s.find("*/", j + 2)
@@ -398,12 +427,21 @@ def strip_jsonc(s):
     return "".join(out)
 
 def parse(path):
-    with open(path, encoding="utf-8") as f:
-        raw = f.read()
+    # O_NONBLOCK: a named pipe here would otherwise hang the validator.
+    # Reads are capped at 1 MiB + 1; a longer read REFUSES (truncation would
+    # let a padded valid prefix hide invalid trailing content).
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     try:
-        return json.loads(raw)
+        raw = os.read(fd, (1 << 20) + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > (1 << 20):
+        sys.exit(1)  # oversized — refuse, never truncate
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
     except Exception:
-        return json.loads(strip_jsonc(raw))
+        return json.loads(strip_jsonc(text))
 
 try:
     d = parse(sys.argv[1])

@@ -47,9 +47,14 @@ fi
 #      a shadow of it has already executed code — total compromise, out of
 #      scope (bash32-unshadowable-abort).
 _bd_env_sentinel="no"
-if [[ -n "$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)" ]]; then
-  _bd_env_sentinel="yes"
-fi
+# The env var must carry a real exported-function VALUE (starts with "() {"):
+# a caller-set name with a non-function value (e.g. via `env
+# 'BASH_FUNC__bd_sentinel%%=x'`) fails here, and a function-shaped value
+# would be imported in an unprivileged shell → caught by the `type` check.
+_bd_sentinel_env="$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)"
+case "$_bd_sentinel_env" in
+  "() {"*) _bd_env_sentinel="yes" ;;
+esac
 if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" || "$_bd_env_sentinel" != "yes" ]] \
    || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
   _bd_priv_guard=

@@ -120,6 +120,35 @@ grep -qE 'env -i HOME="\$_pi_jail"' <<<"$ARM" \
   && ok "pi child runs under the projected private HOME" \
   || fail "pi child no longer runs under \$_pi_jail — the operator's whole credential store is one read away"
 
+# `_pi_available` runs during `--cli all` selection, in the INHERITED shell and
+# BEFORE the pi arm's own sterile preflight. It resolves the operator's home by
+# tilde expansion, which needs `eval` — a builtin an exported `BASH_FUNC_eval%%`
+# overrides — so doing that work here would hand arbitrary execution to the
+# environment at CLI-selection time. Username validation is no defence: the
+# shadow intercepts the call whatever its argument. The probe therefore lives
+# inside an `env -i` child (verified: the child's `eval` resolves to `builtin`
+# even with an exported shadow). This assertion scans the WHOLE file, not $ARM —
+# the function is defined above the `pi)` arm.
+_AVAIL_FN="$(awk '/^_pi_available\(\) \{$/{inb=1} inb{print} inb && /^\}$/{exit}' "$DISPATCH" \
+             | grep -vE '^[[:space:]]*#')"
+if [[ -z "$_AVAIL_FN" ]]; then
+  fail "could not extract _pi_available — this assertion is not running"
+elif ! grep -qF '/usr/bin/env -i' <<<"$_AVAIL_FN"; then
+  fail "_pi_available does not run its probe in a sterile env -i child"
+elif grep -nE '(^|[;&|]|then|do)[[:space:]]*eval[[:space:]]' <<<"$(awk '/<<.CHILD./{inh=1; next} inh && /^CHILD$/{inh=0; next} !inh' <<<"$_AVAIL_FN")" >/dev/null; then
+  fail "_pi_available calls eval in the INHERITED shell — an exported eval function executes during --cli all"
+else
+  ok "_pi_available resolves the home dir inside a sterile child (eval cannot be shadowed there)"
+fi
+
+# The dispatch invocation must use the ABSOLUTE /usr/bin/env, like every other
+# sterile-child escape in this arm — a bare `env` command word is a shell
+# command word an exported function can shadow, which would defeat the HOME
+# jail and PATH scrub this whole arm exists to enforce.
+grep -qE '/usr/bin/env -i HOME="\$_pi_jail"' <<<"$ARM" \
+  && ok "pi dispatch invocation uses the unshadowable /usr/bin/env" \
+  || fail "pi dispatch invocation uses a bare 'env' — an exported env function could intercept the HOME jail"
+
 if grep -qE 'env -i HOME="\$_pi_home"' <<<"$ARM"; then
   fail "pi child receives the operator's REAL home — credential projection bypassed"
 else
@@ -448,12 +477,38 @@ grep -qE '^rm -f "\$d/\.pi/agent/auth\.json"$' <<<"$WIPE_CHILD" \
 # live concern into a mandatory red build.
 if command -v pi >/dev/null 2>&1; then
   out_np="$(bash "$DISPATCH" --cli pi --model nosuchslash --timeout 5 --prompt x 2>&1 || true)"
-  grep -q 'could not derive a provider' <<<"$out_np" \
-    && ok "unparseable model reference fails closed instead of exposing the credential store" \
-    || fail "no fail-closed guard for a model reference without a provider/ prefix: $out_np"
+  if grep -q 'is not the probed' <<<"$out_np"; then
+    # The version gate (BUSDRIVER_PI_PROBED_VERSION) fires BEFORE the provider
+    # guard this test targets. On a host with a different pi version that's a
+    # true skip, not a provider-derivation failure — reporting fail here would
+    # attribute an unrelated version mismatch to this guard.
+    skip "provider-derivation guard (installed pi is not the probed version)"
+  else
+    grep -q 'could not derive a provider' <<<"$out_np" \
+      && ok "unparseable model reference fails closed instead of exposing the credential store" \
+      || fail "no fail-closed guard for a model reference without a provider/ prefix: $out_np"
+  fi
 else
   skip "provider-derivation guard (pi not installed on this host)"
 fi
+
+# The generic primary-CLI retry loop (shared by every --cli arm) retries
+# whenever $outfile is empty, on the assumption an empty file means the CLI
+# died before writing anything transient. pi's four deterministic setup
+# failures (untrusted home, binary missing, version mismatch, provider
+# underivable) are never a call to pi at all, so a bare `echo ... >&2` left
+# $outfile empty and the loop retried a failure that cannot succeed on a
+# retry — full 5s+10s+20s backoff for nothing. All four must route through
+# _pi_setup_fail, which mirrors the message into $outfile too.
+_pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
+[[ "$_pi_setup_fail_count" -eq 4 ]] \
+  && ok "all four deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
+  || fail "expected 4 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
+
+grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
+  && grep -qE '>> "\$outfile" 2>/dev/null' <<<"$ARM" \
+  && ok "_pi_setup_fail mirrors the error into \$outfile (breaks the retry loop's empty-output test)" \
+  || fail "_pi_setup_fail does not write to \$outfile — deterministic setup errors would still retry"
 
 # ── 2c. EXECUTED: the projection child actually projects one entry ──
 # Runs the real heredoc from the arm, not a copy — a copy would drift and then
@@ -673,9 +728,11 @@ eq "$got_aud" "zenmux/openai/gpt-5.6-luna" ".auditor.model still resolves after 
 
 echo '{"pi":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
 got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-grep -qv 'glm' <<<"$got_aud" \
-  && ok ".pi.model does not leak into the auditor lane" \
-  || fail ".pi.model bled into the auditor lane: $got_aud"
+if [[ -n "$got_aud" && "$got_aud" != *glm* ]]; then
+  ok ".pi.model does not leak into the auditor lane"
+else
+  fail ".pi.model bled into the auditor lane or the auditor resolver returned nothing: '$got_aud'"
+fi
 
 # An unknown config block must yield the default, never a wildcard read.
 got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_auditor_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
@@ -694,10 +751,17 @@ for _c in timeout gtimeout; do command -v "$_c" >/dev/null 2>&1 && { _TO="$_c"; 
 
 if [[ "${BUSDRIVER_PI_LIVE:-0}" != "1" ]]; then
   skip "live in-tree containment checks (set BUSDRIVER_PI_LIVE=1 to run; needs a working .pi.model provider)"
+# FAIL, not skip, once BUSDRIVER_PI_LIVE=1 has been asked for. The operator sets
+# it precisely to CERTIFY the allowlist — most often as step 2 of the version-pin
+# bump, where ADR 0034 says "revert the bump if it fails". A skip exits 0, so
+# under the old behaviour a host without timeout/gtimeout (or with pi off PATH)
+# silently satisfied that rule and left a BUMPED, UNVERIFIED pin in place: the
+# fail-closed gate turned fail-open exactly where it mattered. Not being able to
+# run the certification is a failure of the certification.
 elif [[ -z "$_TO" ]]; then
-  skip "live checks need timeout/gtimeout (macOS: brew install coreutils) — not certifying the allowlist without a bound"
+  fail "live certification requested but timeout/gtimeout is missing (macOS: brew install coreutils) — allowlist NOT certified"
 elif ! command -v pi >/dev/null 2>&1; then
-  skip "live checks need pi installed"
+  fail "live certification requested but pi is not on PATH — allowlist NOT certified"
 else
   # Same naming rule as FAKE_HOME: the EXIT handler removes this recursively, so
   # the path must come from builtins rather than a shadowable mktemp.

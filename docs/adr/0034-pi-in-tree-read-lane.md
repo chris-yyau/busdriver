@@ -122,6 +122,21 @@ instead of introducing a second config grammar.
   OS-enforced read confinement — see the revisit trigger. Until then this lane
   sits in the same disclosed category as `droid` (no strict sandbox), and must
   not be pointed at a checkout you would not run.
+- **Fail-closed version pin.** The read-only posture rests on observed
+  behaviour of `--tools read` plus the six `--no-*` flags on ONE probed pi
+  version (`BUSDRIVER_PI_PROBED_VERSION` in `dispatch.sh`), not a proven
+  invariant, and the live test that proves write-denial semantically is
+  opt-in (`BUSDRIVER_PI_LIVE=1` — it needs a model call), so CI cannot catch
+  a pi release that re-enables shell or write tools for in-tree prompts. The
+  dispatch refuses to run against any other installed version rather than
+  trust an unverified one. Operator cost on every pi release, **in this order**:
+  bump `BUSDRIVER_PI_PROBED_VERSION` to the new version FIRST, then run
+  `BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh`, and revert the bump if it
+  fails. The reverse order cannot work and is the obvious thing to write: the
+  live test drives `dispatch.sh`, whose version gate refuses the new pi before
+  the semantic write-denial check ever runs, so "verify then bump" deadlocks.
+  The window where the constant names an unverified version is exactly the
+  length of that test run, on the operator's own machine.
 - **Credential teardown is done by grammar, not by a command.** `_pi_wipe` runs
   back in the inherited shell, where every command word is shadowable by an
   exported function — inside the one function that must still work after an
@@ -147,9 +162,10 @@ instead of introducing a second config grammar.
   breaks both the single-cleanup-owner and no-bare-command-word invariants the
   lane rests on — the test suite enforces both, and caught it. What bounds the
   residual: the window is one statement, the second pass re-checks the path shape,
-  the name carries `$$` plus two `$RANDOM` draws under a per-user mode-700
-  `$TMPDIR`, and the credential is already zeroed. Closing it properly needs
-  signal masking, i.e. not bash.
+  the name carries `$$` plus two `$RANDOM` draws, the jail itself is created
+  mode 0700 under `umask 077` (`$TMPDIR` is per-user on macOS but falls back to a
+  world-writable `/tmp` elsewhere), and the credential is already zeroed. Closing
+  it properly needs signal masking, i.e. not bash.
 - **Known gap, deliberately not papered over:** a project-local `AGENTS.md`
   injection assertion was written and removed for being vacuous — it passed with
   the flags, without them, and with `--approve`. No failing case could be

@@ -37,7 +37,7 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
 | **Repo tracing / "how does X work"** | **`pi`** | **Reads the working tree and returns a cited summary — see below** |
 | High-stakes decisions | `both` | Codex + Agy consensus |
-| Maximum coverage | `all` | Top 3 available CLIs in parallel |
+| Maximum coverage | `all` | All available CLIs in parallel (up to 6; `grok`, `opencode` and `pi` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ### `pi` — the in-tree read lane

@@ -193,6 +193,45 @@ _has_cli() {
   fi
 }
 
+# pi is a special case: dispatch_one's pi arm resolves the binary from
+# password-db home candidates (~/.local/bin/pi, ~/.pi/bin/pi, Homebrew paths),
+# not from the inherited PATH — so `--cli pi` can dispatch even when pi is
+# absent from PATH. `_has_cli` alone (a bare `command -v`) would then miss a
+# pi install that dispatch_one can actually reach, silently dropping pi from
+# `--cli all`. Mirror the same candidate list here as a lightweight presence
+# check (not a trust boundary — the real, PATH-shadow-proof resolution still
+# happens inside dispatch_one's `env -i` child at dispatch time).
+# THE WHOLE PROBE RUNS IN A STERILE CHILD, not here. It resolves the operator's
+# home by tilde expansion, which needs `eval` — and `eval` is a builtin an
+# exported `BASH_FUNC_eval%%` overrides, so running it in the INHERITED shell
+# would hand arbitrary execution to the environment during `--cli all`, BEFORE
+# the pi arm's own sterile preflight ever runs. Username validation does not
+# help: the shadow intercepts the call regardless of its argument. `env -i`
+# gives the child an empty environment, so it imports no functions and its
+# `eval` is genuinely the builtin. Same trust anchor as every other escape in
+# this arm — the absolute `/usr/bin/env`, which cannot be imported as a
+# function name.
+# NO `_has_cli pi` SHORTCUT. Selection must accept exactly what the arm's
+# preflight accepts, and the preflight takes ONLY the trusted-path candidates
+# below — never whatever `command -v` finds on the inherited PATH. With the
+# shortcut, a pi anywhere on PATH got added to a `--cli all` batch and then
+# failed preflight, which fails the WHOLE batch. The candidate list is the
+# contract; duplicating it loosely here is what broke it.
+_pi_available() {
+  /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+    /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
+u="$(/usr/bin/id -un)" || exit 1
+case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+h="$(eval echo "~$u")" || exit 1
+case "$h" in /*) ;; *) exit 1 ;; esac
+[ -d "$h" ] || exit 1
+for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
+  [ -f "$c" ] && [ -x "$c" ] && exit 0
+done
+exit 1
+CHILD
+}
+
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
@@ -255,7 +294,11 @@ if [[ "$CLI" == "all" ]]; then
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         [[ "$c" == "opencode" && "$MODE" == "auto" ]] && continue
         [[ "$c" == "pi" && "$MODE" == "auto" ]] && continue
-        _has_cli "$c" && ALL_CLIS+=("$c")
+        if [[ "$c" == "pi" ]]; then
+            _pi_available && ALL_CLIS+=("$c")
+        else
+            _has_cli "$c" && ALL_CLIS+=("$c")
+        fi
         [[ ${#ALL_CLIS[@]} -ge 6 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
@@ -306,6 +349,11 @@ dispatch_one() {
     [[ "$MODE" != "readonly" ]] && _max_retries=0
     local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
     case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
+    # Cleared per DISPATCH, not per arm. Only the pi arm sets it, but the retry
+    # loop below is shared by every CLI — so a pi setup failure during
+    # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
+    # of its retries. `local` also keeps it out of the caller's scope entirely.
+    local _pi_setup_failed=0
     local _attempt=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
@@ -569,6 +617,34 @@ dispatch_one() {
                 fi
             fi ;;
         pi)
+            # Deterministic setup failures (untrusted-home, binary-missing,
+            # version-mismatch, provider-underivable — none of them a call to
+            # pi at all) used to write only to stderr, leaving $outfile empty.
+            # The generic retry loop above retries on ANY empty $outfile,
+            # treating a setup error that will fail identically on every
+            # attempt as if it were a transient one — a direct `--cli pi`
+            # invocation with a bad model reference or missing binary paid the
+            # full 5s+10s+20s backoff for nothing. Mirror the message into
+            # $outfile too so the retry loop's non-transient-with-output path
+            # (see the `break` below `_is_transient_cli_error`) short-circuits
+            # instead of retrying a failure that cannot succeed on a retry.
+            # A SETUP failure is deterministic — an untrusted home, a missing or
+            # unprobed binary, an underivable provider. Retrying it cannot change
+            # the outcome, so the retry loop must skip it. The signal is this
+            # FLAG, not the message text: the text is partly operator-controlled
+            # (it quotes `--model`), so `--model ECONNRESET` produced a
+            # deterministic provider error that `_is_transient_cli_error` matched
+            # on the substring, and the full retry+backoff cycle ran anyway.
+            # Classifying our own failures by grepping our own prose was the bug.
+            # Declared and cleared once per dispatch in dispatch_one (see the
+            # `local _pi_setup_failed=0` there) — deliberately NOT re-cleared here,
+            # so there is exactly one owner of its lifetime.
+            _pi_setup_fail() {
+                echo "Error: $1" >&2
+                printf 'Error: %s\n' "$1" >> "$outfile" 2>/dev/null || true
+                _pi_setup_failed=1
+                exit_code=1
+            }
             # THE READ LANE — deliberately the mirror image of the opencode arm
             # above. opencode is confined to an EMPTY dir precisely so it cannot
             # see the tree; this arm runs IN THE WORKING TREE, because tracing
@@ -667,12 +743,10 @@ CHILD
             _pi_bin="${_pi_bin%%$'\n'*}"
             if [[ -z "$_pi_home" || "$_pi_home" != /* || ! -d "$_pi_home" ]]; then
                 # NO $HOME fallback — fail closed rather than trust an injected one.
-                echo "Error: could not derive a trusted home from the password database — refusing to resolve pi from a possibly-injected \$HOME." >&2
-                exit_code=1
+                _pi_setup_fail "could not derive a trusted home from the password database — refusing to resolve pi from a possibly-injected \$HOME."
             else
                 if [[ -z "$_pi_bin" || "$_pi_bin" != /* || ! -x "$_pi_bin" ]]; then
-                    echo "Error: pi binary not found on the trusted install path." >&2
-                    exit_code=1
+                    _pi_setup_fail "pi binary not found on the trusted install path."
                 else
                     # /opt/homebrew/bin is ALWAYS present, not only when pi lives
                     # there: pi ships `#!/usr/bin/env node`, so a pi installed under
@@ -686,9 +760,13 @@ CHILD
                     # opt-in (it needs a live model call), so CI cannot catch an
                     # upgrade that re-enables shell or write tools for in-tree
                     # prompts. Surface the drift instead of assuming it away.
-                    # WARN, not block: a hard pin would break the lane on every pi
-                    # release, and this is a read lane, not a merge gate. On a
-                    # mismatch, re-run: BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+                    # BLOCK, not warn: the read-only posture is observed behaviour
+                    # on one probed version, not a proven invariant, and CI cannot
+                    # catch a pi upgrade that re-enables shell or write tools for
+                    # in-tree prompts — so an unprobed version runs unverified
+                    # inside the working tree. "A stuck session beats a skipped
+                    # check" applies here. On a mismatch, re-run:
+                    # BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
                     # The probe runs under `env -i`, NOT the inherited environment.
                     # pi is a `#!/usr/bin/env node` script, so an injected
                     # NODE_OPTIONS=--require=<repo-file> would execute repo code as
@@ -709,10 +787,13 @@ CHILD
                     # cannot catch an upgrade that re-enables shell or write tools.
                     # Running an unprobed version in-tree is exactly the case where
                     # "a stuck session beats a skipped check" applies. Clearing it
-                    # is one constant, after re-running the live test.
+                    # is one constant — bumped BEFORE the live test, never after:
+                    # the test drives this very dispatch, so this gate would refuse
+                    # the new pi before the write-denial check could run. "Verify
+                    # then bump" is the intuitive order and it deadlocks; the error
+                    # text below must keep saying bump-then-verify.
                     if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
-                        echo "Error: pi version '${_pi_ver:-unreadable}' is not the probed ${BUSDRIVER_PI_PROBED_VERSION}. This lane's read-only posture was verified against that version only — refusing to run an unverified pi inside the working tree. To clear: run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh against the new version, then update BUSDRIVER_PI_PROBED_VERSION in dispatch.sh." >&2
-                        exit_code=1
+                        _pi_setup_fail "pi version '${_pi_ver:-unreadable}' is not the probed ${BUSDRIVER_PI_PROBED_VERSION}. This lane's read-only posture was verified against that version only — refusing to run an unverified pi inside the working tree. To clear, IN THIS ORDER: (1) set BUSDRIVER_PI_PROBED_VERSION in dispatch.sh to the new version, (2) run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, (3) revert step 1 if it fails. Verifying before bumping cannot work — this gate refuses the new pi before the live test reaches it."
                     else
                     # PATH+HOME pinned AT THE CALL, not inherited from the arm's
                     # pin, so neither depends on line order in this case arm.
@@ -1031,8 +1112,7 @@ CHILD
                         # No `provider/` prefix ⇒ we cannot tell which credential
                         # to project, and projecting ALL of them is the thing this
                         # block exists to prevent. Fail closed.
-                        echo "Error: could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store." >&2
-                        exit_code=1
+                        _pi_setup_fail "could not derive a provider from the pi model reference '${MODEL:-$_BD_PI_MODEL}' (expected provider/model) — refusing to dispatch rather than hand pi the full credential store."
                     # JAIL CREATION + PROJECTION, both inside ONE `env -i` child.
                     # Everything here used to run in the caller's shell, where
                     # `mktemp`, `mkdir`, `rm` and `python3` are all command words an
@@ -1134,7 +1214,7 @@ CHILD
                     # arriving in it exits with NO owner and the credential on disk.
                     # One continuously-armed owner has neither hole.
                     ( _portable_timeout "$_budget" \
-                        env -i HOME="$_pi_jail" PATH="$_pi_path" \
+                        /usr/bin/env -i HOME="$_pi_jail" PATH="$_pi_path" \
                         "$_pi_bin" --model "${MODEL:-$_BD_PI_MODEL}" \
                           --print --no-session \
                           --no-approve --no-context-files --no-skills \
@@ -1256,7 +1336,13 @@ CHILD
     # never a valid response, whatever the exit code) OR the output looks
     # transient. Otherwise bail (non-transient hard failure that produced output
     # → the droid fallback owns the rescue).
-    if [[ ! -s "$outfile" ]] || _is_transient_cli_error < "$outfile"; then
+    # The setup-failure flag is checked FIRST and wins outright. It is set only by
+    # `_pi_setup_fail`, for failures that are deterministic by construction, so no
+    # amount of retrying helps — and the text classifier below cannot be trusted to
+    # agree, because those messages quote operator-supplied values (`--model
+    # ECONNRESET` made a deterministic provider error read as transient).
+    if [[ "${_pi_setup_failed:-0}" != "1" ]] \
+       && { [[ ! -s "$outfile" ]] || _is_transient_cli_error < "$outfile"; }; then
         _attempt=$((_attempt + 1))
         continue
     fi

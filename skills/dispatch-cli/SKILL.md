@@ -342,7 +342,27 @@ regardless of task size, which is what makes small reads not worth dispatching.
 fire it at task start, keep working, consume the citations when it lands. Let it
 finish **inside the session**: the jail-cleanup trap covers `INT TERM HUP` only
 (`scripts/dispatch.sh:1268`), so a SIGKILL teardown strands the projected
-credential in the jail.
+credential in the jail. To clean up after one, find it first:
+
+```bash
+# Mirrors dispatch.sh:1324-1325 — a TMPDIR that is unset OR not absolute
+# becomes /tmp, so looking only in $TMPDIR can miss the jail entirely.
+d="${TMPDIR:-/tmp}"; case "$d" in /*) ;; *) d=/tmp ;; esac
+ls -d "$d"/busdriver-pi-* 2>/dev/null
+```
+
+The jail is a directory named `busdriver-pi-` + the dispatch's PID + a random
+suffix (`scripts/dispatch.sh:1324-1326`). Identify the one belonging to the
+killed run and remove **that** directory by its literal path.
+
+**Do not glob-delete them.** PIDs are reused, so a name that looks stale can
+belong to a live dispatch — `_pi_wipe` removes only the jail it created, and a
+`rm -rf …/busdriver-pi-*` has no such ownership check. Confirm no dispatch is
+running before removing anything.
+
+What is in there is a **copy** of one provider credential, projected for that
+single dispatch — not your credential store. Removing it cannot invalidate your
+real auth; leaving it is what costs you.
 
 **Route by who wrote the content, not by where it sits.** Re-read the
 read-confinement warning above first. Writes are blocked; reads are **not**

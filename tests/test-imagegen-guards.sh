@@ -204,12 +204,78 @@ check "jpeg dims not density" \
   "1024x1024"
 check "degenerate dims" "$(dims 'JPEG image data, JFIF standard 1.01, density 300x300, precision 8, 1x1, components 3')" "1x1"
 
-# 12. The grok path guard rejects traversal out of the session root. Lexical prefix
-#    matching alone is defeated by .../sessions/../../secret.png.
-root=$(cd -P "$TMP" && pwd -P)
-gen="$TMP/sessions/../escaped.png"
-dir=$(cd -P "$(dirname "$gen")" 2>/dev/null && pwd -P || echo /nowhere)
-case "$dir/$(basename "$gen")" in "$root"/sessions/*) bad "traversal accepted";; *) ok "traversal rejected";; esac
+# 12. grok_take itself, against a real session tree. Grok reports a path instead of
+#     saving one, so this function is the only thing standing between a claim and a
+#     published file. Reimplementing its logic here would test the copy, not the guard —
+#     so the function is extracted from the doc and run, with $HOME pointed at a fixture.
+#     Every rejection path must reject for its OWN reason, and the accept path must
+#     accept, or the rest proves nothing.
+eval "$(awk '/^grok_take\(\) \{/,/^\}/' "$BLOCK")"
+FAKEHOME="$TMP/fakehome"
+WORK="$TMP/work"; mkdir -p "$WORK"
+workr=$(cd -P "$WORK" && pwd -P)
+SESSROOT="$FAKEHOME/.grok/sessions/$(printf '%s' "$workr" | sed 's|/|%2F|g')"
+mkdir -p "$SESSROOT"
+# shellcheck disable=SC2034  # read by grok_take, which shellcheck cannot see through eval
+OUT="$TMP/mine/grok.png"
+STAMP="$WORK/.start"; : > "$STAMP"
+TAKE=""; ASSET=""
+# Rejections only need the message, so a subshell is fine. The ACCEPT case must not use
+# one: grok_take's $ASSET would be set in the subshell and lost.
+take() { TAKE=""; ASSET=""; HOME="$FAKEHOME" grok_take "$1" 2>&1; }
+
+printf 'x' > "$SESSROOT/fresh.png"
+TAKE=""; ASSET=""
+if HOME="$FAKEHOME" grok_take "here you go: $SESSROOT/fresh.png" >"$TMP/take.log" 2>&1 \
+   && [ -n "$ASSET" ] && [ -f "$ASSET" ]; then
+  ok "grok_take accepts a fresh file in this run's subtree"
+  rm -rf "${TAKE:?}"
+else
+  bad "grok_take rejected a valid take: $(cat "$TMP/take.log")"
+fi
+
+# A sibling reached by .. — lexical prefix matching alone would accept this.
+printf 'x' > "$FAKEHOME/.grok/sessions/escaped.png"
+out=$(take "path: $SESSROOT/../escaped.png")
+case "$out" in
+  *"not a grok session output"*) ok "grok_take rejects traversal out of the subtree" ;;
+  *) bad "traversal not rejected for the right reason: $out" ;;
+esac
+
+# A real file in the right place, but left over from an earlier run.
+printf 'x' > "$SESSROOT/old.png"; touch -t 202001010000 "$SESSROOT/old.png"
+out=$(take "path: $SESSROOT/old.png")
+case "$out" in
+  *"stale, not from this run"*) ok "grok_take rejects a stale file" ;;
+  *) bad "stale not rejected for the right reason: $out" ;;
+esac
+
+# A failed encoder must refuse, not widen. An empty or unsubstituted segment appended
+# to the session root points $root back at ALL of ~/.grok/sessions, where a concurrent
+# session's fresh image would satisfy every remaining check.
+mkdir -p "$TMP/stub4"
+printf 'x' > "$FAKEHOME/.grok/sessions/other-session.png"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/stub4/sed"; chmod +x "$TMP/stub4/sed"
+out=$(PATH="$TMP/stub4:$PATH" take "path: $FAKEHOME/.grok/sessions/other-session.png")
+case "$out" in
+  *"cannot encode"*|*"encoder failed"*) ok "grok_take refuses when the encoder fails" ;;
+  *) bad "broken encoder did not refuse: $out" ;;
+esac
+printf '#!/bin/sh\ncat\n' > "$TMP/stub4/sed"   # succeeds, but substitutes nothing
+out=$(PATH="$TMP/stub4:$PATH" take "path: $FAKEHOME/.grok/sessions/other-session.png")
+case "$out" in
+  *"encoder failed"*) ok "grok_take refuses an unsubstituted encoding" ;;
+  *) bad "no-op encoder did not refuse: $out" ;;
+esac
+
+# The 402-quota shape: prose on stdout, no path at all.
+for reply in "I could not do that" ""; do
+  out=$(take "$reply")
+  case "$out" in
+    *"returned no path"*) ok "grok_take rejects a pathless reply '${reply:0:12}'" ;;
+    *) bad "pathless reply '${reply:0:12}' not rejected: $out" ;;
+  esac
+done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

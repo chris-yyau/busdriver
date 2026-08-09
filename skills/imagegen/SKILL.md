@@ -168,13 +168,24 @@ ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 # `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
 # require it inside grok's own session output, and require it to postdate $STAMP.
 grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider cannot reach
-  local root workr gen dir
+  local root workr enc gen dir
   # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
   # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
   # is what stops a concurrent grok session's image from being picked up.
   root=$(cd -P "$HOME/.grok/sessions" 2>/dev/null && pwd -P) || { echo "no grok session root"; return 1; }
   workr=$(cd -P "$WORK" 2>/dev/null && pwd -P) || return 1
-  root="$root/$(printf '%s' "$workr" | sed 's|/|%2F|g')"
+  # Guard the encoder. A failed or absent sed yields an empty segment, and appending it
+  # would silently widen $root back to ALL of ~/.grok/sessions — the prefix test below
+  # would then accept a fresh image from someone else's concurrent session. A leftover
+  # `/` proves the substitution did not happen, so both are refused.
+  enc=$(printf '%s' "$workr" | sed 's|/|%2F|g') || { echo "cannot encode the session root"; return 1; }
+  case "$enc" in
+    "" | */*) echo "session-root encoder failed on $workr (got: ${enc:-empty})"; return 1 ;;
+  esac
+  root="$root/$enc"
+  # Belt and braces: this dispatch's own subtree must already exist. If it does not,
+  # grok wrote somewhere else and nothing under $root can be from this run.
+  [ -d "$root" ] || { echo "no grok session directory for this run: $root"; return 1; }
   gen=$(printf '%s' "$1" | grep -oE '/[^[:space:]]+\.(png|jpe?g)' | tail -1)
   # An empty reply is the common failure (quota, error) — without this, dirname ""
   # yields "." and the check would silently resolve against the current directory.
@@ -225,7 +236,7 @@ grok|grok-edit)
   # unsupported $HOME or workdir could never validate. Grok-only; codex and agy never
   # see this path, so logo@2x.png is fine for them.
   case "$HOME$(cd -P "$WORK" && pwd -P)" in
-    *[!A-Za-z0-9/._-]*) die "grok needs [A-Za-z0-9/._-] in \$HOME and \$OUT's directory" ;;
+    *[!A-Za-z0-9/._-]*) die "grok needs [A-Za-z0-9/._-] in \$HOME and \$TMPDIR (the paths checked are \$HOME and $WORK)" ;;
   esac
   : > "$STAMP" || die "cannot create $STAMP"   # per invocation: a retry must not accept the previous image
   if [ "$PROVIDER" = grok-edit ]; then

@@ -105,8 +105,8 @@ Mechanical changes:
   GitHub-side Devin review at PR-create is unchanged (Devin stays installed;
   only gating and enumeration are removed). Accepted: those repos' pr-grind
   gate never depended on Devin meaningfully (its exclusive findings were
-  mostly ignored), and the operator can re-enable it per-repo if a specific
-  repo needs it.
+  mostly ignored). The registry is a fixed array (no per-repo override), so
+  re-adding Devin is a code change, not a per-repo flag.
 - Cost: the $20 plan pressure is relieved for the two most redundant bots.
 
 ## Revisit trigger

@@ -324,7 +324,7 @@ Inline copy of SKILL.md triage table:
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note in `RESULT_REMAINING`, skip after 3 consecutive identical failures (see Bail Triggers) |
 | **Advisory check failure (CodeScene status)** | Status is non-blocking, BUT inspect its review thread (Source 2) for actionable findings and fix those |
-| **Automated reviewer — specific fix in your changed code** (Cursor/Codex/CodeRabbit-Pro/Cubic) | Fix it — treat like human review |
+| **Automated reviewer — specific fix in your changed code** (Cubic/CodeRabbit-Pro/Greptile, plus Codex; dropped bots' findings are not enumerated per ADR 0035) | Fix it — treat like human review |
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | See "Out-of-Scope-Acknowledged Workflow" below — classify with one of 6 enumerated reasons; spawn follow-up issue (3 reasons) or post audit-only reply (3 reasons), then resolve the thread. Counts toward the per-round (≤3) and cumulative (≤5/≤3) discipline rails. |
 | **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the other row is for findings on lines your PR DID touch but the fix is out of scope) |
 | **Automated reviewer — Free-plan CodeRabbit summary with no `_⚠️ Potential issue_` markers** | Skip — informational only |
@@ -850,7 +850,7 @@ RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
 RESULT_ACK_TIERS: cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cubic-dev-ai=0/1:approved,coderabbitai=1/1:fixed SC2015 short-circuit,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/1:approved,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: none
 ```
 

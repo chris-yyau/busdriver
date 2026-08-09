@@ -531,12 +531,8 @@ test_m_wait_round_classifier() {
     if printf '%s\n' "$dispatcher_json" | jq -e \
         '.status == "success"
          and .result_commit_sha == "none"
-         and (.result_reviewer_acks | contains("cubic-dev-ai=none"))
-         and (.result_reviewer_acks | contains("coderabbitai=none"))
-         and (.result_reviewer_acks | contains("greptile-apps=none"))
-         and (.result_ack_tiers | contains("cubic-dev-ai=none"))
-         and (.result_ack_tiers | contains("coderabbitai=none"))
-         and (.result_ack_tiers | contains("greptile-apps=none"))' >/dev/null; then
+         and .result_reviewer_acks == "cubic-dev-ai=none,coderabbitai=none,greptile-apps=none"
+         and .result_ack_tiers == "cubic-dev-ai=none,coderabbitai=none,greptile-apps=none"' >/dev/null; then
         return 0
     fi
 

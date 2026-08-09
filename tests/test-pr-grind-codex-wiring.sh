@@ -257,8 +257,8 @@ fi
 # After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
 # Re-folding Codex alone leaves 3 bots at pre-wait values across a 480s window, so a
 # bot that posts CHANGES_REQUESTED during it would still read as passing.
-hasre 'FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*chatgpt-codex-connector=\$\(bash "\$ACK_SCRIPT" chatgpt-codex-connector' \
-  && ok "full 4-bot ledger recomputed after the wait" \
+hasre 'FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*chatgpt-codex-connector=\$\{CODEX_REGRACE\}' \
+  && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
   fail "Codex-only sed re-fold still present — the other 3 bots stay stale"

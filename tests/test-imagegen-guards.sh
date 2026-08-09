@@ -35,12 +35,16 @@ else
   ok "guards copy calls no provider"
 fi
 
-run() {  # run() <script> <OUT> [env assignments...] -> prints exit code
-  local script=$1 out=$2; shift 2
-  ( env "$@" BRIEF="$TMP/brief.txt" bash -c "
+# Prints the run's STDERR, never its exit status. Status alone proves nothing here:
+# with the dispatch stripped, GUARDS exits 1 at "no regular asset produced" no matter
+# what, so an exit-1 assertion still passes with the guard under test deleted. Every
+# case below therefore asserts on the REASON.
+why_run() {  # why_run <script> <OUT> -> prints stderr
+  local script=$1 out=$2
+  # shellcheck disable=SC2069  # deliberate swap: capture stderr, discard stdout
+  env BRIEF="$TMP/brief.txt" bash -c "
       $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$out|; s|^PROVIDER=.*|PROVIDER=agy|" "$script")
-    " >/dev/null 2>&1 )
-  echo $?
+    " 2>&1 >/dev/null
 }
 
 echo "a minimal flat vector logo of a circle" > "$TMP/brief.txt"
@@ -48,13 +52,25 @@ echo "a minimal flat vector logo of a circle" > "$TMP/brief.txt"
 # 1. The documented block is valid shell. Cheapest guard against a broken paste.
 if bash -n "$BLOCK" 2>/dev/null; then ok "block parses"; else bad "block has a syntax error"; fi
 
+# 1b. The operator-filled assignments must be SINGLE-quoted. They are the one place a
+#     path the operator did not author enters the block, and command substitution in an
+#     unquoted — or double-quoted — value runs at assignment time, before any guard.
+unquoted=$(grep -nE "^(BRIEF|OUT|PROVIDER|SRC|CODEX_SANDBOX_CHECKED)=" "$BLOCK" | grep -vE "^[0-9]+:[A-Z_]+='")
+if [ -n "$unquoted" ]; then bad "assignment not single-quoted: $unquoted"; else ok "operator assignments are single-quoted"; fi
+
 # 2. A relative $OUT is refused (the providers all need an absolute path).
-check "relative OUT refused" "$(run "$GUARDS" 'relative/hero.png')" 1
+case "$(why_run "$GUARDS" 'relative/hero.png')" in
+  *"must be absolute"*) ok "relative OUT refused" ;;
+  *) bad "relative OUT: wrong or missing guard: $(why_run "$GUARDS" 'relative/hero.png')" ;;
+esac
 
 # 3. A group/world-writable asset directory is refused — publication cannot be made
 #    race-proof against another writer, so the directory must be yours.
 mkdir -p "$TMP/open"; chmod 777 "$TMP/open"
-check "world-writable dir refused" "$(run "$GUARDS" "$TMP/open/hero.png")" 1
+case "$(why_run "$GUARDS" "$TMP/open/hero.png")" in
+  *"not provably private"*) ok "world-writable dir refused" ;;
+  *) bad "world-writable: wrong or missing guard: $(why_run "$GUARDS" "$TMP/open/hero.png")" ;;
+esac
 
 # 4. A private directory is NOT refused — the guard must be able to pass, not just fail.
 #    With the dispatch stripped there is no asset, so this run still exits 1; what

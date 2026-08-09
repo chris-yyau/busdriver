@@ -43,8 +43,12 @@ use **codex** — it produced the cleanest mark on an identical prompt.
 
 ## Commands (verified 2026-08-09)
 
-Always pass an **absolute** `$OUT`, and always tell the agent to reply with the
-path only — that reply is how you learn where the file actually landed.
+Always pass an **absolute** `$OUT`. Codex and agy are told to write to a path you
+chose, so their reply is only an echo — the file at that path is what counts, and
+the block never parses what they say. Grok is different: `image_gen` writes into
+its own session directory and *reports* the path, so there its reply is the only
+way to find the file — and being a claim rather than proof, `grok_take` re-derives
+and re-checks it before anything is copied.
 
 **Never paste the brief into the command literal.** A brief containing a
 backtick, `$(…)`, `$VAR`, or a quote is evaluated by *your* shell before the
@@ -65,11 +69,17 @@ to exist before it starts.
 **Step 2 — one Bash call:**
 
 ```bash
-BRIEF=/abs/scratch/brief.txt      # written in step 1
-OUT=/abs/assets/hero.png
-PROVIDER=codex                    # codex | agy | grok | grok-edit  — exactly one
-SRC=                              # required only for grok-edit: absolute path of the source image
-CODEX_SANDBOX_CHECKED=            # set to 1 ONLY after reading the codex note in the
+# SINGLE quotes, and keep them. These four lines are the one place a path you did not
+# author enters the block — a $SRC of /tmp/$(rm -rf ~)/x.png runs at ASSIGNMENT time,
+# long before any guard below can look at it, and double quotes would not stop it
+# either: $( ) and ` ` still expand inside them. Single quotes stop all of it. (A path
+# containing a single quote cannot be written this way at all — the shell will refuse
+# to parse it, which is the safe outcome. Rename the file.)
+BRIEF='/abs/scratch/brief.txt'    # written in step 1
+OUT='/abs/assets/hero.png'
+PROVIDER='codex'                  # codex | agy | grok | grok-edit  — exactly one
+SRC=''                            # required only for grok-edit: absolute path of the source image
+CODEX_SANDBOX_CHECKED=''          # set to 1 ONLY after reading the codex note in the
                                   # codex) branch below; empty keeps that route closed
 
 # Must exit, not return: a `return` inside a helper only leaves the helper, so a

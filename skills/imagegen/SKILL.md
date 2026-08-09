@@ -168,7 +168,7 @@ ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 # `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
 # require it inside grok's own session output, and require it to postdate $STAMP.
 grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider cannot reach
-  local root workr enc gen dir
+  local root workr enc gen dir fresh
   # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
   # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
   # is what stops a concurrent grok session's image from being picked up.
@@ -194,7 +194,18 @@ grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider ca
   gen="$dir/$(basename "$gen")"
   case "$gen" in "$root"/*) ;; *) echo "not a grok session output: $gen"; return 1;; esac
   [ -f "$gen" ] && [ ! -L "$gen" ] || { echo "not a regular file: $gen"; return 1; }
-  [ -n "$(find "$gen" -newer "$STAMP" -print -quit 2>/dev/null)" ] || { echo "stale, not from this run: $gen"; return 1; }
+  # Inclusive ">=" on purpose: `find "$gen" -newer "$STAMP"` is a strict `>` and a take
+  # written in the same clock tick as $STAMP (mtime resolution/timer coalescing on some
+  # filesystems) would tie and be wrongly rejected as stale — a CI-only failure on a
+  # coarse-mtime filesystem. Flip the comparison instead: if $STAMP is NOT strictly newer
+  # than $gen, then $gen's mtime is >= $STAMP's.
+  # Inverting the test inverts the failure direction too, so the exit status is now
+  # load-bearing: with `-z` alone, a find that never ran (missing binary, unreadable
+  # path, or a $STAMP the provider deleted — it can write $WORK) prints nothing and
+  # PASSES. Require an exit-0 find, exactly as the directory probe above does.
+  fresh=$(find "$STAMP" -newer "$gen" -print -quit 2>&1) \
+    || { echo "cannot compare timestamps (find: ${fresh:-no output}); is $STAMP still there?"; return 1; }
+  [ -z "$fresh" ] || { echo "stale, not from this run: $gen"; return 1; }
   # Never copy into $WORK: the provider could write there, so any check-then-cp on a
   # path it knows is a race it can win with a symlink. Copy into a directory created
   # AFTER the provider exited, whose name it never saw.

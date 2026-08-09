@@ -196,8 +196,13 @@ case "$why" in
 esac
 
 # 11. Dimension parsing reads PIXELS, not JPEG's JFIF density. `head` would return
-#    300x300 for the JPEG line below and pass a 1x1 image.
-dims() { printf '%s' "$1" | grep -oE '[0-9]+ ?x ?[0-9]+' | tail -1; }
+#    300x300 for the JPEG line below and pass a 1x1 image. The regex is extracted from
+#    the block itself (not reimplemented here) — same no-drift reason as the rest of
+#    this file: a change to the block's DIMS grep must be reflected in this test, not
+#    silently validated against a stale copy.
+dims_regex=$(grep -oE "DIMS=.*grep -oE '[^']+'" "$BLOCK" | sed -E "s/.*grep -oE '([^']+)'.*/\1/")
+[ -n "$dims_regex" ] || { echo "FAIL could not extract the DIMS regex from $BLOCK"; exit 1; }
+dims() { printf '%s' "$1" | grep -oE "$dims_regex" | tail -1; }
 check "png dims" "$(dims 'PNG image data, 1024 x 1024, 8-bit/color RGB, non-interlaced')" "1024 x 1024"
 check "jpeg dims not density" \
   "$(dims 'JPEG image data, JFIF standard 1.01, density 300x300, segment length 16, precision 8, 1024x1024, components 3')" \
@@ -248,6 +253,19 @@ out=$(take "path: $SESSROOT/old.png")
 case "$out" in
   *"stale, not from this run"*) ok "grok_take rejects a stale file" ;;
   *) bad "stale not rejected for the right reason: $out" ;;
+esac
+
+# The freshness comparison must refuse when it cannot be made. The test is inclusive
+# (">=", so a take written in the same clock tick is not wrongly rejected), which means
+# an EMPTY find result is the PASS side — so a find that never ran reads as fresh. The
+# provider can write $WORK, so deleting $STAMP is a move available to it.
+printf 'x' > "$SESSROOT/newer.png"
+mv "$STAMP" "$TMP/stamp.bak"
+out=$(take "path: $SESSROOT/newer.png")
+mv "$TMP/stamp.bak" "$STAMP"
+case "$out" in
+  *"cannot compare timestamps"*) ok "grok_take refuses when \$STAMP is gone (fail closed)" ;;
+  *) bad "missing \$STAMP did not refuse: $out" ;;
 esac
 
 # A failed encoder must refuse, not widen. An empty or unsubstituted segment appended

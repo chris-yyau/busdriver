@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
@@ -7,6 +7,82 @@
 #   PROMPT
 #   echo "task" | dispatch.sh --cli codex
 #   dispatch.sh --cli codex --prompt "simple single-line only"
+
+# ── Interpreter floor (pi lane) — FIRST, before any command word ──
+# Issue #595: the pi arm's preflight runs a QUOTED heredoc inside `$(...)`
+# (`/usr/bin/env -i ... /bin/bash <<'CHILD'`). bash 3.2 — macOS's stock
+# /bin/bash — mis-parses that construct when the body contains `case`
+# patterns: body text is re-parsed as parent code, and the `set -u` abort
+# inside the `if ! _pi_pre="$(...)"` condition exits 0 — a silent fail-open
+# that the old `#!/bin/bash` shebang reached on every macOS direct exec.
+# Verified: 3.2.57 broken, 4.4 and 5.x parse it correctly.
+#
+# This guard runs BEFORE ANY COMMAND WORD — even the `set -euo pipefail`
+# below, whose `set` is shadowable. Bash 3.2 permits slash-named functions
+# via the `function` keyword, so even an absolute path like /usr/bin/env can
+# be shadowed by an imported BASH_FUNC_*, and an exported `source` function
+# would run at the first `source` call. The scan below therefore uses ONLY
+# parser constructs (`for`/`case`/`[[`/`((` and assignments — no command
+# word), and the abort is the `${VAR:?msg}` parameter expansion, which is
+# unconditional (needs no `set -e`), unshadowable (not a command word) and
+# untrappable. It refuses both ways a pi dispatch can be reached: `--cli pi`
+# directly, and `--cli all` in a non-auto mode (the batch discovery below
+# excludes pi from `all` only under --mode auto). The no-pi-installed corner
+# is deliberately NOT checked here: knowing that requires the trusted-home
+# derivation (the env -i preflight), which no pre-command-word scan can run —
+# so `--cli all` on a 3.2 host refuses loudly even when pi is absent, a
+# conservative fail-closed false positive with an explanatory message.
+#
+# The `#!/usr/bin/env bash` shebang is the repo-wide convention (every test
+# in tests/ uses it) and resolves the operator's Homebrew bash on macOS. A
+# PATH-planted `bash` is a hostile CALLER, who could equally invoke any
+# interpreter it likes directly — no shebang can defend against that; a
+# planted 3.2 bash is still caught by this guard, and a planted >= 4 bash is
+# the attacker's own code, which is total compromise by definition.
+if (( BASH_VERSINFO[0] < 4 )); then
+    # The scan mirrors the real arg parser (lines ~202-206): --cli/--mode/
+    # --timeout/--model/--prompt each consume their next operand, the LAST
+    # --cli / --mode wins, and -h|--help anywhere exits 0 before dispatch —
+    # so a help request must not be refused (usage is the same on every
+    # bash). Consuming the other flags' operands matters: `--prompt --cli
+    # --cli pi` parses as PROMPT=--cli, CLI=pi — without the operand
+    # consumption the scan would read the second `--cli` as the first's
+    # value and miss the pi dispatch entirely.
+    _cli_arg=""
+    _mode_arg=""
+    _help=0
+    _prev=""
+    for _a in "$@"; do
+        if [[ "$_prev" == "cli" ]]; then
+            _cli_arg="$_a"
+            _prev=""
+        elif [[ "$_prev" == "mode" ]]; then
+            _mode_arg="$_a"
+            _prev=""
+        elif [[ -n "$_prev" ]]; then
+            # operand of --timeout/--model/--prompt (or a bare word after a
+            # value-taking flag): consumed, not inspected
+            _prev=""
+        elif [[ "$_a" == "--cli" ]]; then
+            _prev="cli"
+        elif [[ "$_a" == "--mode" ]]; then
+            _prev="mode"
+        elif [[ "$_a" == "--timeout" || "$_a" == "--model" || "$_a" == "--prompt" ]]; then
+            _prev="skip"
+        elif [[ "$_a" == "--help" || "$_a" == "-h" ]]; then
+            _help=1
+        fi
+    done
+    if (( ! _help )) && [[ "$_cli_arg" == "pi" || ( "$_cli_arg" == "all" && "$_mode_arg" != "auto" ) ]]; then
+        # The self-assignment overwrites any imported value: `${VAR:?}` only
+        # fires on an unset/empty variable, so an environment exporting
+        # `_pi_bash_floor=1` would otherwise bypass the abort. Assignments are
+        # parser constructs, not command words — nothing can shadow this.
+        _pi_bash_floor=""
+        # shellcheck disable=SC2154  # _pi_bash_floor is assigned (empty) right above; :? is the abort
+        : "${_pi_bash_floor:?dispatch.sh requires bash 4.0 or newer for the pi lane (found ${BASH_VERSION:-unknown}). bash 3.2 (macOS stock /bin/bash) mis-parses the pi preflight heredoc-in-command-substitution and fails open with exit 0. Install a newer bash (macOS: brew install bash), run this script with it, or dispatch a non-pi CLI.}"
+    fi
+fi
 
 # `_has_cli` is intentionally used inside `if`/`!`/`||`/`&&` conditions as
 # the canonical "is this CLI installed" check. SC2310's "set -e disabled in

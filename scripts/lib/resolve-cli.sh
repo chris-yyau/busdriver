@@ -377,10 +377,22 @@ def strip_jsonc(s):
             continue
         if c == ",":
             j = i + 1
-            while j < n and s[j] in " \t\r\n":
-                j += 1
+            while j < n:
+                ch = s[j]
+                if ch in " \t\r\n":
+                    j += 1
+                    continue
+                if s.startswith("//", j):
+                    k = s.find("\n", j)
+                    j = n if k == -1 else k + 1
+                    continue
+                if s.startswith("/*", j):
+                    k = s.find("*/", j + 2)
+                    j = n if k == -1 else k + 2
+                    continue
+                break
             if j < n and s[j] in "}]":
-                i += 1  # trailing comma — drop
+                i += 1  # trailing comma (even with comments after it) — drop
                 continue
         out.append(c); i += 1
     return "".join(out)

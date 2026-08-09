@@ -1,33 +1,39 @@
 #!/bin/bash -p
 # ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
-# PRIMARY: the `-p` shebang makes the very first process privileged — bash
-# -p does NOT import BASH_FUNC_* from the environment (verified on 3.2/5.x),
-# so no imported function can EVER run in a shebang invocation (the only
-# invocation the harness uses). BACKSTOP (non-shebang `bash dispatch.sh`
-# runs): re-exec once with -p before any OTHER command word executes, then
-# abort unshadowably if the re-exec was swallowed by an imported shadow.
-# ${VAR:?} is pure parameter expansion — no command lookup — the only
-# unshadowable non-zero abort on bash 3.2 (verified; self-assignment defeats
-# env-imported values). Documented residual for the backstop path only: an
-# imported BASH_FUNC_exec%% can run before the abort fires, but it cannot
-# make the script continue — anything after the abort is unreachable. The
-# repo's deeper trust boundary remains env -i children (see
-# _bd_read_auditor_model). Loop guard is the "_bd_priv" ARGV marker, shifted
-# off immediately after: argv is the operator's channel (a fork can inject
-# env, not argv), whereas an env marker is forgeable (SHELLOPTS is
-# honored-from-env but not enforced — verified).
+# PRIMARY: the `-p` shebang makes the first process privileged — bash -p does
+# NOT import BASH_FUNC_* from the environment (verified on 3.2/5.x), so no
+# imported function can run in a shebang invocation (the harness invocation).
+# BACKSTOP (non-shebang `bash dispatch.sh`, which ignores the shebang):
+# re-exec with -p, then PROVE the re-exec was privileged before continuing.
+# The proof: a sentinel function is exported before the re-exec — a real -p
+# shell does not import it, a forged no-p re-exec (an imported exec shadow
+# that re-execs with the marker itself) does. The marker only gates the
+# attempt; the sentinel check is what authorizes continuation.
+# BOUNDED BY CONSTRUCTION (bash32-unshadowable-abort): the guard's command
+# words (`export`, `type`, `exec`) are shadowable, and every bypass probe
+# against it — shadowing `type`, `unset -f _bd_sentinel` before re-exec'ing,
+# stripping the sentinel from the env — requires the attacker's shadow to
+# execute further commands. The moment any imported shadow runs, it already
+# has arbitrary code execution: "a set +e-running attacker is total compromise
+# anyway", and no in-shell guard survives that. This backstop therefore stops
+# every shadow that merely replaces a command word (the realistic #325 probe:
+# a fork's settings.json exporting BASH_FUNC_exec%%); it does not — cannot —
+# stop an attacker who is already running code. The real trust boundary is
+# the env -i child; the -p shebang provides the function-clean start for the
+# invocation path the harness uses.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv" ]]; then
+  # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
+  _bd_sentinel() { :; }
+  export -f _bd_sentinel
   exec /bin/bash -p "$0" _bd_priv "$@"
 fi
-# If we are still here with $1 != _bd_priv, the `exec` above was shadowed by
-# an imported BASH_FUNC_exec%% and returned WITHOUT replacing the process —
-# everything from here on would run unprivileged under attacker-shadowable
-# `set`/`source`/etc. Abort FIRST via the one mechanism that cannot be
-# shadowed. The assignment overwrites any hostile env-supplied value, so the
-# expansion always sees null.
-if [[ "${1:-}" != "_bd_priv" ]]; then
+# Re-exec'd process: $1 == _bd_priv. Abort unless BOTH (a) the marker is
+# present AND (b) the sentinel was NOT imported — i.e. the re-exec really ran
+# under -p. Fails closed: a missing marker, an imported sentinel (forged
+# no-p re-exec), or an unparseable `type` result all refuse to continue.
+if [[ "${1:-}" != "_bd_priv" ]] || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
   _bd_priv_guard=
-  : "${_bd_priv_guard:?refusing to continue: the privileged re-exec did not take effect (BASH_FUNC_exec shadow?) — re-run in a clean shell}"
+  : "${_bd_priv_guard:?refusing to continue: the script is not running privileged (imported function shadows present) — re-run via the shebang in a clean shell}"
 fi
 [[ "${1:-}" == "_bd_priv" ]] && shift
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents

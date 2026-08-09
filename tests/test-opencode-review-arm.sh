@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2329  # this file intentionally defines poison/sentinel functions invoked inside children or string-eval contexts
 # test-opencode-review-arm.sh — guard tests for the opencode (Auditor) arm.
 #
 # The arm's read-only posture is NOT structural — it comes from a plugin-owned
@@ -385,6 +386,10 @@ if (
   printf '{\n  "provider": {\n    "p": { "url": "http://x//y", "s": "a,}" },\n  },\n}\n' > "$_home/.opencode/opencode.jsonc"
   rm -f "$_home/.opencode/opencode.json"
   validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i) string-aware JSONC strip mangled a valid provider value"; ok=0; }
+  # (i2) trailing comma with a comment between it and the closing brace must
+  # still be dropped (JSONC stripper lookahead must skip comments).
+  printf '{\n  "provider": {}, // trailing\n}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i2) trailing comma before a comment refused a valid provider-only jsonc"; ok=0; }
 
   # (j) seeded property sweep: random key subsets x {strict, JSONC} over the
   # allowlist, plus non-object roots. Oracle: PASS iff the parsed root is an
@@ -454,17 +459,17 @@ if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
 else
   fail "an opencode arm is missing the validate_opencode_home_config call"
 fi
-# (h) dispatch.sh re-execs under privileged bash before any imported function
-# can run (the guard must precede set -euo pipefail — `set` itself can be
-# shadowed by an imported function).
-# shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
-# shellcheck disable=SC2312  # grep status is load-bearing; head/cut in the pipeline are not
+# (h) dispatch.sh starts privileged via the -p shebang with a sentinel-verified
+# re-exec backstop for non-shebang invocations; the re-exec guard itself must
+# precede set -euo pipefail (a shadowed `set` must not run before the guard).
+# shellcheck disable=SC2016,SC2312  # single-quoted patterns; head/cut in pipeline are not load-bearing
 if grep -q '^#!/bin/bash -p' "$DP" \
    && grep -q 'exec /bin/bash -p "\$0" _bd_priv "\$@"' "$DP" \
+   && grep -q 'type -t _bd_sentinel' "$DP" \
    && [[ "$(grep -n 'exec /bin/bash -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
-  pass "dispatch.sh starts privileged (-p shebang) with in-script re-exec backstop before set -euo"
+  pass "dispatch.sh starts privileged (-p shebang) with sentinel-verified re-exec backstop before set -euo"
 else
-  fail "dispatch.sh missing/incorrectly-ordered privileged bash boundary"
+  fail "dispatch.sh missing/incorrectly-placed function-clean boundary"
 fi
 # (i) privileged bash suppresses imported function shadows (the mechanism the
 # re-exec relies on) — verified on the repo's target /bin/bash 3.2. Uses a
@@ -480,30 +485,50 @@ else
   unset -f _mechpoison
   fail "privileged bash does not suppress imported function shadows (re-exec is ineffective)"
 fi
-# (j) function-clean boundary: with the -p shebang NO imported function can
-# run — poisoned exec/set shadows are inert (probe: no poison output, --help
-# still exits 0). The non-shebang `bash dispatch.sh` path exercises the
-# backstop: a shadowed `exec` cannot continue the script — the unshadowable
-# ${VAR:?} abort fires before any other command.
+# (j) function-clean boundary: (a) the -p shebang keeps poisoned exec/set
+# shadows inert; (b) a naive exec shadow (returns without re-exec'ing) aborts;
+# (c) a FORGED re-exec (exec shadow calls builtin exec WITHOUT -p but WITH the
+# marker) is caught by the sentinel probe — the script refuses to continue;
+# (d) a source shadow never runs (the guard does not call source before the
+# re-exec).
 if (
   set -uo pipefail
+  # (a) shebang path (the harness invocation): poisons never imported
   exec() { echo EXEC-POISONED; }
   set() { echo SET-POISONED; }
   export -f exec set
-  # shebang path (the harness invocation): poisons never imported
   out="$(echo test | "$DP" --help 2>&1)"; rc=$?
-  [[ "$rc" -eq 0 ]] || { echo "  ✗ (j) shebang path failed under poisoned env (rc=$rc)"; exit 1; }
-  printf '%s' "$out" | grep -q "EXEC-POISONED" && { echo "  ✗ (j) poison exec ran via shebang"; exit 1; }
-  printf '%s' "$out" | grep -q "SET-POISONED" && { echo "  ✗ (j) poison set ran via shebang"; exit 1; }
-  printf '%s' "$out" | grep -q "refusing to continue" && { echo "  ✗ (j) unexpected abort via shebang"; exit 1; }
-  # non-shebang path: backstop aborts before continuation
+  [[ "$rc" -eq 0 ]] || { echo "  ✗ (j-a) dispatch failed under poisoned env (rc=$rc)"; exit 1; }
+  printf '%s' "$out" | grep -q "EXEC-POISONED\|SET-POISONED" && { echo "  ✗ (j-a) poison ran via shebang"; exit 1; }
+  # (b) naive exec shadow → abort, no continuation
+  exec() { echo EXEC-POISONED; }
+  export -f exec
   out2="$(bash "$DP" --help 2>&1)"; rc2=$?
-  [[ "$rc2" -ne 0 ]] || { echo "  ✗ (j) non-shebang path continued unprivileged (rc=0)"; exit 1; }
-  printf '%s' "$out2" | grep -q "refusing to continue" || { echo "  ✗ (j) missing unshadowable abort (non-shebang)"; exit 1; }
-  printf '%s' "$out2" | grep -q "SET-POISONED" && { echo "  ✗ (j) execution continued past the guard (non-shebang)"; exit 1; }
+  [[ "$rc2" -ne 0 ]] || { echo "  ✗ (j-b) naive exec shadow continued (rc=0)"; exit 1; }
+  printf '%s' "$out2" | grep -q "refusing to continue" || { echo "  ✗ (j-b) missing abort"; exit 1; }
+  # (c) FORGED re-exec: the exec shadow re-execs WITHOUT -p but WITH the
+  # marker (script called: exec /bin/bash -p "$0" _bd_priv "$@" → shadow sees
+  # $1=/bin/bash $2=-p $3=script $4=_bd_priv $5+=orig). The re-exec'd process
+  # imports the sentinel → the sentinel probe refuses continuation.
+  exec() { echo EXEC-FORGED; builtin exec /bin/bash "$3" "$4" "${@:5}"; }
+  export -f exec
+  out3="$(bash "$DP" --help 2>&1)"; rc3=$?
+  [[ "$rc3" -ne 0 ]] || { echo "  ✗ (j-c) forged re-exec continued unprivileged (rc=0)"; exit 1; }
+  printf '%s' "$out3" | grep -q "refusing to continue" || { echo "  ✗ (j-c) sentinel abort missing"; exit 1; }
+  printf '%s' "$out3" | grep -q "EXEC-FORGED" || { echo "  ✗ (j-c) forged exec did not run"; exit 1; }
+  printf '%s' "$out3" | grep -q "Usage:" && { echo "  ✗ (j-c) script continued past the guard"; exit 1; }
+  # (d) source shadow: must never run (the guard calls no source before the
+  # re-exec; exec is forwarded to the real builtin so the privileged child
+  # runs and --help exits clean)
+  exec() { builtin exec "$@"; }
+  source() { echo SRC-POISONED; }
+  export -f exec source
+  out4="$(bash "$DP" --help 2>&1)"; rc4=$?
+  [[ "$rc4" -eq 0 ]] || { echo "  ✗ (j-d) dispatch failed under source poison (rc=$rc4)"; exit 1; }
+  printf '%s' "$out4" | grep -q "SRC-POISONED" && { echo "  ✗ (j-d) source shadow ran"; exit 1; }
   exit 0
 ); then
-  pass "function-clean boundary: -p shebang keeps poisons inert; non-shebang backstop aborts unshadowably"
+  pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"
 else
   fail "function-clean boundary failed (see above)"
 fi

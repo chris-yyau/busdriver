@@ -53,7 +53,8 @@ read it into a variable — expanding a variable inside double quotes is not
 re-evaluated, so this is injection-free for any content (a heredoc is not: a
 line equal to the delimiter ends it, and the rest parses as shell).
 
-Dispatch from the asset directory, not from a checkout — see Threat model.
+Dispatch from a fresh temp directory outside any checkout — never from the asset
+tree or a repository. See Threat model for why.
 
 **Step 1 — write the brief with the Write tool**, to a scratch path *outside* the
 asset tree (your scratchpad, not `assets/`): prompt text should never end up
@@ -101,7 +102,14 @@ die() {
 trap 'die "interrupted"' INT TERM
 
 case "$OUT" in /*) ;; *) die "refuse: \$OUT must be absolute";; esac
-mkdir -p "$(dirname "$OUT")"
+
+# Read the brief BEFORE creating anything, so a typo'd path fails without leaving
+# directories behind. This has to precede the mkdir below, not merely the dispatch.
+PROMPT=$(cat "$BRIEF") || die "unreadable brief: $BRIEF"
+[ -n "$PROMPT" ] || die "empty brief: $BRIEF"
+
+DIR=$(dirname "$OUT")
+mkdir -p "$DIR" || die "cannot create $DIR"
 # ASSUMPTION: the asset directory is yours alone. Publication cannot be made race-proof
 # against another writer — POSIX ln has no portable --no-target-directory, so a directory
 # raced into place at $OUT would quietly receive $OUT/asset.png. The mode-bit test below
@@ -110,15 +118,15 @@ mkdir -p "$(dirname "$OUT")"
 # while these bits stay clear. If you cannot vouch for the directory, do not publish
 # into it — and note that anyone who can write it controls its contents with or
 # without this script.
-[ -n "$(find "$(dirname "$OUT")" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) 2>/dev/null)" ] \
-  && die "refuse: $(dirname "$OUT") is group- or world-writable"
+# Fail CLOSED: a discarded find(1) failure — no find on PATH, -perm rejected, the
+# directory unreadable — produces the same empty output as a private directory, so
+# silence alone must not be read as proof. Only a find that EXITED 0 and printed
+# nothing counts; stderr is folded into the capture so a warning cannot pass as clean.
+PERM=$(find "$DIR" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) -print 2>&1) \
+  || die "cannot inspect $DIR (find: ${PERM:-no output}) — refusing to publish"
+[ -z "$PERM" ] || die "refuse: $DIR is not provably private (find: $PERM)"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && die "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"
-
-# Read the brief BEFORE creating anything, so a typo'd path fails without leaving
-# directories behind.
-PROMPT=$(cat "$BRIEF") || die "unreadable brief: $BRIEF"
-[ -n "$PROMPT" ] || die "empty brief: $BRIEF"
 
 # $WORK goes in the system temp dir, NOT beside $OUT. Verified: with $WORK inside a
 # git checkout, `codex exec -s workspace-write -C "$WORK"` still wrote to the

@@ -35,7 +35,7 @@ run() {  # run() <script> <OUT> [env assignments...] -> prints exit code
 echo "a minimal flat vector logo of a circle" > "$TMP/brief.txt"
 
 # 1. The documented block is valid shell. Cheapest guard against a broken paste.
-bash -n "$BLOCK" 2>/dev/null && ok "block parses" || bad "block has a syntax error"
+if bash -n "$BLOCK" 2>/dev/null; then ok "block parses"; else bad "block has a syntax error"; fi
 
 # 2. A relative $OUT is refused (the providers all need an absolute path).
 check "relative OUT refused" "$(run "$GUARDS" 'relative/hero.png')" 1
@@ -58,12 +58,14 @@ case "$why" in
   *) bad "private dir: unexpected failure: $why" ;;
 esac
 
-# 5. An unreadable brief fails and leaves no working directories behind.
-mkdir -p "$TMP/clean"
+# 5. An unreadable brief must fail BEFORE the output directory is created — the brief
+#    read has to precede the mkdir, not merely the dispatch, or a typo'd path litters
+#    the tree with empty directories. Asserting on a pre-created directory would miss
+#    exactly that, so the directory here must not exist beforehand.
 ( env BRIEF=/nonexistent/brief.txt bash -c "
-    $(sed "s|^BRIEF=.*|BRIEF=/nonexistent/brief.txt|; s|^OUT=.*|OUT=$TMP/clean/hero.png|; s|^PROVIDER=.*|PROVIDER=agy|" "$GUARDS")
+    $(sed "s|^BRIEF=.*|BRIEF=/nonexistent/brief.txt|; s|^OUT=.*|OUT=$TMP/nodir/hero.png|; s|^PROVIDER=.*|PROVIDER=agy|" "$GUARDS")
   " >/dev/null 2>&1 )
-check "bad brief leaves no litter" "$(ls -A "$TMP/clean" | wc -l | tr -d ' ')" 0
+if [ -e "$TMP/nodir" ]; then bad "bad brief created $TMP/nodir"; else ok "bad brief creates nothing"; fi
 
 # 6. An inherited WORK/TAKE/VERIFIED must never be swept: these are ordinary variable
 #    names, and die() rm -rf's them.
@@ -71,9 +73,24 @@ mkdir -p "$TMP/precious"; touch "$TMP/precious/keep.txt"
 ( env BRIEF=/nonexistent WORK="$TMP/precious" TAKE="$TMP/precious" VERIFIED=1 bash -c "
     $(sed "s|^BRIEF=.*|BRIEF=/nonexistent|; s|^OUT=.*|OUT=$TMP/mine/x.png|; s|^PROVIDER=.*|PROVIDER=agy|" "$GUARDS")
   " >/dev/null 2>&1 )
-[ -f "$TMP/precious/keep.txt" ] && ok "inherited WORK not swept" || bad "inherited WORK was deleted"
+if [ -f "$TMP/precious/keep.txt" ]; then ok "inherited WORK not swept"; else bad "inherited WORK was deleted"; fi
 
-# 7. Dimension parsing reads PIXELS, not JPEG's JFIF density. `head` would return
+# 7. A find(1) that cannot answer must REFUSE, not pass. A discarded find failure
+#    (absent binary, rejected -perm, unreadable directory) yields the same empty
+#    output as a private directory, so silence must not be read as proof. The stub
+#    below fails the way a missing or incompatible find would.
+mkdir -p "$TMP/stub"
+printf '#!/bin/sh\necho "find: broken" >&2\nexit 1\n' > "$TMP/stub/find"
+chmod +x "$TMP/stub/find"
+why=$( env BRIEF="$TMP/brief.txt" PATH="$TMP/stub:$PATH" bash -c "
+    $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$TMP/mine/probe.png|; s|^PROVIDER=.*|PROVIDER=agy|" "$GUARDS")
+  " 2>&1 >/dev/null )
+case "$why" in
+  *"cannot inspect"*) ok "unanswerable find refuses (fail closed)" ;;
+  *) bad "broken find did not refuse: $why" ;;
+esac
+
+# 8. Dimension parsing reads PIXELS, not JPEG's JFIF density. `head` would return
 #    300x300 for the JPEG line below and pass a 1x1 image.
 dims() { printf '%s' "$1" | grep -oE '[0-9]+ ?x ?[0-9]+' | tail -1; }
 check "png dims" "$(dims 'PNG image data, 1024 x 1024, 8-bit/color RGB, non-interlaced')" "1024 x 1024"
@@ -82,7 +99,7 @@ check "jpeg dims not density" \
   "1024x1024"
 check "degenerate dims" "$(dims 'JPEG image data, JFIF standard 1.01, density 300x300, precision 8, 1x1, components 3')" "1x1"
 
-# 8. The grok path guard rejects traversal out of the session root. Lexical prefix
+# 9. The grok path guard rejects traversal out of the session root. Lexical prefix
 #    matching alone is defeated by .../sessions/../../secret.png.
 root=$(cd -P "$TMP" && pwd -P)
 gen="$TMP/sessions/../escaped.png"

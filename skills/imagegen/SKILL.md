@@ -57,10 +57,12 @@ Dispatch from the asset directory, not from a checkout — see Threat model.
 
 ```bash
 OUT=/abs/assets/hero.png; mkdir -p "$(dirname "$OUT")"
-[ -e "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
+# -e alone returns false for a dangling symlink, which a provider would then write through
+[ -e "$OUT" ] || [ -L "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
 
-BRIEF="$(dirname "$OUT")/brief.txt"    # <- write this file with the Write tool first
-PROMPT=$(cat "$BRIEF")
+BRIEF="$OUT.brief.txt"    # <- per-output name (append, never strip: ${OUT%.*} mangles /a.b/hero)
+PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
+[ -n "$PROMPT" ] || { echo "empty brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
 
 # codex — needs </dev/null and --skip-git-repo-check outside a git repo
 codex exec -s workspace-write -C "$(dirname "$OUT")" --skip-git-repo-check \
@@ -74,8 +76,8 @@ codex exec -s workspace-write -C "$(dirname "$OUT")" --skip-git-repo-check \
 grok -p "Use image_gen to create: $PROMPT. Save it into the current directory as $(basename "$OUT"). Reply with only the absolute path." \
   --sandbox workspace --always-approve --disable-web-search --cwd "$(dirname "$OUT")"
 
-# grok — edit an existing image (the only provider that can). Put the requested
-# change in $PROMPT via the same heredoc, and point $SRC at the source:
+# grok — edit an existing image (the only provider that can). Describe the change
+# in the same brief file, and point $SRC at the source:
 SRC=/abs/path/source.png; [ -f "$SRC" ] || { echo "no such source: $SRC"; return 1 2>/dev/null || exit 1; }
 grok -p "Use image_edit on the image at $SRC: $PROMPT, keep everything else identical. Save the result into the current directory as $(basename "$OUT"). Reply with only the absolute path." \
   --sandbox workspace --always-approve --disable-web-search --cwd "$(dirname "$OUT")"
@@ -137,7 +139,7 @@ This is not ceremony. Both failures below were observed:
 - **agy needs `toolPermission` looser than `strict`** in `~/.gemini/antigravity-cli/settings.json`; under `strict` the image tool is auto-denied in headless mode ("a tool required the `command` permission"). Keep `--sandbox`.
 - **Don't deny shell to the provider.** Every one of them saves by copying a file; block that and you get the fabrication above, not a clean failure. The sandbox profile is the control, not a tool denylist.
 - **Two minutes per image, one dispatch per image.** Each command carries a single `$OUT`, so an 8-section page is 8 dispatches and ~15 minutes. Budget for it up front; there is no batch form.
-- **Quoting:** the quoted-heredoc `$PROMPT` above is mandatory, not stylistic — it is the only form that survives a brief containing quotes, backticks, or `$`.
+- **Quoting:** the brief-file `$PROMPT` above is mandatory, not stylistic — it is the only form that survives a brief containing quotes, backticks, or `$`. Do not "simplify" it back into the command literal or a heredoc.
 
 ## Wiring
 

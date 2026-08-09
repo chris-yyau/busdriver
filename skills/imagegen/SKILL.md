@@ -55,19 +55,21 @@ line equal to the delimiter ends it, and the rest parses as shell).
 
 Dispatch from the asset directory, not from a checkout — see Threat model.
 
+**Step 1 — write the brief with the Write tool**, to a scratch path *outside* the
+asset tree (your scratchpad, not `assets/`): prompt text should never end up
+beside a served or committed image. Do this first: shell variables do not survive
+between Bash calls, so everything below has to run as one call, and the brief has
+to exist before it starts.
+
+**Step 2 — one Bash call:**
+
 ```bash
+BRIEF=/abs/scratch/brief.txt      # written in step 1
 OUT=/abs/assets/hero.png
 case "$OUT" in /*) ;; *) echo "refuse: \$OUT must be absolute"; return 1 2>/dev/null || exit 1;; esac
-# Whitespace anywhere in $OUT or $HOME breaks the grok path parsing and session-root
-# encoding below. Refuse rather than mis-resolve; put assets on a whitespace-free path.
-case "$OUT$HOME" in *[[:space:]]*) echo "refuse: whitespace in \$OUT or \$HOME is unsupported"; return 1 2>/dev/null || exit 1;; esac
 mkdir -p "$(dirname "$OUT")"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
-
-BRIEF="$OUT.brief.txt"    # <- per-output name (append, never strip: ${OUT%.*} mangles /a.b/hero)
-PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
-[ -n "$PROMPT" ] || { echo "empty brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
 
 # Dispatch into a fresh empty directory, never the asset directory. The provider's
 # write sandbox is scoped to its cwd, so an empty cwd means there is nothing of
@@ -75,6 +77,11 @@ PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/nul
 # $WORK sits BESIDE $OUT, not in /tmp, so the final mv is a same-filesystem rename
 # (atomic). A cross-device mv is copy-then-delete and can leave a partial $OUT that
 # then blocks every retry.
+# Read the brief BEFORE creating anything, so a typo'd path fails without leaving
+# empty .imagegen.* directories littered beside your assets.
+PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
+[ -n "$PROMPT" ] || { echo "empty brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
+
 WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX") || { echo "mktemp failed"; return 1 2>/dev/null || exit 1; }
 ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 
@@ -83,12 +90,13 @@ ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 # `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
 # require it inside grok's own session output, and require it to postdate $STAMP.
 grok_take() {   # sets $ASSET to a copy the provider cannot reach
-  local root gen dir take
+  local root workr gen dir take
   # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
   # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
   # is what stops a concurrent grok session's image from being picked up.
   root=$(cd -P "$HOME/.grok/sessions" 2>/dev/null && pwd -P) || { echo "no grok session root"; return 1; }
-  root="$root/$(cd -P "$WORK" && pwd -P | sed 's|/|%2F|g')"
+  workr=$(cd -P "$WORK" 2>/dev/null && pwd -P) || return 1
+  root="$root/$(printf '%s' "$workr" | sed 's|/|%2F|g')"
   gen=$(printf '%s' "$1" | grep -oE '/[^[:space:]]+\.(png|jpe?g)' | tail -1)
   # An empty reply is the common failure (quota, error) — without this, dirname ""
   # yields "." and the check would silently resolve against the current directory.
@@ -116,6 +124,11 @@ codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
 
 # grok — needs NO shell: image_gen writes into grok's own session dir and reports the
 # path, so allow exactly one tool and do the copy yourself.
+# Preflight BEFORE spending balance: grok_take's session-root encoder maps only `/`,
+# while a real URL encoder would also touch space, %, #, ? and non-ASCII — so an
+# unsupported $HOME or workdir could never validate. Grok-only; codex and agy never
+# see this path, so logo@2x.png is fine for them.
+case "$HOME$(cd -P "$WORK" && pwd -P)" in *[!A-Za-z0-9/._-]*) echo "grok needs [A-Za-z0-9/._-] in \$HOME and \$OUT's directory"; return 1 2>/dev/null || exit 1;; esac
 : > "$STAMP"   # re-stamp per invocation: a retry or a later edit must not accept the earlier image
 RAW=$(grok -p "Use image_gen to create: $PROMPT. Do not copy or move any files. Reply with only the absolute path of the file image_gen produced." \
   --sandbox workspace --permission-mode default --allow image_gen --disable-web-search --cwd "$WORK")
@@ -221,7 +234,7 @@ This is not ceremony. Both failures below were observed:
 - **codex outside a git repo** fails with `Not inside a trusted directory`; add `--skip-git-repo-check`.
 - **codex saves to `$CODEX_HOME/generated_images/` first.** The prompt must say *copy to `$OUT`*, or the asset is left outside the project.
 - **agy needs `toolPermission` looser than `strict`** in `~/.gemini/antigravity-cli/settings.json`; under `strict` the image tool is auto-denied in headless mode ("a tool required the `command` permission"). Keep `--sandbox`.
-- **Don't deny shell to the provider.** Every one of them saves by copying a file; block that and you get the fabrication above, not a clean failure. The sandbox profile is the control, not a tool denylist.
+- **Don't deny shell to codex or agy.** Both save by copying a file; block that and you get the fabrication above, not a clean failure — their sandbox flag is the control, not a tool denylist. Grok is the exception: it never needs shell, which is why its commands grant none.
 - **Grok has a spendable balance.** When it runs out the CLI prints `API error (status 402 …): Grok Build usage balance exhausted` on **stderr** and stdout is empty — so a dispatch that swallows stderr looks like a silent no-op. Route to codex/agy; only `image_edit` has no substitute.
 - **Two minutes per image, one dispatch per image.** Each command carries a single `$OUT`, so an 8-section page is 8 dispatches and ~15 minutes. Budget for it up front; there is no batch form.
 - **Quoting:** the brief-file `$PROMPT` above is mandatory, not stylistic — it is the only form that survives a brief containing quotes, backticks, or `$`. Do not "simplify" it back into the command literal or a heredoc.

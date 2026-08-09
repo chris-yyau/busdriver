@@ -235,7 +235,7 @@ PROMPT
 |------|--------|---------|
 | `--cli` | `codex`, `agy`, `droid`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
-| `--timeout` | seconds | `300` |
+| `--timeout` | seconds | `600` |
 | `--model` | model name | CLI default |
 | `--prompt` | task description | (or pipe stdin) |
 
@@ -294,13 +294,36 @@ This skill is **not pipeline-bound**. Use it from anywhere:
 - Within other skills — as a building block
 
 Dispatch events log to `~/.claude/homunculus/dispatch-log.jsonl` for auditing.
+A run that ends in `error` or `timeout` also has its output archived to
+`~/.claude/homunculus/failures/` (mode 600, in a mode-700 directory), and the log
+entry's `output_file` points there rather than at the `$TMPDIR` original — which
+the OS reaps and a reboot wipes, so a failure's only diagnostic used to disappear
+before anyone read it. The archive keeps the **last** 64KB: a CLI appends its
+fatal error after its normal output, so capping from the front would preserve
+everything except the failure cause.
+
+## Routing reads to pi (the point of the lane)
+
+Measured over 30 days, **context handling is ~86% of Claude's token consumption**
+— the dominant cost is Claude *reading*. The pi lane only pays for itself if it
+absorbs that reading, so route by size rather than by ceremony:
+
+| Question | Route |
+|----------|-------|
+| "How does X work?", "where is Y handled?", tracing across a large file or several files | **pi first.** Then `Read` only the `file:line` ranges it cites. |
+| A known small region you can name up front | Read it directly — a ~5min dispatch is slower than reading 40 lines. |
+
+The win is not that pi is smarter; it is that a cited answer costs ~1k tokens
+where opening the file costs tens of thousands. Ask pi for citations, then pull
+only those lines into context. Verify anything load-bearing against the source —
+pi is a reader, never an authority.
 
 ## Error Handling
 
 | Situation | What happens |
 |-----------|-------------|
 | CLI not found | Script falls back to other CLI (auto mode) or errors clearly |
-| Timeout (default 5min) | Script returns timeout status, partial output if any |
+| Timeout (default 10min) | Script returns timeout status, partial output if any |
 | CLI error | Script captures stderr, returns error status |
 | Empty output | Script notes "(no output)" — may need a better prompt |
 | Setup precondition unmet | Script returns **`skipped`** status — see below |

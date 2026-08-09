@@ -5,12 +5,14 @@
 # imported function can run in a shebang invocation (the harness invocation).
 # BACKSTOP (non-shebang `bash dispatch.sh`, which ignores the shebang):
 # re-exec with -p, then PROVE the re-exec was privileged before continuing.
-# The proof: a sentinel function is exported before the re-exec — a real -p
-# shell does not import it, a forged no-p re-exec (an imported exec shadow
-# that re-execs with the marker itself) does. The marker only gates the
-# attempt; the sentinel check is what authorizes continuation.
+# The proof: a sentinel function is exported before the re-exec — the
+# post-re-exec checks verify (a) the marker, (b) the sentinel env export is
+# present with the "() {" function shape under the BASH_FUNC_%% encoding this
+# build exports, and (c) the sentinel was NOT imported (a -p shell never
+# imports it; a forged no-p re-exec does). The marker only gates the attempt;
+# the sentinel checks are what authorize continuation.
 # BOUNDED BY CONSTRUCTION (bash32-unshadowable-abort): the guard's command
-# words (`export`, `type`, `exec`) are shadowable, and every bypass probe
+# words (`export`, `exec`, `type`) are shadowable, and every bypass probe
 # against it — shadowing `type`, `unset -f _bd_sentinel` before re-exec'ing,
 # stripping the sentinel from the env — requires the attacker's shadow to
 # execute further commands. The moment any imported shadow runs, it already
@@ -20,32 +22,19 @@
 # a fork's settings.json exporting BASH_FUNC_exec%%); it does not — cannot —
 # stop an attacker who is already running code. The real trust boundary is
 # the env -i child; the -p shebang provides the function-clean start for the
-# invocation path the harness uses.
-# Detect THIS bash's exported-function env encoding from a RANDOM-NAME probe
-# (unconditional — runs before the guard, so every process sees the
-# script-computed value): BASH_FUNC_<name>%% (bash 4.3+ / Shellshock-patched
-# macOS 3.2) vs plain <name> (pre-4.3 / unpatched 3.2). The random name
-# cannot be pre-set by a caller, so exactly ONE encoding of the probe export
-# exists and the detection is unambiguous. The sentinel env-presence check
-# below looks ONLY under the detected encoding. `eval` here is the one
-# shadowable word (needed to define a computed function name); a shadow of it
-# has already executed code — total compromise, out of scope
-# (bash32-unshadowable-abort).
-_bd_probe_name="_bd_probe_${RANDOM}${RANDOM}${RANDOM}"
-eval "${_bd_probe_name}() { :; }"
-# shellcheck disable=SC2163  # export -f takes the EXPANDED function name — deliberate indirection
-export -f "${_bd_probe_name}"
-_bd_export_enc="plain"
-if [[ -n "$(/usr/bin/printenv "BASH_FUNC_${_bd_probe_name}%%" 2>/dev/null || true)" ]]; then
-  _bd_export_enc="BASH_FUNC_"
-fi
-export _bd_export_enc
+# invocation path the harness uses. There is deliberately NO function-export
+# encoding probe (an `eval`-defined random-name function): on this build the
+# sentinel always exports as BASH_FUNC__bd_sentinel%%, and on a build that
+# exports plain names the single-encoding check FAILS CLOSED (abort) — an
+# unpatched pre-4.3 Shellshock-era bash is out of scope.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]]; then
   # Nonce: the marker is "_bd_priv_<nonce>"; the nonce must be NON-EMPTY, so
   # caller-supplied bare "_bd_priv" / "_bd_priv_" (empty env nonce) never
   # match and fall through to the re-exec. The pre-re-exec branch also exports
-  # the sentinel — its env presence (under THIS bash's export encoding, see
-  # the detection above) is proof the branch ran.
+  # the sentinel — its env presence is proof the branch ran. This branch runs
+  # no probe words beyond reserved-word `[[ ]]` and the builtins it needs
+  # (set/export/exec — a shadow of any of them has already executed code,
+  # total compromise, out of scope).
   _bd_nonce="${RANDOM}${RANDOM}${RANDOM}"
   export _bd_nonce
   # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
@@ -55,22 +44,19 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}"
 fi
 # Post-re-exec. THREE proofs, all required before continuing:
 #  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.
-#  (b) the sentinel env export is present under THIS bash's export encoding:
-#      checked via /usr/bin/printenv EXACT NAME lookup (absolute path — the
-#      repo's trust anchor; only slash-named shadowing applies, which is
-#      total compromise) + `[[ -n ]]` (reserved word, unshadowable). The
-#      encoding was detected above from the script's OWN probe export, so a
-#      caller-set var under the OTHER encoding is never accepted. A
-#      function-shaped value would be imported in an unprivileged shell →
-#      caught by (c); a non-function value fails the "() {" shape check.
+#  (b) the sentinel env export BASH_FUNC__bd_sentinel%% is present with the
+#      "() {" function shape — checked via /usr/bin/printenv EXACT NAME lookup
+#      (absolute path — the repo's trust anchor; only slash-named shadowing
+#      applies, which is total compromise) + `[[ -n ]]` / `case` (reserved
+#      words, unshadowable). A caller-set var under a DIFFERENT name (plain
+#      `_bd_sentinel`, substring names) is never accepted — and on builds
+#      whose exports use plain names the check fails CLOSED (abort).
 #  (c) the sentinel was NOT imported (`type -t` != function) — proves the
-#      re-exec ran under -p. `type` is the one shadowable word in this guard;
-#      a shadow of it has already executed code — total compromise, out of
-#      scope (bash32-unshadowable-abort).
-_bd_env_lookup="_bd_sentinel"
-[[ "$_bd_export_enc" == "BASH_FUNC_" ]] && _bd_env_lookup="BASH_FUNC__bd_sentinel%%"
+#      re-exec ran under -p (a forged no-p re-exec imports it). `type` is the
+#      one shadowable word in this guard; a shadow of it has already executed
+#      code — total compromise, out of scope (bash32-unshadowable-abort).
 _bd_env_sentinel="no"
-_bd_sentinel_env="$(/usr/bin/printenv "$_bd_env_lookup" 2>/dev/null || true)"
+_bd_sentinel_env="$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)"
 case "$_bd_sentinel_env" in
   "() {"*) _bd_env_sentinel="yes" ;;
 esac
@@ -907,22 +893,41 @@ dispatch_one() {
                     printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
                     rmdir "$_oc_cwd" 2>/dev/null || true
                     exit_code=1
-                elif ! validate_opencode_home_config "$_oc_home"; then
-                    printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
-                    rmdir "$_oc_cwd" 2>/dev/null || true
-                    exit_code=1
-                fi
+                else
                 # shellcheck disable=SC2310  # intentional: refused dispatch is the branch
                 if [[ "$exit_code" -eq 0 ]]; then
-                ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT
+                # Validation runs INSIDE the trap-owned subshell: the staged
+                # sandbox is owned from creation, so an early TERM/EXIT during
+                # staging cannot orphan a credential-bearing temp dir.
+                ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"' EXIT
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 143' TERM
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 130' INT
+                  if ! validate_opencode_home_config "$_oc_home"; then
+                    printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
+                    exit 1
+                  fi
                   cd "$_oc_cwd" 2>/dev/null || exit 1
+                  # XDG_DATA_HOME points at the SANDBOX data dir, which the
+                  # validator populated with a validated auth.json copy ONLY:
+                  # auth-based providers work, while the empty rest of the
+                  # data dir carries NO account/org state (nothing merges
+                  # config after OPENCODE_CONFIG — MCP/plugin/permission/
+                  # agent overrides). XDG_CACHE_HOME shares the inert model/
+                  # package cache. (Comments sit BEFORE the command — a
+                  # comment after a backslash continuation would terminate
+                  # the chain and run opencode UNISOLATED.)
                   _portable_timeout "$_budget" \
-                    env -i HOME="$_oc_home" PATH="$_oc_path" \
+                    env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                         OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                        XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
+                        XDG_CACHE_HOME="$_oc_home/.cache" \
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                     -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
-                rm -rf "$_oc_cwd" 2>/dev/null || true
+                # The subshell's EXIT/TERM/INT trap owns write-back + cleanup
+                # (the sandbox var lives only inside the subshell).
+                fi
                 fi
                 fi
             fi ;;

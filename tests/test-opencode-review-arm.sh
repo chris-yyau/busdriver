@@ -106,10 +106,11 @@ for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
      && grep -q '_oc_cwd="\$(mktemp -d' "$_f" \
      && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
      && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
-     && grep -q '"\$_oc_bin" run --dir' "$_f"; then
-    pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin)"
+     && grep -q '"\$_oc_bin" run --dir' "$_f" \
+     && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+    pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin + intact chain)"
   else
-    fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin)"
+    fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin/chain — a comment after a backslash continuation would run opencode UNISOLATED)"
   fi
 done
 
@@ -327,7 +328,8 @@ if (
   ok=1
   _home="$(mktemp -d)" || exit 1
   mkdir -p "$_home/.opencode" || exit 1
-  trap 'rm -rf "$_home"' EXIT
+  # shellcheck disable=SC2016  # _BD_OC_SANDBOX_HOME must expand at trap fire time
+  trap '_bd_rm_sandbox_home "$_BD_OC_SANDBOX_HOME" "$_home"; rm -rf "$_home"' EXIT
 
   # (a) provider-only json → pass
   printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
@@ -339,6 +341,62 @@ if (
   # (a3) NESTED npm (per-model provider override) → refuse
   printf '{"provider":{"p":{"models":{"m":{"provider":{"npm":"file:///tmp/evil.mjs"}}}}}}\n' > "$_home/.opencode/opencode.json"
   validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3) nested model npm accepted"; ok=0; }
+  # (a3b) {file:} placeholder in an OBJECT KEY (expanded by opencode at load
+  # time — can smuggle an npm key past the scan above) → refuse
+  printf '{"provider":{"p":{"{file:/x-npm}":"file:///tmp/evil.mjs"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3b) {file:} key-smuggle accepted"; ok=0; }
+  # (a3c) plain {file:} value reference → refuse (HOME-redirected resolution
+  # would break; fail-closed)
+  printf '{"provider":{"p":{"options":{"apiKey":"{file:~/.secrets/key}"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3c) {file:} value accepted"; ok=0; }
+  # (a3d) {env:...} substitution (also expanded before parsing — an unset var
+  # becomes empty, so `n{env:UNSET}pm` becomes the key `npm`) → refuse
+  printf '{"provider":{"p":{"n{env:UNSET}pm":"file:///tmp/evil.mjs"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3d) {env:} key-smuggle accepted"; ok=0; }
+  # (a4) on success the validator STAGES the validated bytes at
+  # $_BD_OC_SANDBOX_HOME/.opencode/opencode.json (open-code-copy semantics —
+  # the dispatch arms run opencode with HOME=<sandbox home>, so opencode
+  # reads exactly what was validated); on refusal the sandbox home is unset.
+  [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4) refusal left a staged sandbox home"; ok=0; }
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4) valid config refused"; ok=0; }
+  if [[ ! -f "$_BD_OC_SANDBOX_HOME/.opencode/opencode.json" ]] \
+     || ! diff -q "$_home/.opencode/opencode.json" "$_BD_OC_SANDBOX_HOME/.opencode/opencode.json" >/dev/null 2>&1; then
+    echo "  ✗ (a4) staged copy missing or differs from validated bytes"; ok=0;
+  fi
+  # (a4c) HOME-based SDK dirs (.aws etc.) are symlinked into the staged home,
+  # so providers reading ~/.aws profiles keep working under the redirected
+  # HOME; absent dirs are not created.
+  mkdir -p "$_home/.aws" || exit 1
+  printf '[default]\n' > "$_home/.aws/config"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4c) valid config with .aws refused"; ok=0; }
+  [[ -L "$_BD_OC_SANDBOX_HOME/.aws" ]] || { echo "  ✗ (a4c) .aws not symlinked into staged home"; ok=0; }
+  [[ ! -e "$_BD_OC_SANDBOX_HOME/.azure" ]] || { echo "  ✗ (a4c) absent .azure was created"; ok=0; }
+  rm -rf "$_BD_OC_SANDBOX_HOME" "$_home/.aws" 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
+  # (a4b) Auth availability via a VALIDATED COPY in the sandbox DATA dir:
+  # the arms set XDG_DATA_HOME to the sandbox's own .local/share (never the
+  # real data dir — account/org state there would merge config after
+  # OPENCODE_CONFIG). The copy is byte-identical + 0600; nothing else is
+  # staged (no account state, no wellknown credentials).
+  mkdir -p "$_home/.local/share/opencode" || exit 1
+  printf '{"openai":{"key":"secret"}}\n' > "$_home/.local/share/opencode/auth.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4b) valid config with auth refused"; ok=0; }
+  if [[ ! -f "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" ]] \
+     || ! diff -q "$_home/.local/share/opencode/auth.json" "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" >/dev/null 2>&1; then
+    echo "  ✗ (a4b) auth.json not staged byte-identically"; ok=0;
+  fi
+  _m="$(/usr/bin/stat -f%Lp "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || /usr/bin/stat -c%a "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || echo "000")"
+  [[ "$_m" == "600" ]] || { echo "  ✗ (a4b) staged auth.json mode $_m (want 600)"; ok=0; }
+  [[ "$(ls -A "$_BD_OC_SANDBOX_HOME/.local/share" 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] \
+    || { echo "  ✗ (a4b) sandbox data dir carries more than auth.json (account state?)"; ok=0; }
+  for _f in skills/dispatch-cli/scripts/dispatch.sh scripts/lib/resolve-cli.sh; do
+    # shellcheck disable=SC2016  # the \$ is a literal grep pattern
+    grep -q 'XDG_DATA_HOME="\$_BD_OC_SANDBOX_HOME/.local/share"' "$_f" \
+      || { echo "  ✗ (a4b) $_f does not wire XDG_DATA_HOME to the sandbox data dir"; ok=0; }
+  done
+  rm -rf "$_BD_OC_SANDBOX_HOME" "$_home/.local/share" 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
 
   # (b) mcp key → refuse
   printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/.opencode/opencode.json"
@@ -368,8 +426,9 @@ if (
   printf '%s' "$out" | grep -q "PLANTED" && { echo "  ✗ (f) planted json.py executed inside validator"; ok=0; }
   rm -rf "$_plant"
 
-  # (g) BASH_FUNC_python3%% environment poison: the validator runs in a
-  # sterile child (/usr/bin/env -i) with an ABSOLUTE interpreter, so an
+  # (g) BASH_FUNC_python3%% environment poison: the validator invokes the
+  # ABSOLUTE interpreter /usr/bin/python3 with -I (no env -i wrapper needed —
+  # -I implies -E, and absolute paths bypass function lookup entirely), so an
   # imported/exported `python3` function shadow must not run — an mcp config
   # is still rejected and the poison never prints.
   printf '{"mcp":{"x":{}}}\n' > "$_home/.opencode/opencode.json"

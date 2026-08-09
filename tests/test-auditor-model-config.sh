@@ -57,6 +57,16 @@ DEFAULT="$(grep -E '^BUSDRIVER_AUDITOR_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
 SHIM_DEFAULT="$(grep -E 'resolve_auditor_model\(\) \{ _BD_AUDITOR_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
 eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh shim default matches BUSDRIVER_AUDITOR_MODEL_DEFAULT"
 
+# pi's shim mirrors the auditor's: same library-missing fallback pattern, same
+# drift risk between dispatch.sh's shim literal and the LIB constant. The
+# golden-grep leak sweep below exempts PI_MODEL_DEFAULT/resolve_pi_model() from
+# the "one place a model name lives" invariant on the assumption this asserts
+# they stay in sync — without this, a silent divergence would still pass green.
+PI_DEFAULT="$(grep -E '^BUSDRIVER_PI_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
+[[ -n "$PI_DEFAULT" ]] && ok "pi default constant present → $PI_DEFAULT" || fail "no BUSDRIVER_PI_MODEL_DEFAULT in $LIB"
+PI_SHIM_DEFAULT="$(grep -E 'resolve_pi_model\(\) \{ _BD_PI_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
+eq "$PI_SHIM_DEFAULT" "$PI_DEFAULT" "dispatch.sh pi shim default matches BUSDRIVER_PI_MODEL_DEFAULT"
+
 eq "$(resolve '')"                                        "$DEFAULT"        "no config → default"
 eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → default"
 eq "$(resolve '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}')" \
@@ -213,6 +223,11 @@ done
 # actively lying about what ran. Allowed: the default constant, dispatch.sh's
 # library-missing shim, and the config example next to it. docs/adr + CHANGELOG
 # are historical records and are not swept.
+# The same rule now also covers the pi read lane's `.pi.model`
+# (PI_MODEL_DEFAULT + its library-missing shim): two configurable model keys,
+# one invariant — an id may appear at its default constant and nowhere else, so
+# rationale comments say "the shipped default" instead of naming a model and
+# going stale next to it.
 # Scoped to the files that HOST the witness — a model name elsewhere (e.g. the
 # agent-tools catalog listing LLMs) is not this invariant's business.
 leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai' \
@@ -222,7 +237,7 @@ leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai' \
            "$ROOT/skills/dispatch-cli/scripts/dispatch.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"' || true)"
+         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"|PI_MODEL_DEFAULT|resolve_pi_model\(\)' || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

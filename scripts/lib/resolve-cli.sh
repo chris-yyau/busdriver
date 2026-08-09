@@ -71,6 +71,7 @@ get_cli_install_hint() {
     droid)  echo "See https://droid.dev" ;;
     grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
     opencode) echo "See https://opencode.ai (auth via 'opencode auth login')" ;;
+    pi)     echo "See https://github.com/badlogic/pi-mono (check providers with 'pi auth check --provider <name>')" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -248,13 +249,24 @@ _read_user_config_value() {
 #
 # `opencode models` lists valid ids.
 _bd_read_auditor_model() {
-  /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" <<'CHILD'
+  /usr/bin/env -i "HOME=$1" /bin/bash --noprofile --norc -s "$2" "${3:-auditor}" <<'CHILD'
 default="$1"
+# The config BLOCK is SELECTED from an enum of literals — never built from the
+# parameter. Both readers below take the block name from code, so a caller
+# cannot steer the read at a different key, and an unrecognised key degrades to
+# the default rather than performing a wildcard read. Constructing a jq path
+# from a parameter would open a second injection surface inside the very child
+# that exists to escape one.
+case "$2" in
+  auditor) jqf='.auditor.model // empty'; pykey='auditor' ;;
+  pi)      jqf='.pi.model // empty';      pykey='pi'      ;;
+  *)       printf '%s' "$default"; exit 0 ;;
+esac
 cfg="$HOME/.claude/busdriver.json"
 m=""
 if [[ -f "$cfg" ]]; then
   for b in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq /bin/jq; do
-    if [[ -x "$b" ]]; then m="$("$b" -r '.auditor.model // empty' "$cfg" 2>/dev/null)"; break; fi
+    if [[ -x "$b" ]]; then m="$("$b" -r "$jqf" "$cfg" 2>/dev/null)"; break; fi
   done
   if [[ -z "$m" ]]; then
     for b in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 /bin/python3; do
@@ -262,10 +274,10 @@ if [[ -f "$cfg" ]]; then
         m="$("$b" -I -c 'import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    v = (d.get("auditor") or {}).get("model")
+    v = (d.get(sys.argv[2]) or {}).get("model")
     print(v if isinstance(v, str) else "")
 except Exception:
-    pass' "$cfg" 2>/dev/null)"
+    pass' "$cfg" "$pykey" 2>/dev/null)"
         break
       fi
     done
@@ -285,7 +297,7 @@ fi
 # AUXILIARY voice on a typo.
 if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$ ]]; then
   if [[ -n "$m" ]]; then
-    echo "busdriver: ignoring invalid .auditor.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
+    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
   fi
   m="$default"
 fi
@@ -304,6 +316,38 @@ _BD_AUDITOR_MODEL=""
 resolve_auditor_model() {
   _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
   [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+}
+
+# ── Pi (repo-reading exploration lane) model ────────────────────
+#
+#   ~/.claude/busdriver.json  →  { "pi": { "model": "<provider>/<model-id>" } }
+#
+# ONE key carries provider AND model: `pi --model provider/id` is pi's own
+# documented reference form (verified — a single --model flag carrying both
+# runs without a separate --provider), so this reuses the auditor key's shape
+# and its validation regex verbatim rather than inventing a second config
+# grammar. `pi --list-models` enumerates valid ids.
+#
+# Same trust rules as the auditor model, for the same reason: the value names
+# the third party an exploration prompt — which quotes repo source — is shipped
+# to. USER config only, no env override, no project config, and the CALLER MUST
+# pass a password-DB-derived $HOME (a repo-injectable $HOME would let a reviewed
+# fork choose where its own contents are sent).
+#
+# OPERATOR CAVEAT (deliberate, chosen by the operator): the shipped default
+# requires its provider workspace's China-hosting opt-in. Without that opt-in
+# the provider returns HTTP 403 `RegionError` and the voice produces no output.
+# That is why the pi arm surfaces the child's stderr into the transcript rather
+# than swallowing it — a 403 must read as a diagnosable provider error, not a
+# silent dead voice. Operators without the opt-in set a different `.pi.model`;
+# `pi --list-models` enumerates the alternatives, and
+# `pi auth check --provider <name>` confirms one is reachable before use.
+BUSDRIVER_PI_MODEL_DEFAULT="opencode-go/deepseek-v4-flash"
+
+_BD_PI_MODEL=""
+resolve_pi_model() {
+  _BD_PI_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_PI_MODEL_DEFAULT" pi)"
+  [[ -n "$_BD_PI_MODEL" ]] || _BD_PI_MODEL="$BUSDRIVER_PI_MODEL_DEFAULT"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────

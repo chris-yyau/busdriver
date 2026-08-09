@@ -56,7 +56,9 @@ line equal to the delimiter ends it, and the rest parses as shell).
 Dispatch from the asset directory, not from a checkout — see Threat model.
 
 ```bash
-OUT=/abs/assets/hero.png; mkdir -p "$(dirname "$OUT")"
+OUT=/abs/assets/hero.png
+case "$OUT" in /*) ;; *) echo "refuse: \$OUT must be absolute"; return 1 2>/dev/null || exit 1;; esac
+mkdir -p "$(dirname "$OUT")"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
 
@@ -64,23 +66,60 @@ BRIEF="$OUT.brief.txt"    # <- per-output name (append, never strip: ${OUT%.*} m
 PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
 [ -n "$PROMPT" ] || { echo "empty brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
 
+# Dispatch into a fresh empty directory, never the asset directory. The provider's
+# write sandbox is scoped to its cwd, so an empty cwd means there is nothing of
+# yours in reach to overwrite. YOU move the verified file into place afterwards.
+# $WORK sits BESIDE $OUT, not in /tmp, so the final mv is a same-filesystem rename
+# (atomic). A cross-device mv is copy-then-delete and can leave a partial $OUT that
+# then blocks every retry.
+WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX"); ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
+
+# Grok reports a path instead of saving for you; that reply is a claim, not proof —
+# it can read your disk, so it could name any image on it. Resolve the path with
+# `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
+# require it inside grok's own session output, and require it to postdate $STAMP.
+grok_take() {
+  local root gen dir
+  # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
+  # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
+  # is what stops a concurrent grok session's image from being picked up.
+  root=$(cd -P "$HOME/.grok/sessions" 2>/dev/null && pwd -P) || { echo "no grok session root"; return 1; }
+  root="$root/$(cd -P "$WORK" && pwd -P | sed 's|/|%2F|g')"
+  gen=$(printf '%s' "$1" | grep -oE '/[^[:space:]]+\.(png|jpe?g)' | tail -1)
+  # An empty reply is the common failure (quota, error) — without this, dirname ""
+  # yields "." and the check would silently resolve against the current directory.
+  [ -n "$gen" ] || { echo "grok returned no path (quota exhausted? rerun with 2>&1 to see): $1"; return 1; }
+  dir=$(cd -P "$(dirname "$gen")" 2>/dev/null && pwd -P) || { echo "grok reported no usable path: $1"; return 1; }
+  gen="$dir/$(basename "$gen")"
+  case "$gen" in "$root"/*) ;; *) echo "not a grok session output: $gen"; return 1;; esac
+  [ -f "$gen" ] && [ ! -L "$gen" ] || { echo "not a regular file: $gen"; return 1; }
+  [ -n "$(find "$gen" -newer "$STAMP" -print -quit 2>/dev/null)" ] || { echo "stale, not from this run: $gen"; return 1; }
+  cp "$gen" "$ASSET"
+}
+
 # codex — needs </dev/null and --skip-git-repo-check outside a git repo
-codex exec -s workspace-write -C "$(dirname "$OUT")" --skip-git-repo-check \
-  "Use the imagegen skill to create: $PROMPT. Copy the final file to $OUT. Reply with only the absolute path." </dev/null
+codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
+  "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null
 
-# agy — has no --cwd; it inherits the process cwd, so enter the asset dir in a subshell
-( cd "$(dirname "$OUT")" && agy -p "Use generate_image to create: $PROMPT. Save it to $OUT. Reply with only the absolute path." \
-  --sandbox --add-dir "$(dirname "$OUT")" --print-timeout 5m )
+# agy — has no --cwd; it inherits the process cwd, so enter $WORK in a subshell
+( cd "$WORK" && agy -p "Use generate_image to create: $PROMPT. Save it to $ASSET. Reply with only the absolute path." \
+  --sandbox --add-dir "$WORK" --print-timeout 5m )
 
-# grok — generate
-grok -p "Use image_gen to create: $PROMPT. Save it into the current directory as $(basename "$OUT"). Reply with only the absolute path." \
-  --sandbox workspace --always-approve --disable-web-search --cwd "$(dirname "$OUT")"
+# grok — needs NO shell: image_gen writes into grok's own session dir and reports the
+# path, so allow exactly one tool and do the copy yourself.
+: > "$STAMP"   # re-stamp per invocation: a retry or a later edit must not accept the earlier image
+RAW=$(grok -p "Use image_gen to create: $PROMPT. Do not copy or move any files. Reply with only the absolute path of the file image_gen produced." \
+  --sandbox workspace --permission-mode default --allow image_gen --disable-web-search --cwd "$WORK")
+# the reply is prose + path on one line; take the last path-looking token, never the whole reply
+grok_take "$RAW" || { return 1 2>/dev/null || exit 1; }
 
-# grok — edit an existing image (the only provider that can). Describe the change
-# in the same brief file, and point $SRC at the source:
+# grok — edit an existing image (the only provider that can). Same shape, with
+# --allow image_edit; describe the change in the brief and point $SRC at the source.
 SRC=/abs/path/source.png; [ -f "$SRC" ] || { echo "no such source: $SRC"; return 1 2>/dev/null || exit 1; }
-grok -p "Use image_edit on the image at $SRC: $PROMPT, keep everything else identical. Save the result into the current directory as $(basename "$OUT"). Reply with only the absolute path." \
-  --sandbox workspace --always-approve --disable-web-search --cwd "$(dirname "$OUT")"
+: > "$STAMP"   # re-stamp per invocation: a retry or a later edit must not accept the earlier image
+RAW=$(grok -p "Use image_edit on the image at $SRC: $PROMPT, keep everything else identical. Do not copy or move any files. Reply with only the absolute path of the file image_edit produced." \
+  --sandbox workspace --permission-mode default --allow image_edit --disable-web-search --cwd "$WORK")
+grok_take "$RAW" || { return 1 2>/dev/null || exit 1; }
 ```
 
 ## Threat model — what the flags do and don't confine
@@ -93,16 +132,27 @@ precise about what the sandbox flags buy:
 | codex `-s workspace-write` | writes, to the workspace |
 | agy `--sandbox` | terminal execution; `--add-dir` *adds* a writable dir, it does not revoke access to the cwd |
 | grok `--sandbox workspace` | writes, to cwd + temp + `~/.grok` |
+| grok `--permission-mode default --allow image_gen` | **the default decision for tools this command did not name.** `--allow` adds auto-approval, it does not deny anything else, and pinning the mode only overrides the *default* — per-tool allow rules already configured in `~/.grok/config.toml` still load and still apply. So this narrows what the flags themselves grant; it does not audit your config. Read-only tools and read-only shell run regardless |
 
-**None of them confine reads, and none can confine network** — the image tool
+Grok still comes out tightest on writes: it needs no shell to save, so nothing
+in these commands grants it one. Never substitute `--always-approve` (auto-approves
+*every* tool — a general-purpose agent with shell on your machine) and never
+re-add a `Bash(cp *)` grant to "help it save" — it does not need to save, and
+that rule would reach every path the write sandbox allows, including `~/.grok`.
+If your `~/.grok/config.toml` carries broad allow rules, these commands inherit
+them; that file is operator-owned and worth reading once.
+
+**No profile confines reads, and none can confine network** — the image tool
 is a cloud API call, so egress is inherent to the feature. Treat every dispatch
-as "this agent can read what it can reach and talk to the internet." The
-controls that actually hold are procedural:
+as "this agent can read what it can reach and talk to a server." Beyond grok's
+allow-list, the remaining controls are procedural — real, but not enforced:
 
 1. **The brief is always Claude-authored.** Never place scraped copy, issue
    bodies, page content, or raw user text in `$BRIEF`. Summarize it yourself.
-2. **Dispatch from a dedicated asset directory**, never a checkout holding
-   secrets, `.env` files, or customer data. The commands above `cd` there.
+2. **Dispatch from an empty `mktemp -d`**, never a checkout holding secrets,
+   `.env` files, or customer data, and never the asset directory itself. For
+   codex and agy — which do save the file themselves — an empty cwd is what
+   keeps their write scope free of anything of yours to overwrite.
 3. **`--disable-web-search` on grok** removes its web fetch tool; the brief
    already carries any facts, so nothing is lost.
 4. **Verify the output** (below) — a wrong or fabricated file is the failure
@@ -114,13 +164,38 @@ write confinement you have.
 ## Verify every result — the reply is not evidence
 
 ```bash
-file "$OUT"    # must say "PNG image data, WxH" (or JPEG — see below)
+# file(1) succeeds on missing paths, on text, and through symlinks — none of which is
+# an image. Require a real regular file AND a raster magic number.
+[ -f "$ASSET" ] && [ ! -L "$ASSET" ] || { echo "no regular asset produced"; return 1 2>/dev/null || exit 1; }
+# Providers ignore the extension you ask for — image_edit returned a JPEG named .png.
+# Require the magic number to match $OUT's extension; consumers pick decoding and
+# transparency behaviour from the filename, so a mislabelled file is a live bug.
+case "$(file -b "$ASSET")___${OUT##*.}" in
+  PNG\ image*___png|JPEG\ image*___jpg|JPEG\ image*___jpeg) ;;
+  *) echo "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate"; return 1 2>/dev/null || exit 1;;
+esac
+
+# Only then publish. -n so a file that appeared during the dispatch is never clobbered;
+# a directory at $OUT would silently become a destination FOLDER, so reject it first.
+[ -d "$OUT" ] && { echo "refuse: $OUT is a directory"; return 1 2>/dev/null || exit 1; }
+mv -n "$ASSET" "$OUT"
+# mv -n exits 0 when it SKIPS, so the destination is the only trustworthy signal — and
+# if $OUT turned into a directory after the test above, mv moved the file INTO it.
+# Keep $WORK on any failure (it may hold the only copy) and return non-zero, or a
+# caller reads "not published" as success.
+if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
+  rm -rf "$WORK"
+else
+  echo "NOT published at $OUT — look in $WORK, and in $OUT/ if it became a directory"
+  return 1 2>/dev/null || exit 1
+fi
 ```
 
-This only proves anything because `$OUT` was asserted absent before the
-dispatch (above). Verifying a path that already held an image proves nothing —
-a provider that fails without writing leaves the stale file sitting there,
-passing the check, and you ship the previous asset as the new one.
+Verify in `$WORK`, before the `mv`. That directory was empty a moment ago, so a
+file existing there at all is evidence this dispatch produced it. Verifying
+`$OUT` instead proves nothing when something already lived at that path — a
+provider that fails without writing leaves the old file passing the check, and
+you ship the previous asset as the new one.
 
 This is not ceremony. Both failures below were observed:
 
@@ -138,6 +213,7 @@ This is not ceremony. Both failures below were observed:
 - **codex saves to `$CODEX_HOME/generated_images/` first.** The prompt must say *copy to `$OUT`*, or the asset is left outside the project.
 - **agy needs `toolPermission` looser than `strict`** in `~/.gemini/antigravity-cli/settings.json`; under `strict` the image tool is auto-denied in headless mode ("a tool required the `command` permission"). Keep `--sandbox`.
 - **Don't deny shell to the provider.** Every one of them saves by copying a file; block that and you get the fabrication above, not a clean failure. The sandbox profile is the control, not a tool denylist.
+- **Grok has a spendable balance.** When it runs out the CLI prints `API error (status 402 …): Grok Build usage balance exhausted` on **stderr** and stdout is empty — so a dispatch that swallows stderr looks like a silent no-op. Route to codex/agy; only `image_edit` has no substitute.
 - **Two minutes per image, one dispatch per image.** Each command carries a single `$OUT`, so an 8-section page is 8 dispatches and ~15 minutes. Budget for it up front; there is no batch form.
 - **Quoting:** the brief-file `$PROMPT` above is mandatory, not stylistic — it is the only form that survives a brief containing quotes, backticks, or `$`. Do not "simplify" it back into the command literal or a heredoc.
 

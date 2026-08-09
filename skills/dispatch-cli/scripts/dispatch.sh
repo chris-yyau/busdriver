@@ -1634,10 +1634,32 @@ CHILD
             exit_code=0
             escalated=1
         else
-            rm -f "${outfile}.droid"
-            # If the primary only "passed" (exit 0) by producing EMPTY output and
-            # the rescue also failed, mark failure now — don't report false success.
+            # Failure mark FIRST, fold second: the guard normalizes an
+            # empty-output "success" (exit 0) into the canonical failure status
+            # (exit 1 — the same normalization the pre-loop guard applies before
+            # escalation), so appending the rescue's output below can never be
+            # misread as primary output that would mask that failure.
             [[ "$exit_code" -eq 0 ]] && exit_code=1
+            # PRESERVE THE RESCUE'S FAILURE before the unlink (#597). The
+            # primary already failed and this rescue failed too, so the rescue
+            # is the LAST thing that went wrong — usually the more informative
+            # of the two. log_event archives $outfile only (never
+            # ${outfile}.droid, which is deleted right below), so fold the
+            # rescue into $outfile — delimited, in order — and the archived run
+            # carries BOTH failures. The marker names the rescue's exit code
+            # (the primary's own code is already recorded by the status/meta
+            # machinery, and is normalized to 1 for an empty-output primary) and
+            # is written even when the rescue produced no output, so the archive
+            # still records that a rescue was attempted and how it died.
+            # Best-effort: a fold failure must not change the (already failing)
+            # dispatch outcome.
+            {
+                echo ""
+                echo "[busdriver: ${name} failed; droid rescue also failed (exit ${_esc_exit})]"
+                echo ""
+                [[ -s "${outfile}.droid" ]] && cat "${outfile}.droid"
+            } >> "$outfile" 2>/dev/null || true
+            rm -f "${outfile}.droid"
             echo "⟳ droid fallback for ${name} also failed (exit ${_esc_exit}) — voice drops" >&2
         fi
     fi

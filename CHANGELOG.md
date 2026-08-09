@@ -1,3 +1,10 @@
+## [1.102.3](https://github.com/chris-yyau/busdriver/compare/v1.102.2...v1.102.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** raise default timeout to 600s and archive failed-run output ([#598](https://github.com/chris-yyau/busdriver/issues/598)) ([7cb081c](https://github.com/chris-yyau/busdriver/commit/7cb081c24696bb8c49fbc42f0433b9c90cbd83a7))
+
 ## [1.102.2](https://github.com/chris-yyau/busdriver/compare/v1.102.1...v1.102.2) (2026-08-09)
 
 

@@ -1,3 +1,10 @@
+## [1.102.1](https://github.com/chris-yyau/busdriver/compare/v1.102.0...v1.102.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** add skipped status so one ineligible voice can't fail a batch ([#596](https://github.com/chris-yyau/busdriver/issues/596)) ([e78e119](https://github.com/chris-yyau/busdriver/commit/e78e119543bd240f444ef5812733653f6caf8eba)), closes [#594](https://github.com/chris-yyau/busdriver/issues/594)
+
 # [1.102.0](https://github.com/chris-yyau/busdriver/compare/v1.101.5...v1.102.0) (2026-08-09)
 
 

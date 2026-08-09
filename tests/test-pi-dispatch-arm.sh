@@ -793,6 +793,138 @@ eq "$got_unknown" "SENTINEL" "unrecognised config block degrades to the caller d
 SHIM_DEFAULT="$(grep -E 'resolve_pi_model\(\) \{ _BD_PI_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
 eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh library-missing shim matches the library default"
 
+# ── 9b. Interpreter floor: bash 3.2 must refuse loudly, never exit 0 ──
+# Issue #595: the pi arm's env -i preflight feeds a QUOTED heredoc into
+# `$(...)` (`/usr/bin/env -i ... /bin/bash <<'CHILD'`). bash 3.2 — macOS's
+# stock /bin/bash — mis-parses that construct when the body contains `case`
+# patterns: body text is re-parsed as parent code, and the `set -u` abort
+# inside the `if ! _pi_pre="$(...)"` condition exits 0 — a SILENT fail-open.
+# The fix: resolve bash via PATH (shebang) and refuse pre-4 bash LOUDLY with
+# a non-zero exit for the lanes that can reach the preflight (`pi`, `all`).
+# Other backends never use that construct and must keep working on 3.2.
+# 4.0+ is verified (4.4 built and probed; 5.x is what CI and Homebrew run).
+grep -q '^#!/usr/bin/env bash' "$DISPATCH" \
+  && ok "dispatch.sh shebang resolves bash via PATH (#!/usr/bin/env bash)" \
+  || fail "dispatch.sh shebang is not #!/usr/bin/env bash — direct exec on macOS hits /bin/bash 3.2"
+
+grep -qE 'BASH_VERSINFO\[0\]' "$DISPATCH" \
+  && ok "dispatch.sh carries a BASH_VERSINFO floor check" \
+  || fail "dispatch.sh lost its BASH_VERSINFO floor — bash 3.2 would silently fail open again"
+
+# Static guard that the early scanner consumes the operand of every
+# value-taking flag the real parser has (--cli/--mode/--timeout/--model/
+# --prompt): dropping one lets option-like operands desynchronize the scan
+# (issue #595 review) — e.g. `--prompt --cli --cli pi` parses as PROMPT=--cli,
+# CLI=pi. Behavioral coverage of the scan runs below where the host ships a
+# pre-4 bash; this grep keeps the flag list honest on every host.
+grep -qE -- '--timeout" \|\| "\$_a" == "--model" \|\| "\$_a" == "--prompt"' "$DISPATCH" \
+  && ok "floor argv scan consumes operands of every value-taking flag (--cli/--mode/--timeout/--model/--prompt)" \
+  || fail "floor argv scan no longer consumes all value-taking operands — scanner/parser desync risk"
+
+# The issue's exact repro must NEVER exit 0 on THIS host's bash. On >= 4 the
+# pi arm fails CLOSED on the unparseable model prefix; on < 4 the floor
+# refuses loudly. Either way a caller checking $? must see non-zero.
+PI_REPRO_RC=0
+PI_REPRO_OUT="$(bash "$DISPATCH" --cli pi --model noproviderprefix --prompt p 2>&1)" || PI_REPRO_RC=$?
+[[ "$PI_REPRO_RC" -ne 0 ]] \
+  && ok "issue #595 repro (pi + unparseable model) exits non-zero, never silent exit-0" \
+  || fail "issue #595 repro exited 0 — silent fail-open (out: $(head -c 200 <<<"$PI_REPRO_OUT"))"
+
+# Stub droid (exits 124) so non-pi scanner cases reach dispatch without a
+# real CLI. Lives under FAKE_HOME so the EXIT trap wipes it.
+mkdir -p "$FAKE_HOME/9b-bin"
+printf '#!/usr/bin/env bash\nexit 124\n' > "$FAKE_HOME/9b-bin/droid"
+chmod +x "$FAKE_HOME/9b-bin/droid"
+
+# Scanner agreement with the real parser (issue #595 review) — UNCONDITIONAL:
+# on a pre-4 host these assert the scan's no-false-fire behavior; on 5.x the
+# floor never fires, so they exercise the same invocations' normal paths.
+# Coverage split is deliberate: the `(( BASH_VERSINFO[0] < 4 ))` branch can
+# only execute where a pre-4 bash exists (macOS hosts — the repo's primary
+# environment, and this suite runs there); Ubuntu CI's 5.x gets the static
+# flag-list grep above plus these unconditional no-fire/help cases, which are
+# the maximal CI-visible checks for a version-gated branch.
+SCAN_OK=1
+for scan_args in "--cli droid --prompt pi --prompt p" "--cli pi --cli droid --prompt p" "--cli droid --prompt p"; do
+  # shellcheck disable=SC2086  # scan_args is a deliberate word split
+  SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
+  grep -qi 'requires bash 4' <<<"$SCAN_OUT" && SCAN_OK=0
+done
+[[ "$SCAN_OK" -eq 1 ]] \
+  && ok "floor argv scan agrees with the parser for --prompt pi / duplicate --cli (no false fire)" \
+  || fail "floor argv scan misfires on non-pi invocations — scanner/parser divergence"
+
+# Help must win over the floor on EVERY bash: the parser prints usage and
+# exits 0 when -h/--help is reached, so a 3.2 help request must not be
+# refused. On a pre-4 host this asserts the scan's help exemption.
+HELP_OK=1
+for help_args in "--cli pi --help" "--help --cli pi"; do
+  HELP_RC=0
+  # shellcheck disable=SC2086  # help_args is a deliberate word split
+  HELP_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $help_args 2>&1)" || HELP_RC=$?
+  { [[ "$HELP_RC" -eq 0 ]] && ! grep -qi 'requires bash 4' <<<"$HELP_OUT"; } || HELP_OK=0
+done
+[[ "$HELP_OK" -eq 1 ]] \
+  && ok "-h/--help exits 0 on every bash (floor exempts help; no false refusal)" \
+  || fail "-h/--help no longer exits 0 — floor or scanner treats help as a pi dispatch"
+
+# Where the host /bin/bash really is 3.2 (stock macOS), prove the refusal is
+# loud AND non-zero before the pi arm can even start — and that non-pi
+# backends are NOT caught by it. On Linux CI /bin/bash is 5.x, the floor
+# passes, and the script runs normally — so this half is conditional on the
+# host actually shipping a pre-4 bash.
+if /bin/bash -c '(( ${BASH_VERSINFO[0]} < 4 ))' 2>/dev/null; then
+  REFUSE_RC=0
+  REFUSE_OUT="$(/bin/bash "$DISPATCH" --cli pi --model noproviderprefix --prompt p 2>&1)" || REFUSE_RC=$?
+  { [[ "$REFUSE_RC" -ne 0 ]] && grep -qi 'requires bash 4' <<<"$REFUSE_OUT" \
+      && ! grep -q 'Dispatching to pi' <<<"$REFUSE_OUT"; } \
+    && ok "host /bin/bash < 4 → pi lane refuses loudly with non-zero exit (pi arm never starts)" \
+    || fail "host /bin/bash < 4 → expected loud bash>=4 refusal, got rc=$REFUSE_RC out=[$(head -c 200 <<<"$REFUSE_OUT")]"
+
+  # Non-pi backend under the same 3.2: must reach its own error path (stub
+  # droid exits 124) WITHOUT the floor message — the refusal is pi-scoped.
+  NONPI_RC=0
+  NONPI_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli droid --timeout 1 --prompt p 2>&1)" || NONPI_RC=$?
+  if grep -qi 'requires bash 4' <<<"$NONPI_OUT"; then
+    fail "non-pi CLI refused on host /bin/bash < 4 — floor must be pi-scoped (out: $(head -c 200 <<<"$NONPI_OUT"))"
+  else
+    ok "non-pi CLI on host /bin/bash < 4 is not blocked by the pi floor (rc=$NONPI_RC)"
+  fi
+
+  # `--cli all --mode auto` excludes pi from the batch (discovery drops it in
+  # auto mode) — that batch must also run on 3.2 without the floor firing.
+  ALLAUTO_RC=0
+  ALLAUTO_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli all --mode auto --timeout 1 --prompt p 2>&1)" || ALLAUTO_RC=$?
+  if grep -qi 'requires bash 4' <<<"$ALLAUTO_OUT"; then
+    fail "--cli all --mode auto refused on host /bin/bash < 4 — batch excludes pi, floor must not fire (out: $(head -c 200 <<<"$ALLAUTO_OUT"))"
+  else
+    ok "--cli all --mode auto on host /bin/bash < 4 is not blocked (batch excludes pi; rc=$ALLAUTO_RC)"
+  fi
+
+  # `--cli all` in readonly mode (the default) DOES admit pi on 3.2 — the
+  # floor must refuse the batch before discovery even runs.
+  ALLRO_RC=0
+  ALLRO_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" --cli all --timeout 1 --prompt p 2>&1)" || ALLRO_RC=$?
+  { [[ "$ALLRO_RC" -ne 0 ]] && grep -qi 'requires bash 4' <<<"$ALLRO_OUT" \
+      && ! grep -q 'Dispatching to pi' <<<"$ALLRO_OUT"; } \
+    && ok "host /bin/bash < 4 → --cli all readonly refuses loudly before the batch (pi admitted)" \
+    || fail "host /bin/bash < 4 → --cli all readonly expected loud refusal, got rc=$ALLRO_RC out=[$(head -c 200 <<<"$ALLRO_OUT")]"
+
+  # `--prompt --cli --cli pi --model noproviderprefix` parses as PROMPT=--cli,
+  # CLI=pi — the scan must still catch it (the operand-consumption fix).
+  SCAN_OK=1
+  for scan_args in "--cli pi --prompt p" "--prompt --cli --cli pi --model noproviderprefix"; do
+    # shellcheck disable=SC2086  # scan_args is a deliberate word split
+    SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
+    grep -qi 'requires bash 4' <<<"$SCAN_OUT" || SCAN_OK=0
+  done
+  [[ "$SCAN_OK" -eq 1 ]] \
+    && ok "floor argv scan still catches pi hidden behind value-taking operands" \
+    || fail "floor argv scan missed a pi dispatch behind option-like operands"
+else
+  skip "host /bin/bash is >= 4 — cannot exercise the 3.2 refusal on this host"
+fi
+
 # ── 10. LIVE containment (opt-in: needs a model call) ───────────
 # Stock macOS ships neither `timeout` nor `gtimeout`, and this suite is not
 # sourced into the library that owns _portable_timeout — so resolve one here and

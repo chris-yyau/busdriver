@@ -41,11 +41,22 @@ STUB="$TMP/stub"; mkdir -p "$STUB"
 # `.claude` can never turn the teardown into `rm -rf ~/.claude`.
 TEST_STATE="dispatchtest-$$-${RANDOM}"
 TEST_LOGROOT="$HOME/$TEST_STATE"
+# ALIAS_ROOT is set later (test 4e) but declared/cleaned here so the EXIT trap
+# covers it too: if the suite is interrupted (Ctrl-C/kill) after ALIAS_ROOT is
+# created but before test 4e's own inline rm runs, the trap is the only thing
+# that still removes it. `${ALIAS_ROOT:-}` guards the case against unset/unbound
+# before test 4e assigns it (set -u is active).
+ALIAS_ROOT=""
 cleanup() {
   rm -rf "$TMP"
   case "$TEST_STATE" in
     dispatchtest-*) [[ -n "$TEST_LOGROOT" ]] && rm -rf "$TEST_LOGROOT" ;;
     *) echo "REFUSING to remove unexpected log root '$TEST_LOGROOT'" >&2 ;;
+  esac
+  case "${ALIAS_ROOT:-}" in
+    "") ;;
+    "$HOME"/dispatchtest-alias-*) rm -rf "$ALIAS_ROOT" ;;
+    *) echo "REFUSING to remove unexpected alias root '$ALIAS_ROOT'" >&2 ;;
   esac
 }
 trap cleanup EXIT

@@ -266,9 +266,10 @@ fi
 # Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
 # whitespace after every bot login is the shell argument terminator, so shadowed
 # args (`cubic-dev-ai-shadow`, `cubic-dev-ai,shadow`) are rejected, and the closing
-# `"$` anchors the complete FRESH_ACKS assignment to the end of the line (CodeRabbit
-# + litmus, PR #609).
-POSTWAIT_LEDGER='FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai[[:space:]].*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai[[:space:]].*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps[[:space:]].*chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
+# `"$` anchors the complete FRESH_ACKS assignment to the end of the line. The
+# `^[[:space:]]*` start anchor requires an EXECUTABLE assignment — a commented-out
+# `# FRESH_ACKS=...` line cannot satisfy it (CodeRabbit + litmus + cubic, PR #609).
+POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai[[:space:]].*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai[[:space:]].*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps[[:space:]].*chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
 hasre "$POSTWAIT_LEDGER" \
   && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"

@@ -100,7 +100,7 @@ fi
 # (3) ordering: guard must precede the COMPLETION FRESH_ACKS re-query.
 HOIST_ORDER=$(awk '
   /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { if (!hoist) hoist=NR }
-  /^FRESH_ACKS="cursor=/                                     { if (!fresh) fresh=NR }
+  /^FRESH_ACKS="cubic-dev-ai=/                            { if (!fresh) fresh=NR }
   END { print (hoist && fresh && hoist < fresh) ? "OK" : "BAD" }' "$SKILL")
 if [[ "$HOIST_ORDER" == OK ]]; then
   ok "clean-path hoist ordered before COMPLETION FRESH_ACKS (#467)"
@@ -255,13 +255,13 @@ else
   ok "force-on marker does not diverge via BUSDRIVER_STATE_DIR"
 fi
 # After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
-# Re-folding Codex alone leaves 5 bots at pre-wait values across a 480s window, so a
+# Re-folding Codex alone leaves 3 bots at pre-wait values across a 480s window, so a
 # bot that posts CHANGES_REQUESTED during it would still read as passing.
-hasre 'FRESH_ACKS="cursor=\$\(bash "\$ACK_SCRIPT" cursor.*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps' \
-  && ok "full 6-bot ledger recomputed after the wait" \
+hasre 'FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*chatgpt-codex-connector=\$\{CODEX_REGRACE\}' \
+  && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
-  fail "Codex-only sed re-fold still present — the other 5 bots stay stale"
+  fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
 else
   ok "Codex-only sed re-fold removed"
 fi

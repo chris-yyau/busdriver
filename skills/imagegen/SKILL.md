@@ -66,10 +66,17 @@ to exist before it starts.
 ```bash
 BRIEF=/abs/scratch/brief.txt      # written in step 1
 OUT=/abs/assets/hero.png
-case "$OUT" in /*) ;; *) echo "refuse: \$OUT must be absolute"; return 1 2>/dev/null || exit 1;; esac
+PROVIDER=codex                    # codex | agy | grok | grok-edit  — exactly one
+SRC=                              # required only for grok-edit: absolute path of the source image
+
+# Must exit, not return: a `return` inside a helper only leaves the helper, so a
+# failed check would fall through into the dispatch.
+die() { echo "$1" >&2; exit 1; }
+
+case "$OUT" in /*) ;; *) die "refuse: \$OUT must be absolute";; esac
 mkdir -p "$(dirname "$OUT")"
 # -e alone returns false for a dangling symlink, which a provider would then write through
-[ -e "$OUT" ] || [ -L "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
+[ -e "$OUT" ] || [ -L "$OUT" ] && die "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"
 
 # Dispatch into a fresh empty directory, never the asset directory. The provider's
 # write sandbox is scoped to its cwd, so an empty cwd means there is nothing of
@@ -79,10 +86,10 @@ mkdir -p "$(dirname "$OUT")"
 # then blocks every retry.
 # Read the brief BEFORE creating anything, so a typo'd path fails without leaving
 # empty .imagegen.* directories littered beside your assets.
-PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
-[ -n "$PROMPT" ] || { echo "empty brief: $BRIEF"; return 1 2>/dev/null || exit 1; }
+PROMPT=$(cat "$BRIEF") || die "unreadable brief: $BRIEF"
+[ -n "$PROMPT" ] || die "empty brief: $BRIEF"
 
-WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX") || { echo "mktemp failed"; return 1 2>/dev/null || exit 1; }
+WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX") || die "mktemp failed"
 ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 
 # Grok reports a path instead of saving for you; that reply is a claim, not proof —
@@ -114,34 +121,47 @@ grok_take() {   # sets $ASSET to a copy the provider cannot reach
   cp "$gen" "$ASSET"
 }
 
-# codex — needs </dev/null and --skip-git-repo-check outside a git repo
-codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
-  "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null
+# Exactly ONE provider runs. A failed dispatch stops here: a CLI can exit non-zero
+# after leaving a partial-but-recognizable image behind, which the magic-number check
+# below would happily accept.
+case "$PROVIDER" in
 
-# agy — has no --cwd; it inherits the process cwd, so enter $WORK in a subshell
-( cd "$WORK" && agy -p "Use generate_image to create: $PROMPT. Save it to $ASSET. Reply with only the absolute path." \
-  --sandbox --add-dir "$WORK" --print-timeout 5m )
+codex)  # needs </dev/null and --skip-git-repo-check outside a git repo
+  codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
+    "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null \
+    || die "codex dispatch failed" ;;
 
-# grok — needs NO shell: image_gen writes into grok's own session dir and reports the
-# path, so allow exactly one tool and do the copy yourself.
-# Preflight BEFORE spending balance: grok_take's session-root encoder maps only `/`,
-# while a real URL encoder would also touch space, %, #, ? and non-ASCII — so an
-# unsupported $HOME or workdir could never validate. Grok-only; codex and agy never
-# see this path, so logo@2x.png is fine for them.
-case "$HOME$(cd -P "$WORK" && pwd -P)" in *[!A-Za-z0-9/._-]*) echo "grok needs [A-Za-z0-9/._-] in \$HOME and \$OUT's directory"; return 1 2>/dev/null || exit 1;; esac
-: > "$STAMP"   # re-stamp per invocation: a retry or a later edit must not accept the earlier image
-RAW=$(grok -p "Use image_gen to create: $PROMPT. Do not copy or move any files. Reply with only the absolute path of the file image_gen produced." \
-  --sandbox workspace --permission-mode default --allow image_gen --disable-web-search --cwd "$WORK")
-# the reply is prose + path on one line; take the last path-looking token, never the whole reply
-grok_take "$RAW" || { return 1 2>/dev/null || exit 1; }
+agy)    # no --cwd; it inherits the process cwd, so enter $WORK in a subshell
+  ( cd "$WORK" && agy -p "Use generate_image to create: $PROMPT. Save it to $ASSET. Reply with only the absolute path." \
+    --sandbox --add-dir "$WORK" --print-timeout 5m ) \
+    || die "agy dispatch failed" ;;
 
-# grok — edit an existing image (the only provider that can). Same shape, with
-# --allow image_edit; describe the change in the brief and point $SRC at the source.
-SRC=/abs/path/source.png; [ -f "$SRC" ] || { echo "no such source: $SRC"; return 1 2>/dev/null || exit 1; }
-: > "$STAMP"   # re-stamp per invocation: a retry or a later edit must not accept the earlier image
-RAW=$(grok -p "Use image_edit on the image at $SRC: $PROMPT, keep everything else identical. Do not copy or move any files. Reply with only the absolute path of the file image_edit produced." \
-  --sandbox workspace --permission-mode default --allow image_edit --disable-web-search --cwd "$WORK")
-grok_take "$RAW" || { return 1 2>/dev/null || exit 1; }
+grok|grok-edit)
+  # grok needs NO shell: image_gen writes into its own session dir and reports the
+  # path, so allow exactly one tool and do the copy yourself.
+  # Preflight BEFORE spending balance: grok_take's session-root encoder maps only `/`,
+  # while a real URL encoder would also touch space, %, #, ? and non-ASCII — so an
+  # unsupported $HOME or workdir could never validate. Grok-only; codex and agy never
+  # see this path, so logo@2x.png is fine for them.
+  case "$HOME$(cd -P "$WORK" && pwd -P)" in
+    *[!A-Za-z0-9/._-]*) die "grok needs [A-Za-z0-9/._-] in \$HOME and \$OUT's directory" ;;
+  esac
+  : > "$STAMP"   # per invocation: a retry must not accept the previous image
+  if [ "$PROVIDER" = grok-edit ]; then
+    # absolute, or image_edit resolves it against --cwd "$WORK" and finds nothing
+    case "$SRC" in /*) ;; *) die "grok-edit needs an absolute \$SRC";; esac
+    [ -f "$SRC" ] || die "no such source: $SRC"
+    RAW=$(grok -p "Use image_edit on the image at $SRC: $PROMPT, keep everything else identical. Do not copy or move any files. Reply with only the absolute path of the file image_edit produced." \
+      --sandbox workspace --permission-mode default --allow image_edit --disable-web-search --cwd "$WORK") || die "grok dispatch failed"
+  else
+    RAW=$(grok -p "Use image_gen to create: $PROMPT. Do not copy or move any files. Reply with only the absolute path of the file image_gen produced." \
+      --sandbox workspace --permission-mode default --allow image_gen --disable-web-search --cwd "$WORK") || die "grok dispatch failed"
+  fi
+  # the reply is prose + path on one line; take the last path-looking token, never the whole reply
+  grok_take "$RAW" || die "grok output rejected" ;;
+
+*) die "unknown \$PROVIDER: $PROVIDER" ;;
+esac
 ```
 
 ## Threat model — what the flags do and don't confine
@@ -188,18 +208,19 @@ write confinement you have.
 ```bash
 # file(1) succeeds on missing paths, on text, and through symlinks — none of which is
 # an image. Require a real regular file AND a raster magic number.
-[ -f "$ASSET" ] && [ ! -L "$ASSET" ] || { echo "no regular asset produced"; return 1 2>/dev/null || exit 1; }
+[ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
 # Providers ignore the extension you ask for — image_edit returned a JPEG named .png.
 # Require the magic number to match $OUT's extension; consumers pick decoding and
 # transparency behaviour from the filename, so a mislabelled file is a live bug.
 case "$(file -b "$ASSET")___${OUT##*.}" in
   PNG\ image*___png|JPEG\ image*___jpg|JPEG\ image*___jpeg) ;;
-  *) echo "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate"; return 1 2>/dev/null || exit 1;;
+  *) die "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate";;
 esac
 
-# Only then publish. -n so a file that appeared during the dispatch is never clobbered;
-# a directory at $OUT would silently become a destination FOLDER, so reject it first.
-[ -d "$OUT" ] && { echo "refuse: $OUT is a directory"; return 1 2>/dev/null || exit 1; }
+# Only then publish. -n so a file that appeared during the dispatch is never clobbered.
+# There is no race-free pre-check for "$OUT became a directory" with POSIX tools — mv
+# would put asset.png INSIDE it — so the destination test AFTER the move is the
+# authority, not any check before it.
 mv -n "$ASSET" "$OUT"
 # mv -n exits 0 when it SKIPS, so the destination is the only trustworthy signal — and
 # if $OUT turned into a directory after the test above, mv moved the file INTO it.
@@ -208,8 +229,7 @@ mv -n "$ASSET" "$OUT"
 if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
   rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
 else
-  echo "NOT published at $OUT — look in $WORK, and in $OUT/ if it became a directory"
-  return 1 2>/dev/null || exit 1
+  die "NOT published at $OUT — look in $(dirname "$ASSET"), and in $OUT/ if it became a directory"
 fi
 ```
 

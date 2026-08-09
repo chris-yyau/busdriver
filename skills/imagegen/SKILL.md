@@ -58,6 +58,9 @@ Dispatch from the asset directory, not from a checkout — see Threat model.
 ```bash
 OUT=/abs/assets/hero.png
 case "$OUT" in /*) ;; *) echo "refuse: \$OUT must be absolute"; return 1 2>/dev/null || exit 1;; esac
+# Whitespace anywhere in $OUT or $HOME breaks the grok path parsing and session-root
+# encoding below. Refuse rather than mis-resolve; put assets on a whitespace-free path.
+case "$OUT$HOME" in *[[:space:]]*) echo "refuse: whitespace in \$OUT or \$HOME is unsupported"; return 1 2>/dev/null || exit 1;; esac
 mkdir -p "$(dirname "$OUT")"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && { echo "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"; return 1 2>/dev/null || exit 1; }
@@ -72,14 +75,15 @@ PROMPT=$(cat "$BRIEF") || { echo "unreadable brief: $BRIEF"; return 1 2>/dev/nul
 # $WORK sits BESIDE $OUT, not in /tmp, so the final mv is a same-filesystem rename
 # (atomic). A cross-device mv is copy-then-delete and can leave a partial $OUT that
 # then blocks every retry.
-WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX"); ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
+WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX") || { echo "mktemp failed"; return 1 2>/dev/null || exit 1; }
+ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 
 # Grok reports a path instead of saving for you; that reply is a claim, not proof —
 # it can read your disk, so it could name any image on it. Resolve the path with
 # `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
 # require it inside grok's own session output, and require it to postdate $STAMP.
-grok_take() {
-  local root gen dir
+grok_take() {   # sets $ASSET to a copy the provider cannot reach
+  local root gen dir take
   # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
   # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
   # is what stops a concurrent grok session's image from being picked up.
@@ -94,6 +98,11 @@ grok_take() {
   case "$gen" in "$root"/*) ;; *) echo "not a grok session output: $gen"; return 1;; esac
   [ -f "$gen" ] && [ ! -L "$gen" ] || { echo "not a regular file: $gen"; return 1; }
   [ -n "$(find "$gen" -newer "$STAMP" -print -quit 2>/dev/null)" ] || { echo "stale, not from this run: $gen"; return 1; }
+  # Never copy into $WORK: the provider could write there, so any check-then-cp on a
+  # path it knows is a race it can win with a symlink. Copy into a directory created
+  # AFTER the provider exited, whose name it never saw.
+  take=$(mktemp -d "$(dirname "$OUT")/.imagegen-take.XXXXXX") || { echo "mktemp failed"; return 1; }
+  ASSET="$take/asset.png"
   cp "$gen" "$ASSET"
 }
 
@@ -184,7 +193,7 @@ mv -n "$ASSET" "$OUT"
 # Keep $WORK on any failure (it may hold the only copy) and return non-zero, or a
 # caller reads "not published" as success.
 if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
-  rm -rf "$WORK"
+  rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
 else
   echo "NOT published at $OUT — look in $WORK, and in $OUT/ if it became a directory"
   return 1 2>/dev/null || exit 1

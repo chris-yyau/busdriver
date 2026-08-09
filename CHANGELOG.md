@@ -1,3 +1,10 @@
+# [1.102.0](https://github.com/chris-yyau/busdriver/compare/v1.101.5...v1.102.0) (2026-08-09)
+
+
+### Features
+
+* **dispatch-cli:** add pi in-tree read lane with configurable model ([#591](https://github.com/chris-yyau/busdriver/issues/591)) ([028fc8d](https://github.com/chris-yyau/busdriver/commit/028fc8d49f45c51c725af7f7e26dc2024cf00e86))
+
 ## [1.101.5](https://github.com/chris-yyau/busdriver/compare/v1.101.4...v1.101.5) (2026-08-09)
 
 

@@ -1,3 +1,10 @@
+# [1.104.0](https://github.com/chris-yyau/busdriver/compare/v1.103.0...v1.104.0) (2026-08-09)
+
+
+### Features
+
+* **imagegen:** image-generation router over codex, agy, and grok ([#608](https://github.com/chris-yyau/busdriver/issues/608)) ([a2cb534](https://github.com/chris-yyau/busdriver/commit/a2cb5346ab0c21ef122e7d41292831df2214fc39))
+
 # [1.103.0](https://github.com/chris-yyau/busdriver/compare/v1.102.4...v1.103.0) (2026-08-09)
 
 

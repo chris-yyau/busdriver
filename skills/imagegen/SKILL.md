@@ -220,15 +220,18 @@ grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider ca
 case "$PROVIDER" in
 
 codex)
-  # Fail CLOSED unless you have checked the config yourself. Verified on this machine:
-  # with `[projects."/"] trust_level = "trusted"` in codex's config, BOTH
-  # -s workspace-write AND -s read-only wrote a file into an unrelated git checkout —
-  # the flag below was decoration. Sniffing the TOML for that entry is not a boundary
-  # (quoting, whitespace, dotted keys and `sandbox_workspace_write.writable_roots` all
-  # evade a grep), so this asks for an explicit acknowledgement instead.
+  # Fail CLOSED unless you have PROBED the sandbox yourself. Measured on codex-cli
+  # 0.147.0: both -s workspace-write AND -s read-only wrote files outside the workdir
+  # they were given, and -s read-only wrote inside it too — the flag below was
+  # decoration. Deleting the `[projects."/"] trust_level = "trusted"` entry did NOT
+  # restore confinement, and codex adds a trust entry for a directory it is run in, so
+  # the cause is not established and no config read can stand in for the probe. (A TOML
+  # sniff would not be a boundary anyway: quoting, whitespace, dotted keys and
+  # `sandbox_workspace_write.writable_roots` all evade a grep.) Hence an explicit
+  # acknowledgement instead.
   # Exactly 1, not merely non-empty: CODEX_SANDBOX_CHECKED=0 or =false reads as a
   # REFUSAL, and -n would have opened the route on both.
-  [ "$CODEX_SANDBOX_CHECKED" = 1 ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block, after confirming ${CODEX_HOME:-\$HOME/.codex}/config.toml neither trusts \"/\" nor widens writable_roots. Or use PROVIDER=agy."
+  [ "$CODEX_SANDBOX_CHECKED" = 1 ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block. Confirm it by PROBING THE MODE THIS ROUTE ACTUALLY RUNS — 'codex exec -s workspace-write -C \$W --skip-git-repo-check', where \$W is a fresh empty temp dir outside any checkout, asking it to write a file into a DIFFERENT directory. PASS means no file appears at that outside path when you check the filesystem (its reply is not evidence). A read-only probe does NOT establish this — it is a different mode. Reading ${CODEX_HOME:-\$HOME/.codex}/config.toml is not sufficient either: removing a \"/\" trust entry did not restore confinement on codex-cli 0.147.0, and codex adds a trust entry for a directory it is run in. Or use PROVIDER=agy."
   # needs </dev/null and --skip-git-repo-check outside a git repo
   codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
     "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null \
@@ -353,7 +356,7 @@ precise about what the sandbox flags buy:
 
 | | Confines |
 |---|---|
-| codex `-s workspace-write` | writes, to the workspace — **but only if codex's project trust says so.** Verified on this machine: with `[projects."/"] trust_level = "trusted"` in `~/.codex/config.toml`, both `-s workspace-write` AND `-s read-only` happily wrote a file into an unrelated git checkout. Check that entry before treating the flag as a boundary |
+| codex `-s workspace-write` | **nothing that was measurable.** On codex-cli 0.147.0 both `-s workspace-write` and `-s read-only` wrote a file outside the workdir they were given, and `-s read-only` wrote inside it as well. The cause is not established — deleting the `[projects."/"] trust_level = "trusted"` entry did not restore confinement, and codex adds a trust entry for a directory it is run in. Probe it (write, then check the filesystem) before treating any `-s` value as a boundary |
 | agy `--sandbox` | terminal execution; `--add-dir` *adds* a writable dir, it does not revoke access to the cwd |
 | grok `--sandbox workspace` | writes, to cwd + temp + `~/.grok` |
 | grok `--permission-mode default --allow image_gen` | **the default decision for tools this command did not name.** `--allow` adds auto-approval, it does not deny anything else, and pinning the mode only overrides the *default* — per-tool allow rules already configured in `~/.grok/config.toml` still load and still apply. So this narrows what the flags themselves grant; it does not audit your config. Read-only tools and read-only shell run regardless |

@@ -332,6 +332,13 @@ if (
   # (a) provider-only json → pass
   printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
   validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a) provider-only json refused"; ok=0; }
+  # (a2) provider with an npm package (in-process load = code execution in the
+  # review lane) → refuse
+  printf '{"provider":{"p":{"npm":"@ai-sdk/openai-compatible"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a2) provider npm package accepted"; ok=0; }
+  # (a3) NESTED npm (per-model provider override) → refuse
+  printf '{"provider":{"p":{"models":{"m":{"provider":{"npm":"file:///tmp/evil.mjs"}}}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3) nested model npm accepted"; ok=0; }
 
   # (b) mcp key → refuse
   printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/.opencode/opencode.json"
@@ -417,6 +424,9 @@ if (
   mkdir -p "$_cases/home/.opencode"
   # shellcheck disable=SC2312  # decoder status is checked; generator status is not load-bearing
   while read -r _expect _ext _b64; do
+    # Clear BOTH canonical paths first — a stale file under the other
+    # extension would mask or corrupt this case's expectation.
+    rm -f "$_cases/home/.opencode/opencode.json" "$_cases/home/.opencode/opencode.jsonc"
     printf '%s' "$_b64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$_cases/home/.opencode/opencode$_ext" || { echo "  ✗ (j) case decode failed"; ok=0; break; }
     if validate_opencode_home_config "$_cases/home" 2>/dev/null; then _got=PASS; else _got=FAIL; fi
     [[ "$_got" == "$_expect" ]] || { echo "  ✗ (j) case .opencode$_ext expected $_expect got $_got"; ok=0; }

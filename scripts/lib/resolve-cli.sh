@@ -449,7 +449,27 @@ except Exception:
     sys.exit(1)
 # Root must be an object; a non-object ([] / ["provider"] / scalar) is not a
 # provider-only configuration and must refuse.
-if not isinstance(d, dict) or [k for k in d if k not in ("provider", "$schema")]:
+if not isinstance(d, dict):
+    sys.exit(1)
+# The top-level allowlist is not enough: an `npm` key ANYWHERE inside a
+# provider block — including per-model overrides
+# (`provider.<id>.models.<model>.provider.npm`, which opencode prioritizes
+# over the provider-level value) — makes opencode load that package
+# in-process (arbitrary code execution in the review lane; no `mcp` key
+# needed). The dispatch lane's providers must be defined without npm
+# (built-in openai-compatible handling; verified), so any nested npm key
+# refuses. Recursive, because models can carry their own provider objects.
+def has_npm(v):
+    if isinstance(v, dict):
+        return "npm" in v or any(has_npm(x) for x in v.values())
+    if isinstance(v, list):
+        return any(has_npm(x) for x in v)
+    return False
+
+_prov = d.get("provider", {})
+if not isinstance(_prov, dict) or any(has_npm(v) for v in _prov.values()):
+    sys.exit(1)
+if [k for k in d if k not in ("provider", "$schema")]:
     sys.exit(1)
 sys.exit(0)
 PY

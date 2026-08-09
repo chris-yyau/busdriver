@@ -1,3 +1,10 @@
+# [1.103.0](https://github.com/chris-yyau/busdriver/compare/v1.102.4...v1.103.0) (2026-08-09)
+
+
+### Features
+
+* **pr-grind:** drop bugbot (cursor) and devin from ack registry ([#604](https://github.com/chris-yyau/busdriver/issues/604)) ([ce1319f](https://github.com/chris-yyau/busdriver/commit/ce1319f26e31c3c344260c02426dcf6e994bd3c0))
+
 ## [1.102.4](https://github.com/chris-yyau/busdriver/compare/v1.102.3...v1.102.4) (2026-08-09)
 
 

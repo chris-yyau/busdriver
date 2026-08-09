@@ -257,9 +257,35 @@ fi
 # After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
 # Re-folding Codex alone leaves 3 bots at pre-wait values across a 480s window, so a
 # bot that posts CHANGES_REQUESTED during it would still read as passing.
-hasre 'FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*chatgpt-codex-connector=\$\{CODEX_REGRACE\}' \
+# #606: the discriminator is `${CODEX_REGRACE}` — the pre-wait line ends
+# `chatgpt-codex-connector=$(bash "$ACK_SCRIPT" ...)` and can never satisfy a pattern
+# that requires that token. Requiring EVERY non-Codex bot to show
+# `$(bash "$ACK_SCRIPT" ...)` on the SAME line also blocks partial re-folds (e.g.
+# cubic-dev-ai-only): the three registered bots must be re-derived from ack-ledger,
+# not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
+POSTWAIT_LEDGER='FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai.*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps.*chatgpt-codex-connector=\$\{CODEX_REGRACE\}'
+hasre "$POSTWAIT_LEDGER" \
   && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
+# The pattern must match EXACTLY ONE line. Zero = the post-wait recomputation was
+# deleted (guard vacuous — the #606 bug); two+ = the pre-wait line also satisfies it
+# (guard ambiguous again). Both are fail.
+POSTWAIT_LEDGER_COUNT=$(grep -cE "$POSTWAIT_LEDGER" "$SKILL" || true)
+[ "$POSTWAIT_LEDGER_COUNT" -eq 1 ] \
+  && ok "post-wait ledger pattern matches exactly one line" \
+  || fail "post-wait ledger pattern matches $POSTWAIT_LEDGER_COUNT lines — expected exactly 1 (pre-wait line must not satisfy it)"
+# Deletion proof (issue #606): strip the post-wait line from a copy of the SKILL and
+# require the discriminator to stop matching — the issue's `sed 1555d` reproduction,
+# without pinning a line number. A guard that cannot fire certifies safety it never
+# checked.
+POSTWAIT_GONE=$(mktemp)
+grep -vE "$POSTWAIT_LEDGER" "$SKILL" > "$POSTWAIT_GONE"
+if grep -qE "$POSTWAIT_LEDGER" "$POSTWAIT_GONE"; then
+  fail "post-wait ledger pattern still satisfied with the recomputation deleted — guard cannot fire (#606)"
+else
+  ok "post-wait ledger guard fires when the recomputation is deleted (#606)"
+fi
+rm -f "$POSTWAIT_GONE"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
   fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
 else

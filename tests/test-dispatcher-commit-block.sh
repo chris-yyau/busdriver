@@ -531,12 +531,13 @@ test_m_wait_round_classifier() {
     if printf '%s\n' "$dispatcher_json" | jq -e \
         '.status == "success"
          and .result_commit_sha == "none"
-         and (.result_reviewer_acks | contains("cursor=none"))
-         and (.result_ack_tiers | contains("cursor=none"))' >/dev/null; then
+         and (.result_reviewer_acks | contains("cubic-dev-ai=none"))
+         and (.result_reviewer_acks | contains("greptile-apps=none"))
+         and (.result_ack_tiers | contains("cubic-dev-ai=none"))' >/dev/null; then
         return 0
     fi
 
-    fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks and all-none tiers; got exit=$dispatcher_exit json=$dispatcher_json"
+    fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks (cubic/coderabbit/greptile) and all-none tiers; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_n_clean_path_acks() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

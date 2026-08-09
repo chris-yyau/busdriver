@@ -31,9 +31,10 @@ a downgrade candidate.
 
 pr-grind's clean-marker (Invariant 2, `skills/pr-grind/SKILL.md`) refuses to
 write the `clean` (merge-ready) marker while ANY registered advisory reviewer bot
-(`cursor`, `cubic-dev-ai`, `coderabbitai`, `devin-ai-integration`,
-`codescene-delta-analysis`, plus Codex tracked separately) is `stale` in the ack
-ledger. `stale` means the bot's last review targets a non-HEAD SHA.
+(`cubic-dev-ai`, `coderabbitai`, `greptile-apps`, `codescene-delta-analysis`,
+plus Codex tracked separately — `cursor`/Bugbot and `devin-ai-integration` were
+dropped from the registry by ADR 0035) is `stale` in the ack ledger. `stale`
+means the bot's last review targets a non-HEAD SHA.
 
 The real merge authority is server-side and untouched by this decision: required
 GitHub status checks (`.github/required-checks.lock`) + branch protection + the

@@ -40,7 +40,7 @@
 # Timestamp-FREE (git object hashes, not backdatable dates), so it does not relax
 # the #186/#189 anti-backdating posture. Disable entirely with ACK_CONTENT_IDENTITY=0.
 #
-# SCOPE BOUNDARY: this widens ONLY the AI-reviewer ack ledger (Tier D — cursor/cubic/
+# SCOPE BOUNDARY: this widens ONLY the AI-reviewer ack ledger (Tier D — cubic/coderabbit/
 # coderabbit, code reviewers that approve the tree). The required status checks that
 # are the merge authority (commitlint, DCO, signature, CI) are enforced by GitHub
 # branch protection on the real HEAD and re-run independently — they are NEVER carried

@@ -116,8 +116,8 @@ new_repo
 OLD=$( git -C "$repo" rev-parse HEAD )
 ( cd "$repo" && git commit -q --amend -m "feat: thing typo-fixed" )
 NEW=$( git -C "$repo" rev-parse HEAD ); NEW8=${NEW:0:8}
-HEAD_SHA="$NEW8"; ALL_CHECK_RUNS=$(checkruns_json cursor "$OLD")
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_CHECK_RUNS=$(checkruns_json cubic-dev-ai "$OLD")
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "$NEW8" ]; then ok "Tier D: message-only amend carries the check-run ack forward to HEAD ($out)"
 else fail "Tier D: expected HEAD-ack $NEW8, got '$out'"; fi
 
@@ -145,8 +145,8 @@ new_repo
 OLD=$( git -C "$repo" rev-parse HEAD )
 ( cd "$repo" && echo v2 > f.txt && git add f.txt && git commit -q --amend --no-edit )  # different tree
 NEW=$( git -C "$repo" rev-parse HEAD ); NEW8=${NEW:0:8}
-HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cursor "$OLD" APPROVED)   # APPROVED ⇒ ever_approved>0 ⇒ final stale
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cubic-dev-ai "$OLD" APPROVED)   # APPROVED ⇒ ever_approved>0 ⇒ final stale
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "stale" ]; then ok "Negative (real code change): correctly stale, no false HEAD-ack"
 elif [ "$out" = "$NEW8" ]; then fail "Negative (real code change): FALSE HEAD-ack $out — carry-forward fired on a different tree!"
 else fail "Negative (real code change): expected stale, got '$out'"; fi
@@ -174,8 +174,8 @@ NEW8=${NEW:0:8}
 OLD_PARENT=$(git -C "$repo" show -s --format=%P "$OLD")
 NEW_PARENT=$(git -C "$repo" show -s --format=%P "$NEW")
 [ "$OLD_PARENT" != "$NEW_PARENT" ] || fail "setup#5: NEW parent unexpectedly equals OLD parent"
-HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cursor "$OLD" APPROVED)
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cubic-dev-ai "$OLD" APPROVED)
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "stale" ]; then ok "Negative (parent change / rebase): parent-pin rejects it, stays stale"
 elif [ "$out" = "$NEW8" ]; then fail "Negative (parent change): FALSE HEAD-ack $out — parent pin failed!"
 else fail "Negative (parent change): expected stale, got '$out'"; fi
@@ -189,8 +189,8 @@ new_repo
 ( cd "$repo" && git commit -q --amend -m "feat: thing reworded" )
 NEW=$( git -C "$repo" rev-parse HEAD ); NEW8=${NEW:0:8}
 ABSENT="0123456789abcdef0123456789abcdef01234567"   # not an object in this repo
-HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cursor "$ABSENT" APPROVED)
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cubic-dev-ai "$ABSENT" APPROVED)
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "stale" ]; then ok "Fail-closed (acked SHA not local): stays stale, no carry-forward"
 else fail "Fail-closed (absent object): expected stale, got '$out'"; fi
 
@@ -203,8 +203,8 @@ new_repo
 OLD=$( git -C "$repo" rev-parse HEAD )
 ( cd "$repo" && git commit -q --amend -m "feat: thing reworded" )
 NEW=$( git -C "$repo" rev-parse HEAD ); NEW8=${NEW:0:8}
-HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cursor "$OLD" APPROVED); ACK_CONTENT_IDENTITY=0
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cubic-dev-ai "$OLD" APPROVED); ACK_CONTENT_IDENTITY=0
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "stale" ]; then ok "Opt-out (ACK_CONTENT_IDENTITY=0): kill switch restores pre-fix stale"
 else fail "Opt-out: expected stale, got '$out'"; fi
 
@@ -230,8 +230,8 @@ new_repo
 ( cd "$repo" && git commit -q --amend -m "feat: thing reworded" )
 NEW=$( git -C "$repo" rev-parse HEAD ); NEW8=${NEW:0:8}
 # commit_id is an injection-shaped string, not a SHA. APPROVED ⇒ stale on no ack.
-HEAD_SHA="$NEW8"; ALL_REVIEWS='[{"user":{"login":"cursor[bot]"},"commit_id":"--output=/tmp/x","state":"APPROVED"}]'
-out=$(run_ledger "$repo" cursor)
+HEAD_SHA="$NEW8"; ALL_REVIEWS='[{"user":{"login":"cubic-dev-ai[bot]"},"commit_id":"--output=/tmp/x","state":"APPROVED"}]'
+out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "stale" ]; then ok "arg-injection guard: non-hex candidate rejected, stays stale"
 elif [ "$out" = "$NEW8" ]; then fail "arg-injection guard: FALSE HEAD-ack from a non-hex candidate!"
 else fail "arg-injection guard: expected stale, got '$out'"; fi
@@ -268,13 +268,13 @@ if [ "$out" = "none" ]; then ok "greptile Tier-D guard: check-run-only success d
 elif [ "$out" = "$HEAD8" ]; then fail "greptile Tier-D guard: FAIL-OPEN — check-run alone fabricated a clean HEAD-ack!"
 else fail "greptile Tier-D guard: expected none, got '$out'"; fi
 
-# Control: the SAME fixture for a clean-only-check bot (cursor) MUST still ack via
+# Control: the SAME fixture for a clean-only-check bot (cubic-dev-ai) MUST still ack via
 # Tier D — proves the guard is greptile-specific, not a blanket Tier-D break.
 reset_fixture
-HEAD_SHA="$HEAD8"; ALL_CHECK_RUNS=$(checkruns_json cursor "$HEAD")
-out=$(run_ledger "$repo" cursor)
-if [ "$out" = "$HEAD8" ]; then ok "control: cursor still Tier-D acks the same check-run fixture ($out)"
-else fail "control: cursor Tier-D ack broke — guard is not greptile-specific; got '$out'"; fi
+HEAD_SHA="$HEAD8"; ALL_CHECK_RUNS=$(checkruns_json cubic-dev-ai "$HEAD")
+out=$(run_ledger "$repo" cubic-dev-ai)
+if [ "$out" = "$HEAD8" ]; then ok "control: cubic-dev-ai still Tier-D acks the same check-run fixture ($out)"
+else fail "control: cubic-dev-ai Tier-D ack broke — guard is not greptile-specific; got '$out'"; fi
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

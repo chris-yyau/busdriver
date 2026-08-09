@@ -94,7 +94,11 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai devin-ai-integration greptile-apps)
+# cursor (Bugbot) and devin-ai-integration were DROPPED from the registry
+# (ADR 0035): both are review-once-at-create bots that never re-review fix-round
+# pushes, their findings were ~75-92% redundant with the remaining bots, and
+# dropping them removes the Case-4 devin whitelist machinery (ADR 0027).
+REGISTERED_ACK_BOTS=(cubic-dev-ai coderabbitai greptile-apps)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -124,7 +128,7 @@ fi
 emit_success_no_commit() {
     # $1 = acks ledger, $2 = ack-tier map, $3 = codex ack (callers pass all explicitly).
     # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
-    # so a valid bodyless-ack exemption (cursor=D / coderabbitai=E) survives to
+    # so a valid bodyless-ack exemption (cubic=D / coderabbitai=E) survives to
     # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
     # default because it REFRESHES acks via the ack-ledger and the worker's tier
     # snapshot would be stale against those refreshed acks (fail-CLOSED). Erasing
@@ -164,7 +168,7 @@ case "$RESULT_STATUS" in
         # must survive). Fall back to all-`none` tiers / "none" codex only when
         # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
         emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
-            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none}" \
+            "${RESULT_ACK_TIERS:-cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
             "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)
@@ -196,9 +200,9 @@ case "$RESULT_STATUS" in
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
                 # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
                 # Compute tiers from the SAME ack-ledger pass as the acks so they are
-                # consistent — a Tier-D cursor ack is immediately paired with tier=D,
+                # consistent — a Tier-D cubic ack is immediately paired with tier=D,
                 # allowing Invariant 3's bodyless-ack exemption on wait-rounds where
-                # cursor has no Source-2/3/4 body to enumerate (cursor=0/0:none ledger).
+                # cubic has no Source-2/3/4 body to enumerate (cubic=0/0:none ledger).
                 raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
                 ack="${raw%%:*}"
                 case "$raw" in
@@ -220,7 +224,7 @@ case "$RESULT_STATUS" in
             # Wait-round: acks, tiers, and codex_ack are all FRESHLY computed from the same
             # ack-ledger pass, so they are mutually consistent. Pass the fresh
             # tiers so Invariant 3's D/E bodyless-ack exemption can fire on
-            # wait-rounds (e.g. cursor acks via check-run while other bots are
+            # wait-rounds (e.g. cubic acks via check-run while other bots are
             # still stale). The worker's old tier and codex snapshots are discarded.
             emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" \
                 "$(IFS=,; echo "${tier_entries[*]}")" \
@@ -1034,7 +1038,7 @@ if [ "$_fetch_ok" = "1" ]; then
         # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
         # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually
         # consistent (the core ADR 0001 invariant). A bot that bodyless-acks the
-        # post-push HEAD (e.g. cursor's check-run registers fast) is paired with
+        # post-push HEAD (e.g. cubic's check-run registers fast) is paired with
         # its real D/E tier, so Invariant 3's exemption fires correctly instead of
         # fail-closed-bailing — no stale-snapshot pairing is possible.
         raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")

@@ -313,8 +313,12 @@ absorbs that reading, so route by size rather than by ceremony:
 | You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
 | **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **pi first.** Then `Read` only the `file:line` ranges it cites. |
 
-Both conditions must hold to stay local. A named 300-line region still routes to
-pi; a two-file 20-line inspection does not.
+Both conditions must hold to stay local, and **file count is not one of them** —
+what matters is whether you can point at the lines before you start, and how many
+there are. So a single named 300-line region routes to pi (nameable, but too big
+to be worth reading), while 20 lines in each of two files stays local (two hops,
+but both named and both tiny — dispatching would pay the floor below for a read
+you could finish in seconds).
 
 The win is not that pi is smarter; it is that a cited answer costs ~1k tokens
 where opening the file costs tens of thousands. Ask pi for citations, then pull

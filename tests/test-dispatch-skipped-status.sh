@@ -67,13 +67,24 @@ mk_codex_fail() { printf '#!/usr/bin/env bash\necho "hard failure"\nexit 3\n' > 
 # home candidates, not PATH.
 BASE_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Is pi selectable for `--cli all`? Mirrors _pi_available's candidate list.
+# Is pi selectable for `--cli all`? Mirrors _pi_available's candidate list AND
+# its trusted-home lookup (password database via `id -un` + `eval echo ~$u`,
+# NOT $HOME) — dispatch.sh deliberately does not trust $HOME because it's
+# repo-injectable; matching that here keeps this gate's pass/fail decision
+# aligned with what dispatch.sh will actually do when $HOME is remapped.
 pi_selectable() {
-  PATH="/usr/bin:/bin" bash -c '
-    for c in "$HOME/.local/bin/pi" "$HOME/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
+  /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+    /bin/bash --noprofile --norc <<'CHILD'
+    u="$(/usr/bin/id -un)" || exit 1
+    case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+    h="$(eval echo "~$u")" || exit 1
+    case "$h" in /*) ;; *) exit 1 ;; esac
+    [ -d "$h" ] || exit 1
+    for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
       [ -f "$c" ] && [ -x "$c" ] && exit 0
     done
-    exit 1'
+    exit 1
+CHILD
 }
 
 echo "── dispatch.sh skipped status (#594) ───────────────────────"

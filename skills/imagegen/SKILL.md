@@ -75,6 +75,16 @@ die() { echo "$1" >&2; exit 1; }
 
 case "$OUT" in /*) ;; *) die "refuse: \$OUT must be absolute";; esac
 mkdir -p "$(dirname "$OUT")"
+# ASSUMPTION: the asset directory is yours alone. Publication cannot be made race-proof
+# against another writer — POSIX ln has no portable --no-target-directory, so a directory
+# raced into place at $OUT would quietly receive $OUT/asset.png. The mode-bit test below
+# is a cheap sanity check that catches the obvious case; it is NOT proof, since it does
+# not inspect ACLs (macOS or POSIX.1e), which can grant another account write access
+# while these bits stay clear. If you cannot vouch for the directory, do not publish
+# into it — and note that anyone who can write it controls its contents with or
+# without this script.
+[ -n "$(find "$(dirname "$OUT")" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) 2>/dev/null)" ] \
+  && die "refuse: $(dirname "$OUT") is group- or world-writable"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && die "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"
 
@@ -146,7 +156,7 @@ grok|grok-edit)
   case "$HOME$(cd -P "$WORK" && pwd -P)" in
     *[!A-Za-z0-9/._-]*) die "grok needs [A-Za-z0-9/._-] in \$HOME and \$OUT's directory" ;;
   esac
-  : > "$STAMP"   # per invocation: a retry must not accept the previous image
+  : > "$STAMP" || die "cannot create $STAMP"   # per invocation: a retry must not accept the previous image
   if [ "$PROVIDER" = grok-edit ]; then
     # absolute, or image_edit resolves it against --cwd "$WORK" and finds nothing
     case "$SRC" in /*) ;; *) die "grok-edit needs an absolute \$SRC";; esac
@@ -174,20 +184,16 @@ case "$(file -b "$ASSET")___${OUT##*.}" in
   *) die "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate";;
 esac
 
-# Only then publish. -n so a file that appeared during the dispatch is never clobbered.
-# There is no race-free pre-check for "$OUT became a directory" with POSIX tools — mv
-# would put asset.png INSIDE it — so the destination test AFTER the move is the
-# authority, not any check before it.
-mv -n "$ASSET" "$OUT"
-# mv -n exits 0 when it SKIPS, so the destination is the only trustworthy signal — and
-# if $OUT turned into a directory after the test above, mv moved the file INTO it.
-# Keep $WORK on any failure (it may hold the only copy) and return non-zero, or a
-# caller reads "not published" as success.
-if [ -f "$OUT" ] && [ ! -e "$ASSET" ]; then
-  rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
-else
-  die "NOT published at $OUT — look in $(dirname "$ASSET"), and in $OUT/ if it became a directory"
-fi
+# Publish with ln, not mv. link() fails with EEXIST atomically, so a concurrent
+# writer can never be clobbered — whereas `mv -n` is a check-then-rename on some
+# implementations and loses that race. $WORK is on the same filesystem as $OUT
+# (that is why it sits beside it), so the hard link always works.
+ln "$ASSET" "$OUT" || die "could not publish to $OUT (already exists?) — asset kept at $ASSET"
+# ln into a DIRECTORY (or a symlink to one) succeeds by creating $OUT/asset.png, so
+# confirm a regular file landed at $OUT BEFORE discarding the copy that is still ours.
+[ -f "$OUT" ] || die "ln did not produce a file at $OUT (a directory there?) — asset kept at $ASSET"
+rm -f "$ASSET"
+rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
 ```
 
 ## Threat model — what the flags do and don't confine

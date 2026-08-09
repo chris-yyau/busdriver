@@ -359,7 +359,12 @@ strip_ansi() {
 
 # Args: cli_name status duration output_file
 log_event() {
-    mkdir -p "$LOG_DIR"
+    # `|| true`: this helper is best-effort by contract, and it now runs BEFORE
+    # the dispatch output is emitted. An unguarded `mkdir` under `set -e` would
+    # therefore let an unwritable or invalid state dir suppress a COMPLETED CLI
+    # result entirely — logging failing closed over the very output it exists to
+    # annotate. Everything below already tolerates a missing directory.
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
     local ts _logged_out="$4"
     ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     # PRESERVE THE EVIDENCE OF A FAILED RUN. Output files live in $TMPDIR, which
@@ -1637,6 +1642,10 @@ if [[ "$CLI" == "both" ]]; then
     CS=$(echo "$CMETA" | cut -d'|' -f1); CD=$(echo "$CMETA" | cut -d'|' -f2)
     AS=$(echo "$AMETA" | cut -d'|' -f1); AD=$(echo "$AMETA" | cut -d'|' -f2)
 
+    # Log before emitting — same SIGPIPE reasoning as the other two paths.
+    log_event "codex" "$CS" "$CD" "$CODEX_OUT"
+    log_event "agy"   "$AS" "$AD" "$AGY_OUT"
+
     # Print both outputs
     echo "═══════════════════════════════════════════════════════"
     echo "  CODEX  (${CS}, ${CD}s)"
@@ -1647,9 +1656,6 @@ if [[ "$CLI" == "both" ]]; then
     echo "  AGY  (${AS}, ${AD}s)"
     echo "═══════════════════════════════════════════════════════"
     [[ -f "$AGY_OUT" ]] && cat "$AGY_OUT" || echo "(no output)"
-
-    log_event "codex" "$CS" "$CD" "$CODEX_OUT"
-    log_event "agy"   "$AS" "$AD" "$AGY_OUT"
 
     echo "" >&2
     echo "Saved: codex → ${CODEX_OUT}  |  agy → ${AGY_OUT}" >&2
@@ -1673,21 +1679,40 @@ elif [[ "$CLI" == "all" ]]; then
 
     any_failed=false
     any_ran=false
-    idx=0
+    # PASS 1 — read every voice's meta and LOG IT, writing nothing to stdout.
+    # Interleaving this with the output loop below does not work: `cat` (and even
+    # the header `echo`s) die on SIGPIPE as soon as a consumer exits early, and
+    # under `set -e` that kills the script, so every voice after the one being
+    # printed would lose its log entry AND its failure archive. Separating the
+    # passes is what actually makes the batch's audit trail independent of
+    # whether anyone is still reading stdout — moving `log_event` a few lines
+    # earlier inside one combined loop does not, because the headers still
+    # precede it.
+    local_idx=0
+    ALL_STATUS=(); ALL_DURATION=()
     for c in "${ALL_CLIS[@]}"; do
-        outfile="${ALL_OUTS[$idx]}"
+        outfile="${ALL_OUTS[$local_idx]}"
         META=$(read_meta "${outfile}.meta"); rm -f "${outfile}.meta"
         STATUS=$(echo "$META" | cut -d'|' -f1); DURATION=$(echo "$META" | cut -d'|' -f2)
-        echo "═══════════════════════════════════════════════════════"
-        echo "  $(echo "$c" | tr '[:lower:]' '[:upper:]')  (${STATUS}, ${DURATION}s)"
-        echo "═══════════════════════════════════════════════════════"
-        [[ -f "$outfile" ]] && cat "$outfile" || echo "(no output)"
-        echo ""
+        ALL_STATUS+=("$STATUS"); ALL_DURATION+=("$DURATION")
         log_event "$c" "$STATUS" "$DURATION" "$outfile"
         [[ "$STATUS" == "error" || "$STATUS" == "timeout" ]] && any_failed=true
         # `skipped` is deliberately absent from the failure test above — a voice
         # that never ran is not a voice that failed (#594).
         [[ "$STATUS" != "skipped" ]] && any_ran=true
+        local_idx=$((local_idx + 1))
+    done
+
+    # PASS 2 — emit. Everything above is already durable, so a consumer that
+    # walks away here costs only the display.
+    idx=0
+    for c in "${ALL_CLIS[@]}"; do
+        outfile="${ALL_OUTS[$idx]}"
+        echo "═══════════════════════════════════════════════════════"
+        echo "  $(echo "$c" | tr '[:lower:]' '[:upper:]')  (${ALL_STATUS[$idx]}, ${ALL_DURATION[$idx]}s)"
+        echo "═══════════════════════════════════════════════════════"
+        [[ -f "$outfile" ]] && cat "$outfile" || echo "(no output)"
+        echo ""
         idx=$((idx + 1))
     done
 
@@ -1718,9 +1743,17 @@ else
     DURATION=$(echo "$META" | cut -d'|' -f2)
     EXIT_CODE=$(echo "$META" | cut -d'|' -f3)
 
-    [[ -f "$OUTFILE" ]] && cat "$OUTFILE"
-
+    # LOG BEFORE EMITTING. `cat` dies on SIGPIPE the moment a consumer exits
+    # early (`dispatch.sh ... | head -1`), and it is the last command of an `&&`
+    # list, so `set -e` takes the whole script down with it — losing both the log
+    # entry and the failure archive for a run that had already finished. Verified:
+    # a 2.4MB failing output piped to `head -1` produced 0 log entries and 0
+    # archived files; a small output did not, because it fit in the pipe buffer
+    # and `cat` never received the signal. Recording the run first makes the
+    # audit trail independent of whether anyone is still reading stdout.
     log_event "$CLI" "$STATUS" "$DURATION" "$OUTFILE"
+
+    [[ -f "$OUTFILE" ]] && cat "$OUTFILE"
 
     echo "" >&2
     echo "${CLI} → ${STATUS} (${DURATION}s) | saved: ${OUTFILE}" >&2

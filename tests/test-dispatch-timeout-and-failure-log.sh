@@ -47,6 +47,9 @@ TEST_LOGROOT="$HOME/$TEST_STATE"
 # that still removes it. `${ALIAS_ROOT:-}` guards the case against unset/unbound
 # before test 4e assigns it (set -u is active).
 ALIAS_ROOT=""
+# Same reasoning as ALIAS_ROOT — test 4f creates this one, and an interrupted
+# run would otherwise strand it in $HOME holding a failed run's output.
+PIPE_ROOT=""
 cleanup() {
   rm -rf "$TMP"
   case "$TEST_STATE" in
@@ -57,6 +60,11 @@ cleanup() {
     "") ;;
     "$HOME"/dispatchtest-alias-*) rm -rf "$ALIAS_ROOT" ;;
     *) echo "REFUSING to remove unexpected alias root '$ALIAS_ROOT'" >&2 ;;
+  esac
+  case "${PIPE_ROOT:-}" in
+    "") ;;
+    "$HOME"/dispatchtest-pipe-*) rm -rf "$PIPE_ROOT" ;;
+    *) echo "REFUSING to remove unexpected pipe root '$PIPE_ROOT'" >&2 ;;
   esac
 }
 trap cleanup EXIT
@@ -215,6 +223,32 @@ rm -rf "$TEST_LOGROOT"
 mk_codex_fail
 PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
   "$RUN_BASH" "$DISPATCH" --cli codex --timeout 20 --prompt p >/dev/null 2>&1
+
+# ── 4f. A consumer that exits early must not cost the run its audit trail.
+#      `cat` dies on SIGPIPE as soon as `| head -1` closes the pipe, and it is
+#      the last command of an `&&` list, so `set -e` takes the script down before
+#      log_event runs — losing BOTH the log entry and the archive for a run that
+#      had already completed. The output must exceed the pipe buffer (~64KB) or
+#      `cat` finishes before the signal ever arrives and this passes vacuously.
+PIPE_STATE="dispatchtest-pipe-$$-${RANDOM}"
+PIPE_ROOT="$HOME/$PIPE_STATE"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for i in $(seq 1 40000); do printf "LINE_%%s_PADPADPADPADPADPADPADPADPADPADPADPADPADPAD\\n" "$i"; done\n'
+  printf 'echo FATAL_TAIL\n'
+  printf 'exit 3\n'; } > "$STUB/codex"
+chmod +x "$STUB/codex"
+PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$PIPE_STATE" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  "$RUN_BASH" "$DISPATCH" --cli codex --timeout 30 --prompt p 2>/dev/null | head -1 >/dev/null
+if [[ -s "$PIPE_ROOT/homunculus/dispatch-log.jsonl" ]] \
+   && [[ -n "$(find "$PIPE_ROOT/homunculus/failures" -type f 2>/dev/null)" ]]; then
+  ok "an early-exiting consumer still leaves a log entry and an archive"
+else
+  bad "SIGPIPE killed the script before log_event — the failed run left no audit trail"
+fi
+case "$PIPE_STATE" in
+  dispatchtest-pipe-*) rm -rf "$PIPE_ROOT" ;;
+  *) echo "REFUSING to remove unexpected pipe root '$PIPE_ROOT'" >&2 ;;
+esac
 
 # ── 5. ...and the log line POINTS at the durable copy, not at the $TMPDIR path
 #      that may no longer exist. An archive nothing references is not a fix.

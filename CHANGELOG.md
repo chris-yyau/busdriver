@@ -1,3 +1,10 @@
+## [1.101.5](https://github.com/chris-yyau/busdriver/compare/v1.101.4...v1.101.5) (2026-08-09)
+
+
+### Bug Fixes
+
+* **gitcmd-detect:** extract payloads hidden by torn assignment values ([#587](https://github.com/chris-yyau/busdriver/issues/587)) ([30f056c](https://github.com/chris-yyau/busdriver/commit/30f056cd6a84744851e35d14db7657e24e924d15)), closes [#584](https://github.com/chris-yyau/busdriver/issues/584) [#584](https://github.com/chris-yyau/busdriver/issues/584)
+
 ## [1.101.4](https://github.com/chris-yyau/busdriver/compare/v1.101.3...v1.101.4) (2026-08-08)
 
 

@@ -191,7 +191,9 @@ codex)
   # the flag below was decoration. Sniffing the TOML for that entry is not a boundary
   # (quoting, whitespace, dotted keys and `sandbox_workspace_write.writable_roots` all
   # evade a grep), so this asks for an explicit acknowledgement instead.
-  [ -n "$CODEX_SANDBOX_CHECKED" ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block, after confirming ${CODEX_HOME:-\$HOME/.codex}/config.toml neither trusts \"/\" nor widens writable_roots. Or use PROVIDER=agy."
+  # Exactly 1, not merely non-empty: CODEX_SANDBOX_CHECKED=0 or =false reads as a
+  # REFUSAL, and -n would have opened the route on both.
+  [ "$CODEX_SANDBOX_CHECKED" = 1 ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block, after confirming ${CODEX_HOME:-\$HOME/.codex}/config.toml neither trusts \"/\" nor widens writable_roots. Or use PROVIDER=agy."
   # needs </dev/null and --skip-git-repo-check outside a git repo
   codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
     "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null \
@@ -239,7 +241,11 @@ if [ -z "$TAKE" ]; then
   cp "$ASSET" "$TAKE/asset.png" || die "could not take the asset out of $WORK"
   ASSET="$TAKE/asset.png"
 fi
-rm -rf "$WORK"; WORK=
+# Say so if the sweep failed: clearing $WORK afterwards drops the only record of the
+# path, so a silent failure would orphan whatever the provider left there — possibly a
+# large partial image — while the run still reports a clean publication.
+rm -rf "$WORK" || echo "warning: could not remove $WORK — remove it yourself" >&2
+WORK=
 
 # file(1) succeeds on missing paths, on text, and through symlinks — none of which is
 # an image. Require a real regular file AND a raster magic number.
@@ -284,7 +290,11 @@ ln "$ASSET" "$FINAL" || die "could not publish to $FINAL (already exists?)"
 # confirm a regular file landed at $FINAL BEFORE discarding the copy that is still ours.
 [ -f "$FINAL" ] || die "ln did not produce a file at $FINAL (a directory there?)"
 rm -f "$ASSET"
-rm -rf "$WORK" ${TAKE:+"$TAKE"}    # the grok path puts $ASSET in its own take dir
+# Same reason as the earlier sweep: $FINAL is published either way, so this warns
+# rather than fails — but it must not fail silently and leave .imagegen-take.* sitting
+# in the asset tree.
+rm -rf "$WORK" ${TAKE:+"$TAKE"} \
+  || echo "warning: could not remove ${WORK:-}${TAKE:+ $TAKE} — remove it yourself" >&2
 ```
 
 ## Threat model — what the flags do and don't confine

@@ -21,8 +21,19 @@ awk '/^\*\*Step 2 — one Bash call/,0' "$SKILL" \
 [ -s "$BLOCK" ] || { echo "FAIL could not extract the block from $SKILL"; exit 1; }
 
 # A copy with the provider dispatch removed, so guard cases never spend real balance.
+# This deletes to the first COLUMN-0 `esac`, which is the provider case's own — the
+# nested case inside the grok branch is indented. That is load-bearing: un-indent it
+# and the deletion stops early, leaving a headless case body that either fails to parse
+# or still calls a provider. Both are asserted below rather than trusted.
 GUARDS="$TMP/guards.sh"
 awk '/^case "\$PROVIDER" in$/{skip=1} skip&&/^esac$/{skip=0;next} !skip' "$BLOCK" > "$GUARDS"
+if bash -n "$GUARDS" 2>/dev/null; then ok "guards copy parses"; else bad "guards copy is not valid shell — extraction cut the wrong esac"; fi
+# shellcheck disable=SC2016  # the $ are literal: this matches the text of the block
+if grep -qE '^[[:space:]]*(codex exec|agy -p|RAW=\$\(grok|\( cd "\$WORK" && agy)' "$GUARDS"; then
+  bad "guards copy still dispatches a provider — extraction cut the wrong esac"
+else
+  ok "guards copy calls no provider"
+fi
 
 run() {  # run() <script> <OUT> [env assignments...] -> prints exit code
   local script=$1 out=$2; shift 2
@@ -90,7 +101,30 @@ case "$why" in
   *) bad "broken find did not refuse: $why" ;;
 esac
 
-# 8. Dimension parsing reads PIXELS, not JPEG's JFIF density. `head` would return
+# 8. The codex acknowledgement must mean exactly 1. `-n` would have opened the route on
+#    CODEX_SANDBOX_CHECKED=0 and =false — values that plainly read as a refusal. This is
+#    the one case that runs the FULL block (the acknowledgement lives in the stripped
+#    codex branch), so codex is stubbed: nothing real is dispatched even if the guard
+#    regresses, and the stub's marker is the proof that it was not reached.
+mkdir -p "$TMP/stub2"
+printf '#!/bin/sh\ntouch "%s/DISPATCHED"\nexit 0\n' "$TMP" > "$TMP/stub2/codex"
+chmod +x "$TMP/stub2/codex"
+for val in 0 false ""; do
+  rm -f "$TMP/DISPATCHED"
+  why=$( env BRIEF="$TMP/brief.txt" PATH="$TMP/stub2:$PATH" bash -c "
+      $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$TMP/mine/codex-$RANDOM.png|; s|^PROVIDER=.*|PROVIDER=codex|; s|^CODEX_SANDBOX_CHECKED=.*|CODEX_SANDBOX_CHECKED=$val|" "$BLOCK")
+    " 2>&1 >/dev/null )
+  if [ -e "$TMP/DISPATCHED" ]; then
+    bad "CODEX_SANDBOX_CHECKED='$val' dispatched codex"
+  else
+    case "$why" in
+      *"route is closed"*) ok "CODEX_SANDBOX_CHECKED='$val' refuses" ;;
+      *) bad "CODEX_SANDBOX_CHECKED='$val': unexpected failure: $why" ;;
+    esac
+  fi
+done
+
+# 9. Dimension parsing reads PIXELS, not JPEG's JFIF density. `head` would return
 #    300x300 for the JPEG line below and pass a 1x1 image.
 dims() { printf '%s' "$1" | grep -oE '[0-9]+ ?x ?[0-9]+' | tail -1; }
 check "png dims" "$(dims 'PNG image data, 1024 x 1024, 8-bit/color RGB, non-interlaced')" "1024 x 1024"
@@ -99,7 +133,7 @@ check "jpeg dims not density" \
   "1024x1024"
 check "degenerate dims" "$(dims 'JPEG image data, JFIF standard 1.01, density 300x300, precision 8, 1x1, components 3')" "1x1"
 
-# 9. The grok path guard rejects traversal out of the session root. Lexical prefix
+# 10. The grok path guard rejects traversal out of the session root. Lexical prefix
 #    matching alone is defeated by .../sessions/../../secret.png.
 root=$(cd -P "$TMP" && pwd -P)
 gen="$TMP/sessions/../escaped.png"

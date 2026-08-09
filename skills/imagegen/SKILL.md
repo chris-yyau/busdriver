@@ -70,8 +70,27 @@ PROVIDER=codex                    # codex | agy | grok | grok-edit  — exactly 
 SRC=                              # required only for grok-edit: absolute path of the source image
 
 # Must exit, not return: a `return` inside a helper only leaves the helper, so a
-# failed check would fall through into the dispatch.
-die() { echo "$1" >&2; exit 1; }
+# failed check would fall through into the dispatch. On the way out, sweep the working
+# directories — quota failures and rejected output would otherwise leave .imagegen.*
+# litter, sometimes holding large partial images, inside the asset tree. The one thing
+# never swept is a verified asset that simply could not be published: that is the only
+# copy, so it is reported instead.
+# Clear everything die() reads: these are ordinary names an exported variable from the
+# calling environment could already hold, and an early failure would then sweep an
+# inherited $WORK/$TAKE path or take the preservation branch on an inherited $VERIFIED.
+WORK= TAKE= ASSET= STAMP= VERIFIED= FINAL= FMT=
+
+# $VERIFIED is set only once the magic-number check has passed, so a partial file left
+# by a failed provider — or an output the check REJECTED — is swept, not preserved.
+die() {
+  echo "$1" >&2
+  if [ -n "$VERIFIED" ] && [ -f "$ASSET" ]; then
+    echo "verified asset kept at $ASSET" >&2
+  else
+    rm -rf ${WORK:+"$WORK"} ${TAKE:+"$TAKE"}
+  fi
+  exit 1
+}
 
 case "$OUT" in /*) ;; *) die "refuse: \$OUT must be absolute";; esac
 mkdir -p "$(dirname "$OUT")"
@@ -91,9 +110,8 @@ mkdir -p "$(dirname "$OUT")"
 # Dispatch into a fresh empty directory, never the asset directory. The provider's
 # write sandbox is scoped to its cwd, so an empty cwd means there is nothing of
 # yours in reach to overwrite. YOU move the verified file into place afterwards.
-# $WORK sits BESIDE $OUT, not in /tmp, so the final mv is a same-filesystem rename
-# (atomic). A cross-device mv is copy-then-delete and can leave a partial $OUT that
-# then blocks every retry.
+# $WORK sits BESIDE $OUT, not in /tmp, because publication below is a hard link and
+# link() cannot cross filesystems.
 # Read the brief BEFORE creating anything, so a typo'd path fails without leaving
 # empty .imagegen.* directories littered beside your assets.
 PROMPT=$(cat "$BRIEF") || die "unreadable brief: $BRIEF"
@@ -106,8 +124,8 @@ ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 # it can read your disk, so it could name any image on it. Resolve the path with
 # `cd -P` (a lexical prefix test is defeated by `.../sessions/../../secret.png`),
 # require it inside grok's own session output, and require it to postdate $STAMP.
-grok_take() {   # sets $ASSET to a copy the provider cannot reach
-  local root workr gen dir take
+grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider cannot reach
+  local root workr gen dir
   # Grok files its session output under the URL-encoded RESOLVED cwd, so a unique $WORK
   # gives this dispatch a private subtree. Scoping to it — not to all of ~/.grok/sessions —
   # is what stops a concurrent grok session's image from being picked up.
@@ -126,8 +144,8 @@ grok_take() {   # sets $ASSET to a copy the provider cannot reach
   # Never copy into $WORK: the provider could write there, so any check-then-cp on a
   # path it knows is a race it can win with a symlink. Copy into a directory created
   # AFTER the provider exited, whose name it never saw.
-  take=$(mktemp -d "$(dirname "$OUT")/.imagegen-take.XXXXXX") || { echo "mktemp failed"; return 1; }
-  ASSET="$take/asset.png"
+  TAKE=$(mktemp -d "$(dirname "$OUT")/.imagegen-take.XXXXXX") || { echo "mktemp failed"; return 1; }
+  ASSET="$TAKE/asset.png"
   cp "$gen" "$ASSET"
 }
 
@@ -176,24 +194,30 @@ esac
 # file(1) succeeds on missing paths, on text, and through symlinks — none of which is
 # an image. Require a real regular file AND a raster magic number.
 [ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
-# Providers ignore the extension you ask for — image_edit returned a JPEG named .png.
-# Require the magic number to match $OUT's extension; consumers pick decoding and
-# transparency behaviour from the filename, so a mislabelled file is a live bug.
-case "$(file -b "$ASSET")___${OUT##*.}" in
-  PNG\ image*___png|JPEG\ image*___jpg|JPEG\ image*___jpeg) ;;
-  *) die "format/extension mismatch: $(file -b "$ASSET") for .${OUT##*.} — rename \$OUT or regenerate";;
+# Providers ignore the extension you ask for and are not even consistent between runs
+# — the same agy prompt returned PNG once and JPEG the next time. Never publish under a
+# lying extension (consumers pick decoding and transparency from the filename), but do
+# not throw away a good image either: publish under its TRUE format and say so.
+case "$(file -b "$ASSET")" in
+  PNG\ image*)  FMT=png ;;
+  JPEG\ image*) FMT=jpg ;;
+  *) die "not a raster image: $(file -b "$ASSET")" ;;
 esac
+VERIFIED=1    # from here on, $ASSET is a real image worth keeping if publication fails
+case "$OUT" in *.png|*.jpg|*.jpeg) FINAL="${OUT%.*}.$FMT" ;; *) FINAL="$OUT.$FMT" ;; esac
+[ "$FINAL" = "$OUT" ] || echo "note: provider returned $FMT — publishing as $FINAL"
+[ -e "$FINAL" ] || [ -L "$FINAL" ] && die "refuse: $FINAL exists — use a versioned sibling"
 
 # Publish with ln, not mv. link() fails with EEXIST atomically, so a concurrent
 # writer can never be clobbered — whereas `mv -n` is a check-then-rename on some
 # implementations and loses that race. $WORK is on the same filesystem as $OUT
 # (that is why it sits beside it), so the hard link always works.
-ln "$ASSET" "$OUT" || die "could not publish to $OUT (already exists?) — asset kept at $ASSET"
-# ln into a DIRECTORY (or a symlink to one) succeeds by creating $OUT/asset.png, so
-# confirm a regular file landed at $OUT BEFORE discarding the copy that is still ours.
-[ -f "$OUT" ] || die "ln did not produce a file at $OUT (a directory there?) — asset kept at $ASSET"
+ln "$ASSET" "$FINAL" || die "could not publish to $FINAL (already exists?)"
+# ln into a DIRECTORY (or a symlink to one) succeeds by creating $FINAL/asset.png, so
+# confirm a regular file landed at $FINAL BEFORE discarding the copy that is still ours.
+[ -f "$FINAL" ] || die "ln did not produce a file at $FINAL (a directory there?)"
 rm -f "$ASSET"
-rm -rf "$WORK" "$(dirname "$ASSET")"    # the grok path puts $ASSET in its own take dir
+rm -rf "$WORK" ${TAKE:+"$TAKE"}    # the grok path puts $ASSET in its own take dir
 ```
 
 ## Threat model — what the flags do and don't confine
@@ -237,21 +261,24 @@ write confinement you have.
 
 ## Why the verification in that block is not optional
 
-The reply is not evidence. Verification happens in `$WORK`, before the `mv`:
-that directory was empty a moment ago, so a
-file existing there at all is evidence this dispatch produced it. Verifying
-`$OUT` instead proves nothing when something already lived at that path — a
-provider that fails without writing leaves the old file passing the check, and
-you ship the previous asset as the new one.
+The reply is not evidence. Verification happens on `$ASSET` — inside the fresh
+working directory for codex and agy, inside the post-dispatch take directory for
+grok — *before* anything is published to `$OUT`. Those directories were empty
+moments earlier, so a file existing there at all is evidence this dispatch
+produced it. Verifying `$OUT` instead would prove nothing when something already
+lived at that path: a provider that fails without writing leaves the old file
+passing the check, and you ship the previous asset as the new one.
 
 This is not ceremony. Both failures below were observed:
 
 - **The agent will claim success it didn't achieve.** With shell denied, Grok
   could not copy the generated file, so it hand-wrote an SVG, named it `.png`,
   and replied with the path as if it had worked.
-- **The extension lies.** `image_edit` asked for `sb-edit.png` returned a JPEG
-  with a `.png` name. Read the real type from `file` before wiring the asset
-  into a build.
+- **The extension lies, and inconsistently.** `image_edit` asked for
+  `sb-edit.png` returned a JPEG; the *same* agy prompt returned PNG on one run
+  and JPEG on the next. So the block reads the real type from `file` and
+  publishes under it — ask for `hero.png` and you may get `hero.jpg`, with a
+  printed note. **Read the final path from that note; don't assume `$OUT`.**
 
 ## Gotchas
 

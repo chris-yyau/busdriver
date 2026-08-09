@@ -1,4 +1,35 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+# ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
+# PRIMARY: the `-p` shebang makes the very first process privileged — bash
+# -p does NOT import BASH_FUNC_* from the environment (verified on 3.2/5.x),
+# so no imported function can EVER run in a shebang invocation (the only
+# invocation the harness uses). BACKSTOP (non-shebang `bash dispatch.sh`
+# runs): re-exec once with -p before any OTHER command word executes, then
+# abort unshadowably if the re-exec was swallowed by an imported shadow.
+# ${VAR:?} is pure parameter expansion — no command lookup — the only
+# unshadowable non-zero abort on bash 3.2 (verified; self-assignment defeats
+# env-imported values). Documented residual for the backstop path only: an
+# imported BASH_FUNC_exec%% can run before the abort fires, but it cannot
+# make the script continue — anything after the abort is unreachable. The
+# repo's deeper trust boundary remains env -i children (see
+# _bd_read_auditor_model). Loop guard is the "_bd_priv" ARGV marker, shifted
+# off immediately after: argv is the operator's channel (a fork can inject
+# env, not argv), whereas an env marker is forgeable (SHELLOPTS is
+# honored-from-env but not enforced — verified).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv" ]]; then
+  exec /bin/bash -p "$0" _bd_priv "$@"
+fi
+# If we are still here with $1 != _bd_priv, the `exec` above was shadowed by
+# an imported BASH_FUNC_exec%% and returned WITHOUT replacing the process —
+# everything from here on would run unprivileged under attacker-shadowable
+# `set`/`source`/etc. Abort FIRST via the one mechanism that cannot be
+# shadowed. The assignment overwrites any hostile env-supplied value, so the
+# expansion always sees null.
+if [[ "${1:-}" != "_bd_priv" ]]; then
+  _bd_priv_guard=
+  : "${_bd_priv_guard:?refusing to continue: the privileged re-exec did not take effect (BASH_FUNC_exec shadow?) — re-run in a clean shell}"
+fi
+[[ "${1:-}" == "_bd_priv" ]] && shift
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
@@ -812,6 +843,27 @@ dispatch_one() {
                 # neither depends on line order within this long case arm.
                 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
                   HOME="$_oc_home" resolve_auditor_model
+                # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
+                # opencode loads these in EVERY environment — including this
+                # sandbox (verified 2026-08-09) — so they are a fourth config
+                # surface the three isolation boundaries do not cover. An `mcp`
+                # entry there would load inside the sandbox and read_mcp_resource
+                # survives the tool denylist (exactly why XDG_CONFIG_HOME is
+                # redirected). Single source of truth: the shared guard lives in
+                # resolve-cli.sh; a missing library fails CLOSED here (a stuck
+                # lane beats an unvalidated dispatch).
+                if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
+                    echo "Error: resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >&2
+                    printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
+                    rmdir "$_oc_cwd" 2>/dev/null || true
+                    exit_code=1
+                elif ! validate_opencode_home_config "$_oc_home"; then
+                    printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
+                    rmdir "$_oc_cwd" 2>/dev/null || true
+                    exit_code=1
+                fi
+                # shellcheck disable=SC2310  # intentional: refused dispatch is the branch
+                if [[ "$exit_code" -eq 0 ]]; then
                 ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT
                   cd "$_oc_cwd" 2>/dev/null || exit 1
                   _portable_timeout "$_budget" \
@@ -821,6 +873,7 @@ dispatch_one() {
                     -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
                 rm -rf "$_oc_cwd" 2>/dev/null || true
+                fi
                 fi
             fi ;;
         pi)

@@ -318,6 +318,99 @@ resolve_auditor_model() {
   [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
 }
 
+# ── Operator home config validation for the opencode arms ────────────
+# opencode loads ~/.opencode/opencode.json[c] in EVERY environment — including
+# the dispatch sandbox (verified 2026-08-09) — so they are a fourth config
+# surface the three isolation boundaries (empty dir, empty XDG_CONFIG_HOME,
+# plugin OPENCODE_CONFIG) do NOT cover. An `mcp` entry there would load inside
+# the sandbox and read_mcp_resource survives the tool denylist (exactly why
+# XDG_CONFIG_HOME is redirected). BOTH opencode arms (execute_review here and
+# dispatch.sh's opencode arm) MUST call this before dispatching. The file is
+# operator-owned (password-DB home, outside the reviewed repo), so this
+# enforces operator discipline — it is NOT an anti-injection boundary.
+# Usage: validate_opencode_home_config <home>  →  0 if every existing
+# ~/.opencode/opencode.json[c] under <home> is provider/$schema-only or absent;
+# 1 otherwise (caller refuses to dispatch).
+validate_opencode_home_config() {
+  local _voh_home="$1" _voh_cfg _voh_py="/usr/bin/python3"
+  # Fail closed if the trusted interpreter is absent (macOS CLT provides it).
+  [[ -x "$_voh_py" ]] || { echo "busdriver: cannot validate the operator ~/.opencode home config — $_voh_py not found; refusing to dispatch unconfined." >&2; return 1; }
+  for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc"; do
+    [[ -f "$_voh_cfg" ]] || continue
+    # STERILE CHILD + absolute interpreter + -I. /usr/bin/env -i strips every
+    # env var — including BASH_FUNC_* — so an inherited/exported function
+    # shadow of `python3` (or any name) cannot run here (verified: absolute
+    # paths bypass function lookup, env -i strips imported functions on 3.2).
+    # -I keeps the reviewed CWD's planted json.py off sys.path (same class as
+    # _read_config_value; verified there). JSONC-tolerant parse: opencode
+    # accepts comments/trailing commas (esp. in .jsonc), and a valid
+    # provider-only JSONC file must not false-refuse the lane.
+    if ! /usr/bin/env -i PATH="/usr/bin:/bin" "$_voh_py" -I - "$_voh_cfg" <<'PY' 2>/dev/null
+import json, sys
+
+def strip_jsonc(s):
+    # String-aware comment + trailing-comma stripping: //, /* */, and a comma
+    # directly before } or ] are dropped ONLY outside strings, so a provider
+    # value containing e.g. "http://x//y" or "a,}" is never corrupted.
+    out = []
+    i, n = 0, len(s)
+    in_str = False
+    while i < n:
+        c = s[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(s[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if s.startswith("//", i):
+            j = s.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if s.startswith("/*", i):
+            j = s.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if j < n and s[j] in "}]":
+                i += 1  # trailing comma — drop
+                continue
+        out.append(c); i += 1
+    return "".join(out)
+
+def parse(path):
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return json.loads(strip_jsonc(raw))
+
+try:
+    d = parse(sys.argv[1])
+except Exception:
+    sys.exit(1)
+# Root must be an object; a non-object ([] / ["provider"] / scalar) is not a
+# provider-only configuration and must refuse.
+if not isinstance(d, dict) or [k for k in d if k not in ("provider", "$schema")]:
+    sys.exit(1)
+sys.exit(0)
+PY
+    then
+      echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and contains keys beyond provider/\$schema (or is unparseable) — refusing to dispatch unconfined." >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # ── Pi (repo-reading exploration lane) model ────────────────────
 #
 #   ~/.claude/busdriver.json  →  { "pi": { "model": "<provider>/<model-id>" } }
@@ -1862,6 +1955,18 @@ execute_review() {
              # prompt goes to a provider they configured away from. These dirs
              # are root-owned system install paths, not repo-writable.
              PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
+             # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
+             # opencode loads these in EVERY environment — including this
+             # sandbox — so they are a fourth config surface the three isolation
+             # boundaries do not cover. An `mcp` entry there would load inside
+             # the sandbox and read_mcp_resource survives the tool denylist
+             # (exactly why XDG_CONFIG_HOME is redirected). Shared guard:
+             # validate_opencode_home_config (single source of truth, also
+             # called by dispatch.sh's opencode arm).
+             if ! validate_opencode_home_config "$_oc_home"; then
+               rmdir "$_oc_cwd" 2>/dev/null || true
+               return 1
+             fi
              ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT   # best-effort cleanup even on grace-kill
                cd "$_oc_cwd" 2>/dev/null || exit 1
                _run_review_with_retries opencode "$prompt" "$duration" pipe \

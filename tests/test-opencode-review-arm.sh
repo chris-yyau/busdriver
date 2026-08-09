@@ -309,6 +309,205 @@ else
   fail "describe_role_resolution opencode provenance metadata mismatch (see assertions above)"
 fi
 
+# ── 9. Operator-owned ~/.opencode/opencode.json[c] is validated fail-closed ──
+# opencode loads these HOME-based files in EVERY environment — including the
+# dispatch sandbox, which the three isolation boundaries (empty dir, empty
+# XDG_CONFIG_HOME, plugin OPENCODE_CONFIG) do NOT cover. An `mcp` entry there
+# would load inside the sandbox and read_mcp_resource survives the tool
+# denylist (exactly why XDG_CONFIG_HOME is redirected), so both opencode arms
+# must refuse dispatch unless the file is provider/$schema-only. Behavioral
+# coverage of the shared guard (validate_opencode_home_config) + static wiring
+# assertions that both arms call it.
+# (a)-(f) behavioral; (g) wiring.
+if (
+  set -uo pipefail
+  # shellcheck source=/dev/null
+  source "$RC"
+  ok=1
+  _home="$(mktemp -d)" || exit 1
+  mkdir -p "$_home/.opencode" || exit 1
+  trap 'rm -rf "$_home"' EXIT
+
+  # (a) provider-only json → pass
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a) provider-only json refused"; ok=0; }
+
+  # (b) mcp key → refuse
+  printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (b) mcp key accepted"; ok=0; }
+
+  # (c) provider-only jsonc WITH comments + trailing commas → pass (JSONC-tolerant)
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{\n  // balancer provider\n  "provider": {\n    "opencode-go-lb": {\n      "options": {},\n    },\n  },\n}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (c) provider-only jsonc (comments/trailing commas) refused"; ok=0; }
+
+  # (d) garbage → refuse (fail-closed on unparseable)
+  printf 'not json at all {\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (d) unparseable jsonc accepted"; ok=0; }
+
+  # (e) absent files → pass (nothing to widen)
+  rm -rf "$_home/.opencode"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (e) absent files refused"; ok=0; }
+
+  # (f) -I isolation: a planted json.py in the CWD must NOT be imported (it
+  # would print PLANTED and exit 0, making the check accept an mcp key).
+  _plant="$(mktemp -d)" || exit 1
+  printf 'import sys\nprint("PLANTED", file=sys.stderr)\nsys.exit(0)\n' > "$_plant/json.py"
+  mkdir -p "$_home/.opencode"
+  printf '{"mcp":{"x":{}}}\n' > "$_home/.opencode/opencode.json"
+  out="$(cd "$_plant" && validate_opencode_home_config "$_home" 2>&1)"; rc=$?
+  [[ "$rc" -ne 0 ]] || { echo "  ✗ (f) mcp accepted from planted-cwd run (json.py imported?)"; ok=0; }
+  printf '%s' "$out" | grep -q "PLANTED" && { echo "  ✗ (f) planted json.py executed inside validator"; ok=0; }
+  rm -rf "$_plant"
+
+  # (g) BASH_FUNC_python3%% environment poison: the validator runs in a
+  # sterile child (/usr/bin/env -i) with an ABSOLUTE interpreter, so an
+  # imported/exported `python3` function shadow must not run — an mcp config
+  # is still rejected and the poison never prints.
+  printf '{"mcp":{"x":{}}}\n' > "$_home/.opencode/opencode.json"
+  # shellcheck disable=SC2329  # python3 function invoked inside the bash -c string
+  out="$(python3() { echo PY-POISONED; exit 0; }; export -f python3; bash -c '
+    set -uo pipefail
+    source "$1" 2>/dev/null || exit 9
+    validate_opencode_home_config "$2" 2>&1
+  ' _ "$RC" "$_home" 2>&1)"; rc=$?
+  [[ "$rc" -ne 0 ]] || { echo "  ✗ (g) python3 function shadow accepted mcp config"; ok=0; }
+  printf '%s' "$out" | grep -q "PY-POISONED" && { echo "  ✗ (g) python3 function shadow executed inside validator"; ok=0; }
+
+  # (h) non-object roots ([] / ["provider"]) are not provider-only configs → refuse
+  printf '["provider"]\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (h) array root accepted"; ok=0; }
+  printf '[]\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (h) empty-array root accepted"; ok=0; }
+
+  # (i) string-escape case: provider values containing "//" and ",}" must NOT
+  # be mangled by the JSONC stripper (string-aware comments/trailing commas).
+  printf '{\n  "provider": {\n    "p": { "url": "http://x//y", "s": "a,}" },\n  },\n}\n' > "$_home/.opencode/opencode.jsonc"
+  rm -f "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i) string-aware JSONC strip mangled a valid provider value"; ok=0; }
+
+  # (j) seeded property sweep: random key subsets x {strict, JSONC} over the
+  # allowlist, plus non-object roots. Oracle: PASS iff the parsed root is an
+  # object whose keys are ⊆ {provider, $schema}. Seeded RNG → deterministic.
+  # The validator reads only the CANONICAL opencode.json/.jsonc paths, so the
+  # generator emits spec lines (expect, ext, base64 doc) and the bash loop
+  # materializes + validates each case individually.
+  _cases="$(mktemp -d)" || exit 1
+  mkdir -p "$_cases/home/.opencode"
+  # shellcheck disable=SC2312  # decoder status is checked; generator status is not load-bearing
+  while read -r _expect _ext _b64; do
+    printf '%s' "$_b64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$_cases/home/.opencode/opencode$_ext" || { echo "  ✗ (j) case decode failed"; ok=0; break; }
+    if validate_opencode_home_config "$_cases/home" 2>/dev/null; then _got=PASS; else _got=FAIL; fi
+    [[ "$_got" == "$_expect" ]] || { echo "  ✗ (j) case .opencode$_ext expected $_expect got $_got"; ok=0; }
+  done < <(python3 - "$_cases" <<'PY'
+import base64, random, sys
+rng = random.Random(20260809)
+ALLOWED = {"provider", "$schema"}
+KEYS = ["provider", "$schema", "mcp", "agent", "permission", "tools", "lsp", "x"]
+
+def doc_for(keys, jsonc):
+    body = []
+    if jsonc and rng.random() < 0.5:
+        body.append("// lead")
+    body.append("{")
+    for i, k in enumerate(keys):
+        if jsonc and rng.random() < 0.3:
+            body.append(f"/* c{i} */")
+        v = "{}" if k == "provider" else "1"
+        body.append(f'"{k}": {v},')  # trailing comma on every entry incl. last
+    body.append("}")
+    return "\n".join(body)
+
+cases = []
+for _ in range(10):
+    keys = rng.sample(sorted(ALLOWED), rng.randint(0, 2))
+    cases.append((keys, False))
+    cases.append((keys, True))
+for _ in range(10):
+    keys = rng.sample(KEYS, rng.randint(1, 4))
+    if set(keys) <= ALLOWED:
+        continue
+    cases.append((keys, rng.random() < 0.5))
+for root in ["[]", "[1,2]", "42", '"str"', "null"]:
+    cases.append((root, False))
+
+for keys, jsonc in cases:
+    ext = ".jsonc" if (isinstance(keys, list) and jsonc) else ".json"
+    doc = doc_for(keys, jsonc) if isinstance(keys, list) else keys
+    expect = "PASS" if (isinstance(keys, list) and set(keys) <= ALLOWED) else "FAIL"
+    print(f"{expect} {ext} {base64.b64encode(doc.encode()).decode()}")
+PY
+)
+  rm -rf "$_cases"
+
+  exit $((1 - ok))
+); then
+  pass "validate_opencode_home_config: provider-only pass, mcp/unparseable refuse, JSONC-tolerant, -I isolated"
+else
+  fail "validate_opencode_home_config behavioral assertions failed (see above)"
+fi
+# (g) BOTH opencode arms call the shared guard before dispatch.
+# shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
+if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
+   && grep -q 'validate_opencode_home_config "\$_oc_home"' "$DP"; then
+  pass "both opencode arms (execute_review + dispatch.sh) call validate_opencode_home_config"
+else
+  fail "an opencode arm is missing the validate_opencode_home_config call"
+fi
+# (h) dispatch.sh re-execs under privileged bash before any imported function
+# can run (the guard must precede set -euo pipefail — `set` itself can be
+# shadowed by an imported function).
+# shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
+# shellcheck disable=SC2312  # grep status is load-bearing; head/cut in the pipeline are not
+if grep -q '^#!/bin/bash -p' "$DP" \
+   && grep -q 'exec /bin/bash -p "\$0" _bd_priv "\$@"' "$DP" \
+   && [[ "$(grep -n 'exec /bin/bash -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
+  pass "dispatch.sh starts privileged (-p shebang) with in-script re-exec backstop before set -euo"
+else
+  fail "dispatch.sh missing/incorrectly-ordered privileged bash boundary"
+fi
+# (i) privileged bash suppresses imported function shadows (the mechanism the
+# re-exec relies on) — verified on the repo's target /bin/bash 3.2. Uses a
+# non-command name (_mechpoison) so the test itself never shadows a real tool.
+# shellcheck disable=SC2329  # _mechpoison invoked inside the /bin/bash -c strings
+_mechpoison() { echo MECH-POISONED; }
+export -f _mechpoison
+if /bin/bash -c '_mechpoison' 2>&1 | grep -q MECH-POISONED \
+   && ! /bin/bash -p -c '_mechpoison' 2>&1 | grep -q MECH-POISONED; then
+  unset -f _mechpoison
+  pass "privileged bash (-p) suppresses imported function shadows (3.2-verified mechanism)"
+else
+  unset -f _mechpoison
+  fail "privileged bash does not suppress imported function shadows (re-exec is ineffective)"
+fi
+# (j) function-clean boundary: with the -p shebang NO imported function can
+# run — poisoned exec/set shadows are inert (probe: no poison output, --help
+# still exits 0). The non-shebang `bash dispatch.sh` path exercises the
+# backstop: a shadowed `exec` cannot continue the script — the unshadowable
+# ${VAR:?} abort fires before any other command.
+if (
+  set -uo pipefail
+  exec() { echo EXEC-POISONED; }
+  set() { echo SET-POISONED; }
+  export -f exec set
+  # shebang path (the harness invocation): poisons never imported
+  out="$(echo test | "$DP" --help 2>&1)"; rc=$?
+  [[ "$rc" -eq 0 ]] || { echo "  ✗ (j) shebang path failed under poisoned env (rc=$rc)"; exit 1; }
+  printf '%s' "$out" | grep -q "EXEC-POISONED" && { echo "  ✗ (j) poison exec ran via shebang"; exit 1; }
+  printf '%s' "$out" | grep -q "SET-POISONED" && { echo "  ✗ (j) poison set ran via shebang"; exit 1; }
+  printf '%s' "$out" | grep -q "refusing to continue" && { echo "  ✗ (j) unexpected abort via shebang"; exit 1; }
+  # non-shebang path: backstop aborts before continuation
+  out2="$(bash "$DP" --help 2>&1)"; rc2=$?
+  [[ "$rc2" -ne 0 ]] || { echo "  ✗ (j) non-shebang path continued unprivileged (rc=0)"; exit 1; }
+  printf '%s' "$out2" | grep -q "refusing to continue" || { echo "  ✗ (j) missing unshadowable abort (non-shebang)"; exit 1; }
+  printf '%s' "$out2" | grep -q "SET-POISONED" && { echo "  ✗ (j) execution continued past the guard (non-shebang)"; exit 1; }
+  exit 0
+); then
+  pass "function-clean boundary: -p shebang keeps poisons inert; non-shebang backstop aborts unshadowably"
+else
+  fail "function-clean boundary failed (see above)"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

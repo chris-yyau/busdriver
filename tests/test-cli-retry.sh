@@ -418,6 +418,14 @@ if [ "$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
 exit 0   # clean exit, NEVER any output
 EOF
 chmod +x "$STUB/agy"
+# Dedicated failing droid stub — C8 must not silently depend on the one C7
+# wrote (C7 removal/reorder would otherwise break C8 with no obvious cause).
+cat > "$STUB/droid" <<'EOF'
+#!/usr/bin/env bash
+printf 'DROID_RESCUE_ERROR: the rescue also failed\n'
+exit 1
+EOF
+chmod +x "$STUB/droid"
 O="$TMP/c8.out"
 TMPDIR="$TMP/run8" PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli agy --timeout 5 --prompt p >"$O" 2>/dev/null; rc=$?

@@ -92,6 +92,12 @@ die() {
   exit 1
 }
 
+# Without this, Ctrl-C or a kill leaves the working directory and a partial image
+# behind, since neither die() nor the success path runs. Note bash DEFERS a trap while
+# a foreground command is running: cleanup happens once the provider exits, not the
+# instant you interrupt, and signalling this shell alone does not stop the provider.
+trap 'die "interrupted"' INT TERM
+
 case "$OUT" in /*) ;; *) die "refuse: \$OUT must be absolute";; esac
 mkdir -p "$(dirname "$OUT")"
 # ASSUMPTION: the asset directory is yours alone. Publication cannot be made race-proof
@@ -203,7 +209,23 @@ case "$(file -b "$ASSET")" in
   JPEG\ image*) FMT=jpg ;;
   *) die "not a raster image: $(file -b "$ASSET")" ;;
 esac
-VERIFIED=1    # from here on, $ASSET is a real image worth keeping if publication fails
+# file(1) reads the header only, so a 1x1 placeholder passes it. Require real
+# dimensions as a cheap floor. This still cannot prove the PIXELS are what you asked
+# for — a truncated body or a valid-but-wrong image passes; look at the result.
+# tail, not head: JPEG's file(1) line puts JFIF `density 300x300` BEFORE the pixel
+# dimensions, so head would read the density and pass a 1x1 image. Verified on both
+# formats: PNG "…, 1024 x 1024, …" and JPEG "…density 300x300, …, 1024x1024, …".
+DIMS=$(file -b "$ASSET" | grep -oE '[0-9]+ ?x ?[0-9]+' | tail -1)
+IMGW=${DIMS%%[ x]*}; IMGH=${DIMS##*[ x]}   # BOTH sides: 512x1 is a placeholder too
+
+VERIFIED=1    # a decodable image of a real type: worth keeping even if what follows fails
+
+# Only a degenerate result is rejected. Any larger floor guesses at your intent — 16x16
+# favicons and 8x8 sprites are legitimate asks — so this catches the 1-pixel placeholder
+# and nothing else. $VERIFIED is already set, so even this rejection keeps the file for
+# you to look at rather than deleting it.
+[ "${IMGW:-0}" -ge 2 ] 2>/dev/null && [ "${IMGH:-0}" -ge 2 ] 2>/dev/null \
+  || die "degenerate image (${DIMS:-no dimensions})"
 case "$OUT" in *.png|*.jpg|*.jpeg) FINAL="${OUT%.*}.$FMT" ;; *) FINAL="$OUT.$FMT" ;; esac
 [ "$FINAL" = "$OUT" ] || echo "note: provider returned $FMT — publishing as $FINAL"
 [ -e "$FINAL" ] || [ -L "$FINAL" ] && die "refuse: $FINAL exists — use a versioned sibling"
@@ -268,6 +290,11 @@ moments earlier, so a file existing there at all is evidence this dispatch
 produced it. Verifying `$OUT` instead would prove nothing when something already
 lived at that path: a provider that fails without writing leaves the old file
 passing the check, and you ship the previous asset as the new one.
+
+What it catches: a missing file, text or SVG dressed as an image, a symlink, a
+type that contradicts the extension, a placeholder-sized image. What it cannot
+catch: a truncated body, or a perfectly valid image of the wrong thing. **Look
+at the result** — `Read` the published file — before wiring it into a build.
 
 This is not ceremony. Both failures below were observed:
 

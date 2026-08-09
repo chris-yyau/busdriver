@@ -68,6 +68,8 @@ BRIEF=/abs/scratch/brief.txt      # written in step 1
 OUT=/abs/assets/hero.png
 PROVIDER=codex                    # codex | agy | grok | grok-edit  — exactly one
 SRC=                              # required only for grok-edit: absolute path of the source image
+CODEX_SANDBOX_CHECKED=            # set to 1 ONLY after reading the codex note in the
+                                  # codex) branch below; empty keeps that route closed
 
 # Must exit, not return: a `return` inside a helper only leaves the helper, so a
 # failed check would fall through into the dispatch. On the way out, sweep the working
@@ -113,17 +115,31 @@ mkdir -p "$(dirname "$OUT")"
 # -e alone returns false for a dangling symlink, which a provider would then write through
 [ -e "$OUT" ] || [ -L "$OUT" ] && die "refuse: $OUT exists — use a versioned sibling (hero-v2.png)"
 
-# Dispatch into a fresh empty directory, never the asset directory. The provider's
-# write sandbox is scoped to its cwd, so an empty cwd means there is nothing of
-# yours in reach to overwrite. YOU move the verified file into place afterwards.
-# $WORK sits BESIDE $OUT, not in /tmp, because publication below is a hard link and
-# link() cannot cross filesystems.
 # Read the brief BEFORE creating anything, so a typo'd path fails without leaving
-# empty .imagegen.* directories littered beside your assets.
+# directories behind.
 PROMPT=$(cat "$BRIEF") || die "unreadable brief: $BRIEF"
 [ -n "$PROMPT" ] || die "empty brief: $BRIEF"
 
-WORK=$(mktemp -d "$(dirname "$OUT")/.imagegen.XXXXXX") || die "mktemp failed"
+# $WORK goes in the system temp dir, NOT beside $OUT. Verified: with $WORK inside a
+# git checkout, `codex exec -s workspace-write -C "$WORK"` still wrote to the
+# REPOSITORY ROOT — it resolves its workspace from the enclosing repo, so a workdir
+# under your project hands a general-purpose agent write access to the whole checkout.
+# Outside any repo there is nothing to discover, and the empty cwd holds nothing of
+# yours. The verified file is copied out afterwards, by you.
+WORK=$(mktemp -d) || die "mktemp failed"
+# mktemp honours $TMPDIR, which could itself sit inside a checkout — so don't assume,
+# check. Fail CLOSED: only an explicit "not a git repository" counts as proof. A
+# nonzero status alone does not, because GIT_DIR / GIT_CEILING_DIRECTORIES in the
+# environment, or a missing git, produce failures that would otherwise read as "safe".
+command -v git >/dev/null 2>&1 || die "git not found — cannot prove \$WORK is outside a repository"
+# LC_ALL=C so the "not a git repository" match below survives a localized git.
+GITOUT=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CEILING_DIRECTORIES \
+  LC_ALL=C git -C "$WORK" rev-parse --show-toplevel 2>&1); GITRC=$?
+if [ "$GITRC" -eq 0 ]; then
+  die "refuse: \$TMPDIR is inside a git checkout ($GITOUT) — codex would take that repo as its workspace"
+elif ! printf '%s' "$GITOUT" | grep -qi 'not a git repository'; then
+  die "cannot prove \$WORK is outside a repository (git said: $GITOUT)"
+fi
 ASSET="$WORK/asset.png"; STAMP="$WORK/.start"
 
 # Grok reports a path instead of saving for you; that reply is a claim, not proof —
@@ -160,7 +176,15 @@ grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider ca
 # below would happily accept.
 case "$PROVIDER" in
 
-codex)  # needs </dev/null and --skip-git-repo-check outside a git repo
+codex)
+  # Fail CLOSED unless you have checked the config yourself. Verified on this machine:
+  # with `[projects."/"] trust_level = "trusted"` in codex's config, BOTH
+  # -s workspace-write AND -s read-only wrote a file into an unrelated git checkout —
+  # the flag below was decoration. Sniffing the TOML for that entry is not a boundary
+  # (quoting, whitespace, dotted keys and `sandbox_workspace_write.writable_roots` all
+  # evade a grep), so this asks for an explicit acknowledgement instead.
+  [ -n "$CODEX_SANDBOX_CHECKED" ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block, after confirming ${CODEX_HOME:-\$HOME/.codex}/config.toml neither trusts \"/\" nor widens writable_roots. Or use PROVIDER=agy."
+  # needs </dev/null and --skip-git-repo-check outside a git repo
   codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
     "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null \
     || die "codex dispatch failed" ;;
@@ -197,6 +221,18 @@ grok|grok-edit)
 *) die "unknown \$PROVIDER: $PROVIDER" ;;
 esac
 
+# Take the result out of the provider's reach, onto $OUT's filesystem (link() cannot
+# cross devices). $TAKE is created AFTER the provider exited and it never saw the name,
+# so there is no path here it can have raced. grok_take already did this; for codex and
+# agy the file is still sitting in $WORK.
+if [ -z "$TAKE" ]; then
+  [ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
+  TAKE=$(mktemp -d "$(dirname "$OUT")/.imagegen-take.XXXXXX") || die "mktemp failed"
+  cp "$ASSET" "$TAKE/asset.png" || die "could not take the asset out of $WORK"
+  ASSET="$TAKE/asset.png"
+fi
+rm -rf "$WORK"; WORK=
+
 # file(1) succeeds on missing paths, on text, and through symlinks — none of which is
 # an image. Require a real regular file AND a raster magic number.
 [ -f "$ASSET" ] && [ ! -L "$ASSET" ] || die "no regular asset produced"
@@ -232,8 +268,9 @@ case "$OUT" in *.png|*.jpg|*.jpeg) FINAL="${OUT%.*}.$FMT" ;; *) FINAL="$OUT.$FMT
 
 # Publish with ln, not mv. link() fails with EEXIST atomically, so a concurrent
 # writer can never be clobbered — whereas `mv -n` is a check-then-rename on some
-# implementations and loses that race. $WORK is on the same filesystem as $OUT
-# (that is why it sits beside it), so the hard link always works.
+# implementations and loses that race. $ASSET now lives in $TAKE, created beside $OUT
+# and therefore on the same filesystem — that is why the hard link works. ($WORK is in
+# the system temp dir and may be on another device; nothing is linked from there.)
 ln "$ASSET" "$FINAL" || die "could not publish to $FINAL (already exists?)"
 # ln into a DIRECTORY (or a symlink to one) succeeds by creating $FINAL/asset.png, so
 # confirm a regular file landed at $FINAL BEFORE discarding the copy that is still ours.
@@ -249,7 +286,7 @@ precise about what the sandbox flags buy:
 
 | | Confines |
 |---|---|
-| codex `-s workspace-write` | writes, to the workspace |
+| codex `-s workspace-write` | writes, to the workspace — **but only if codex's project trust says so.** Verified on this machine: with `[projects."/"] trust_level = "trusted"` in `~/.codex/config.toml`, both `-s workspace-write` AND `-s read-only` happily wrote a file into an unrelated git checkout. Check that entry before treating the flag as a boundary |
 | agy `--sandbox` | terminal execution; `--add-dir` *adds* a writable dir, it does not revoke access to the cwd |
 | grok `--sandbox workspace` | writes, to cwd + temp + `~/.grok` |
 | grok `--permission-mode default --allow image_gen` | **the default decision for tools this command did not name.** `--allow` adds auto-approval, it does not deny anything else, and pinning the mode only overrides the *default* — per-tool allow rules already configured in `~/.grok/config.toml` still load and still apply. So this narrows what the flags themselves grant; it does not audit your config. Read-only tools and read-only shell run regardless |

@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (Cursor, CodeRabbit, Cubic, etc.)
+- AI reviewer acks (CodeRabbit, Cubic, Greptile, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -54,7 +54,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cursor, Cubic are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -307,7 +307,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        is `stale`) →
   │        BAIL with reason "subagent reported clean but reviewer ack
   │        ledger has stale entries: <list>" (include `chatgpt-codex-connector`
-  │        in <list> when RESULT_CODEX_ACK=stale). Slow-Cursor / slow-Cubic
+  │        in <list> when RESULT_CODEX_ACK=stale). Slow-Cubic / slow-CodeRabbit
   │        race protection — clean cannot ship while a registered bot OR
   │        Codex hasn't acked HEAD. Codex is checked here even though it lives
   │        outside RESULT_REVIEWER_ACKS (its clean signal is a Tier-F reaction,
@@ -362,8 +362,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,none}).
   │                - if tier is `D` or `E` → PASS. The HEAD-ack came from a
   │                  bodyless structured signal (D=check-run, E=commit-status)
-  │                  with no enumerable Source 2/3/4 body — e.g., Cursor
-  │                  Bugbot on a clean run. By ack-ledger's tier order (A→E,
+  │                  with no enumerable Source 2/3/4 body — e.g., a
+  │                  clean-only check-run bot. By ack-ledger's tier order (A→E,
   │                  first hit wins), reaching D/E proves the bot has zero
   │                  live Source-2 inline threads, so this exemption cannot
   │                  mask an inline finding. See agents/pr-grinder.md Step 2.6
@@ -1140,11 +1140,11 @@ PRIOR_ATTEMPTS:
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
+3. All automated reviewers completed (CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
+7. **Reviewer ack ledger**: every registered bot (Cubic, CodeRabbit, Greptile) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 

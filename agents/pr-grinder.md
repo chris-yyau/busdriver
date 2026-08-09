@@ -2,7 +2,10 @@
 name: pr-grinder
 description: Runs ONE round of post-PR feedback resolution — waits for checks, collects reviewer comments, applies minimal fixes, commits and pushes. Returns a structured result. Use when dispatched from the pr-grind skill, never invoked directly by the user.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-model: sonnet
+# NO model pin: the round work is mechanical, so the agent runs on the
+# session default (cheap model). A pinned `sonnet` breaks dispatch in
+# harnesses whose router has no `sonnet` id (404 invalid_model) — unpinned,
+# it works on the session default everywhere.
 effort: medium
 ---
 

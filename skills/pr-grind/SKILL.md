@@ -41,11 +41,11 @@ GitHub branch-protection settings encode org policy that pr-grind has no automat
 
 ## Architecture: Dispatcher + Per-Round Worker
 
-This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:
+This skill is a **thin dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent (deliberately **unpinned** — see `agents/pr-grinder.md`; a pinned `sonnet` 404s in harnesses whose router has no such id, so the worker runs on the session default, which in Claude Code is typically the cheap tier), dispatched once per round. This:
 
-- Cuts cost ~5× by running mechanical fix work on Sonnet
+- Cuts cost by running mechanical fix work on the session default (typically the cheap tier)
 - Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
-- Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
+- Keeps the dispatcher available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
 
 ## Anti-Patterns (DO NOT)
 
@@ -2446,7 +2446,7 @@ fi
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
-- Model: Sonnet
+- Model: session default (worker agent unpinned)
 - CI: all required checks passing
 - Automated reviewers: all completed, no actionable findings
 - Advisory checks: [fixed | N failing — noted as beyond PR scope]
@@ -2494,4 +2494,4 @@ When emitting the verbatim message template (from the canonical protocol — see
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
 - **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree.
 - **Gate:** Litmus runs inside the dispatcher-owned commit block before each fix commit; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
-- **Subagent:** `pr-grinder` (Sonnet) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.
+- **Subagent:** `pr-grinder` (unpinned — session default) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.

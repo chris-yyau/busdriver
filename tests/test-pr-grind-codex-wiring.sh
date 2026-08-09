@@ -263,7 +263,12 @@ fi
 # `$(bash "$ACK_SCRIPT" ...)` on the SAME line also blocks partial re-folds (e.g.
 # cubic-dev-ai-only): the three registered bots must be re-derived from ack-ledger,
 # not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
-POSTWAIT_LEDGER='FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai.*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai.*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps.*chatgpt-codex-connector=\$\{CODEX_REGRACE\}'
+# Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
+# whitespace after every bot login is the shell argument terminator, so shadowed
+# args (`cubic-dev-ai-shadow`, `cubic-dev-ai,shadow`) are rejected, and the closing
+# `"$` anchors the complete FRESH_ACKS assignment to the end of the line (CodeRabbit
+# + litmus, PR #609).
+POSTWAIT_LEDGER='FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai[[:space:]].*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai[[:space:]].*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps[[:space:]].*chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
 hasre "$POSTWAIT_LEDGER" \
   && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
@@ -274,18 +279,30 @@ POSTWAIT_LEDGER_COUNT=$(grep -cE "$POSTWAIT_LEDGER" "$SKILL" || true)
 [ "$POSTWAIT_LEDGER_COUNT" -eq 1 ] \
   && ok "post-wait ledger pattern matches exactly one line" \
   || fail "post-wait ledger pattern matches $POSTWAIT_LEDGER_COUNT lines — expected exactly 1 (pre-wait line must not satisfy it)"
-# Deletion proof (issue #606): strip the post-wait line from a copy of the SKILL and
-# require the discriminator to stop matching — the issue's `sed 1555d` reproduction,
-# without pinning a line number. A guard that cannot fire certifies safety it never
-# checked.
+# Deletion proof (issue #606, fixed per cubic + Codex review on PR #609): strip the
+# post-wait line by an INDEPENDENT selector — the `${CODEX_REGRACE}` discriminator
+# field, which only the post-wait recomputation carries — never by the pattern under
+# test (grep -v of the pattern itself would make the re-grep vacuously empty). The
+# remaining file still holds the pre-wait line; the pattern must not match it.
 POSTWAIT_GONE=$(mktemp)
-grep -vE "$POSTWAIT_LEDGER" "$SKILL" > "$POSTWAIT_GONE"
+grep -vE 'chatgpt-codex-connector=\$\{CODEX_REGRACE\}' "$SKILL" > "$POSTWAIT_GONE"
 if grep -qE "$POSTWAIT_LEDGER" "$POSTWAIT_GONE"; then
   fail "post-wait ledger pattern still satisfied with the recomputation deleted — guard cannot fire (#606)"
 else
   ok "post-wait ledger guard fires when the recomputation is deleted (#606)"
 fi
 rm -f "$POSTWAIT_GONE"
+# Exact-field-token proof (CodeRabbit, PR #609): a bot arg that only PREFIXES a
+# registered login must not satisfy the ledger. Mutate the post-wait line's
+# `cubic-dev-ai` arg to `cubic-dev-ai-shadow`; the boundary class must reject it.
+BOT_SHADOW=$(mktemp)
+sed 's/cubic-dev-ai 2>\/dev\/null/cubic-dev-ai-shadow 2>\/dev\/null/' "$SKILL" > "$BOT_SHADOW"
+if grep -qE "$POSTWAIT_LEDGER" "$BOT_SHADOW"; then
+  fail "post-wait ledger pattern accepts a shadowed bot arg (cubic-dev-ai-shadow) — ACK_SCRIPT args must be exact field tokens"
+else
+  ok "post-wait ledger pattern rejects shadowed bot args (exact field tokens)"
+fi
+rm -f "$BOT_SHADOW"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
   fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
 else

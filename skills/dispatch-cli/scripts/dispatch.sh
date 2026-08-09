@@ -224,8 +224,9 @@ _has_cli() {
 # during discovery has no deadline above it), which needed a capture file, a
 # race-free name, and a size cap — and the size cap reintroduced the divergence
 # the copy existed to close, because a truncated version string can match in one
-# place and not the other. Selection is therefore optimistic — see the KNOWN
-# LIMITATION below for what that currently costs.
+# place and not the other. Selection is therefore optimistic, and since #594 the
+# cost of that is bounded: an ineligible pi reports `skipped`, so it drops out of
+# a `--cli all` batch instead of failing it. See the block below.
 _pi_available() {
   /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
@@ -243,14 +244,17 @@ case "$h" in /*) ;; *) exit 1 ;; esac
 # remove, since a truncated version string can match here and not there. Every
 # bound on a second implementation of a check spawns the next gap between them.
 #
-# KNOWN LIMITATION, stated rather than papered over: because a deterministic
-# setup failure still reports `error`, a stale or version-mismatched pi on the
-# trusted path DOES still fail an otherwise successful `--cli all` batch. The
-# proper fix is a `skipped` status, which changes the shared batch loop's
-# semantics for every CLI (retry interaction, audit log, exit code) and belongs
-# in its own change rather than riding along here. What this function guarantees
-# today is narrower and still worth having: there is exactly ONE version probe in
-# the codebase, so selection and preflight cannot disagree about eligibility.
+# WHAT OPTIMISTIC SELECTION COSTS, and what absorbs it. A stale or
+# version-mismatched pi on the trusted path is still SELECTED here and still
+# fails its preflight at dispatch time — selection cannot predict that verdict
+# without a second probe, and a second probe is what the paragraph above rules
+# out. What changed with #594 is the CONSEQUENCE: that preflight failure now
+# reports `skipped` rather than `error`, so the ineligible voice drops out of a
+# `--cli all` batch instead of failing it for every other voice. An explicit
+# `--cli pi` still fails, because there the voice that cannot run is the whole
+# request. What this function guarantees is unchanged: there is exactly ONE
+# version probe in the codebase, so selection and preflight cannot disagree
+# about eligibility.
 for c in "$h/.local/bin/pi" "$h/.pi/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi /usr/bin/pi /bin/pi; do
   [ -f "$c" ] && [ -x "$c" ] && exit 0
 done
@@ -380,6 +384,14 @@ dispatch_one() {
     # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
     # of its retries. `local` also keeps it out of the caller's scope entirely.
     local _pi_setup_failed=0
+    # Set ONLY where a teardown ran and could not confirm the jail was removed,
+    # i.e. a projected credential may still be on disk. It is deliberately NOT
+    # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
+    # before anything is created (see the "THE PARENT NAMES THE JAIL" comment) so
+    # `_pi_wipe` can reach the path on every failure path, which means a non-empty
+    # name proves nothing on its own — every pre-creation bail carries one too.
+    # Only a name that SURVIVES a wipe is evidence of a leak.
+    local _pi_jail_survived=0
     local _attempt=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
@@ -1213,6 +1225,14 @@ CHILD
                         # one can do worse. Nothing comes between a possibly written
                         # credential and its removal.
                         _pi_wipe
+                        # `_pi_wipe` clears `_pi_jail` ONLY after its sterile child
+                        # verifies the path is absent. A name that survives the call
+                        # therefore means the projected credential may still be on
+                        # disk — record that, so the status ladder can refuse to
+                        # downgrade this failure to `skipped` (which the batch loop
+                        # treats as "not a failure", per #594). Assignment only, no
+                        # command word, on the credential path.
+                        [[ -z "${_pi_jail:-}" ]] || _pi_jail_survived=1
                         # Routed through _pi_setup_fail (not a bare echo+exit_code=1)
                         # so this deterministic failure also lands in $outfile and
                         # sets _pi_setup_failed — otherwise the shared retry loop
@@ -1477,12 +1497,28 @@ CHILD
     [[ $exit_code -eq 124 ]] && status="timeout"
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
     [[ "$escalated" -eq 1 ]] && status="droid-fallback"
-    # NOTE: a deterministic setup failure (unprobed pi version, no python3,
-    # provider not authenticated) still reports `error` and so fails a `--cli all`
-    # batch for every other voice. That is worth fixing, but NOT here — a
-    # `skipped` status changes the shared batch loop's semantics for every CLI
-    # (retry interaction, audit log, exit code), which is a change that needs its
-    # own review rather than a rider on the pi lane. Tracked separately.
+    # `skipped` — the voice never ran. Assigned LAST so it wins over the
+    # error/timeout classification above: a deterministic precondition failure
+    # (unprobed pi version, underivable provider, no projectable credential) is
+    # not an attempt that failed, it is an attempt that was refused before it
+    # began, and the two deserve different consequences. Keeping them merged as
+    # `error` is what let ONE ineligible voice fail a whole `--cli all` batch for
+    # every other voice (#594). An EXPLICIT `--cli pi` still fails, because there
+    # the voice that cannot run IS the request.
+    # Only the pi arm sets this flag today (`_pi_setup_fail`). The status itself
+    # is shared; wire a second arm to it when a second arm needs it. opencode's
+    # setup bails are deliberately NOT routed here yet — they write their reason
+    # to stderr only, never to "$outfile", so a skipped opencode would print
+    # "(no output)" in the batch banner with the reason lost.
+    # ...but NEVER when a teardown left a credential behind. The projection
+    # failure path runs `_pi_wipe` and then records whether the jail name survived
+    # it; if it did, a projected API key may still be on disk. That case must stay
+    # `error`: before this status existed it failed the batch, and downgrading it
+    # to `skipped` would let another voice's success carry the batch to exit 0
+    # with a live key in the jail. Reported by Codex on PR #596. The batch loop's
+    # whole point is that `skipped` is not a failure — which is exactly why a
+    # leaked credential must never be classified as one.
+    [[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" ]] && status="skipped"
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }
@@ -1532,6 +1568,9 @@ if [[ "$CLI" == "both" ]]; then
 
     # Exit with failure if either dispatch failed
     [[ "$CS" == "error" || "$CS" == "timeout" || "$AS" == "error" || "$AS" == "timeout" ]] && exit 1
+    # Explicit — see the identical note at the end of the `all` branch. Without
+    # it, a fully successful pair exited 1.
+    exit 0
 
 elif [[ "$CLI" == "all" ]]; then
     echo "Dispatching to ${#ALL_CLIS[@]} CLIs: ${ALL_CLIS[*]} (${MODE}, ${TIMEOUT}s timeout)..." >&2
@@ -1545,6 +1584,7 @@ elif [[ "$CLI" == "all" ]]; then
     wait || true  # allow meta parsing even if a background job exits non-zero
 
     any_failed=false
+    any_ran=false
     idx=0
     for c in "${ALL_CLIS[@]}"; do
         outfile="${ALL_OUTS[$idx]}"
@@ -1557,12 +1597,26 @@ elif [[ "$CLI" == "all" ]]; then
         echo ""
         log_event "$c" "$STATUS" "$DURATION" "$outfile"
         [[ "$STATUS" == "error" || "$STATUS" == "timeout" ]] && any_failed=true
+        # `skipped` is deliberately absent from the failure test above — a voice
+        # that never ran is not a voice that failed (#594).
+        [[ "$STATUS" != "skipped" ]] && any_ran=true
         idx=$((idx + 1))
     done
 
     echo "" >&2
     echo "Saved outputs to ${OUT_DIR}/dispatch-*-${STAMP}.txt" >&2
+    # ...but a batch in which EVERY voice was skipped produced no comparison at
+    # all, and "nothing ran" must never read as success. This is the one place
+    # `skipped` is still fatal.
+    if [[ "$any_ran" != "true" ]]; then
+        echo "Error: every CLI in the batch was skipped — no voice met its preconditions, so nothing ran." >&2
+        exit 1
+    fi
     [[ "$any_failed" == "true" ]] && exit 1
+    # Explicit, and load-bearing: without it the `&&` list above is the branch's
+    # LAST statement, so a fully successful batch fell off the end of the script
+    # carrying that test's own exit status — a clean run reported failure.
+    exit 0
 
 else
     OUTFILE="${OUT_DIR}/dispatch-${CLI}-${STAMP}.txt"

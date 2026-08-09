@@ -303,6 +303,27 @@ Dispatch events log to `~/.claude/homunculus/dispatch-log.jsonl` for auditing.
 | Timeout (default 5min) | Script returns timeout status, partial output if any |
 | CLI error | Script captures stderr, returns error status |
 | Empty output | Script notes "(no output)" — may need a better prompt |
+| Setup precondition unmet | Script returns **`skipped`** status — see below |
+
+### `skipped` vs `error` (#594)
+
+A voice that refuses to run on a **deterministic precondition** — an unprobed pi
+version, a model reference with no `provider/` prefix, a provider whose
+credential cannot be projected — reports `skipped`, not `error`. It never ran, so
+it is not a failed attempt, and the two carry different consequences:
+
+| Invocation | A skipped voice means |
+|------------|----------------------|
+| `--cli pi` (explicit) | **Failure**, exit non-zero — the voice you asked for is the whole request |
+| `--cli all` (batch) | **Not a failure** — the voice drops out, the batch succeeds on the others |
+| `--cli all`, every voice skipped | **Failure**, exit non-zero — nothing ran, and nothing must never read as success |
+
+A voice that genuinely ran and failed still fails the batch, exactly as before.
+`skipped` is recorded verbatim in the dispatch log, so an audit distinguishes
+"never attempted" from "attempted and failed".
+
+Only the pi arm can currently produce a `skipped`; the status itself is shared by
+every CLI.
 
 If a dispatch fails, check:
 1. Is the CLI installed? (`which codex`, `which agy`)

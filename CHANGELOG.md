@@ -1,3 +1,10 @@
+## [1.102.2](https://github.com/chris-yyau/busdriver/compare/v1.102.1...v1.102.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** refuse pre-4 bash loudly instead of silent exit-0 ([#595](https://github.com/chris-yyau/busdriver/issues/595)) ([#600](https://github.com/chris-yyau/busdriver/issues/600)) ([3b019ff](https://github.com/chris-yyau/busdriver/commit/3b019ff873f63ebb84d1aa8938a1ea7e9ab2ffeb))
+
 ## [1.102.1](https://github.com/chris-yyau/busdriver/compare/v1.102.0...v1.102.1) (2026-08-09)
 
 

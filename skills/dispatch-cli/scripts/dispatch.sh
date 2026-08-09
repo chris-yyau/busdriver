@@ -21,11 +21,31 @@
 # stop an attacker who is already running code. The real trust boundary is
 # the env -i child; the -p shebang provides the function-clean start for the
 # invocation path the harness uses.
+# Detect THIS bash's exported-function env encoding from a RANDOM-NAME probe
+# (unconditional — runs before the guard, so every process sees the
+# script-computed value): BASH_FUNC_<name>%% (bash 4.3+ / Shellshock-patched
+# macOS 3.2) vs plain <name> (pre-4.3 / unpatched 3.2). The random name
+# cannot be pre-set by a caller, so exactly ONE encoding of the probe export
+# exists and the detection is unambiguous. The sentinel env-presence check
+# below looks ONLY under the detected encoding. `eval` here is the one
+# shadowable word (needed to define a computed function name); a shadow of it
+# has already executed code — total compromise, out of scope
+# (bash32-unshadowable-abort).
+_bd_probe_name="_bd_probe_${RANDOM}${RANDOM}${RANDOM}"
+eval "${_bd_probe_name}() { :; }"
+# shellcheck disable=SC2163  # export -f takes the EXPANDED function name — deliberate indirection
+export -f "${_bd_probe_name}"
+_bd_export_enc="plain"
+if [[ -n "$(/usr/bin/printenv "BASH_FUNC_${_bd_probe_name}%%" 2>/dev/null || true)" ]]; then
+  _bd_export_enc="BASH_FUNC_"
+fi
+export _bd_export_enc
 if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]]; then
   # Nonce: the marker is "_bd_priv_<nonce>"; the nonce must be NON-EMPTY, so
   # caller-supplied bare "_bd_priv" / "_bd_priv_" (empty env nonce) never
   # match and fall through to the re-exec. The pre-re-exec branch also exports
-  # the sentinel — its env presence is proof the branch ran.
+  # the sentinel — its env presence (under THIS bash's export encoding, see
+  # the detection above) is proof the branch ran.
   _bd_nonce="${RANDOM}${RANDOM}${RANDOM}"
   export _bd_nonce
   # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
@@ -35,23 +55,22 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}"
 fi
 # Post-re-exec. THREE proofs, all required before continuing:
 #  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.
-#  (b) the sentinel env export is present: checked via /usr/bin/printenv
-#      EXACT NAME lookup (absolute path — the repo's trust anchor; only
-#      slash-named shadowing applies, which is total compromise) + `[[ -n ]]`
-#      (reserved word, unshadowable). Name-exact, so an env var whose VALUE
-#      merely contains "BASH_FUNC__bd_sentinel" cannot forge it. Closes the
-#      dual-forge probe (_bd_nonce=known + _bd_priv_known): such a caller
-#      never executed the branch that exports the sentinel.
+#  (b) the sentinel env export is present under THIS bash's export encoding:
+#      checked via /usr/bin/printenv EXACT NAME lookup (absolute path — the
+#      repo's trust anchor; only slash-named shadowing applies, which is
+#      total compromise) + `[[ -n ]]` (reserved word, unshadowable). The
+#      encoding was detected above from the script's OWN probe export, so a
+#      caller-set var under the OTHER encoding is never accepted. A
+#      function-shaped value would be imported in an unprivileged shell →
+#      caught by (c); a non-function value fails the "() {" shape check.
 #  (c) the sentinel was NOT imported (`type -t` != function) — proves the
 #      re-exec ran under -p. `type` is the one shadowable word in this guard;
 #      a shadow of it has already executed code — total compromise, out of
 #      scope (bash32-unshadowable-abort).
+_bd_env_lookup="_bd_sentinel"
+[[ "$_bd_export_enc" == "BASH_FUNC_" ]] && _bd_env_lookup="BASH_FUNC__bd_sentinel%%"
 _bd_env_sentinel="no"
-# The env var must carry a real exported-function VALUE (starts with "() {"):
-# a caller-set name with a non-function value (e.g. via `env
-# 'BASH_FUNC__bd_sentinel%%=x'`) fails here, and a function-shaped value
-# would be imported in an unprivileged shell → caught by the `type` check.
-_bd_sentinel_env="$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)"
+_bd_sentinel_env="$(/usr/bin/printenv "$_bd_env_lookup" 2>/dev/null || true)"
 case "$_bd_sentinel_env" in
   "() {"*) _bd_env_sentinel="yes" ;;
 esac

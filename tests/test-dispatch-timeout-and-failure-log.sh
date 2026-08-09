@@ -54,7 +54,7 @@ mk_codex_ok()   { printf '#!/usr/bin/env bash\necho CODEX_OK\n'                 
 mk_codex_fail() { printf '#!/usr/bin/env bash\necho "BOOM_DIAGNOSTIC"\nexit 3\n'       > "$STUB/codex"; chmod +x "$STUB/codex"; }
 
 BASE_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
-banner() { PATH="$BASE_PATH" "$RUN_BASH" "$DISPATCH" "$@" 2>&1 | head -1; }
+banner() { PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" "$RUN_BASH" "$DISPATCH" "$@" 2>&1 | head -1; }
 
 echo "── dispatch.sh timeout default + failure archiving ─────────"
 
@@ -103,10 +103,16 @@ fi
 #      whatever a diagnostic quoted — to any local user who can traverse $HOME.
 _perm_bad=""
 if [[ -d "$FDIR" ]]; then
-  _dmode=$(stat -f '%Lp' "$FDIR" 2>/dev/null || stat -c '%a' "$FDIR" 2>/dev/null || echo "")
+  # GNU stat's `-f` flag means "show filesystem status", not "custom format" —
+  # `stat -f '%Lp' dir` on Linux SUCCEEDS (exit 0) but prints filesystem info
+  # (device ID, block size, ...), not the file mode, so a BSD-first `||` chain
+  # never falls through to the GNU form and this assertion fails on every
+  # Linux CI run. Try the GNU form (`stat -c`) first — it errors loudly on
+  # macOS (no `-c` flag there), correctly falling back to the BSD `stat -f`.
+  _dmode=$(stat -c '%a' "$FDIR" 2>/dev/null || stat -f '%Lp' "$FDIR" 2>/dev/null || echo "")
   [[ "$_dmode" == "700" ]] || _perm_bad="dir=$_dmode"
   while IFS= read -r _f; do
-    _fmode=$(stat -f '%Lp' "$_f" 2>/dev/null || stat -c '%a' "$_f" 2>/dev/null || echo "")
+    _fmode=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || echo "")
     [[ "$_fmode" == "600" ]] || _perm_bad="$_perm_bad file=$_fmode"
   done < <(find "$FDIR" -type f 2>/dev/null)
 else

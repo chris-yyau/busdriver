@@ -280,6 +280,18 @@ POSTWAIT_LEDGER_COUNT=$(grep -cE "$POSTWAIT_LEDGER" "$SKILL" || true)
 [ "$POSTWAIT_LEDGER_COUNT" -eq 1 ] \
   && ok "post-wait ledger pattern matches exactly one line" \
   || fail "post-wait ledger pattern matches $POSTWAIT_LEDGER_COUNT lines — expected exactly 1 (pre-wait line must not satisfy it)"
+# Positional tie (Codex, PR #609): the discriminator `${CODEX_REGRACE}` could be
+# carried by ANOTHER assignment — e.g. the pre-wait line mutated to end with it
+# while the post-wait recomputation is deleted. Content alone cannot distinguish
+# that compound regression, so the matching line must also sit AFTER the post-wait
+# block's own doc comment (the unique `Recompute the ENTIRE ledger` marker).
+POSTWAIT_ANCHOR_LINE=$(grep -n '# Recompute the ENTIRE ledger on the post-wait sources' "$SKILL" | head -1 | cut -d: -f1)
+POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1)
+if [ -n "$POSTWAIT_MATCH_LINE" ] && [ -n "$POSTWAIT_ANCHOR_LINE" ] && [ "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_ANCHOR_LINE" ]; then
+  ok "post-wait ledger line sits inside the post-wait block (positional tie)"
+else
+  fail "post-wait ledger line not inside the post-wait block — discriminator carried by another assignment (#606/PR #609)"
+fi
 # Deletion proof (issue #606, fixed per cubic + Codex review on PR #609): strip the
 # post-wait line by an INDEPENDENT selector — the `${CODEX_REGRACE}` discriminator
 # field, which only the post-wait recomputation carries — never by the pattern under

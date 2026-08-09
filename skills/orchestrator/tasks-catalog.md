@@ -15,6 +15,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `busdriver:design-taste-frontend` (explore landing/marketing/portfolio/showcase) → `impeccable:impeccable` (harden; owns dashboards/app UI solo). Supplements (gap-fill only, do NOT lead): `busdriver:ui-ux-pro-max`, `busdriver:design-system`, `document-skills:frontend-design`. Load `.impeccable.md` if present |
 | **Design Setup** | impeccable, design context, brand setup | `impeccable:shape` (one-time → `.impeccable.md`) |
 | **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/layout`, `/adapt`, `/optimize`, `/onboard` |
+| **Image assets** | generate an image, make a logo, hero image, icon, texture, sprite, mockup, reference board, edit this image | `busdriver:imagegen` (router → codex / agy / grok image tools). Art direction lives in `busdriver:imagegen-frontend-web` / `-mobile` / `image-to-code`; this is the transport. Video is unavailable — see the skill's Video section |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |

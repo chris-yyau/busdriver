@@ -136,6 +136,20 @@ instead of introducing a second config grammar.
   → 0. The subsequent unlink runs in a sterile `env -i` child and is hygiene
   only; by then the credential is already zeroed. Truncation is not unlinking,
   and that is the right trade: the credential is *content*.
+- **Second residual — reentrancy across the teardown's final clear.** `_pi_wipe`
+  empties `_pi_jail` once removal is confirmed, which is what makes a second call
+  a no-op. That clear cannot be made atomic with the removal preceding it: bash
+  runs a pending signal handler after a foreground command returns but before the
+  next assignment, so a signal in that one-statement window re-enters the function
+  while the variable still holds the just-freed pathname. Shell offers no atomic
+  swap. `trap '' INT TERM HUP` around the body would close it, and was tried and
+  reverted: `trap` is itself a shadowable builtin and a second arming site, so it
+  breaks both the single-cleanup-owner and no-bare-command-word invariants the
+  lane rests on — the test suite enforces both, and caught it. What bounds the
+  residual: the window is one statement, the second pass re-checks the path shape,
+  the name carries `$$` plus two `$RANDOM` draws under a per-user mode-700
+  `$TMPDIR`, and the credential is already zeroed. Closing it properly needs
+  signal masking, i.e. not bash.
 - **Known gap, deliberately not papered over:** a project-local `AGENTS.md`
   injection assertion was written and removed for being vacuous — it passed with
   the flags, without them, and with `--approve`. No failing case could be

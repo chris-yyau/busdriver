@@ -126,9 +126,74 @@ else
   ok "pi child does not receive the operator's real home"
 fi
 
-grep -qE "trap '_pi_wipe' EXIT TERM INT" <<<"$ARM" \
-  && ok "projected credential is removed by trap (survives timeout/interrupt)" \
-  || fail "no trap wiping the jail — a killed dispatch leaves a credential on disk"
+# _pi_wipe MUST CLEAR THE JAIL NAME once removal is confirmed, and only then.
+# Every step in it is gated on the name being non-empty, so clearing is what makes
+# a second call a no-op. A boolean latch could not do this: set before the work, a
+# signal in the gap turned the handler's `_pi_wipe` into a no-op and abandoned
+# cleanup with a live credential; set after, the zeroing stayed unguarded, where a
+# recreated path — a symlink at ANY component, not just the final one — would have
+# `>|` truncate an unrelated file. Narrowing trap windows never terminated.
+_clear_at="$(grep -nE '^[[:space:]]*_pi_jail=""$' <<<"$ARM" | head -1 | cut -d: -f1)"
+_unlink_at="$(grep -nF '/usr/bin/env -i /bin/bash --noprofile --norc -s "$_pi_jail"' <<<"$ARM" | head -1 | cut -d: -f1)"
+if [[ -z "$_clear_at" ]]; then
+  fail "_pi_wipe never clears _pi_jail — a second call re-uses a freed pathname to truncate and delete"
+elif [[ -z "$_unlink_at" || "$_clear_at" -lt "$_unlink_at" ]]; then
+  fail "the name is cleared before removal is confirmed — a failed wipe becomes unretryable and reports success"
+elif grep -qE '_pi_jail[^=]*-eq' <<<"$ARM"; then
+  fail "jail state is compared with -eq — arithmetic evaluation expands \$(...) from an inherited value"
+elif ! grep -qF '[[ -f "$_pi_jail/.pi/agent/auth.json" && ! -L "$_pi_jail/.pi/agent/auth.json" ]]' <<<"$ARM"; then
+  fail "the zeroing step does not refuse symlinks — >| follows one and truncates an unrelated file"
+else
+  ok "_pi_wipe clears the jail name only once removal is confirmed (no freed pathname left to reuse)"
+fi
+
+# EXACTLY ONE CLEANUP OWNER, continuously armed: the parent. A trap in each shell
+# means a process-group signal fires both, and the parent's delete lands after the
+# subshell already freed the pathname. Disarming the parent first instead opens a
+# gap in which a signal exits with no owner at all and the credential on disk.
+_wipe_traps="$(grep -cE "trap '[^']*_pi_wipe" <<<"$ARM" || true)"
+if [[ "$_wipe_traps" -ne 1 ]]; then
+  fail "$_wipe_traps traps call _pi_wipe — one continuously-armed owner is the only shape without a double-delete or a gap"
+elif ! grep -qE "trap '_pi_wipe; rm -f \"\\\$PROMPT_FILE\" 2>/dev/null; exit 130' INT TERM HUP" <<<"$ARM"; then
+  fail "the single wipe trap is not the parent's signal handler — the dispatch window is uncovered"
+else
+  ok "exactly one continuously-armed cleanup owner (the parent signal trap)"
+fi
+
+# The normal (unsignalled) path still has to tear down, since the trap only fires
+# on a signal. Read the lines AFTER the subshell closes — an earlier version of
+# this check stopped ON the `exit_code=$?` line and so could never see the code it
+# was meant to inspect, which made it assert nothing.
+_disp_tail="$(awk '/exit_code=\$\?$/{f=1; next} f' <<<"$ARM" | head -20)"
+if [[ -z "$_disp_tail" ]]; then
+  fail "could not read past the dispatch subshell — this assertion is not running"
+elif ! grep -qE '^\s*_pi_wipe\s*$' <<<"$_disp_tail"; then
+  fail "nothing tears the jail down on the normal path — the trap only covers signals"
+else
+  ok "the normal dispatch path tears the jail down explicitly"
+fi
+
+# Teardown is verified by LOOKING at the jail, not by a reserved exit code that
+# pi or the timeout wrapper could return on their own.
+grep -qE 'if \[\[ -e "\$_pi_jail" \|\| -L "\$_pi_jail" \]\]; then' <<<"$_disp_tail" \
+  && ok "a surviving jail is detected directly and fails the dispatch" \
+  || fail "teardown failure is not verified after dispatch — a live credential can survive silently"
+
+# The signal trap authorises `rm -rf` on a path guarded only by "absolute and not
+# /", so it must not be armed until `_pi_mkjail` has observed the jail into
+# existence. It therefore lives INSIDE _pi_project (which runs only on that
+# branch) and nowhere at the arm's top level. Checked by containment, not by line
+# order — _pi_project is DEFINED above the chain but RUNS after it.
+_projfn="$(awk '/_pi_project\(\) \{/{inb=1} inb{print} inb && /^                    \}$/{exit}' <<<"$ARM")"
+_trap_total="$(grep -c "trap '_pi_wipe; rm -f" <<<"$ARM" || true)"
+_trap_in_fn="$(grep -c "trap '_pi_wipe; rm -f" <<<"$_projfn" || true)"
+if [[ "$_trap_in_fn" -ne 1 ]]; then
+  fail "the rm -rf-authorising signal trap is not armed inside _pi_project — creation may not yet be observed"
+elif [[ "$_trap_total" -ne 1 ]]; then
+  fail "that signal trap is armed in $_trap_total places — one of them precedes the ownership proof"
+else
+  ok "signal trap is armed only after jail creation is observed"
+fi
 
 # _pi_wipe runs back in the INHERITED shell, so every command word in it is
 # shadowable by an exported function — and it is the one function that must

@@ -790,9 +790,46 @@ CHILD
                     # tests/test-pi-dispatch-arm.sh asserts each of these against this
                     # body, so they survive the next edit.
                     _pi_wipe() {
+                        # SUCCESS CLEARS THE NAME. `_pi_jail` is emptied once the jail
+                        # is verifiably gone, and every step here is gated on it being
+                        # non-empty — so a second call does nothing, having no path to
+                        # act on. That closes double-delete AND double-truncate at
+                        # once, which a boolean latch could not: latching before the
+                        # work let a signal in the gap turn the handler's `_pi_wipe`
+                        # into a no-op and abandon cleanup with a live credential,
+                        # while latching after left the zeroing unguarded, where a
+                        # recreated path — a symlink at any component, not just the
+                        # final one — would have `>|` truncate an unrelated file.
+                        # Clearing the pathname has no such gap: it happens only after
+                        # the removal is confirmed, so a failed wipe KEEPS the name and
+                        # stays retryable, and a successful one leaves nothing to
+                        # reuse. Chasing this with trap windows never terminated.
+                        #
                         # The shape checks stay in the PARENT because `[[` is a
                         # reserved word — the grammar, not a command — so nothing can
                         # intercept them. The removal itself does NOT stay here.
+                        # KNOWN, ACCEPTED RESIDUAL — reentrancy across the clear.
+                        # Clearing `_pi_jail` cannot be made ATOMIC with the removal
+                        # that precedes it: bash runs a pending handler after a
+                        # foreground command returns but before the next assignment,
+                        # so a signal in that window re-enters this function while the
+                        # variable still holds the just-freed pathname. Shell has no
+                        # atomic swap, and every mitigation costs more than it buys —
+                        # `trap '' INT TERM HUP` around the body would work, but `trap`
+                        # is itself a shadowable builtin and a second arming site,
+                        # breaking the single-owner and no-bare-command-word
+                        # invariants this lane is built on (the suite enforces both).
+                        # What bounds it: the window is one statement wide, the second
+                        # pass still re-checks the path shape, the pathname carries
+                        # $$ plus two $RANDOM draws under a per-user $TMPDIR, and the
+                        # credential is already zeroed by then. Closing it properly
+                        # needs a language with signal masking, not more bash.
+                        #
+                        # Compared as STRINGS throughout. `[[ x -eq y ]]` evaluates both
+                        # sides ARITHMETICALLY, and arithmetic evaluation expands
+                        # command substitution — so any inherited state tested that way
+                        # could execute `$(...)` from the environment, inside the
+                        # containment function itself.
                         if [[ -n "${_pi_jail:-}" && "$_pi_jail" == /* && "$_pi_jail" != "/" ]]; then
                             # Both removals run inside ONE STERILE CHILD, for the same
                             # reason projection does. `env -i` gives bash an empty
@@ -839,7 +876,17 @@ CHILD
                             # "use 'true' as a no-op", would reintroduce exactly the
                             # shadowable command word this construct exists to avoid.
                             # shellcheck disable=SC2188
-                            if [[ -f "$_pi_jail/.pi/agent/auth.json" ]] \
+                            # `! -L` IS LOAD-BEARING, not belt-and-braces. `-f` FOLLOWS
+                            # symlinks, and this step is deliberately outside the
+                            # single-shot latch (it must stay idempotent), so it can
+                            # run again after the jail is gone. If the pathname were
+                            # recreated with `auth.json` symlinked at an unrelated
+                            # file, `>|` would follow it and truncate that file — the
+                            # zeroing step turned into a destructive primitive aimed
+                            # anywhere. Refusing symlinks outright keeps it pointed at
+                            # a real file we created, and `-L` is grammar like `-f`,
+                            # so neither check is interceptable.
+                            if [[ -f "$_pi_jail/.pi/agent/auth.json" && ! -L "$_pi_jail/.pi/agent/auth.json" ]] \
                                && ! >| "$_pi_jail/.pi/agent/auth.json"; then
                                 /bin/echo "WARNING: could not zero the projected pi credential at $_pi_jail/.pi/agent/auth.json — remove it by hand." >&2 || _pi_wipe_warn=1
                             fi
@@ -848,6 +895,7 @@ CHILD
                             # already empty. `-e` alone would MISS a dangling symlink
                             # (verified), so the check is `-e || -L` and the child
                             # cannot report success over a surviving path.
+                            #
                             if ! /usr/bin/env -i /bin/bash --noprofile --norc -s "$_pi_jail" <<'CHILD' 2>/dev/null
 d="$1"
 case "$d" in /|'') exit 1 ;; /*) ;; *) exit 1 ;; esac
@@ -862,6 +910,16 @@ CHILD
                                 # retain the credential — the destructive work is
                                 # already done and verified in the sterile child.
                                 /bin/echo "WARNING: pi jail $_pi_jail was not fully removed (the credential was zeroed first, so this is a leftover directory, not a live key)." >&2 || _pi_wipe_warn=1
+                            else
+                                # CONFIRMED GONE — drop the name. Everything above is
+                                # gated on `-n "${_pi_jail:-}"`, so this is what makes
+                                # a second call a no-op: no pathname, nothing to
+                                # truncate, nothing to delete. Only on the child's
+                                # SUCCESS, which it reports only after checking the
+                                # path is absent — a failed wipe keeps the name and
+                                # stays retryable, and the caller's own
+                                # `-e || -L` check still sees it.
+                                _pi_jail=""
                             fi
                         fi
                         _pi_wipe_rc=0
@@ -897,6 +955,20 @@ CHILD
                     # ours and ANY failure here authorises teardown — no exit-code
                     # taxonomy, nothing for a signal to make ambiguous.
                     _pi_project() {
+                        # THE SIGNAL TRAP IS ARMED HERE, not before the branch chain,
+                        # because it authorises `rm -rf` on a path whose only guard is
+                        # "absolute and not /". Armed any earlier it covers the window
+                        # before `_pi_mkjail` has observed creation, so a signal in
+                        # that window deletes a path this dispatch never made. Armed
+                        # here it covers exactly the window in which a credential can
+                        # exist: from the first write attempt until the explicit
+                        # `_pi_wipe` after dispatch disarms it. The dispatch subshell
+                        # installs no trap of its own — this handler stays the sole
+                        # owner throughout. (Traps are shell-global in bash, not
+                        # function-scoped, so this outlives the call.)
+                        # EXIT is deliberately NOT taken: the script-level EXIT trap
+                        # owns $PROMPT_FILE, and stealing it would leak that instead.
+                        trap '_pi_wipe; rm -f "$PROMPT_FILE" 2>/dev/null; exit 130' INT TERM HUP
                         /usr/bin/env -i \
                             "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                             "SRC=$_pi_home/.pi/agent/auth.json" \
@@ -955,17 +1027,6 @@ CHILD
                     _pi_tmp="${TMPDIR:-/tmp}"
                     [[ "$_pi_tmp" == /* ]] || _pi_tmp="/tmp"
                     _pi_jail="${_pi_tmp%/}/busdriver-pi-$$-${RANDOM}${RANDOM}"
-                    # Cover the whole window in which a jail can exist. The
-                    # top-level EXIT trap removes only $PROMPT_FILE, and the
-                    # dispatch subshell arms its own trap only AFTER projection
-                    # succeeds — so a SIGINT landing mid-projection, or between
-                    # projection and dispatch, would leave the projected
-                    # credential on disk with nothing to remove it.
-                    # EXIT is deliberately NOT taken here: the script-level EXIT
-                    # trap owns $PROMPT_FILE, and stealing it would leak that
-                    # instead. Handed back after the chain so the rest of the run
-                    # keeps default signal behaviour.
-                    trap '_pi_wipe; rm -f "$PROMPT_FILE" 2>/dev/null; exit 130' INT TERM HUP
                     if [[ -z "$_pi_prov" || "$_pi_prov" == "${MODEL:-$_BD_PI_MODEL}" ]]; then
                         # No `provider/` prefix ⇒ we cannot tell which credential
                         # to project, and projecting ALL of them is the thing this
@@ -1050,12 +1111,29 @@ CHILD
                     # HTTP 403 RegionError without its provider workspace's
                     # opt-in), and that must surface as a readable provider
                     # error instead of an empty, silently-dead voice.
-                    # HOME is the JAIL, not the operator's home. The subshell
-                    # trap removes the projected credential even if the timeout
-                    # kills the child or the caller interrupts the batch; the
-                    # unconditional rm after it covers a normal return.
-                    ( trap '_pi_wipe' EXIT TERM INT
-                      _portable_timeout "$_budget" \
+                    # HOME is the JAIL, not the operator's home. The parent's signal
+                    # trap removes the projected credential if the timeout kills the
+                    # child or the caller interrupts the batch, and the explicit
+                    # `_pi_wipe` below covers a normal return.
+                    #
+                    # SUPERSEDED — the subshell installs no traps of its own; the
+                    # parent is the sole owner (see the paragraph below). Kept only so
+                    # the reasoning that ruled the alternative out is not relitigated:
+                    # a subshell EXIT trap plus the parent's signal trap meant a
+                    # process-group signal fired both, and the parent's delete landed
+                    # after the subshell had already freed the pathname, hitting
+                    # whatever had taken it.
+                    #
+                    # THE PARENT IS THE SOLE CLEANUP OWNER, and stays armed across
+                    # this entire window — the subshell installs no trap of its own.
+                    # Both alternatives are worse, and both were tried: with a trap in
+                    # each shell, a PROCESS-GROUP signal reaches both and the parent's
+                    # delete lands after the subshell has already freed the pathname,
+                    # hitting whatever replaced it. Disarming the parent first instead
+                    # opens a gap between that `trap` and the subshell's, and a signal
+                    # arriving in it exits with NO owner and the credential on disk.
+                    # One continuously-armed owner has neither hole.
+                    ( _portable_timeout "$_budget" \
                         env -i HOME="$_pi_jail" PATH="$_pi_path" \
                         "$_pi_bin" --model "${MODEL:-$_BD_PI_MODEL}" \
                           --print --no-session \
@@ -1064,6 +1142,21 @@ CHILD
                           --tools read \
                           < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
                     _pi_wipe
+                    # Disarmed the moment the jail is gone, so the handler cannot fire
+                    # over a freed pathname. `_pi_wipe` is single-shot anyway — this
+                    # is the belt to that braces, not the guarantee.
+                    trap - INT TERM HUP
+                    # TEARDOWN IS VERIFIED BY LOOKING, not by a status. Smuggling a
+                    # cleanup failure out through a reserved exit code was worse than
+                    # the problem: pi or `_portable_timeout` can legitimately return
+                    # that same code, turning a clean run into a false credential
+                    # warning. The jail's continued existence is direct evidence, and
+                    # `[[ ]]` is grammar rather than a shadowable command. `-L` too,
+                    # since a dangling symlink is invisible to `-e`.
+                    if [[ -e "$_pi_jail" || -L "$_pi_jail" ]]; then
+                        echo "Error: pi ran, but its projected credential jail is STILL ON DISK at $_pi_jail — see the warnings above and remove it by hand." >&2
+                        [[ "$exit_code" -ne 0 ]] || exit_code=1
+                    fi
                     fi
                     fi
                     # Jail window closed on every branch above — hand signals back.

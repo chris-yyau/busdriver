@@ -413,13 +413,20 @@ log_event() {
         # and then unlink a predictable name inside it. Refuse a symlinked dir
         # outright rather than trying to make following one safe.
         #
-        # `"$4" != "$_fdest"`: if $TMPDIR ever IS this directory, source and
-        # destination are the same path, and the unlink below would delete the
-        # only diagnostic before `tail` ever read it — archiving the evidence by
-        # destroying it. Nothing to copy in that case; leave the original alone.
+        # SAME-FILE GUARD. If $TMPDIR ever IS this directory, source and
+        # destination are one file, and the unlink below would delete the only
+        # diagnostic before `tail` ever read it — archiving the evidence by
+        # destroying it, the exact inverse of this block's purpose.
+        # Two tests, because a string compare alone is not enough: `-ef` compares
+        # DEVICE+INODE, so it also catches the aliases a string misses — a
+        # trailing slash (`failures//x` vs `failures/x`) or a symlinked $TMPDIR.
+        # It is a bash builtin, so this costs no command word. Applied to the
+        # containing DIRECTORY via `${4%/*}` (parameter expansion, not `dirname`)
+        # because the destination file itself does not exist yet.
         if [[ ! -L "$_fdir" ]] \
            && mkdir -p "$_fdir" 2>/dev/null && chmod 700 "$_fdir" 2>/dev/null \
            && [[ "$4" != "$_fdest" ]] \
+           && ! [[ "${4%/*}" -ef "$_fdir" ]] \
            && rm -f "$_fdest" 2>/dev/null \
            && [[ ! -e "$_fdest" && ! -L "$_fdest" ]] \
            && ( umask 077; tail -c 65536 "$4" > "$_fdest" ) 2>/dev/null; then

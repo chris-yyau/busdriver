@@ -169,6 +169,41 @@ grep -q '\[\[ ! -L "$_fdir" \]\]' "$DISPATCH" \
 grep -q '\[\[ "$4" != "$_fdest" \]\]' "$DISPATCH" \
   && ok "source and destination being the same path is refused" \
   || bad "same-path guard is gone — the unlink would destroy the only diagnostic"
+# A string compare misses aliases: `failures//x` vs `failures/x`, or a symlinked
+# $TMPDIR. `-ef` compares device+inode and catches both. Without it the unlink
+# destroys the only diagnostic — the exact inverse of what the archive is for.
+grep -q '! \[\[ "${4%/\*}" -ef "$_fdir" \]\]' "$DISPATCH" \
+  && ok "an aliased same-directory source is refused (device+inode, not string)" \
+  || bad "the -ef same-file guard is gone — a trailing slash or symlinked TMPDIR would destroy the diagnostic"
+
+# ── 4e. RUNTIME version of the same-file guard. Unlike the symlink case above,
+#      this one IS stageable: point $TMPDIR at the failures directory itself
+#      (with a trailing slash, so a string compare of the paths does NOT match)
+#      and confirm the diagnostic survives. Without the `-ef` device+inode test
+#      the unlink fires on the source and the archive destroys the only evidence
+#      it exists to preserve.
+ALIAS_STATE="dispatchtest-alias-$$-${RANDOM}"
+ALIAS_ROOT="$HOME/$ALIAS_STATE"
+mkdir -p "$ALIAS_ROOT/homunculus/failures"
+printf '#!/usr/bin/env bash\necho ALIAS_DIAGNOSTIC\nexit 3\n' > "$STUB/codex"; chmod +x "$STUB/codex"
+PATH="$BASE_PATH" TMPDIR="$ALIAS_ROOT/homunculus/failures/" BUSDRIVER_STATE_DIR="$ALIAS_STATE" \
+  BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  "$RUN_BASH" "$DISPATCH" --cli codex --timeout 20 --prompt p >/dev/null 2>&1
+if grep -rqs ALIAS_DIAGNOSTIC "$ALIAS_ROOT/homunculus/failures"; then
+  ok "an aliased TMPDIR does not destroy the diagnostic (runtime)"
+else
+  bad "the archive destroyed its own source when TMPDIR aliased failures/"
+fi
+case "$ALIAS_STATE" in
+  dispatchtest-alias-*) rm -rf "$ALIAS_ROOT" ;;
+  *) echo "REFUSING to remove unexpected alias root '$ALIAS_ROOT'" >&2 ;;
+esac
+
+# Restore the small failing stub for the log-pointer assertion below.
+rm -rf "$TEST_LOGROOT"
+mk_codex_fail
+PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  "$RUN_BASH" "$DISPATCH" --cli codex --timeout 20 --prompt p >/dev/null 2>&1
 
 # ── 5. ...and the log line POINTS at the durable copy, not at the $TMPDIR path
 #      that may no longer exist. An archive nothing references is not a fix.

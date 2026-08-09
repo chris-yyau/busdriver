@@ -129,7 +129,23 @@ LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
 # ── Defaults ───────────────────────────────────
 CLI="auto"
 MODE="readonly"
-TIMEOUT=300
+# 600, raised from 300. The pi arm READS THE TREE, so its work scales with the
+# source it has to open rather than with a chat turn, and 300 sat BELOW its
+# median: two successful in-tree traces took 315s and 307s — both would have been
+# killed by the old default. A cap that kills its own successful runs reads as an
+# unreliable model when it is really a misconfigured number.
+#
+# Raised globally rather than per-CLI on purpose. `_portable_timeout` is a CAP,
+# not a wait: an arm that finishes in 30s is unaffected, so the only cost is that
+# a genuinely HUNG voice now takes 600s to kill instead of 300s. Paying that on
+# the rare hang is far cheaper than a per-arm value threaded through the shared
+# retry budget, agy's four `--print-timeout` sites and the droid rescue.
+#
+# A caller running this BLOCKING needs its own timeout above this one, with room
+# for startup and cleanup. Do NOT copy litmus's "600s harness cap" reasoning here
+# — that number is specific to LITMUS_TIMEOUT's own budget, not a property of the
+# Bash tool, whose ceiling is set by BASH_MAX_TIMEOUT_MS (3600000ms here).
+TIMEOUT=600
 MODEL=""
 PROMPT=""
 
@@ -148,7 +164,7 @@ dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencod
 FLAGS:
   --cli     codex|agy|droid|grok|opencode|pi|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
-  --timeout seconds                 (default: 300)
+  --timeout seconds                 (default: 600)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
 
@@ -341,12 +357,77 @@ strip_ansi() {
     perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g' 2>/dev/null || cat
 }
 
+# Args: cli_name status duration output_file
 log_event() {
     mkdir -p "$LOG_DIR"
-    local ts
+    local ts _logged_out="$4"
     ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    # PRESERVE THE EVIDENCE OF A FAILED RUN. Output files live in $TMPDIR, which
+    # the OS reaps and a reboot wipes — so a failure's only diagnostic routinely
+    # vanishes before anyone reads it, leaving a log line that says `error` and
+    # points at a path that no longer exists. That is exactly what happened to a
+    # 465s pi failure whose cause is now unrecoverable.
+    #
+    # Copy on `error`/`timeout` ONLY. A `skipped` run is deterministic by
+    # construction (its reason is a fixed message this script itself wrote), so it
+    # needs no forensics; the gap worth closing is the NON-deterministic class.
+    # `success` is excluded for the obvious reason — it would archive every
+    # dispatch this repo ever makes.
+    #
+    # Best-effort throughout: on any failure the ORIGINAL path is logged
+    # unchanged. Preserving a diagnostic must never fail a dispatch that worked.
+    #
+    # All three call sites run in the SEQUENTIAL result loops, never inside the
+    # backgrounded `dispatch_one &` jobs, so there are no concurrent writers.
+    #
+    # keep-simple(UPGRADE: prune oldest when failures/ exceeds ~200 files): the
+    # directory grows without bound. Each entry is <=64KB and failures are rare;
+    # revisit only if it becomes real disk pressure.
+    if [[ "$2" == "error" || "$2" == "timeout" ]] && [[ -f "$4" ]]; then
+        local _fdir="$LOG_DIR/failures" _fdest
+        _fdest="$_fdir/$(basename "$4")"
+        # PERMISSIONS ARE PART OF THE FIX, not decoration. The original lives in
+        # $TMPDIR, which is per-user mode-700 on macOS; copying it under $HOME at
+        # the caller's umask (commonly 022 ⇒ 0644) would DOWNGRADE a protected
+        # file to one any local user traversing the home directory can read — and
+        # the content is model output, i.e. repo source and whatever a diagnostic
+        # happened to quote. mode-700 dir + umask 077 for the file keeps the copy
+        # no more exposed than the original.
+        #
+        # TAIL, not head: a CLI writes progress and generated output first and
+        # appends the fatal error LAST to combined stdout+stderr, so on an output
+        # past the cap `head` would preserve everything except the failure cause
+        # this archive exists to keep. The last 64KB is the part worth having.
+        # UNLINK BEFORE WRITING. `>` FOLLOWS a symlink, and the destination
+        # basename is predictable, so a link planted in a previously
+        # group-writable failures/ would redirect this truncating write onto an
+        # arbitrary file the operator can write. `chmod 700` does not remove an
+        # entry that is already there — it only stops NEW ones. `rm -f` unlinks
+        # the symlink itself rather than following it, and the re-check refuses
+        # to proceed if anything still occupies the path.
+        # A failures/ owned by another user makes `chmod` fail, which short-
+        # circuits this whole chain — fail-closed, no write attempted.
+        # The DIRECTORY needs the same treatment as the file: `mkdir -p` succeeds
+        # on an existing symlink-to-dir and `chmod` follows it, so a link planted
+        # at failures/ would have us chmod an operator-owned directory elsewhere
+        # and then unlink a predictable name inside it. Refuse a symlinked dir
+        # outright rather than trying to make following one safe.
+        #
+        # `"$4" != "$_fdest"`: if $TMPDIR ever IS this directory, source and
+        # destination are the same path, and the unlink below would delete the
+        # only diagnostic before `tail` ever read it — archiving the evidence by
+        # destroying it. Nothing to copy in that case; leave the original alone.
+        if [[ ! -L "$_fdir" ]] \
+           && mkdir -p "$_fdir" 2>/dev/null && chmod 700 "$_fdir" 2>/dev/null \
+           && [[ "$4" != "$_fdest" ]] \
+           && rm -f "$_fdest" 2>/dev/null \
+           && [[ ! -e "$_fdest" && ! -L "$_fdest" ]] \
+           && ( umask 077; tail -c 65536 "$4" > "$_fdest" ) 2>/dev/null; then
+            _logged_out="$_fdest"
+        fi
+    fi
     printf '{"ts":"%s","cli":"%s","mode":"%s","status":"%s","duration":%s,"prompt_len":%d,"output_file":"%s"}\n' \
-        "$ts" "$1" "$MODE" "$2" "$3" "${#PROMPT}" "$4" >> "$LOG_FILE" 2>/dev/null || true
+        "$ts" "$1" "$MODE" "$2" "$3" "${#PROMPT}" "$_logged_out" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 # ── Single-CLI dispatch ───────────────────────

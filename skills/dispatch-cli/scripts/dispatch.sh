@@ -21,21 +21,41 @@
 # stop an attacker who is already running code. The real trust boundary is
 # the env -i child; the -p shebang provides the function-clean start for the
 # invocation path the harness uses.
-if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]]; then
+  # Nonce: the marker is "_bd_priv_<nonce>"; the nonce must be NON-EMPTY, so
+  # caller-supplied bare "_bd_priv" / "_bd_priv_" (empty env nonce) never
+  # match and fall through to the re-exec. The pre-re-exec branch also exports
+  # the sentinel — its env presence is proof the branch ran.
+  _bd_nonce="${RANDOM}${RANDOM}${RANDOM}"
+  export _bd_nonce
   # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
   _bd_sentinel() { :; }
   export -f _bd_sentinel
-  exec /bin/bash -p "$0" _bd_priv "$@"
+  exec /bin/bash -p "$0" "_bd_priv_${_bd_nonce}" "$@"
 fi
-# Re-exec'd process: $1 == _bd_priv. Abort unless BOTH (a) the marker is
-# present AND (b) the sentinel was NOT imported — i.e. the re-exec really ran
-# under -p. Fails closed: a missing marker, an imported sentinel (forged
-# no-p re-exec), or an unparseable `type` result all refuse to continue.
-if [[ "${1:-}" != "_bd_priv" ]] || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
+# Post-re-exec. THREE proofs, all required before continuing:
+#  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.
+#  (b) the sentinel env export is present: checked via /usr/bin/printenv
+#      EXACT NAME lookup (absolute path — the repo's trust anchor; only
+#      slash-named shadowing applies, which is total compromise) + `[[ -n ]]`
+#      (reserved word, unshadowable). Name-exact, so an env var whose VALUE
+#      merely contains "BASH_FUNC__bd_sentinel" cannot forge it. Closes the
+#      dual-forge probe (_bd_nonce=known + _bd_priv_known): such a caller
+#      never executed the branch that exports the sentinel.
+#  (c) the sentinel was NOT imported (`type -t` != function) — proves the
+#      re-exec ran under -p. `type` is the one shadowable word in this guard;
+#      a shadow of it has already executed code — total compromise, out of
+#      scope (bash32-unshadowable-abort).
+_bd_env_sentinel="no"
+if [[ -n "$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)" ]]; then
+  _bd_env_sentinel="yes"
+fi
+if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" || "$_bd_env_sentinel" != "yes" ]] \
+   || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
   _bd_priv_guard=
   : "${_bd_priv_guard:?refusing to continue: the script is not running privileged (imported function shadows present) — re-run via the shebang in a clean shell}"
 fi
-[[ "${1:-}" == "_bd_priv" ]] && shift
+[[ "${1:-}" == "_bd_priv_${_bd_nonce:-}" ]] && shift
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):

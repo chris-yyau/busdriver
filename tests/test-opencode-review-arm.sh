@@ -464,10 +464,10 @@ fi
 # precede set -euo pipefail (a shadowed `set` must not run before the guard).
 # shellcheck disable=SC2016,SC2312  # single-quoted patterns; head/cut in pipeline are not load-bearing
 if grep -q '^#!/bin/bash -p' "$DP" \
-   && grep -q 'exec /bin/bash -p "\$0" _bd_priv "\$@"' "$DP" \
+   && grep -q 'exec /bin/bash -p "\$0" "_bd_priv_\${_bd_nonce}" "\$@"' "$DP" \
    && grep -q 'type -t _bd_sentinel' "$DP" \
    && [[ "$(grep -n 'exec /bin/bash -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
-  pass "dispatch.sh starts privileged (-p shebang) with sentinel-verified re-exec backstop before set -euo"
+  pass "dispatch.sh starts privileged (-p shebang) with nonce+sentinel-verified re-exec backstop before set -euo"
 else
   fail "dispatch.sh missing/incorrectly-placed function-clean boundary"
 fi
@@ -526,6 +526,32 @@ if (
   out4="$(bash "$DP" --help 2>&1)"; rc4=$?
   [[ "$rc4" -eq 0 ]] || { echo "  ✗ (j-d) dispatch failed under source poison (rc=$rc4)"; exit 1; }
   printf '%s' "$out4" | grep -q "SRC-POISONED" && { echo "  ✗ (j-d) source shadow ran"; exit 1; }
+  # (e) a caller-supplied BARE marker (_bd_priv, no nonce) must not bypass
+  # the boundary: the guard re-execs anyway (bare never matches
+  # "_bd_priv_<nonce>"), so under a naive exec shadow it aborts instead of
+  # continuing unprivileged.
+  exec() { echo EXEC-POISONED; }
+  export -f exec
+  out5="$(bash "$DP" _bd_priv --help 2>&1)"; rc5=$?
+  [[ "$rc5" -ne 0 ]] || { echo "  ✗ (j-e) bare marker bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out5" | grep -q "refusing to continue" || { echo "  ✗ (j-e) missing abort on bare-marker attempt"; exit 1; }
+  printf '%s' "$out5" | grep -q "EXEC-POISONED" || { echo "  ✗ (j-e) exec shadow did not run (guard never re-exec'd?)"; exit 1; }
+  # (f) empty-nonce marker (_bd_priv_ with no env nonce) must also fall
+  # through to the re-exec → same abort under a naive exec shadow.
+  out6="$(bash "$DP" _bd_priv_ --help 2>&1)"; rc6=$?
+  [[ "$rc6" -ne 0 ]] || { echo "  ✗ (j-f) empty-nonce marker bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out6" | grep -q "refusing to continue" || { echo "  ✗ (j-f) missing abort on empty-nonce attempt"; exit 1; }
+  # (g) dual-forge (matching env nonce + argv marker, no code execution): the
+  # re-exec branch was skipped so the sentinel was never exported — the env-
+  # presence check aborts.
+  out7="$(_bd_nonce=known bash "$DP" _bd_priv_known --help 2>&1)"; rc7=$?
+  [[ "$rc7" -ne 0 ]] || { echo "  ✗ (j-g) dual-forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out7" | grep -q "refusing to continue" || { echo "  ✗ (j-g) missing abort on dual-forge attempt"; exit 1; }
+  # (h) substring forge (an env var whose VALUE contains the sentinel name):
+  # printenv's exact NAME lookup must not be fooled by a value match.
+  out8="$(_bd_nonce=known X='BASH_FUNC__bd_sentinel%%' bash "$DP" _bd_priv_known --help 2>&1)"; rc8=$?
+  [[ "$rc8" -ne 0 ]] || { echo "  ✗ (j-h) substring-forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out8" | grep -q "refusing to continue" || { echo "  ✗ (j-h) missing abort on substring-forge attempt"; exit 1; }
   exit 0
 ); then
   pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"

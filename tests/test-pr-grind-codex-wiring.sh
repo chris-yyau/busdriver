@@ -265,11 +265,14 @@ fi
 # not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
 # Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
 # whitespace after every bot login is the shell argument terminator, so shadowed
-# args (`cubic-dev-ai-shadow`, `cubic-dev-ai,shadow`) are rejected, and the closing
-# `"$` anchors the complete FRESH_ACKS assignment to the end of the line. The
-# `^[[:space:]]*` start anchor requires an EXECUTABLE assignment — a commented-out
-# `# FRESH_ACKS=...` line cannot satisfy it (CodeRabbit + litmus + cubic, PR #609).
-POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai[[:space:]].*coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai[[:space:]].*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps[[:space:]].*chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
+# args (`cubic-dev-ai-shadow`, `cubic-dev-ai,shadow`) are rejected. Each ledger
+# FIELD is also comma-delimited and closed by its command-substitution `)`
+# (`[^,)]*\)`, so a prefixed field name (`x-coderabbitai=`) cannot satisfy it.
+# The `^[[:space:]]*` start anchor requires an EXECUTABLE assignment — a
+# commented-out `# FRESH_ACKS=...` line cannot match — and the closing `"$`
+# anchors the complete assignment to the end of the line (CodeRabbit + litmus +
+# cubic, PR #609).
+POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai[[:space:]][^,)]*\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai[[:space:]][^,)]*\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps[[:space:]][^,)]*\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
 hasre "$POSTWAIT_LEDGER" \
   && ok "full 4-bot ledger recomputed after the wait (post-wait line)" \
   || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
@@ -280,17 +283,22 @@ POSTWAIT_LEDGER_COUNT=$(grep -cE "$POSTWAIT_LEDGER" "$SKILL" || true)
 [ "$POSTWAIT_LEDGER_COUNT" -eq 1 ] \
   && ok "post-wait ledger pattern matches exactly one line" \
   || fail "post-wait ledger pattern matches $POSTWAIT_LEDGER_COUNT lines — expected exactly 1 (pre-wait line must not satisfy it)"
-# Positional tie (Codex, PR #609): the discriminator `${CODEX_REGRACE}` could be
-# carried by ANOTHER assignment — e.g. the pre-wait line mutated to end with it
-# while the post-wait recomputation is deleted. Content alone cannot distinguish
-# that compound regression, so the matching line must also sit AFTER the post-wait
-# block's own doc comment (the unique `Recompute the ENTIRE ledger` marker).
+# Positional tie (Codex + cubic, PR #609): the discriminator `${CODEX_REGRACE}`
+# could be carried by ANOTHER assignment — e.g. the pre-wait line mutated to end
+# with it while the post-wait recomputation is deleted — and content alone cannot
+# distinguish that compound regression. The matching line must sit INSIDE the
+# post-wait shell block: after the block's own doc comment (`# Recompute the
+# ENTIRE ledger` marker) AND before the closing ``` fence (a line in later
+# Markdown/prose — e.g. a copy of the assignment after the fence — is not
+# executable, so it must not satisfy the guard).
 POSTWAIT_ANCHOR_LINE=$(grep -n '# Recompute the ENTIRE ledger on the post-wait sources' "$SKILL" | head -1 | cut -d: -f1)
+POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL")
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1)
-if [ -n "$POSTWAIT_MATCH_LINE" ] && [ -n "$POSTWAIT_ANCHOR_LINE" ] && [ "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_ANCHOR_LINE" ]; then
-  ok "post-wait ledger line sits inside the post-wait block (positional tie)"
+if [ -n "$POSTWAIT_MATCH_LINE" ] && [ -n "$POSTWAIT_ANCHOR_LINE" ] && [ -n "$POSTWAIT_FENCE_CLOSE" ] \
+   && [ "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_ANCHOR_LINE" ] && [ "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_FENCE_CLOSE" ]; then
+  ok "post-wait ledger line sits inside the post-wait shell block (positional tie)"
 else
-  fail "post-wait ledger line not inside the post-wait block — discriminator carried by another assignment (#606/PR #609)"
+  fail "post-wait ledger line not inside the post-wait shell block — discriminator carried by another assignment or non-executable text (#606/PR #609)"
 fi
 # Deletion proof (issue #606, fixed per cubic + Codex review on PR #609): strip the
 # post-wait line by an INDEPENDENT selector — the `${CODEX_REGRACE}` discriminator
@@ -316,6 +324,18 @@ else
   ok "post-wait ledger pattern rejects shadowed bot args (exact field tokens)"
 fi
 rm -f "$BOT_SHADOW"
+# Exact field-NAME boundaries (CodeRabbit + Codex, PR #609): a field whose name is
+# only a PREFIX of a registered login (`x-coderabbitai=`) must not satisfy the
+# ledger — the comma-delimited field boundary is part of the pattern. Mutation:
+# prefix the coderabbitai field name on the post-wait line.
+PREFIX_FIELD=$(mktemp)
+sed 's/,coderabbitai=\$(bash/,x-coderabbitai=\$(bash/' "$SKILL" > "$PREFIX_FIELD"
+if grep -qE "$POSTWAIT_LEDGER" "$PREFIX_FIELD"; then
+  fail "post-wait ledger pattern accepts a prefixed field name (x-coderabbitai=) — ledger fields must be exact"
+else
+  ok "post-wait ledger pattern rejects prefixed field names (exact field boundaries)"
+fi
+rm -f "$PREFIX_FIELD"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
   fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
 else

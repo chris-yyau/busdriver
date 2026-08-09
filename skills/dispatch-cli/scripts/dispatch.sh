@@ -384,6 +384,14 @@ dispatch_one() {
     # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
     # of its retries. `local` also keeps it out of the caller's scope entirely.
     local _pi_setup_failed=0
+    # Set ONLY where a teardown ran and could not confirm the jail was removed,
+    # i.e. a projected credential may still be on disk. It is deliberately NOT
+    # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
+    # before anything is created (see the "THE PARENT NAMES THE JAIL" comment) so
+    # `_pi_wipe` can reach the path on every failure path, which means a non-empty
+    # name proves nothing on its own — every pre-creation bail carries one too.
+    # Only a name that SURVIVES a wipe is evidence of a leak.
+    local _pi_jail_survived=0
     local _attempt=0
     while [[ "$_attempt" -le "$_max_retries" ]]; do
     exit_code=0
@@ -1217,6 +1225,14 @@ CHILD
                         # one can do worse. Nothing comes between a possibly written
                         # credential and its removal.
                         _pi_wipe
+                        # `_pi_wipe` clears `_pi_jail` ONLY after its sterile child
+                        # verifies the path is absent. A name that survives the call
+                        # therefore means the projected credential may still be on
+                        # disk — record that, so the status ladder can refuse to
+                        # downgrade this failure to `skipped` (which the batch loop
+                        # treats as "not a failure", per #594). Assignment only, no
+                        # command word, on the credential path.
+                        [[ -z "${_pi_jail:-}" ]] || _pi_jail_survived=1
                         # Routed through _pi_setup_fail (not a bare echo+exit_code=1)
                         # so this deterministic failure also lands in $outfile and
                         # sets _pi_setup_failed — otherwise the shared retry loop
@@ -1494,7 +1510,15 @@ CHILD
     # setup bails are deliberately NOT routed here yet — they write their reason
     # to stderr only, never to "$outfile", so a skipped opencode would print
     # "(no output)" in the batch banner with the reason lost.
-    [[ "${_pi_setup_failed:-0}" == "1" ]] && status="skipped"
+    # ...but NEVER when a teardown left a credential behind. The projection
+    # failure path runs `_pi_wipe` and then records whether the jail name survived
+    # it; if it did, a projected API key may still be on disk. That case must stay
+    # `error`: before this status existed it failed the batch, and downgrading it
+    # to `skipped` would let another voice's success carry the batch to exit 0
+    # with a live key in the jail. Reported by Codex on PR #596. The batch loop's
+    # whole point is that `skipped` is not a failure — which is exactly why a
+    # leaked credential must never be classified as one.
+    [[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" ]] && status="skipped"
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }

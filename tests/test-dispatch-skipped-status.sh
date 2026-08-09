@@ -175,7 +175,23 @@ LADDER="$(grep -n 'status="' "$DISPATCH" | grep -E 'status="(success|timeout|err
   && ok "skipped is the final status assignment (wins over error/timeout)" \
   || bad "skipped is no longer assigned last — the error classification overwrites it"
 
-# ── 8. Static: the batch failure test must not count `skipped`. Guards against
+# ── 8. Static: `skipped` is conditional on the credential jail being CONFIRMED
+#      GONE. `_pi_wipe` clears `_pi_jail` only after verifying the path is
+#      absent, so a surviving name means a projected credential may still be on
+#      disk — and since the batch loop treats `skipped` as "not a failure", that
+#      case must stay `error` or a leaked key rides out on another voice's
+#      success. Static because forcing a wipe failure needs an unlink that fails,
+#      which no portable test can arrange without running as another user.
+grep -q '\[\[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" \]\] && status="skipped"' "$DISPATCH" \
+  && ok "skipped is refused when a teardown left the credential jail behind" \
+  || bad "skipped is no longer gated on _pi_jail_survived — a failed credential wipe would stop failing the batch"
+# ...and the flag must actually be SET where the teardown can fail, or the guard
+# above is decorative: it would read a variable nothing ever assigns.
+grep -q '\[\[ -z "${_pi_jail:-}" \]\] || _pi_jail_survived=1' "$DISPATCH" \
+  && ok "_pi_jail_survived is set after the projection-failure teardown" \
+  || bad "nothing sets _pi_jail_survived — the leaked-credential guard cannot fire"
+
+# ── 9. Static: the batch failure test must not count `skipped`. Guards against
 #      a well-meaning "handle every status" edit re-merging the two.
 grep -q '\[\[ "\$STATUS" == "error" || "\$STATUS" == "timeout" \]\] && any_failed=true' "$DISPATCH" \
   && ok "batch failure test still keys on error/timeout only" \

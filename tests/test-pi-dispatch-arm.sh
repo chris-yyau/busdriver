@@ -545,6 +545,12 @@ fi
 # $outfile too. (Raised from 4 to 5 on PR #591 review: the credential-
 # projection failure branch was the one deterministic setup error still using
 # a bare echo + exit_code=1.)
+# Two other failure exits (existing-path refused, _pi_mkjail failed) stay
+# outside this count deliberately, not by omission: both leave $outfile
+# empty and take the retry path, but each retry recomputes $_pi_jail from a
+# fresh $$/$RANDOM draw, so a transient name collision can clear on retry —
+# unlike the five setup failures above, which fail identically no matter how
+# many times they are retried.
 _pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
 [[ "$_pi_setup_fail_count" -eq 5 ]] \
   && ok "all five deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \

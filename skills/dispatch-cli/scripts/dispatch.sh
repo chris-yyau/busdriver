@@ -799,7 +799,7 @@ CHILD
                     # the operator during a bare `pi --version` — before any
                     # read-only flag applies. Wiping the environment for the probe
                     # closes that; the dispatch itself was already `env -i`.
-                    local _pi_ver
+                    local _pi_ver _pi_ver_rc
                     # No pipeline: a bare `tr` would run back in the inherited
                     # shell, and an exported `tr` function could print the expected
                     # version and wave a mismatched pi through. Bash parameter

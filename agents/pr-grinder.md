@@ -869,8 +869,8 @@ ROUND=3 (fix=2/5, wait=0/8)
 PRIOR_COMMIT_SHA=8947cdd
 PRIOR_REVIEWER_ACKS=cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
 PRIOR_ATTEMPTS:
-  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=cubic-dev-ai=stale,coderabbitai=none,greptile-apps=none
-  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
+  - Round 1 (fix=1/5, wait=0/8): commit=3f10ba92; fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=cubic-dev-ai=stale,coderabbitai=none,greptile-apps=none
+  - Round 2 (fix=2/5, wait=0/8): commit=8947cdd; fixes=tilde expansion in target_dir parser; failures=none; acks=cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
 ```
 
 (Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)

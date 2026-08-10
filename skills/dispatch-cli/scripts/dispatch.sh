@@ -77,7 +77,8 @@ fi
 #   echo "task" | dispatch.sh --cli codex
 #   dispatch.sh --cli codex --prompt "simple single-line only"
 
-# ── Interpreter floor (pi lane) — FIRST, before any command word ──
+# ── Interpreter floor (pi lane) — before `set -euo pipefail`, after the
+#    privileged re-exec boundary above ──
 # Issue #595: the pi arm's preflight runs a QUOTED heredoc inside `$(...)`
 # (`/usr/bin/env -i ... /bin/bash <<'CHILD'`). bash 3.2 — macOS's stock
 # /bin/bash — mis-parses that construct when the body contains `case`

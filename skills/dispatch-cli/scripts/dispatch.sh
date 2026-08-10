@@ -114,9 +114,10 @@ fi
 # The `#!/usr/bin/env -S bash -p` shebang runs the FIRST `bash` on PATH — it
 # selects by PATH order, not by vendor, so it picks up a >= 4 bash where one
 # is installed ahead of /bin/bash (Homebrew's, typically, on macOS) and plain
-# /bin/bash 3.2 where none is. It authenticates nothing about the binary it
-# lands on: a PATH-planted `bash` is a hostile CALLER, who could equally
-# invoke any interpreter directly — no shebang defends against that. A planted
+# /bin/bash 3.2 where none is. It authenticates nothing about the interpreter
+# it lands on. The threat actor is the CALLER, who by controlling PATH can
+# select or plant the `bash` that runs — but such a caller could equally
+# invoke any interpreter directly, so no shebang defends against it. A planted
 # 3.2 bash is still caught by the version floor below, and a planted >= 4 bash
 # is the attacker's own code, i.e. total compromise by definition. What `-p`
 # does add is refusing to import functions from the environment.

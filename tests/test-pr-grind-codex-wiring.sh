@@ -13,15 +13,28 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SKILL="$SCRIPT_DIR/skills/pr-grind/SKILL.md"
+SKILL_CORE="$SCRIPT_DIR/skills/pr-grind/SKILL.md"
+SKILL_COMPLETION="$SCRIPT_DIR/skills/pr-grind/references/completion.md"
 
 passed=0; failed=0
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
 fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
+
+# The COMPLETION section lives in references/completion.md to keep ~23k
+# tokens of merge-path detail out of the dispatcher's per-round context. It is
+# the TAIL of the document, so concatenating core+completion in that order
+# reproduces the original reading order — which the awk ordering assertions
+# below (nudge < BEHIND < approver-gap, pin < inv, hoist < fresh) depend on.
+# Assert against the joined view, never against either half alone.
+for _f in "$SKILL_CORE" "$SKILL_COMPLETION"; do
+  [ -f "$_f" ] || { fail "missing $_f"; echo "Results: $passed passed, $failed failed"; exit 1; }
+done
+SKILL="$(mktemp -t pr-grind-skill.XXXXXX)"
+trap 'rm -f "$SKILL"' EXIT
+cat "$SKILL_CORE" "$SKILL_COMPLETION" > "$SKILL"
+
 has()  { grep -qF "$1" "$SKILL"; }        # fixed-string presence
 hasre(){ grep -qE "$1" "$SKILL"; }        # regex presence
-
-[ -f "$SKILL" ] || { fail "missing $SKILL"; echo "Results: $passed passed, $failed failed"; exit 1; }
 
 # (a) CODEX_REGRACE initialized to CODEX_DONE (decouples warning from grace>0)
 has 'CODEX_REGRACE="$CODEX_DONE"' && ok "CODEX_REGRACE init present" \

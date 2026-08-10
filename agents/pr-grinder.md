@@ -717,7 +717,7 @@ echo "Codex ack: $CODEX_ACK"
 # never trip the guard. One-shot + opt-out (PR_GRIND_CODEX_RETRIGGER=0) + phrase
 # override (PR_GRIND_CODEX_RETRIGGER_PHRASE) live in the helper; `|| true` guarantees
 # a failed post never stales the gate. See ADR 0005. Distinct from the COMPLETION
-# first-engagement grace (skills/pr-grind/SKILL.md), which only RE-POLLS a `none`
+# first-engagement grace (skills/pr-grind/references/completion.md), which only RE-POLLS a `none`
 # Codex and never RE-TRIGGERS a `stale` one.
 if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null \
    && [ -z "$(git ls-files --others --exclude-standard 2>/dev/null)" ] \
@@ -757,7 +757,7 @@ The dispatcher emits three categories itself, alongside the worker's emissions:
 
 - **`budget`** — dispatcher-only. Labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) when the dispatcher's own counters overflow. The worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds, so it never produces this value.
 - **`judgment`** — emitted by both worker (design/scope concerns, history-rewrite triggers, flaky-check streaks, proportionality bails) AND dispatcher (Invariant 4 discipline-rail breaches: cumulative scope-skipped > 5 OR cumulative spawned issues > 3 — caps are INCLUSIVE, so 5 dismissals and 3 spawns are allowed, the 6th and 4th BAIL respectively. See `skills/pr-grind/SKILL.md` Dispatcher Loop → Invariant checks). Both share the category because both surface to the operator as "this needs human judgment, not an automated fix."
-- **`policy`** — dispatcher-only. Labels bails where an external policy (branch protection requiring `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule, or similar non-resolvable structural blocker) is the sole remaining merge-gate signal after CI, threads, and bot acks are all clean. The worker has no visibility into branch-protection rules or repo-side audit workflows, so it never produces this value. Excluded from MAX_FIX/MAX_WAIT accounting — there's nothing to fix and nothing to wait for; the gap is structural. pr-grind NEVER auto-bypasses org policy on this category; the `--admin-on-approver-gap` opt-in is the narrow exception (see `skills/pr-grind/SKILL.md` "Approver-Gap Detection"), and even that requires a repo-side audit workflow to leave a trail.
+- **`policy`** — dispatcher-only. Labels bails where an external policy (branch protection requiring `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule, or similar non-resolvable structural blocker) is the sole remaining merge-gate signal after CI, threads, and bot acks are all clean. The worker has no visibility into branch-protection rules or repo-side audit workflows, so it never produces this value. Excluded from MAX_FIX/MAX_WAIT accounting — there's nothing to fix and nothing to wait for; the gap is structural. pr-grind NEVER auto-bypasses org policy on this category; the `--admin-on-approver-gap` opt-in is the narrow exception (see `skills/pr-grind/references/completion.md` "Approver-Gap Detection"), and even that requires a repo-side audit workflow to leave a trail.
 
 Listing `budget` and `policy` in the enum keeps the dispatcher-side surface explicit and reserves both values against accidental worker emission. Adding new bail triggers means adding a row above with an explicit category, never expanding the dispatcher's match logic to scrape narrative.
 

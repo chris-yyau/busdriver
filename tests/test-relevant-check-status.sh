@@ -165,16 +165,21 @@ echo "== call-site wiring (issue #154) =="
 # This catches both direct `bash "$RCS"` style (where the path is assigned to a
 # variable on a non-comment line) and inline `bash "...relevant-check-status.sh"`
 # style, while rejecting files that only mention the helper in comments.
+# Takes one or more files and asserts against their concatenation — pr-grind's
+# two invocation sites (Step 1 Phase 2.5, Completion verify-checks-green) were
+# split across SKILL.md and references/completion.md, and BOTH halves
+# must stay wired.
 assert_wired() {
-  local label="$1" file="$2"
-  if grep -vE '^\s*#' "$file" | grep -q 'relevant-check-status\.sh' \
-     && ! grep -qF 'grep -ivE "$ADVISORY_PATTERN"' "$file"; then
+  local label="$1"; shift
+  if cat "$@" | grep -vE '^\s*#' | grep -q 'relevant-check-status\.sh' \
+     && ! cat "$@" | grep -qF 'grep -ivE "$ADVISORY_PATTERN"'; then
     echo "  ok   $label wired to helper (old decision grep removed)"; PASS=$((PASS+1))
   else
     echo "  FAIL $label not wired / old decision grep remains"; FAIL=$((FAIL+1))
   fi
 }
-assert_wired "pr-grind SKILL.md" "$REPO_ROOT/skills/pr-grind/SKILL.md"
+assert_wired "pr-grind SKILL.md" "$REPO_ROOT/skills/pr-grind/SKILL.md" \
+                                 "$REPO_ROOT/skills/pr-grind/references/completion.md"
 assert_wired "pr-grinder.md"     "$REPO_ROOT/agents/pr-grinder.md"
 assert_wired "pre-merge-gate.sh" "$REPO_ROOT/hooks/gate-scripts/pre-merge-gate.sh"
 

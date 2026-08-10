@@ -6,7 +6,7 @@
 # byte-for-byte lockstep:
 #   - agents/pr-grinder.md   Step 6.5      ack_for_bot()
 #   - skills/pr-grind/SKILL.md Step 6.5    inline_ack_for_bot()
-#   - skills/pr-grind/SKILL.md Completion  dispatcher_ack_for_bot()
+#   - skills/pr-grind/references/completion.md  dispatcher_ack_for_bot()
 # Ledger changes now touch one file. Cross-site comments at the call sites
 # point here for traceability.
 #

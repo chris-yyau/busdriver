@@ -5,7 +5,7 @@
 # across the four surfaces that previously each embedded the logic (issue #154):
 #   - hooks/gate-scripts/pre-merge-gate.sh      (count logic extracted from here)
 #   - skills/pr-grind/SKILL.md  Step 1 Phase 2.5
-#   - skills/pr-grind/SKILL.md  Completion verify-checks-green
+#   - skills/pr-grind/references/completion.md  verify-checks-green
 #   - agents/pr-grinder.md      worker Phase 2.5
 # Filter edits now touch one file instead of four kept in lockstep.
 #

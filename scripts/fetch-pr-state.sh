@@ -192,7 +192,7 @@ _fetch_pr_state() {
     # HEAD-scoped, so a bot's check-run on the PRE-amend SHA is invisible. Widen
     # ALL_CHECK_RUNS with any content-identical predecessor's check-runs (additive,
     # best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0). Keep in sync with
-    # agents/pr-grinder.md Step 6.5 and the two skills/pr-grind/SKILL.md mirrors.
+    # agents/pr-grinder.md Step 6.5 and the two skills/pr-grind/references/completion.md mirrors.
     # PR_NUMBER lets augment consult the force-push timeline (best-effort).
     # Guard: only source augment when fetch succeeded (FETCH_OK=1); sourcing on a
     # failed fetch could mutate ALL_CHECK_RUNS with stale data from prior

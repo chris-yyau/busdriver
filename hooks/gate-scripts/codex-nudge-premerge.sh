@@ -3,7 +3,7 @@
 #
 # WHY: the ADR 0013 `none`-nudge (post `@codex review` when Codex never engaged
 # on a PR that a Codex-active repo expects it to) was PROSE — a bash block buried
-# in skills/pr-grind/SKILL.md's COMPLETION section that only fires if the grinding
+# in skills/pr-grind/references/completion.md that only fires if the grinding
 # agent executes it verbatim. It therefore SILENTLY no-ops on every merge path
 # that reaches "clean" without running that block: the pre-merge gate's
 # bootstrap-merge bypass (gate-modifying PRs), skip-pr-grind bypasses, worktree

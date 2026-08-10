@@ -2,7 +2,7 @@
 # scripts/approver-gap-detect.sh — detect required-approver gap before merge.
 #
 # Single source of truth for the approver-gap detection algorithm consumed
-# by skills/pr-grind/SKILL.md's Completion path (post-clean, pre-merge). The
+# by skills/pr-grind/references/completion.md, the Completion path (post-clean, pre-merge). The
 # Completion path composes the four input JSON blobs / status flags below
 # and invokes this script; the script emits a structured JSON decision on
 # stdout for the dispatcher to switch on.
@@ -45,7 +45,7 @@
 #   6. Set ADMIN_FLAG_PASSED — "1" when --admin-on-approver-gap was passed
 #      to pr-grind, else "0".
 #   7. Set SOLO_ADMIN_OPT_IN — "1" only when ALL of the following hold;
-#      the caller (skills/pr-grind/SKILL.md) is responsible for performing
+#      the caller (skills/pr-grind/references/completion.md) is responsible for performing
 #      these checks before setting the flag. Set "0" if any condition fails.
 #        (a) The opt-in file exists at
 #            <MAIN_REPO_ROOT>/.claude/pr-grind-auto-admin-solo.local
@@ -134,7 +134,7 @@
 #   - "no-gap"             → caller proceeds to the normal gh pr merge path.
 #   - "surface-decision"   → caller BAILs with RESULT_BAIL_CATEGORY=policy and
 #                            renders the operator-decision message (template in
-#                            SKILL.md Completion → "Operator-decision message").
+#                            references/completion.md → "Operator-decision message").
 #                            The audit_workflow_present field controls whether
 #                            [admin] appears as the first/default option.
 #   - "auto-admin-merge"   → caller logs to .claude/bypass-log.jsonl and runs

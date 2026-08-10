@@ -1,3 +1,31 @@
+## [1.104.1](https://github.com/chris-yyau/busdriver/compare/v1.104.0...v1.104.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **imagegen:** ask operators to accept codex's unconfined sandbox, not certify it ([#614](https://github.com/chris-yyau/busdriver/issues/614)) ([38c2270](https://github.com/chris-yyau/busdriver/commit/38c227081a3d9b25902f75ed0f498585b7778cf6))
+
+# [1.104.0](https://github.com/chris-yyau/busdriver/compare/v1.103.0...v1.104.0) (2026-08-09)
+
+
+### Features
+
+* **imagegen:** image-generation router over codex, agy, and grok ([#608](https://github.com/chris-yyau/busdriver/issues/608)) ([a2cb534](https://github.com/chris-yyau/busdriver/commit/a2cb5346ab0c21ef122e7d41292831df2214fc39))
+
+# [1.103.0](https://github.com/chris-yyau/busdriver/compare/v1.102.4...v1.103.0) (2026-08-09)
+
+
+### Features
+
+* **pr-grind:** drop bugbot (cursor) and devin from ack registry ([#604](https://github.com/chris-yyau/busdriver/issues/604)) ([ce1319f](https://github.com/chris-yyau/busdriver/commit/ce1319f26e31c3c344260c02426dcf6e994bd3c0))
+
+## [1.102.4](https://github.com/chris-yyau/busdriver/compare/v1.102.3...v1.102.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** preserve failed droid rescue output before unlink ([#597](https://github.com/chris-yyau/busdriver/issues/597)) ([#602](https://github.com/chris-yyau/busdriver/issues/602)) ([3e74109](https://github.com/chris-yyau/busdriver/commit/3e74109004ae31ccd2d10c5393622f661bf48582))
+
 ## [1.102.3](https://github.com/chris-yyau/busdriver/compare/v1.102.2...v1.102.3) (2026-08-09)
 
 

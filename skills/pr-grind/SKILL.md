@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (Cursor, CodeRabbit, Cubic, etc.)
+- AI reviewer acks (CodeRabbit, Cubic, Greptile, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -54,7 +54,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cursor, Cubic are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -151,7 +151,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none,greptile-apps=none",
+                   PRIOR_REVIEWER_ACKS="cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
                    PRIOR_CODEX_ACK="none"
                    # PRIOR_CODEX_ACK persists Codex's RESULT_CODEX_ACK across
                    # rounds (parallel to PRIOR_REVIEWER_ACKS), so the max-wait
@@ -256,8 +256,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         reset, no fail-closed crutch. Invariant 3's bodyless-ack exemption
   │         then fires iff a registered bot acked the CURRENT HEAD via tier D
   │         (check-run) or E (commit-status) with n_total==0 — including on a
-  │         fix/wait round where, e.g., cursor's check-run registers before
-  │         slower bots (cursor=<sha> tier=D exempts; the others stay stale).
+  │         fix/wait round where, e.g., cubic's check-run registers before
+  │         slower bots (cubic=<sha> tier=D exempts; the others stay stale).
   │         Backward-compat: if `result_ack_tiers` is absent (legacy
   │         commit-block), reset RESULT_ACK_TIERS to the all-`none` default
   │         (fail-CLOSED — strict pre-ADR-0001 behavior).
@@ -289,7 +289,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
   │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
   │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
-  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all five
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
   │        registered bots acked HEAD but Codex is still reviewing — is
   │        legitimate and must NOT be misread as no-progress). A round with
   │        none of these is broken — re-dispatching would loop forever on no
@@ -307,7 +307,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        is `stale`) →
   │        BAIL with reason "subagent reported clean but reviewer ack
   │        ledger has stale entries: <list>" (include `chatgpt-codex-connector`
-  │        in <list> when RESULT_CODEX_ACK=stale). Slow-Cursor / slow-Cubic
+  │        in <list> when RESULT_CODEX_ACK=stale). Slow-Cubic / slow-CodeRabbit
   │        race protection — clean cannot ship while a registered bot OR
   │        Codex hasn't acked HEAD. Codex is checked here even though it lives
   │        outside RESULT_REVIEWER_ACKS (its clean signal is a Tier-F reaction,
@@ -336,18 +336,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        worked-example "always include codescene and
   │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the five registered ack-bots that the worker can
+  │        scoped to the three registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (7 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
-  │        `devin-ai-integration`, `greptile-apps`,
+  │        (5 bots: `cubic-dev-ai`, `coderabbitai`, `greptile-apps`,
   │        `codescene-delta-analysis`, `chatgpt-codex-connector`).
-  │        After comma-splitting, the number of entries MUST equal 7; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 7
+  │        After comma-splitting, the number of entries MUST equal 5; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -363,8 +362,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,none}).
   │                - if tier is `D` or `E` → PASS. The HEAD-ack came from a
   │                  bodyless structured signal (D=check-run, E=commit-status)
-  │                  with no enumerable Source 2/3/4 body — e.g., Cursor
-  │                  Bugbot on a clean run. By ack-ledger's tier order (A→E,
+  │                  with no enumerable Source 2/3/4 body — e.g., a
+  │                  clean-only check-run bot. By ack-ledger's tier order (A→E,
   │                  first hit wins), reaching D/E proves the bot has zero
   │                  live Source-2 inline threads, so this exemption cannot
   │                  mask an inline finding. See agents/pr-grinder.md Step 2.6
@@ -604,7 +603,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           (e.g. Codex/Devin after a rebase). It NEVER touches merge authority — required
                           checks + litmus still gate; this only releases the *advisory* ack after those
                           are already green. Treats ALL registered advisory bots uniformly (no per-bot
-                          special-casing — Codex and Devin are aligned with cursor/cubic/coderabbit).
+                          special-casing — Codex and Cubic/Coderabbit/Greptile are aligned).
 
                           1. Opt-in gate: run the resolver and proceed ONLY if it prints `1`:
                              `OPTIN=$(bash "<PLUGIN_ROOT>/scripts/advisory-downgrade-optin.sh")`.
@@ -1052,7 +1051,7 @@ Inputs (env vars, optional; default 0/empty):
 Outputs (stdout, exactly one JSON object on the last line):
 Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
 - Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — post-push synthesis computes acks, tiers, AND codex_ack from one ack-ledger pass over the new HEAD. Degrades to all-`stale` acks + all-`none` tiers + `"stale"` codex_ack if the post-push GitHub-state fetch fails (stale-codex on degraded fetch prevents Invariant 1 from misclassifying as no-progress).
-- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — refreshes acks, tiers, AND codex_ack from one ack-ledger pass, so a bot that bodyless-acks HEAD (e.g. cursor=<sha> tier=D) is exemptible even while slower bots stay stale. Codex ack reflects the current reaction state.
+- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — refreshes acks, tiers, AND codex_ack from one ack-ledger pass, so a bot that bodyless-acks HEAD (e.g. cubic=<sha> tier=D) is exemptible even while slower bots stay stale. Codex ack reflects the current reaction state.
 - Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>","result_codex_ack":"<worker RESULT_CODEX_ACK verbatim>"}` — passes the worker's acks, tiers, AND codex_ack through unchanged (one worker Step 6.5 pass). Falls back to all-`none` tiers / `"none"` codex_ack only if the caller omitted the respective tags (fail-CLOSED for tiers; `"none"` default for codex is safe on clean path since a stale Codex would block clean).
 - Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
 
@@ -1113,10 +1112,10 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale,greptile-apps=stale
-RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none,greptile-apps=none
+RESULT_REVIEWER_ACKS: cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
+RESULT_ACK_TIERS: cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,devin-ai-integration=0/0:none,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1127,10 +1126,10 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cursor=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All five bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 
@@ -1141,11 +1140,11 @@ PRIOR_ATTEMPTS:
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
+3. All automated reviewers completed (CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
+7. **Reviewer ack ledger**: every registered bot (Cubic, CodeRabbit, Greptile) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -1252,8 +1251,8 @@ ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value
 # (still reviewing, or hasn't re-acked HEAD after the last push) must block the
 # merge exactly like a stale registered bot. It is NOT in RESULT_REVIEWER_ACKS
-# (the five SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
-FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
+# (the three SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
+FRESH_ACKS="cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-
 # pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing
@@ -1412,7 +1411,7 @@ if [ "$CODEX_DONE" = "none" ]; then
   # never overwrites the last trustworthy observation.
   CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
   # ...and the PAYLOADS that verdict was computed from. Restoring the verdict
-  # alone is not enough: the five NON-Codex reviewers are recomputed after this
+  # alone is not enough: the three NON-Codex reviewers are recomputed after this
   # loop from these same six variables plus FETCH_OK, so a failed final poll
   # would leave them holding the incomplete snapshot and fail every one of them
   # closed to `stale` — blocking the merge for exactly the transient reason the
@@ -1438,7 +1437,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     # reads `none` (non-gating) rather than blocking the merge on a snapshot we
     # already know was incomplete.
     # Restore the verdict AND the payloads it came from, then clear FETCH_OK so
-    # the post-loop recomputation of the other five reviewers reads a snapshot
+    # the post-loop recomputation of the other three reviewers reads a snapshot
     # that is actually complete. Only when a complete snapshot was ever seen
     # (CODEX_LG_OK=1); otherwise leave FETCH_OK=0 and fail CLOSED.
     if [ "$FETCH_OK" != "1" ] && [ "$CODEX_LG_OK" = "1" ]; then
@@ -1527,7 +1526,7 @@ if [ "$CODEX_DONE" = "none" ]; then
   export ALL_CHECK_RUNS FETCH_OK
   # Recompute the ENTIRE ledger on the post-wait sources — not just Codex.
   # The loop refreshes all six payloads, but the old code re-folded ONLY the Codex
-  # entry, leaving the five registered bots at their pre-wait values. Over the old
+  # entry, leaving the three registered bots at their pre-wait values. Over the old
   # 20s sleep that gap was narrow; at a 480s deadline it is wide enough for a bot to
   # post CHANGES_REQUESTED (or a finding with no inline thread) during the window
   # while FRESH_ACKS still carries its stale-but-passing SHA — authorizing the merge
@@ -1553,7 +1552,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     none | stale | "$HEAD_SHA") : ;;
     *) CODEX_REGRACE=stale ;;
   esac
-  FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
+  FRESH_ACKS="cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
   # HEAD-MOVED GUARD (fail-CLOSED). Everything above classifies acks against
   # HEAD_SHA captured BEFORE the wait, but the later `gh pr merge` targets whatever
   # the PR points at NOW. A push landing during the window would therefore carry
@@ -1575,7 +1574,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     _CODEX_HEAD_DISPLAY="${CODEX_HEAD_NOW:0:8}"
     [ -z "$CODEX_HEAD_NOW" ] && _CODEX_HEAD_DISPLAY="<lookup failed>"
     echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${_CODEX_HEAD_DISPLAY}) — invalidating acks; the loop must re-converge on the new HEAD."
-    FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
+    FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
   fi
   fi
   # Missing-Codex warning (#320 secondary ask): Codex is HISTORICALLY active here but
@@ -1767,18 +1766,12 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # devin-ai-integration reviews ONLY the PR-create commit and
-                    # does not re-review later pushes; it registers NO check-run, so
-                    # its clean COMMENTED review strands `stale` on the pre-fix SHA.
-                    # Ack-ledger Case 4 (login-gated to devin; issue #489 / ADR 0027)
-                    # maps it to `none` when the review body matches a known Devin
-                    # clean template (fail-CLOSED anchored whitelist — a finding in
-                    # the summary, a thread (Tier A -> stale), or CHANGES_REQUESTED
-                    # (ever_approved>0) all keep it `stale`), so [update-merge]
-                    # converges without an opt-in for the recognized-clean case.
-                    # cursor is NOT covered by Case 4 (its clean-body string is
-                    # unconfirmed). For cursor, or any OTHER bot lacking a
-                    # Case-3/Case-4 downgrade that strands stale, the ADR 0012 opt-in
+                    # cursor (Bugbot) and devin-ai-integration were DROPPED from
+                    # the ack registry (ADR 0035) — both were review-once-at-create
+                    # bots whose stranded clean reviews previously needed the
+                    # Case-4 devin whitelist (ADR 0027, now removed); they no
+                    # longer gate the ledger. For any registered bot lacking a
+                    # Case-3 downgrade that strands stale, the ADR 0012 opt-in
                     # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
                     # ack ELIGIBLE for a stale→none downgrade at --max-wait
                     # exhaustion, and only when every ADR 0012 fail-closed
@@ -1837,18 +1830,12 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # devin-ai-integration reviews ONLY the PR-create commit and
-                    # does not re-review later pushes; it registers NO check-run, so
-                    # its clean COMMENTED review strands `stale` on the pre-fix SHA.
-                    # Ack-ledger Case 4 (login-gated to devin; issue #489 / ADR 0027)
-                    # maps it to `none` when the review body matches a known Devin
-                    # clean template (fail-CLOSED anchored whitelist — a finding in
-                    # the summary, a thread (Tier A -> stale), or CHANGES_REQUESTED
-                    # (ever_approved>0) all keep it `stale`), so [update-merge]
-                    # converges without an opt-in for the recognized-clean case.
-                    # cursor is NOT covered by Case 4 (its clean-body string is
-                    # unconfirmed). For cursor, or any OTHER bot lacking a
-                    # Case-3/Case-4 downgrade that strands stale, the ADR 0012 opt-in
+                    # cursor (Bugbot) and devin-ai-integration were DROPPED from
+                    # the ack registry (ADR 0035) — both were review-once-at-create
+                    # bots whose stranded clean reviews previously needed the
+                    # Case-4 devin whitelist (ADR 0027, now removed); they no
+                    # longer gate the ledger. For any registered bot lacking a
+                    # Case-3 downgrade that strands stale, the ADR 0012 opt-in
                     # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
                     # ack ELIGIBLE for a stale→none downgrade at --max-wait
                     # exhaustion, and only when every ADR 0012 fail-closed

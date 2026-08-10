@@ -2,7 +2,20 @@
 
 ## Status
 
-**Accepted (2026-07-25).** From issue #489 (evidence: Dive-And-Dev/jikdak PR #270,
+**Superseded (2026-08-09, ADR 0035).** Both bots this ADR exists for —
+`devin-ai-integration` and `cursor` (Bugbot) — were **dropped from the pr-grind
+ack registry** (ADR 0035): a 60-day cross-repo audit (14 repos, 682 PRs) showed
+their findings were ~75-92% redundant with the remaining bots, their exclusive
+findings had a 34% fix rate (mostly dependency/version nags the author ignored),
+and both are review-once-at-create bots that structurally cannot re-review
+fix-round pushes. The Case 4 login-gated whitelist this ADR introduced was
+**removed from `scripts/ack-ledger.sh`**; `tests/test-ack-ledger-devin.sh` was
+deleted. What remains is historical record — the review-once behavior and the
+fail-CLOSED whitelist design reasoning were real, but the machinery no longer
+has a subject.
+
+**Original status (2026-07-25), for the record:** Accepted. From issue #489
+(evidence: Dive-And-Dev/jikdak PR #270,
 2026-07-24). Decision: **direction 2, fail-CLOSED** — reclassify a *stranded,
 clean, one-and-done* review from a known review-once bot as **non-gating `none`**,
 implemented as a new login-gated Case 4 in `scripts/ack-ledger.sh`'s downgrade

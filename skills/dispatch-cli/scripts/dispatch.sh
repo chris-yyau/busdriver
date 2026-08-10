@@ -842,7 +842,7 @@ dispatch_one() {
                 # opencode would fail OPEN to the user default.
                 echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                 exit_code=1
-            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || [[ -z "$_oc_user" ]] || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
                 # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
                 # injectable). Derived BEFORE the neutral-dir creation so the
                 # arm's later XDG_CACHE_HOME/auth paths use it.

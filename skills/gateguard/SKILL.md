@@ -152,18 +152,48 @@ Do not "harden" this into `sanitized-node.sh` without first widening the profile
 list — otherwise you ship a guard that can never fire, which is worse than no
 guard because it reads as coverage.
 
-**The profile is checked twice on purpose — that is not drift.** Each entry wraps
-the launcher in a shell `case "${ECC_HOOK_PROFILE:-standard}" in [Ss][Tt]…` guard
-*and* passes `"strict"` to `run-with-flags.js`. The shell guard exists so a
-non-strict session never launches `node` at all: without it, the trailing
-`|| exit 2` would turn a broken `node` or `CLAUDE_PLUGIN_ROOT` into a hard block
-for `standard`/`minimal` users, because the in-process profile check lives inside
-`run-with-flags.js` and never runs if node cannot start. `isHookEnabled()`'s own
-check then remains as defense-in-depth. The `case` pattern is deliberately
-case-insensitive to match `hook-flags.js:19` (`.toLowerCase()`) — an exact
-`= "strict"` test would silently no-op under `ECC_HOOK_PROFILE=STRICT` while
-every other hook stayed enabled. Keep both saying `strict`; remove neither as
-"redundant".
+**The shell guard skips; it never enables.** Each entry is wrapped in
+
+```sh
+case "${ECC_HOOK_PROFILE:-standard}" in standard|minimal) ;; *) node … --fail-closed || exit 2 ;; esac
+```
+
+Two things make this shape the right one, and both are easy to get wrong.
+
+*Why a shell guard at all.* The trailing `|| exit 2` makes a `node` that cannot
+start (missing binary, bad `CLAUDE_PLUGIN_ROOT`) a **blocking** failure, which is
+what `--fail-closed` promises. But the in-process profile check lives inside
+`run-with-flags.js`, so it never runs when node cannot start — without a guard, a
+broken node would hard-block `standard` and `minimal` sessions where this gate is
+supposed to be inert.
+
+*Why the guard lists the OFF profiles rather than matching `strict`.* The shell
+must never be the thing that decides the hook is **on**, because shell pattern
+matching cannot reproduce `hook-flags.js:19` (`String(...).trim().toLowerCase()`).
+Successive review rounds found a fresh divergence each time one was patched:
+`STRICT` fails a case-sensitive compare, `" strict "` fails an untrimmed compare,
+and NBSP-padded `strict` survives JS `.trim()` but not shell `IFS` splitting. All
+three normalize to `strict` in JS, so each would have silently skipped GateGuard
+while `getHookProfile()` kept every *other* strict hook enabled.
+
+Listing only the unambiguous off-values inverts the risk. `standard` and `minimal`
+(case-insensitively, plus unset — which defaults to `standard`) skip cheaply and
+never launch node. Everything else falls through to node and `isHookEnabled()`
+makes the real decision — including values JS *rejects*, like `strict extra`,
+which `getHookProfile()` maps back to `standard` so the hook is correctly skipped
+in-process. A weird profile value costs one wasted node launch; it can never
+silently disable the gate.
+
+*Known residual.* A profile value that is genuinely non-strict but spelled oddly
+enough to miss the skip list (`" minimal "`, say) will launch node, so if node
+itself is broken the `|| exit 2` blocks that session. That needs two unlikely
+conditions at once, and it fails **closed** and loudly, which is the direction
+this repo prefers. Widening the skip list further would re-import the shell-vs-JS
+normalization problem in the dangerous direction.
+
+So: do not "tighten" this into a positive `strict` match, and do not delete the
+`"strict"` argument to `run-with-flags.js` as redundant — that argument is the
+only thing actually deciding whether the hook runs.
 
 If GateGuard blocks setup or repair work, start the session with
 `ECC_GATEGUARD=off` (or `GATEGUARD_DISABLED=1`). For hook-level control, add

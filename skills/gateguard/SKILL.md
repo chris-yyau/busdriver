@@ -152,6 +152,19 @@ Do not "harden" this into `sanitized-node.sh` without first widening the profile
 list — otherwise you ship a guard that can never fire, which is worse than no
 guard because it reads as coverage.
 
+**The profile is checked twice on purpose — that is not drift.** Each entry wraps
+the launcher in a shell `case "${ECC_HOOK_PROFILE:-standard}" in [Ss][Tt]…` guard
+*and* passes `"strict"` to `run-with-flags.js`. The shell guard exists so a
+non-strict session never launches `node` at all: without it, the trailing
+`|| exit 2` would turn a broken `node` or `CLAUDE_PLUGIN_ROOT` into a hard block
+for `standard`/`minimal` users, because the in-process profile check lives inside
+`run-with-flags.js` and never runs if node cannot start. `isHookEnabled()`'s own
+check then remains as defense-in-depth. The `case` pattern is deliberately
+case-insensitive to match `hook-flags.js:19` (`.toLowerCase()`) — an exact
+`= "strict"` test would silently no-op under `ECC_HOOK_PROFILE=STRICT` while
+every other hook stayed enabled. Keep both saying `strict`; remove neither as
+"redundant".
+
 If GateGuard blocks setup or repair work, start the session with
 `ECC_GATEGUARD=off` (or `GATEGUARD_DISABLED=1`). For hook-level control, add
 either hook ID above to `ECC_DISABLED_HOOKS`.

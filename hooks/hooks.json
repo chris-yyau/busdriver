@@ -148,7 +148,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2"
+            "command": "case \"${ECC_HOOK_PROFILE:-standard}\" in [Ss][Tt][Rr][Ii][Cc][Tt]) node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2 ;; esac"
           }
         ],
         "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing"
@@ -158,7 +158,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2"
+            "command": "case \"${ECC_HOOK_PROFILE:-standard}\" in [Ss][Tt][Rr][Ii][Cc][Tt]) node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2 ;; esac"
           }
         ],
         "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command"

@@ -430,7 +430,11 @@ finally:
 if len(raw) > (1 << 20):
     sys.exit(2)
 try:
-    json.loads(raw.decode("utf-8"))
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
 except Exception:
     sys.exit(2)
 d = os.path.join(sand, ".local", "share", "opencode")
@@ -460,7 +464,7 @@ PY
   # staged, lane continues); a kill-mid-write (137) is treated as fail-closed
   # by the VALIDATOR — assert the python contract for 0/1/2 first.
   _fault_sand2="$(mktemp -d)" || exit 1
-  for _ac in "valid:0" "garbage:2" "oversize:2" "fifo:2" "symlink:2"; do
+  for _ac in "valid:0" "garbage:2" "oversize:2" "fifo:2" "symlink:2" "nan:2" "nullroot:2"; do
     _kind="${_ac%%:*}"; _want="${_ac##*:}"
     rm -f "$_home/.local/share/opencode/auth.json" "$_home/.local/share/opencode/auth-target.json"
     case "$_kind" in
@@ -471,6 +475,8 @@ PY
       oversize) /usr/bin/python3 -c 'import sys; sys.stdout.write("{\"pad\":\"" + "a" * 1048600 + "\"}")' > "$_home/.local/share/opencode/auth.json" ;;
       fifo) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null ;;
       symlink) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json" ;;
+      nan) printf '{"k":NaN}\n' > "$_home/.local/share/opencode/auth.json" ;;
+      nullroot) printf 'null\n' > "$_home/.local/share/opencode/auth.json" ;;
     esac
     # Guard the fixtures: a failed mkfifo/ln would leave a MISSING source,
     # which exits 2 for the same reason — a false pass.
@@ -493,7 +499,11 @@ finally:
 if len(raw) > (1 << 20):
     sys.exit(2)
 try:
-    json.loads(raw.decode("utf-8"))
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
 except Exception:
     sys.exit(2)
 d = os.path.join(sand, ".local", "share", "opencode")
@@ -552,7 +562,11 @@ finally:
 if len(raw) > (1 << 20):
     sys.exit(2)
 try:
-    json.loads(raw.decode("utf-8"))
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
 except Exception:
     sys.exit(2)
 d = os.path.join(sand, ".local", "share", "opencode")
@@ -624,6 +638,10 @@ PY
   # (d) garbage → refuse (fail-closed on unparseable)
   printf 'not json at all {\n' > "$_home/.opencode/opencode.jsonc"
   validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (d) unparseable jsonc accepted"; ok=0; }
+
+  # (d2) NaN constant → refuse (python accepts NaN, opencode does not)
+  printf '{"provider":{"p":{"options":{"apiKey":NaN}}}}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (d2) NaN config accepted"; ok=0; }
 
   # (e) absent files → pass (nothing to widen)
   rm -rf "$_home/.opencode"

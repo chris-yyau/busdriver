@@ -501,10 +501,15 @@ def parse(path):
 try:
     raw = parse(sys.argv[1])
     text = raw.decode("utf-8", errors="replace")
+    # Reject Python-only constants (NaN/Infinity): python accepts them,
+    # opencode's parser does not — a config opencode refuses to load is not
+    # a safe provider-only config.
+    def _reject(x):
+        raise ValueError(x)
     try:
-        d = json.loads(text)
+        d = json.loads(text, parse_constant=_reject)
     except Exception:
-        d = json.loads(strip_jsonc(text))
+        d = json.loads(strip_jsonc(text), parse_constant=_reject)
 except Exception:
     sys.exit(1)
 # Root must be an object; a non-object ([] / ["provider"] / scalar) is not a
@@ -587,9 +592,17 @@ finally:
 if len(raw) > (1 << 20):
     sys.exit(2)  # oversized — fail open (no auth staged)
 try:
-    json.loads(raw.decode("utf-8"))  # mid-write/unparseable — fail open
+    # Reject Python-only constants (NaN/Infinity) and non-dict roots
+    # (null/[]): python's default loads accepts them, opencode's parser or
+    # auth schema does not — staging them would turn fail-open into a
+    # failed dispatch.
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)  # empty/malformed — fail open (nothing staged)
 except Exception:
-    sys.exit(2)
+    sys.exit(2)  # mid-write/unparseable — fail open
 d = os.path.join(sand, ".local", "share", "opencode")
 dest = os.path.join(d, "auth.json")
 try:

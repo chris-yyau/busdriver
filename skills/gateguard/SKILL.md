@@ -49,8 +49,9 @@ Both agents produce code that runs and passes tests. The difference is design de
 ### Edit / MultiEdit Gate (first edit per file)
 
 MultiEdit is *intended* to be handled identically — each file in the batch gated
-individually — but the implementation never fires for it; see the Quick Start
-notes below and #615. The code is the authority.
+individually — but MultiEdit requests are not actually gated: the hook fires but
+its denial condition never matches, so the request is always allowed through.
+See the Quick Start notes below and #615. The code is the authority.
 
 ```
 Before editing {file_path}, present these facts:
@@ -108,8 +109,12 @@ ECC_HOOK_PROFILE=strict claude
 ```
 
 Deliberate staged rollout — promote to `"standard,strict"` in `hooks.json` once
-you are satisfied with the behaviour. What it denies, precisely (it is narrower
-than the three-stage summary above suggests):
+you are satisfied with the behaviour. That promotion is two edits, not one: the
+`run-with-flags.js` profile argument AND the shell `case` guard's skip pattern
+(see "The shell guard skips; it never enables" below) both currently treat
+`standard` as OFF — widen both, or standard sessions will still be skipped
+before node ever runs. What it denies, precisely (it is narrower than the
+three-stage summary above suggests):
 
 - `Edit`/`Write` — the **first touch of each file** only. Paths under Claude's
   own settings are exempt (`isClaudeSettingsPath`).
@@ -155,7 +160,10 @@ guard because it reads as coverage.
 **The shell guard skips; it never enables.** Each entry is wrapped in
 
 ```sh
-case "${ECC_HOOK_PROFILE:-standard}" in standard|minimal) ;; *) node … --fail-closed || exit 2 ;; esac
+case "${ECC_HOOK_PROFILE:-standard}" in
+  [Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd]|[Mm][Ii][Nn][Ii][Mm][Aa][Ll]) ;;
+  *) node … --fail-closed || exit 2 ;;
+esac
 ```
 
 Two things make this shape the right one, and both are easy to get wrong.

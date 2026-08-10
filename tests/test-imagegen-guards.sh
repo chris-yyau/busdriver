@@ -55,8 +55,9 @@ if bash -n "$BLOCK" 2>/dev/null; then ok "block parses"; else bad "block has a s
 # 1b. The operator-filled assignments must be SINGLE-quoted. They are the one place a
 #     path the operator did not author enters the block, and command substitution in an
 #     unquoted — or double-quoted — value runs at assignment time, before any guard.
-unquoted=$(grep -nE "^(BRIEF|OUT|PROVIDER|SRC|CODEX_SANDBOX_CHECKED)=" "$BLOCK" | grep -vE "^[0-9]+:[A-Z_]+='")
-if [ -n "$unquoted" ]; then bad "assignment not single-quoted: $unquoted"; else ok "operator assignments are single-quoted"; fi
+# shellcheck disable=SC2312  # a no-match grep exits 1; empty output is the pass signal here
+unquoted=$(grep -nE "^(BRIEF|OUT|PROVIDER|SRC|CODEX_UNCONFINED_OK)=" "$BLOCK" | grep -vE "^[0-9]+:[A-Z_]+='")
+if [[ -n "$unquoted" ]]; then bad "assignment not single-quoted: $unquoted"; else ok "operator assignments are single-quoted"; fi
 
 # 2. A relative $OUT is refused (the providers all need an absolute path).
 case "$(why_run "$GUARDS" 'relative/hero.png')" in
@@ -117,28 +118,47 @@ case "$why" in
   *) bad "broken find did not refuse: $why" ;;
 esac
 
-# 8. The codex acknowledgement must mean exactly 1. `-n` would have opened the route on
-#    CODEX_SANDBOX_CHECKED=0 and =false — values that plainly read as a refusal. This is
-#    the one case that runs the FULL block (the acknowledgement lives in the stripped
-#    codex branch), so codex is stubbed: nothing real is dispatched even if the guard
-#    regresses, and the stub's marker is the proof that it was not reached.
+# 8. The codex acknowledgement gates the route, and must mean exactly 1 — `-n` would
+#    have opened it on CODEX_UNCONFINED_OK=0 and =false, values that plainly read as a
+#    refusal. Both directions are asserted: an unacknowledged run must NOT reach codex,
+#    and an acknowledged one MUST — a gate that refuses everything is not a control,
+#    it is a deletion, which is exactly the failure the flag was renamed to fix.
+#    This is the one case that runs the FULL block (the acknowledgement lives in the
+#    stripped codex branch), so codex is stubbed: nothing real is dispatched even if the
+#    guard regresses, and the stub's marker is the proof of which way it went.
 mkdir -p "$TMP/stub2"
 printf '#!/bin/sh\ntouch "%s/DISPATCHED"\nexit 0\n' "$TMP" > "$TMP/stub2/codex"
 chmod +x "$TMP/stub2/codex"
 for val in 0 false ""; do
   rm -f "$TMP/DISPATCHED"
+  # shellcheck disable=SC2312  # sed's status is immaterial — an empty extract fails the
+  # assertion below anyway
   why=$( env BRIEF="$TMP/brief.txt" PATH="$TMP/stub2:$PATH" bash -c "
-      $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$TMP/mine/codex-$RANDOM.png|; s|^PROVIDER=.*|PROVIDER=codex|; s|^CODEX_SANDBOX_CHECKED=.*|CODEX_SANDBOX_CHECKED=$val|" "$BLOCK")
+      $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$TMP/mine/codex-$RANDOM.png|; s|^PROVIDER=.*|PROVIDER=codex|; s|^CODEX_UNCONFINED_OK=.*|CODEX_UNCONFINED_OK=$val|" "$BLOCK")
     " 2>&1 >/dev/null )
-  if [ -e "$TMP/DISPATCHED" ]; then
-    bad "CODEX_SANDBOX_CHECKED='$val' dispatched codex"
+  if [[ -e "$TMP/DISPATCHED" ]]; then
+    bad "CODEX_UNCONFINED_OK='$val' dispatched codex"
   else
     case "$why" in
-      *"route is closed"*) ok "CODEX_SANDBOX_CHECKED='$val' refuses" ;;
-      *) bad "CODEX_SANDBOX_CHECKED='$val': unexpected failure: $why" ;;
+      *UNCONFINED*) ok "CODEX_UNCONFINED_OK='$val' refuses" ;;
+      *) bad "CODEX_UNCONFINED_OK='$val': unexpected failure: $why" ;;
     esac
   fi
 done
+
+#    ...and the acknowledged value opens it. Without this the gate could refuse
+#    unconditionally — killing the route outright — and every assertion above would
+#    still pass. That regression is the exact reason the flag was renamed.
+rm -f "$TMP/DISPATCHED"
+# shellcheck disable=SC2312  # same rationale as the loop above
+why=$( env BRIEF="$TMP/brief.txt" PATH="$TMP/stub2:$PATH" bash -c "
+    $(sed "s|^BRIEF=.*|BRIEF=$TMP/brief.txt|; s|^OUT=.*|OUT=$TMP/mine/codex-$RANDOM.png|; s|^PROVIDER=.*|PROVIDER=codex|; s|^CODEX_UNCONFINED_OK=.*|CODEX_UNCONFINED_OK=1|" "$BLOCK")
+  " 2>&1 >/dev/null )
+if [[ -e "$TMP/DISPATCHED" ]]; then
+  ok "CODEX_UNCONFINED_OK=1 reaches dispatch"
+else
+  bad "CODEX_UNCONFINED_OK=1 did not dispatch — the gate refuses even when accepted: $why"
+fi
 
 # 9. The grok-edit source guard, exercised directly. This branch is stripped from
 #    GUARDS, so the FULL block runs with grok stubbed: the stub's marker proves whether

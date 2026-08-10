@@ -2289,7 +2289,7 @@ execute_review() {
                # (Comments BEFORE the command — after a backslash
                # continuation they would terminate the chain.)
                _run_review_with_retries opencode "$prompt" "$duration" pipe \
-                 env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
+                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                    OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                    XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
                    XDG_CACHE_HOME="$_oc_home/.cache" \

@@ -901,7 +901,7 @@ dispatch_one() {
                 # redirected). Single source of truth: the shared guard lives in
                 # resolve-cli.sh; a missing library fails CLOSED here (a stuck
                 # lane beats an unvalidated dispatch).
-                if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
+                if [[ "${_BD_RESOLVE_CLI_SOURCED:-}" != 1 ]]; then
                     echo "Error: resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >&2
                     printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
                     /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
@@ -955,7 +955,7 @@ dispatch_one() {
                   # comment after a backslash continuation would terminate
                   # the chain and run opencode UNISOLATED.)
                   _portable_timeout "$_budget" \
-                    env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
+                    /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                         OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                         XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
                         XDG_CACHE_HOME="$_oc_home/.cache" \

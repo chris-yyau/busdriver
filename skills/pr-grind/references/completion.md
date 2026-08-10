@@ -1277,7 +1277,7 @@ NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
 if [ "$NO_WORKTREE" = "1" ]; then
   REPO_ROOT=$(git rev-parse --show-toplevel)
   mkdir -p "$REPO_ROOT/.claude"
-  # Same `<PR> <HEAD_SHA>` contract as the marker-write block above (#505): the
+  # Same `<PR> <REVIEWED_HEAD>` contract as the marker-write block above (#505): the
   # CLASSIFIED head (REVIEWED_HEAD), never a fresh headRefOid query.
   REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
   if [ "${#REVIEWED_HEAD}" -ne 40 ]; then

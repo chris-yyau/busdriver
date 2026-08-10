@@ -691,7 +691,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              COMPLETION's ack-recompute honors the release instead of re-deriving `stale`
                              (see COMPLETION) and so the released list is surfaced in the operator-facing
                              completion message and audit trail. ⚠ The `pr-grind-clean.local` marker itself
-                             MUST stay exactly `<PR_NUMBER> <HEAD_SHA>` regardless — it does NOT carry
+                             MUST stay exactly `<PR_NUMBER> <REVIEWED_HEAD>` regardless — it does NOT carry
                              DOWNGRADED_BOTS or any other content (see COMPLETION's marker note; the durable
                              record of the release lives in `bypass-log.jsonl`, not the marker). Otherwise fall
                              through to BAIL — a bot with live findings, a failed green gate, or the missing
@@ -727,7 +727,7 @@ COMPLETION:
   │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
   │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
   ├── Write .claude/pr-grind-clean.local at repo root. ⚠ The marker MUST stay exactly
-  │   TWO whitespace-separated fields — `<PR_NUMBER> <HEAD_SHA>` (#505). `pre-merge-gate.sh`
+  │   TWO whitespace-separated fields — `<PR_NUMBER> <REVIEWED_HEAD>` (#505). `pre-merge-gate.sh`
   │   reads field 1 as the PR (any non-digit ⇒ corrupt: marker deleted, merge blocked) and
   │   field 2 as the 40-hex commit the grind actually validated, which it compares against
   │   the PR's live `headRefOid` (mismatch or missing ⇒ blocked). Adding a third field is

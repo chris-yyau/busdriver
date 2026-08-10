@@ -339,7 +339,7 @@ fi
 [[ -z "$PROMPT" ]] && { echo "Error: Empty prompt." >&2; exit 1; }
 
 # Write prompt to temp file (avoids shell escaping with long prompts)
-PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/dispatch-prompt-XXXXXX")
+PROMPT_FILE=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/dispatch-prompt-XXXXXX")
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 trap 'rm -f "$PROMPT_FILE"' EXIT
 
@@ -822,7 +822,7 @@ dispatch_one() {
                 # opencode would fail OPEN to the user default.
                 echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                 exit_code=1
-            elif ! _oc_cwd="$(mktemp -d 2>/dev/null)" || [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
+            elif ! _oc_cwd="$(/usr/bin/mktemp -d 2>/dev/null)" || [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
                 echo "Error: could not create a neutral working directory for opencode — refusing to dispatch from the reviewed tree (its project config could redefine the reviewer)." >&2
                 exit_code=1
             else
@@ -903,7 +903,11 @@ dispatch_one() {
                   trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"' EXIT
                   trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 143' TERM
                   trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 130' INT
-                  if ! validate_opencode_home_config "$_oc_home"; then
+                  # Pinned SYSTEM-ONLY PATH: the validator stages credentials
+                  # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is
+                  # the operator-WRITABLE opencode dir, which must not shadow
+                  # those utilities; the system dirs carry them all.
+                  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
                     printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
                     exit 1
                   fi

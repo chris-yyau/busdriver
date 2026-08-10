@@ -103,7 +103,7 @@ for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
   # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
   if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
      && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && grep -q '_oc_cwd="\$(mktemp -d' "$_f" \
+     && { grep -q '_oc_cwd="\$(/usr/bin/mktemp -d' "$_f" || grep -q '_oc_cwd="\$(mktemp -d' "$_f"; } \
      && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
      && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
      && grep -q '"\$_oc_bin" run --dir' "$_f" \
@@ -388,14 +388,218 @@ if (
   fi
   _m="$(/usr/bin/stat -f%Lp "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || /usr/bin/stat -c%a "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || echo "000")"
   [[ "$_m" == "600" ]] || { echo "  ✗ (a4b) staged auth.json mode $_m (want 600)"; ok=0; }
-  [[ "$(ls -A "$_BD_OC_SANDBOX_HOME/.local/share" 2>/dev/null | wc -l | tr -d ' ')" == "1" ]] \
-    || { echo "  ✗ (a4b) sandbox data dir carries more than auth.json (account state?)"; ok=0; }
-  for _f in skills/dispatch-cli/scripts/dispatch.sh scripts/lib/resolve-cli.sh; do
+  # shellcheck disable=SC2312  # the counts are load-bearing; find's rc is not
+  [[ "$(find "$_BD_OC_SANDBOX_HOME/.local/share" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')" == "2" ]] \
+    || { echo "  ✗ (a4b) sandbox data dir has unexpected entries (expect only opencode/ + auth.json)"; ok=0; }
+  for _f in "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh" "$REPO_ROOT/scripts/lib/resolve-cli.sh"; do
     # shellcheck disable=SC2016  # the \$ is a literal grep pattern
     grep -q 'XDG_DATA_HOME="\$_BD_OC_SANDBOX_HOME/.local/share"' "$_f" \
-      || { echo "  ✗ (a4b) $_f does not wire XDG_DATA_HOME to the sandbox data dir"; ok=0; }
+      || { echo "  ✗ (a4b) $(basename "$_f") does not wire XDG_DATA_HOME to the sandbox data dir"; ok=0; }
   done
-  rm -rf "$_BD_OC_SANDBOX_HOME" "$_home/.local/share" 2>/dev/null || true
+  # (a4c) fault injection — mktemp failure (home unwritable) FAILS CLOSED.
+  # (As root, chmod 0555 does not stop mktemp — skip.)
+  # shellcheck disable=SC2312  # the uid is load-bearing; id's rc is not
+  if [[ "$(/usr/bin/id -u 2>/dev/null || echo 0)" -ne 0 ]]; then
+    chmod 0555 "$_home" 2>/dev/null || true
+    if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (a4c) mktemp failure accepted"; ok=0; fi
+    chmod 0755 "$_home" 2>/dev/null || true
+    [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4c) mktemp-failure refusal left a sandbox handle"; ok=0; }
+  fi
+  # (a4c2) direct python contract: a write that cannot be cleaned up (target
+  # pre-created as a DIRECTORY — open and unlink both fail) must exit 1
+  # (fail-closed); a cleaned-up failure exits 2 (fail-open). The python below
+  # mirrors the validator's inline auth-staging logic verbatim.
+  mkdir -p "$_home/.local/share/opencode" || exit 1
+  printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json"
+  _fault_sand="$(mktemp -d)" || exit 1
+  mkdir -p "$_fault_sand/.local/share/opencode/auth.json"   # target is a DIR
+  /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    json.loads(raw.decode("utf-8"))
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
+            sys.exit(2)
+        sys.exit(1)  # state unknown — fail closed
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)  # cleanup failed too — FAIL CLOSED
+    sys.exit(2)      # cleaned up — fail open
+PY
+  _frc=$?
+  [[ "$_frc" -eq 1 ]] || { echo "  ✗ (a4c2) unstageable auth did not exit 1 (got $_frc)"; ok=0; }
+  # (a4c3) failure classification: valid JSON stages (exit 0); invalid JSON,
+  # oversize, FIFO source, and symlink source fail OPEN (exit 2 — no auth
+  # staged, lane continues); a kill-mid-write (137) is treated as fail-closed
+  # by the VALIDATOR — assert the python contract for 0/1/2 first.
+  _fault_sand2="$(mktemp -d)" || exit 1
+  for _ac in "valid:0" "garbage:2" "oversize:2" "fifo:2" "symlink:2"; do
+    _kind="${_ac%%:*}"; _want="${_ac##*:}"
+    rm -f "$_home/.local/share/opencode/auth.json" "$_home/.local/share/opencode/auth-target.json"
+    case "$_kind" in
+      valid) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json" ;;
+      garbage) printf 'not json\n' > "$_home/.local/share/opencode/auth.json" ;;
+      # VALID JSON but > 1 MiB — only the SIZE check can reject it (zero
+      # bytes would fail the JSON check first and never exercise the limit).
+      oversize) /usr/bin/python3 -c 'import sys; sys.stdout.write("{\"pad\":\"" + "a" * 1048600 + "\"}")' > "$_home/.local/share/opencode/auth.json" ;;
+      fifo) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null ;;
+      symlink) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json" ;;
+    esac
+    # Guard the fixtures: a failed mkfifo/ln would leave a MISSING source,
+    # which exits 2 for the same reason — a false pass.
+    [[ -e "$_home/.local/share/opencode/auth.json" || -L "$_home/.local/share/opencode/auth.json" ]] \
+      || { echo "  ✗ (a4c3) $_kind fixture missing"; ok=0; continue; }
+    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    json.loads(raw.decode("utf-8"))
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
+            sys.exit(2)
+        sys.exit(1)  # state unknown — fail closed
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)
+    sys.exit(2)
+PY
+    _frc2=$?
+    [[ "$_frc2" -eq "$_want" ]] || { echo "  ✗ (a4c3) $_kind auth exit $_frc2 (want $_want)"; ok=0; }
+    rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
+  done
+  # (a4c3b) seeded random property sweep over the same auth contract: random
+  # kinds and sizes, deterministic seed — valid JSON ≤ 1 MiB stages (0);
+  # garbage, oversize, FIFO, or symlink sources fail open (2).
+  _seed=7
+  for _ri in $(seq 1 10); do
+    _seed=$(( (_seed * 1103515245 + 12345) & 0x7fffffff ))
+    _rk=$(( _seed % 5 ))
+    rm -f "$_home/.local/share/opencode/auth.json" "$_home/.local/share/opencode/auth-target.json"
+    case "$_rk" in
+      0) printf '{"k":"v%d"}\n' "$_ri" > "$_home/.local/share/opencode/auth.json"; _rw=0 ;;
+      1) printf 'garbage %d\n' "$_ri" > "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+      2) /usr/bin/python3 -c "import sys; sys.stdout.write('{\"pad\":\"' + 'a' * (1048576 + $_ri) + '\"}')" > "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+      3) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null; _rw=2 ;;
+      4) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+    esac
+    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    json.loads(raw.decode("utf-8"))
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):
+            sys.exit(2)
+        sys.exit(1)
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)
+    sys.exit(2)
+PY
+    _frc3=$?
+    [[ "$_frc3" -eq "$_rw" ]] || { echo "  ✗ (a4c3b) random case $_rk/$_ri exit $_frc3 (want $_rw)"; ok=0; }
+    rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
+  done
+  # (a4c4) the VALIDATOR's shell-level rc classifier: 0 = ok, 2 = fail-open,
+  # EVERYTHING else (1, 137, 143 — helper killed mid-write) = fail-closed,
+  # with the sandbox removed and the handle cleared. Exercises the REAL
+  # production classifier (not a copy).
+  _cl_sand="$(mktemp -d "$_home/.cl-sand.XXXXXX")" || exit 1
+  _BD_OC_SANDBOX_HOME="$_cl_sand"
+  _bd_oc_auth_rc_classify 0 "$_cl_sand"; _c0=$?
+  _bd_oc_auth_rc_classify 2 "$_cl_sand" 2>/dev/null; _c2=$?
+  for _crc in 1 137 143; do
+    _cl_sand2="$(mktemp -d "$_home/.cl-sand.XXXXXX")" || exit 1
+    _BD_OC_SANDBOX_HOME="$_cl_sand2"
+    _bd_oc_auth_rc_classify "$_crc" "$_cl_sand2" 2>/dev/null; _cc=$?
+    [[ "$_cc" -eq 1 ]] || { echo "  ✗ (a4c4) rc $_crc classified continue (got $_cc)"; ok=0; }
+    [[ ! -e "$_cl_sand2" ]] || { echo "  ✗ (a4c4) rc $_crc left the sandbox"; ok=0; }
+    [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4c4) rc $_crc left the handle"; ok=0; }
+  done
+  [[ "$_c0" -eq 0 ]] || { echo "  ✗ (a4c4) rc 0 classified refuse"; ok=0; }
+  [[ "$_c2" -eq 0 ]] || { echo "  ✗ (a4c4) rc 2 classified refuse"; ok=0; }
+  rm -rf "$_cl_sand" "$_home/.cl-sand."* 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
+  rm -rf "$_BD_OC_SANDBOX_HOME" "$_fault_sand" "$_fault_sand2" "$_home/.local/share" 2>/dev/null || true
   _BD_OC_SANDBOX_HOME=""
 
   # (b) mcp key → refuse

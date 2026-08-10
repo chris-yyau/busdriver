@@ -354,7 +354,7 @@ validate_opencode_home_config() {
   # real data dir; XDG_CACHE_HOME in the dispatch env keeps the inert model/
   # package cache shared. XDG_DATA_HOME is deliberately NOT set (see the arm
   # comment: the data dir's account state would reopen a config surface).
-  _voh_sandbox="$(mktemp -d "$_voh_home/.busdriver-oc-home.XXXXXX" 2>/dev/null)" || { echo "busdriver: cannot stage the validated opencode home — mktemp failed; refusing to dispatch unconfined." >&2; return 1; }
+  _voh_sandbox="$(/usr/bin/mktemp -d "$_voh_home/.busdriver-oc-home.XXXXXX" 2>/dev/null)" || { echo "busdriver: cannot stage the validated opencode home — mktemp failed; refusing to dispatch unconfined." >&2; return 1; }
   # Assign IMMEDIATELY (before populating): a caller's already-armed cleanup
   # trap sees the path during the whole staging window, so TERM mid-staging
   # cannot orphan the (possibly credential-bearing) dir.
@@ -364,7 +364,7 @@ validate_opencode_home_config() {
   # inherited/exported _BD_OC_SANDBOX_HOME (even one matching the anchored
   # prefix) can never make a lane's trap delete a CONCURRENT dispatch's
   # populated sandbox.
-  : > "$_voh_sandbox/.bd-own" || { echo "busdriver: cannot mark the staged opencode home — refusing to dispatch unconfined." >&2; if rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi; return 1; }
+  /usr/bin/touch "$_voh_sandbox/.bd-own" || { echo "busdriver: cannot mark the staged opencode home — refusing to dispatch unconfined." >&2; if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi; return 1; }
   # HOME-based SDK credential/config dirs (AWS profiles, Azure, GCP ADC):
   # providers that obtain credentials from ~/.aws etc. must keep reading the
   # REAL files under the redirected HOME. Explicit symlinks into the sandbox,
@@ -372,14 +372,14 @@ validate_opencode_home_config() {
   # operator's own process and already read these under the pre-fix HOME=real.
   for _voh_sdk in .aws .azure .config/gcloud; do
     if [[ -e "$_voh_home/$_voh_sdk" || -L "$_voh_home/$_voh_sdk" ]] && [[ ! -e "$_voh_sandbox/$_voh_sdk" ]]; then
-      if [[ "${_voh_sdk%/*}" != "$_voh_sdk" ]] && ! mkdir -p "$_voh_sandbox/${_voh_sdk%/*}" 2>/dev/null; then
+      if [[ "${_voh_sdk%/*}" != "$_voh_sdk" ]] && ! /bin/mkdir -p "$_voh_sandbox/${_voh_sdk%/*}" 2>/dev/null; then
         echo "busdriver: cannot stage the sandbox path for $_voh_sdk — refusing to dispatch unconfined." >&2
-        if rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
         return 1
       fi
-      if ! ln -s "$_voh_home/$_voh_sdk" "$_voh_sandbox/$_voh_sdk" 2>/dev/null; then
+      if ! /bin/ln -s "$_voh_home/$_voh_sdk" "$_voh_sandbox/$_voh_sdk" 2>/dev/null; then
         echo "busdriver: cannot stage the operator's $_voh_sdk (provider credential dir) — refusing to dispatch unconfined." >&2
-        if rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
         return 1
       fi
     fi
@@ -546,7 +546,7 @@ PY
       echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and is not a safe provider-only config (unparseable, keys beyond provider/\$schema, non-regular file, or an npm package reference) — refusing to dispatch unconfined." >&2
       # Clear the global only if the removal actually succeeded — otherwise
       # the lane's EXIT trap retries it with the still-live handle.
-      if rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+      if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
       return 1
     fi
   done
@@ -562,37 +562,80 @@ PY
   # refreshed mid-run is lost; the next dispatch re-copies the real file).
   _voh_authp="$_voh_home/.local/share/opencode/auth.json"
   if [[ -e "$_voh_authp" || -L "$_voh_authp" ]]; then
-    if ! /usr/bin/python3 -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null
-import json, os, stat, sys
+    # exit 0 = staged / nothing to stage; exit 2 = source unreadable (fail-open,
+    # warned — the lane's own provider is apiKey-based); exit 1 = write or
+    # cleanup failure (FAIL-CLOSED — a partial/incorrectly-permissioned
+    # auth.json left in the sandbox would break every provider's auth parse).
+    _voh_auth_rc=0
+    /usr/bin/python3 -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null || _voh_auth_rc=$?
+import errno, json, os, stat, sys
 
 src, sand = sys.argv[1], sys.argv[2]
 try:
     fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
 except OSError:
-    sys.exit(1)  # missing/symlink/unreadable — caller warns, fails open
+    sys.exit(2)  # missing/symlink/unreadable — caller warns, fails open
 try:
     if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(1)  # FIFO/socket/device — refuse
+        sys.exit(2)  # FIFO/socket/device — fail open (no auth staged)
     raw = os.read(fd, (1 << 20) + 1)
 finally:
     os.close(fd)
 if len(raw) > (1 << 20):
-    sys.exit(1)  # oversized — refuse
+    sys.exit(2)  # oversized — fail open (no auth staged)
 try:
-    json.loads(raw.decode("utf-8"))  # mid-write/unparseable — refuse
+    json.loads(raw.decode("utf-8"))  # mid-write/unparseable — fail open
 except Exception:
-    sys.exit(1)
+    sys.exit(2)
 d = os.path.join(sand, ".local", "share", "opencode")
-os.makedirs(d, exist_ok=True)
-with open(os.path.join(d, "auth.json"), "wb") as f:
-    f.write(raw)
-os.chmod(os.path.join(d, "auth.json"), 0o600)
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    # If the destination exists after a failed write, it is partial or
+    # incorrectly permissioned and MUST NOT stay for opencode; if the unlink
+    # fails too, FAIL CLOSED. ENOENT/ENOTDIR prove the destination never
+    # existed (nothing partial) — fail open; any OTHER lookup failure leaves
+    # the state unknown — fail closed.
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR):
+            sys.exit(2)
+        sys.exit(1)
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)  # partial file may remain — FAIL CLOSED
+    sys.exit(2)      # cleaned up — fail open
 PY
-    then
-      echo "busdriver: WARNING — could not stage the operator auth.json; auth-based providers will be unavailable this dispatch (apiKey-based providers unaffected)." >&2
+    if [[ "$_voh_auth_rc" -eq 0 ]]; then
+      :  # staged (or nothing to stage)
+    elif ! _bd_oc_auth_rc_classify "$_voh_auth_rc" "$_voh_sandbox"; then
+      return 1
     fi
   fi
   return 0
+}
+
+# Auth staging rc classifier: 0 = staged (ok); 2 = source unreadable/nothing
+# staged (fail-OPEN, warned — the lane's own provider is apiKey-based); ANY
+# other nonzero (1 = partial may remain; 137/143 = helper killed mid-write)
+# FAILS CLOSED — a partial auth.json must never be left for opencode.
+# Usage: _bd_oc_auth_rc_classify <rc> <sandbox_home>  →  0 continue / 1 refuse
+_bd_oc_auth_rc_classify() {
+  local _rc="$1" _sb="${2:-}"
+  [[ "$_rc" -eq 0 ]] && return 0
+  if [[ "$_rc" -eq 2 ]]; then
+    echo "busdriver: WARNING — could not stage the operator auth.json; auth-based providers will be unavailable this dispatch (apiKey-based providers unaffected)." >&2
+    return 0
+  fi
+  echo "busdriver: the operator auth.json could not be staged and a partial file may remain in the sandbox — refusing to dispatch unconfined." >&2
+  if /bin/rm -rf "$_sb" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+  return 1
 }
 
 # Anchored sandbox-home cleanup: the path must be a DIRECT child of the
@@ -610,8 +653,8 @@ _bd_rm_sandbox_home() {
     *) return 0 ;;
   esac
   [[ "${_p##*/}" == .busdriver-oc-home.* ]] || return 0
-  [[ -f "$_p/.bd-own" ]] || { [[ -z "$(ls -A "$_p" 2>/dev/null)" ]] || return 0; }   # marked, or still-empty (nothing staged yet — early-orphan window)
-  rm -rf "$_p" 2>/dev/null || { echo "busdriver: WARNING — could not remove staged opencode home $_p" >&2; return 1; }
+  [[ -f "$_p/.bd-own" ]] || { [[ -z "$(/bin/ls -A "$_p" 2>/dev/null)" ]] || return 0; }   # marked, or still-empty (nothing staged yet — early-orphan window)
+  /bin/rm -rf "$_p" 2>/dev/null || { echo "busdriver: WARNING — could not remove staged opencode home $_p" >&2; return 1; }
 }
 
 # Lane cleanup for the opencode arms: neutral-dir and sandbox-home removal.
@@ -625,7 +668,7 @@ _bd_rm_sandbox_home() {
 # Usage: _bd_oc_lane_cleanup <real_home> <neutral_cwd>
 _bd_oc_lane_cleanup() {
   local _rc=$?
-  rm -rf "$2" 2>/dev/null || true
+  /bin/rm -rf "$2" 2>/dev/null || true
   _bd_rm_sandbox_home "${_BD_OC_SANDBOX_HOME:-}" "$1" || true
   return "$_rc"
 }
@@ -2100,7 +2143,7 @@ execute_review() {
                return 1
              fi
              local _oc_cwd
-             _oc_cwd="$(mktemp -d 2>/dev/null)" || _oc_cwd=""
+             _oc_cwd="$(/usr/bin/mktemp -d 2>/dev/null)" || _oc_cwd=""
              if [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
                echo "busdriver: could not create a neutral working directory for the opencode voice — refusing to dispatch from the reviewed tree (it could redefine the reviewer or expose files/MCP)." >&2
                return 1
@@ -2192,7 +2235,11 @@ execute_review() {
                trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"' EXIT   # best-effort cleanup even on grace-kill
                trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 143' TERM
                trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 130' INT
-               if ! validate_opencode_home_config "$_oc_home"; then
+               # Pinned SYSTEM-ONLY PATH: the validator stages credentials
+               # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is the
+               # operator-WRITABLE opencode dir, which must not shadow those
+               # utilities; the system dirs carry them all.
+               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
                  rmdir "$_oc_cwd" 2>/dev/null || true
                  exit 1
                fi
@@ -2211,7 +2258,7 @@ execute_review() {
                  "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                    -m "$_BD_AUDITOR_MODEL" )
              local _oc_rc=$?
-             rm -rf "$_oc_cwd" 2>/dev/null || true
+             /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
              return "$_oc_rc" ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)

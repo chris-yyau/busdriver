@@ -102,10 +102,41 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 
 | CLI | Readonly mechanism | Strict sandbox? |
 |-----|-------------------|-----------------|
-| codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
+| codex | `-s read-only` | ⚠️  **unverified** — measured writing files anyway on codex-cli 0.147.0. See below |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
 | pi | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
+
+**Codex caveat — `-s read-only` was observed NOT confining.** Measured 2026-08-09 on
+**codex-cli 0.147.0**, workdir a fresh `mktemp -d` outside any git checkout (so this is
+not an enclosing-repo effect), via `codex exec -s <mode> -C <workdir> --skip-git-repo-check`:
+
+| Probe | Result |
+|-------|--------|
+| `-s read-only`, asked to write a file **inside** its own workdir | **wrote it** — replied `DONE` |
+| `-s read-only`, asked to write **outside** the workdir | **wrote it** |
+| `-s workspace-write`, asked to write **outside** the workdir | **wrote it** |
+
+Codex's own run summary still reported the workspace that was asked for, so its
+self-report does not surface this — the write has to be checked for on disk.
+
+**The cause is NOT established, so do not treat any config edit as the fix.** Deleting
+the `[projects."/"] trust_level = "trusted"` entry from `$CODEX_HOME/config.toml` was
+tried and did **not** restore confinement: with it gone, both the workspace-write
+outside-write and the read-only inside-write still succeeded. Note also that codex
+**adds a `[projects."<dir>"]` trust entry for a directory it is run in**, so the absence
+of an entry beforehand does not mean the path stays untrusted for the run.
+
+What follows from this, and only this:
+
+- **Verify, do not assume.** Before relying on the `readonly` row above as a security
+  boundary, run the probe on your own machine and check the filesystem — not the reply.
+- **This affects who can review what.** litmus pins codex as its PR-mode lead reviewer
+  partly on the assumption that `-s read-only` confines it. On the configuration
+  measured above it does not.
+- `busdriver:imagegen` already assumes the worst here: its codex route stays closed
+  behind `CODEX_SANDBOX_CHECKED=1`, because no `-s` value was found that reliably
+  confines codex without checking first.
 
 **Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
 
@@ -126,7 +157,9 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 
 > **Security Warning:** `DROID_AUTO_LEVEL` overrides the dispatch default and applies to ALL `dispatch.sh` invocations in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps dispatches at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
-For strict read-only guarantees, dispatch to `codex` or `agy` instead. (Litmus/santa/blueprint-review backends use bare `droid exec` — default read-only mode with Create/Edit blocked — via `scripts/lib/resolve-cli.sh::execute_review`. Empirically verified on droid v0.131.0+; earlier versions per PR #97 required `--auto low` because bare `droid exec` bailed on stdin pipe. `DROID_AUTO_LEVEL` does NOT apply to that path.)
+For strict read-only guarantees, dispatch to `agy` — **not** `codex`, whose `-s read-only`
+was measured writing files anyway (see the Codex caveat above; this line used to name both).
+(Litmus/santa/blueprint-review backends use bare `droid exec` — default read-only mode with Create/Edit blocked — via `scripts/lib/resolve-cli.sh::execute_review`. Empirically verified on droid v0.131.0+; earlier versions per PR #97 required `--auto low` because bare `droid exec` bailed on stdin pipe. `DROID_AUTO_LEVEL` does NOT apply to that path.)
 
 ## How to Dispatch
 

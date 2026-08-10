@@ -309,18 +309,18 @@ POSTWAIT_NORM_ESAC_LINE=$(awk -v c="$POSTWAIT_CASE_LINE" '
   NR < c { next }
   NR == c { depth = 1; next }
   /^[[:space:]]*case / { depth++ }
-  /^[[:space:]]*esac/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
+  /^[[:space:]]*esac([[:space:]]|;|$)/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
 POSTWAIT_GRACE_IF_LINE=$(grep -n "^[[:space:]]*if \[ \"\${CODEX_GRACE}\" -gt 0 \]" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_GRACE_IF_FI_LINE=$(awk -v h="$POSTWAIT_GRACE_IF_LINE" '
   NR < h { next }
   NR == h { depth = 1; next }
   /^[[:space:]]*if / { depth++ }
-  /^[[:space:]]*fi/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
+  /^[[:space:]]*fi([[:space:]]|;|$)/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
 POSTWAIT_HEAD_GUARD_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*# HEAD-MOVED GUARD/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_CONSUMER_LINE=$(grep -n "^[[:space:]]*STALE_BOTS=\$(echo \"\$FRESH_ACKS\"" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
-POSTWAIT_HEAD_IF_LINE=$(grep -n "^[[:space:]]*if \[ -z \"\$CODEX_HEAD_NOW\" \] ||" "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_HEAD_IF_LINE=$(grep -n "^[[:space:]]*if \[ -z \"\$CODEX_HEAD_NOW\" \] || \[ \"\$CODEX_HEAD_NOW\" != \"\$HEAD_FULL_SHA\" \]; then\$" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_INVALIDATION_LINE=$(grep -n '^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$' "$SKILL" | head -1 | cut -d: -f1 || true)
 # The HEAD-divergence conditional's MATCHING `fi` (depth-aware: the first `fi`
 # that returns the block to depth 0, not the first lexical `fi`), plus the
@@ -330,7 +330,7 @@ POSTWAIT_HEAD_IF_FI_LINE=$(awk -v h="$POSTWAIT_HEAD_IF_LINE" '
   NR < h { next }
   NR == h { depth = 1; next }
   /^[[:space:]]*if / { depth++ }
-  /^[[:space:]]*fi/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
+  /^[[:space:]]*fi([[:space:]]|;|$)/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
 # The invalidation must sit in the divergence conditional's `then` branch at the
 # branch's own nesting level: an `else`/`elif` at depth 1, a nested case arm, a
 # false loop, or a subshell `(` before it moves the invalidation off the
@@ -341,7 +341,7 @@ POSTWAIT_HEAD_IF_ELSE_BEFORE_INV=$(awk -v h="$POSTWAIT_HEAD_IF_LINE" -v i="$POST
   NR == i { exit }
   depth == 1 && (/(^|[;])[[:space:]]*else([[:space:]]|$)/ || /(^|[;])[[:space:]]*elif([[:space:]]|$)/) { print NR; exit }
   /(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ { depth++ }
-  /(^|[;])[[:space:]]*(fi|esac|done)/ { depth-- }
+  /(^|[;])[[:space:]]*(fi|esac|done)([[:space:]]|;|$)/ { depth-- }
   /^[[:space:]]*\(/ { depth++ }
   /^[[:space:]]*\)/ { depth-- }
   /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ { depth++ }
@@ -351,7 +351,7 @@ POSTWAIT_HEAD_IF_DEPTH_AT_INV=$(awk -v h="$POSTWAIT_HEAD_IF_LINE" -v i="$POSTWAI
   NR == h { depth = 1; next }
   NR == i { print depth; exit }
   /(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ { depth++ }
-  /(^|[;])[[:space:]]*(fi|esac|done)/ { depth-- }
+  /(^|[;])[[:space:]]*(fi|esac|done)([[:space:]]|;|$)/ { depth-- }
   /^[[:space:]]*\(/ { depth++ }
   /^[[:space:]]*\)/ { depth-- }
   /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ { depth++ }
@@ -365,11 +365,12 @@ POSTWAIT_MATCH_NEXT=$(awk -v m="$POSTWAIT_MATCH_LINE" 'NR == m+1 && /^[[:space:]
 POSTWAIT_INV_PREV=$(awk -v i="$POSTWAIT_INVALIDATION_LINE" 'NR == i-1 && /^[[:space:]]*\(/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_INV_NEXT=$(awk -v i="$POSTWAIT_INVALIDATION_LINE" 'NR == i+1 && /^[[:space:]]*\)/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_HEAD_LOOKUP_LINE=$(grep -n "^[[:space:]]*CODEX_HEAD_NOW=\$(gh pr view \"\$PR\" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo \"\")$" "$SKILL" | head -1 | cut -d: -f1 || true)
+# shellcheck disable=SC2016  # OPENER_CLASS is an awk ERE fragment interpolated into the scans below
+OPENER_CLASS='(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]|^[[:space:]]*\(|^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{|(^|[[:space:]]|;|&&)[[:space:]]*\{|\\$|<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?'
 # The normalization chain must sit at the block's own nesting level: a block opener
 # between the anchor comment and the case would bury the whole recompute in a
 # never-executed branch (litmus, PR #609).
-POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" -v c="$POSTWAIT_CASE_LINE" '
-  NR > a && NR < c && (/(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ || /^[[:space:]]*\(/ || /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ || /\\$/ || /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/) { print NR; exit }' "$SKILL" || true)
+POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" -v c="$POSTWAIT_CASE_LINE" "NR > a && NR < c && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
 # Same-level proof for the head of the chain: between the wait-loop's closing
 # `done` and the anchor comment nothing may OPEN a block — an opener there (e.g.
 # `if false; then` before the anchor) would bury the whole recompute in a
@@ -377,13 +378,11 @@ POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" -v c="$POSTW
 # unreliable (single-line `case ... esac` and mid-line-closing subshells), so the
 # bound is the last `done` BEFORE the anchor rather than an absolute depth.
 POSTWAIT_LAST_DONE_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR < a && /^[[:space:]]*done$/ { last = NR } END { print last }' "$SKILL" || true)
-POSTWAIT_BETWEEN_DONE_AND_ANCHOR=$(awk -v d="$POSTWAIT_LAST_DONE_LINE" -v a="$POSTWAIT_ANCHOR_LINE" '
-  NR > d && NR < a && (/(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ || /^[[:space:]]*\(/ || /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ || /\\$/ || /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/) { print NR; exit }' "$SKILL" || true)
+POSTWAIT_BETWEEN_DONE_AND_ANCHOR=$(awk -v d="$POSTWAIT_LAST_DONE_LINE" -v a="$POSTWAIT_ANCHOR_LINE" "NR > d && NR < a && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
 # No block opener may sit between the refresh and the divergence conditional — a
 # dead conditional there would let a differently formatted lookup seed
 # CODEX_HEAD_NOW early (litmus, PR #609).
-POSTWAIT_BETWEEN_MATCH_AND_HEADIF=$(awk -v m="$POSTWAIT_MATCH_LINE" -v h="$POSTWAIT_HEAD_IF_LINE" '
-  NR > m && NR < h && (/(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ || /^[[:space:]]*\(/ || /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ || /\\$/ || /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/) { print NR; exit }' "$SKILL" || true)
+POSTWAIT_BETWEEN_MATCH_AND_HEADIF=$(awk -v m="$POSTWAIT_MATCH_LINE" -v h="$POSTWAIT_HEAD_IF_LINE" "NR > m && NR < h && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
 # A `: || \` line-continuation immediately before the lookup joins it to a never-
 # executed no-op, making the post-wait lookup unreachable while a differently
 # formatted pre-wait lookup seeds the value (litmus, PR #609).
@@ -403,8 +402,7 @@ POSTWAIT_INTERVENING=$(awk -v a="$POSTWAIT_MATCH_LINE" -v c="$POSTWAIT_CONSUMER_
 # block opener (if/case/while/for/until) or subshell `(` between the esac and the
 # refresh would put the recompute inside an arm or subshell that other paths skip
 # or discard (litmus, PR #609).
-POSTWAIT_BETWEEN_NORM_AND_MATCH=$(awk -v e="$POSTWAIT_NORM_ESAC_LINE" -v m="$POSTWAIT_MATCH_LINE" '
-  NR > e && NR < m && (/(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ || /^[[:space:]]*\(/ || /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ || /\\$/ || /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/) { print NR; exit }' "$SKILL" || true)
+POSTWAIT_BETWEEN_NORM_AND_MATCH=$(awk -v e="$POSTWAIT_NORM_ESAC_LINE" -v m="$POSTWAIT_MATCH_LINE" "NR > e && NR < m && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
 # The HEAD-moved all-stale invalidation is MANDATORY (the fail-closed response to a
 # moved head), sits at nesting depth 1 of the HEAD-divergence conditional (directly
 # in the branch — not wrapped in an inner `if false`), and precedes the consumer —

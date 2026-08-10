@@ -339,9 +339,26 @@ fi
 [[ -z "$PROMPT" ]] && { echo "Error: Empty prompt." >&2; exit 1; }
 
 # Write prompt to temp file (avoids shell escaping with long prompts)
-PROMPT_FILE=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/dispatch-prompt-XXXXXX")
-printf '%s' "$PROMPT" > "$PROMPT_FILE"
+# Prompt file under the PASSWORD-DB home (derived once, top-level): $HOME and
+# ${TMPDIR} are both repo-injectable (a fork's settings.json) — a prompt file
+# placed there would land in an attacker-selected location. `id` absolute;
+# `eval` runs in the function-clean (-p shebang) top level.
+_bd_pt_user="$(/usr/bin/id -un 2>/dev/null)"
+if [[ -z "$_bd_pt_user" ]]; then
+  # Fail CLOSED on an empty user: the following `~` expansion would fall back
+  # to the repo-injectable $HOME and place the prompt in an attacker-selected
+  # location.
+  echo "Error: could not derive the operator user from the password database — refusing to dispatch." >&2
+  exit 1
+fi
+_bd_pt_home="$(eval echo "~${_bd_pt_user}" 2>/dev/null)"
+if [[ -z "$_bd_pt_home" || ! -d "$_bd_pt_home" ]]; then
+  echo "Error: could not derive a trusted home from the password database — refusing to dispatch (cannot place the prompt file safely)." >&2
+  exit 1
+fi
+PROMPT_FILE=$(/usr/bin/mktemp "$_bd_pt_home/.busdriver-dispatch-prompt-XXXXXX")
 trap 'rm -f "$PROMPT_FILE"' EXIT
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # ── CLI detection ──────────────────────────────
 _has_cli() {
@@ -801,7 +818,7 @@ dispatch_one() {
             # NO env override for the config path — BUSDRIVER_OPENCODE_CONFIG is
             # repo-injectable via a fork's settings.json (#325 class) and could
             # point at a tool-restoring JSON. Always the plugin-owned file.
-            local _oc_cfg _oc_cwd
+            local _oc_cfg _oc_cwd _oc_user _oc_home _oc_path _oc_bin _oc_trust
             _oc_cfg="${_PLUGIN_ROOT}/scripts/lib/opencode-review-config.json"
             # THREE isolation boundaries — full threat model in the opencode) arm
             # of scripts/lib/resolve-cli.sh (single source of truth; do not fork).
@@ -822,8 +839,11 @@ dispatch_one() {
                 # opencode would fail OPEN to the user default.
                 echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                 exit_code=1
-            elif ! _oc_cwd="$(/usr/bin/mktemp -d 2>/dev/null)" || [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
-                echo "Error: could not create a neutral working directory for opencode — refusing to dispatch from the reviewed tree (its project config could redefine the reviewer)." >&2
+            elif ! _oc_user="$(id -un 2>/dev/null)" || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+                # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
+                # injectable). Derived BEFORE the neutral-dir creation so the
+                # arm's later XDG_CACHE_HOME/auth paths use it.
+                echo "Error: could not derive a trusted home from the password database — refusing to dispatch unconfined." >&2
                 exit_code=1
             else
                 # Resolve the binary ONLY from a FIXED trusted path (operator
@@ -834,16 +854,7 @@ dispatch_one() {
                 # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
                 # injectable). `~user` tilde expansion reads getpwnam. Full
                 # rationale in resolve-cli.sh.
-                local _oc_path _oc_bin _oc_trust _oc_home _oc_user
-                _oc_user="$(id -un 2>/dev/null)"
-                _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
-                # NO $HOME fallback — fail closed if the password-DB lookup fails
-                # rather than trust the repo-injectable $HOME.
-                if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
-                    echo "Error: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-                    rmdir "$_oc_cwd" 2>/dev/null || true
-                    exit_code=1
-                fi
+                local _oc_path _oc_bin _oc_trust
                 _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
                 # `|| true` — under `set -e`, a nonzero `command -v` inside this
                 # assignment's command substitution would exit the script
@@ -854,7 +865,6 @@ dispatch_one() {
                     : # already failed on home derivation — skip dispatch
                 elif [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
                     echo "Error: opencode binary not found on the trusted install path." >&2
-                    rmdir "$_oc_cwd" 2>/dev/null || true
                     exit_code=1
                 else
                 _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
@@ -891,7 +901,7 @@ dispatch_one() {
                 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
                     echo "Error: resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >&2
                     printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
-                    rmdir "$_oc_cwd" 2>/dev/null || true
+                    /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
                     exit_code=1
                 else
                 # shellcheck disable=SC2310  # intentional: refused dispatch is the branch
@@ -900,9 +910,9 @@ dispatch_one() {
                 # sandbox is owned from creation, so an early TERM/EXIT during
                 # staging cannot orphan a credential-bearing temp dir.
                 ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"' EXIT
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 143' TERM
-                  trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 130' INT
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
                   # Pinned SYSTEM-ONLY PATH: the validator stages credentials
                   # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is
                   # the operator-WRITABLE opencode dir, which must not shadow
@@ -911,6 +921,26 @@ dispatch_one() {
                     printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
                     exit 1
                   fi
+                  # Neutral cwd INSIDE the validated sandbox (post-validation):
+                  # opencode's project discovery walks UP from the cwd and
+                  # finds the sandbox's OWN validated .opencode/opencode.json
+                  # copy, stopping there — the real home's config surfaces are
+                  # never reopened (no validate-then-open race; the 0700
+                  # sandbox is private to the operator — no other-user
+                  # planting).
+                  _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
+                  /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
+                  # Git-init the EMPTY cwd: opencode's project-config
+                  # discovery scans every ancestor through the worktree root
+                  # (non-Git = /, reaching the real home); a git repo bounds
+                  # the worktree AT the empty cwd, so discovery finds nothing
+                  # beyond it. The workspace stays EMPTY — auth.json / SDK
+                  # symlinks live OUTSIDE the worktree, and the plugin config
+                  # denies external_directory, so the read-enabled reviewer
+                  # cannot reach them. Sterile init (GIT_DIR/GIT_WORK_TREE are
+                  # repo-injectable) + .git verified inside the cwd.
+                  /usr/bin/env -i PATH="/usr/bin:/bin" /usr/bin/git -C "$_oc_cwd" init -q 2>/dev/null || exit 1
+                  [[ -d "$_oc_cwd/.git" ]] || exit 1
                   cd "$_oc_cwd" 2>/dev/null || exit 1
                   # XDG_DATA_HOME points at the SANDBOX data dir, which the
                   # validator populated with a validated auth.json copy ONLY:

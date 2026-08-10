@@ -103,7 +103,7 @@ for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
   # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
   if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
      && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && { grep -q '_oc_cwd="\$(/usr/bin/mktemp -d' "$_f" || grep -q '_oc_cwd="\$(mktemp -d' "$_f"; } \
+     && { grep -q '_oc_cwd="\$(/usr/bin/mktemp -d' "$_f" || grep -q '_oc_cwd="\$(mktemp -d' "$_f" || grep -q '_oc_cwd="\${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f"; } \
      && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
      && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
      && grep -q '"\$_oc_bin" run --dir' "$_f" \
@@ -605,6 +605,16 @@ PY
   # (b) mcp key → refuse
   printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/.opencode/opencode.json"
   validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (b) mcp key accepted"; ok=0; }
+
+  # (b2) HOME-ROOT opencode.json[c] (opencode's ancestor project discovery
+  # reaches them when the neutral cwd lives under the home) → refuse on mcp
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (b2) home-root mcp accepted"; ok=0; }
+  rm -f "$_home/opencode.json"
+  printf '{"provider":{"p":{"options":{}}}}\n' > "$_home/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (b2) home-root provider-only refused"; ok=0; }
+  rm -f "$_home/opencode.jsonc"
 
   # (c) provider-only jsonc WITH comments + trailing commas → pass (JSONC-tolerant)
   rm -f "$_home/.opencode/opencode.json"

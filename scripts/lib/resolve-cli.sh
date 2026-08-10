@@ -384,19 +384,19 @@ validate_opencode_home_config() {
       fi
     fi
   done
-  for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc"; do
+  # BOTH the .opencode subdir AND the home-root configs: opencode's ancestor
+  # project discovery does NOT stop at the sandbox — it walks up into the
+  # real home, so a home-root opencode.json[c] is a discoverable surface too.
+  # The staging copy preserves each file's HOME-RELATIVE path, so a home-root
+  # opencode.json lands at $sandbox/opencode.json (never colliding with the
+  # $sandbox/.opencode/opencode.json copy).
+  for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc" "$_voh_home/opencode.json" "$_voh_home/opencode.jsonc"; do
     # Existence OR link here — `[[ -e ]]` alone follows a symlink and returns
     # false for a DANGLING one, skipping the python O_NOFOLLOW refusal; -L
     # keeps every symlink (live or dangling) on the python path.
     [[ -e "$_voh_cfg" || -L "$_voh_cfg" ]] || continue
-    # Direct absolute interpreter, NO env -i wrapper: `-I` implies -E (ignores
-    # PYTHONPATH/PYTHONHOME — a hostile env cannot redirect python imports),
-    # and the absolute path defeats normal-name function shadows (verified:
-    # absolute paths bypass function lookup on 3.2/5.x). The remaining
-    # slash-named shadowing (BASH_FUNC_/usr/bin/python3%%) is rejected at
-    # import time by the Shellshock-patched bash (verified: "error importing
-    # function definition") and is total compromise on unpatched builds.
-    if ! /usr/bin/python3 -I - "$_voh_cfg" "$_voh_sandbox" <<'PY' 2>/dev/null
+    _voh_rel="${_voh_cfg#"$_voh_home"/}"   # .opencode/opencode.json | opencode.json
+    if ! /usr/bin/python3 -I - "$_voh_cfg" "$_voh_sandbox" "$_voh_rel" <<'PY' 2>/dev/null
 import json, os, stat, sys
 
 def strip_jsonc(s):
@@ -531,12 +531,15 @@ if not isinstance(_prov, dict) or any(has_npm(v) for v in _prov.values()):
     sys.exit(1)
 if [k for k in d if k not in ("provider", "$schema")]:
     sys.exit(1)
-# Stage the VALIDATED bytes (the same read) into the sandbox home; the
-# dispatch arms run opencode with HOME=<sandbox home>, so opencode consumes
-# exactly these bytes and the real ~/.opencode is never reopened.
+# Stage the VALIDATED bytes (the same read) into the sandbox home at the
+# HOME-RELATIVE path (argv[3]); the dispatch arms run opencode with
+# HOME=<sandbox home>, so opencode consumes exactly these bytes and the real
+# ~/.opencode is never reopened. The relative path keeps home-root and
+# .opencode configs in distinct destinations.
 try:
-    os.makedirs(os.path.join(sys.argv[2], ".opencode"), exist_ok=True)
-    with open(os.path.join(sys.argv[2], ".opencode", os.path.basename(sys.argv[1])), "wb") as f:
+    dest = os.path.join(sys.argv[2], sys.argv[3])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
         f.write(raw)
 except Exception:
     sys.exit(1)
@@ -2142,12 +2145,24 @@ execute_review() {
                echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                return 1
              fi
-             local _oc_cwd
-             _oc_cwd="$(/usr/bin/mktemp -d 2>/dev/null)" || _oc_cwd=""
-             if [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
-               echo "busdriver: could not create a neutral working directory for the opencode voice — refusing to dispatch from the reviewed tree (it could redefine the reviewer or expose files/MCP)." >&2
+             # Derive the trusted home from the PASSWORD DATABASE FIRST (not
+             # $HOME: repo-injectable) — used for the auth/cache env paths.
+             # `~user` tilde expansion reads getpwnam; `id` runs absolute.
+             local _oc_home _oc_user
+             _oc_user="$(/usr/bin/id -un 2>/dev/null)"
+             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+             # NO $HOME fallback — $HOME is the repo-injectable value this whole
+             # block exists to distrust. If the password-DB lookup fails (a broken
+             # system, not a normal state), fail CLOSED rather than trust $HOME.
+             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                return 1
              fi
+             # Neutral cwd is created INSIDE the validated sandbox (post-
+             # validation, in the run subshell): opencode's project discovery
+             # walks UP and stops at the sandbox's own validated copy. Never
+             # ${TMPDIR} (repo-injectable) and never a bare /tmp child
+             # (world-writable — other users could plant config for the walk).
              # Binary selection and process CWD are pinned to trusted values so
              # NOTHING the reviewed repo controls can supply the executable:
              #   (a) resolve ONLY against a FIXED trusted lookup path (operator
@@ -2163,26 +2178,12 @@ execute_review() {
              #       binary's own dir + system dirs.
              #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
              #       empty dir (see the dispatch below), before --dir applies.
-             # Derive the trusted home from the PASSWORD DATABASE, not $HOME: a
-             # repo-injected $HOME (fork settings.json) would otherwise point
-             # _oc_trust at an attacker dir. `~user` tilde expansion reads getpwnam,
-             # independent of the $HOME env var; `id` runs on the pinned system PATH.
-             local _oc_bin _oc_path _oc_trust _oc_home _oc_user
-             _oc_user="$(id -un 2>/dev/null)"
-             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
-             # NO $HOME fallback — $HOME is the repo-injectable value this whole
-             # block exists to distrust. If the password-DB lookup fails (a broken
-             # system, not a normal state), fail CLOSED rather than trust $HOME.
-             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
-               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               rmdir "$_oc_cwd" 2>/dev/null || true
-               return 1
-             fi
+             local _oc_bin _oc_path _oc_trust _oc_cwd=""
              _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
              _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
              if [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
                echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
-               rmdir "$_oc_cwd" 2>/dev/null || true
+               /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
                return 1
              fi
              _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
@@ -2231,18 +2232,35 @@ execute_review() {
              # race on a swapped-in mcp/npm payload). Validation runs INSIDE
              # the trap-owned subshell so the staged sandbox is owned from
              # creation (an early TERM cannot orphan credential-bearing dirs).
+             # shellcheck disable=SC2030,SC2031  # _oc_cwd is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
              ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-               trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"' EXIT   # best-effort cleanup even on grace-kill
-               trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 143' TERM
-               trap '_bd_oc_lane_cleanup "$_oc_home" "$_oc_cwd"; exit 130' INT
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT   # best-effort cleanup even on grace-kill
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
                # Pinned SYSTEM-ONLY PATH: the validator stages credentials
                # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is the
                # operator-WRITABLE opencode dir, which must not shadow those
                # utilities; the system dirs carry them all.
                if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
-                 rmdir "$_oc_cwd" 2>/dev/null || true
                  exit 1
                fi
+               # Neutral cwd INSIDE the validated sandbox (post-validation):
+               # opencode's project discovery walks UP from the cwd and stops
+               # at the sandbox's OWN validated copy — the real home's config
+               # surfaces are never reopened; the 0700 sandbox is private to
+               # the operator (no other-user planting; never ${TMPDIR} — repo-
+               # injectable).
+               _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
+               /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
+               # Git-init the EMPTY cwd: opencode's project-config discovery
+               # scans every ancestor through the worktree root (non-Git = /,
+               # reaching the real home); a git repo bounds the worktree AT
+               # the empty cwd. The workspace stays EMPTY — auth.json / SDK
+               # symlinks are OUTSIDE the worktree and external_directory is
+               # denied, so the read-enabled reviewer cannot reach them.
+               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable).
+               /usr/bin/env -i PATH="/usr/bin:/bin" /usr/bin/git -C "$_oc_cwd" init -q 2>/dev/null || exit 1
+               [[ -d "$_oc_cwd/.git" ]] || exit 1
                cd "$_oc_cwd" 2>/dev/null || exit 1
                # XDG_DATA_HOME points at the SANDBOX data dir — populated
                # with a validated auth.json copy ONLY (auth works, account
@@ -2258,7 +2276,8 @@ execute_review() {
                  "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                    -m "$_BD_AUDITOR_MODEL" )
              local _oc_rc=$?
-             /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
+              # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
+            /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
              return "$_oc_rc" ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)

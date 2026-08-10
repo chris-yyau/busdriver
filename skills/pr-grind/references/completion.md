@@ -550,7 +550,7 @@ fi
 **The contract:** marker write completes → next Bash call runs the merge. Do NOT inline-combine, even if the chain "looks natural" while you're reading this section.
 </EXTREMELY-IMPORTANT>
 
-**Write the pr-grind-clean marker (REQUIRED). Run this as its own Bash tool call. ⚠ Unlike almost every other block in this SKILL.md, do NOT `cd "$WORKTREE_DIR"` first — run it at the AMBIENT session cwd.**
+**Write the pr-grind-clean marker (REQUIRED). Run this as its own Bash tool call. ⚠ Unlike most other blocks in this completion specification, do NOT `cd "$WORKTREE_DIR"` first — run it at the AMBIENT session cwd.**
 
 The pre-merge gate anchors its marker lookup (`REPO_DIR`) on the hook's `cwd` — the Claude **session's launch dir** — refining to a `cd` target only for a statically-parseable single-line `cd <path> && …` merge form (`hooks/gate-scripts/lib/resolve-repo-dir.sh`). The default merge below is a **bare** `gh pr merge`, so the gate anchors on the **session cwd**. That is exactly the directory the Bash tool lands in when a block does **not** `cd` (the "CWD Reset Across Bash Calls" invariant) — so `git rev-parse --show-toplevel` at the ambient cwd resolves to the very repo root the gate will read. This is the whole fix: writing the marker to any *other* root (the grind worktree, or the main-repo root) is what lets the two diverge. The bug it closes: if this block first `cd`s into a checkout that is NOT the session cwd — e.g. the grind resolved `WORKTREE_DIR` to a linked sibling worktree while you invoked `/pr-grind <PR>` from the main checkout — the marker lands in the worktree while the gate still reads the session cwd, and the merge blocks with "pr-grind has not declared this PR clean" right after a clean grind.
 ```bash

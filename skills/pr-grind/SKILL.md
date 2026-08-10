@@ -1154,7 +1154,7 @@ ADR 0012 downgrade, Branch-Currency, Approver-Gap Detection, the
 **Read `references/completion.md` in full before taking ANY merge-path action.**
 Do not improvise the marker format, the merge flags, or the marker/merge call
 split from memory — `--match-head-commit`, the marker's second field
-(`<PR_NUMBER> <HEAD_SHA>`, #505/ADR 0030), and the TOCTOU requirement that the
+(`<PR_NUMBER> <REVIEWED_HEAD>`, #505/ADR 0030), and the TOCTOU requirement that the
 marker write and `gh pr merge` be SEPARATE Bash tool calls are all defined only
 in that file.
 

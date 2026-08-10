@@ -366,11 +366,12 @@ POSTWAIT_INV_PREV=$(awk -v i="$POSTWAIT_INVALIDATION_LINE" 'NR == i-1 && /^[[:sp
 POSTWAIT_INV_NEXT=$(awk -v i="$POSTWAIT_INVALIDATION_LINE" 'NR == i+1 && /^[[:space:]]*\)/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_HEAD_LOOKUP_LINE=$(grep -n "^[[:space:]]*CODEX_HEAD_NOW=\$(gh pr view \"\$PR\" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo \"\")$" "$SKILL" | head -1 | cut -d: -f1 || true)
 # shellcheck disable=SC2016  # OPENER_CLASS is an awk ERE fragment interpolated into the scans below
-OPENER_CLASS='(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]|^[[:space:]]*\(|^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{|(^|[[:space:]]|;|&&)[[:space:]]*\{|\\$|<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?'
+OPENER_CLASS='(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]|(^|[;[:space:]])[[:space:]]*(else|elif)([[:space:]]|;|$)|^[[:space:]]*\(|^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{|(^|[[:space:]]|;|&&)[[:space:]]*\{|\\$|<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?'
 # The normalization chain must sit at the block's own nesting level: a block opener
 # between the anchor comment and the case would bury the whole recompute in a
 # never-executed branch (litmus, PR #609).
-BETWEEN_ANCHOR_AND_CASE_PROG='NR <= ANCHOR_LINE || NR >= CASE_LINE { next }
+BETWEEN_ANCHOR_AND_CASE_PROG='/^[[:space:]]*#/ { next }
+NR <= ANCHOR_LINE || NR >= CASE_LINE { next }
 term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
 term != "" { next }
 /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
@@ -403,7 +404,8 @@ POSTWAIT_DEPTH_AT_ANCHOR=$(awk -v g="$POSTWAIT_GRACE_IF_LINE" -v a="$POSTWAIT_AN
 # No block opener may sit between the refresh and the divergence conditional — a
 # dead conditional there would let a differently formatted lookup seed
 # CODEX_HEAD_NOW early (litmus, PR #609).
-BETWEEN_MATCH_AND_HEADIF_PROG='NR <= MATCH_LINE || NR >= HEAD_IF_LINE { next }
+BETWEEN_MATCH_AND_HEADIF_PROG='/^[[:space:]]*#/ { next }
+NR <= MATCH_LINE || NR >= HEAD_IF_LINE { next }
 term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
 term != "" { next }
 /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
@@ -432,7 +434,8 @@ POSTWAIT_INTERVENING=$(awk -v a="$POSTWAIT_MATCH_LINE" -v c="$POSTWAIT_CONSUMER_
 # block opener (if/case/while/for/until) or subshell `(` between the esac and the
 # refresh would put the recompute inside an arm or subshell that other paths skip
 # or discard (litmus, PR #609).
-BETWEEN_NORM_AND_MATCH_PROG='NR <= NORM_ESAC_LINE || NR >= MATCH_LINE { next }
+BETWEEN_NORM_AND_MATCH_PROG='/^[[:space:]]*#/ { next }
+NR <= NORM_ESAC_LINE || NR >= MATCH_LINE { next }
 term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
 term != "" { next }
 /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }

@@ -200,6 +200,19 @@ if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_PI_MODEL=""
   resolve_pi_model() { _BD_PI_MODEL="opencode-go/deepseek-v4-flash"; }
 fi
+# Ditto for the username allowlist (resolve-cli.sh owns the canonical copy —
+# keep the pattern identical): a missing library must not make the prompt-home
+# derivation below die with `command not found` under set -e.
+if ! type _bd_valid_username &>/dev/null; then
+  _bd_valid_username() {
+    [[ -n "${1:-}" ]] || return 1
+    case "$1" in
+      *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    [[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1
+    return 0
+  }
+fi
 # The pi version whose tool-permission behaviour this repo actually probed (see
 # the pi) arm and docs/adr/0034). A mismatch BLOCKS the dispatch: this lane's
 # read-only posture is observed behaviour of one version, and the test proving it
@@ -346,6 +359,8 @@ fi
 # placed there would land in an attacker-selected location. `id` absolute;
 # `eval` runs in the function-clean (-p shebang) top level.
 _bd_pt_user="$(/usr/bin/id -un 2>/dev/null)"
+# shellcheck disable=SC2310  # predicate by design — set -e off in || is intended
+_bd_valid_username "$_bd_pt_user" || _bd_pt_user=""
 if [[ -z "$_bd_pt_user" ]]; then
   # Fail CLOSED on an empty user: the following `~` expansion would fall back
   # to the repo-injectable $HOME and place the prompt in an attacker-selected
@@ -409,7 +424,10 @@ _pi_available() {
   /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
 u="$(/usr/bin/id -un)" || exit 1
-case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+# Tilde directory-stack forms (~- ~+ ~N ~-N ~+N → $OLDPWD/$PWD) must never
+# reach the eval below; digit-LEADING names (0abc) are normal usernames.
+[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
+case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
 h="$(eval echo "~$u")" || exit 1
 case "$h" in /*) ;; *) exit 1 ;; esac
 [ -d "$h" ] || exit 1
@@ -832,6 +850,7 @@ dispatch_one() {
             #   OPENCODE_CONFIG      → the plugin's deny-all tools config
             # Create the temp dir ONLY after the config check passes, so a
             # missing-config bail does not leak an empty directory.
+            # shellcheck disable=SC2310  # _bd_valid_username is a predicate by design — set -e off in !/|| is intended
             if [[ ! -f "$_oc_cfg" ]]; then
                 echo "Error: opencode review config not found at '$_oc_cfg' — refusing to dispatch unconfined (a missing config silently restores write/bash)." >&2
                 exit_code=1
@@ -841,7 +860,7 @@ dispatch_one() {
                 # opencode would fail OPEN to the user default.
                 echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                 exit_code=1
-            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || [[ -z "$_oc_user" ]] || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || ! _bd_valid_username "$_oc_user" || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
                 # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
                 # injectable). Derived BEFORE the neutral-dir creation so the
                 # arm's later XDG_CACHE_HOME/auth paths use it.
@@ -940,9 +959,13 @@ dispatch_one() {
                   # symlinks live OUTSIDE the worktree, and the plugin config
                   # denies external_directory, so the read-enabled reviewer
                   # cannot reach them. Sterile init (GIT_DIR/GIT_WORK_TREE are
-                  # repo-injectable) + .git verified inside the cwd.
-                  /usr/bin/env -i PATH="/usr/bin:/bin" /usr/bin/git -C "$_oc_cwd" init -q 2>/dev/null || exit 1
-                  [[ -d "$_oc_cwd/.git" ]] || exit 1
+                  # repo-injectable) with the EXECUTION-PROBED git (the CLT
+                  # shim at /usr/bin/git exists but fails without CLT) +
+                  # .git verified inside the cwd.
+                  _bd_git=""  # global cache for _bd_resolve_git (defined in resolve-cli.sh)
+                  _bd_resolve_git || { echo "Error: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+                  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "Error: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+                  [[ -d "$_oc_cwd/.git" ]] || { echo "Error: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
                   cd "$_oc_cwd" 2>/dev/null || exit 1
                   # XDG_DATA_HOME points at the SANDBOX data dir, which the
                   # validator populated with a validated auth.json copy ONLY:
@@ -1052,8 +1075,11 @@ dispatch_one() {
                        /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
 u="$(/usr/bin/id -un)" || exit 1
 # Only a plain username shape reaches eval — `~user` is the one way to read the
-# password DB, and eval on anything else is arbitrary execution.
-case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+# password DB, and eval on anything else is arbitrary execution. Tilde
+# directory-stack forms (~- ~+ ~N → $OLDPWD/$PWD) are excluded too; digit-
+# LEADING names (0abc) are normal usernames.
+[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
+case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
 h="$(eval echo "~$u")" || exit 1
 case "$h" in /*) ;; *) exit 1 ;; esac
 [ -d "$h" ] || exit 1

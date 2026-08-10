@@ -336,8 +336,62 @@ resolve_auditor_model() {
 # HOME=<sandbox home>, so opencode reads EXACTLY the validated bytes and the
 # real ~/.opencode is never reopened (no validate-then-open race: a swap or
 # retarget of the real file after validation cannot reach the review lane).
+# Operator-username allowlist: only plain [A-Za-z0-9._-] may reach
+# `eval echo "~$user"` — AND the name must not BE a tilde directory-stack
+# form. Bash treats `~-`/`~+`/`~N`/`~-N`/`~+N` as $OLDPWD/$PWD expansions,
+# NOT username lookups: a name matching `^[-+]?[0-9]*$` (e.g. `-0`, `+1`,
+# `7`, bare `-`/`+`) would make the reviewed checkout the "trusted home".
+# Digit-LEADING names like `0abc` are ordinary usernames and remain valid
+# (POSIX permits them) — hence the WHOLE-NAME regex, which a glob cannot
+# express (`[0-9]*` matches every digit-leading string). `[[ =~ ]]` is a
+# bash builtin — no shadowable command word. (Same allowlist the pi lane's
+# probes apply; dispatch.sh carries an identical fallback copy.)
+# Usage: _bd_valid_username <name> → 0 valid / 1 invalid
+_bd_valid_username() {
+  [[ -n "${1:-}" ]] || return 1
+  case "$1" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1
+  return 0
+}
+
+# Trusted git resolution: /usr/bin/git on a CLT-less macOS is a developer-
+# tools SHIM that exists but fails when run — a bare PATH lookup picks it and
+# never retries. Probe each candidate by EXECUTION (--version) and take the
+# first that works. The candidate list is FIXED (operator-owned install
+# dirs), never the caller PATH.
+_bd_git=""
+_bd_resolve_git() {
+  [[ -n "$_bd_git" ]] && return 0
+  local _c
+  for _c in /usr/bin/git /opt/homebrew/bin/git /usr/local/bin/git; do
+    if [[ -x "$_c" ]] && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_c" --version >/dev/null 2>&1; then
+      _bd_git="$_c"
+      return 0
+    fi
+  done
+  return 1
+}
+
 validate_opencode_home_config() {
-  local _voh_home="$1" _voh_cfg _voh_py="/usr/bin/python3" _voh_sandbox
+  local _voh_home="$1" _voh_cfg _voh_py="/usr/bin/python3" _voh_sandbox _c
+  # Trusted-path interpreter resolution by EXECUTION probe (never `command -v`:
+  # an exported BASH_FUNC_command%% could return an attacker-selected path):
+  # /usr/bin/python3 first (CLT), falling through to Homebrew/usr-local when
+  # the CLT interpreter is absent OR a nonfunctional shim (CLT-less machines —
+  # the reviewer's P2; documented project requirements do not require CLT).
+  # Every candidate is an absolute slash-named path in an operator-owned
+  # install dir a fork's settings.json cannot write; `-I` isolation applies
+  # regardless of which interpreter is chosen.
+  _voh_py=""
+  for _c in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$_c" ]] && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_c" -I -c 'import sys' >/dev/null 2>&1; then
+      _voh_py="$_c"
+      break
+    fi
+  done
+  [[ -n "$_voh_py" ]] || _voh_py="/usr/bin/python3"
   # NO auto-clean of a "previous" sandbox here: this function cannot prove it
   # created a value found in _BD_OC_SANDBOX_HOME (an inherited/exported value
   # could name a CONCURRENT dispatch's sandbox — anchored path checks cannot
@@ -396,7 +450,7 @@ validate_opencode_home_config() {
     # keeps every symlink (live or dangling) on the python path.
     [[ -e "$_voh_cfg" || -L "$_voh_cfg" ]] || continue
     _voh_rel="${_voh_cfg#"$_voh_home"/}"   # .opencode/opencode.json | opencode.json
-    if ! /usr/bin/python3 -I - "$_voh_cfg" "$_voh_sandbox" "$_voh_rel" <<'PY' 2>/dev/null
+    if ! "$_voh_py" -I - "$_voh_cfg" "$_voh_sandbox" "$_voh_rel" <<'PY' 2>/dev/null
 import json, os, stat, sys
 
 def strip_jsonc(s):
@@ -500,7 +554,7 @@ def parse(path):
 
 try:
     raw = parse(sys.argv[1])
-    text = raw.decode("utf-8", errors="replace")
+    text = raw.decode("utf-8")  # strict — invalid UTF-8 must REFUSE (opencode would reject it too)
     # Reject Python-only constants (NaN/Infinity): python accepts them,
     # opencode's parser does not — a config opencode refuses to load is not
     # a safe provider-only config.
@@ -575,7 +629,7 @@ PY
     # cleanup failure (FAIL-CLOSED — a partial/incorrectly-permissioned
     # auth.json left in the sandbox would break every provider's auth parse).
     _voh_auth_rc=0
-    /usr/bin/python3 -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null || _voh_auth_rc=$?
+    "$_voh_py" -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null || _voh_auth_rc=$?
 import errno, json, os, stat, sys
 
 src, sand = sys.argv[1], sys.argv[2]
@@ -607,9 +661,9 @@ d = os.path.join(sand, ".local", "share", "opencode")
 dest = os.path.join(d, "auth.json")
 try:
     os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # born 0600 — no chmod-after window
+    with os.fdopen(fd, "wb") as f:
         f.write(raw)
-    os.chmod(dest, 0o600)
 except Exception:
     # If the destination exists after a failed write, it is partial or
     # incorrectly permissioned and MUST NOT stay for opencode; if the unlink
@@ -2163,11 +2217,11 @@ execute_review() {
              # `~user` tilde expansion reads getpwnam; `id` runs absolute.
              local _oc_home _oc_user
              _oc_user="$(/usr/bin/id -un 2>/dev/null)"
-             if [[ -z "$_oc_user" ]]; then
-               # Fail CLOSED on an empty user: the following `~` expansion
-               # would fall back to the repo-injectable $HOME and supply the
-               # binary path from an attacker-selected directory.
-               echo "busdriver: could not derive the operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
+             if ! _bd_valid_username "$_oc_user"; then
+               # Fail CLOSED on an empty or non-plain username: the following
+               # `~` expansion would fall back to the repo-injectable $HOME
+               # (or a hostile name could execute as shell text).
+               echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                return 1
              fi
              _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
@@ -2278,9 +2332,12 @@ execute_review() {
                # the empty cwd. The workspace stays EMPTY — auth.json / SDK
                # symlinks are OUTSIDE the worktree and external_directory is
                # denied, so the read-enabled reviewer cannot reach them.
-               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable).
-               /usr/bin/env -i PATH="/usr/bin:/bin" /usr/bin/git -C "$_oc_cwd" init -q 2>/dev/null || exit 1
-               [[ -d "$_oc_cwd/.git" ]] || exit 1
+               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable) with
+               # the EXECUTION-PROBED git (the CLT shim at /usr/bin/git exists
+               # but fails without CLT).
+               _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               [[ -d "$_oc_cwd/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
                cd "$_oc_cwd" 2>/dev/null || exit 1
                # XDG_DATA_HOME points at the SANDBOX data dir — populated
                # with a validated auth.json copy ONLY (auth works, account

@@ -103,7 +103,7 @@ for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
   # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
   if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
      && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && { grep -q '_oc_cwd="\$(/usr/bin/mktemp -d' "$_f" || grep -q '_oc_cwd="\$(mktemp -d' "$_f" || grep -q '_oc_cwd="\${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f"; } \
+     && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
      && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
      && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
      && grep -q '"\$_oc_bin" run --dir' "$_f" \
@@ -907,6 +907,32 @@ if (
   pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"
 else
   fail "function-clean boundary failed (see above)"
+fi
+
+# ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────
+# `eval echo "~$u"` must never see a name that starts with `-`, `+`, or a
+# digit: `~-`/`~-0` expand to $OLDPWD/$PWD, `~+`/`~0` to $PWD — a special-form
+# "username" would make the reviewed checkout the "trusted home". Behavioral
+# test on the REAL helper (sourced, not copied).
+if ( # shellcheck disable=SC1090,SC2016  # source target is a variable; '$u' is a literal grep pattern
+     source "$RC" && _bd_valid_username "vfrvndtt" && _bd_valid_username "0abc" \
+     && ! _bd_valid_username "-0" && ! _bd_valid_username "-" && ! _bd_valid_username "+1" \
+     && ! _bd_valid_username "7" && ! _bd_valid_username "-" && ! _bd_valid_username "a;rm" \
+     && ! _bd_valid_username 'a b' && ! _bd_valid_username "" ); then
+  pass "username allowlist: plain + digit-leading ok, tilde-stack/metachar/empty refused"
+else
+  fail "username allowlist: a tilde-stack or metacharacter name passed validation"
+fi
+if grep -qF '[[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1' "$RC"; then
+  pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
+else
+  fail "resolve-cli.sh: allowlist does not reject tilde stack forms"
+fi
+# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for the pi-probe source text
+if [[ "$(grep -cF '[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1' "$DP")" -eq 2 ]]; then
+  pass "dispatch.sh pi probes: both username checks reject tilde stack forms"
+else
+  fail "dispatch.sh pi probes: username checks missing tilde-stack guard"
 fi
 
 echo

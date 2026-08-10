@@ -1,3 +1,10 @@
+## [1.105.2](https://github.com/chris-yyau/busdriver/compare/v1.105.1...v1.105.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* **pr-grind:** pin post-wait ledger guard to the CODEX_REGRACE discriminator ([#606](https://github.com/chris-yyau/busdriver/issues/606)) ([#609](https://github.com/chris-yyau/busdriver/issues/609)) ([4b35cfc](https://github.com/chris-yyau/busdriver/commit/4b35cfc847288c47096bd0d401eee98ab45baca3))
+
 ## [1.105.1](https://github.com/chris-yyau/busdriver/compare/v1.105.0...v1.105.1) (2026-08-10)
 
 

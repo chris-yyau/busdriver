@@ -58,9 +58,11 @@ The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `
 
 Two **on-demand** reads, each only when the situation actually arises:
 
-- **The design-review gate blocks a Write/Edit** (`check-design-document.sh` → `pre-implementation-gate.sh`; escape hatch `.claude/skip-design-review.local`). Read `skills/blueprint-review/SKILL.md` → "User-Created Skip File" for the canonical protocol. **Never create a skip file yourself** — surface the block to the operator; bail with category `env` if you cannot proceed. (The pre-merge skip file is never yours: you run neither `git commit` nor `gh pr merge`.)
+- **The design-review gate blocks a Write/Edit/MultiEdit — or a file-modifying Bash command** (`check-design-document.sh` → `pre-implementation-gate.sh`, registered for `Write|Edit|MultiEdit|Bash`, so it can fire on a fix applied through a formatter or script too; escape hatch `.claude/skip-design-review.local`). Read `${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/SKILL.md` → "User-Created Skip File" for the canonical protocol. **Never create a skip file yourself** — surface the block to the operator; bail with category `env` if you cannot proceed. (The pre-merge skip file is never yours: you run neither `git commit` nor `gh pr merge`.)
 - **The freeze guard blocks a Write/Edit** — `.claude/freeze-scope.local` exists and your path is outside the frozen scope. There is **no skip file** for this one and the blueprint-review protocol does not cover it: the operator deactivates it with `rm .claude/freeze-scope.local`. Surface the block; bail `env` if you cannot proceed. (`careful-guard.sh` is a Bash-only hook and cannot block a Write/Edit at all.)
-- **You need the dispatcher's side of a contract you emit into** — Invariant 4's cumulative caps, or the commit-block envelope. Read the *named section* of `skills/pr-grind/SKILL.md`, never the whole file.
+- **You need the dispatcher's side of a contract you emit into** — Invariant 4's cumulative caps, or the commit-block envelope. Read the *named section* of `${CLAUDE_PLUGIN_ROOT}/skills/pr-grind/SKILL.md`, never the whole file.
+
+Both on-demand reads resolve against the busdriver plugin's own install root, not the current working repo: a bare relative `skills/...` path only resolves when the repo being worked on IS busdriver itself. When busdriver is installed as a plugin and pr-grind targets a different repository, `${CLAUDE_PLUGIN_ROOT}` is what still points at the right file.
 
 ### Step 1 — Wait for ALL checks + reviewers
 
@@ -733,7 +735,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | **Step 1 Phase 0: `mergeable` is `CONFLICTING` or `mergeStateStatus` is `DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
 | `WORKTREE_DIR` missing or unreadable | `env` |
-| A PreToolUse gate blocks a Write/Edit you cannot route around (design-review, or the freeze guard) — surface it, never create a skip file | `env` |
+| A PreToolUse gate blocks a Write/Edit/MultiEdit/Bash you cannot route around (design-review, or the freeze guard on Write/Edit) — surface it, never create a skip file | `env` |
 
 **Why history-rewrite bails are `judgment`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push, but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns. Categorizing as `judgment` forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
 

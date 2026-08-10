@@ -55,6 +55,17 @@ else
   ok "no unscoped read of skills/pr-grind/SKILL.md in the worker contract"
 fi
 
+# (1b) Companion guard for (1): the UNSCOPED check above passes vacuously if
+# the literal path is ever renamed or reworded in the worker — every line
+# would fail the `index(...) == 0` prefilter, UNSCOPED stays empty, and (1)
+# reports OK without having checked anything. Assert the literal is still
+# referenced at all, so a path rename can't silently disable half the guard.
+if grep -q "skills/pr-grind/SKILL.md" "$WORKER"; then
+  ok "worker contract still references the skills/pr-grind/SKILL.md literal (assertion 1's prefilter has something to check)"
+else
+  fail "worker contract no longer references 'skills/pr-grind/SKILL.md' at all — assertion 1 passed vacuously; update the literal in this test if the path was intentionally renamed"
+fi
+
 # (2) No bail/anti-pattern row punishing a read that is no longer ordered —
 # a guard that cannot fire certifies a check it never runs.
 if grep -qi 'Skipped.*mandatory Read of SKILL\.md\|skipped pre-flight Read' "$WORKER"; then

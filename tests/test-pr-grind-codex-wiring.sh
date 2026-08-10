@@ -304,7 +304,7 @@ fi
 # the refresh and its consumer — except the documented HEAD-moved all-stale
 # invalidation — or STALE_BOTS would consume a partial ledger.
 POSTWAIT_ANCHOR_LINE=$(grep -n '# Recompute the ENTIRE ledger on the post-wait sources' "$SKILL" | head -1 | cut -d: -f1 || true)
-POSTWAIT_CASE_LINE=$(grep -n "^[[:space:]]*case \"\$CODEX_REGRACE\" in" "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_CASE_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*case "\$CODEX_REGRACE" in/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_NORM_ESAC_LINE=$(awk -v c="$POSTWAIT_CASE_LINE" '
   NR < c { next }
   NR == c { depth = 1; next }
@@ -317,11 +317,11 @@ POSTWAIT_GRACE_IF_FI_LINE=$(awk -v h="$POSTWAIT_GRACE_IF_LINE" '
   /^[[:space:]]*if / { depth++ }
   /^[[:space:]]*fi([[:space:]]|;|$)/ { depth--; if (depth == 0) { print NR; exit } }' "$SKILL" || true)
 POSTWAIT_HEAD_GUARD_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*# HEAD-MOVED GUARD/ { print NR; exit }' "$SKILL" || true)
-POSTWAIT_CONSUMER_LINE=$(grep -n "^[[:space:]]*STALE_BOTS=\$(echo \"\$FRESH_ACKS\"" "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_CONSUMER_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*STALE_BOTS=\$\(echo "\$FRESH_ACKS"/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
-POSTWAIT_HEAD_IF_LINE=$(grep -n "^[[:space:]]*if \[ -z \"\$CODEX_HEAD_NOW\" \] || \[ \"\$CODEX_HEAD_NOW\" != \"\$HEAD_FULL_SHA\" \]; then\$" "$SKILL" | head -1 | cut -d: -f1 || true)
-POSTWAIT_INVALIDATION_LINE=$(grep -n '^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$' "$SKILL" | head -1 | cut -d: -f1 || true)
+POSTWAIT_HEAD_IF_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*if \[ -z "\$CODEX_HEAD_NOW" \] \|\| \[ "\$CODEX_HEAD_NOW" != "\$HEAD_FULL_SHA" \]; then$/ { print NR; exit }' "$SKILL" || true)
+POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
 # The HEAD-divergence conditional's MATCHING `fi` (depth-aware: the first `fi`
 # that returns the block to depth 0, not the first lexical `fi`), plus the
 # nesting depth of the invalidation inside that block (must be 1 — directly in
@@ -370,29 +370,59 @@ OPENER_CLASS='(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]|^[[:space:
 # The normalization chain must sit at the block's own nesting level: a block opener
 # between the anchor comment and the case would bury the whole recompute in a
 # never-executed branch (litmus, PR #609).
-POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" -v c="$POSTWAIT_CASE_LINE" "NR > a && NR < c && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
+BETWEEN_ANCHOR_AND_CASE_PROG='NR <= ANCHOR_LINE || NR >= CASE_LINE { next }
+term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
+term != "" { next }
+/<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
+$0 ~ /'"$OPENER_CLASS"'/ { print NR; exit }
+END { if (term != "") print "unterminated-heredoc" }'
+POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v ANCHOR_LINE="$POSTWAIT_ANCHOR_LINE" -v CASE_LINE="$POSTWAIT_CASE_LINE" "$BETWEEN_ANCHOR_AND_CASE_PROG" "$SKILL" || true)
 # Same-level proof for the head of the chain: between the wait-loop's closing
 # `done` and the anchor comment nothing may OPEN a block — an opener there (e.g.
 # `if false; then` before the anchor) would bury the whole recompute in a
 # never-executed branch (litmus, PR #609). Depth tracking across the whole file is
 # unreliable (single-line `case ... esac` and mid-line-closing subshells), so the
 # bound is the last `done` BEFORE the anchor rather than an absolute depth.
-POSTWAIT_LAST_DONE_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR < a && /^[[:space:]]*done$/ { last = NR } END { print last }' "$SKILL" || true)
-POSTWAIT_BETWEEN_DONE_AND_ANCHOR=$(awk -v d="$POSTWAIT_LAST_DONE_LINE" -v a="$POSTWAIT_ANCHOR_LINE" "NR > d && NR < a && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
+# Nesting proof for the head of the chain (Codex, PR #609): the anchor must sit at
+# nesting depth 1 inside the grace block — a wrapper (`while false; do`, `if false;
+# then`) around the poll+refresh pushes it deeper. Same-line `if ... fi` and the
+# mid-line-closing `( ... ) || true` subshell are handled so the count is exact.
+POSTWAIT_DEPTH_AT_ANCHOR=$(awk -v g="$POSTWAIT_GRACE_IF_LINE" -v a="$POSTWAIT_ANCHOR_LINE" '
+  NR < g || NR >= a { next }
+  /gh api graphql/ { in_gql = 1; next }
+  in_gql && /\x27 -f owner=/ { in_gql = 0; next }
+  in_gql { next }
+  /(^|[;])[[:space:]]*(if|case|while|for|until)[[:space:]]/ { depth++ }
+  /(^|[;])[[:space:]]*(fi|esac|done)([[:space:]]|;|$)/ { depth-- }
+  /^[[:space:]]*\(/ { depth++ }
+  /\)[[:space:]]*\|\| true/ { depth-- }
+  /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{/ { depth++ }
+  /(^|[[:space:]]|;|&&)[[:space:]]*\{/ { depth++ }
+  /^[[:space:]]*\}/ { depth-- }
+  END { print depth }' "$SKILL" || true)
 # No block opener may sit between the refresh and the divergence conditional — a
 # dead conditional there would let a differently formatted lookup seed
 # CODEX_HEAD_NOW early (litmus, PR #609).
-POSTWAIT_BETWEEN_MATCH_AND_HEADIF=$(awk -v m="$POSTWAIT_MATCH_LINE" -v h="$POSTWAIT_HEAD_IF_LINE" "NR > m && NR < h && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
+BETWEEN_MATCH_AND_HEADIF_PROG='NR <= MATCH_LINE || NR >= HEAD_IF_LINE { next }
+term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
+term != "" { next }
+/<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
+$0 ~ /'"$OPENER_CLASS"'/ { print NR; exit }
+END { if (term != "") print "unterminated-heredoc" }'
+POSTWAIT_BETWEEN_MATCH_AND_HEADIF=$(awk -v MATCH_LINE="$POSTWAIT_MATCH_LINE" -v HEAD_IF_LINE="$POSTWAIT_HEAD_IF_LINE" "$BETWEEN_MATCH_AND_HEADIF_PROG" "$SKILL" || true)
 # A `: || \` line-continuation immediately before the lookup joins it to a never-
 # executed no-op, making the post-wait lookup unreachable while a differently
 # formatted pre-wait lookup seeds the value (litmus, PR #609).
 POSTWAIT_LOOKUP_PREV=$(awk -v l="$POSTWAIT_HEAD_LOOKUP_LINE" 'NR == l-1 && (/^[[:space:]]*: \|\|/ || /\\$/ || /<<'"'"'[A-Za-z_]+'"'"'/) { print NR; exit }' "$SKILL" || true)
 # A heredoc opened before the lookup and terminated after it turns the matched
-# assignment into inert heredoc body text (litmus, PR #609).
+# assignment into inert heredoc body text; a heredoc opened AND closed before the
+# lookup must leave no state behind (coderabbitai, PR #609).
 POSTWAIT_LOOKUP_HEREDOC=$(awk -v l="$POSTWAIT_HEAD_LOOKUP_LINE" '
-  NR < l && /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term) }
-  NR > l && term != "" && $0 != term { print NR; exit }
-  NR > l && term != "" && $0 == term { term = "" }
+  NR < l && term == "" && /<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
+  NR < l && term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
+  NR == l && term != "" { print l; exit }
+  NR > l && term != "" && $0 !~ ("^[[:space:]]*" term "[[:space:]]*$") { print NR; exit }
+  NR > l && term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = "" }
   END { if (term != "") print "unterminated" }' "$SKILL" || true)
 # `unset FRESH_ACKS` between the refresh and its consumer empties the ledger
 # STALE_BOTS derives (litmus, PR #609).
@@ -402,7 +432,13 @@ POSTWAIT_INTERVENING=$(awk -v a="$POSTWAIT_MATCH_LINE" -v c="$POSTWAIT_CONSUMER_
 # block opener (if/case/while/for/until) or subshell `(` between the esac and the
 # refresh would put the recompute inside an arm or subshell that other paths skip
 # or discard (litmus, PR #609).
-POSTWAIT_BETWEEN_NORM_AND_MATCH=$(awk -v e="$POSTWAIT_NORM_ESAC_LINE" -v m="$POSTWAIT_MATCH_LINE" "NR > e && NR < m && \$0 ~ /$OPENER_CLASS/ { print NR; exit }" "$SKILL" || true)
+BETWEEN_NORM_AND_MATCH_PROG='NR <= NORM_ESAC_LINE || NR >= MATCH_LINE { next }
+term != "" && $0 ~ ("^[[:space:]]*" term "[[:space:]]*$") { term = ""; next }
+term != "" { next }
+/<<[[:space:]]*'"'"'?[A-Za-z_]+'"'"'?/ { term = $0; sub(/^.*<<[[:space:]]*'"'"'?/, "", term); sub(/'"'"'.*$/, "", term); next }
+$0 ~ /'"$OPENER_CLASS"'/ { print NR; exit }
+END { if (term != "") print "unterminated-heredoc" }'
+POSTWAIT_BETWEEN_NORM_AND_MATCH=$(awk -v NORM_ESAC_LINE="$POSTWAIT_NORM_ESAC_LINE" -v MATCH_LINE="$POSTWAIT_MATCH_LINE" "$BETWEEN_NORM_AND_MATCH_PROG" "$SKILL" || true)
 # The HEAD-moved all-stale invalidation is MANDATORY (the fail-closed response to a
 # moved head), sits at nesting depth 1 of the HEAD-divergence conditional (directly
 # in the branch — not wrapped in an inner `if false`), and precedes the consumer —
@@ -433,7 +469,7 @@ if [[ -n "$POSTWAIT_MATCH_LINE" && -n "$POSTWAIT_ANCHOR_LINE" && -n "$POSTWAIT_C
    && "$POSTWAIT_INVALIDATION_OK" == "yes" \
    && -z "$POSTWAIT_INTERVENING" \
    && -z "$POSTWAIT_BETWEEN_NORM_AND_MATCH" \
-   && -z "$POSTWAIT_BETWEEN_DONE_AND_ANCHOR" \
+   && "$POSTWAIT_DEPTH_AT_ANCHOR" == "1" \
    && -z "$POSTWAIT_BETWEEN_MATCH_AND_HEADIF" \
    && -z "$POSTWAIT_MATCH_PREV" && -z "$POSTWAIT_MATCH_NEXT" \
    && -z "$POSTWAIT_INV_PREV" && -z "$POSTWAIT_INV_NEXT" \

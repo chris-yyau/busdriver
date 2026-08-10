@@ -318,6 +318,431 @@ resolve_auditor_model() {
   [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
 }
 
+# ── Operator home config validation for the opencode arms ────────────
+# opencode loads ~/.opencode/opencode.json[c] in EVERY environment — including
+# the dispatch sandbox (verified 2026-08-09) — so they are a fourth config
+# surface the three isolation boundaries (empty dir, empty XDG_CONFIG_HOME,
+# plugin OPENCODE_CONFIG) do NOT cover. An `mcp` entry there would load inside
+# the sandbox and read_mcp_resource survives the tool denylist (exactly why
+# XDG_CONFIG_HOME is redirected). BOTH opencode arms (execute_review here and
+# dispatch.sh's opencode arm) MUST call this before dispatching. The file is
+# operator-owned (password-DB home, outside the reviewed repo), so this
+# enforces operator discipline — it is NOT an anti-injection boundary.
+# Usage: validate_opencode_home_config <home>  →  0 if every existing
+# ~/.opencode/opencode.json[c] under <home> is provider/$schema-only or absent;
+# 1 otherwise (caller refuses to dispatch).
+# On success it ALSO stages a validated copy into a fresh 0700 temp home
+# (`_BD_OC_SANDBOX_HOME`) — the dispatch arms run opencode with
+# HOME=<sandbox home>, so opencode reads EXACTLY the validated bytes and the
+# real ~/.opencode is never reopened (no validate-then-open race: a swap or
+# retarget of the real file after validation cannot reach the review lane).
+# Operator-username allowlist: only plain [A-Za-z0-9._-] may reach
+# `eval echo "~$user"` — AND the name must not BE a tilde directory-stack
+# form. Bash treats `~-`/`~+`/`~N`/`~-N`/`~+N` as $OLDPWD/$PWD expansions,
+# NOT username lookups: a name matching `^[-+]?[0-9]*$` (e.g. `-0`, `+1`,
+# `7`, bare `-`/`+`) would make the reviewed checkout the "trusted home".
+# Digit-LEADING names like `0abc` are ordinary usernames and remain valid
+# (POSIX permits them) — hence the WHOLE-NAME regex, which a glob cannot
+# express (`[0-9]*` matches every digit-leading string). `[[ =~ ]]` is a
+# bash builtin — no shadowable command word. (Same allowlist the pi lane's
+# probes apply; dispatch.sh carries an identical fallback copy.)
+# Usage: _bd_valid_username <name> → 0 valid / 1 invalid
+_bd_valid_username() {
+  [[ -n "${1:-}" ]] || return 1
+  case "$1" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1
+  return 0
+}
+
+# Trusted git resolution: /usr/bin/git on a CLT-less macOS is a developer-
+# tools SHIM that exists but fails when run — a bare PATH lookup picks it and
+# never retries. Probe each candidate by EXECUTION (--version) and take the
+# first that works. The candidate list is FIXED (operator-owned install
+# dirs), never the caller PATH.
+_bd_git=""
+_bd_resolve_git() {
+  [[ -n "$_bd_git" ]] && return 0
+  local _c
+  for _c in /usr/bin/git /opt/homebrew/bin/git /usr/local/bin/git; do
+    if [[ -x "$_c" ]] && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_c" --version >/dev/null 2>&1; then
+      _bd_git="$_c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_opencode_home_config() {
+  local _voh_home="$1" _voh_cfg _voh_py="/usr/bin/python3" _voh_sandbox _c
+  # Trusted-path interpreter resolution by EXECUTION probe (never `command -v`:
+  # an exported BASH_FUNC_command%% could return an attacker-selected path):
+  # /usr/bin/python3 first (CLT), falling through to Homebrew/usr-local when
+  # the CLT interpreter is absent OR a nonfunctional shim (CLT-less machines —
+  # the reviewer's P2; documented project requirements do not require CLT).
+  # Every candidate is an absolute slash-named path in an operator-owned
+  # install dir a fork's settings.json cannot write; `-I` isolation applies
+  # regardless of which interpreter is chosen.
+  _voh_py=""
+  for _c in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$_c" ]] && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_c" -I -c 'import sys' >/dev/null 2>&1; then
+      _voh_py="$_c"
+      break
+    fi
+  done
+  [[ -n "$_voh_py" ]] || _voh_py="/usr/bin/python3"
+  # NO auto-clean of a "previous" sandbox here: this function cannot prove it
+  # created a value found in _BD_OC_SANDBOX_HOME (an inherited/exported value
+  # could name a CONCURRENT dispatch's sandbox — anchored path checks cannot
+  # distinguish "mine" from "another's", both being <home>/.busdriver-oc-home.*).
+  # Ownership belongs to the calling lane: the opencode arms run validation
+  # INSIDE a trap-owned subshell, so the sandbox they create is cleaned on any
+  # exit. The tests clean their own staged homes explicitly.
+  _BD_OC_SANDBOX_HOME=""
+  # Fail closed if the trusted interpreter is absent (macOS CLT provides it).
+  [[ -x "$_voh_py" ]] || { echo "busdriver: cannot validate the operator ~/.opencode home config — $_voh_py not found; refusing to dispatch unconfined." >&2; return 1; }
+  # Stage under the TRUSTED home, NOT ${TMPDIR}: TMPDIR is repo-injectable
+  # (a fork's settings.json can point it at an observable filesystem), while
+  # the password-DB home is the arm's trust anchor. Same filesystem as the
+  # real data dir; XDG_CACHE_HOME in the dispatch env keeps the inert model/
+  # package cache shared. XDG_DATA_HOME is deliberately NOT set (see the arm
+  # comment: the data dir's account state would reopen a config surface).
+  _voh_sandbox="$(/usr/bin/mktemp -d "$_voh_home/.busdriver-oc-home.XXXXXX" 2>/dev/null)" || { echo "busdriver: cannot stage the validated opencode home — mktemp failed; refusing to dispatch unconfined." >&2; return 1; }
+  # Assign IMMEDIATELY (before populating): a caller's already-armed cleanup
+  # trap sees the path during the whole staging window, so TERM mid-staging
+  # cannot orphan the (possibly credential-bearing) dir.
+  _BD_OC_SANDBOX_HOME="$_voh_sandbox"
+  # Ownership marker: cleanup acts ONLY on dirs carrying this marker (or
+  # still-empty dirs — nothing credential-bearing was staged yet), so an
+  # inherited/exported _BD_OC_SANDBOX_HOME (even one matching the anchored
+  # prefix) can never make a lane's trap delete a CONCURRENT dispatch's
+  # populated sandbox.
+  /usr/bin/touch "$_voh_sandbox/.bd-own" || { echo "busdriver: cannot mark the staged opencode home — refusing to dispatch unconfined." >&2; if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi; return 1; }
+  # HOME-based SDK credential/config dirs (AWS profiles, Azure, GCP ADC):
+  # providers that obtain credentials from ~/.aws etc. must keep reading the
+  # REAL files under the redirected HOME. Explicit symlinks into the sandbox,
+  # created only for dirs the operator actually has; the review lane is the
+  # operator's own process and already read these under the pre-fix HOME=real.
+  for _voh_sdk in .aws .azure .config/gcloud; do
+    if [[ -e "$_voh_home/$_voh_sdk" || -L "$_voh_home/$_voh_sdk" ]] && [[ ! -e "$_voh_sandbox/$_voh_sdk" ]]; then
+      if [[ "${_voh_sdk%/*}" != "$_voh_sdk" ]] && ! /bin/mkdir -p "$_voh_sandbox/${_voh_sdk%/*}" 2>/dev/null; then
+        echo "busdriver: cannot stage the sandbox path for $_voh_sdk — refusing to dispatch unconfined." >&2
+        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+        return 1
+      fi
+      if ! /bin/ln -s "$_voh_home/$_voh_sdk" "$_voh_sandbox/$_voh_sdk" 2>/dev/null; then
+        echo "busdriver: cannot stage the operator's $_voh_sdk (provider credential dir) — refusing to dispatch unconfined." >&2
+        if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+        return 1
+      fi
+    fi
+  done
+  # BOTH the .opencode subdir AND the home-root configs: opencode's ancestor
+  # project discovery does NOT stop at the sandbox — it walks up into the
+  # real home, so a home-root opencode.json[c] is a discoverable surface too.
+  # The staging copy preserves each file's HOME-RELATIVE path, so a home-root
+  # opencode.json lands at $sandbox/opencode.json (never colliding with the
+  # $sandbox/.opencode/opencode.json copy).
+  for _voh_cfg in "$_voh_home/.opencode/opencode.json" "$_voh_home/.opencode/opencode.jsonc" "$_voh_home/opencode.json" "$_voh_home/opencode.jsonc"; do
+    # Existence OR link here — `[[ -e ]]` alone follows a symlink and returns
+    # false for a DANGLING one, skipping the python O_NOFOLLOW refusal; -L
+    # keeps every symlink (live or dangling) on the python path.
+    [[ -e "$_voh_cfg" || -L "$_voh_cfg" ]] || continue
+    _voh_rel="${_voh_cfg#"$_voh_home"/}"   # .opencode/opencode.json | opencode.json
+    if ! "$_voh_py" -I - "$_voh_cfg" "$_voh_sandbox" "$_voh_rel" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+def strip_jsonc(s):
+    # String-aware comment + trailing-comma stripping: //, /* */, and a comma
+    # directly before } or ] are dropped ONLY outside strings, so a provider
+    # value containing e.g. "http://x//y" or "a,}" is never corrupted. A
+    # removed comment is replaced by a SPACE so tokens cannot merge
+    # (1/*x*/2 must stay invalid, not become 12). An unterminated block
+    # comment returns the input UNCHANGED so the strict parse fails (the
+    # guard refuses malformed documents rather than silently truncating).
+    out = []
+    i, n = 0, len(s)
+    in_str = False
+    while i < n:
+        c = s[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(s[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if s.startswith("//", i):
+            # JSONC line terminators are LF, CR, U+2028, and U+2029 (opencode
+            # treats all four): a doc like "//c\u2028\"mcp\":{}" must end the
+            # comment at U+2028, exactly as opencode's parser does — otherwise
+            # the validator strips "mcp" while opencode still sees it.
+            j = i
+            while j < n and s[j] not in "\n\r\u2028\u2029":
+                j += 1
+            if j == n:
+                i = n
+            else:
+                out.append(" ")
+                i = j + 1
+                if s[j] == "\r" and i < n and s[i] == "\n":
+                    i += 1  # consume the LF of a CRLF pair too
+            continue
+        if s.startswith("/*", i):
+            j = s.find("*/", i + 2)
+            if j == -1:
+                return s  # unterminated — let the strict parse fail
+            out.append(" "); i = j + 2
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n:
+                ch = s[j]
+                if ch in " \t\r\n":
+                    j += 1
+                    continue
+                if s.startswith("//", j):
+                    k = j
+                    while k < n and s[k] not in "\n\r\u2028\u2029":
+                        k += 1
+                    j = n if k == n else k + 1
+                    continue
+                if s.startswith("/*", j):
+                    k = s.find("*/", j + 2)
+                    j = n if k == -1 else k + 2
+                    continue
+                break
+            if j < n and s[j] in "}]":
+                i += 1  # trailing comma (even with comments after it) — drop
+                continue
+        out.append(c); i += 1
+    return "".join(out)
+
+def parse(path):
+    # Open ONCE with the type check atomic to the read: O_NOFOLLOW refuses a
+    # symlink (opencode would follow it), O_NONBLOCK refuses a FIFO (which
+    # would otherwise hang, and whose content can differ per open), and fstat
+    # after open confirms a REGULAR file — no separate check-then-read gap.
+    # Reads are capped at 1 MiB + 1; a longer read REFUSES (truncation would
+    # let a padded valid prefix hide invalid trailing content).
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        sys.exit(1)  # missing, symlink, or unreadable — refuse
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            sys.exit(1)  # FIFO / socket / device — refuse
+        raw = os.read(fd, (1 << 20) + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > (1 << 20):
+        sys.exit(1)  # oversized — refuse, never truncate
+    # OpenCode expands {file:...}, {env:...}, and other {name:...} placeholders
+    # across config text INCLUDING object keys, so a key like
+    # `{"provider":{"p":{"n{env:UNSET}pm":"file:///tmp/evil.mjs"}}}` becomes an
+    # npm provider entry at load time, bypassing the npm scan above. Refuse ANY
+    # {name: reference (fail-closed; operators inline values instead).
+    if b"{" in raw:
+        import re as _re
+        if _re.search(r"\{[A-Za-z_][A-Za-z0-9_]*:", raw.decode("utf-8", errors="replace")):
+            sys.exit(1)
+    return raw
+
+try:
+    raw = parse(sys.argv[1])
+    text = raw.decode("utf-8")  # strict — invalid UTF-8 must REFUSE (opencode would reject it too)
+    # Reject Python-only constants (NaN/Infinity): python accepts them,
+    # opencode's parser does not — a config opencode refuses to load is not
+    # a safe provider-only config.
+    def _reject(x):
+        raise ValueError(x)
+    try:
+        d = json.loads(text, parse_constant=_reject)
+    except Exception:
+        d = json.loads(strip_jsonc(text), parse_constant=_reject)
+except Exception:
+    sys.exit(1)
+# Root must be an object; a non-object ([] / ["provider"] / scalar) is not a
+# provider-only configuration and must refuse.
+if not isinstance(d, dict):
+    sys.exit(1)
+# The top-level allowlist is not enough: an `npm` key ANYWHERE inside a
+# provider block — including per-model overrides
+# (`provider.<id>.models.<model>.provider.npm`, which opencode prioritizes
+# over the provider-level value) — makes opencode load that package
+# in-process (arbitrary code execution in the review lane; no `mcp` key
+# needed). The dispatch lane's providers must be defined without npm
+# (built-in openai-compatible handling; verified), so any nested npm key
+# refuses. Recursive, because models can carry their own provider objects.
+def has_npm(v):
+    if isinstance(v, dict):
+        return "npm" in v or any(has_npm(x) for x in v.values())
+    if isinstance(v, list):
+        return any(has_npm(x) for x in v)
+    return False
+
+_prov = d.get("provider", {})
+if not isinstance(_prov, dict) or any(has_npm(v) for v in _prov.values()):
+    sys.exit(1)
+if [k for k in d if k not in ("provider", "$schema")]:
+    sys.exit(1)
+# Stage the VALIDATED bytes (the same read) into the sandbox home at the
+# HOME-RELATIVE path (argv[3]); the dispatch arms run opencode with
+# HOME=<sandbox home>, so opencode consumes exactly these bytes and the real
+# ~/.opencode is never reopened. The relative path keeps home-root and
+# .opencode configs in distinct destinations.
+try:
+    dest = os.path.join(sys.argv[2], sys.argv[3])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+    then
+      echo "busdriver: $_voh_cfg is loaded by opencode inside the sandbox and is not a safe provider-only config (unparseable, keys beyond provider/\$schema, non-regular file, or an npm package reference) — refusing to dispatch unconfined." >&2
+      # Clear the global only if the removal actually succeeded — otherwise
+      # the lane's EXIT trap retries it with the still-live handle.
+      if /bin/rm -rf "$_voh_sandbox" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+      return 1
+    fi
+  done
+  # Auth availability: copy the operator's auth.json (single fd, same
+  # O_NOFOLLOW+fstat+size+JSON discipline as the config) into the sandbox
+  # DATA dir. The arms set XDG_DATA_HOME=$sandbox/.local/share, so opencode
+  # reads THIS copy — auth-based providers work — while the rest of the data
+  # dir stays EMPTY: no account/org state, no wellknown credentials, nothing
+  # that merges config after OPENCODE_CONFIG. Fail-open with a warning: the
+  # lane's own provider carries apiKey in the validated config, so an
+  # unstageable auth.json costs auth-based providers only. There is no
+  # write-back — the real file is never modified by the lane (a token
+  # refreshed mid-run is lost; the next dispatch re-copies the real file).
+  _voh_authp="$_voh_home/.local/share/opencode/auth.json"
+  if [[ -e "$_voh_authp" || -L "$_voh_authp" ]]; then
+    # exit 0 = staged / nothing to stage; exit 2 = source unreadable (fail-open,
+    # warned — the lane's own provider is apiKey-based); exit 1 = write or
+    # cleanup failure (FAIL-CLOSED — a partial/incorrectly-permissioned
+    # auth.json left in the sandbox would break every provider's auth parse).
+    _voh_auth_rc=0
+    "$_voh_py" -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null || _voh_auth_rc=$?
+import errno, json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)  # missing/symlink/unreadable — caller warns, fails open
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)  # FIFO/socket/device — fail open (no auth staged)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)  # oversized — fail open (no auth staged)
+try:
+    # Reject Python-only constants (NaN/Infinity) and non-dict roots
+    # (null/[]): python's default loads accepts them, opencode's parser or
+    # auth schema does not — staging them would turn fail-open into a
+    # failed dispatch.
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)  # empty/malformed — fail open (nothing staged)
+except Exception:
+    sys.exit(2)  # mid-write/unparseable — fail open
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # born 0600 — no chmod-after window
+    with os.fdopen(fd, "wb") as f:
+        f.write(raw)
+except Exception:
+    # If the destination exists after a failed write, it is partial or
+    # incorrectly permissioned and MUST NOT stay for opencode; if the unlink
+    # fails too, FAIL CLOSED. ENOENT/ENOTDIR prove the destination never
+    # existed (nothing partial) — fail open; any OTHER lookup failure leaves
+    # the state unknown — fail closed.
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR):
+            sys.exit(2)
+        sys.exit(1)
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)  # partial file may remain — FAIL CLOSED
+    sys.exit(2)      # cleaned up — fail open
+PY
+    if [[ "$_voh_auth_rc" -eq 0 ]]; then
+      :  # staged (or nothing to stage)
+    elif ! _bd_oc_auth_rc_classify "$_voh_auth_rc" "$_voh_sandbox"; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Auth staging rc classifier: 0 = staged (ok); 2 = source unreadable/nothing
+# staged (fail-OPEN, warned — the lane's own provider is apiKey-based); ANY
+# other nonzero (1 = partial may remain; 137/143 = helper killed mid-write)
+# FAILS CLOSED — a partial auth.json must never be left for opencode.
+# Usage: _bd_oc_auth_rc_classify <rc> <sandbox_home>  →  0 continue / 1 refuse
+_bd_oc_auth_rc_classify() {
+  local _rc="$1" _sb="${2:-}"
+  [[ "$_rc" -eq 0 ]] && return 0
+  if [[ "$_rc" -eq 2 ]]; then
+    echo "busdriver: WARNING — could not stage the operator auth.json; auth-based providers will be unavailable this dispatch (apiKey-based providers unaffected)." >&2
+    return 0
+  fi
+  echo "busdriver: the operator auth.json could not be staged and a partial file may remain in the sandbox — refusing to dispatch unconfined." >&2
+  if /bin/rm -rf "$_sb" 2>/dev/null; then _BD_OC_SANDBOX_HOME=""; fi
+  return 1
+}
+
+# Anchored sandbox-home cleanup: the path must be a DIRECT child of the
+# trusted home with our mktemp prefix, AND its basename must carry the prefix
+# (the prefix pattern's trailing `*` would otherwise match "/../" traversal —
+# the basename can never contain a slash). Used by both opencode arms'
+# cleanup traps, so a forged _BD_OC_SANDBOX_HOME can never point rm -rf at an
+# unrelated path.
+# Usage: _bd_rm_sandbox_home <path> <trusted_home>
+_bd_rm_sandbox_home() {
+  local _p="${1:-}" _home="${2:-}"
+  [[ -n "$_p" && -n "$_home" ]] || return 0
+  case "$_p" in
+    "$_home"/.busdriver-oc-home.*) ;;
+    *) return 0 ;;
+  esac
+  [[ "${_p##*/}" == .busdriver-oc-home.* ]] || return 0
+  [[ -f "$_p/.bd-own" ]] || { [[ -z "$(/bin/ls -A "$_p" 2>/dev/null)" ]] || return 0; }   # marked, or still-empty (nothing staged yet — early-orphan window)
+  /bin/rm -rf "$_p" 2>/dev/null || { echo "busdriver: WARNING — could not remove staged opencode home $_p" >&2; return 1; }
+}
+
+# Lane cleanup for the opencode arms: neutral-dir and sandbox-home removal.
+# EXIT runs it once; the TERM/INT handlers run it and then EXIT (a caught
+# signal otherwise resumes the run with its HOME already deleted). ${VAR:-}
+# guards keep the handlers alive under set -u even when the signal lands
+# before staging assigned the sandbox variable. The caller's exit status is
+# captured FIRST and returned, so a cleanup failure (each removal is
+# individually non-fatal) can neither abort the later steps under set -e nor
+# replace the lane's original status.
+# Usage: _bd_oc_lane_cleanup <real_home> <neutral_cwd>
+_bd_oc_lane_cleanup() {
+  local _rc=$?
+  /bin/rm -rf "$2" 2>/dev/null || true
+  _bd_rm_sandbox_home "${_BD_OC_SANDBOX_HOME:-}" "$1" || true
+  return "$_rc"
+}
+
 # ── Pi (repo-reading exploration lane) model ────────────────────
 #
 #   ~/.claude/busdriver.json  →  { "pi": { "model": "<provider>/<model-id>" } }
@@ -1787,12 +2212,31 @@ execute_review() {
                echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                return 1
              fi
-             local _oc_cwd
-             _oc_cwd="$(mktemp -d 2>/dev/null)" || _oc_cwd=""
-             if [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
-               echo "busdriver: could not create a neutral working directory for the opencode voice — refusing to dispatch from the reviewed tree (it could redefine the reviewer or expose files/MCP)." >&2
+             # Derive the trusted home from the PASSWORD DATABASE FIRST (not
+             # $HOME: repo-injectable) — used for the auth/cache env paths.
+             # `~user` tilde expansion reads getpwnam; `id` runs absolute.
+             local _oc_home _oc_user
+             _oc_user="$(/usr/bin/id -un 2>/dev/null)"
+             if ! _bd_valid_username "$_oc_user"; then
+               # Fail CLOSED on an empty or non-plain username: the following
+               # `~` expansion would fall back to the repo-injectable $HOME
+               # (or a hostile name could execute as shell text).
+               echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                return 1
              fi
+             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+             # NO $HOME fallback — $HOME is the repo-injectable value this whole
+             # block exists to distrust. If the password-DB lookup fails (a broken
+             # system, not a normal state), fail CLOSED rather than trust $HOME.
+             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
+               return 1
+             fi
+             # Neutral cwd is created INSIDE the validated sandbox (post-
+             # validation, in the run subshell): opencode's project discovery
+             # walks UP and stops at the sandbox's own validated copy. Never
+             # ${TMPDIR} (repo-injectable) and never a bare /tmp child
+             # (world-writable — other users could plant config for the walk).
              # Binary selection and process CWD are pinned to trusted values so
              # NOTHING the reviewed repo controls can supply the executable:
              #   (a) resolve ONLY against a FIXED trusted lookup path (operator
@@ -1808,26 +2252,12 @@ execute_review() {
              #       binary's own dir + system dirs.
              #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
              #       empty dir (see the dispatch below), before --dir applies.
-             # Derive the trusted home from the PASSWORD DATABASE, not $HOME: a
-             # repo-injected $HOME (fork settings.json) would otherwise point
-             # _oc_trust at an attacker dir. `~user` tilde expansion reads getpwnam,
-             # independent of the $HOME env var; `id` runs on the pinned system PATH.
-             local _oc_bin _oc_path _oc_trust _oc_home _oc_user
-             _oc_user="$(id -un 2>/dev/null)"
-             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
-             # NO $HOME fallback — $HOME is the repo-injectable value this whole
-             # block exists to distrust. If the password-DB lookup fails (a broken
-             # system, not a normal state), fail CLOSED rather than trust $HOME.
-             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
-               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               rmdir "$_oc_cwd" 2>/dev/null || true
-               return 1
-             fi
+             local _oc_bin _oc_path _oc_trust _oc_cwd=""
              _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
              _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
              if [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
                echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
-               rmdir "$_oc_cwd" 2>/dev/null || true
+               /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
                return 1
              fi
              _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
@@ -1862,15 +2292,69 @@ execute_review() {
              # prompt goes to a provider they configured away from. These dirs
              # are root-owned system install paths, not repo-writable.
              PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
-             ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT   # best-effort cleanup even on grace-kill
+             # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
+             # opencode loads these in EVERY environment — including this
+             # sandbox — so they are a fourth config surface the three isolation
+             # boundaries do not cover. An `mcp` entry there would load inside
+             # the sandbox and read_mcp_resource survives the tool denylist
+             # (exactly why XDG_CONFIG_HOME is redirected). Shared guard:
+             # validate_opencode_home_config (single source of truth, also
+             # called by dispatch.sh's opencode arm). On success it also
+             # stages a validated copy at $_BD_OC_SANDBOX_HOME; the run below
+             # uses THAT as HOME so opencode reads exactly the validated bytes
+             # (the real ~/.opencode is never reopened — no validate-then-open
+             # race on a swapped-in mcp/npm payload). Validation runs INSIDE
+             # the trap-owned subshell so the staged sandbox is owned from
+             # creation (an early TERM cannot orphan credential-bearing dirs).
+             # shellcheck disable=SC2030,SC2031  # _oc_cwd is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
+             ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT   # best-effort cleanup even on grace-kill
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
+               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
+               # Pinned SYSTEM-ONLY PATH: the validator stages credentials
+               # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is the
+               # operator-WRITABLE opencode dir, which must not shadow those
+               # utilities; the system dirs carry them all.
+               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
+                 exit 1
+               fi
+               # Neutral cwd INSIDE the validated sandbox (post-validation):
+               # opencode's project discovery walks UP from the cwd and stops
+               # at the sandbox's OWN validated copy — the real home's config
+               # surfaces are never reopened; the 0700 sandbox is private to
+               # the operator (no other-user planting; never ${TMPDIR} — repo-
+               # injectable).
+               _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
+               /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
+               # Git-init the EMPTY cwd: opencode's project-config discovery
+               # scans every ancestor through the worktree root (non-Git = /,
+               # reaching the real home); a git repo bounds the worktree AT
+               # the empty cwd. The workspace stays EMPTY — auth.json / SDK
+               # symlinks are OUTSIDE the worktree and external_directory is
+               # denied, so the read-enabled reviewer cannot reach them.
+               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable) with
+               # the EXECUTION-PROBED git (the CLT shim at /usr/bin/git exists
+               # but fails without CLT).
+               _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               [[ -d "$_oc_cwd/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
                cd "$_oc_cwd" 2>/dev/null || exit 1
+               # XDG_DATA_HOME points at the SANDBOX data dir — populated
+               # with a validated auth.json copy ONLY (auth works, account
+               # state absent — nothing merges config after OPENCODE_CONFIG).
+               # XDG_CACHE_HOME shares the inert model/package cache.
+               # (Comments BEFORE the command — after a backslash
+               # continuation they would terminate the chain.)
                _run_review_with_retries opencode "$prompt" "$duration" pipe \
-                 env -i HOME="$_oc_home" PATH="$_oc_path" \
+                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                    OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
+                   XDG_CACHE_HOME="$_oc_home/.cache" \
                  "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                    -m "$_BD_AUDITOR_MODEL" )
              local _oc_rc=$?
-             rm -rf "$_oc_cwd" 2>/dev/null || true
+              # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
+            /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
              return "$_oc_rc" ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)

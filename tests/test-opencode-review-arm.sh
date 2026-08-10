@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2329  # this file intentionally defines poison/sentinel functions invoked inside children or string-eval contexts
 # test-opencode-review-arm.sh — guard tests for the opencode (Auditor) arm.
 #
 # The arm's read-only posture is NOT structural — it comes from a plugin-owned
@@ -102,13 +103,14 @@ for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
   # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
   if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
      && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && grep -q '_oc_cwd="\$(mktemp -d' "$_f" \
+     && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
      && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
      && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
-     && grep -q '"\$_oc_bin" run --dir' "$_f"; then
-    pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin)"
+     && grep -q '"\$_oc_bin" run --dir' "$_f" \
+     && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+    pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin + intact chain)"
   else
-    fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin)"
+    fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin/chain — a comment after a backslash continuation would run opencode UNISOLATED)"
   fi
 done
 
@@ -307,6 +309,630 @@ if (
   pass "describe_role_resolution reports the filtered route entry, not rejected opencode"
 else
   fail "describe_role_resolution opencode provenance metadata mismatch (see assertions above)"
+fi
+
+# ── 9. Operator-owned ~/.opencode/opencode.json[c] is validated fail-closed ──
+# opencode loads these HOME-based files in EVERY environment — including the
+# dispatch sandbox, which the three isolation boundaries (empty dir, empty
+# XDG_CONFIG_HOME, plugin OPENCODE_CONFIG) do NOT cover. An `mcp` entry there
+# would load inside the sandbox and read_mcp_resource survives the tool
+# denylist (exactly why XDG_CONFIG_HOME is redirected), so both opencode arms
+# must refuse dispatch unless the file is provider/$schema-only. Behavioral
+# coverage of the shared guard (validate_opencode_home_config) + static wiring
+# assertions that both arms call it.
+# (a)-(f) behavioral; (g) wiring.
+if (
+  set -uo pipefail
+  # shellcheck source=/dev/null
+  source "$RC"
+  ok=1
+  _home="$(mktemp -d)" || exit 1
+  mkdir -p "$_home/.opencode" || exit 1
+  # shellcheck disable=SC2016  # _BD_OC_SANDBOX_HOME must expand at trap fire time
+  trap '_bd_rm_sandbox_home "$_BD_OC_SANDBOX_HOME" "$_home"; rm -rf "$_home"' EXIT
+
+  # (a) provider-only json → pass
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a) provider-only json refused"; ok=0; }
+  # (a2) provider with an npm package (in-process load = code execution in the
+  # review lane) → refuse
+  printf '{"provider":{"p":{"npm":"@ai-sdk/openai-compatible"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a2) provider npm package accepted"; ok=0; }
+  # (a3) NESTED npm (per-model provider override) → refuse
+  printf '{"provider":{"p":{"models":{"m":{"provider":{"npm":"file:///tmp/evil.mjs"}}}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3) nested model npm accepted"; ok=0; }
+  # (a3b) {file:} placeholder in an OBJECT KEY (expanded by opencode at load
+  # time — can smuggle an npm key past the scan above) → refuse
+  printf '{"provider":{"p":{"{file:/x-npm}":"file:///tmp/evil.mjs"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3b) {file:} key-smuggle accepted"; ok=0; }
+  # (a3c) plain {file:} value reference → refuse (HOME-redirected resolution
+  # would break; fail-closed)
+  printf '{"provider":{"p":{"options":{"apiKey":"{file:~/.secrets/key}"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3c) {file:} value accepted"; ok=0; }
+  # (a3d) {env:...} substitution (also expanded before parsing — an unset var
+  # becomes empty, so `n{env:UNSET}pm` becomes the key `npm`) → refuse
+  printf '{"provider":{"p":{"n{env:UNSET}pm":"file:///tmp/evil.mjs"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (a3d) {env:} key-smuggle accepted"; ok=0; }
+  # (a4) on success the validator STAGES the validated bytes at
+  # $_BD_OC_SANDBOX_HOME/.opencode/opencode.json (open-code-copy semantics —
+  # the dispatch arms run opencode with HOME=<sandbox home>, so opencode
+  # reads exactly what was validated); on refusal the sandbox home is unset.
+  [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4) refusal left a staged sandbox home"; ok=0; }
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4) valid config refused"; ok=0; }
+  if [[ ! -f "$_BD_OC_SANDBOX_HOME/.opencode/opencode.json" ]] \
+     || ! diff -q "$_home/.opencode/opencode.json" "$_BD_OC_SANDBOX_HOME/.opencode/opencode.json" >/dev/null 2>&1; then
+    echo "  ✗ (a4) staged copy missing or differs from validated bytes"; ok=0;
+  fi
+  # (a4c) HOME-based SDK dirs (.aws etc.) are symlinked into the staged home,
+  # so providers reading ~/.aws profiles keep working under the redirected
+  # HOME; absent dirs are not created.
+  mkdir -p "$_home/.aws" || exit 1
+  printf '[default]\n' > "$_home/.aws/config"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4c) valid config with .aws refused"; ok=0; }
+  [[ -L "$_BD_OC_SANDBOX_HOME/.aws" ]] || { echo "  ✗ (a4c) .aws not symlinked into staged home"; ok=0; }
+  [[ ! -e "$_BD_OC_SANDBOX_HOME/.azure" ]] || { echo "  ✗ (a4c) absent .azure was created"; ok=0; }
+  rm -rf "$_BD_OC_SANDBOX_HOME" "$_home/.aws" 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
+  # (a4b) Auth availability via a VALIDATED COPY in the sandbox DATA dir:
+  # the arms set XDG_DATA_HOME to the sandbox's own .local/share (never the
+  # real data dir — account/org state there would merge config after
+  # OPENCODE_CONFIG). The copy is byte-identical + 0600; nothing else is
+  # staged (no account state, no wellknown credentials).
+  mkdir -p "$_home/.local/share/opencode" || exit 1
+  printf '{"openai":{"key":"secret"}}\n' > "$_home/.local/share/opencode/auth.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (a4b) valid config with auth refused"; ok=0; }
+  if [[ ! -f "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" ]] \
+     || ! diff -q "$_home/.local/share/opencode/auth.json" "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" >/dev/null 2>&1; then
+    echo "  ✗ (a4b) auth.json not staged byte-identically"; ok=0;
+  fi
+  _m="$(/usr/bin/stat -f%Lp "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || /usr/bin/stat -c%a "$_BD_OC_SANDBOX_HOME/.local/share/opencode/auth.json" 2>/dev/null || echo "000")"
+  [[ "$_m" == "600" ]] || { echo "  ✗ (a4b) staged auth.json mode $_m (want 600)"; ok=0; }
+  # shellcheck disable=SC2312  # the counts are load-bearing; find's rc is not
+  [[ "$(find "$_BD_OC_SANDBOX_HOME/.local/share" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')" == "2" ]] \
+    || { echo "  ✗ (a4b) sandbox data dir has unexpected entries (expect only opencode/ + auth.json)"; ok=0; }
+  for _f in "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh" "$REPO_ROOT/scripts/lib/resolve-cli.sh"; do
+    # shellcheck disable=SC2016  # the \$ is a literal grep pattern
+    grep -q 'XDG_DATA_HOME="\$_BD_OC_SANDBOX_HOME/.local/share"' "$_f" \
+      || { echo "  ✗ (a4b) $(basename "$_f") does not wire XDG_DATA_HOME to the sandbox data dir"; ok=0; }
+  done
+  # (a4c) fault injection — mktemp failure (home unwritable) FAILS CLOSED.
+  # (As root, chmod 0555 does not stop mktemp — skip.)
+  # shellcheck disable=SC2312  # the uid is load-bearing; id's rc is not
+  if [[ "$(/usr/bin/id -u 2>/dev/null || echo 0)" -ne 0 ]]; then
+    chmod 0555 "$_home" 2>/dev/null || true
+    if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (a4c) mktemp failure accepted"; ok=0; fi
+    chmod 0755 "$_home" 2>/dev/null || true
+    [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4c) mktemp-failure refusal left a sandbox handle"; ok=0; }
+  fi
+  # (a4c2) direct python contract: a write that cannot be cleaned up (target
+  # pre-created as a DIRECTORY — open and unlink both fail) must exit 1
+  # (fail-closed); a cleaned-up failure exits 2 (fail-open). The python below
+  # mirrors the validator's inline auth-staging logic verbatim.
+  mkdir -p "$_home/.local/share/opencode" || exit 1
+  printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json"
+  _fault_sand="$(mktemp -d)" || exit 1
+  mkdir -p "$_fault_sand/.local/share/opencode/auth.json"   # target is a DIR
+  /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
+            sys.exit(2)
+        sys.exit(1)  # state unknown — fail closed
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)  # cleanup failed too — FAIL CLOSED
+    sys.exit(2)      # cleaned up — fail open
+PY
+  _frc=$?
+  [[ "$_frc" -eq 1 ]] || { echo "  ✗ (a4c2) unstageable auth did not exit 1 (got $_frc)"; ok=0; }
+  # (a4c3) failure classification: valid JSON stages (exit 0); invalid JSON,
+  # oversize, FIFO source, and symlink source fail OPEN (exit 2 — no auth
+  # staged, lane continues); a kill-mid-write (137) is treated as fail-closed
+  # by the VALIDATOR — assert the python contract for 0/1/2 first.
+  _fault_sand2="$(mktemp -d)" || exit 1
+  for _ac in "valid:0" "garbage:2" "oversize:2" "fifo:2" "symlink:2" "nan:2" "nullroot:2"; do
+    _kind="${_ac%%:*}"; _want="${_ac##*:}"
+    rm -f "$_home/.local/share/opencode/auth.json" "$_home/.local/share/opencode/auth-target.json"
+    case "$_kind" in
+      valid) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json" ;;
+      garbage) printf 'not json\n' > "$_home/.local/share/opencode/auth.json" ;;
+      # VALID JSON but > 1 MiB — only the SIZE check can reject it (zero
+      # bytes would fail the JSON check first and never exercise the limit).
+      oversize) /usr/bin/python3 -c 'import sys; sys.stdout.write("{\"pad\":\"" + "a" * 1048600 + "\"}")' > "$_home/.local/share/opencode/auth.json" ;;
+      fifo) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null ;;
+      symlink) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json" ;;
+      nan) printf '{"k":NaN}\n' > "$_home/.local/share/opencode/auth.json" ;;
+      nullroot) printf 'null\n' > "$_home/.local/share/opencode/auth.json" ;;
+    esac
+    # Guard the fixtures: a failed mkfifo/ln would leave a MISSING source,
+    # which exits 2 for the same reason — a false pass.
+    [[ -e "$_home/.local/share/opencode/auth.json" || -L "$_home/.local/share/opencode/auth.json" ]] \
+      || { echo "  ✗ (a4c3) $_kind fixture missing"; ok=0; continue; }
+    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
+            sys.exit(2)
+        sys.exit(1)  # state unknown — fail closed
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)
+    sys.exit(2)
+PY
+    _frc2=$?
+    [[ "$_frc2" -eq "$_want" ]] || { echo "  ✗ (a4c3) $_kind auth exit $_frc2 (want $_want)"; ok=0; }
+    rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
+  done
+  # (a4c3b) seeded random property sweep over the same auth contract: random
+  # kinds and sizes, deterministic seed — valid JSON ≤ 1 MiB stages (0);
+  # garbage, oversize, FIFO, or symlink sources fail open (2).
+  _seed=7
+  for _ri in $(seq 1 10); do
+    _seed=$(( (_seed * 1103515245 + 12345) & 0x7fffffff ))
+    _rk=$(( _seed % 5 ))
+    rm -f "$_home/.local/share/opencode/auth.json" "$_home/.local/share/opencode/auth-target.json"
+    case "$_rk" in
+      0) printf '{"k":"v%d"}\n' "$_ri" > "$_home/.local/share/opencode/auth.json"; _rw=0 ;;
+      1) printf 'garbage %d\n' "$_ri" > "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+      2) /usr/bin/python3 -c "import sys; sys.stdout.write('{\"pad\":\"' + 'a' * (1048576 + $_ri) + '\"}')" > "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+      3) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null; _rw=2 ;;
+      4) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
+    esac
+    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
+import json, os, stat, sys
+
+src, sand = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(2)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(2)
+    raw = os.read(fd, (1 << 20) + 1)
+finally:
+    os.close(fd)
+if len(raw) > (1 << 20):
+    sys.exit(2)
+try:
+    def _reject(x):
+        raise ValueError(x)
+    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
+    if not isinstance(parsed, dict) or not parsed:
+        sys.exit(2)
+except Exception:
+    sys.exit(2)
+d = os.path.join(sand, ".local", "share", "opencode")
+dest = os.path.join(d, "auth.json")
+try:
+    os.makedirs(d, exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    os.chmod(dest, 0o600)
+except Exception:
+    try:
+        os.lstat(dest)
+    except OSError as e:
+        if e.errno in (2, 20):
+            sys.exit(2)
+        sys.exit(1)
+    try:
+        os.unlink(dest)
+    except Exception:
+        sys.exit(1)
+    sys.exit(2)
+PY
+    _frc3=$?
+    [[ "$_frc3" -eq "$_rw" ]] || { echo "  ✗ (a4c3b) random case $_rk/$_ri exit $_frc3 (want $_rw)"; ok=0; }
+    rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
+  done
+  # (a4c4) the VALIDATOR's shell-level rc classifier: 0 = ok, 2 = fail-open,
+  # EVERYTHING else (1, 137, 143 — helper killed mid-write) = fail-closed,
+  # with the sandbox removed and the handle cleared. Exercises the REAL
+  # production classifier (not a copy).
+  _cl_sand="$(mktemp -d "$_home/.cl-sand.XXXXXX")" || exit 1
+  _BD_OC_SANDBOX_HOME="$_cl_sand"
+  _bd_oc_auth_rc_classify 0 "$_cl_sand"; _c0=$?
+  _bd_oc_auth_rc_classify 2 "$_cl_sand" 2>/dev/null; _c2=$?
+  for _crc in 1 137 143; do
+    _cl_sand2="$(mktemp -d "$_home/.cl-sand.XXXXXX")" || exit 1
+    _BD_OC_SANDBOX_HOME="$_cl_sand2"
+    _bd_oc_auth_rc_classify "$_crc" "$_cl_sand2" 2>/dev/null; _cc=$?
+    [[ "$_cc" -eq 1 ]] || { echo "  ✗ (a4c4) rc $_crc classified continue (got $_cc)"; ok=0; }
+    [[ ! -e "$_cl_sand2" ]] || { echo "  ✗ (a4c4) rc $_crc left the sandbox"; ok=0; }
+    [[ -z "$_BD_OC_SANDBOX_HOME" ]] || { echo "  ✗ (a4c4) rc $_crc left the handle"; ok=0; }
+  done
+  [[ "$_c0" -eq 0 ]] || { echo "  ✗ (a4c4) rc 0 classified refuse"; ok=0; }
+  [[ "$_c2" -eq 0 ]] || { echo "  ✗ (a4c4) rc 2 classified refuse"; ok=0; }
+  rm -rf "$_cl_sand" "$_home/.cl-sand."* 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
+  rm -rf "$_BD_OC_SANDBOX_HOME" "$_fault_sand" "$_fault_sand2" "$_home/.local/share" 2>/dev/null || true
+  _BD_OC_SANDBOX_HOME=""
+
+  # (b) mcp key → refuse
+  printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (b) mcp key accepted"; ok=0; }
+
+  # (b2) HOME-ROOT opencode.json[c] (opencode's ancestor project discovery
+  # reaches them when the neutral cwd lives under the home) → refuse on mcp
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{"provider":{},"mcp":{"x":{"type":"stdio","command":"/bin/echo"}}}\n' > "$_home/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (b2) home-root mcp accepted"; ok=0; }
+  rm -f "$_home/opencode.json"
+  printf '{"provider":{"p":{"options":{}}}}\n' > "$_home/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (b2) home-root provider-only refused"; ok=0; }
+  rm -f "$_home/opencode.jsonc"
+
+  # (c) provider-only jsonc WITH comments + trailing commas → pass (JSONC-tolerant)
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{\n  // balancer provider\n  "provider": {\n    "opencode-go-lb": {\n      "options": {},\n    },\n  },\n}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (c) provider-only jsonc (comments/trailing commas) refused"; ok=0; }
+
+  # (d) garbage → refuse (fail-closed on unparseable)
+  printf 'not json at all {\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (d) unparseable jsonc accepted"; ok=0; }
+
+  # (d2) NaN constant → refuse (python accepts NaN, opencode does not)
+  printf '{"provider":{"p":{"options":{"apiKey":NaN}}}}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (d2) NaN config accepted"; ok=0; }
+
+  # (e) absent files → pass (nothing to widen)
+  rm -rf "$_home/.opencode"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (e) absent files refused"; ok=0; }
+
+  # (f) -I isolation: a planted json.py in the CWD must NOT be imported (it
+  # would print PLANTED and exit 0, making the check accept an mcp key).
+  _plant="$(mktemp -d)" || exit 1
+  printf 'import sys\nprint("PLANTED", file=sys.stderr)\nsys.exit(0)\n' > "$_plant/json.py"
+  mkdir -p "$_home/.opencode"
+  printf '{"mcp":{"x":{}}}\n' > "$_home/.opencode/opencode.json"
+  out="$(cd "$_plant" && validate_opencode_home_config "$_home" 2>&1)"; rc=$?
+  [[ "$rc" -ne 0 ]] || { echo "  ✗ (f) mcp accepted from planted-cwd run (json.py imported?)"; ok=0; }
+  printf '%s' "$out" | grep -q "PLANTED" && { echo "  ✗ (f) planted json.py executed inside validator"; ok=0; }
+  rm -rf "$_plant"
+
+  # (g) BASH_FUNC_python3%% environment poison: the validator invokes the
+  # ABSOLUTE interpreter /usr/bin/python3 with -I (no env -i wrapper needed —
+  # -I implies -E, and absolute paths bypass function lookup entirely), so an
+  # imported/exported `python3` function shadow must not run — an mcp config
+  # is still rejected and the poison never prints.
+  printf '{"mcp":{"x":{}}}\n' > "$_home/.opencode/opencode.json"
+  # shellcheck disable=SC2329  # python3 function invoked inside the bash -c string
+  out="$(python3() { echo PY-POISONED; exit 0; }; export -f python3; bash -c '
+    set -uo pipefail
+    source "$1" 2>/dev/null || exit 9
+    validate_opencode_home_config "$2" 2>&1
+  ' _ "$RC" "$_home" 2>&1)"; rc=$?
+  [[ "$rc" -ne 0 ]] || { echo "  ✗ (g) python3 function shadow accepted mcp config"; ok=0; }
+  printf '%s' "$out" | grep -q "PY-POISONED" && { echo "  ✗ (g) python3 function shadow executed inside validator"; ok=0; }
+
+  # (h) non-object roots ([] / ["provider"]) are not provider-only configs → refuse
+  printf '["provider"]\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (h) array root accepted"; ok=0; }
+  printf '[]\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (h) empty-array root accepted"; ok=0; }
+
+  # (i) string-escape case: provider values containing "//" and ",}" must NOT
+  # be mangled by the JSONC stripper (string-aware comments/trailing commas).
+  printf '{\n  "provider": {\n    "p": { "url": "http://x//y", "s": "a,}" },\n  },\n}\n' > "$_home/.opencode/opencode.jsonc"
+  rm -f "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i) string-aware JSONC strip mangled a valid provider value"; ok=0; }
+  # (i2) trailing comma with a comment between it and the closing brace must
+  # still be dropped (JSONC stripper lookahead must skip comments).
+  printf '{\n  "provider": {}, // trailing\n}\n' > "$_home/.opencode/opencode.jsonc"
+  validate_opencode_home_config "$_home" 2>/dev/null || { echo "  ✗ (i2) trailing comma before a comment refused a valid provider-only jsonc"; ok=0; }
+  # (i3) unterminated block comment must refuse (not silently truncate)
+  printf '{"provider":{}}/*\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i3) unterminated block comment accepted"; ok=0; }
+  # (i4) comment removal must not merge tokens (1/*x*/2 must stay invalid)
+  printf '{"provider":{"a":1/*x*/2}}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4) token-merged malformed jsonc accepted"; ok=0; }
+  # (i4b) CR line terminator: "//c\r \"mcp\":{}" — the comment ends at the CR
+  # (as opencode parses it), so mcp must remain visible → refuse.
+  printf '{"provider":{}, //c\r "mcp":{}\n}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4b) CR-terminated comment hid an mcp key"; ok=0; }
+  # (i4d) U+2028 line separator also terminates a JSONC comment (opencode
+  # treats it as a line terminator) — an mcp key after it must be seen.
+  printf '{"provider":{}, //c\xe2\x80\xa8 "mcp":{}\n}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4d) U+2028-terminated comment hid an mcp key"; ok=0; }
+  # (i5) a non-regular file (named pipe) at the config path must be REFUSED,
+  # not validated (a FIFO writer can serve different content to each open,
+  # so validating one read cannot close the race) — and must not hang.
+  rm -f "$_home/.opencode/opencode.json"
+  mkfifo "$_home/.opencode/opencode.json" 2>/dev/null || { echo "  ✗ (i5) mkfifo unavailable"; ok=0; }
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5) FIFO config accepted (unvalidated)"; ok=0; fi
+
+  # (i5b) a SYMLINK at the config path must be REFUSED (O_NOFOLLOW): opencode
+  # follows the link, so a retarget between validation and opencode's open
+  # would serve different content to each reader.
+  rm -f "$_home/.opencode/opencode.json"
+  printf '{"provider":{"opencode-go-lb":{"options":{"baseURL":"http://127.0.0.1:8788/v1","apiKey":"x"}}}}\n' > "$_home/.opencode/opencode-target.json"
+  ln -s opencode-target.json "$_home/.opencode/opencode.json"
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5b) symlink config accepted"; ok=0; fi
+  rm -f "$_home/.opencode/opencode-target.json"
+
+  # (i5c) a DANGLING symlink must ALSO be refused (not skipped by `[[ -e ]]`,
+  # which follows links and returns false): the target can appear after
+  # validation but before opencode opens the path.
+  ln -s opencode-target-absent.json "$_home/.opencode/opencode.json"
+  if validate_opencode_home_config "$_home" 2>/dev/null; then echo "  ✗ (i5c) dangling symlink skipped validation"; ok=0; fi
+
+  # (j) seeded property sweep: random key subsets x {strict, JSONC} over the
+  # allowlist, plus non-object roots. Oracle: PASS iff the parsed root is an
+  # object whose keys are ⊆ {provider, $schema}. Seeded RNG → deterministic.
+  # The validator reads only the CANONICAL opencode.json/.jsonc paths, so the
+  # generator emits spec lines (expect, ext, base64 doc) and the bash loop
+  # materializes + validates each case individually.
+  _cases="$(mktemp -d)" || exit 1
+  mkdir -p "$_cases/home/.opencode"
+  # shellcheck disable=SC2312  # decoder status is checked; generator status is not load-bearing
+  while read -r _expect _ext _b64; do
+    # Clear BOTH canonical paths first — a stale file under the other
+    # extension would mask or corrupt this case's expectation.
+    rm -f "$_cases/home/.opencode/opencode.json" "$_cases/home/.opencode/opencode.jsonc"
+    printf '%s' "$_b64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$_cases/home/.opencode/opencode$_ext" || { echo "  ✗ (j) case decode failed"; ok=0; break; }
+    if validate_opencode_home_config "$_cases/home" 2>/dev/null; then _got=PASS; else _got=FAIL; fi
+    [[ "$_got" == "$_expect" ]] || { echo "  ✗ (j) case .opencode$_ext expected $_expect got $_got"; ok=0; }
+  done < <(python3 - "$_cases" <<'PY'
+import base64, random, sys
+rng = random.Random(20260809)
+ALLOWED = {"provider", "$schema"}
+KEYS = ["provider", "$schema", "mcp", "agent", "permission", "tools", "lsp", "x"]
+
+def doc_for(keys, jsonc):
+    body = []
+    if jsonc and rng.random() < 0.5:
+        body.append("// lead")
+    body.append("{")
+    for i, k in enumerate(keys):
+        if jsonc and rng.random() < 0.3:
+            body.append(f"/* c{i} */")
+        v = "{}" if k == "provider" else "1"
+        body.append(f'"{k}": {v},')  # trailing comma on every entry incl. last
+    body.append("}")
+    return "\n".join(body)
+
+cases = []
+for _ in range(10):
+    keys = rng.sample(sorted(ALLOWED), rng.randint(0, 2))
+    cases.append((keys, False))
+    cases.append((keys, True))
+for _ in range(10):
+    keys = rng.sample(KEYS, rng.randint(1, 4))
+    if set(keys) <= ALLOWED:
+        continue
+    cases.append((keys, rng.random() < 0.5))
+for root in ["[]", "[1,2]", "42", '"str"', "null"]:
+    cases.append((root, False))
+
+for keys, jsonc in cases:
+    ext = ".jsonc" if (isinstance(keys, list) and jsonc) else ".json"
+    doc = doc_for(keys, jsonc) if isinstance(keys, list) else keys
+    expect = "PASS" if (isinstance(keys, list) and set(keys) <= ALLOWED) else "FAIL"
+    print(f"{expect} {ext} {base64.b64encode(doc.encode()).decode()}")
+PY
+)
+  rm -rf "$_cases"
+
+  exit $((1 - ok))
+); then
+  pass "validate_opencode_home_config: provider-only pass, mcp/unparseable refuse, JSONC-tolerant, -I isolated"
+else
+  fail "validate_opencode_home_config behavioral assertions failed (see above)"
+fi
+# (g) BOTH opencode arms call the shared guard before dispatch.
+# shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
+if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
+   && grep -q 'validate_opencode_home_config "\$_oc_home"' "$DP"; then
+  pass "both opencode arms (execute_review + dispatch.sh) call validate_opencode_home_config"
+else
+  fail "an opencode arm is missing the validate_opencode_home_config call"
+fi
+# (h) dispatch.sh keeps the pi-required PATH-resolved bash shebang (the pi
+# lane needs bash 4+ via PATH — a `#!/bin/bash` shebang would pin /bin/bash
+# 3.2) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
+# privileged, so no BASH_FUNC_* shadow is imported from the start, and the
+# nonce+sentinel re-exec guard precedes set -euo pipefail (a shadowed `set`
+# must not run before the guard).
+# shellcheck disable=SC2016,SC2312  # single-quoted patterns; head/cut in pipeline are not load-bearing
+if grep -qE '^#!/usr/bin/env -S bash -p$' "$DP" \
+   && grep -qF 'exec "$BASH" -p "$0" "_bd_priv_${_bd_nonce}" "$@"' "$DP" \
+   && grep -q 'type -t _bd_sentinel' "$DP" \
+   && [[ "$(grep -nF 'exec "$BASH" -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
+  pass "dispatch.sh keeps env-resolved -p bash shebang + nonce+sentinel re-exec backstop before set -euo"
+else
+  fail "dispatch.sh missing/incorrectly-placed function-clean boundary"
+fi
+# (i) privileged bash suppresses imported function shadows (the mechanism the
+# re-exec relies on) — verified on the repo's target /bin/bash 3.2. Uses a
+# non-command name (_mechpoison) so the test itself never shadows a real tool.
+# shellcheck disable=SC2329  # _mechpoison invoked inside the /bin/bash -c strings
+_mechpoison() { echo MECH-POISONED; }
+export -f _mechpoison
+if /bin/bash -c '_mechpoison' 2>&1 | grep -q MECH-POISONED \
+   && ! /bin/bash -p -c '_mechpoison' 2>&1 | grep -q MECH-POISONED; then
+  unset -f _mechpoison
+  pass "privileged bash (-p) suppresses imported function shadows (3.2-verified mechanism)"
+else
+  unset -f _mechpoison
+  fail "privileged bash does not suppress imported function shadows (re-exec is ineffective)"
+fi
+# (j) function-clean boundary: (a) the `-p`-in-shebang (env -S bash -p) keeps
+# poisoned exec/set shadows INERT (the first process imports nothing); (b) a
+# naive exec shadow (returns without re-exec'ing) aborts; (c) a FORGED
+# re-exec (exec shadow calls builtin exec WITHOUT -p but WITH the marker) is
+# caught by the sentinel probe — the script refuses to continue; (d) a source
+# shadow never runs (the guard does not call source before the re-exec).
+if (
+  set -uo pipefail
+  # (a) shebang path (the harness invocation): poisons never imported
+  exec() { echo EXEC-POISONED; }
+  set() { echo SET-POISONED; }
+  export -f exec set
+  out="$(echo test | "$DP" --help 2>&1)"; rc=$?
+  [[ "$rc" -eq 0 ]] || { echo "  ✗ (j-a) dispatch failed under poisoned env (rc=$rc)"; exit 1; }
+  printf '%s' "$out" | grep -q "EXEC-POISONED\|SET-POISONED" && { echo "  ✗ (j-a) poison ran via shebang"; exit 1; }
+  # (b) naive exec shadow → abort, no continuation
+  exec() { echo EXEC-POISONED; }
+  export -f exec
+  out2="$(bash "$DP" --help 2>&1)"; rc2=$?
+  [[ "$rc2" -ne 0 ]] || { echo "  ✗ (j-b) naive exec shadow continued (rc=0)"; exit 1; }
+  printf '%s' "$out2" | grep -q "refusing to continue" || { echo "  ✗ (j-b) missing abort"; exit 1; }
+  # (c) FORGED re-exec: the exec shadow re-execs WITHOUT -p but WITH the
+  # marker (script called: exec /bin/bash -p "$0" _bd_priv "$@" → shadow sees
+  # $1=/bin/bash $2=-p $3=script $4=_bd_priv $5+=orig). The re-exec'd process
+  # imports the sentinel → the sentinel probe refuses continuation.
+  exec() { echo EXEC-FORGED; builtin exec /bin/bash "$3" "$4" "${@:5}"; }
+  export -f exec
+  out3="$(bash "$DP" --help 2>&1)"; rc3=$?
+  [[ "$rc3" -ne 0 ]] || { echo "  ✗ (j-c) forged re-exec continued unprivileged (rc=0)"; exit 1; }
+  printf '%s' "$out3" | grep -q "refusing to continue" || { echo "  ✗ (j-c) sentinel abort missing"; exit 1; }
+  printf '%s' "$out3" | grep -q "EXEC-FORGED" || { echo "  ✗ (j-c) forged exec did not run"; exit 1; }
+  printf '%s' "$out3" | grep -q "Usage:" && { echo "  ✗ (j-c) script continued past the guard"; exit 1; }
+  # (d) source shadow: must never run (the guard calls no source before the
+  # re-exec; exec is forwarded to the real builtin so the privileged child
+  # runs and --help exits clean)
+  exec() { builtin exec "$@"; }
+  source() { echo SRC-POISONED; }
+  export -f exec source
+  out4="$(bash "$DP" --help 2>&1)"; rc4=$?
+  [[ "$rc4" -eq 0 ]] || { echo "  ✗ (j-d) dispatch failed under source poison (rc=$rc4)"; exit 1; }
+  printf '%s' "$out4" | grep -q "SRC-POISONED" && { echo "  ✗ (j-d) source shadow ran"; exit 1; }
+  # (e) a caller-supplied BARE marker (_bd_priv, no nonce) must not bypass
+  # the boundary: the guard re-execs anyway (bare never matches
+  # "_bd_priv_<nonce>"), so under a naive exec shadow it aborts instead of
+  # continuing unprivileged.
+  exec() { echo EXEC-POISONED; }
+  export -f exec
+  out5="$(bash "$DP" _bd_priv --help 2>&1)"; rc5=$?
+  [[ "$rc5" -ne 0 ]] || { echo "  ✗ (j-e) bare marker bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out5" | grep -q "refusing to continue" || { echo "  ✗ (j-e) missing abort on bare-marker attempt"; exit 1; }
+  printf '%s' "$out5" | grep -q "EXEC-POISONED" || { echo "  ✗ (j-e) exec shadow did not run (guard never re-exec'd?)"; exit 1; }
+  # (f) empty-nonce marker (_bd_priv_ with no env nonce) must also fall
+  # through to the re-exec → same abort under a naive exec shadow.
+  out6="$(bash "$DP" _bd_priv_ --help 2>&1)"; rc6=$?
+  [[ "$rc6" -ne 0 ]] || { echo "  ✗ (j-f) empty-nonce marker bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out6" | grep -q "refusing to continue" || { echo "  ✗ (j-f) missing abort on empty-nonce attempt"; exit 1; }
+  # (g) dual-forge (matching env nonce + argv marker, no code execution): the
+  # re-exec branch was skipped so the sentinel was never exported — the env-
+  # presence check aborts.
+  out7="$(_bd_nonce=known bash "$DP" _bd_priv_known --help 2>&1)"; rc7=$?
+  [[ "$rc7" -ne 0 ]] || { echo "  ✗ (j-g) dual-forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out7" | grep -q "refusing to continue" || { echo "  ✗ (j-g) missing abort on dual-forge attempt"; exit 1; }
+  # (h) substring forge (an env var whose VALUE contains the sentinel name):
+  # printenv's exact NAME lookup must not be fooled by a value match.
+  out8="$(_bd_nonce=known X='BASH_FUNC__bd_sentinel%%' bash "$DP" _bd_priv_known --help 2>&1)"; rc8=$?
+  [[ "$rc8" -ne 0 ]] || { echo "  ✗ (j-h) substring-forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out8" | grep -q "refusing to continue" || { echo "  ✗ (j-h) missing abort on substring-forge attempt"; exit 1; }
+  # (i) env-NAME forge with a NON-function value (via `env`): the sentinel
+  # value check (must start with "() {" and end with "}") refuses it.
+  out9="$(env '_bd_nonce=known' 'BASH_FUNC__bd_sentinel%%=x' bash "$DP" _bd_priv_known --help 2>&1)"; rc9=$?
+  [[ "$rc9" -ne 0 ]] || { echo "  ✗ (j-i) env-NAME forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out9" | grep -q "refusing to continue" || { echo "  ✗ (j-i) missing abort on env-NAME forge"; exit 1; }
+  # (j) TRUNCATED-function forge: `BASH_FUNC__bd_sentinel%%='() {'` (no closing
+  # brace) is NOT imported on bash 5.x but satisfies a bare "() {" prefix — the
+  # trailing-`}` shape check must refuse it.
+  out10="$(env '_bd_nonce=known' 'BASH_FUNC__bd_sentinel%%=() {' bash "$DP" _bd_priv_known --help 2>&1)"; rc10=$?
+  [[ "$rc10" -ne 0 ]] || { echo "  ✗ (j-j) truncated-function forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out10" | grep -q "refusing to continue" || { echo "  ✗ (j-j) missing abort on truncated-function forge"; exit 1; }
+  exit 0
+); then
+  pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"
+else
+  fail "function-clean boundary failed (see above)"
+fi
+
+# ── 10. Operator-username allowlist refuses tilde SPECIAL forms ─────
+# `eval echo "~$u"` must never see a name that starts with `-`, `+`, or a
+# digit: `~-`/`~-0` expand to $OLDPWD/$PWD, `~+`/`~0` to $PWD — a special-form
+# "username" would make the reviewed checkout the "trusted home". Behavioral
+# test on the REAL helper (sourced, not copied).
+if ( # shellcheck disable=SC1090,SC2016  # source target is a variable; '$u' is a literal grep pattern
+     source "$RC" && _bd_valid_username "vfrvndtt" && _bd_valid_username "0abc" \
+     && ! _bd_valid_username "-0" && ! _bd_valid_username "-" && ! _bd_valid_username "+1" \
+     && ! _bd_valid_username "7" && ! _bd_valid_username "-" && ! _bd_valid_username "a;rm" \
+     && ! _bd_valid_username 'a b' && ! _bd_valid_username "" ); then
+  pass "username allowlist: plain + digit-leading ok, tilde-stack/metachar/empty refused"
+else
+  fail "username allowlist: a tilde-stack or metacharacter name passed validation"
+fi
+if grep -qF '[[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1' "$RC"; then
+  pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
+else
+  fail "resolve-cli.sh: allowlist does not reject tilde stack forms"
+fi
+# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for the pi-probe source text
+if [[ "$(grep -cF '[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1' "$DP")" -eq 2 ]]; then
+  pass "dispatch.sh pi probes: both username checks reject tilde stack forms"
+else
+  fail "dispatch.sh pi probes: username checks missing tilde-stack guard"
 fi
 
 echo

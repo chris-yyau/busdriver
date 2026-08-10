@@ -1,4 +1,73 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S bash -p
+# ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
+# SHEBANG: `#!/usr/bin/env -S bash -p` — env resolves `bash` via PATH (the
+# pi lane requires bash 4+ via PATH; a `#!/bin/bash` shebang would pin macOS
+# /bin/bash 3.2) AND the first process starts with `-p`, so no BASH_FUNC_*
+# shadow is imported from the start — the guard's own `exec` cannot be a
+# shadow. Every invocation then passes the nonce+sentinel re-exec proof
+# below before continuing.
+# The proof: a sentinel function is exported before the re-exec — the
+# post-re-exec checks verify (a) the marker, (b) the sentinel env export is
+# present, and (c) the sentinel was NOT imported (a -p shell never imports
+# it; a forged no-p re-exec does). The marker only gates the attempt;
+# the sentinel checks are what authorize continuation.
+# BOUNDED BY CONSTRUCTION (bash32-unshadowable-abort): the guard's command
+# words (`export`, `exec`, `type`) are shadowable, and every bypass probe
+# against it — shadowing `type`, `unset -f _bd_sentinel` before re-exec'ing,
+# stripping the sentinel from the env — requires the attacker's shadow to
+# execute further commands. The moment any imported shadow runs, it already
+# has arbitrary code execution: "a set +e-running attacker is total compromise
+# anyway", and no in-shell guard survives that. This backstop therefore stops
+# every shadow that merely replaces a command word (the realistic #325 probe:
+# a fork's settings.json exporting BASH_FUNC_exec%%); it does not — cannot —
+# stop an attacker who is already running code. The real trust boundary is
+# the env -i child. There is deliberately NO function-export
+# encoding probe (an `eval`-defined random-name function): on this build the
+# sentinel always exports as BASH_FUNC__bd_sentinel%%, and on a build that
+# exports plain names the single-encoding check FAILS CLOSED (abort) — an
+# unpatched pre-4.3 Shellshock-era bash is out of scope.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]]; then
+  # Nonce: the marker is "_bd_priv_<nonce>"; the nonce must be NON-EMPTY, so
+  # caller-supplied bare "_bd_priv" / "_bd_priv_" (empty env nonce) never
+  # match and fall through to the re-exec. The pre-re-exec branch also exports
+  # the sentinel — its env presence is proof the branch ran. This branch runs
+  # no probe words beyond reserved-word `[[ ]]` and the builtins it needs
+  # (set/export/exec — a shadow of any of them has already executed code,
+  # total compromise, out of scope).
+  _bd_nonce="${RANDOM}${RANDOM}${RANDOM}"
+  export _bd_nonce
+  # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
+  _bd_sentinel() { :; }
+  export -f _bd_sentinel
+  exec "$BASH" -p "$0" "_bd_priv_${_bd_nonce}" "$@"
+fi
+# Post-re-exec. THREE proofs, all required before continuing:
+#  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.
+#  (b) the sentinel env export BASH_FUNC__bd_sentinel%% EXACTLY equals THIS
+#      bash's own export of an identically-bodied probe function (defined +
+#      exported HERE, post-exec — no eval, no encoding probe): a forged
+#      malformed value (`() { x }`, truncated `() {`) is NOT importable and
+#      differs from the real export text → rejected; an attacker forging the
+#      EXACT valid value makes it importable in their plain shell → caught by
+#      (c). The probe lookup failing (a build exporting plain names) fails
+#      CLOSED (abort) — an unpatched pre-4.3 Shellshock-era bash is out of
+#      scope.
+#  (c) the sentinel was NOT imported (`type -t` != function) — proves the
+#      re-exec ran under -p (a forged no-p re-exec imports it). `type` is the
+#      one shadowable word in this guard; a shadow of it has already executed
+#      code — total compromise, out of scope (bash32-unshadowable-abort).
+# shellcheck disable=SC2329  # probe is exported and printenv'd, never invoked — its export text IS the signal
+_bd_probe2() { :; }
+export -f _bd_probe2
+_bd_expected_env="$(/usr/bin/printenv "BASH_FUNC__bd_probe2%%" 2>/dev/null || true)"
+_bd_sentinel_env="$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)"
+if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]] \
+   || [[ -z "$_bd_expected_env" || "$_bd_sentinel_env" != "$_bd_expected_env" ]] \
+   || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
+  _bd_priv_guard=
+  : "${_bd_priv_guard:?refusing to continue: the script is not running privileged (imported function shadows present) — re-run via the shebang in a clean shell}"
+fi
+[[ "${1:-}" == "_bd_priv_${_bd_nonce:-}" ]] && shift
 # dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
@@ -130,6 +199,19 @@ if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   resolve_auditor_model() { _BD_AUDITOR_MODEL="zenmux/moonshotai/kimi-k3"; }
   _BD_PI_MODEL=""
   resolve_pi_model() { _BD_PI_MODEL="opencode-go/deepseek-v4-flash"; }
+fi
+# Ditto for the username allowlist (resolve-cli.sh owns the canonical copy —
+# keep the pattern identical): a missing library must not make the prompt-home
+# derivation below die with `command not found` under set -e.
+if ! type _bd_valid_username &>/dev/null; then
+  _bd_valid_username() {
+    [[ -n "${1:-}" ]] || return 1
+    case "$1" in
+      *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    [[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1
+    return 0
+  }
 fi
 # The pi version whose tool-permission behaviour this repo actually probed (see
 # the pi) arm and docs/adr/0034). A mismatch BLOCKS the dispatch: this lane's
@@ -272,9 +354,28 @@ fi
 [[ -z "$PROMPT" ]] && { echo "Error: Empty prompt." >&2; exit 1; }
 
 # Write prompt to temp file (avoids shell escaping with long prompts)
-PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/dispatch-prompt-XXXXXX")
-printf '%s' "$PROMPT" > "$PROMPT_FILE"
+# Prompt file under the PASSWORD-DB home (derived once, top-level): $HOME and
+# ${TMPDIR} are both repo-injectable (a fork's settings.json) — a prompt file
+# placed there would land in an attacker-selected location. `id` absolute;
+# `eval` runs in the function-clean (-p shebang) top level.
+_bd_pt_user="$(/usr/bin/id -un 2>/dev/null)"
+# shellcheck disable=SC2310  # predicate by design — set -e off in || is intended
+_bd_valid_username "$_bd_pt_user" || _bd_pt_user=""
+if [[ -z "$_bd_pt_user" ]]; then
+  # Fail CLOSED on an empty user: the following `~` expansion would fall back
+  # to the repo-injectable $HOME and place the prompt in an attacker-selected
+  # location.
+  echo "Error: could not derive the operator user from the password database — refusing to dispatch." >&2
+  exit 1
+fi
+_bd_pt_home="$(eval echo "~${_bd_pt_user}" 2>/dev/null)"
+if [[ -z "$_bd_pt_home" || ! -d "$_bd_pt_home" ]]; then
+  echo "Error: could not derive a trusted home from the password database — refusing to dispatch (cannot place the prompt file safely)." >&2
+  exit 1
+fi
+PROMPT_FILE=$(/usr/bin/mktemp "$_bd_pt_home/.busdriver-dispatch-prompt-XXXXXX")
 trap 'rm -f "$PROMPT_FILE"' EXIT
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # ── CLI detection ──────────────────────────────
 _has_cli() {
@@ -323,7 +424,10 @@ _pi_available() {
   /usr/bin/env -i "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
 u="$(/usr/bin/id -un)" || exit 1
-case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+# Tilde directory-stack forms (~- ~+ ~N ~-N ~+N → $OLDPWD/$PWD) must never
+# reach the eval below; digit-LEADING names (0abc) are normal usernames.
+[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
+case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
 h="$(eval echo "~$u")" || exit 1
 case "$h" in /*) ;; *) exit 1 ;; esac
 [ -d "$h" ] || exit 1
@@ -734,7 +838,7 @@ dispatch_one() {
             # NO env override for the config path — BUSDRIVER_OPENCODE_CONFIG is
             # repo-injectable via a fork's settings.json (#325 class) and could
             # point at a tool-restoring JSON. Always the plugin-owned file.
-            local _oc_cfg _oc_cwd
+            local _oc_cfg _oc_cwd _oc_user _oc_home _oc_path _oc_bin _oc_trust
             _oc_cfg="${_PLUGIN_ROOT}/scripts/lib/opencode-review-config.json"
             # THREE isolation boundaries — full threat model in the opencode) arm
             # of scripts/lib/resolve-cli.sh (single source of truth; do not fork).
@@ -746,6 +850,7 @@ dispatch_one() {
             #   OPENCODE_CONFIG      → the plugin's deny-all tools config
             # Create the temp dir ONLY after the config check passes, so a
             # missing-config bail does not leak an empty directory.
+            # shellcheck disable=SC2310  # _bd_valid_username is a predicate by design — set -e off in !/|| is intended
             if [[ ! -f "$_oc_cfg" ]]; then
                 echo "Error: opencode review config not found at '$_oc_cfg' — refusing to dispatch unconfined (a missing config silently restores write/bash)." >&2
                 exit_code=1
@@ -755,8 +860,11 @@ dispatch_one() {
                 # opencode would fail OPEN to the user default.
                 echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                 exit_code=1
-            elif ! _oc_cwd="$(mktemp -d 2>/dev/null)" || [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
-                echo "Error: could not create a neutral working directory for opencode — refusing to dispatch from the reviewed tree (its project config could redefine the reviewer)." >&2
+            elif ! _oc_user="$(/usr/bin/id -un 2>/dev/null)" || ! _bd_valid_username "$_oc_user" || ! _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)" || [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+                # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
+                # injectable). Derived BEFORE the neutral-dir creation so the
+                # arm's later XDG_CACHE_HOME/auth paths use it.
+                echo "Error: could not derive a trusted home from the password database — refusing to dispatch unconfined." >&2
                 exit_code=1
             else
                 # Resolve the binary ONLY from a FIXED trusted path (operator
@@ -767,16 +875,7 @@ dispatch_one() {
                 # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
                 # injectable). `~user` tilde expansion reads getpwnam. Full
                 # rationale in resolve-cli.sh.
-                local _oc_path _oc_bin _oc_trust _oc_home _oc_user
-                _oc_user="$(id -un 2>/dev/null)"
-                _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
-                # NO $HOME fallback — fail closed if the password-DB lookup fails
-                # rather than trust the repo-injectable $HOME.
-                if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
-                    echo "Error: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-                    rmdir "$_oc_cwd" 2>/dev/null || true
-                    exit_code=1
-                fi
+                local _oc_path _oc_bin _oc_trust
                 _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
                 # `|| true` — under `set -e`, a nonzero `command -v` inside this
                 # assignment's command substitution would exit the script
@@ -787,7 +886,6 @@ dispatch_one() {
                     : # already failed on home derivation — skip dispatch
                 elif [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
                     echo "Error: opencode binary not found on the trusted install path." >&2
-                    rmdir "$_oc_cwd" 2>/dev/null || true
                     exit_code=1
                 else
                 _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
@@ -812,15 +910,84 @@ dispatch_one() {
                 # neither depends on line order within this long case arm.
                 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
                   HOME="$_oc_home" resolve_auditor_model
-                ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT
+                # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
+                # opencode loads these in EVERY environment — including this
+                # sandbox (verified 2026-08-09) — so they are a fourth config
+                # surface the three isolation boundaries do not cover. An `mcp`
+                # entry there would load inside the sandbox and read_mcp_resource
+                # survives the tool denylist (exactly why XDG_CONFIG_HOME is
+                # redirected). Single source of truth: the shared guard lives in
+                # resolve-cli.sh; a missing library fails CLOSED here (a stuck
+                # lane beats an unvalidated dispatch).
+                if [[ "${_BD_RESOLVE_CLI_SOURCED:-}" != 1 ]]; then
+                    echo "Error: resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >&2
+                    printf 'Error: %s\n' "resolve-cli.sh not sourced — cannot validate the operator ~/.opencode home config; refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
+                    /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
+                    exit_code=1
+                else
+                # shellcheck disable=SC2310  # intentional: refused dispatch is the branch
+                if [[ "$exit_code" -eq 0 ]]; then
+                # Validation runs INSIDE the trap-owned subshell: the staged
+                # sandbox is owned from creation, so an early TERM/EXIT during
+                # staging cannot orphan a credential-bearing temp dir.
+                ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
+                  trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
+                  # Pinned SYSTEM-ONLY PATH: the validator stages credentials
+                  # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is
+                  # the operator-WRITABLE opencode dir, which must not shadow
+                  # those utilities; the system dirs carry them all.
+                  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
+                    printf 'Error: %s\n' "operator ~/.opencode home config failed validation — refusing to dispatch unconfined." >> "$outfile" 2>/dev/null || true
+                    exit 1
+                  fi
+                  # Neutral cwd INSIDE the validated sandbox (post-validation):
+                  # opencode's project discovery walks UP from the cwd and
+                  # finds the sandbox's OWN validated .opencode/opencode.json
+                  # copy, stopping there — the real home's config surfaces are
+                  # never reopened (no validate-then-open race; the 0700
+                  # sandbox is private to the operator — no other-user
+                  # planting).
+                  _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
+                  /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
+                  # Git-init the EMPTY cwd: opencode's project-config
+                  # discovery scans every ancestor through the worktree root
+                  # (non-Git = /, reaching the real home); a git repo bounds
+                  # the worktree AT the empty cwd, so discovery finds nothing
+                  # beyond it. The workspace stays EMPTY — auth.json / SDK
+                  # symlinks live OUTSIDE the worktree, and the plugin config
+                  # denies external_directory, so the read-enabled reviewer
+                  # cannot reach them. Sterile init (GIT_DIR/GIT_WORK_TREE are
+                  # repo-injectable) with the EXECUTION-PROBED git (the CLT
+                  # shim at /usr/bin/git exists but fails without CLT) +
+                  # .git verified inside the cwd.
+                  _bd_git=""  # global cache for _bd_resolve_git (defined in resolve-cli.sh)
+                  _bd_resolve_git || { echo "Error: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+                  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "Error: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+                  [[ -d "$_oc_cwd/.git" ]] || { echo "Error: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
                   cd "$_oc_cwd" 2>/dev/null || exit 1
+                  # XDG_DATA_HOME points at the SANDBOX data dir, which the
+                  # validator populated with a validated auth.json copy ONLY:
+                  # auth-based providers work, while the empty rest of the
+                  # data dir carries NO account/org state (nothing merges
+                  # config after OPENCODE_CONFIG — MCP/plugin/permission/
+                  # agent overrides). XDG_CACHE_HOME shares the inert model/
+                  # package cache. (Comments sit BEFORE the command — a
+                  # comment after a backslash continuation would terminate
+                  # the chain and run opencode UNISOLATED.)
                   _portable_timeout "$_budget" \
-                    env -i HOME="$_oc_home" PATH="$_oc_path" \
+                    /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                         OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                        XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
+                        XDG_CACHE_HOME="$_oc_home/.cache" \
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                     -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
-                rm -rf "$_oc_cwd" 2>/dev/null || true
+                # The subshell's EXIT/TERM/INT trap owns write-back + cleanup
+                # (the sandbox var lives only inside the subshell).
+                fi
+                fi
                 fi
             fi ;;
         pi)
@@ -908,8 +1075,11 @@ dispatch_one() {
                        /bin/bash --noprofile --norc <<'CHILD' 2>/dev/null
 u="$(/usr/bin/id -un)" || exit 1
 # Only a plain username shape reaches eval — `~user` is the one way to read the
-# password DB, and eval on anything else is arbitrary execution.
-case "$u" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+# password DB, and eval on anything else is arbitrary execution. Tilde
+# directory-stack forms (~- ~+ ~N → $OLDPWD/$PWD) are excluded too; digit-
+# LEADING names (0abc) are normal usernames.
+[[ "$u" =~ ^[-+]?[0-9]*$ ]] && exit 1
+case "$u" in *[!A-Za-z0-9._-]*) exit 1 ;; esac
 h="$(eval echo "~$u")" || exit 1
 case "$h" in /*) ;; *) exit 1 ;; esac
 [ -d "$h" ] || exit 1

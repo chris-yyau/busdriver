@@ -562,7 +562,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
         PRIOR_CODEX_ACK     = RESULT_CODEX_ACK   # on fix/wait-rounds: overwrite with result_codex_ack from commit-block envelope (post-push); on clean path: use worker-emitted value. Backward-compat: if result_codex_ack absent from envelope (legacy commit-block), retain worker RESULT_CODEX_ACK unchanged — do NOT default to "none" (that would lose a stale signal from the worker).
-        PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
+        PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<RESULT_COMMIT_SHA>; fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
+        # commit= is the per-round provenance record: the SHA this round pushed,
+        # or the literal `none` on a wait-round. Without it the worker has only
+        # free-form `fixes=` prose plus PRIOR_COMMIT_SHA (the LATEST push), so it
+        # cannot map a finding back to the round that wrote the line — the Step 3
+        # proportionality gate's authorship discriminator then falls through to
+        # its uncertainty branch every time and can never fire (Codex + CodeRabbit,
+        # PR #620). Emit the SHA verbatim; the worker attributes a finding by
+        # blaming its LINE (`git blame -L`) and testing the resulting SHA against
+        # these values — not by the summary text, and not by which files a commit
+        # touched (a grind commit and an author finding can share a file).
         # failures= is required — subagent's flaky-check bail (3+ rounds)
         # reads it. Dropping it makes that bail unreachable and the loop
         # will grind to MAX rounds instead of stopping early on a flaky
@@ -1009,8 +1019,8 @@ Agent invocation:
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
-      - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
-      - Round 2 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<sha or "none">; fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 2 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<sha or "none">; fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
       ...
 
     Execute one round per agents/pr-grinder.md. Return RESULT_* tags.
@@ -1134,7 +1144,7 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
 ```
 
 **Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.

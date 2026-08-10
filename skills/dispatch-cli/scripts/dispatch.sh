@@ -110,11 +110,15 @@ fi
 # host refuses loudly even when pi is absent, a conservative fail-closed
 # false positive with an explanatory message.
 #
-# The `#!/usr/bin/env -S bash -p` shebang resolves the operator's Homebrew
-# bash on macOS. A PATH-planted `bash` is a hostile CALLER, who could equally
-# invoke any interpreter it likes directly — no shebang can defend against
-# that; a planted 3.2 bash is still caught by this guard, and a planted >= 4
-# bash is the attacker's own code, which is total compromise by definition.
+# The `#!/usr/bin/env -S bash -p` shebang runs the FIRST `bash` on PATH — it
+# selects by PATH order, not by vendor, so it picks up a >= 4 bash where one
+# is installed ahead of /bin/bash (Homebrew's, typically, on macOS) and plain
+# /bin/bash 3.2 where none is. It authenticates nothing about the binary it
+# lands on: a PATH-planted `bash` is a hostile CALLER, who could equally
+# invoke any interpreter directly — no shebang defends against that. A planted
+# 3.2 bash is still caught by the version floor below, and a planted >= 4 bash
+# is the attacker's own code, i.e. total compromise by definition. What `-p`
+# does add is refusing to import functions from the environment.
 if (( BASH_VERSINFO[0] < 4 )); then
     # The scan mirrors the real arg parser (lines ~202-206): --cli/--mode/
     # --timeout/--model/--prompt each consume their next operand, the LAST

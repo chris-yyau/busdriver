@@ -1,3 +1,10 @@
+## [1.104.1](https://github.com/chris-yyau/busdriver/compare/v1.104.0...v1.104.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **imagegen:** ask operators to accept codex's unconfined sandbox, not certify it ([#614](https://github.com/chris-yyau/busdriver/issues/614)) ([38c2270](https://github.com/chris-yyau/busdriver/commit/38c227081a3d9b25902f75ed0f498585b7778cf6))
+
 # [1.104.0](https://github.com/chris-yyau/busdriver/compare/v1.103.0...v1.104.0) (2026-08-09)
 
 

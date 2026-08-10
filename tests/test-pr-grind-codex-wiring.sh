@@ -389,9 +389,14 @@ POSTWAIT_BETWEEN_ANCHOR_AND_CASE=$(awk -v ANCHOR_LINE="$POSTWAIT_ANCHOR_LINE" -v
 # then`) around the poll+refresh pushes it deeper. Same-line `if ... fi` and the
 # mid-line-closing `( ... ) || true` subshell are handled so the count is exact.
 POSTWAIT_PRE_GRACE_FN=$(awk -v g="$POSTWAIT_GRACE_IF_LINE" '
-  NR < g && /^```/ { fence = NR; next }
-  fence != "" && NR < g && /^[[:space:]]*(function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{|function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{|[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{)/ { print NR; exit }
-  END { if (fence == "") print "no-fence" }' "$SKILL" || true)
+  NR < g && /^```/ { lastfence = NR; cand = ""; next }
+  NR < g && /^[[:space:]]*(function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{|function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{|[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{)/ { cand = NR }
+  END { if (lastfence == "") print "no-fence"; else if (cand != "" && cand > lastfence) print cand }' "$SKILL" || true)
+POSTWAIT_PRE_GRACE_OP=$(awk -v g="$POSTWAIT_GRACE_IF_LINE" '
+  NR < g && /^[[:space:]]*(#|$)/ { next }
+  NR < g { last = $0; lastnr = NR; next }
+  NR == g && last ~ /(&&|\|\|)[[:space:]]*(#.*)?$/ { print lastnr; exit }
+' "$SKILL" || true)
 POSTWAIT_DEPTH_AT_ANCHOR=$(awk -v g="$POSTWAIT_GRACE_IF_LINE" -v a="$POSTWAIT_ANCHOR_LINE" '
   NR < g || NR >= a { next }
   /gh api graphql/ { in_gql = 1; next }
@@ -475,6 +480,7 @@ if [[ -n "$POSTWAIT_MATCH_LINE" && -n "$POSTWAIT_ANCHOR_LINE" && -n "$POSTWAIT_C
    && "$POSTWAIT_CONSUMER_LINE" -lt "$POSTWAIT_FENCE_CLOSE" \
    && "$POSTWAIT_INVALIDATION_OK" == "yes" \
    && -z "$POSTWAIT_PRE_GRACE_FN" \
+   && -z "$POSTWAIT_PRE_GRACE_OP" \
    && -z "$POSTWAIT_INTERVENING" \
    && -z "$POSTWAIT_BETWEEN_NORM_AND_MATCH" \
    && "$POSTWAIT_DEPTH_AT_ANCHOR" == "1" \

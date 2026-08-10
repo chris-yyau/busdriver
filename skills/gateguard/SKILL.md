@@ -48,7 +48,10 @@ Both agents produce code that runs and passes tests. The difference is design de
 
 ### Edit / MultiEdit Gate (first edit per file)
 
-MultiEdit is handled identically — each file in the batch is gated individually.
+MultiEdit is *intended* to be handled identically — each file in the batch gated
+individually — but MultiEdit requests are not actually gated: the hook fires but
+its denial condition never matches, so the request is always allowed through.
+See the Quick Start notes below and #615. The code is the authority.
 
 ```
 Before editing {file_path}, present these facts:
@@ -93,18 +96,138 @@ Triggers on: `rm -rf`, `git reset --hard`, `git push --force`, `drop table`, etc
 
 ### Option A: Use the ECC hook (zero install)
 
-The hook at `scripts/hooks/gateguard-fact-force.js` is included in this plugin. Enable it via hooks.json.
+The hook at `scripts/hooks/gateguard-fact-force.js` **is registered** in
+`hooks/hooks.json` as two PreToolUse entries — `pre:edit-write:gateguard-fact-force`
+(matcher `Write|Edit|MultiEdit`) and `pre:bash:gateguard-fact-force` (matcher `Bash`).
+
+Both are scoped to the **`strict` profile**, so they do NOT fire in a default
+session (`ECC_HOOK_PROFILE` defaults to `standard`). Turn them on for a session
+with:
+
+```bash
+ECC_HOOK_PROFILE=strict claude
+```
+
+Deliberate staged rollout — promote to `"standard,strict"` in `hooks.json` once
+you are satisfied with the behaviour. That promotion is two edits, not one: the
+`run-with-flags.js` profile argument AND the shell `case` guard's skip pattern
+(see "The shell guard skips; it never enables" below) both currently treat
+`standard` as OFF — widen both, or standard sessions will still be skipped
+before node ever runs. What it denies, precisely (it is narrower than the
+three-stage summary above suggests):
+
+- `Edit`/`Write` — the **first touch of each file** only. Paths under Claude's
+  own settings are exempt (`isClaudeSettingsPath`).
+- `MultiEdit` — **matched by the registration but never actually gated** (#615).
+  The branch iterates `tool_input.edits[]` looking for a per-edit `file_path`
+  (`gateguard-fact-force.js:855-858`), but a real MultiEdit payload carries
+  `file_path` at the *top* level and each `edits[]` entry holds only
+  `old_string`/`new_string`. So the loop body never executes and the branch falls
+  through to allow. The matcher is left in place because the fix belongs in the
+  hook; until #615 lands, treat MultiEdit as uncovered.
+- `Bash` — destructive commands (`rm -rf`, `git reset --hard`, force-push, `drop
+  table`, …) are gated **once per distinct command string**, not every time: the
+  hook keys state on a SHA-256 of the exact command
+  (`gateguard-fact-force.js:876-879`), so re-running a byte-identical destructive
+  command later in the session is allowed straight through. Any command that
+  differs by even one character is a new key and gates again. (This contradicts
+  the "every destructive command" heading inherited from upstream above — the
+  code is the authority.) The first *routine* command of a session is also gated
+  once, with a shorter two-fact prompt.
+
+**Not env-contained, on purpose.** These two entries invoke `run-with-flags.js`
+directly rather than through `hooks/gate-scripts/lib/sanitized-node.sh`, so a
+committed `.claude/settings.json` `env` block *can* switch them off. That is
+accepted here and would be wrong for a security gate. Two reasons:
+
+1. **GateGuard guards no boundary.** It improves output quality, so a repo that
+   disables it only degrades its own results — unlike `block-no-verify` or
+   `config-protection`, where disabling grants a real bypass. That is the line
+   the repo already draws: 26 of the 31 JS hooks invoke bare `node`, and the 5
+   routed through `sanitized-node.sh` are exactly the security gates.
+2. **Containment would make this gate unable to fire at all.**
+   `sanitized-node.sh` runs `/usr/bin/env -i`, wiping `ECC_HOOK_PROFILE` along
+   with everything else. `getHookProfile()` then falls back to `standard`
+   (`scripts/lib/hook-flags.js:19`), which is not in these entries' declared
+   `strict` list, so `isHookEnabled()` returns false (`:56-66`) and the hook is
+   skipped on **every** invocation. Containment here would not harden the gate;
+   it would silently retire it.
+
+Do not "harden" this into `sanitized-node.sh` without first widening the profile
+list — otherwise you ship a guard that can never fire, which is worse than no
+guard because it reads as coverage.
+
+**The shell guard skips; it never enables.** Each entry is wrapped in
+
+```sh
+case "${ECC_HOOK_PROFILE:-standard}" in
+  [Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd]|[Mm][Ii][Nn][Ii][Mm][Aa][Ll]) ;;
+  *) node … --fail-closed || exit 2 ;;
+esac
+```
+
+Two things make this shape the right one, and both are easy to get wrong.
+
+*Why a shell guard at all.* The trailing `|| exit 2` makes a `node` that cannot
+start (missing binary, bad `CLAUDE_PLUGIN_ROOT`) a **blocking** failure, which is
+what `--fail-closed` promises. But the in-process profile check lives inside
+`run-with-flags.js`, so it never runs when node cannot start — without a guard, a
+broken node would hard-block `standard` and `minimal` sessions where this gate is
+supposed to be inert.
+
+*Why the guard lists the OFF profiles rather than matching `strict`.* The shell
+must never be the thing that decides the hook is **on**, because shell pattern
+matching cannot reproduce `hook-flags.js:19` (`String(...).trim().toLowerCase()`).
+Successive review rounds found a fresh divergence each time one was patched:
+`STRICT` fails a case-sensitive compare, `" strict "` fails an untrimmed compare,
+and NBSP-padded `strict` survives JS `.trim()` but not shell `IFS` splitting. All
+three normalize to `strict` in JS, so each would have silently skipped GateGuard
+while `getHookProfile()` kept every *other* strict hook enabled.
+
+Listing only the unambiguous off-values inverts the risk. `standard` and `minimal`
+(case-insensitively, plus unset — which defaults to `standard`) skip cheaply and
+never launch node. Everything else falls through to node and `isHookEnabled()`
+makes the real decision — including values JS *rejects*, like `strict extra`,
+which `getHookProfile()` maps back to `standard` so the hook is correctly skipped
+in-process. A weird profile value costs one wasted node launch; it can never
+silently disable the gate.
+
+*Known residual.* A profile value that is genuinely non-strict but spelled oddly
+enough to miss the skip list (`" minimal "`, say) will launch node, so if node
+itself is broken the `|| exit 2` blocks that session. That needs two unlikely
+conditions at once, and it fails **closed** and loudly, which is the direction
+this repo prefers. Widening the skip list further would re-import the shell-vs-JS
+normalization problem in the dangerous direction.
+
+So: do not "tighten" this into a positive `strict` match, and do not delete the
+`"strict"` argument to `run-with-flags.js` as redundant — that argument is the
+only thing actually deciding whether the hook runs.
 
 If GateGuard blocks setup or repair work, start the session with
-`ECC_GATEGUARD=off`. For hook-level control, keep using
-`ECC_DISABLED_HOOKS` with the GateGuard hook ID.
+`ECC_GATEGUARD=off` (or `GATEGUARD_DISABLED=1`). For hook-level control, add
+either hook ID above to `ECC_DISABLED_HOOKS`.
 
-In long sessions, only the first `GATEGUARD_FACT_FORCE_FULL_DENIALS`
-fact-force denials (default 3) emit the full four-fact block; later
-denials are condensed to a single line carrying the denial ordinal, so
-near-identical blocks cannot accumulate in the context window and
-amplify model repetition loops (#2142). Retrying the same file or
-command after presenting facts never re-triggers the gate.
+**What the gate actually enforces — read this before trusting the three-stage
+model above.** It denies the FIRST touch of each file (and each destructive
+command), then allows the retry. `markChecked()` runs *before* the denial is
+returned (`gateguard-fact-force.js:840-845`), so the state file records "this
+target was gated once", **not** "the facts were presented". The hook has no way
+to verify that you actually answered — a retry that presents nothing is allowed
+just the same. Its value is forcing the investigation *pause* on first touch,
+not proving the investigation happened.
+
+Two further gaps, both in the hook rather than the registration — know them
+before you rely on this as coverage:
+
+- **Subagent edits are never gated.** `run()` returns `rawInput` the moment
+  `isSubagentInvocation(data)` is true (`gateguard-fact-force.js:836-838`,
+  `:851-853`), with no `isChecked()` consultation. The inline comment says the
+  parent session already passed the file gate, but nothing checks that — a file
+  first touched *inside* a subagent bypasses the gate entirely.
+- **A `Write` payload over 1 MiB is not gated.** `run-with-flags.js` caps stdin
+  at `MAX_STDIN = 1024 * 1024`; past that the JSON arrives truncated, GateGuard
+  hits its parse-error path and returns the input unchanged, and the runner
+  suppresses the truncated output and exits 0 — even under `--fail-closed`.
 
 ### Option B: Full package with config
 

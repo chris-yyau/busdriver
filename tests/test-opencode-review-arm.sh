@@ -795,15 +795,18 @@ if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
 else
   fail "an opencode arm is missing the validate_opencode_home_config call"
 fi
-# (h) dispatch.sh starts privileged via the -p shebang with a sentinel-verified
-# re-exec backstop for non-shebang invocations; the re-exec guard itself must
-# precede set -euo pipefail (a shadowed `set` must not run before the guard).
+# (h) dispatch.sh keeps the pi-required PATH-resolved bash shebang (the pi
+# lane needs bash 4+ via PATH — a `#!/bin/bash` shebang would pin /bin/bash
+# 3.2) WITH `-p` (`#!/usr/bin/env -S bash -p`): the first process is
+# privileged, so no BASH_FUNC_* shadow is imported from the start, and the
+# nonce+sentinel re-exec guard precedes set -euo pipefail (a shadowed `set`
+# must not run before the guard).
 # shellcheck disable=SC2016,SC2312  # single-quoted patterns; head/cut in pipeline are not load-bearing
-if grep -q '^#!/bin/bash -p' "$DP" \
-   && grep -q 'exec /bin/bash -p "\$0" "_bd_priv_\${_bd_nonce}" "\$@"' "$DP" \
+if grep -qE '^#!/usr/bin/env -S bash -p$' "$DP" \
+   && grep -qF 'exec "$BASH" -p "$0" "_bd_priv_${_bd_nonce}" "$@"' "$DP" \
    && grep -q 'type -t _bd_sentinel' "$DP" \
-   && [[ "$(grep -n 'exec /bin/bash -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
-  pass "dispatch.sh starts privileged (-p shebang) with nonce+sentinel-verified re-exec backstop before set -euo"
+   && [[ "$(grep -nF 'exec "$BASH" -p' "$DP" | head -1 | cut -d: -f1)" -lt "$(grep -n 'set -euo pipefail' "$DP" | head -1 | cut -d: -f1)" ]]; then
+  pass "dispatch.sh keeps env-resolved -p bash shebang + nonce+sentinel re-exec backstop before set -euo"
 else
   fail "dispatch.sh missing/incorrectly-placed function-clean boundary"
 fi
@@ -821,12 +824,12 @@ else
   unset -f _mechpoison
   fail "privileged bash does not suppress imported function shadows (re-exec is ineffective)"
 fi
-# (j) function-clean boundary: (a) the -p shebang keeps poisoned exec/set
-# shadows inert; (b) a naive exec shadow (returns without re-exec'ing) aborts;
-# (c) a FORGED re-exec (exec shadow calls builtin exec WITHOUT -p but WITH the
-# marker) is caught by the sentinel probe — the script refuses to continue;
-# (d) a source shadow never runs (the guard does not call source before the
-# re-exec).
+# (j) function-clean boundary: (a) the `-p`-in-shebang (env -S bash -p) keeps
+# poisoned exec/set shadows INERT (the first process imports nothing); (b) a
+# naive exec shadow (returns without re-exec'ing) aborts; (c) a FORGED
+# re-exec (exec shadow calls builtin exec WITHOUT -p but WITH the marker) is
+# caught by the sentinel probe — the script refuses to continue; (d) a source
+# shadow never runs (the guard does not call source before the re-exec).
 if (
   set -uo pipefail
   # (a) shebang path (the harness invocation): poisons never imported

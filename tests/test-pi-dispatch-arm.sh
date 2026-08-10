@@ -803,9 +803,9 @@ eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh library-missing shim matches the libr
 # a non-zero exit for the lanes that can reach the preflight (`pi`, `all`).
 # Other backends never use that construct and must keep working on 3.2.
 # 4.0+ is verified (4.4 built and probed; 5.x is what CI and Homebrew run).
-grep -q '^#!/usr/bin/env bash' "$DISPATCH" \
-  && ok "dispatch.sh shebang resolves bash via PATH (#!/usr/bin/env bash)" \
-  || fail "dispatch.sh shebang is not #!/usr/bin/env bash — direct exec on macOS hits /bin/bash 3.2"
+grep -qE '^#!/usr/bin/env -S bash -p$' "$DISPATCH" \
+  && ok "dispatch.sh shebang resolves bash via PATH with -p (env -S bash -p)" \
+  || fail "dispatch.sh shebang is not #!/usr/bin/env -S bash -p — direct exec on macOS hits /bin/bash 3.2 or loses -p"
 
 grep -qE 'BASH_VERSINFO\[0\]' "$DISPATCH" \
   && ok "dispatch.sh carries a BASH_VERSINFO floor check" \

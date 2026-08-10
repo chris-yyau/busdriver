@@ -1,15 +1,15 @@
-#!/bin/bash -p
+#!/usr/bin/env -S bash -p
 # ── Function-clean boundary (ADR 0016 / #325 class) ───────────────
-# PRIMARY: the `-p` shebang makes the first process privileged — bash -p does
-# NOT import BASH_FUNC_* from the environment (verified on 3.2/5.x), so no
-# imported function can run in a shebang invocation (the harness invocation).
-# BACKSTOP (non-shebang `bash dispatch.sh`, which ignores the shebang):
-# re-exec with -p, then PROVE the re-exec was privileged before continuing.
+# SHEBANG: `#!/usr/bin/env -S bash -p` — env resolves `bash` via PATH (the
+# pi lane requires bash 4+ via PATH; a `#!/bin/bash` shebang would pin macOS
+# /bin/bash 3.2) AND the first process starts with `-p`, so no BASH_FUNC_*
+# shadow is imported from the start — the guard's own `exec` cannot be a
+# shadow. Every invocation then passes the nonce+sentinel re-exec proof
+# below before continuing.
 # The proof: a sentinel function is exported before the re-exec — the
 # post-re-exec checks verify (a) the marker, (b) the sentinel env export is
-# present with the "() {" function shape under the BASH_FUNC_%% encoding this
-# build exports, and (c) the sentinel was NOT imported (a -p shell never
-# imports it; a forged no-p re-exec does). The marker only gates the attempt;
+# present, and (c) the sentinel was NOT imported (a -p shell never imports
+# it; a forged no-p re-exec does). The marker only gates the attempt;
 # the sentinel checks are what authorize continuation.
 # BOUNDED BY CONSTRUCTION (bash32-unshadowable-abort): the guard's command
 # words (`export`, `exec`, `type`) are shadowable, and every bypass probe
@@ -21,8 +21,7 @@
 # every shadow that merely replaces a command word (the realistic #325 probe:
 # a fork's settings.json exporting BASH_FUNC_exec%%); it does not — cannot —
 # stop an attacker who is already running code. The real trust boundary is
-# the env -i child; the -p shebang provides the function-clean start for the
-# invocation path the harness uses. There is deliberately NO function-export
+# the env -i child. There is deliberately NO function-export
 # encoding probe (an `eval`-defined random-name function): on this build the
 # sentinel always exports as BASH_FUNC__bd_sentinel%%, and on a build that
 # exports plain names the single-encoding check FAILS CLOSED (abort) — an
@@ -40,7 +39,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}"
   # shellcheck disable=SC2329  # sentinel is exported and probed, never invoked — its import state IS the signal
   _bd_sentinel() { :; }
   export -f _bd_sentinel
-  exec /bin/bash -p "$0" "_bd_priv_${_bd_nonce}" "$@"
+  exec "$BASH" -p "$0" "_bd_priv_${_bd_nonce}" "$@"
 fi
 # Post-re-exec. THREE proofs, all required before continuing:
 #  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.

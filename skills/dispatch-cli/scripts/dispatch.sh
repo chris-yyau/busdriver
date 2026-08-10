@@ -77,7 +77,8 @@ fi
 #   echo "task" | dispatch.sh --cli codex
 #   dispatch.sh --cli codex --prompt "simple single-line only"
 
-# ── Interpreter floor (pi lane) — FIRST, before any command word ──
+# ── Interpreter floor (pi lane) — before `set -euo pipefail`, after the
+#    privileged re-exec boundary above ──
 # Issue #595: the pi arm's preflight runs a QUOTED heredoc inside `$(...)`
 # (`/usr/bin/env -i ... /bin/bash <<'CHILD'`). bash 3.2 — macOS's stock
 # /bin/bash — mis-parses that construct when the body contains `case`
@@ -86,28 +87,40 @@ fi
 # that the old `#!/bin/bash` shebang reached on every macOS direct exec.
 # Verified: 3.2.57 broken, 4.4 and 5.x parse it correctly.
 #
-# This guard runs BEFORE ANY COMMAND WORD — even the `set -euo pipefail`
-# below, whose `set` is shadowable. Bash 3.2 permits slash-named functions
-# via the `function` keyword, so even an absolute path like /usr/bin/env can
-# be shadowed by an imported BASH_FUNC_*, and an exported `source` function
-# would run at the first `source` call. The scan below therefore uses ONLY
-# parser constructs (`for`/`case`/`[[`/`((` and assignments — no command
-# word), and the abort is the `${VAR:?msg}` parameter expansion, which is
-# unconditional (needs no `set -e`), unshadowable (not a command word) and
-# untrappable. It refuses both ways a pi dispatch can be reached: `--cli pi`
-# directly, and `--cli all` in a non-auto mode (the batch discovery below
-# excludes pi from `all` only under --mode auto). The no-pi-installed corner
-# is deliberately NOT checked here: knowing that requires the trusted-home
-# derivation (the env -i preflight), which no pre-command-word scan can run —
-# so `--cli all` on a 3.2 host refuses loudly even when pi is absent, a
-# conservative fail-closed false positive with an explanatory message.
+# The scan below uses only parser constructs (`for`/`case`/`[[`/`((` and
+# assignments — no command word), and aborts via the `${VAR:?msg}` parameter
+# expansion, which is unconditional (needs no `set -e`) and untrappable.
 #
-# The `#!/usr/bin/env bash` shebang is the repo-wide convention (every test
-# in tests/ uses it) and resolves the operator's Homebrew bash on macOS. A
-# PATH-planted `bash` is a hostile CALLER, who could equally invoke any
-# interpreter it likes directly — no shebang can defend against that; a
-# planted 3.2 bash is still caught by this guard, and a planted >= 4 bash is
-# the attacker's own code, which is total compromise by definition.
+# HISTORY (#600, amended after #617): that no-command-word style was chosen
+# when this guard was the FIRST thing in the file, to survive an imported
+# BASH_FUNC_* shadowing even an absolute path like /usr/bin/env. It is no
+# longer load-bearing — #617 put the `-p` shebang and the privileged re-exec
+# boundary above (lines ~29-70, themselves full of command words), so by the
+# time this runs, imported function shadows cannot execute at all. The style
+# is kept because it works and rewriting it buys nothing.
+# ponytail: keep-simple — collapse the argv scan into the pi arm (dropping
+# this duplicate of the real parser at ~line 313 and its source-text grep in
+# tests/test-pi-dispatch-arm.sh) the next time either one desyncs or breaks
+# on a reformat; the `-p` boundary above is why that is safe to do.
+#
+# It refuses both ways a pi dispatch can be reached: `--cli pi` directly, and
+# `--cli all` in a non-auto mode (the batch discovery below excludes pi from
+# `all` only under --mode auto). The no-pi-installed corner is deliberately
+# NOT checked here: knowing that requires the trusted-home derivation (the
+# env -i preflight), which this scan cannot run — so `--cli all` on a 3.2
+# host refuses loudly even when pi is absent, a conservative fail-closed
+# false positive with an explanatory message.
+#
+# The `#!/usr/bin/env -S bash -p` shebang runs the FIRST `bash` on PATH — it
+# selects by PATH order, not by vendor, so it picks up a >= 4 bash where one
+# is installed ahead of /bin/bash (Homebrew's, typically, on macOS) and plain
+# /bin/bash 3.2 where none is. It authenticates nothing about the interpreter
+# it lands on. The threat actor is the CALLER, who by controlling PATH can
+# select or plant the `bash` that runs — but such a caller could equally
+# invoke any interpreter directly, so no shebang defends against it. A planted
+# 3.2 bash is still caught by the version floor below, and a planted >= 4 bash
+# is the attacker's own code, i.e. total compromise by definition. What `-p`
+# does add is refusing to import functions from the environment.
 if (( BASH_VERSINFO[0] < 4 )); then
     # The scan mirrors the real arg parser (lines ~202-206): --cli/--mode/
     # --timeout/--model/--prompt each consume their next operand, the LAST

@@ -735,7 +735,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | **Step 1 Phase 0: `mergeable` is `CONFLICTING` or `mergeStateStatus` is `DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
 | `WORKTREE_DIR` missing or unreadable | `env` |
-| A PreToolUse gate blocks a Write/Edit/MultiEdit/Bash you cannot route around (design-review, or the freeze guard on Write/Edit) — surface it, never create a skip file | `env` |
+| A PreToolUse gate blocks a Write/Edit/MultiEdit/Bash you cannot route around (design-review, or the freeze guard on Write/Edit/MultiEdit) — surface it, never create a skip file | `env` |
 
 **Why history-rewrite bails are `judgment`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push, but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns. Categorizing as `judgment` forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
 

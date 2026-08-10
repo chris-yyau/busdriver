@@ -36,17 +36,24 @@ done
 # paraphrase ("read the whole file at .../SKILL.md"); matching the word
 # anywhere on the line false-positives on long lines that say "read budget
 # pressure" or "Edit/Read/Write tool calls" and only cite the path at the end.
-# So: anchor the verb to the path — look for a read verb in the 60 characters
-# immediately PRECEDING the path mention, after dropping lines whose whole
-# point is to scope or forbid the read.
+# So: anchor the verb to the path — look for a read verb in a 60-character
+# window on EITHER side of the path mention (a wholesale-read order can be
+# phrased before the path, "Read .../SKILL.md", or after it, ".../SKILL.md —
+# read it fully"; checking only the PRECEDING window misses the latter), after
+# dropping lines whose whole point is to scope or forbid the read. Legitimate
+# cross-references ("see .../SKILL.md Safety Rails for the rationale") carry
+# no read verb in either window and correctly stay unflagged.
 UNSCOPED=$(awk '
   index($0, "skills/pr-grind/SKILL.md") == 0 { next }
   /named section|[Dd]o NOT read|wholesale "for context"/ { next }
   {
     idx = index($0, "skills/pr-grind/SKILL.md")
+    pathlen = length("skills/pr-grind/SKILL.md")
     pre = substr($0, 1, idx - 1)
     if (length(pre) > 60) pre = substr(pre, length(pre) - 59)
-    if (tolower(pre) ~ /read/) printf "%d: %s\n", NR, substr($0, 1, 150)
+    post = substr($0, idx + pathlen)
+    if (length(post) > 60) post = substr(post, 1, 60)
+    if (tolower(pre) ~ /read/ || tolower(post) ~ /read/) printf "%d: %s\n", NR, substr($0, 1, 150)
   }' "$WORKER")
 if [[ -n "$UNSCOPED" ]]; then
   fail "worker contract carries an unscoped read of SKILL.md (~25k tokens/round of dispatcher control flow):"
@@ -92,11 +99,19 @@ fi
 # (4) The worker still has a reachable path to the gate-block protocol, which
 # is the one thing the dropped read could plausibly have supplied. The worker
 # does Write/Edit, so the design-review gate and the freeze guard can fire on
-# IT (careful-guard is Bash-only and cannot).
-if grep -q 'blueprint-review/SKILL\.md' "$WORKER"; then
-  ok "worker retains an on-demand pointer to the canonical skip-file protocol"
+# IT (careful-guard is Bash-only and cannot). Require the
+# ${CLAUDE_PLUGIN_ROOT}-qualified form specifically — a bare
+# 'blueprint-review/SKILL.md' match would pass vacuously even if the worker
+# reverted to an unqualified relative path, which only resolves when the
+# targeted repo IS busdriver itself (see agents/pr-grinder.md's own note on
+# why both on-demand reads must resolve against the plugin install root).
+# shellcheck disable=SC2016  # the literal string ${CLAUDE_PLUGIN_ROOT} is the
+# thing being searched for in the worker contract — expanding it here would
+# search for this test process's own plugin root and never match.
+if grep -q '\${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/SKILL\.md' "$WORKER"; then
+  ok "worker retains an on-demand, plugin-root-qualified pointer to the canonical skip-file protocol"
 else
-  fail "worker has no route to the gate-block/skip-file protocol — dropped read left a real gap"
+  fail "worker has no \${CLAUDE_PLUGIN_ROOT}-qualified route to the gate-block/skip-file protocol — dropped read left a real gap, or the path regressed to an unqualified relative form"
 fi
 
 # (5) Never create a skip file: this must survive any rewrite of Step 0.

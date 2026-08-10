@@ -50,13 +50,21 @@ If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (th
 
 The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps the default tags non-empty, which the dispatcher's tag parser requires.
 
-### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
+### Step 0 — Orientation (this contract is self-contained)
 
-Before Step 1, run `Read skills/pr-grind/SKILL.md` once. The full Step 1–6 protocol, the 3-phase check-verification block, and the rationale all live there. The inlined bash below is your authoritative copy for Steps 1–3 — but the SKILL.md prose context is what lets you triage edge cases (advisory checks, stuck checks, rebase races, skip-file protocol). Treat skipping this Read as a contract violation; bail with reason "skipped pre-flight Read" if for any reason you cannot.
+**Do NOT read `skills/pr-grind/SKILL.md`.** It is the *dispatcher's* control flow — the round loop, ephemeral-worktree creation, the commit-block contract, and the merge path. It contains no worker step protocol: there is no Step 1, no Phase 0/1/2 check-verification block, and no ack-ledger function in that file. Everything you execute is inline below, and Steps 1–6.5 here are authoritative in full — the 3-phase check verification, all four feedback sources, the triage table and dismissal rails, the ack-ledger invocation, the bail-trigger table, and the anti-pattern table. A wholesale read costs ~25k tokens per round and returns nothing you do not already have.
+
+(This paragraph replaces a mandatory pre-flight Read that was ordered on the claim that "the full Step 1–6 protocol" lived in SKILL.md. It does not, and the protocol has been inline here for some time; the order outlived the fact.)
+
+Two **on-demand** reads, each only when the situation actually arises:
+
+- **The design-review gate blocks a Write/Edit** (`check-design-document.sh` → `pre-implementation-gate.sh`; escape hatch `.claude/skip-design-review.local`). Read `skills/blueprint-review/SKILL.md` → "User-Created Skip File" for the canonical protocol. **Never create a skip file yourself** — surface the block to the operator; bail with category `env` if you cannot proceed. (The pre-merge skip file is never yours: you run neither `git commit` nor `gh pr merge`.)
+- **The freeze guard blocks a Write/Edit** — `.claude/freeze-scope.local` exists and your path is outside the frozen scope. There is **no skip file** for this one and the blueprint-review protocol does not cover it: the operator deactivates it with `rm .claude/freeze-scope.local`. Surface the block; bail `env` if you cannot proceed. (`careful-guard.sh` is a Bash-only hook and cannot block a Write/Edit at all.)
+- **You need the dispatcher's side of a contract you emit into** — Invariant 4's cumulative caps, or the commit-block envelope. Read the *named section* of `skills/pr-grind/SKILL.md`, never the whole file.
 
 ### Step 1 — Wait for ALL checks + reviewers
 
-Inline copy of SKILL.md Step 1 — execute verbatim:
+Execute verbatim:
 
 ```bash
 # Phase 0 (#515): a PR that CANNOT run CI must never be evaluated for greenness.
@@ -317,7 +325,7 @@ For each `out-of-scope-acknowledged` dismissal you record this round, append `+s
 
 `<n_actionable>=0` with `<n_total>=0` is reserved for "bot didn't post" — never use it for "bot posted but I didn't look", which is the bug the dispatcher's invariant-3 gate catches.
 
-Inline copy of SKILL.md triage table:
+Triage table (authoritative — this contract is its only home):
 
 | Category | Action |
 |----------|--------|
@@ -725,7 +733,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | **Step 1 Phase 0: `mergeable` is `CONFLICTING` or `mergeStateStatus` is `DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
 | `WORKTREE_DIR` missing or unreadable | `env` |
-| Skipped Step 0 mandatory Read of SKILL.md | `env` |
+| A PreToolUse gate blocks a Write/Edit you cannot route around (design-review, or the freeze guard) — surface it, never create a skip file | `env` |
 
 **Why history-rewrite bails are `judgment`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push, but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns. Categorizing as `judgment` forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
 
@@ -810,7 +818,7 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | `--no-verify` to bypass litmus | Litmus is the meaningful review. Bail instead. |
 | Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | CodeRabbit summaries land in Source 4 (issue comments); Codex findings span Source 2 (inline review threads) and Source 3 (the `### 💡 Codex Review` body in a COMMENTED `/reviews` entry — Codex posts COMMENTED but not APPROVED; it has no structured HEAD-ack). Skipping Sources 3/4 merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
 | Treating CodeScene's "advisory" status as "ignore its findings" | The check status is non-blocking; the **review thread is not**. CodeScene posts real findings as Source 2 review threads (e.g., "Excess Number of Function Arguments") that must be triaged like any other reviewer. |
-| Skipping the Step 0 mandatory Read of SKILL.md | Edge cases (skip-file protocol, rebase races, late-arriving bot ack patterns) are documented there. The inlined bash above is necessary but not sufficient. |
+| Reading `skills/pr-grind/SKILL.md` wholesale "for context" | It is dispatcher control flow — the round loop, worktree creation, the commit block, the merge path. It holds no worker step protocol (no Step 1, no Phase 0/1/2 block, no ack-ledger function), so the read costs ~25k tokens per round and returns nothing this contract lacks. Read a *named section* if you need the dispatcher's side of a contract you emit into; otherwise don't. |
 | Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Codex's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
 | Emitting `<bot>=0/0:<anything>` for a bot with review history | If a bot's ack is a SHA (HEAD-acked) or `stale`, `n_total` MUST be ≥1. `0/0` is reserved for "bot didn't post" — paired with `none` ack. The dispatcher's invariant-3 gate keys on `n_total == 0` for any HEAD-acked bot, regardless of disposition text — so `0/0:not-evaluated`, `0/0:didn't-look`, even `0/0:no-findings` all trip the gate identically when the bot acked HEAD. The disposition is documentary; the count is load-bearing. |
 | Writing a regex parser for "find all findings" | Vendors change templates frequently; a per-bot regex grammar accumulates false positives forever. The fix is enumeration + per-finding judgment, not a parser. |

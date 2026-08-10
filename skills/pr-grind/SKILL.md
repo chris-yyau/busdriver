@@ -47,6 +47,15 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 - Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
 - Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
 
+**This file is dispatcher-only. The worker does not read it.** `agents/pr-grinder.md`
+is self-contained for Steps 1–6.5 — the 3-phase check verification, the four feedback
+sources, the triage table, the ack ledger, and the bail table are all inline there.
+This file holds no worker step protocol at all (no Step 1, no Phase 0/1/2 block, no
+ack-ledger function). A worker contract that ordered a wholesale Read of this file was
+paying ~25k tokens per round for dispatcher control flow it never executes; that order
+was removed. Do not restore it — if the worker needs the dispatcher's side of a contract
+it emits into, it reads the *named section*.
+
 **This skill is two files.** The merge path — everything from `RESULT_STATUS=clean`
 through the `pr-grind-clean.local` marker and `gh pr merge` — lives in
 `references/completion.md`, and is **mandatory reading before any merge-path

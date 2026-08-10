@@ -4,9 +4,10 @@
 # Single source of truth for "which `gh pr checks` failures/pendings count"
 # across the four surfaces that previously each embedded the logic (issue #154):
 #   - hooks/gate-scripts/pre-merge-gate.sh      (count logic extracted from here)
-#   - skills/pr-grind/SKILL.md  Step 1 Phase 2.5
 #   - skills/pr-grind/references/completion.md  verify-checks-green
-#   - agents/pr-grinder.md      worker Phase 2.5
+#   - agents/pr-grinder.md      worker Step 1 Phase 2.5
+# (SKILL.md was a fourth surface until the worker step protocol consolidated
+#  into agents/pr-grinder.md; it holds no Phase 2.5 call site today.)
 # Filter edits now touch one file instead of four kept in lockstep.
 #
 # The count-computation logic is preserved unchanged from

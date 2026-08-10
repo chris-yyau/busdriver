@@ -144,6 +144,26 @@
         "description": "Reminder before git push to review changes"
       },
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed"
+          }
+        ],
+        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed"
+          }
+        ],
+        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command"
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

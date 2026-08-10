@@ -48,7 +48,9 @@ Both agents produce code that runs and passes tests. The difference is design de
 
 ### Edit / MultiEdit Gate (first edit per file)
 
-MultiEdit is handled identically — each file in the batch is gated individually.
+MultiEdit is *intended* to be handled identically — each file in the batch gated
+individually — but the implementation never fires for it; see the Quick Start
+notes below and #615. The code is the authority.
 
 ```
 Before editing {file_path}, present these facts:
@@ -111,7 +113,13 @@ than the three-stage summary above suggests):
 
 - `Edit`/`Write` — the **first touch of each file** only. Paths under Claude's
   own settings are exempt (`isClaudeSettingsPath`).
-- `MultiEdit` — each file in the batch gated individually, same first-touch rule.
+- `MultiEdit` — **matched by the registration but never actually gated** (#615).
+  The branch iterates `tool_input.edits[]` looking for a per-edit `file_path`
+  (`gateguard-fact-force.js:855-858`), but a real MultiEdit payload carries
+  `file_path` at the *top* level and each `edits[]` entry holds only
+  `old_string`/`new_string`. So the loop body never executes and the branch falls
+  through to allow. The matcher is left in place because the fix belongs in the
+  hook; until #615 lands, treat MultiEdit as uncovered.
 - `Bash` — destructive commands (`rm -rf`, `git reset --hard`, force-push, `drop
   table`, …) are gated **once per distinct command string**, not every time: the
   hook keys state on a SHA-256 of the exact command

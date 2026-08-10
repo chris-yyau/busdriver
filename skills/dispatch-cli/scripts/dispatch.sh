@@ -44,23 +44,26 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]] && [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}"
 fi
 # Post-re-exec. THREE proofs, all required before continuing:
 #  (a) marker == "_bd_priv_<non-empty env nonce>" — the re-exec branch ran.
-#  (b) the sentinel env export BASH_FUNC__bd_sentinel%% is present with the
-#      "() {" function shape — checked via /usr/bin/printenv EXACT NAME lookup
-#      (absolute path — the repo's trust anchor; only slash-named shadowing
-#      applies, which is total compromise) + `[[ -n ]]` / `case` (reserved
-#      words, unshadowable). A caller-set var under a DIFFERENT name (plain
-#      `_bd_sentinel`, substring names) is never accepted — and on builds
-#      whose exports use plain names the check fails CLOSED (abort).
+#  (b) the sentinel env export BASH_FUNC__bd_sentinel%% EXACTLY equals THIS
+#      bash's own export of an identically-bodied probe function (defined +
+#      exported HERE, post-exec — no eval, no encoding probe): a forged
+#      malformed value (`() { x }`, truncated `() {`) is NOT importable and
+#      differs from the real export text → rejected; an attacker forging the
+#      EXACT valid value makes it importable in their plain shell → caught by
+#      (c). The probe lookup failing (a build exporting plain names) fails
+#      CLOSED (abort) — an unpatched pre-4.3 Shellshock-era bash is out of
+#      scope.
 #  (c) the sentinel was NOT imported (`type -t` != function) — proves the
 #      re-exec ran under -p (a forged no-p re-exec imports it). `type` is the
 #      one shadowable word in this guard; a shadow of it has already executed
 #      code — total compromise, out of scope (bash32-unshadowable-abort).
-_bd_env_sentinel="no"
+# shellcheck disable=SC2329  # probe is exported and printenv'd, never invoked — its export text IS the signal
+_bd_probe2() { :; }
+export -f _bd_probe2
+_bd_expected_env="$(/usr/bin/printenv "BASH_FUNC__bd_probe2%%" 2>/dev/null || true)"
 _bd_sentinel_env="$(/usr/bin/printenv "BASH_FUNC__bd_sentinel%%" 2>/dev/null || true)"
-case "$_bd_sentinel_env" in
-  "() {"*) _bd_env_sentinel="yes" ;;
-esac
-if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" || "$_bd_env_sentinel" != "yes" ]] \
+if [[ "${1:-}" != "_bd_priv_${_bd_nonce:-}" || -z "${_bd_nonce:-}" ]] \
+   || [[ -z "$_bd_expected_env" || "$_bd_sentinel_env" != "$_bd_expected_env" ]] \
    || [[ "$(type -t _bd_sentinel 2>/dev/null || true)" == "function" ]]; then
   _bd_priv_guard=
   : "${_bd_priv_guard:?refusing to continue: the script is not running privileged (imported function shadows present) — re-run via the shebang in a clean shell}"

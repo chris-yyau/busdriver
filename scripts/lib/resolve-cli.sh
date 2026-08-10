@@ -423,12 +423,12 @@ def strip_jsonc(s):
         if c == '"':
             in_str = True; out.append(c); i += 1; continue
         if s.startswith("//", i):
-            # JSONC treats CR as a line terminator too (not just LF): a
-            # mixed-ending doc like "//c\r \"mcp\":{}" must end the comment at
-            # the CR, exactly as opencode's parser does — otherwise the
-            # validator strips "mcp" while opencode still sees it.
+            # JSONC line terminators are LF, CR, U+2028, and U+2029 (opencode
+            # treats all four): a doc like "//c\u2028\"mcp\":{}" must end the
+            # comment at U+2028, exactly as opencode's parser does — otherwise
+            # the validator strips "mcp" while opencode still sees it.
             j = i
-            while j < n and s[j] not in "\n\r":
+            while j < n and s[j] not in "\n\r\u2028\u2029":
                 j += 1
             if j == n:
                 i = n
@@ -453,7 +453,7 @@ def strip_jsonc(s):
                     continue
                 if s.startswith("//", j):
                     k = j
-                    while k < n and s[k] not in "\n\r":
+                    while k < n and s[k] not in "\n\r\u2028\u2029":
                         k += 1
                     j = n if k == n else k + 1
                     continue
@@ -2150,6 +2150,13 @@ execute_review() {
              # `~user` tilde expansion reads getpwnam; `id` runs absolute.
              local _oc_home _oc_user
              _oc_user="$(/usr/bin/id -un 2>/dev/null)"
+             if [[ -z "$_oc_user" ]]; then
+               # Fail CLOSED on an empty user: the following `~` expansion
+               # would fall back to the repo-injectable $HOME and supply the
+               # binary path from an attacker-selected directory.
+               echo "busdriver: could not derive the operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
+               return 1
+             fi
              _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
              # NO $HOME fallback — $HOME is the repo-injectable value this whole
              # block exists to distrust. If the password-DB lookup fails (a broken

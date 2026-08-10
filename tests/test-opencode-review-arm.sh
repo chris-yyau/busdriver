@@ -680,6 +680,10 @@ PY
   # (as opencode parses it), so mcp must remain visible → refuse.
   printf '{"provider":{}, //c\r "mcp":{}\n}\n' > "$_home/.opencode/opencode.json"
   validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4b) CR-terminated comment hid an mcp key"; ok=0; }
+  # (i4d) U+2028 line separator also terminates a JSONC comment (opencode
+  # treats it as a line terminator) — an mcp key after it must be seen.
+  printf '{"provider":{}, //c\xe2\x80\xa8 "mcp":{}\n}\n' > "$_home/.opencode/opencode.json"
+  validate_opencode_home_config "$_home" 2>/dev/null && { echo "  ✗ (i4d) U+2028-terminated comment hid an mcp key"; ok=0; }
   # (i5) a non-regular file (named pipe) at the config path must be REFUSED,
   # not validated (a FIFO writer can serve different content to each open,
   # so validating one read cannot close the race) — and must not hang.
@@ -867,10 +871,16 @@ if (
   [[ "$rc8" -ne 0 ]] || { echo "  ✗ (j-h) substring-forge bypassed the boundary (rc=0)"; exit 1; }
   printf '%s' "$out8" | grep -q "refusing to continue" || { echo "  ✗ (j-h) missing abort on substring-forge attempt"; exit 1; }
   # (i) env-NAME forge with a NON-function value (via `env`): the sentinel
-  # value check (must start with "() {") refuses it.
+  # value check (must start with "() {" and end with "}") refuses it.
   out9="$(env '_bd_nonce=known' 'BASH_FUNC__bd_sentinel%%=x' bash "$DP" _bd_priv_known --help 2>&1)"; rc9=$?
   [[ "$rc9" -ne 0 ]] || { echo "  ✗ (j-i) env-NAME forge bypassed the boundary (rc=0)"; exit 1; }
   printf '%s' "$out9" | grep -q "refusing to continue" || { echo "  ✗ (j-i) missing abort on env-NAME forge"; exit 1; }
+  # (j) TRUNCATED-function forge: `BASH_FUNC__bd_sentinel%%='() {'` (no closing
+  # brace) is NOT imported on bash 5.x but satisfies a bare "() {" prefix — the
+  # trailing-`}` shape check must refuse it.
+  out10="$(env '_bd_nonce=known' 'BASH_FUNC__bd_sentinel%%=() {' bash "$DP" _bd_priv_known --help 2>&1)"; rc10=$?
+  [[ "$rc10" -ne 0 ]] || { echo "  ✗ (j-j) truncated-function forge bypassed the boundary (rc=0)"; exit 1; }
+  printf '%s' "$out10" | grep -q "refusing to continue" || { echo "  ✗ (j-j) missing abort on truncated-function forge"; exit 1; }
   exit 0
 ); then
   pass "function-clean boundary: shebang inert; naive+forged exec shadows abort; source shadow never runs"

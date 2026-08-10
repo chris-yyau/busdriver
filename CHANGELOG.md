@@ -1,3 +1,10 @@
+## [1.105.1](https://github.com/chris-yyau/busdriver/compare/v1.105.0...v1.105.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** harden the opencode review lane (validated sandbox home + git-bounded cwd) ([#617](https://github.com/chris-yyau/busdriver/issues/617)) ([924cbde](https://github.com/chris-yyau/busdriver/commit/924cbdea94f2075a6bf471aceb7ea4e415f7b61c))
+
 # [1.105.0](https://github.com/chris-yyau/busdriver/compare/v1.104.1...v1.105.0) (2026-08-10)
 
 

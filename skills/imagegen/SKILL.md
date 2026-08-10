@@ -38,8 +38,24 @@ flag to "make it work".
 | Illustration, photo-real, or **editing an existing image** | **grok** |
 
 Only Codex has a real transparency path (generate on a chroma key, then
-`remove_chroma_key.py`). Only Grok has `image_edit`. When it doesn't matter,
-use **codex** — it produced the cleanest mark on an identical prompt.
+`remove_chroma_key.py`). Only Grok has `image_edit`. Codex produced the cleanest
+mark on an identical prompt — but it is the only route whose sandbox flag was
+measured **not to hold at all**, so **when it doesn't matter, use `agy`**: it is
+the block's default. Reach for **codex** when you specifically need transparency
+or that mark quality, and accept what the next paragraph says.
+
+None of the three confines *reads*, and grok's `--allow` adds auto-approval
+without denying anything else — see Threat model for exactly what each flag buys.
+`agy` and `grok` at least confine **writes** as documented; codex did not.
+
+> ⚠️ **Choosing `codex` means choosing an unconfined agent.** On codex-cli 0.147.0,
+> `codex exec -s workspace-write` was measured writing files **outside** the workdir it
+> was given, so the `-s` flag is not a boundary — the route can write anywhere your user
+> account can. The route is available, but not by default: set `CODEX_UNCONFINED_OK=1`
+> in the block to accept that. The flag says *"I accept an unconfined agent"* — it is
+> **not** a claim that you proved confinement, and nothing in this skill can check it
+> for you. **`agy` confines writes as documented** and is the default — not a
+> promise of full isolation (nothing here confines reads), just a flag that holds.
 
 ## Commands (verified 2026-08-09)
 
@@ -77,10 +93,15 @@ to exist before it starts.
 # to parse it, which is the safe outcome. Rename the file.)
 BRIEF='/abs/scratch/brief.txt'    # written in step 1
 OUT='/abs/assets/hero.png'
-PROVIDER='codex'                  # codex | agy | grok | grok-edit  — exactly one
+PROVIDER='agy'                    # codex | agy | grok | grok-edit  — exactly one.
+                                  # Defaults to the CONFINED provider on purpose: codex
+                                  # makes the better mark but was measured writing outside
+                                  # its workdir (see Route), so running it unconfined is a
+                                  # word you type, never a default you inherit.
 SRC=''                            # required only for grok-edit: absolute path of the source image
-CODEX_SANDBOX_CHECKED=''          # set to 1 ONLY after reading the codex note in the
-                                  # codex) branch below; empty keeps that route closed
+CODEX_UNCONFINED_OK=''            # PROVIDER='codex' only: set to 1 to accept an
+                                  # UNCONFINED agent (see Route). Not a claim that you
+                                  # verified anything — a decision that you accept it
 
 # Must exit, not return: a `return` inside a helper only leaves the helper, so a
 # failed check would fall through into the dispatch. On the way out, sweep the working
@@ -220,7 +241,7 @@ grok_take() {   # sets $ASSET (and $TAKE, for cleanup) to a copy the provider ca
 case "$PROVIDER" in
 
 codex)
-  # Fail CLOSED unless you have PROBED the sandbox yourself. Measured on codex-cli
+  # This route's sandbox flag is decoration until you PROBE it yourself. Measured on codex-cli
   # 0.147.0: both -s workspace-write AND -s read-only wrote files outside the workdir
   # they were given, and -s read-only wrote inside it too — the flag below was
   # decoration. Deleting the `[projects."/"] trust_level = "trusted"` entry did NOT
@@ -229,9 +250,18 @@ codex)
   # sniff would not be a boundary anyway: quoting, whitespace, dotted keys and
   # `sandbox_workspace_write.writable_roots` all evade a grep.) Hence an explicit
   # acknowledgement instead.
-  # Exactly 1, not merely non-empty: CODEX_SANDBOX_CHECKED=0 or =false reads as a
+  #
+  # The acknowledgement asks you to ACCEPT the risk, not to certify it away. It used to
+  # be CODEX_SANDBOX_CHECKED — "I probed this and it confines" — which on 0.147.0 is a
+  # sentence no honest operator could sign, so the route was permanently dead even
+  # though it WORKS (it produced a 1254x1254 PNG on this machine). A gate nobody can
+  # pass is not a safety control, it is a deletion. So the question changed: not "did
+  # you prove it is confined?" but "do you accept that it is not?" — one word, decided
+  # BEFORE dispatch, which a warning printed inside an already-approved Bash call could
+  # never be. PROVIDER=agy remains the answer if you would rather not decide.
+  # Exactly 1, not merely non-empty: CODEX_UNCONFINED_OK=0 or =false reads as a
   # REFUSAL, and -n would have opened the route on both.
-  [ "$CODEX_SANDBOX_CHECKED" = 1 ] || die "refuse: codex route is closed until you set CODEX_SANDBOX_CHECKED=1 at the top of this block. Confirm it by PROBING THE MODE THIS ROUTE ACTUALLY RUNS — 'codex exec -s workspace-write -C \$W --skip-git-repo-check', where \$W is a fresh empty temp dir outside any checkout, asking it to write a file into a DIFFERENT directory. PASS means no file appears at that outside path when you check the filesystem (its reply is not evidence). A read-only probe does NOT establish this — it is a different mode. Reading ${CODEX_HOME:-\$HOME/.codex}/config.toml is not sufficient either: removing a \"/\" trust entry did not restore confinement on codex-cli 0.147.0, and codex adds a trust entry for a directory it is run in. Or use PROVIDER=agy."
+  [ "$CODEX_UNCONFINED_OK" = 1 ] || die "refuse: PROVIDER=codex dispatches an UNCONFINED agent. On codex-cli 0.147.0, 'codex exec -s workspace-write' wrote files OUTSIDE the workdir it was given, so -s is not a boundary — this route can read and write anything your user account can, including files unrelated to this project. Deleting the \"/\" trust entry did not restore confinement, and codex adds a trust entry for a directory it is run in, so there is no config you can read to make this safe. To proceed anyway, set CODEX_UNCONFINED_OK=1 at the top of this block — that is you ACCEPTING an unconfined agent, not verifying anything. To avoid the question entirely, use PROVIDER=agy (the default)."
   # needs </dev/null and --skip-git-repo-check outside a git repo
   codex exec -s workspace-write -C "$WORK" --skip-git-repo-check \
     "Use the imagegen skill to create: $PROMPT. Copy the final file to $ASSET. Reply with only the absolute path." </dev/null \

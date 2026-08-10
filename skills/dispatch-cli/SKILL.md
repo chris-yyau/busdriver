@@ -134,9 +134,12 @@ What follows from this, and only this:
 - **This affects who can review what.** litmus pins codex as its PR-mode lead reviewer
   partly on the assumption that `-s read-only` confines it. On the configuration
   measured above it does not.
-- `busdriver:imagegen` already assumes the worst here: its codex route stays closed
-  behind `CODEX_SANDBOX_CHECKED=1`, because no `-s` value was found that reliably
-  confines codex without checking first.
+- `busdriver:imagegen` already assumes the worst here: its codex route is gated behind
+  `CODEX_UNCONFINED_OK=1`, and its block defaults to `agy` — whose `--sandbox` at least
+  confines WRITES as documented, which is not the same as isolation (no provider there
+  confines reads). Note what that
+  flag does and does not say — it is the operator ACCEPTING an unconfined agent, not
+  certifying confinement, because no `-s` value was found that reliably confines codex.
 
 **Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
 

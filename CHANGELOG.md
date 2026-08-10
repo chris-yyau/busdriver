@@ -1,3 +1,10 @@
+# [1.105.0](https://github.com/chris-yyau/busdriver/compare/v1.104.1...v1.105.0) (2026-08-10)
+
+
+### Features
+
+* **gateguard:** register fact-force hooks under strict profile ([#613](https://github.com/chris-yyau/busdriver/issues/613)) ([11b4839](https://github.com/chris-yyau/busdriver/commit/11b48397e0b540249287426e79058ce27b76c442)), closes [#611](https://github.com/chris-yyau/busdriver/issues/611)
+
 ## [1.104.1](https://github.com/chris-yyau/busdriver/compare/v1.104.0...v1.104.1) (2026-08-10)
 
 

@@ -764,20 +764,14 @@ function withRecoveryHint(message, hookIds = [EDIT_WRITE_HOOK_ID]) {
   ].join('\n');
 }
 
-function isSubagentInvocation(data) {
-  if (!data || typeof data !== 'object') {
-    return false;
-  }
-
-  const candidates = [
-    data.agent_id,
-    data.agentId,
-    data.parent_tool_use_id,
-    data.parentToolUseId
-  ];
-
-  return candidates.some(candidate => typeof candidate === 'string' && candidate.trim());
-}
+// #611 — there was an isSubagentInvocation() early-return here that allowed any
+// Edit/Write/MultiEdit carrying agent_id / parent_tool_use_id, on the unverified
+// premise that "the parent session already passed the first-touch file gate".
+// Nothing verified it: a file whose FIRST touch happened inside a subagent was
+// gated nowhere — not in the subagent, and not later in the parent, whose state
+// was never marked either. Consulting isChecked() (which the branches already do)
+// expresses the intended exemption exactly — a parent-gated file is checked, so it
+// passes — which made the early-return, and this helper, redundant.
 
 // --- Deny helper ---
 
@@ -825,16 +819,11 @@ function run(rawInput) {
   // Normalize: case-insensitive matching via lookup map
   const TOOL_MAP = { edit: 'Edit', write: 'Write', multiedit: 'MultiEdit', bash: 'Bash' };
   const toolName = TOOL_MAP[rawToolName.toLowerCase()] || rawToolName;
-  const inSubagent = isSubagentInvocation(data);
 
   if (toolName === 'Edit' || toolName === 'Write') {
     const filePath = toolInput.file_path || '';
     if (!filePath || isClaudeSettingsPath(filePath)) {
       return rawInput; // allow
-    }
-
-    if (inSubagent) {
-      return rawInput; // parent session already passed the first-touch file gate
     }
 
     if (!isChecked(filePath)) {
@@ -848,10 +837,6 @@ function run(rawInput) {
   }
 
   if (toolName === 'MultiEdit') {
-    if (inSubagent) {
-      return rawInput; // parent session already passed the first-touch file gate
-    }
-
     // #615 — a genuine MultiEdit payload carries the target at the TOP level; each
     // edits[] element holds only old_string/new_string. Reading edit.file_path alone
     // made this loop a no-op body, so the gate NEVER fired for MultiEdit (fail-open).

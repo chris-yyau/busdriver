@@ -112,6 +112,39 @@ describe('gateguard MultiEdit branch (#615)', () => {
     ).toBe('allow')
   })
 
+  it('gates a file whose first touch is inside a subagent (#611)', () => {
+    // agent_id / parent_tool_use_id used to short-circuit to allow on the
+    // unverified premise that the parent had already gated the file.
+    for (const marker of [{ agent_id: 'sub-1' }, { parent_tool_use_id: 'toolu_1' }]) {
+      const out = invoke({
+        ...marker,
+        session_id: `s-sub-${Object.keys(marker)[0]}`,
+        tool_name: 'Edit',
+        tool_input: { file_path: '/repo/src/sub.ts' },
+      })
+      expect(decisionOf(out)).toBe('deny')
+    }
+  })
+
+  it('still exempts a subagent touching a file the parent already gated (#611)', () => {
+    const filePath = '/repo/src/parent-gated.ts'
+    // Parent gates it first...
+    expect(
+      decisionOf(invoke({ session_id: 's-parent', tool_name: 'Edit', tool_input: { file_path: filePath } })),
+    ).toBe('deny')
+    // ...then the subagent in that same session passes straight through.
+    expect(
+      decisionOf(
+        invoke({
+          session_id: 's-parent',
+          agent_id: 'sub-2',
+          tool_name: 'MultiEdit',
+          tool_input: { file_path: filePath, edits: [{ old_string: 'a', new_string: 'b' }] },
+        }),
+      ),
+    ).toBe('allow')
+  })
+
   it('does not let a non-string alias mask a valid one beside it', () => {
     // A truthy non-string in the preferred alias must not shadow the usable
     // sibling — every alias is collected, then non-strings are dropped.

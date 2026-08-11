@@ -214,14 +214,9 @@ to verify that you actually answered — a retry that presents nothing is allowe
 just the same. Its value is forcing the investigation *pause* on first touch,
 not proving the investigation happened.
 
-Two further gaps, both in the hook rather than the registration — know them
-before you rely on this as coverage:
+One further gap, in the hook rather than the registration — know it before you
+rely on this as coverage:
 
-- **Subagent edits are never gated.** `run()` returns `rawInput` the moment
-  `isSubagentInvocation(data)` is true (`gateguard-fact-force.js:836-838`,
-  `:851-853`), with no `isChecked()` consultation. The inline comment says the
-  parent session already passed the file gate, but nothing checks that — a file
-  first touched *inside* a subagent bypasses the gate entirely.
 - **A `Write` payload over 1 MiB is not gated.** `run-with-flags.js` caps stdin
   at `MAX_STDIN = 1024 * 1024`; past that the JSON arrives truncated, GateGuard
   hits its parse-error path and returns the input unchanged, and the runner

@@ -184,7 +184,12 @@ function truncationDisposition(failClosed) {
 // decided nonzero has spoken, and both live gate registrations wrap the runner
 // with `|| exit 2` so any nonzero exit blocks anyway.
 function enforceTruncation(code, { truncated, failClosed, hookId }) {
-  if (!truncated || !failClosed || code !== 0) {
+  // Named instead of a compound `if` (CodeScene Complex Conditional) — the
+  // override applies only when a fail-closed gate saw a truncated payload
+  // AND still exited 0 (an unconfirmed allow); any other combination passes
+  // `code` through unchanged.
+  const unconfirmedAllow = truncated && failClosed && code === 0;
+  if (!unconfirmedAllow) {
     return code;
   }
   process.stderr.write(`[Hook] ${hookId || 'unknown'} allowed a payload truncated at ${MAX_STDIN} bytes; --fail-closed cannot confirm that allow — blocking (exit 2)\n`);

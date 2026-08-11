@@ -76,8 +76,8 @@ single contract rather than two that merely look alike.
 This is the load-bearing part of the decision, not an implementation detail.
 Both documents this touches are agent-executed prose, and a documented-but-
 unenforced contract is precisely #620's failure mode. Prose cannot be tested;
-these scripts are covered by `tests/test-grind-pr-commits.sh` (20 cases) and
-`tests/test-grind-set-member.sh` (24 cases), with golden greps demoted to
+these scripts are covered by `tests/test-grind-pr-commits.sh` (23 cases) and
+`tests/test-grind-set-member.sh` (32 cases), with golden greps demoted to
 declared drift guards in `tests/test-grind-provenance-gate.sh`.
 
 **3. The dispatcher derives; the worker is handed the result.** The worker's
@@ -152,7 +152,7 @@ otherwise scan trunk history or a truncated ancestry silently.
 | A single repo-wide `refs/bd-grind/base` | Shared across linked worktrees; races concurrent grinds and, without `+`, poisons permanently on a divergent base. |
 | `--no-verify` to protect the trailer | Bypasses the repository gates the dispatcher is required to commit through. Verify after the fact instead. |
 | Verifying with git's trailer parser alone | A normalizing `commit-msg` hook passes it while the scanner misses the commit — silent fail-open. |
-| Leaving the contract in prose | The reason #620 shipped inert. Two scripts + 44 behavioral cases replace it. |
+| Leaving the contract in prose | The reason #620 shipped inert. Two scripts + 55 behavioral cases replace it. |
 
 ## Consequences
 

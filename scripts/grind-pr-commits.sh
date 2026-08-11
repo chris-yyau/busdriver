@@ -11,9 +11,10 @@
 #   grind-pr-commits.sh [--context] -C <repo_dir> <pr_number> <base_sha> <head_sha>
 #
 # Output (default):  one full SHA per line, possibly empty.
-# Output (--context): exactly two lines, ready to paste into the worker prompt:
+# Output (--context): exactly three lines, ready to paste into the worker prompt:
 #                       GRIND_SHAS=<sha>,<sha>,...   or   GRIND_SHAS=none
 #                       GRIND_SHAS_STATUS=ok
+#                       GRIND_HEAD_SHA=<full OID the set was derived at>
 #                     --context exists so the "empty set renders none, not 1"
 #                     rule is executable rather than prose in a caller's head
 #                     (`helper | wc -l` on empty output returns 1).

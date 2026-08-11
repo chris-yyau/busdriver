@@ -170,6 +170,61 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── round_number += 1                  # pre-increment so ROUND=<N> is 1-indexed at dispatch time
   │
+  ├── Derive durable grind provenance — BEFORE the Agent dispatch, EVERY round:
+  │     # Rail A / ADR 0036. This is what makes #620's proportionality gate fire
+  │     # across invocations instead of only within one.
+  │     #
+  │     # It must sit HERE, pre-dispatch. `scripts/dispatcher-commit-block.sh` is
+  │     # a subprocess invoked AFTER the worker returns and only on fix-rounds,
+  │     # so a call placed there could never populate a wait-round or the round-1
+  │     # re-invocation this exists to fix — which is #620's defect repeating.
+  │     #
+  │     # Substitute the literals remembered from Step 0 (<WORKTREE_DIR>,
+  │     # <BASE_SHA>); shell state does not survive across Bash tool calls.
+  │     #
+  │     # `BASH_ENV= ENV= command bash` closes two specific cheap vectors that
+  │     # the helper cannot close from inside itself: an inherited `bash`
+  │     # FUNCTION (`command` bypasses function lookup) and a startup file
+  │     # sourced into the helper's own shell before its first line runs.
+  │     #
+  │     # It is NOT an environment-sanitization boundary, and must not be read
+  │     # as one. PATH is still whatever the caller had, inherited BASH_FUNC_*
+  │     # entries still reach the child, and a PATH shim can forge
+  │     # `GRIND_SHAS=none` / `STATUS=ok` outright.
+  │     #
+  │     # Do NOT reach for `env -i` here, and do NOT cite ADR 0016: that
+  │     # wrapper protects auto-firing GATES and explicitly does not transfer
+  │     # to dispatcher prose, which runs in the operator session's ambient
+  │     # environment. **ADR 0026 settled this as an accepted residual** for
+  │     # every credentialed call on this path (issue #475, closed as
+  │     # documented, deliberately not wrapped) — a plugin cannot sanitize the
+  │     # session it runs inside, and a dispatcher-wide wrapper would be false
+  │     # assurance. Rail A inherits that bound rather than reopening it; the
+  │     # two prefixes above are cheap defense-in-depth within it, nothing more.
+  │     HEAD_SHA=$(git -C <WORKTREE_DIR> rev-parse HEAD) \
+  │       || { echo "GRIND_PROVENANCE_FAILED rev-parse"; exit 1; }
+  │     BASH_ENV= ENV= command bash "${CLAUDE_PLUGIN_ROOT}/scripts/grind-pr-commits.sh" --context \
+  │       -C <WORKTREE_DIR> <PR_NUMBER> <BASE_SHA> "$HEAD_SHA" \
+  │       || { echo "GRIND_PROVENANCE_FAILED scan"; exit 1; }
+  │     #
+  │     # rc 0  → stdout is exactly two lines, `GRIND_SHAS=…` and
+  │     #         `GRIND_SHAS_STATUS=ok`. Copy BOTH verbatim into the context
+  │     #         block below. They are emitted together, always.
+  │     # rc ≠ 0 → BAIL `env` BEFORE dispatching. The worker is never launched on
+  │     #         an unverifiable set. Do NOT substitute
+  │     #         `GRIND_SHAS_STATUS=unavailable` and dispatch anyway — that
+  │     #         value exists only to make the worker-side contract explicit.
+  │     #
+  │     # Use `--context`, not a bare call: it is what makes "an empty set renders
+  │     # `none`" executable rather than a rule in the caller's head. `helper |
+  │     # wc -l` returns 1 on empty output, and a pipeline would mask the
+  │     # helper's exit 3 as rc 0 — fail-open on the exact property Rail A rests
+  │     # on. Never pipe this call; never count its lines yourself.
+  │     #
+  │     # Re-derived every round, not cached per invocation: one rev-list pair is
+  │     # cheap, and re-deriving removes any need to reason about whether this
+  │     # invocation's own pushes are already reflected. They are, by construction.
+  │
   ├── Dispatch a round:
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
@@ -914,6 +969,61 @@ if [ -z "$WORKTREE_DIR" ]; then
 fi
 cd "$WORKTREE_DIR" || { echo "❌ cd to '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
 
+# --- Durable grind provenance: resolve the base floor ONCE (Rail A / ADR 0036) ---
+# Deliberately HERE, after the resolver produced WORKTREE_DIR and after the `cd`
+# above — not up with BASE_BRANCH resolution ~70 lines earlier, where
+# WORKTREE_DIR does not exist yet and a `git -C ""` would be fatal on every
+# single invocation.
+#
+# Why not `gh pr view --json baseRefOid`: it does not materialize the object
+# locally (the only other fetch, above, fetches the PR head only), so
+# `git rev-list <missing-sha>..HEAD` fails rc 128 and hard-BAILs every grind.
+# It is also frozen at PR creation, not the live base tip.
+# Why not `origin/<base>`: commonly stale in this repo specifically —
+# semantic-release pushes a release commit to main after every merge.
+#
+# The `+` force refspec is load-bearing: fast-forward enforcement applies to
+# custom namespaces too, so without it a base retarget or force-push would
+# reject the fetch, leave the OLD value in place, and turn a scratch pointer
+# into a permanent BAIL with no self-healing path. Forcing is safe because the
+# ref names no work and protects no history: it is read once, immediately, and
+# deleted in this same block.
+#
+# The `-$$` suffix is what makes it race-free — NOT the deletion. Linked
+# worktrees share the common dir's refs and pr-grind explicitly contemplates
+# concurrent runs, so PR-scoping alone still lets two grinds on the SAME PR
+# interleave: one deletes the ref between the other's fetch and its merge-base,
+# causing a spurious provenance-unavailable bail. A per-invocation name removes
+# the shared object outright. The deletion is cleanup, and living in this same
+# block is why there is no COMPLETION/BAIL cleanup row to forget.
+git fetch --no-tags -q origin \
+  "+refs/heads/${BASE_BRANCH}:refs/bd-grind/<PR_NUMBER>/base-$$" || {
+  echo "❌ Step 0 could not fetch base branch '$BASE_BRANCH' — grind provenance unavailable."
+  exit 1
+}
+# The floor is the MERGE BASE, not the fetched tip. The live tip is not an
+# ancestor of the PR head the moment the base branch advances after the branch
+# diverged — the routine `mergeStateStatus=BEHIND` case here — and
+# grind-pr-commits.sh refuses a non-ancestor range, so using the tip directly
+# would BAIL before every dispatch on ordinary behind-but-valid PRs.
+#
+# The merge base is an ancestor of HEAD by construction, and `merge-base..HEAD`
+# is exactly this branch's own commits: it still excludes the trunk squash
+# commits whose concatenated bodies carry Grind-PR: lines, which is the whole
+# point of scoping the range.
+BASE_SHA=$(git merge-base "refs/bd-grind/<PR_NUMBER>/base-$$" HEAD) || {
+  echo "❌ Step 0 could not find a merge base between '$BASE_BRANCH' and the PR head"
+  echo "   (unrelated histories?) — grind provenance unavailable."
+  exit 1
+}
+git update-ref -d "refs/bd-grind/<PR_NUMBER>/base-$$" || true   # scratch pointer; already consumed
+# Cross-block record. Shell state does NOT survive across Claude Bash tool calls,
+# so Claude MUST remember this literal 40-hex value and template-substitute it
+# into every downstream block, exactly as it already does for WORKTREE_DIR and
+# NO_WORKTREE (see the substitution convention above). Do NOT write
+# `$BASE_SHA` in a later block — it resolves to empty in a fresh shell.
+echo "BASE_SHA=$BASE_SHA"
+
 # Snapshot the solo-admin opt-in file at pr-grind INVOCATION TIME, so the
 # anti-self-bypass freshness check anchors to "≥30s old at invocation start"
 # rather than "at Completion time". A pr-grind run can last minutes; without
@@ -1017,6 +1127,8 @@ Agent invocation:
     ROUND=<N> (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>)
     RESULT_FILE=<unique tmp path generated above>
     PRIOR_COMMIT_SHA=<sha or "none">
+    GRIND_SHAS=<full-sha,full-sha,... or "none">        (verbatim from the pre-dispatch producer)
+    GRIND_SHAS_STATUS=ok                                (verbatim; emitted together with GRIND_SHAS, always)
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
       - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<sha or "none">; fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>

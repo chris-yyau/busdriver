@@ -1686,13 +1686,19 @@ def _torn_assignment(toks, upto=None):
 _TORN_SCOPE = '?torn-assignment'
 
 
-def _torn_direct_hits(seg, target):
+def _torn_direct_hits(seg, target, argv):
     """Yield every `target` token in a segment whose walk hit a torn assignment.
 
     The DIRECT-route companion to the fallback in _shell_payloads: same trigger
     (`_torn_assignment`), same any-position scan, same refusal to rebuild the
-    span. Returns `(toks, index)` for the caller to read a subcommand from, or
-    `(None, None)`.
+    span. Yields `(toks, index)` per candidate for the caller to read a
+    subcommand from, and simply stops iterating when there is no tear -- so an
+    untorn segment costs one `_torn_assignment` scan and nothing else.
+
+    `argv` is the caller's ALREADY-COMPUTED `_command_argv(seg, target)`. It is
+    a parameter rather than a second call because both callers have it in hand
+    and this runs on every git/gh segment, the overwhelming majority of which
+    are untorn: recomputing it duplicated the command-word walk on the hot path.
 
     What makes this safe to add where the pinned note below once said it was
     not: it never derives scope. The blocker was that closing the direct route
@@ -1715,7 +1721,6 @@ def _torn_direct_hits(seg, target):
     `gh pr merge` behind `X=$(printf gh x)`.
     """
     toks = toks_once(seg)
-    argv = _command_argv(seg, target)
     # By ARITHMETIC, for the reason spelled out at the _shell_payloads gate: argv
     # is a SUFFIX of this same list, so the difference is the command word's
     # index even when the walk dropped leading group punctuation. Searching by
@@ -1803,7 +1808,7 @@ def _shell_payloads(cmd):
         #
         # SCOPE: this recovery covers the NESTED route (a payload an interpreter
         # runs). The DIRECT route was missed here - `X=$(printf x y) git commit`
-        # really does run - and that hole is now CLOSED by `_torn_direct_hit`,
+        # really does run - and that hole is now CLOSED by `_torn_direct_hits`,
         # which #593 tracked separately.
         #
         # The blocker recorded here was real and is why the fix took the shape it
@@ -2190,7 +2195,7 @@ def _scan_commit(chunk, allow_cd):
         #     repo's marker.
         # _torn_direct_hits yields nothing when there is no tear, so an untorn
         # command keeps the ordinary walk and its real, resolvable scope.
-        for _toks, _k in _torn_direct_hits(seg, 'git'):
+        for _toks, _k in _torn_direct_hits(seg, 'git', argv):
             if _git_subcommand(_toks[_k:])[0] == 'commit':
                 return (True, '', '--amend' in _toks[_k:], _TORN_SCOPE, False)
         if not argv or not _is_exe(argv[0], 'git'):
@@ -2347,7 +2352,7 @@ def _iter_gh(chunk, subcommand, allow_cd):
         # subcommand is matched by the same _gh_find_pr_sub the normal path uses,
         # so no second spelling of `pr <sub>` enters the file.
         _recovered = False
-        for _toks, _k in _torn_direct_hits(seg, 'gh'):
+        for _toks, _k in _torn_direct_hits(seg, 'gh', argv):
             _rest = _toks[_k + 1:]
             _j = _gh_find_pr_sub(_rest, subcommand)
             if _j is not None:

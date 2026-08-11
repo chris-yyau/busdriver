@@ -1270,6 +1270,38 @@ check("torn-direct (#593) untorn cd keeps trusted scope",
 check("torn-direct (#593) untorn gh no sentinel",
       g.gh_pr('gh pr merge 1', 'merge', with_untrusted_cd=True)[3], '')
 
+# PROPERTY-BASED generation, on top of the fixed sweep above. The sweep can only
+# cover combinations someone thought to list, which is exactly how the first
+# fail-open survived hand-picked rows. This composes the axes randomly instead --
+# quoting, wrapper words, substitution spelling, extra assignments, token
+# boundaries -- and asserts the two invariants that must hold for EVERY torn
+# command carrying a real `git commit` tail:
+#     (1) it is detected, and
+#     (2) its scope is unresolvable, never a fabricated directory.
+# Not every generated combination actually reaches git -- `env X=${foo:-a b} …`
+# splits and env(1) runs the bare `b` instead -- and those are asserted detected
+# too, under the same accepted over-block documented above: a visible stall is
+# the safe direction here, a fabricated scope is not.
+# Seeded, so a failure is reproducible and CI does not flap.
+import random as _rnd
+_r = _rnd.Random(20260811)
+_TEAR_ATOMS = ('$(printf x y)', '$((1 + 2))', '${foo:-a b}', '`printf x y`',
+               '<(printf x y)', '$(printf git x)', '$(printf git commit x)',
+               '$(echo a b)', '${bar:-git commit}')
+_WRAPPERS = ('', 'env ', 'command ', 'nice -n 5 ', 'env -i ', 'sudo -n ')
+_ASSIGNS = ('', 'A=1 ', "Q='a b' ", 'A+=1 ', 'A[0]=1 ')
+_TAILS = ('git commit -m x', 'git commit --amend', '/usr/bin/git commit -m x',
+          'git -C /tmp commit -m x', 'git -c user.name=x commit -m x')
+for _i in range(400):
+    _cmd = (_r.choice(_WRAPPERS) + _r.choice(_ASSIGNS)
+            + 'X=' + _r.choice(_TEAR_ATOMS) + ' '
+            + (('Y=' + _r.choice(_TEAR_ATOMS) + ' ') if _r.random() < 0.3 else '')
+            + _r.choice(_TAILS))
+    _res = g.git_commit(_cmd, with_untrusted_cd=True)
+    check(f"torn-direct (#593) property[{_i}] detected {_cmd!r}", _res[0], True)
+    check(f"torn-direct (#593) property[{_i}] unresolvable {_cmd!r}",
+          _res[3], _TORN_SCOPE)
+
 # Untorn forms must be UNTOUCHED -- same verdict AND same scope as before, so the
 # recovery cannot quietly convert a resolvable commit into a stall.
 check("torn-direct (#593) untorn keeps scope",

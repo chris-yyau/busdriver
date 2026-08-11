@@ -1629,6 +1629,63 @@ test_grind_e_trailer_normalized_by_hook_emits_env_bail() {
     }
 }
 
+test_grind_e2_body_moved_trailer_emits_env_bail() {
+    # The two-different-occurrences bypass: a hook that MOVES `Grind-PR: N` into
+    # the body and appends `grind-pr:N` as the real trailer satisfies both an
+    # exact-bytes-anywhere-in-%B check AND a case-insensitive parsed-key check,
+    # while the scanner - which requires the exact line inside the parsed trailer
+    # block - matches it zero times. Verification must bind on the scanner's
+    # predicate, so this has to BAIL.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Strip the real trailer, re-insert the EXACT line mid-body (followed by
+    # prose so it is not the final paragraph), then append a normalized trailer.
+    write_commit_msg_hook '
+grep -v "^Grind-PR: " "$1" > "$1.tmp"
+printf "\nGrind-PR: 1\n" >> "$1.tmp"
+printf "trailing prose keeps the line out of the trailer block\n" >> "$1.tmp"
+printf "\ngrind-pr:1\n" >> "$1.tmp"
+mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_grind_e2 expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" '.bail_category == "env"' || {
+        echo "test_grind_e2: no parseable env bail envelope; output=$dispatcher_output"
+        return 1
+    }
+    # Confirm the fixture really produced the bypass shape, not just any failure.
+    # Both halves of the bypass must be present, or this test passes for the
+    # wrong reason: the EXACT line lives in %B, and the parsed trailer block
+    # contains only the normalized form.
+    new_sha=$(git -C "$sandbox" rev-parse HEAD)
+    git -C "$sandbox" log -1 --format=%B "$new_sha" | grep -qx 'Grind-PR: 1' || {
+        echo "test_grind_e2: fixture lacks the exact line in the body"
+        git -C "$sandbox" log -1 --format=%B "$new_sha"
+        return 1
+    }
+    # Accept either rendering. Measured on git 2.55.0 the raw bytes are
+    # preserved (`grind-pr:1`), but the fixture's job is only to confirm the
+    # block holds the NORMALIZED key rather than the exact line - pinning the
+    # spacing would make this test a hostage to a formatting detail it is not
+    # about.
+    git -C "$sandbox" log -1 --format='%(trailers)' "$new_sha" \
+        | grep -qxE 'grind-pr: ?1' || {
+        echo "test_grind_e2: fixture lacks the normalized trailer in the block"
+        git -C "$sandbox" log -1 --format='%(trailers)' "$new_sha"
+        return 1
+    }
+    [ "$(git -C "$sandbox" rev-parse origin/main)" = "$initial_sha" ] || {
+        echo "test_grind_e2: the unattributable commit reached the remote"
+        return 1
+    }
+}
+
 test_grind_f_verification_bail_names_unpushed_commit() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json new_sha reason

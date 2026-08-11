@@ -43,18 +43,25 @@ where git's trailer-ratio rule makes recognition shape-dependent on
 `RESULT_FIXES`.
 
 The commit runs through the repository's normal hooks, deliberately, so the
-trailer is **verified after the fact** against two different predicates:
+trailer is **verified after the fact** — against exactly one predicate, and it
+is byte-for-byte the reader's: the exact line `Grind-PR: <N>` must appear in the
+**parsed trailer block** (`%(trailers)`, pinned with `trailer.separators=':'`).
+Failure BAILs `env` with the commit local and unpushed.
 
-- the exact byte sequence the scanner matches (`grep -qx "Grind-PR: N"`), and
-- that it parses as a real trailer (`%(trailers:key=Grind-PR,valueonly=true)`).
+Two weaker shapes were tried and rejected, both silent fail-opens:
 
-Neither alone is sufficient. Git's trailer parser is case-insensitive and
-tolerates a missing space after the colon, so a `commit-msg` hook that
-*normalizes* `Grind-PR: 618` to `grind-pr:618` passes a parser-only check,
-returns `618` from it, and is matched **zero** times by the scanner (measured,
-git 2.55.0) — a silent fail-open on the exact durability property this ADR
-exists to guarantee. Either check failing BAILs `env` with the commit local and
-unpushed.
+- **Parser-only.** Git's trailer parser is case-insensitive and tolerates a
+  missing space after the colon, so a `commit-msg` hook that *normalizes*
+  `Grind-PR: 618` to `grind-pr:618` passes it, returns `618` from it, and is
+  matched **zero** times by the scanner (measured, git 2.55.0).
+- **Exact-bytes-in-`%B` plus a parsed key, checked separately.** That pair
+  validates two *different occurrences*: a hook can move `Grind-PR: N` into the
+  body and append `grind-pr:N` as the real trailer, satisfying both while the
+  scanner still matches nothing. Under-counting would be masked only by the
+  transitional subject arm — which this ADR schedules for removal.
+
+One predicate, applied to the right text, is what makes writer and reader a
+single contract rather than two that merely look alike.
 
 **2. Two prose seams become executable scripts.**
 

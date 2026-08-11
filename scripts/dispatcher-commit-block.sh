@@ -1029,32 +1029,51 @@ RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
 # as exactly one JSON envelope, would see a silent exit instead of a typed BAIL.
 _grind_bail_ctx="commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED; a commit-msg hook altered the Grind-PR: trailer. Fix the hook, then 'git reset --soft HEAD~1' in $WORKTREE_DIR and re-grind"
 
-_committed_msg=$(git log -1 --format=%B "$NEW_COMMIT_SHA") || \
-    emit_bail "env" "failed to re-read the committed message for trailer verification; $_grind_bail_ctx"
+# ONE predicate, and it is byte-for-byte the reader's: the exact line
+# `Grind-PR: <N>` must appear in the PARSED TRAILER BLOCK. That is exactly what
+# scripts/grind-pr-commits.sh requires, down to the pinned
+# `trailer.separators=':'`, so writer and reader enforce a single contract.
+#
+# An earlier version checked two things separately - the exact bytes anywhere in
+# %B, plus a case-insensitive parsed key - and that pair validated two DIFFERENT
+# occurrences. A commit-msg hook could move `Grind-PR: N` into the body and
+# append `grind-pr:N` as the real trailer: both checks passed, the commit was
+# pushed, and the scanner then matched it zero times. Under-counting was masked
+# only by the transitional subject arm, which ADR 0036 schedules for removal.
+#
+# Capture-first throughout: errexit is armed here (:984 arms a bare `set -e`),
+# so a bare pipeline returning 1 would kill the script with no bail envelope on
+# stdout, and the dispatcher would see a silent exit instead of a typed BAIL.
+# The reader runs TWO steps - a `rev-list --grep` prefilter over the raw
+# message, then the exact-line check against the parsed block - so the writer
+# runs both, in the same order. Mirroring the whole predicate rather than its
+# second half means no assumption about how `%(trailers)` renders can put the
+# two ends out of agreement.
+#
+# (Measured, git 2.55.0: `%(trailers)` DOES preserve the raw bytes - `Grind-PR:1`
+# stays `Grind-PR:1`, `grind-pr:1` stays `grind-pr:1` - so the block check alone
+# is already correct. The prefilter is here so correctness does not rest on that
+# observation holding across git versions.)
+# GIT_NO_REPLACE_OBJECTS=1 on both reads, matching grind-pr-commits.sh. Without
+# it a post-commit hook could install a refs/replace entry whose object carries
+# the expected trailer: verification would read the replacement and pass, while
+# the push sends the ORIGINAL, unattributable commit — replacement refs are not
+# pushed. Verification must see the object that will actually travel.
+_grind_selected=$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --no-walk --grep="^Grind-PR: ${PR_NUMBER}\$" "$NEW_COMMIT_SHA") || \
+    emit_bail "env" "failed to re-scan the commit message for verification; $_grind_bail_ctx"
+[ "$_grind_selected" = "$NEW_COMMIT_SHA" ] || \
+    emit_bail "env" "Grind-PR: line is not the exact byte sequence the scanner matches; $_grind_bail_ctx"
 
-# Check 1 is the BINDING one: the canonical byte sequence grind-pr-commits.sh
-# scans for. It is NOT redundant with check 2 - git's trailer parser is
-# case-insensitive and tolerates a missing space after the colon, so a
-# normalizing hook that rewrites this to `grind-pr:617` passes the parser,
-# returns 617 from it, and is matched ZERO times by the scanner. Verified on
-# git 2.55.0. Binding on the reader's own predicate makes writer and reader one
-# contract instead of two that merely look alike.
-printf '%s\n' "$_committed_msg" | grep -qxF "Grind-PR: $PR_NUMBER" || \
-    emit_bail "env" "Grind-PR: trailer missing or malformed on the commit; $_grind_bail_ctx"
-
-# Check 2: it also parses as a real trailer, so its position has not drifted
-# into the body. Capture-first because the bare command exits 0 whether or not
-# the trailer parses.
-# `-c trailer.separators=':'` pins the parse to the SAME configuration
-# grind-pr-commits.sh pins on the read side. Leaving this on ambient config is a
-# real writer/reader split: a repository or user config omitting ':' would make
-# every valid grind commit BAIL here even though the scanner would accept it —
-# the opposite of the one-contract property this verification exists to provide.
-_grind_trailer=$(git -c trailer.separators=':' log -1 \
-    --format='%(trailers:key=Grind-PR,valueonly=true)' "$NEW_COMMIT_SHA") || \
+_grind_block=$(GIT_NO_REPLACE_OBJECTS=1 git -c trailer.separators=':' log -1 \
+    --format='%(trailers)' "$NEW_COMMIT_SHA") || \
     emit_bail "env" "failed to parse trailers for verification; $_grind_bail_ctx"
-[ "$_grind_trailer" = "$PR_NUMBER" ] || \
-    emit_bail "env" "Grind-PR: did not parse as a trailer (got '$_grind_trailer', want '$PR_NUMBER'); $_grind_bail_ctx"
+
+case $'\n'"$_grind_block"$'\n' in
+    *$'\n'"Grind-PR: $PR_NUMBER"$'\n'*) : ;;
+    *)
+        emit_bail "env" "Grind-PR: is not an exact trailer on the commit (trailer block: $(printf '%s' "$_grind_block" | tr '\n' ';')); $_grind_bail_ctx"
+        ;;
+esac
 
 # --- Step 11: Checked push ---
 set +e

@@ -115,6 +115,19 @@ test_producer_failure_bails_before_dispatch() {
         "the no-pipeline / no-wc rule"
 }
 
+test_certified_set_is_bound_to_a_head_snapshot() {
+    # Without GRIND_HEAD_SHA a concurrent same-PR grind can advance the shared
+    # worktree between the scan and the blame, putting its commit in neither
+    # GRIND_SHAS nor PRIOR_ATTEMPTS - findings on it read as author-written and
+    # the gate is inert again.
+    want "$SKILL" 'GRIND_HEAD_SHA=<full OID>' \
+        "GRIND_HEAD_SHA in the worker context block" || return 1
+    want "$SKILL" 'All THREE fields travel' \
+        "the travel-together rule" || return 1
+    want "$AGENT" -- '--head "<GRIND_HEAD_SHA verbatim>"' \
+        "the --head argument in the worker's helper call"
+}
+
 test_context_block_carries_grind_shas() {
     want "$SKILL" 'GRIND_SHAS=<full-sha,full-sha,\.\.\. or "none">' \
         "GRIND_SHAS in the worker context block" || return 1

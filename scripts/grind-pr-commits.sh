@@ -178,9 +178,15 @@ done
 # A shallow clone returns rc 0 over a truncated ancestry, silently under-counting
 # the set - which degrades straight back to the inert gate this script exists to
 # fix. Refuse loudly instead.
-if [ "$(command git -C "$REPO_DIR" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    scan_failed "shallow repository: ancestry is truncated so the grind-commit set cannot be derived (git fetch --unshallow)"
-fi
+# Capture-first: evaluated inside `[ "$(...)" = true ]`, a FAILED probe (old git,
+# unsupported option, broken repo) collapses to "not true" and the scan
+# continues over possibly-truncated history, returning an incomplete set with
+# STATUS=ok. The probe's own status has to be checked.
+_is_shallow=$(command git -C "$REPO_DIR" rev-parse --is-shallow-repository 2>/dev/null)
+rc=$?
+[ "$rc" -eq 0 ] || scan_failed "could not determine whether the repository is shallow (git rev-parse exit $rc)"
+[ "$_is_shallow" != "true" ] \
+    || scan_failed "shallow repository: ancestry is truncated so the grind-commit set cannot be derived (git fetch --unshallow)"
 
 base_full=$(command git -C "$REPO_DIR" rev-parse --verify --quiet "${BASE_SHA}^{commit}") \
     || scan_failed "base does not resolve to a commit in $REPO_DIR: $BASE_SHA"
@@ -312,6 +318,12 @@ if [ "$CONTEXT_MODE" -eq 1 ]; then
         printf 'GRIND_SHAS=%s\n' "$_joined"
     fi
     printf 'GRIND_SHAS_STATUS=ok\n'
+    # Emitted by the SCANNER, not left for the caller to re-resolve. The caller
+    # cannot carry its own HEAD_SHA across a Bash-tool boundary, and
+    # re-resolving HEAD in a later block would pair THIS set with a NEWER head —
+    # which the consumer would accept, recreating the concurrent-run bypass the
+    # binding exists to close. All three lines come from one scan.
+    printf 'GRIND_HEAD_SHA=%s\n' "$head_full"
 else
     # $combined already carries one trailing newline per entry.
     [ -z "$combined" ] || printf '%s' "$combined"

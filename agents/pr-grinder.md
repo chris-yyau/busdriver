@@ -314,6 +314,7 @@ git blame -w -M -C -L <line>,<line> --porcelain -- <path> | head -1
 BASH_ENV= ENV= command bash "${CLAUDE_PLUGIN_ROOT}/scripts/grind-set-member.sh" \
   -C "<WORKTREE_DIR>" \
   --shas "<GRIND_SHAS verbatim>" --status "<GRIND_SHAS_STATUS verbatim>" \
+  --head "<GRIND_HEAD_SHA verbatim>" \
   --prior "<comma-joined PRIOR_ATTEMPTS commit= values>" \
   "<field 1 of the blame header line>"
 # exit 0 → grind-written   exit 1 → author-written   exit 3 → BAIL `env`, quoting stderr
@@ -324,7 +325,9 @@ BASH_ENV= ENV= command bash "${CLAUDE_PLUGIN_ROOT}/scripts/grind-set-member.sh" 
 # instead of surfacing a caller bug.
 ```
 
-Omit **both** `--shas` and `--status` when the context block carries neither (a pre-contract dispatcher). Never pass one without the other, and never synthesize a value for a field the dispatcher did not send.
+Omit **all three** of `--shas`, `--status` and `--head` when the context block carries none (a pre-contract dispatcher). They travel together or not at all — never pass a subset, and never synthesize a value for a field the dispatcher did not send.
+
+`GRIND_HEAD_SHA` is what makes the certified set safe to trust: it names the HEAD the dispatcher derived it at, and the helper re-checks the worktree against it. pr-grind supports concurrent runs, so another invocation can advance the shared worktree between that scan and your blame; its new commit would be in neither `GRIND_SHAS` nor your `PRIOR_ATTEMPTS`, and findings on it would read as author-written — silently re-inerting the gate. A mismatch is exit 3, so it surfaces as a BAIL rather than a wrong verdict.
 
 What the helper enforces, so you can read a failure:
 

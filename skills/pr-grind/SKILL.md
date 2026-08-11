@@ -207,9 +207,22 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       -C <WORKTREE_DIR> <PR_NUMBER> <BASE_SHA> "$HEAD_SHA" \
   │       || { echo "GRIND_PROVENANCE_FAILED scan"; exit 1; }
   │     #
-  │     # rc 0  → stdout is exactly two lines, `GRIND_SHAS=…` and
-  │     #         `GRIND_SHAS_STATUS=ok`. Copy BOTH verbatim into the context
-  │     #         block below. They are emitted together, always.
+  │     # rc 0  → stdout is exactly THREE lines — `GRIND_SHAS=…`,
+  │     #         `GRIND_SHAS_STATUS=ok` and `GRIND_HEAD_SHA=…`. Copy ALL THREE
+  │     #         verbatim into the context block below. Do NOT re-resolve the
+  │     #         head in a later block: shell state does not cross a Bash-tool
+  │     #         boundary, and a re-resolved head would pair THIS set with a
+  │     #         NEWER commit, which the consumer accepts — recreating the very
+  │     #         bypass the binding closes. The scanner emits it so all three
+  │     #         come from one scan.
+  │     #         The certified set is a
+  │     #         SNAPSHOT: pr-grind supports concurrent runs, so another
+  │     #         invocation can advance the shared worktree between this scan
+  │     #         and the worker's blame, and its new commit would be in neither
+  │     #         GRIND_SHAS nor this invocation's PRIOR_ATTEMPTS. Binding the
+  │     #         set to the HEAD it was derived at turns that into a visible
+  │     #         BAIL instead of a silently inert gate. All THREE fields travel
+  │     #         together or none do.
   │     # rc ≠ 0 → BAIL `env` BEFORE dispatching. The worker is never launched on
   │     #         an unverifiable set. Do NOT substitute
   │     #         `GRIND_SHAS_STATUS=unavailable` and dispatch anyway — that
@@ -1138,6 +1151,7 @@ Agent invocation:
     PRIOR_COMMIT_SHA=<sha or "none">
     GRIND_SHAS=<full-sha,full-sha,... or "none">        (verbatim from the pre-dispatch producer)
     GRIND_SHAS_STATUS=ok                                (verbatim; emitted together with GRIND_SHAS, always)
+    GRIND_HEAD_SHA=<full OID>                           (verbatim; the HEAD the set was derived at)
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
       - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<sha or "none">; fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>

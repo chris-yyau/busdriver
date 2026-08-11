@@ -48,11 +48,11 @@ run() {
 # --- membership ---------------------------------------------------------------
 
 test_member_of_durable_set() {
-    run 0 -C "$REPO" --shas "$C2" --status ok "$C2"
+    run 0 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$C2"
 }
 
 test_non_member_is_author_written() {
-    run 1 -C "$REPO" --shas "$C2" --status ok "$C3"
+    run 1 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$C3"
 }
 
 test_member_of_prior_attempts_only() {
@@ -62,11 +62,11 @@ test_member_of_prior_attempts_only() {
 test_union_is_not_prior_attempts_alone() {
     # The #620 defect asserted at the consumer: empty PRIOR_ATTEMPTS (a fresh
     # invocation) must still attribute a prior invocation's commit.
-    run 0 -C "$REPO" --shas "$C2" --status ok --prior "" "$C2"
+    run 0 -C "$REPO" --shas "$C2" --status ok --head "$C3" --prior "" "$C2"
 }
 
 test_prior_attempts_none_sentinel_is_not_a_member() {
-    run 1 -C "$REPO" --shas none --status ok --prior "commit=none" "$C3"
+    run 1 -C "$REPO" --shas none --status ok --head "$C3" --prior "commit=none" "$C3"
 }
 
 test_prior_attempts_unresolvable_is_dropped_not_bailed() {
@@ -77,20 +77,20 @@ test_prior_attempts_unresolvable_is_dropped_not_bailed() {
 }
 
 test_short_sha_blamed_input_normalizes() {
-    run 0 -C "$REPO" --shas "$C2" --status ok "${C2:0:8}"
+    run 0 -C "$REPO" --shas "$C2" --status ok --head "$C3" "${C2:0:8}"
 }
 
 test_porcelain_header_line_is_accepted() {
     # `git blame --porcelain | head -1` yields "<sha> <orig> <final> <count>",
     # not a bare SHA. A caller forwarding the whole line must not get a
     # guaranteed non-match and a permanently inert gate.
-    run 0 -C "$REPO" --shas "$C2" --status ok "$C2 1 1 3"
+    run 0 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$C2 1 1 3"
 }
 
 test_all_zero_blame_sha_is_author_written() {
     # Not-yet-committed line: no provenance. Must exit 1, and must not reach
     # rev-parse (which is fatal on the all-zero SHA), so no rc 3.
-    run 1 -C "$REPO" --shas "$C2" --status ok "$ALLZERO"
+    run 1 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$ALLZERO"
 }
 
 test_contract_violation_outranks_the_all_zero_verdict() {
@@ -98,16 +98,16 @@ test_contract_violation_outranks_the_all_zero_verdict() {
     # before the contract fields were validated, a broken contract would be
     # reported as a clean verdict - fail-OPEN, and invisible.
     local zero="$ALLZERO"
-    run 3 -C "$REPO" --shas "" --status ok "$zero"
-    run 3 -C "$REPO" --shas "$C2" --status unavailable "$zero"
+    run 3 -C "$REPO" --shas "" --status ok --head "$C3" "$zero"
+    run 3 -C "$REPO" --shas "$C2" --status unavailable --head "$C3" "$zero"
     run 3 -C "$REPO" --shas "$C2" "$zero"
-    run 3 -C "$REPO" --shas "$C2,,$C1" --status ok "$zero"
+    run 3 -C "$REPO" --shas "$C2,,$C1" --status ok --head "$C3" "$zero"
     # ...and with a VALID contract, the marker still means author-written.
-    run 1 -C "$REPO" --shas "$C2" --status ok "$zero"
+    run 1 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$zero"
 }
 
 test_unresolvable_blamed_sha_bails() {
-    run 3 -C "$REPO" --shas "$C2" --status ok "$ABSENT"
+    run 3 -C "$REPO" --shas "$C2" --status ok --head "$C3" "$ABSENT"
 }
 
 # --- presence table (exhaustive) ----------------------------------------------
@@ -122,45 +122,45 @@ test_shas_present_without_status_bails() {
 }
 
 test_status_present_without_shas_bails() {
-    run 3 -C "$REPO" --status ok "$C2"
+    run 3 -C "$REPO" --status ok --head "$C3" "$C2"
 }
 
 test_status_unavailable_bails() {
-    run 3 -C "$REPO" --shas "$C2" --status unavailable "$C2"
-    run 3 -C "$REPO" --shas none --status unavailable "$C2"
+    run 3 -C "$REPO" --shas "$C2" --status unavailable --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas none --status unavailable --head "$C3" "$C2"
 }
 
 test_unknown_status_bails() {
-    run 3 -C "$REPO" --shas "$C2" --status OK "$C2"
-    run 3 -C "$REPO" --shas "$C2" --status "" "$C2"
-    run 3 -C "$REPO" --shas "$C2" --status yes "$C2"
+    run 3 -C "$REPO" --shas "$C2" --status OK --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "$C2" --status "" --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "$C2" --status yes --head "$C3" "$C2"
 }
 
 test_none_with_ok_is_a_valid_empty_set() {
-    run 1 -C "$REPO" --shas none --status ok "$C2"
+    run 1 -C "$REPO" --shas none --status ok --head "$C3" "$C2"
 }
 
 test_empty_or_whitespace_shas_with_ok_bails() {
-    run 3 -C "$REPO" --shas "" --status ok "$C2"
-    run 3 -C "$REPO" --shas "   " --status ok "$C2"
+    run 3 -C "$REPO" --shas "" --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "   " --status ok --head "$C3" "$C2"
 }
 
 test_malformed_separators_bail() {
-    run 3 -C "$REPO" --shas "$C2," --status ok "$C2"
-    run 3 -C "$REPO" --shas ",$C2" --status ok "$C2"
-    run 3 -C "$REPO" --shas "$C2,,$C1" --status ok "$C2"
-    run 3 -C "$REPO" --shas "$C2 $C1" --status ok "$C2"
+    run 3 -C "$REPO" --shas "$C2," --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas ",$C2" --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "$C2,,$C1" --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "$C2 $C1" --status ok --head "$C3" "$C2"
 }
 
 test_short_token_bails() {
     # A shortened OID in the certified set is a broken contract, not something
     # to helpfully expand: the producer emits full OIDs only.
-    run 3 -C "$REPO" --shas "${C2:0:8}" --status ok "$C2"
+    run 3 -C "$REPO" --shas "${C2:0:8}" --status ok --head "$C3" "$C2"
 }
 
 test_non_hex_token_bails() {
-    run 3 -C "$REPO" --shas "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" --status ok "$C2"
-    run 3 -C "$REPO" --shas "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" --status ok "$C2"
+    run 3 -C "$REPO" --shas "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" --status ok --head "$C3" "$C2"
 }
 
 test_glob_token_does_not_expand_to_a_valid_oid() {
@@ -186,36 +186,64 @@ test_annotated_tag_oid_token_bails() {
     local tag_oid
     tag_oid=$(git -C "$REPO" rev-parse v-test)
     [ "$tag_oid" != "$C2" ] || { echo "fixture: tag did not create an annotated object"; return 1; }
-    run 3 -C "$REPO" --shas "$tag_oid" --status ok "$C2"
+    run 3 -C "$REPO" --shas "$tag_oid" --status ok --head "$C3" "$C2"
 }
 
 test_short_all_zero_input_is_not_the_uncommitted_marker() {
     # Only a FULL-WIDTH all-zero OID is blame's not-yet-committed marker. "0" or
     # "00" is malformed input and must fail validation, not be waved through as
     # author-written.
-    run 3 -C "$REPO" --shas "$C2" --status ok "0"
-    run 3 -C "$REPO" --shas "$C2" --status ok "00000000"
+    run 3 -C "$REPO" --shas "$C2" --status ok --head "$C3" "0"
+    run 3 -C "$REPO" --shas "$C2" --status ok --head "$C3" "00000000"
 }
 
 test_unresolvable_token_bails() {
     # Full-width, valid hex, but not a commit here. Strict: BAIL, never drop.
-    run 3 -C "$REPO" --shas "$ABSENT" --status ok "$C2"
-    run 3 -C "$REPO" --shas "$C2,$ABSENT" --status ok "$C2"
+    run 3 -C "$REPO" --shas "$ABSENT" --status ok --head "$C3" "$C2"
+    run 3 -C "$REPO" --shas "$C2,$ABSENT" --status ok --head "$C3" "$C2"
+}
+
+# --- the certified set is bound to the HEAD it was derived at ------------------
+
+test_stale_certified_set_bails() {
+    # pr-grind supports concurrent runs, so another invocation can advance the
+    # shared worktree between the dispatcher's scan and this blame. Its new
+    # commit is in neither GRIND_SHAS nor this invocation's PRIOR_ATTEMPTS, so
+    # findings on it would read as author-written - silently re-inerting the
+    # gate. A stale snapshot must BAIL, not answer.
+    run 3 -C "$REPO" --shas "$C2" --status ok --head "$C1" "$C2"
+    run 3 -C "$REPO" --shas none --status ok --head "$C2" "$C2"
+}
+
+test_certified_set_without_head_bails() {
+    run 3 -C "$REPO" --shas "$C2" --status ok "$C2"
+    run 3 -C "$REPO" --shas none --status ok "$C2"
+}
+
+test_head_without_certified_set_bails() {
+    run 3 -C "$REPO" --head "$C3" "$C2"
+    run 3 -C "$REPO" --head "$C3" --prior "commit=$C2" "$C2"
+}
+
+test_prior_attempts_only_needs_no_head() {
+    # The inherited path is unchanged: PRIOR_ATTEMPTS carries no snapshot claim,
+    # so it neither needs nor accepts one.
+    run 0 -C "$REPO" --prior "commit=$C2" "$C2"
 }
 
 # --- usage --------------------------------------------------------------------
 
 test_missing_dash_C_is_usage_error() {
-    run 2 --shas none --status ok "$C2"
+    run 2 --shas none --status ok --head "$C3" "$C2"
 }
 
 test_missing_blamed_sha_is_usage_error() {
-    run 2 -C "$REPO" --shas none --status ok
+    run 2 -C "$REPO" --shas none --status ok --head "$C3"
 }
 
 test_runs_from_foreign_cwd() {
     local rc
-    (cd "$SANDBOX_ROOT" && bash "$SCRIPT" -C "$REPO" --shas "$C2" --status ok "$C2") >/dev/null 2>&1
+    (cd "$SANDBOX_ROOT" && bash "$SCRIPT" -C "$REPO" --shas "$C2" --status ok --head "$C3" "$C2") >/dev/null 2>&1
     rc=$?
     [ "$rc" -eq 0 ] || { echo "foreign-CWD run: expected rc 0, got $rc"; return 1; }
 }

@@ -232,8 +232,9 @@ test_context_mode_empty_set_renders_none_not_one() {
     commit_msg "$r" "feat: author work" >/dev/null || return 1
     local out
     out=$(bash "$SCRIPT" --context -C "$r" 617 "$base" "$(git -C "$r" rev-parse HEAD)")
-    [ "$out" = $'GRIND_SHAS=none\nGRIND_SHAS_STATUS=ok' ] || {
-        echo "expected none/ok, got: $out"; return 1; }
+    local head; head=$(git -C "$r" rev-parse HEAD)
+    [ "$out" = "GRIND_SHAS=none"$'\n'"GRIND_SHAS_STATUS=ok"$'\n'"GRIND_HEAD_SHA=$head" ] || {
+        echo "expected none/ok/head, got: $out"; return 1; }
 }
 
 test_context_mode_renders_comma_list_without_trailing_comma() {

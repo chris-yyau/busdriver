@@ -96,8 +96,10 @@ REPO_DIR=""
 SHAS=""
 STATUS=""
 PRIOR=""
+HEAD_AT_SCAN=""
 HAVE_SHAS=0
 HAVE_STATUS=0
+HAVE_HEAD=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -109,6 +111,8 @@ while [ $# -gt 0 ]; do
                   STATUS="$2"; HAVE_STATUS=1; shift 2 ;;
         --prior)  [ $# -ge 2 ] || usage_error "--prior requires a value"
                   PRIOR="$2"; shift 2 ;;
+        --head)   [ $# -ge 2 ] || usage_error "--head requires a value"
+                  HEAD_AT_SCAN="$2"; HAVE_HEAD=1; shift 2 ;;
         --)       shift; break ;;
         -*)       usage_error "unknown option: $1" ;;
         *)        break ;;
@@ -164,12 +168,29 @@ BLAMED=${BLAMED%%[[:space:]]*}
 durable_set=""
 
 if [ "$HAVE_SHAS" -eq 0 ] && [ "$HAVE_STATUS" -eq 0 ]; then
-    : # pre-contract dispatcher (mixed-version rollout): empty durable set
+    # Pre-contract dispatcher (mixed-version rollout): empty durable set. A
+    # stray --head with no set to bind is still a broken contract.
+    [ "$HAVE_HEAD" -eq 0 ] \
+        || contract_violation "GRIND_HEAD_SHA supplied without GRIND_SHAS/GRIND_SHAS_STATUS"
 elif [ "$HAVE_SHAS" -eq 1 ] && [ "$HAVE_STATUS" -eq 0 ]; then
     contract_violation "GRIND_SHAS present without GRIND_SHAS_STATUS"
 elif [ "$HAVE_SHAS" -eq 0 ] && [ "$HAVE_STATUS" -eq 1 ]; then
     contract_violation "GRIND_SHAS_STATUS present without GRIND_SHAS"
 else
+    # The certified set is a SNAPSHOT, taken at a specific HEAD before dispatch.
+    # pr-grind explicitly contemplates concurrent runs, so another invocation can
+    # advance the shared worktree between that scan and this blame. Its new
+    # commit would then be in neither GRIND_SHAS nor this invocation's
+    # PRIOR_ATTEMPTS, and findings on it would read as author-written - silently
+    # re-inerting the gate. Binding the set to the HEAD it was derived at turns
+    # that into a visible BAIL.
+    [ "$HAVE_HEAD" -eq 1 ] \
+        || contract_violation "GRIND_SHAS/GRIND_SHAS_STATUS supplied without GRIND_HEAD_SHA; the certified set must name the HEAD it was derived at"
+    _head_now=$(command git -C "$REPO_DIR" rev-parse HEAD) \
+        || contract_violation "cannot resolve HEAD in $REPO_DIR to re-check the certified set"
+    [ "$_head_now" = "$HEAD_AT_SCAN" ] \
+        || contract_violation "the worktree advanced since the set was certified (GRIND_HEAD_SHA=$HEAD_AT_SCAN, HEAD is now $_head_now); the durable set is stale — re-derive it"
+
     case "$STATUS" in
         ok) : ;;
         unavailable)

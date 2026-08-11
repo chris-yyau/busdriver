@@ -52,6 +52,10 @@ produce() {
     out=$(bash "$PRODUCER" --context -C "$repo" "$pr" "$base" "$head") || return 1
     CTX_SHAS=$(printf '%s\n' "$out" | sed -n 's/^GRIND_SHAS=//p')
     CTX_STATUS=$(printf '%s\n' "$out" | sed -n 's/^GRIND_SHAS_STATUS=//p')
+    # The scanner emits the head it derived the set at; the caller never
+    # re-resolves it, or it could pair this set with a newer commit.
+    CTX_HEAD=$(printf '%s\n' "$out" | sed -n 's/^GRIND_HEAD_SHA=//p')
+    [ -n "$CTX_HEAD" ] || return 1
 }
 
 test_gate_fires_on_prior_invocation_commit() {
@@ -71,13 +75,13 @@ test_gate_fires_on_prior_invocation_commit() {
 
     # --prior "" models the empty PRIOR_ATTEMPTS of a fresh invocation.
     local rc
-    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --prior "" "$prior_grind"
+    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" --prior "" "$prior_grind"
     rc=$?
     [ "$rc" -eq 0 ] || {
         echo "prior-invocation grind commit was NOT attributed (rc $rc, shas='$CTX_SHAS')"
         return 1
     }
-    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --prior "" "$author"
+    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" --prior "" "$author"
     rc=$?
     [ "$rc" -eq 1 ] || {
         echo "author commit was misattributed as grind-written (rc $rc)"
@@ -99,7 +103,7 @@ test_producer_rendering_survives_consumer_validation_multi_sha() {
     produce "$r" 617 "$base" "$head" || { echo "producer failed"; return 1; }
     local sha
     for sha in "$a" "$b"; do
-        bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" "$sha" || {
+        bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" "$sha" || {
             echo "consumer rejected producer output for $sha (shas='$CTX_SHAS')"
             return 1
         }
@@ -120,7 +124,7 @@ test_producer_none_survives_consumer_validation() {
     [ "$CTX_SHAS" = "none" ] || { echo "expected none, got '$CTX_SHAS'"; return 1; }
 
     local rc
-    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" "$head"
+    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" "$head"
     rc=$?
     [ "$rc" -eq 1 ] || {
         echo "empty durable set did not classify as author-written (rc $rc)"
@@ -146,10 +150,10 @@ test_union_prefers_neither_source_exclusively() {
         echo "fixture invalid: the unmarked commit is in the durable set"
         return 1
     }
-    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" \
+    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" \
         --prior "commit=$inprogress" "$durable" || {
         echo "durable-only commit not attributed"; return 1; }
-    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" \
+    bash "$CONSUMER" -C "$r" --shas "$CTX_SHAS" --status "$CTX_STATUS" --head "$CTX_HEAD" \
         --prior "commit=$inprogress" "$inprogress" || {
         echo "PRIOR_ATTEMPTS-only commit not attributed"; return 1; }
 }

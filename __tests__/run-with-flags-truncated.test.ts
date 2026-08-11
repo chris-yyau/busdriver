@@ -40,8 +40,16 @@ function oversizedPayload(): string {
 // measured decoded string length instead of raw bytes would read this as
 // under MAX_STDIN units while it is actually ~2x MAX_STDIN bytes — exactly
 // the gap CodeRabbit/cubic flagged in review of #612's enforceTruncation.
+//
+// The filler count must stay UNDER MAX_STDIN units so a buggy unit-length
+// cap would NOT truncate it, while its byte count (2 bytes/char) exceeds
+// MAX_STDIN so a correct byte cap DOES truncate it — that gap is what makes
+// the test distinguish the two implementations (cubic #633 P2: filling to
+// MAX_STDIN units plus the JSON wrapper pushed even the unit-length cap
+// over MAX_STDIN, so both implementations truncated and the test couldn't
+// catch the regression).
 function oversizedMultibytePayload(): string {
-  const filler = 'é'.repeat(MAX_STDIN)
+  const filler = 'é'.repeat(Math.floor(MAX_STDIN * 0.6))
   return `{"tool":"Write","tool_input":{"file_path":"/tmp/big.txt","content":"${filler}"}}`
 }
 

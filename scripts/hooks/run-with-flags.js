@@ -169,8 +169,17 @@ function buildDryRunPreview(hookId, relScriptPath, profilesCsv, raw) {
 // truncation-override logic reviewable on its own and hold down main()'s
 // cyclomatic complexity (CodeScene flagged the inline version's added
 // conditional branch — main was already well over threshold pre-PR).
+// The caveat is load-bearing, not hedging: this line is written BEFORE the
+// disabled-hook and dry-run early-returns, both of which exit 0 by design. An
+// unqualified "any allow is overridden" would therefore overclaim enforcement
+// on exactly the two paths that deliberately do not enforce — the wrong
+// direction to be wrong in for a fail-closed runner. The unconditional claim
+// belongs to enforceTruncation()'s own message, which is written at the
+// override site and so is always true when it appears.
 function truncationDisposition(failClosed) {
-  return failClosed ? 'fail-CLOSED: any hook allow is overridden to exit 2' : 'fail-open unless the hook blocks';
+  return failClosed
+    ? 'fail-CLOSED: a hook allow is overridden to exit 2, unless this hook is disabled or in dry-run'
+    : 'fail-open unless the hook blocks';
 }
 
 // #612: a hook that returns "allow" on a truncated payload never saw the whole

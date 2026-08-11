@@ -852,10 +852,19 @@ function run(rawInput) {
       return rawInput; // parent session already passed the first-touch file gate
     }
 
-    const edits = toolInput.edits || [];
-    for (const edit of edits) {
-      const filePath = edit.file_path || '';
-      if (filePath && !isClaudeSettingsPath(filePath) && !isChecked(filePath)) {
+    // #615 — a genuine MultiEdit payload carries the target at the TOP level; each
+    // edits[] element holds only old_string/new_string. Reading edit.file_path alone
+    // made this loop a no-op body, so the gate NEVER fired for MultiEdit (fail-open).
+    // Top-level first, per-edit as a fallback for harness variants that nest it —
+    // matching freeze-guard.sh and check-design-document.sh, which already cite this
+    // file as the sibling doing exactly that. Non-string entries are dropped before
+    // isClaudeSettingsPath/isChecked so a malformed payload cannot throw the gate open.
+    const edits = Array.isArray(toolInput.edits) ? toolInput.edits : [];
+    const targets = [toolInput.file_path, toolInput.filePath]
+      .concat(...edits.map(edit => (edit ? [edit.file_path, edit.filePath] : [])))
+      .filter(candidate => typeof candidate === 'string' && candidate);
+    for (const filePath of targets) {
+      if (!isClaudeSettingsPath(filePath) && !isChecked(filePath)) {
         if (!markChecked(filePath)) {
           return allowWithStateWarning();
         }

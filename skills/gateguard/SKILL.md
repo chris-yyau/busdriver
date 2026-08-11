@@ -48,10 +48,9 @@ Both agents produce code that runs and passes tests. The difference is design de
 
 ### Edit / MultiEdit Gate (first edit per file)
 
-MultiEdit is *intended* to be handled identically — each file in the batch gated
-individually — but MultiEdit requests are not actually gated: the hook fires but
-its denial condition never matches, so the request is always allowed through.
-See the Quick Start notes below and #615. The code is the authority.
+MultiEdit is handled identically — the batch's target file is gated on first
+touch, reading `tool_input.file_path` (where a real MultiEdit payload carries it)
+and falling back to any per-edit `file_path`. The code is the authority.
 
 ```
 Before editing {file_path}, present these facts:
@@ -118,13 +117,12 @@ three-stage summary above suggests):
 
 - `Edit`/`Write` — the **first touch of each file** only. Paths under Claude's
   own settings are exempt (`isClaudeSettingsPath`).
-- `MultiEdit` — **matched by the registration but never actually gated** (#615).
-  The branch iterates `tool_input.edits[]` looking for a per-edit `file_path`
-  (`gateguard-fact-force.js:855-858`), but a real MultiEdit payload carries
-  `file_path` at the *top* level and each `edits[]` entry holds only
-  `old_string`/`new_string`. So the loop body never executes and the branch falls
-  through to allow. The matcher is left in place because the fix belongs in the
-  hook; until #615 lands, treat MultiEdit as uncovered.
+- `MultiEdit` — the **first touch of the batch's target file**, same as
+  `Edit`/`Write`. The branch reads `tool_input.file_path` (where a real MultiEdit
+  payload carries it) and falls back to any per-edit `file_path` for harness
+  variants that nest it there. Before #615 it read the per-edit field *only*, so
+  the loop body never executed and every MultiEdit fell through to allow —
+  `__tests__/gateguard-multiedit.test.ts` locks the fix in.
 - `Bash` — destructive commands (`rm -rf`, `git reset --hard`, force-push, `drop
   table`, …) are gated **once per distinct command string**, not every time: the
   hook keys state on a SHA-256 of the exact command

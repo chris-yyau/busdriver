@@ -64,6 +64,18 @@ if [ -z "$_PLUGIN_ROOT" ]; then
     emit_bootstrap_bail "env" "dispatcher-commit-block: missing PLUGIN_ROOT (set BUSDRIVER_PLUGIN_ROOT or CLAUDE_PLUGIN_ROOT)"
 fi
 
+# PR_NUMBER is interpolated into the Grind-PR: trailer (Step 7) that
+# scripts/grind-pr-commits.sh later scans for with a BRE, so shape-check it here
+# rather than only for non-emptiness. Leading zeros are rejected, not merely
+# non-digits: "0617" would stamp a trailer that a later "617" scan silently
+# misses - an under-count with no error, which is the inert-gate failure Rail A
+# exists to end (ADR 0036).
+case "$PR_NUMBER" in
+    ''|*[!0-9]*|0*)
+        emit_bootstrap_bail "env" "dispatcher-commit-block: PR_NUMBER must match ^[1-9][0-9]*\$, got '$PR_NUMBER'"
+        ;;
+esac
+
 # Resolve script lib paths.
 SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 # shellcheck source=/dev/null
@@ -956,6 +968,16 @@ COMMIT_MSG=$({
             | sed 's/ $//')
         printf '\nLitmus-Auto-Fix: %s\n' "${added_paths:-content-only-edits}"
     fi
+    # Durable grind provenance (Rail A / ADR 0036). This is the sole commit path,
+    # so this is the only place the marker can be stamped.
+    #
+    # The leading newline is load-bearing: Litmus-Auto-Fix: gets its own blank
+    # separator only on the litmus path, so an unconditional bare append would,
+    # on the no-litmus path, glue Grind-PR: onto the body's last paragraph -
+    # where git's trailer-ratio rule makes recognition shape-dependent on
+    # RESULT_FIXES. Emitting the newline here puts exactly one blank line before
+    # it in both shapes.
+    printf '\nGrind-PR: %s\n' "$PR_NUMBER"
 })
 
 # --- Step 8: Local commitlint pre-flight (BEFORE commit; fail-CLOSED before
@@ -991,6 +1013,67 @@ fi
 NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
     emit_bail "env" "failed to resolve HEAD after dispatcher commit"
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
+
+# --- Step 10a: Verify the Grind-PR: trailer actually landed (Rail A / ADR 0036) ---
+# Step 9 commits through the repository's normal hooks, deliberately. A
+# commit-msg hook that rewrites or drops trailers would therefore defeat Rail A
+# silently, on the one property it exists to guarantee. --no-verify is not the
+# answer (it would bypass the gates the dispatcher is required to commit
+# through), so verify after the fact instead, fail-CLOSED.
+#
+# Errexit is ARMED here: :984 does a bare `set -e` rather than restoring the
+# original state, and the next `set +e` is in Step 11. So both checks are
+# written capture-first with an explicit `|| emit_bail`. A bare
+# `git log … | grep -q …` returning 1 would terminate the script instantly -
+# no envelope on stdout - and the dispatcher, which parses the last stdout line
+# as exactly one JSON envelope, would see a silent exit instead of a typed BAIL.
+_grind_bail_ctx="commit $NEW_COMMIT_SHA is LOCAL and UNPUSHED; a commit-msg hook altered the Grind-PR: trailer. Fix the hook, then 'git reset --soft HEAD~1' in $WORKTREE_DIR and re-grind"
+
+# ONE predicate, and it is byte-for-byte the reader's: the exact line
+# `Grind-PR: <N>` must appear in the PARSED TRAILER BLOCK. That is exactly what
+# scripts/grind-pr-commits.sh requires, down to the pinned
+# `trailer.separators=':'`, so writer and reader enforce a single contract.
+#
+# An earlier version checked two things separately - the exact bytes anywhere in
+# %B, plus a case-insensitive parsed key - and that pair validated two DIFFERENT
+# occurrences. A commit-msg hook could move `Grind-PR: N` into the body and
+# append `grind-pr:N` as the real trailer: both checks passed, the commit was
+# pushed, and the scanner then matched it zero times. Under-counting was masked
+# only by the transitional subject arm, which ADR 0036 schedules for removal.
+#
+# Capture-first throughout: errexit is armed here (:984 arms a bare `set -e`),
+# so a bare pipeline returning 1 would kill the script with no bail envelope on
+# stdout, and the dispatcher would see a silent exit instead of a typed BAIL.
+# The reader runs TWO steps - a `rev-list --grep` prefilter over the raw
+# message, then the exact-line check against the parsed block - so the writer
+# runs both, in the same order. Mirroring the whole predicate rather than its
+# second half means no assumption about how `%(trailers)` renders can put the
+# two ends out of agreement.
+#
+# (Measured, git 2.55.0: `%(trailers)` DOES preserve the raw bytes - `Grind-PR:1`
+# stays `Grind-PR:1`, `grind-pr:1` stays `grind-pr:1` - so the block check alone
+# is already correct. The prefilter is here so correctness does not rest on that
+# observation holding across git versions.)
+# GIT_NO_REPLACE_OBJECTS=1 on both reads, matching grind-pr-commits.sh. Without
+# it a post-commit hook could install a refs/replace entry whose object carries
+# the expected trailer: verification would read the replacement and pass, while
+# the push sends the ORIGINAL, unattributable commit — replacement refs are not
+# pushed. Verification must see the object that will actually travel.
+_grind_selected=$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --no-walk --grep="^Grind-PR: ${PR_NUMBER}\$" "$NEW_COMMIT_SHA") || \
+    emit_bail "env" "failed to re-scan the commit message for verification; $_grind_bail_ctx"
+[ "$_grind_selected" = "$NEW_COMMIT_SHA" ] || \
+    emit_bail "env" "Grind-PR: line is not the exact byte sequence the scanner matches; $_grind_bail_ctx"
+
+_grind_block=$(GIT_NO_REPLACE_OBJECTS=1 git -c trailer.separators=':' log -1 \
+    --format='%(trailers)' "$NEW_COMMIT_SHA") || \
+    emit_bail "env" "failed to parse trailers for verification; $_grind_bail_ctx"
+
+case $'\n'"$_grind_block"$'\n' in
+    *$'\n'"Grind-PR: $PR_NUMBER"$'\n'*) : ;;
+    *)
+        emit_bail "env" "Grind-PR: is not an exact trailer on the commit (trailer block: $(printf '%s' "$_grind_block" | tr '\n' ';')); $_grind_bail_ctx"
+        ;;
+esac
 
 # --- Step 11: Checked push ---
 set +e

@@ -1445,6 +1445,310 @@ EOF
     }
 }
 
+# ---------------------------------------------------------------------------
+# Rail A - durable grind provenance (ADR 0036). The dispatcher commit block is
+# the sole commit path, so it is the only place the Grind-PR: trailer can be
+# stamped and the only place its survival through the repo's hooks can be
+# verified.
+# ---------------------------------------------------------------------------
+
+GRIND_HELPER="$REPO_ROOT/scripts/grind-pr-commits.sh"
+
+# A commit-msg hook that mangles the trailer. $1 is the message file.
+write_commit_msg_hook() {
+    local body="$1"
+    cat > "$sandbox/.git/hooks/commit-msg" <<EOF
+#!/usr/bin/env bash
+$body
+EOF
+    chmod +x "$sandbox/.git/hooks/commit-msg"
+}
+
+test_grind_a_trailer_parses_as_a_real_trailer() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json parsed
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Multi-line RESULT_FIXES is the shape that makes a bare append land inside
+    # the body paragraph, where git's trailer-ratio rule stops recognizing it.
+    # A grep substring check cannot detect that; only the parser can.
+    run_dispatcher_capture needs_more $'fixed the parser\nalso fixed the guard\nand the retry path'
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_grind_a dispatcher output: $dispatcher_output"
+        return 1
+    }
+    parsed=$(git -C "$sandbox" log -1 --format='%(trailers:key=Grind-PR,valueonly=true)')
+    [ "$parsed" = "1" ] || {
+        echo "test_grind_a: Grind-PR did not parse as a trailer (got '$parsed')"
+        git -C "$sandbox" log -1 --format=%B
+        return 1
+    }
+}
+
+test_grind_b_trailer_parses_on_the_litmus_autofix_path() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode parsed message
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # The litmus path appends Litmus-Auto-Fix: with its own blank separator, so
+    # this fixture exercises the other of the two message shapes.
+    litmus_mode=autofix_inplace
+    run_dispatcher_capture needs_more $'fixed one thing\nfixed another'
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_grind_b dispatcher output: $dispatcher_output"
+        return 1
+    }
+    message=$(git -C "$sandbox" log -1 --format=%B)
+    printf '%s\n' "$message" | grep -q 'Litmus-Auto-Fix:' || {
+        echo "test_grind_b: fixture did not take the litmus path"
+        return 1
+    }
+    parsed=$(git -C "$sandbox" log -1 --format='%(trailers:key=Grind-PR,valueonly=true)')
+    [ "$parsed" = "1" ] || {
+        echo "test_grind_b: Grind-PR did not parse as a trailer (got '$parsed')"
+        printf '%s\n' "$message"
+        return 1
+    }
+}
+
+test_grind_c_real_commit_message_is_selected_by_the_scanner() {
+    # THE acceptance test for durable provenance: the only assertion that the
+    # writer (this script's composition path) and the reader
+    # (grind-pr-commits.sh) agree on one contract rather than two that merely
+    # look alike. Run in both message shapes.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    local head_sha scanned
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    run_dispatcher_capture needs_more $'first fix\nsecond fix'
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_grind_c (no-litmus) output: $dispatcher_output"
+        return 1
+    }
+    head_sha=$(git -C "$sandbox" rev-parse HEAD)
+    scanned=$(bash "$GRIND_HELPER" -C "$sandbox" 1 "$initial_sha" "$head_sha") || {
+        echo "test_grind_c: scanner exited non-zero"
+        return 1
+    }
+    printf '%s\n' "$scanned" | grep -qxF "$head_sha" || {
+        echo "test_grind_c: scanner did not select the no-litmus commit"
+        git -C "$sandbox" log -1 --format=%B
+        return 1
+    }
+
+    # Second round, litmus shape, on top of the first.
+    printf 'changed again\n' > "$sandbox/file.txt"
+    git -C "$sandbox" add file.txt
+    litmus_mode=autofix_inplace
+    run_dispatcher_capture needs_more $'third fix\nfourth fix'
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_grind_c (litmus) output: $dispatcher_output"
+        return 1
+    }
+    head_sha=$(git -C "$sandbox" rev-parse HEAD)
+    scanned=$(bash "$GRIND_HELPER" -C "$sandbox" 1 "$initial_sha" "$head_sha") || {
+        echo "test_grind_c: scanner exited non-zero on round 2"
+        return 1
+    }
+    printf '%s\n' "$scanned" | grep -qxF "$head_sha" || {
+        echo "test_grind_c: scanner did not select the litmus-path commit"
+        git -C "$sandbox" log -1 --format=%B
+        return 1
+    }
+    [ "$(printf '%s\n' "$scanned" | wc -l | tr -d ' ')" = "2" ] || {
+        echo "test_grind_c: expected both grind commits in the set, got: $scanned"
+        return 1
+    }
+}
+
+test_grind_d_trailer_deleted_by_hook_emits_env_bail() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    write_commit_msg_hook 'grep -v "^Grind-PR:" "$1" > "$1.tmp" && mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_grind_d expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    # Assert a PARSEABLE envelope, not merely a non-zero exit: errexit is armed
+    # at the verification point, so a bare pipeline would kill the script and
+    # produce exit 1 with no envelope - which a status-only assertion would
+    # happily accept.
+    assert_json "$dispatcher_json" '.bail_category == "env"' || {
+        echo "test_grind_d: no parseable env bail envelope; output=$dispatcher_output"
+        return 1
+    }
+}
+
+test_grind_e_trailer_normalized_by_hook_emits_env_bail() {
+    # The silent fail-open this check exists for: 'grind-pr:1' PASSES git's
+    # trailer parser (returns 1) and is matched ZERO times by the scanner.
+    # Without this test the verification is parser-only and fails open.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    write_commit_msg_hook \
+        'sed "s/^Grind-PR: \([0-9]*\)$/grind-pr:\1/" "$1" > "$1.tmp" && mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_grind_e expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" '.bail_category == "env"' || {
+        echo "test_grind_e: no parseable env bail envelope; output=$dispatcher_output"
+        return 1
+    }
+    # Confirm the fixture really did produce the parser-passing/scanner-missing
+    # form - otherwise this test would pass for the wrong reason.
+    new_sha=$(git -C "$sandbox" rev-parse HEAD)
+    [ "$(git -C "$sandbox" log -1 --format='%(trailers:key=Grind-PR,valueonly=true)' "$new_sha")" = "1" ] || {
+        echo "test_grind_e: fixture did not produce a parser-passing normalized trailer"
+        return 1
+    }
+    # ...and that the scanner's trailer predicate misses it. Asserted against
+    # arm 1 specifically, not the whole helper: the transitional subject arm
+    # legitimately still selects this commit by its `fix: address PR #1
+    # feedback` subject, which is exactly why the durability guarantee cannot
+    # rest on the subject and why the trailer must be verified at write time.
+    [ -z "$(git -C "$sandbox" rev-list --grep='^Grind-PR: 1$' "$initial_sha..$new_sha")" ] || {
+        echo "test_grind_e: the trailer scan unexpectedly matched the normalized form"
+        return 1
+    }
+}
+
+test_grind_e2_body_moved_trailer_emits_env_bail() {
+    # The two-different-occurrences bypass: a hook that MOVES `Grind-PR: N` into
+    # the body and appends `grind-pr:N` as the real trailer satisfies both an
+    # exact-bytes-anywhere-in-%B check AND a case-insensitive parsed-key check,
+    # while the scanner - which requires the exact line inside the parsed trailer
+    # block - matches it zero times. Verification must bind on the scanner's
+    # predicate, so this has to BAIL.
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Strip the real trailer, re-insert the EXACT line mid-body (followed by
+    # prose so it is not the final paragraph), then append a normalized trailer.
+    write_commit_msg_hook '
+grep -v "^Grind-PR: " "$1" > "$1.tmp"
+printf "\nGrind-PR: 1\n" >> "$1.tmp"
+printf "trailing prose keeps the line out of the trailer block\n" >> "$1.tmp"
+printf "\ngrind-pr:1\n" >> "$1.tmp"
+mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_grind_e2 expected bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" '.bail_category == "env"' || {
+        echo "test_grind_e2: no parseable env bail envelope; output=$dispatcher_output"
+        return 1
+    }
+    # Confirm the fixture really produced the bypass shape, not just any failure.
+    # Both halves of the bypass must be present, or this test passes for the
+    # wrong reason: the EXACT line lives in %B, and the parsed trailer block
+    # contains only the normalized form.
+    new_sha=$(git -C "$sandbox" rev-parse HEAD)
+    git -C "$sandbox" log -1 --format=%B "$new_sha" | grep -qx 'Grind-PR: 1' || {
+        echo "test_grind_e2: fixture lacks the exact line in the body"
+        git -C "$sandbox" log -1 --format=%B "$new_sha"
+        return 1
+    }
+    # Accept either rendering. Measured on git 2.55.0 the raw bytes are
+    # preserved (`grind-pr:1`), but the fixture's job is only to confirm the
+    # block holds the NORMALIZED key rather than the exact line - pinning the
+    # spacing would make this test a hostage to a formatting detail it is not
+    # about.
+    git -C "$sandbox" log -1 --format='%(trailers)' "$new_sha" \
+        | grep -qxE 'grind-pr: ?1' || {
+        echo "test_grind_e2: fixture lacks the normalized trailer in the block"
+        git -C "$sandbox" log -1 --format='%(trailers)' "$new_sha"
+        return 1
+    }
+    [ "$(git -C "$remote" rev-parse main)" = "$initial_sha" ] || {
+        echo "test_grind_e2: the unattributable commit reached the remote"
+        return 1
+    }
+}
+
+test_grind_f_verification_bail_names_unpushed_commit() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json new_sha reason
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    write_commit_msg_hook 'grep -v "^Grind-PR:" "$1" > "$1.tmp" && mv "$1.tmp" "$1"'
+    run_dispatcher_capture
+
+    new_sha=$(git -C "$sandbox" rev-parse HEAD)
+    reason=$(printf '%s\n' "$dispatcher_json" | jq -r '.bail_reason // ""')
+
+    # The recovery contract: the operator must be able to act on the message
+    # alone. It names the SHA, the local-unpushed state, and the cause.
+    case "$reason" in
+        *"$new_sha"*) : ;;
+        *) echo "test_grind_f: bail_reason omits the commit SHA: $reason"; return 1 ;;
+    esac
+    case "$reason" in
+        *UNPUSHED*) : ;;
+        *) echo "test_grind_f: bail_reason omits the unpushed state: $reason"; return 1 ;;
+    esac
+    case "$reason" in
+        *commit-msg*) : ;;
+        *) echo "test_grind_f: bail_reason omits the cause: $reason"; return 1 ;;
+    esac
+
+    # And the commit really is unpushed - the BAIL fires before Step 11.
+    [ "$new_sha" != "$initial_sha" ] || {
+        echo "test_grind_f: fixture never committed"; return 1; }
+    [ "$(git -C "$remote" rev-parse main)" = "$initial_sha" ] || {
+        echo "test_grind_f: the malformed commit reached the remote"
+        return 1
+    }
+}
+
+test_grind_g_non_numeric_pr_number_rejected() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json pr_number bad
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # ':57' checked non-emptiness only. '0617' is the dangerous one: it would
+    # stamp a trailer that a later '617' scan silently misses.
+    for bad in "abc" "0617" "0" "61a" "-1"; do
+        pr_number="$bad"
+        run_dispatcher_capture
+        [ "$dispatcher_exit" -eq 1 ] || {
+            echo "test_grind_g: PR '$bad' was accepted (exit $dispatcher_exit)"
+            return 1
+        }
+        assert_json "$dispatcher_json" \
+            '.bail_category == "env" and (.bail_reason | contains("PR_NUMBER"))' || {
+            echo "test_grind_g: PR '$bad' produced: $dispatcher_json"
+            return 1
+        }
+    done
+    [ "$(git -C "$sandbox" rev-parse HEAD)" = "$initial_sha" ] || {
+        echo "test_grind_g: a rejected PR number still produced a commit"
+        return 1
+    }
+}
+
 failed=0
 for t in $(declare -F | awk '/test_/{print $3}' | sort); do
     if "$t"; then

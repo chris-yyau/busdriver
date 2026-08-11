@@ -53,6 +53,19 @@ jobs:
           shellcheck --severity=warning \
             scripts/design-clear.sh \
             tests/test-design-clear.sh
+      - name: Lint durable grind provenance (Rail A)
+        # scripts/grind-pr-commits.sh and scripts/grind-set-member.sh are the two
+        # executable seams of the pr-grind proportionality gate (ADR 0036). The
+        # gate fails CLOSED on their exit codes, so lint them as required checks
+        # rather than via the soft scripts/hooks pass below.
+        run: |
+          shellcheck --severity=warning \
+            scripts/grind-pr-commits.sh \
+            scripts/grind-set-member.sh \
+            tests/test-grind-pr-commits.sh \
+            tests/test-grind-set-member.sh \
+            tests/test-grind-provenance.sh \
+            tests/test-grind-provenance-gate.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

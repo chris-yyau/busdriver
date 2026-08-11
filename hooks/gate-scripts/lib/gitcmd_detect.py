@@ -2421,6 +2421,47 @@ def _gh_cd_fields(pending_cd, op, pending_cd_op, cds, allow_cd):
     return target_dir, _untrusted_cd(cds)
 
 
+def _gh_torn_recovery(seg, argv, subcommand):
+    """The recovered PR number for a torn `gh pr <subcommand>` in `seg`, or None
+    if no torn `gh` recovers one. '' is a valid recovered number (no digit
+    argument, e.g. current-branch `gh pr merge`); only Python None means "no
+    recovery" -- callers must check `is not None`, not truthiness.
+
+    Split out of _iter_gh purely to reduce its complexity (CodeScene "Complex
+    Method", #634); behavior unchanged. Same torn-assignment recovery as
+    _scan_commit, in the same FIRST position and for the same verified reasons
+    (#593) -- both `X=$(printf gh x) gh pr merge 1` and
+    `X=$(printf gh pr merge x) env GH_REPO=other/repo gh pr merge 1` put a `gh`
+    from inside the torn value where the walk reads it. The two-word
+    subcommand is matched by the same _gh_find_pr_sub the normal path uses, so
+    no second spelling of `pr <sub>` enters the file.
+
+    LINEAR, not quadratic (#634), same shape as _scan_commit above: each
+    candidate window is bounded by the NEXT candidate's start rather than
+    running to end-of-segment, so slices partition the segment instead of
+    stacking.
+
+    AT MOST ONE result per segment. A segment IS one command -- `;`, `&&` and
+    friends are what split_segments splits on -- so two executed
+    `gh pr merge` invocations can never share one. Every candidate past the
+    first is therefore debris (tear content, or an argument VALUE as in
+    `gh pr merge 1 --body "gh pr merge 2"`), and returning it would inflate
+    gh_pr_count, which the pre-merge gate reads to refuse multi-PR merges.
+    Verified: yielding all candidates reported 2 for both of those
+    single-merge shapes."""
+    _gh_hits = list(_torn_direct_hits(seg, 'gh', argv))
+    _gh_all = _gh_hits[0][0] if _gh_hits else ()
+    _gh_starts = [_k for _t, _k in _gh_hits]
+    for _i, _k in enumerate(_gh_starts):
+        _end = (_gh_starts[_i + 1]
+                if _i + 1 < len(_gh_starts) else len(_gh_all))
+        _rest = _gh_all[_k + 1:_end]
+        _j = _gh_find_pr_sub(_rest, subcommand)
+        if _j is not None:
+            return _gh_pr_number(_rest[_j + 2:])
+    return None
+
+
 def _iter_gh(chunk, subcommand, allow_cd):
     """Yield one result tuple per `gh pr <subcommand>` command word in `chunk`.
     allow_cd=False for substitution bodies (subshell cwd untrusted)."""
@@ -2434,41 +2475,12 @@ def _iter_gh(chunk, subcommand, allow_cd):
             pending_cd_op = op
             continue
         argv = _command_argv(seg, 'gh')
-        # Same torn-assignment recovery as _scan_commit, in the same FIRST
-        # position and for the same verified reasons (#593) -- both
-        # `X=$(printf gh x) gh pr merge 1` and
-        # `X=$(printf gh pr merge x) env GH_REPO=other/repo gh pr merge 1` put a
-        # `gh` from inside the torn value where the walk reads it. The two-word
-        # subcommand is matched by the same _gh_find_pr_sub the normal path uses,
-        # so no second spelling of `pr <sub>` enters the file.
-        _recovered = False
-        # LINEAR, not quadratic (#634), same shape as _scan_commit above: each
-        # candidate window is bounded by the NEXT candidate's start rather than
-        # running to end-of-segment, so slices partition the segment instead of
-        # stacking.
-        # AT MOST ONE yield per segment. A segment IS one command -- `;`, `&&`
-        # and friends are what split_segments splits on -- so two executed
-        # `gh pr merge` invocations can never share one. Every candidate past
-        # the first is therefore debris (tear content, or an argument VALUE as
-        # in `gh pr merge 1 --body "gh pr merge 2"`), and yielding it inflates
-        # gh_pr_count, which the pre-merge gate reads to refuse multi-PR
-        # merges. Verified: yielding all candidates reported 2 for both of
-        # those single-merge shapes.
-        _gh_hits = list(_torn_direct_hits(seg, 'gh', argv))
-        _gh_all = _gh_hits[0][0] if _gh_hits else ()
-        _gh_starts = [_k for _t, _k in _gh_hits]
-        for _i, _k in enumerate(_gh_starts):
-            _end = (_gh_starts[_i + 1]
-                    if _i + 1 < len(_gh_starts) else len(_gh_all))
-            _rest = _gh_all[_k + 1:_end]
-            _j = _gh_find_pr_sub(_rest, subcommand)
-            if _j is not None:
-                yield True, '', _gh_pr_number(_rest[_j + 2:]), _TORN_SCOPE
-                _recovered = True
-                break
-        # Same reason the loop above stops at one: falling through to the
+        # Recovery first, same as _scan_commit -- see _gh_torn_recovery for the
+        # tear-detection and single-result rationale. Falling through to the
         # ordinary walk after recovering would yield the SAME invocation twice.
-        if _recovered:
+        _number = _gh_torn_recovery(seg, argv, subcommand)
+        if _number is not None:
+            yield True, '', _number, _TORN_SCOPE
             pending_cd = None
             continue
         if not argv or not _is_exe(argv[0], 'gh'):

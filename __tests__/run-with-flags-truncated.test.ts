@@ -29,9 +29,19 @@ const MAX_STDIN = 1024 * 1024
 
 // Strictly over the cap. Exactly MAX_STDIN is NOT truncated — the runner's
 // check is `chunk.length > remaining`, so equality passes through intact.
-// ASCII filler only: the cap counts UTF-16 code units, not bytes.
+// ASCII filler only: the cap is enforced in UTF-8 bytes, and ASCII bytes and
+// UTF-16 code units are 1:1, so this stays a clean over-the-cap case either way.
 function oversizedPayload(): string {
   const filler = 'x'.repeat(MAX_STDIN)
+  return `{"tool":"Write","tool_input":{"file_path":"/tmp/big.txt","content":"${filler}"}}`
+}
+
+// Multi-byte payload: 'é' is 1 UTF-16 code unit but 2 UTF-8 bytes. A cap that
+// measured decoded string length instead of raw bytes would read this as
+// under MAX_STDIN units while it is actually ~2x MAX_STDIN bytes — exactly
+// the gap CodeRabbit/cubic flagged in review of #612's enforceTruncation.
+function oversizedMultibytePayload(): string {
+  const filler = 'é'.repeat(MAX_STDIN)
   return `{"tool":"Write","tool_input":{"file_path":"/tmp/big.txt","content":"${filler}"}}`
 }
 
@@ -75,6 +85,17 @@ describe('run-with-flags oversized stdin under --fail-closed', () => {
     expect(r.status).toBe(2)
     // Never echo a JSON document cut mid-stream (#2222).
     expect(r.stdout).toBe('')
+    // The block must name why (#612 review: assert the reason actually reaches
+    // the operator, not just the exit code).
+    expect(r.stderr).toContain('truncated')
+  })
+
+  it('blocks (exit 2) on a multi-byte payload that exceeds MAX_STDIN bytes but not MAX_STDIN UTF-16 units', () => {
+    const rel = writeFixture('passthrough-mb.js', 'module.exports = { run: raw => raw };')
+    const r = runDispatch(['pre:test-trunc-mb', rel, 'standard', '--fail-closed'], oversizedMultibytePayload())
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('truncated')
   })
 
   it('keeps the hook block decision when the hook blocks on its own', () => {

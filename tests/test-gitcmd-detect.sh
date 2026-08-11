@@ -1302,6 +1302,117 @@ for _i in range(400):
     check(f"torn-direct (#593) property[{_i}] unresolvable {_cmd!r}",
           _res[3], _TORN_SCOPE)
 
+# Torn-direct amend-ness is read from the OPTION portion only (#634 cubic
+# review), matching the untorn scan path's `opt_words` derivation: a literal
+# `--amend` pathspec token after `--` must NOT flip is_amend, and a real
+# `--amend` before `--` must still be detected.
+check("torn-direct (#593) amend pathspec-scoped not flagged",
+      g.git_commit("X=$(printf x y) git commit -m m -- --amend",
+                   with_untrusted_cd=True)[2], False)
+check("torn-direct (#593) amend before -- still detected",
+      g.git_commit("X=$(printf x y) git commit --amend -- f",
+                   with_untrusted_cd=True)[2], True)
+
+# UNIFORM RULE (#634): a tear means the scope is unknowable, with no exemption.
+# `_torn_assignment` is presence-based, so an INTACT `TAG=$(git describe)` reads
+# as torn and these stall. That over-fire was reviewed hard, and an exemption --
+# "if the only `git` is the one the walk stopped on, nothing was hidden, so trust
+# the walk" -- was tried and REMOVED: its premise fails whenever the landing is
+# itself inside the substitution, and four shapes defeated it (dynamic command
+# word, interpreter payload, real command in a later segment, forged in-token
+# close), each reporting a cd scope for a commit running elsewhere. Guarding them
+# one at a time is the per-case table #587 exists to stop building. These pin the
+# accepted cost so the exemption is not reintroduced.
+for _c in ('cd /tmp && X=$(true) git commit -m x',
+           'X=$(true) git -C /tmp commit -m x',
+           'cd /tmp && TAG=$(git describe) git commit -m x',
+           'cd /tmp && D=$(date +%s) git commit -m x',
+           'cd /tmp && X=${HOME} git commit -m x',
+           'cd /tmp && H="$(git rev-parse HEAD)" git commit -m x'):
+    check(f"torn-direct (#634) tear ⇒ unknowable scope {_c!r}",
+          g.git_commit(_c, with_untrusted_cd=True)[3], _TORN_SCOPE)
+# The four shapes that killed the exemption. Each must stay blocked; a future
+# re-introduction would flip these to a cd scope while the commit runs elsewhere.
+for _c in ('G=git; cd /tmp && X=$(printf git commit x) $G -C /x commit -m x',
+           'cd /tmp && X=$(printf git commit x) bash -c "git -C /x commit -m x"',
+           'cd /tmp && X=$(printf git commit x) true; git -C /x commit -m x',
+           'X=$(printf git commit x) git -C /tmp commit -m x'):
+    check(f"torn-direct (#634) exemption-killer stays blocked {_c!r}",
+          g.git_commit(_c, with_untrusted_cd=True)[3], _TORN_SCOPE)
+
+
+# DIRECTION LOCK. Every command below was a silent fail-OPEN on main — verified
+# against the pre-#593 path, all NOT-DETECTED, so the commit ran unseen by all
+# three gates. That is the #593 bug. They must now be DETECTED with an
+# unresolvable scope (a visible stall). The failure this pins is a future
+# "optimization" that widens the walk_index exemption until these resolve to the
+# CWD instead — which would silently restore the fail-open, since the gate would
+# then validate the current repo's marker for a commit whose repo is unknown.
+# `$( date )` is in the list deliberately: it carries no inner git at all, and
+# was ALSO missed before, so its stall is likewise a gain and not collateral.
+for _c in ('cd /tmp && TAG=$(git describe --tags) git commit -m x',
+           'cd /tmp && H=$(git rev-parse HEAD) git commit -m x',
+           'cd /tmp && BR=$(git rev-parse --abbrev-ref HEAD) git commit -m x',
+           'cd /tmp && U=$(git config user.name) git commit -m x',
+           'cd /tmp && X=<(git rev-parse HEAD) git commit -m x',
+           'cd /tmp && TAG=$( git describe ) git commit -m x',
+           'cd /tmp && TAG=$( date ) git commit -m x'):
+    check(f"torn-direct (#634) tearing substitution detected {_c!r}",
+          g.git_commit(_c)[0], True)
+    check(f"torn-direct (#634) tearing substitution stalls {_c!r}",
+          g.git_commit(_c, with_untrusted_cd=True)[3], _TORN_SCOPE)
+# Amend-ness across a TORN stream. Each candidate's window is bounded by the
+# next candidate and the results OR-ed, so a `--` inside DEBRIS cannot truncate
+# the scan and hide a real amendment (#634), while a genuine post-`--` pathspec
+# still reads as a pathspec rather than the flag.
+check("torn-direct (#634) debris `--` does not hide a real amend",
+      g.git_commit('X=$(printf git commit -- x) git commit --amend')[2], True)
+check("torn-direct (#634) torn amend still detected",
+      g.git_commit('X=$(printf x y) git commit --amend')[2], True)
+check("torn-direct (#634) post-`--` amend is a pathspec, not the flag",
+      g.git_commit('X=$(printf x y) git commit -m m -- --amend')[2], False)
+# Windows are bounded at the next COMMIT start, not the next `git` TOKEN: an
+# argument value can be the word `git`, and cutting there truncated the window
+# before the real flag.
+check("torn-direct (#634) `-m git` argument does not truncate the amend window",
+      g.git_commit('X=$(printf x y) git commit -m git --amend')[2], True)
+
+# A DYNAMIC command word defeats the exemption's premise — it claims the walk's
+# landing IS the executed command, and `$G` can be anything. In
+# `X=$(printf git commit x) $G -C /x commit` the only literal `git` is
+# substitution debris while `$G` runs the real commit in /x. The pre-#593 path
+# reports scope '/tmp' here (a mis-scope this change INHERITED, not opened), so
+# requiring the segment to be static past the prefix makes this strictly better
+# than baseline rather than merely no worse.
+check("torn-direct (#634) dynamic command word forfeits the exemption",
+      g.git_commit('G=git; cd /tmp && X=$(printf git commit x) $G -C /x commit -m x',
+                   with_untrusted_cd=True)[3], _TORN_SCOPE)
+# A static segment is ALSO not enough: an interpreter runs a payload of its own,
+# so `X=$(printf git commit x) bash -c "git -C /x commit"` has every token static
+# while the real commit executes in /x. The exemption additionally requires the
+# segment to carry no shell payload.
+check("torn-direct (#634) interpreter payload forfeits the exemption",
+      g.git_commit('cd /tmp && X=$(printf git commit x) bash -c "git -C /x commit -m x"',
+                   with_untrusted_cd=True)[3], _TORN_SCOPE)
+check("torn-direct (#634) interpreter payload forfeits the exemption (gh)",
+      g.gh_pr('cd /tmp && X=$(printf gh pr merge x) bash -c "gh pr merge 1"',
+              'merge', with_untrusted_cd=True)[3], _TORN_SCOPE)
+# The plain dynamic form (no tear) stays undetected — a separate, pre-existing
+# limit of this parser, pinned so the two are never conflated.
+check("dynamic command word alone is undetected (pre-existing limit)",
+      g.git_commit('G=git; cd /tmp && $G commit -m x')[0], False)
+
+# The documented ESCAPE must stay clean, or the workaround rots unnoticed.
+# QUOTING is NOT an escape and is pinned as such above: `H="$(…)"` collapses to
+# one token but still carries `$(`, which is all `_torn_assignment` reads.
+# Splitting leaves the cd UNTRUSTED (the `;` does not '&&'-gate the commit), so
+# untrusted_cd is the operand '/tmp' rather than empty — the resolver then proves
+# same-repo or blocks. What matters for the escape is only that it is not the
+# torn sentinel, which no amount of repo-proving can clear.
+check("torn-direct (#634) splitting the segment escapes the stall",
+      g.git_commit('cd /tmp && H=$(git rev-parse HEAD); git commit -m x',
+                   with_untrusted_cd=True)[3] == _TORN_SCOPE, False)
+
 # Untorn forms must be UNTOUCHED -- same verdict AND same scope as before, so the
 # recovery cannot quietly convert a resolvable commit into a stall.
 check("torn-direct (#593) untorn keeps scope",

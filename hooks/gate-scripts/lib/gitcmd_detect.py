@@ -1729,13 +1729,78 @@ def _torn_direct_hits(seg, target, argv):
     upto = (len(toks) - len(argv) + 1) if argv else None
     if not _torn_assignment(toks, upto):
         return
-    for k, tok in enumerate(toks):
-        # Basename-matched via _is_exe, so `/usr/bin/git commit` behind a tear is
-        # not a hole. Position is irrelevant here by design: the whole point is
-        # that the debris destroyed argv positions, so the scan asks only whether
-        # the executable appears at all and lets the caller read the subcommand.
-        if _is_exe(tok, target):
-            yield toks, k
+    # Basename-matched via _is_exe, so `/usr/bin/git commit` behind a tear is not
+    # a hole. Position is irrelevant to the SCAN by design: the debris destroyed
+    # argv positions, so it asks only whether the executable appears at all and
+    # lets the caller read the subcommand.
+    cands = [k for k, tok in enumerate(toks) if _is_exe(tok, target)]
+    # NO EXEMPTION HERE, and the attempt to build one is worth recording so it is
+    # not retried. #634 review flagged that `_torn_assignment` is presence-based,
+    # so an INTACT `TAG=$(git describe) git commit` trips it and stalls. The fix
+    # tried was: if every occurrence of the target is the index the walk stopped
+    # at, the tear hid nothing, so trust the walk. Its premise -- "the walk's
+    # landing IS the executed command word" -- is false exactly when the landing
+    # is itself inside the substitution, and four separate shapes were verified
+    # to defeat it, each reporting the cd's scope for a commit that runs
+    # elsewhere:
+    #     X=$(printf git commit x) $G -C /x commit        (dynamic command word)
+    #     X=$(printf git commit x) bash -c "git -C /x …"  (interpreter payload)
+    #     X=$(printf git commit x) true; git -C /x commit (real command later)
+    #     X=$(printf")" git commit x) true                (forged in-token close)
+    # Guarding each -- staticness, then _shell_payloads, then in-token balance --
+    # closed them one at a time while the next kept arriving, which is the
+    # per-case table #587 exists to stop building. Deciding whether the landing
+    # sits inside the substitution IS the boundary problem, and the boundary is
+    # forgeable through a quoted closer (this file reverted that scanner after
+    # five verified bypasses). So the rule stays uniform: a tear means the scope
+    # is unknowable, full stop.
+    #
+    # DID THE TEAR ACTUALLY HIDE A COMMAND WORD? `_torn_assignment` answers a
+    # deliberately weaker question -- does this value contain substitution syntax
+    # AT ALL -- because shlex discards quote provenance and a balance count is
+    # forgeable (see its docstring). For the NESTED route that over-firing is
+    # free: it costs one extra scan. On THIS route it is not, and #634 review
+    # caught the difference: an INTACT `TAG=$(git describe) git commit` trips
+    # `_torn_assignment` on the bare presence of `$(`, and forcing `_TORN_SCOPE`
+    # there stalls three fail-CLOSED gates on an ordinary, correct command.
+    #
+    # So ask the narrower question the direct route actually needs, WITHOUT
+    # reintroducing the delimiter grammar this file abandoned: could the tear
+    # have hidden a command word from the walk? If every occurrence of the
+    # target is the one the walk already stopped on, the answer is no -- there
+    # is no second `git` for the debris to be concealing -- and the walk's own
+    # reading, scope and all, stands. `X=$(printf git commit x) git -C /tmp
+    # commit` still recovers, because there the debris contributes a SECOND
+    # `git` at a different index and the walk's landing is therefore not the
+    # only candidate.
+    #
+    # WHAT THIS DOES NOT RULE OUT, stated precisely because a first draft of this
+    # note got it wrong: the exemption fires only when the walk's landing is the
+    # ONLY target token, which needs the substitution to contribute none of its
+    # own. `TAG=$(git describe) git commit` qualifies -- the inner `git` FUSES
+    # into the token `TAG=$(git`, so it is not a candidate. `H=$(git rev-parse
+    # HEAD) git commit` does NOT: the walk halts on `rev-parse` and the inner
+    # `git` stands alone, so two indices differ and the sentinel fires.
+    #
+    # That is correct, and it is a safety GAIN rather than an over-block: the
+    # whole `VAR=$(<multi-word git/gh cmd>) git commit` family was a silent
+    # fail-OPEN on main (verified against the pre-#593 path -- every one of
+    # `$(git describe --tags)`, `$(git rev-parse HEAD)`, `$(git config
+    # user.name)`, `<(git rev-parse HEAD)`, `$( git describe )` and even
+    # `$( date )` returned NOT-DETECTED, so the commit ran unseen by all three
+    # gates). This is the #593 bug itself, not collateral damage from fixing it.
+    # It now reports DETECTED with an unresolvable scope, so the gate stalls.
+    # Escapes, both verified clean: QUOTE the substitution
+    # (`H="$(git rev-parse HEAD)" git commit` collapses to one token) or SPLIT
+    # the segment (`H=$(git rev-parse HEAD); git commit`).
+    #
+    # Escapes for the stall, verified clean: SPLIT the segment
+    # (`H=$(git rev-parse HEAD); git commit`) so the assignment is its own
+    # statement. Quoting alone does NOT help -- `H="$(git rev-parse HEAD)"`
+    # collapses to one token but still carries `$(`, which is all
+    # `_torn_assignment` looks at.
+    for k in cands:
+        yield toks, k
 
 
 def toks_once(seg, _cache={}):  # noqa: B006 - deliberate per-scan memo, see below
@@ -1837,6 +1902,15 @@ def _shell_payloads(cmd):
         # command position back out of the debris - the span rebuild that was
         # reverted for producing five verified bypasses of its own - so the
         # over-block stays. On real workflow commands the delta is ZERO.
+        #
+        # WHAT THAT CORPUS DOES NOT PROVE, recorded because trusting it too far
+        # already cost one round: it is one operator's recorded history, so a
+        # command shape absent from it is NOT thereby rare in bash. The #634
+        # review caught exactly that -- an over-fire on `TAG=$(git describe) git
+        # commit`, an entirely ordinary form, which the sweep scored as zero
+        # regressions because that history simply never used it. A zero here
+        # means "no observed regression in this sample", never "no such class".
+        # Reason about the class as well as counting the sample.
         #
         # MEASURED COST, because "over-extraction is the safe direction" is
         # true only for the advisory guard - these payloads also feed three
@@ -2195,9 +2269,55 @@ def _scan_commit(chunk, allow_cd):
         #     repo's marker.
         # _torn_direct_hits yields nothing when there is no tear, so an untorn
         # command keeps the ordinary walk and its real, resolvable scope.
-        for _toks, _k in _torn_direct_hits(seg, 'git', argv):
-            if _git_subcommand(_toks[_k:])[0] == 'commit':
-                return (True, '', '--amend' in _toks[_k:], _TORN_SCOPE, False)
+        # Collected rather than short-circuited so amend-ness can be read across
+        # EVERY candidate window (see below); the first match still decides that
+        # a commit is present.
+        _hits = list(_torn_direct_hits(seg, 'git', argv))
+        # LINEAR, not quadratic (#634). Reading each candidate's subcommand from
+        # its full suffix copied the tail once per candidate, and the amend pass
+        # then re-scanned every start per hit: a 12k-candidate segment measured
+        # ~2.25s against this file's 3s guard alarm, which a large Bash command
+        # could ride into a stalled hook. Each candidate is bounded by the NEXT
+        # one instead, so the slices partition the segment rather than stacking.
+        _all = _hits[0][0] if _hits else ()
+        _starts = [_k for _t, _k in _hits]
+        _commit_starts = []
+        for _i, _k in enumerate(_starts):
+            _end = _starts[_i + 1] if _i + 1 < len(_starts) else len(_all)
+            if _git_subcommand(_all[_k:_end])[0] == 'commit':
+                _commit_starts.append(_k)
+        if _commit_starts:
+            # Amend-ness reads the OPTION portion only, matching the normal
+            # path's `opt_words` split below (#634 cubic review): a `--amend`
+            # after the `--` pathspec separator is a literal pathspec token, not
+            # the flag, so a torn `... -- --amend` must not report an amendment.
+            #
+            # Each candidate is bounded by the NEXT candidate rather than
+            # running to end-of-segment, and the result is OR-ed across all of
+            # them. Taking the first candidate's whole suffix under-reported
+            # (#634): in `X=$(printf git commit -- x) git commit --amend` the
+            # `--` inside the DEBRIS truncated the scan, so the real outer
+            # amendment read as False. Bounding each window at the next
+            # candidate keeps one invocation's options from being read through
+            # another's debris, without locating where any argv actually ENDS --
+            # that is the span rebuild this file abandoned. OR-ing is the
+            # fail-safe direction for the residual ambiguity: over-reporting an
+            # amendment costs a stricter check, under-reporting hides one.
+            # Bounded at the next COMMIT start, not the next target token: an
+            # ordinary argument VALUE can be the word `git` (`git commit -m git
+            # --amend`), and cutting there truncated the window before the real
+            # `--amend` (#634). Only a candidate that actually reads as a commit
+            # can begin another invocation.
+            _amend = False
+            for _i, _k in enumerate(_commit_starts):
+                _end = (_commit_starts[_i + 1]
+                        if _i + 1 < len(_commit_starts) else len(_all))
+                _window = _all[_k:_end]
+                _opt_words = (_window[:_window.index('--')]
+                              if '--' in _window else _window)
+                if '--amend' in _opt_words:
+                    _amend = True
+            return (True, '', _amend, _TORN_SCOPE, False)
         if not argv or not _is_exe(argv[0], 'git'):
             pending_cd = None
             continue
@@ -2362,7 +2482,10 @@ def _iter_gh(chunk, subcommand, allow_cd):
         # One result per command word: falling through to the ordinary walk after
         # recovering would yield the SAME invocation twice and inflate
         # gh_pr_count, which the pre-merge gate reads to refuse multi-PR merges.
-        if _recovered or not argv or not _is_exe(argv[0], 'gh'):
+        if _recovered:
+            pending_cd = None
+            continue
+        if not argv or not _is_exe(argv[0], 'gh'):
             pending_cd = None
             continue
         rest = argv[1:]

@@ -1680,7 +1680,7 @@ mv "$1.tmp" "$1"'
         git -C "$sandbox" log -1 --format='%(trailers)' "$new_sha"
         return 1
     }
-    [ "$(git -C "$sandbox" rev-parse origin/main)" = "$initial_sha" ] || {
+    [ "$(git -C "$remote" rev-parse main)" = "$initial_sha" ] || {
         echo "test_grind_e2: the unattributable commit reached the remote"
         return 1
     }

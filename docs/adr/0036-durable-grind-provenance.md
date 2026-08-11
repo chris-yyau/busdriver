@@ -67,8 +67,9 @@ single contract rather than two that merely look alike.
 
 - `scripts/grind-pr-commits.sh` — the producer. Emits the SHA **set** (not a
   count: a count cannot serve a membership test and would force a second,
-  divergent predicate). `--context` renders the two worker context fields
-  directly.
+  divergent predicate). `--context` renders the three worker context fields
+  directly (`GRIND_SHAS`, `GRIND_SHAS_STATUS`, and `GRIND_HEAD_SHA` — the last
+  binds the certified set to the HEAD it was scanned at).
 - `scripts/grind-set-member.sh` — the consumer. Owns the strict-vs-fail-open
   validation asymmetry and the membership decision.
 

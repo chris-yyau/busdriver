@@ -124,7 +124,7 @@ test_certified_set_is_bound_to_a_head_snapshot() {
         "GRIND_HEAD_SHA in the worker context block" || return 1
     want "$SKILL" 'All THREE fields travel' \
         "the travel-together rule" || return 1
-    want "$AGENT" -- '--head "<GRIND_HEAD_SHA verbatim>"' \
+    want "$AGENT" '--head "<GRIND_HEAD_SHA verbatim>"' \
         "the --head argument in the worker's helper call"
 }
 

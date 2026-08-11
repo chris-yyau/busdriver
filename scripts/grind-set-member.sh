@@ -11,11 +11,13 @@
 #
 # Usage:
 #   grind-set-member.sh -C <repo_dir> [--shas <GRIND_SHAS>] [--status <GRIND_SHAS_STATUS>]
-#                       [--prior <commit=,commit=,...>] <blamed_sha>
+#                       [--head <GRIND_HEAD_SHA>] [--prior <commit=,commit=,...>] <blamed_sha>
 #
-#   --shas / --status are the two worker context-block fields, passed VERBATIM.
-#   Omit BOTH flags to model a pre-contract dispatcher. Passing one without the
-#   other is a contract violation, not a default.
+#   --shas / --status / --head are the three worker context-block fields, passed
+#   VERBATIM. Omit ALL THREE flags to model a pre-contract dispatcher. --shas and
+#   --status are only ever emitted together, and whenever they are present --head
+#   is required to bind the certified set to the HEAD it was derived at. Any
+#   partial combination is a contract violation, not a default.
 #
 # Exit codes:
 #   0  the blamed SHA IS in GRIND_SET   (grind-written)
@@ -75,7 +77,7 @@ _gv=$(command git --version 2>/dev/null) || _gv=""
 case "$_gv" in
     "git version "*) : ;;
     *)
-        printf 'grind-set-member.sh: CONTRACT VIOLATION: `git` does not resolve to the real git binary (shadowed function, alias, or PATH hijack); got %s\n' \
+        printf "grind-set-member.sh: CONTRACT VIOLATION: \`git\` does not resolve to the real git binary (shadowed function, alias, or PATH hijack); got %s\n" \
             "${_gv:-no output}" >&2
         exit 3
         ;;
@@ -120,7 +122,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ $# -eq 1 ] || usage_error \
-    "usage: grind-set-member.sh -C <repo_dir> [--shas S] [--status S] [--prior P] <blamed_sha>"
+    "usage: grind-set-member.sh -C <repo_dir> [--shas S] [--status S] [--head H] [--prior P] <blamed_sha>"
 
 BLAMED="$1"
 [ -n "$REPO_DIR" ] || usage_error "-C <repo_dir> is required"

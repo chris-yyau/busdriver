@@ -305,7 +305,10 @@ test_symbolic_or_abbreviated_ref_exits_2() {
     local r; r=$(new_repo) || return 1
     local head; head=$(git -C "$r" rev-parse HEAD)
     local rc bad
-    for bad in HEAD main "${head:0:12}" "${head^^}"; do
+    # No `${head^^}` — that is a bash 4 expansion and macOS ships /bin/bash 3.2,
+    # where it aborts the suite with "bad substitution". A literal uppercase OID
+    # exercises the same rejection path.
+    for bad in HEAD main "${head:0:12}" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; do
         bash "$SCRIPT" -C "$r" 617 "$head" "$bad" >/dev/null 2>&1; rc=$?
         [ "$rc" -eq 2 ] || { echo "head '$bad': expected rc 2, got $rc"; return 1; }
         bash "$SCRIPT" -C "$r" 617 "$bad" "$head" >/dev/null 2>&1; rc=$?

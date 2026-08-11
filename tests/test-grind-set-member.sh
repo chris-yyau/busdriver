@@ -15,15 +15,18 @@ SANDBOX_ROOT=$(mktemp -d) || { echo "FAIL: mktemp -d failed"; exit 1; }
 trap 'rm -rf "$SANDBOX_ROOT"' EXIT
 
 REPO=$(mktemp -d "$SANDBOX_ROOT/repo.XXXXXX") || { echo "FAIL: mktemp -d failed"; exit 1; }
-git -C "$REPO" init -q -b main
-git -C "$REPO" config user.email t@example.com
-git -C "$REPO" config user.name Test
-git -C "$REPO" commit -q --allow-empty -m "chore: base"
-C1=$(git -C "$REPO" rev-parse HEAD)
-git -C "$REPO" commit -q --allow-empty -m "fix: grind one"
-C2=$(git -C "$REPO" rev-parse HEAD)
-git -C "$REPO" commit -q --allow-empty -m "feat: author work"
-C3=$(git -C "$REPO" rev-parse HEAD)
+setup_fail() { echo "FAIL: fixture setup: $1"; exit 1; }
+git -C "$REPO" init -q -b main                        || setup_fail "init"
+git -C "$REPO" config user.email t@example.com        || setup_fail "config email"
+git -C "$REPO" config user.name Test                  || setup_fail "config name"
+git -C "$REPO" commit -q --allow-empty -m "chore: base"        || setup_fail "commit 1"
+C1=$(git -C "$REPO" rev-parse HEAD)                   || setup_fail "rev-parse 1"
+git -C "$REPO" commit -q --allow-empty -m "fix: grind one"     || setup_fail "commit 2"
+C2=$(git -C "$REPO" rev-parse HEAD)                   || setup_fail "rev-parse 2"
+git -C "$REPO" commit -q --allow-empty -m "feat: author work"  || setup_fail "commit 3"
+C3=$(git -C "$REPO" rev-parse HEAD)                   || setup_fail "rev-parse 3"
+[ "$C1" != "$C2" ] && [ "$C2" != "$C3" ] && [ "$C1" != "$C3" ] \
+    || setup_fail "fixture commits are not distinct"
 ABSENT=0000000000000000000000000000000000000042
 ALLZERO=0000000000000000000000000000000000000000
 
@@ -173,7 +176,7 @@ test_glob_token_does_not_expand_to_a_valid_oid() {
     : > "$decoy/$C2"
     local rc
     (cd "$decoy" && bash "$SCRIPT" -C "$REPO" \
-        --shas "????????????????????????????????????????" --status ok "$C2") >/dev/null 2>&1
+        --shas "????????????????????????????????????????" --status ok --head "$C3" "$C2") >/dev/null 2>&1
     rc=$?
     [ "$rc" -eq 3 ] || { echo "glob token expanded instead of BAILing (rc $rc)"; return 1; }
 }

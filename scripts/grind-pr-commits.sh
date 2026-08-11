@@ -95,7 +95,7 @@ _gv=$(command git --version 2>/dev/null) || _gv=""
 case "$_gv" in
     "git version "*) : ;;
     *)
-        printf 'grind-pr-commits.sh: SCAN FAILED: `git` does not resolve to the real git binary (shadowed function, alias, or PATH hijack); got %s\n' \
+        printf "grind-pr-commits.sh: SCAN FAILED: \`git\` does not resolve to the real git binary (shadowed function, alias, or PATH hijack); got %s\n" \
             "${_gv:-no output}" >&2
         exit 3
         ;;

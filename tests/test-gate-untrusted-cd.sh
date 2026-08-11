@@ -420,22 +420,10 @@ echo
 # by hand before shipping), which would approve a torn commit against whatever
 # marker the CURRENT repo happens to hold. A guard never seen to fail is not
 # a guard, so the fail-open is pinned here alongside the fix.
-scope_case() {   # $1=untrusted_cd  $2=want status  $3=label
-    local got
-    GATE_REPO_DIR=""; GATE_RESOLVE_STATUS=""
-    gate_resolve_repo_dir "" "$PWD" "$1"
-    got="$GATE_RESOLVE_STATUS"
-    if [[ "$got" == "$2" ]]; then
-        printf '  PASS  %-50s status=%s\n' "$3" "$got"
-    else
-        fails=$((fails + 1))
-        printf '  FAIL  %-50s want=%s got=%s\n' "$3" "$2" "$got"
-    fi
-}
-scope_case '?torn-assignment' block-unresolvable \
-    '#593 torn scope → block-unresolvable'
-scope_case '' proceed \
-    '#593 empty scope → proceed (the fail-open it replaces)'
+resolve_case '#593 torn scope → block-unresolvable' \
+    block-unresolvable '' '?torn-assignment'
+resolve_case '#593 empty scope → proceed (the fail-open it replaces)' \
+    proceed '' ''
 
 echo
 # Fold in anything the command-not-found handler recorded (see its comment: the

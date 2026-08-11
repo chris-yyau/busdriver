@@ -1755,33 +1755,6 @@ def _torn_direct_hits(seg, target, argv):
     # five verified bypasses). So the rule stays uniform: a tear means the scope
     # is unknowable, full stop.
     #
-    # DID THE TEAR ACTUALLY HIDE A COMMAND WORD? `_torn_assignment` answers a
-    # deliberately weaker question -- does this value contain substitution syntax
-    # AT ALL -- because shlex discards quote provenance and a balance count is
-    # forgeable (see its docstring). For the NESTED route that over-firing is
-    # free: it costs one extra scan. On THIS route it is not, and #634 review
-    # caught the difference: an INTACT `TAG=$(git describe) git commit` trips
-    # `_torn_assignment` on the bare presence of `$(`, and forcing `_TORN_SCOPE`
-    # there stalls three fail-CLOSED gates on an ordinary, correct command.
-    #
-    # So ask the narrower question the direct route actually needs, WITHOUT
-    # reintroducing the delimiter grammar this file abandoned: could the tear
-    # have hidden a command word from the walk? If every occurrence of the
-    # target is the one the walk already stopped on, the answer is no -- there
-    # is no second `git` for the debris to be concealing -- and the walk's own
-    # reading, scope and all, stands. `X=$(printf git commit x) git -C /tmp
-    # commit` still recovers, because there the debris contributes a SECOND
-    # `git` at a different index and the walk's landing is therefore not the
-    # only candidate.
-    #
-    # WHAT THIS DOES NOT RULE OUT, stated precisely because a first draft of this
-    # note got it wrong: the exemption fires only when the walk's landing is the
-    # ONLY target token, which needs the substitution to contribute none of its
-    # own. `TAG=$(git describe) git commit` qualifies -- the inner `git` FUSES
-    # into the token `TAG=$(git`, so it is not a candidate. `H=$(git rev-parse
-    # HEAD) git commit` does NOT: the walk halts on `rev-parse` and the inner
-    # `git` stands alone, so two indices differ and the sentinel fires.
-    #
     # That is correct, and it is a safety GAIN rather than an over-block: the
     # whole `VAR=$(<multi-word git/gh cmd>) git commit` family was a silent
     # fail-OPEN on main (verified against the pre-#593 path -- every one of
@@ -1790,9 +1763,6 @@ def _torn_direct_hits(seg, target, argv):
     # `$( date )` returned NOT-DETECTED, so the commit ran unseen by all three
     # gates). This is the #593 bug itself, not collateral damage from fixing it.
     # It now reports DETECTED with an unresolvable scope, so the gate stalls.
-    # Escapes, both verified clean: QUOTE the substitution
-    # (`H="$(git rev-parse HEAD)" git commit` collapses to one token) or SPLIT
-    # the segment (`H=$(git rev-parse HEAD); git commit`).
     #
     # Escapes for the stall, verified clean: SPLIT the segment
     # (`H=$(git rev-parse HEAD); git commit`) so the assignment is its own
@@ -2472,16 +2442,32 @@ def _iter_gh(chunk, subcommand, allow_cd):
         # subcommand is matched by the same _gh_find_pr_sub the normal path uses,
         # so no second spelling of `pr <sub>` enters the file.
         _recovered = False
-        for _toks, _k in _torn_direct_hits(seg, 'gh', argv):
-            _rest = _toks[_k + 1:]
+        # LINEAR, not quadratic (#634), same shape as _scan_commit above: each
+        # candidate window is bounded by the NEXT candidate's start rather than
+        # running to end-of-segment, so slices partition the segment instead of
+        # stacking.
+        # AT MOST ONE yield per segment. A segment IS one command -- `;`, `&&`
+        # and friends are what split_segments splits on -- so two executed
+        # `gh pr merge` invocations can never share one. Every candidate past
+        # the first is therefore debris (tear content, or an argument VALUE as
+        # in `gh pr merge 1 --body "gh pr merge 2"`), and yielding it inflates
+        # gh_pr_count, which the pre-merge gate reads to refuse multi-PR
+        # merges. Verified: yielding all candidates reported 2 for both of
+        # those single-merge shapes.
+        _gh_hits = list(_torn_direct_hits(seg, 'gh', argv))
+        _gh_all = _gh_hits[0][0] if _gh_hits else ()
+        _gh_starts = [_k for _t, _k in _gh_hits]
+        for _i, _k in enumerate(_gh_starts):
+            _end = (_gh_starts[_i + 1]
+                    if _i + 1 < len(_gh_starts) else len(_gh_all))
+            _rest = _gh_all[_k + 1:_end]
             _j = _gh_find_pr_sub(_rest, subcommand)
             if _j is not None:
                 yield True, '', _gh_pr_number(_rest[_j + 2:]), _TORN_SCOPE
                 _recovered = True
                 break
-        # One result per command word: falling through to the ordinary walk after
-        # recovering would yield the SAME invocation twice and inflate
-        # gh_pr_count, which the pre-merge gate reads to refuse multi-PR merges.
+        # Same reason the loop above stops at one: falling through to the
+        # ordinary walk after recovering would yield the SAME invocation twice.
         if _recovered:
             pending_cd = None
             continue

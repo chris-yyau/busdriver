@@ -1158,11 +1158,12 @@ for _c in ('echo bash -c "git commit"',
 check("readable-name~ (fixed) '. /dev/null bash -c git commit' does not run",
       g.git_commit(". /dev/null bash -c 'git commit'")[0], False)
 # WAS an accepted limit (#587), now CLOSED (#593). The DIRECT route is recovered
-# by _torn_direct_hit: `X=$(printf x y) git commit` really does run the commit
+# by _torn_direct_hits: `X=$(printf x y) git commit` really does run the commit
 # (verified) and is now detected. What unblocked it was giving up on deriving
 # scope rather than synthesizing an argv -- recovery reports the command with an
 # unresolvable scope token, so the gates stall instead of acting on a guess.
-_TORN_SCOPE = '?torn-assignment'
+_TORN_SCOPE = g._TORN_SCOPE
+check("torn-direct (#593) sentinel value pinned", _TORN_SCOPE, '?torn-assignment')
 for _c in ('X=$(printf x y) git commit -m x',      # #593 headline
            'X=$((1 + 2)) git commit -m x',         # arithmetic form
            'X=${foo:-a b} git commit -m x',        # brace form
@@ -1377,26 +1378,40 @@ check("torn-direct (#634) post-`--` amend is a pathspec, not the flag",
 check("torn-direct (#634) `-m git` argument does not truncate the amend window",
       g.git_commit('X=$(printf x y) git commit -m git --amend')[2], True)
 
-# A DYNAMIC command word defeats the exemption's premise — it claims the walk's
-# landing IS the executed command, and `$G` can be anything. In
-# `X=$(printf git commit x) $G -C /x commit` the only literal `git` is
-# substitution debris while `$G` runs the real commit in /x. The pre-#593 path
-# reports scope '/tmp' here (a mis-scope this change INHERITED, not opened), so
-# requiring the segment to be static past the prefix makes this strictly better
-# than baseline rather than merely no worse.
-check("torn-direct (#634) dynamic command word forfeits the exemption",
+# A DYNAMIC command word is one of the shapes that DEFEATED the removed
+# exemption attempt (see gitcmd_detect.py `_torn_direct_hits`): it would have
+# claimed the walk's landing IS the executed command, and `$G` can be
+# anything. In `X=$(printf git commit x) $G -C /x commit` the only literal
+# `git` is substitution debris while `$G` runs the real commit in /x. The
+# uniform rule reports it unresolvable instead.
+check("torn-direct (#634) dynamic command word reports _TORN_SCOPE",
       g.git_commit('G=git; cd /tmp && X=$(printf git commit x) $G -C /x commit -m x',
                    with_untrusted_cd=True)[3], _TORN_SCOPE)
-# A static segment is ALSO not enough: an interpreter runs a payload of its own,
-# so `X=$(printf git commit x) bash -c "git -C /x commit"` has every token static
-# while the real commit executes in /x. The exemption additionally requires the
-# segment to carry no shell payload.
-check("torn-direct (#634) interpreter payload forfeits the exemption",
+# An interpreter payload is another shape that defeated the removed exemption:
+# `X=$(printf git commit x) bash -c "git -C /x commit"` has every token static
+# while the real commit executes in /x.
+check("torn-direct (#634) interpreter payload reports _TORN_SCOPE",
       g.git_commit('cd /tmp && X=$(printf git commit x) bash -c "git -C /x commit -m x"',
                    with_untrusted_cd=True)[3], _TORN_SCOPE)
-check("torn-direct (#634) interpreter payload forfeits the exemption (gh)",
+check("torn-direct (#634) interpreter payload reports _TORN_SCOPE (gh)",
       g.gh_pr('cd /tmp && X=$(printf gh pr merge x) bash -c "gh pr merge 1"',
               'merge', with_untrusted_cd=True)[3], _TORN_SCOPE)
+# gh_pr_count feeds the pre-merge gate's multi-PR refusal, so the torn recovery
+# must yield ONCE per segment (#634 review). A segment IS one command, so every
+# candidate past the first is debris -- either tear content or an argument
+# VALUE -- and yielding it turns a single merge into a spurious multi-PR block.
+# Yielding all candidates reported 2 for both of the next two cases.
+check("torn-direct (#634) `gh` inside an argument value does not inflate the count",
+      g.gh_pr_count('X=$(printf x y) gh pr merge 1 --body gh pr merge 2',
+                     'merge'), 1)
+check("torn-direct (#634) `gh pr merge` inside the TEAR does not inflate the count",
+      g.gh_pr_count('X=$(printf gh pr merge x) gh pr merge 1', 'merge'), 1)
+# ...while genuinely separate invocations, which need separate SEGMENTS, still
+# both count. This one passes under either policy; it is here so the pair above
+# cannot be "fixed" by disabling torn recovery wholesale.
+check("torn-direct (#634) two torn merges in two segments count 2",
+      g.gh_pr_count('X=$(printf gh) gh pr merge 1; Y=$(printf gh) gh pr merge 2',
+                     'merge'), 2)
 # The plain dynamic form (no tear) stays undetected — a separate, pre-existing
 # limit of this parser, pinned so the two are never conflated.
 check("dynamic command word alone is undetected (pre-existing limit)",

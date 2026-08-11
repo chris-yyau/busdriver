@@ -1,3 +1,10 @@
+## [1.105.3](https://github.com/chris-yyau/busdriver/compare/v1.105.2...v1.105.3) (2026-08-11)
+
+
+### Bug Fixes
+
+* **pr-grinder:** drop the worker's wholesale SKILL.md read, ordered on a false claim ([#621](https://github.com/chris-yyau/busdriver/issues/621)) ([4787cd3](https://github.com/chris-yyau/busdriver/commit/4787cd31084ce29b8f79d604dfc1f27d5ec71b56)), closes [#619](https://github.com/chris-yyau/busdriver/issues/619)
+
 ## [1.105.2](https://github.com/chris-yyau/busdriver/compare/v1.105.1...v1.105.2) (2026-08-10)
 
 

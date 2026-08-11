@@ -1,3 +1,10 @@
+# [1.106.0](https://github.com/chris-yyau/busdriver/compare/v1.105.3...v1.106.0) (2026-08-11)
+
+
+### Features
+
+* **pr-grind:** durable grind provenance so [#620](https://github.com/chris-yyau/busdriver/issues/620)'s gate fires across invocations ([#628](https://github.com/chris-yyau/busdriver/issues/628)) ([8209074](https://github.com/chris-yyau/busdriver/commit/8209074c55034ac123da25f13ae9a8510a514dc5)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.105.3](https://github.com/chris-yyau/busdriver/compare/v1.105.2...v1.105.3) (2026-08-11)
 
 

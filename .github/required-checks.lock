@@ -126,10 +126,6 @@
       "job": "gitleaks"
     },
     {
-      "name": "GitGuardian Security Checks",
-      "source_app": "gitguardian"
-    },
-    {
       "name": "coverage",
       "source_app": "github-actions",
       "workflow": ".github/workflows/tests.yml",

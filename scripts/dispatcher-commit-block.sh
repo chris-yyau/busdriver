@@ -1045,7 +1045,13 @@ printf '%s\n' "$_committed_msg" | grep -qxF "Grind-PR: $PR_NUMBER" || \
 # Check 2: it also parses as a real trailer, so its position has not drifted
 # into the body. Capture-first because the bare command exits 0 whether or not
 # the trailer parses.
-_grind_trailer=$(git log -1 --format='%(trailers:key=Grind-PR,valueonly=true)' "$NEW_COMMIT_SHA") || \
+# `-c trailer.separators=':'` pins the parse to the SAME configuration
+# grind-pr-commits.sh pins on the read side. Leaving this on ambient config is a
+# real writer/reader split: a repository or user config omitting ':' would make
+# every valid grind commit BAIL here even though the scanner would accept it —
+# the opposite of the one-contract property this verification exists to provide.
+_grind_trailer=$(git -c trailer.separators=':' log -1 \
+    --format='%(trailers:key=Grind-PR,valueonly=true)' "$NEW_COMMIT_SHA") || \
     emit_bail "env" "failed to parse trailers for verification; $_grind_bail_ctx"
 [ "$_grind_trailer" = "$PR_NUMBER" ] || \
     emit_bail "env" "Grind-PR: did not parse as a trailer (got '$_grind_trailer', want '$PR_NUMBER'); $_grind_bail_ctx"

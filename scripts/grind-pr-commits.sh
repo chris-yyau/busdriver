@@ -297,7 +297,14 @@ if [ "$CONTEXT_MODE" -eq 1 ]; then
     if [ -z "$combined" ]; then
         printf 'GRIND_SHAS=none\n'
     else
-        printf 'GRIND_SHAS=%s\n' "$(printf '%s' "$combined" | tr '\n' ',')"
+        # Capture the join separately. Nesting it inside printf's argument would
+        # let a failed `tr` be masked by printf succeeding, emitting a malformed
+        # GRIND_SHAS alongside STATUS=ok — the fail-OPEN direction, in the one
+        # line the whole contract is transported through.
+        _joined=$(printf '%s' "$combined" | tr '\n' ',')
+        rc=$?
+        [ "$rc" -eq 0 ] || scan_failed "failed to render the SHA list (tr exit $rc)"
+        printf 'GRIND_SHAS=%s\n' "$_joined"
     fi
     printf 'GRIND_SHAS_STATUS=ok\n'
 else

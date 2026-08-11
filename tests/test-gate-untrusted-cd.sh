@@ -411,6 +411,33 @@ frame_case pre-pr-gate.sh     no "plain pr create → no parse error" "gh pr cre
 frame_case pre-merge-gate.sh  no "plain pr merge → no parse error" "gh pr merge 1"
 
 echo
+# #593: the DIRECT-route torn-assignment recovery reports `_TORN_SCOPE` as the
+# untrusted cd because the debris destroyed argv position, so nothing can say
+# WHERE the hidden command would run. This asserts the resolver actually turns
+# that into a block -- and, in the same breath, that the EMPTY value it would
+# otherwise have carried does NOT. Both directions matter: the empty variant
+# anchors the cwd repo and returns `proceed` (this is the mutation that was run
+# by hand before shipping), which would approve a torn commit against whatever
+# marker the CURRENT repo happens to hold. A guard never seen to fail is not
+# a guard, so the fail-open is pinned here alongside the fix.
+scope_case() {   # $1=untrusted_cd  $2=want status  $3=label
+    local got
+    GATE_REPO_DIR=""; GATE_RESOLVE_STATUS=""
+    gate_resolve_repo_dir "" "$PWD" "$1"
+    got="$GATE_RESOLVE_STATUS"
+    if [[ "$got" == "$2" ]]; then
+        printf '  PASS  %-50s status=%s\n' "$3" "$got"
+    else
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s want=%s got=%s\n' "$3" "$2" "$got"
+    fi
+}
+scope_case '?torn-assignment' block-unresolvable \
+    '#593 torn scope → block-unresolvable'
+scope_case '' proceed \
+    '#593 empty scope → proceed (the fail-open it replaces)'
+
+echo
 # Fold in anything the command-not-found handler recorded (see its comment: the
 # handler's own increment cannot survive its subshell).
 if [ -s "$UNDEFINED_HELPERS" ]; then

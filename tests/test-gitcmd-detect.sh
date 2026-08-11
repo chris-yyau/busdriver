@@ -1157,15 +1157,126 @@ for _c in ('echo bash -c "git commit"',
 # to a no-op sourced script). cubic-dev-ai #587.
 check("readable-name~ (fixed) '. /dev/null bash -c git commit' does not run",
       g.git_commit(". /dev/null bash -c 'git commit'")[0], False)
-# ACCEPTED LIMIT, pinned so the trade stays visible: the DIRECT route is not
-# recovered. `X=$(printf x y) git commit` runs the commit (verified) and is
-# missed, exactly as on main -- closing it means synthesizing an argv for a
-# scanner that derives target_dir, `-C` authority and cd trust from argv
-# POSITION, a far larger blast radius than payload extraction. This change's
-# invariant is that it introduces no NEW fail-open, not that it closes every one.
-for _c in ('X=$(printf x y) git commit -m x',
-           'X=$((1 + 2)) git commit -m x'):
-    check(f"torn-direct~ (known limit) {_c!r}", g.git_commit(_c)[0], False)
+# WAS an accepted limit (#587), now CLOSED (#593). The DIRECT route is recovered
+# by _torn_direct_hit: `X=$(printf x y) git commit` really does run the commit
+# (verified) and is now detected. What unblocked it was giving up on deriving
+# scope rather than synthesizing an argv -- recovery reports the command with an
+# unresolvable scope token, so the gates stall instead of acting on a guess.
+_TORN_SCOPE = '?torn-assignment'
+for _c in ('X=$(printf x y) git commit -m x',      # #593 headline
+           'X=$((1 + 2)) git commit -m x',         # arithmetic form
+           'X=${foo:-a b} git commit -m x',        # brace form
+           'A=1 X=$(printf x y) git commit -m x',  # tear at token 1, not token 0
+           'X=$( gh pr list ) git commit -m x',    # decoy: bare gh before real git
+           'X=$(printf x y) git -C /tmp commit',   # subcommand not adjacent to git
+           'X=$(printf x y) /usr/bin/git commit'): # path-qualified target
+    check(f"torn-direct (#593) detected {_c!r}", g.git_commit(_c)[0], True)
+    # Scope MUST be reported unresolvable. An empty untrusted_cd here makes
+    # resolve-repo-dir.sh ANCHOR the cwd repo and `proceed` (verified by
+    # mutation), which would approve a torn commit against the wrong repo's
+    # marker -- the one way this recovery could fail OPEN.
+    check(f"torn-direct (#593) unresolvable {_c!r}",
+          g.git_commit(_c, with_untrusted_cd=True)[3], _TORN_SCOPE)
+
+# The same tear hides `gh pr merge` / `gh pr create` from the pre-merge and
+# pre-PR gates; both are recovered through the same helper and the same
+# _gh_find_pr_sub the normal path uses.
+for _c, _sub in (('X=$(printf x y) gh pr merge 1', 'merge'),
+                 ('X=$(printf x y) gh pr create', 'create')):
+    check(f"torn-direct (#593) gh {_sub} {_c!r}", g.gh_pr(_c, _sub)[0], True)
+    check(f"torn-direct (#593) gh {_sub} unresolvable {_c!r}",
+          g.gh_pr(_c, _sub, with_untrusted_cd=True)[3], _TORN_SCOPE)
+
+# The FALSE-POSITIVE floor. Recovery is subcommand-aware, which is what keeps it
+# off these: a tear destroys argv position, so a rule that fired on "torn AND git
+# present" would newly block all four of them (verified). Measured against 29,277
+# recorded agent commands, the recovery newly detects ONE command -- an
+# investigation probe that PRINTS `git commit` rather than running it -- so the
+# delta on real workflow commands is ZERO, #587's own bar.
+for _c in ('X=$(printf a b) git status',
+           'X=${foo:-a b} git diff',
+           'X=$(printf a b) git commit-graph write',   # plumbing, not `commit`
+           'X=$(printf a b) git log --grep commit'):   # `commit` is an option value
+    check(f"torn-direct (#593) no-FP {_c!r}", g.git_commit(_c)[0], False)
+
+# PROPERTY sweep across the axes hand-picked rows kept missing. The product of
+# {tear spelling} x {prefix position} x {target spelling} is what surfaced the
+# fail-open where the torn VALUE contributes its own `git` token ahead of the
+# real one: `X=$(printf git x) git commit` put a `git` in the command slot, the
+# walk read `x)` as the subcommand, and the commit ran unseen (verified against
+# bash -- the commit lands).
+#
+# 23 of the 24 prefix/tear combinations really do commit, each confirmed by
+# running it against a scratch repo. The ONE that does not is
+# `env X=${foo:-a b} git commit`: with `foo` unset the value splits, so env(1)
+# takes the bare `b` as the utility to run and never reaches git. It is detected
+# anyway -- the same accepted over-block as the echo-debris class, costing a
+# visible stall and never a bypass -- so it is swept here rather than carved out,
+# with the asymmetry recorded instead of papered over.
+_TEARS = ('$(printf x y)', '$((1 + 2))', '${foo:-a b}', '$(printf git x)',
+          '`printf x y`', '<(printf x y)')
+_PREFIXES = ('X={t} ', 'A=1 X={t} ', 'X={t} Y={t} ', 'env X={t} ')
+_GITS = ('git', '/usr/bin/git')
+for _tear in _TEARS:
+    for _pre in _PREFIXES:
+        for _git in _GITS:
+            _c = _pre.format(t=_tear) + _git + ' commit -m x'
+            check(f"torn-direct (#593) sweep {_c!r}", g.git_commit(_c)[0], True)
+            check(f"torn-direct (#593) sweep-scope {_c!r}",
+                  g.git_commit(_c, with_untrusted_cd=True)[3], _TORN_SCOPE)
+# Same sweep for the two gh subcommands, including the value-contributes-`gh`
+# shape that hid `gh pr merge` from the pre-merge gate.
+for _tear in ('$(printf x y)', '$(printf gh x)', '$((1 + 2))'):
+    for _sub in ('merge', 'create'):
+        _c = f'X={_tear} gh pr {_sub} 1'
+        check(f"torn-direct (#593) gh sweep {_c!r}", g.gh_pr(_c, _sub)[0], True)
+
+# The debris spells a COMPLETE command, so the ordinary walk "succeeds" and would
+# report the CWD as scope -- while bash commits somewhere else entirely. Verified
+# against two scratch repos: the commit lands in the `-C` directory and the cwd
+# repo gets nothing, so a gate trusting that scope validates the wrong repo's
+# marker. This is why recovery runs BEFORE the walk rather than only after it
+# fails, and why a tear forces the unresolvable scope even on an apparent match.
+check("torn-direct (#593) debris spells a command, scope must not be cwd",
+      g.git_commit('X=$(printf git commit x) git -C /tmp commit -m x',
+                   with_untrusted_cd=True)[3], _TORN_SCOPE)
+check("torn-direct (#593) debris spells gh pr merge, scope must not be cwd",
+      g.gh_pr('X=$(printf gh pr merge x) env GH_REPO=other/repo gh pr merge 1',
+              'merge', with_untrusted_cd=True)[3], _TORN_SCOPE)
+# One result per command word: recovery must not ALSO fall through to the normal
+# walk, or gh_pr_count double-counts and the pre-merge gate's multi-PR refusal
+# reads an inflated number.
+check("torn-direct (#593) recovery does not double-count",
+      g.gh_pr_count('X=$(printf x y) gh pr merge 1', 'merge'), 1)
+
+# The sentinel must SURVIVE the nested-payload fold. _gh_scan_nested used to
+# rebuild this field from the cd list alone, discarding the scanner's verdict, so
+# a torn command inside `bash -c` came back with an EMPTY scope and the gate
+# anchored the cwd repo while the payload targeted another (verified). The git
+# sibling always folded r[3] in; these pin that the two now agree.
+for _c, _sub in (("bash -c 'X=$(printf x y) gh pr merge 1'", 'merge'),
+                 ("bash -c 'X=$(printf x y) gh pr create'", 'create'),
+                 ("bash -c 'X=$(printf gh pr merge x) env GH_REPO=o/r gh pr merge 1'",
+                  'merge')):
+    check(f"torn-direct (#593) nested keeps scope {_c!r}",
+          g.gh_pr(_c, _sub, with_untrusted_cd=True)[3], _TORN_SCOPE)
+check("torn-direct (#593) nested git keeps scope",
+      g.git_commit("bash -c 'X=$(printf x y) git commit -m x'",
+                   with_untrusted_cd=True)[3], _TORN_SCOPE)
+# ...and must NOT appear on untorn nested/cd forms, which keep their real scope.
+check("torn-direct (#593) untorn cd keeps trusted scope",
+      g.gh_pr('cd /other && gh pr merge 1', 'merge', with_untrusted_cd=True)[1],
+      '/other')
+check("torn-direct (#593) untorn gh no sentinel",
+      g.gh_pr('gh pr merge 1', 'merge', with_untrusted_cd=True)[3], '')
+
+# Untorn forms must be UNTOUCHED -- same verdict AND same scope as before, so the
+# recovery cannot quietly convert a resolvable commit into a stall.
+check("torn-direct (#593) untorn keeps scope",
+      g.git_commit('git -C /tmp commit -m x', with_untrusted_cd=True)[1], '/tmp')
+for _c in ("X=1 git commit -m x", "X='a b' git commit -m x"):
+    check(f"torn-direct (#593) untorn no sentinel {_c!r}",
+          g.git_commit(_c, with_untrusted_cd=True)[3], '')
 
 # `--` ENDS a wrapper's option processing, so the token after it is an OPERAND,
 # never an option argument. Leaving the arity guess on swallowed the real

@@ -18,22 +18,34 @@ const MAX_STDIN = 1024 * 1024;
 
 function readStdinRaw() {
   return new Promise(resolve => {
-    let raw = '';
+    // No setEncoding('utf8') here: decoded String#length counts UTF-16 code
+    // units, not UTF-8 bytes. A payload full of multi-byte characters (e.g.
+    // non-ASCII file content) can exceed MAX_STDIN bytes while its decoded
+    // length stays under the cap, so `truncated` would silently read false —
+    // defeating the --fail-closed enforcement this flag drives (#612 review).
+    // Buffer chunks are tracked and byte-capped instead; decoding to utf8
+    // happens once at the end, after any cap-boundary cut.
+    const chunks = [];
+    let byteLength = 0;
     let truncated = false;
-    process.stdin.setEncoding('utf8');
     process.stdin.on('data', chunk => {
-      if (raw.length < MAX_STDIN) {
-        const remaining = MAX_STDIN - raw.length;
-        raw += chunk.substring(0, remaining);
+      if (byteLength < MAX_STDIN) {
+        const remaining = MAX_STDIN - byteLength;
         if (chunk.length > remaining) {
+          chunks.push(chunk.subarray(0, remaining));
+          byteLength += remaining;
           truncated = true;
+        } else {
+          chunks.push(chunk);
+          byteLength += chunk.length;
         }
       } else {
         truncated = true;
       }
     });
-    process.stdin.on('end', () => resolve({ raw, truncated }));
-    process.stdin.on('error', () => resolve({ raw, truncated }));
+    const finish = () => resolve({ raw: Buffer.concat(chunks).toString('utf8'), truncated });
+    process.stdin.on('end', finish);
+    process.stdin.on('error', finish);
   });
 }
 
@@ -153,6 +165,46 @@ function buildDryRunPreview(hookId, relScriptPath, profilesCsv, raw) {
   return parts.join(' ') + '\n';
 }
 
+// Hoisted out of main() (was an inline closure + ternary) to keep the #612
+// truncation-override logic reviewable on its own and hold down main()'s
+// cyclomatic complexity (CodeScene flagged the inline version's added
+// conditional branch — main was already well over threshold pre-PR).
+// The caveat is load-bearing, not hedging: this line is written BEFORE the
+// disabled-hook and dry-run early-returns, both of which exit 0 by design. An
+// unqualified "any allow is overridden" would therefore overclaim enforcement
+// on exactly the two paths that deliberately do not enforce — the wrong
+// direction to be wrong in for a fail-closed runner. The unconditional claim
+// belongs to enforceTruncation()'s own message, which is written at the
+// override site and so is always true when it appears.
+function truncationDisposition(failClosed) {
+  return failClosed
+    ? 'fail-CLOSED: a hook allow is overridden to exit 2, unless this hook is disabled or in dry-run'
+    : 'fail-open unless the hook blocks';
+}
+
+// #612: a hook that returns "allow" on a truncated payload never saw the whole
+// document — GateGuard's parse-error path (`return rawInput`) allows precisely
+// because the JSON was cut mid-stream. An allow computed from input the hook
+// could not fully read is not a confirmed allow, so override it to a block for
+// the pure-block gates. Advisory dispatches keep their historical exit 0:
+// giving them a block they never had would let an oversized payload DoS every
+// non-gate hook. Keyed off argv only, for the same injection reason as
+// failOpenExitCode(). Only the exit-0 case is forced — a hook that already
+// decided nonzero has spoken, and both live gate registrations wrap the runner
+// with `|| exit 2` so any nonzero exit blocks anyway.
+function enforceTruncation(code, { truncated, failClosed, hookId }) {
+  // Named instead of a compound `if` (CodeScene Complex Conditional) — the
+  // override applies only when a fail-closed gate saw a truncated payload
+  // AND still exited 0 (an unconfirmed allow); any other combination passes
+  // `code` through unchanged.
+  const unconfirmedAllow = truncated && failClosed && code === 0;
+  if (!unconfirmedAllow) {
+    return code;
+  }
+  process.stderr.write(`[Hook] ${hookId || 'unknown'} allowed a payload truncated at ${MAX_STDIN} bytes; --fail-closed cannot confirm that allow — blocking (exit 2)\n`);
+  return 2;
+}
+
 async function main() {
   const [, , hookId, relScriptPath, profilesCsv] = process.argv;
   const { raw, truncated } = await readStdinRaw();
@@ -164,8 +216,9 @@ async function main() {
   // the truncated flag (run() context / ECC_HOOK_INPUT_TRUNCATED), so
   // security hooks like config-protection can still choose to block.
   const sanitizeEcho = text => (truncated && text === raw ? '' : text);
+  const failClosed = process.argv.includes('--fail-closed');
   if (truncated) {
-    process.stderr.write(`[Hook] stdin exceeded ${MAX_STDIN} bytes for ${hookId || 'unknown'}; suppressing pass-through (fail-open unless the hook blocks)\n`);
+    process.stderr.write(`[Hook] stdin exceeded ${MAX_STDIN} bytes for ${hookId || 'unknown'}; suppressing pass-through (${truncationDisposition(failClosed)})\n`);
   }
 
   if (!hookId || !relScriptPath) {
@@ -252,7 +305,7 @@ async function main() {
         maxStdin: MAX_STDIN
       });
       const result = resolveHookResult(raw, output);
-      exitWithStdout(sanitizeEcho(result.stdout), result.exitCode);
+      exitWithStdout(sanitizeEcho(result.stdout), enforceTruncation(result.exitCode, { truncated, failClosed, hookId }));
     } catch (runErr) {
       process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
       // A blocking gate whose hook crashed cannot confirm an allow → fail CLOSED when
@@ -288,7 +341,7 @@ async function main() {
     return;
   }
 
-  exitWithStdout(legacyStdout, Number.isInteger(result.status) ? result.status : 0);
+  exitWithStdout(legacyStdout, enforceTruncation(Number.isInteger(result.status) ? result.status : 0, { truncated, failClosed, hookId }));
 }
 
 main().catch(err => {

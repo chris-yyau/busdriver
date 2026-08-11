@@ -5359,7 +5359,7 @@
     {
       "path": "skills/gateguard/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/gateguard/SKILL.md"
     },
     {

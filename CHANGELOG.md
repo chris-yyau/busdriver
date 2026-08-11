@@ -1,3 +1,11 @@
+## [1.106.1](https://github.com/chris-yyau/busdriver/compare/v1.106.0...v1.106.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **gateguard:** make the MultiEdit and subagent fact-force gates able to fire ([#615](https://github.com/chris-yyau/busdriver/issues/615), [#611](https://github.com/chris-yyau/busdriver/issues/611)) ([#630](https://github.com/chris-yyau/busdriver/issues/630)) ([39e6847](https://github.com/chris-yyau/busdriver/commit/39e68479cc0f01bce1665f78bded6dd278c00147)), closes [#631](https://github.com/chris-yyau/busdriver/issues/631) [#631](https://github.com/chris-yyau/busdriver/issues/631)
+* **hooks:** honor --fail-closed when stdin exceeds MAX_STDIN ([#612](https://github.com/chris-yyau/busdriver/issues/612)) ([#633](https://github.com/chris-yyau/busdriver/issues/633)) ([e54425d](https://github.com/chris-yyau/busdriver/commit/e54425d1911def77f8c71ed2b346ef6ed7c8f98e)), closes [#635](https://github.com/chris-yyau/busdriver/issues/635)
+
 # [1.106.0](https://github.com/chris-yyau/busdriver/compare/v1.105.3...v1.106.0) (2026-08-11)
 
 

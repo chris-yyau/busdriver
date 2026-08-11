@@ -164,9 +164,29 @@ async function main() {
   // the truncated flag (run() context / ECC_HOOK_INPUT_TRUNCATED), so
   // security hooks like config-protection can still choose to block.
   const sanitizeEcho = text => (truncated && text === raw ? '' : text);
+  const failClosed = process.argv.includes('--fail-closed');
   if (truncated) {
-    process.stderr.write(`[Hook] stdin exceeded ${MAX_STDIN} bytes for ${hookId || 'unknown'}; suppressing pass-through (fail-open unless the hook blocks)\n`);
+    const disposition = failClosed ? 'fail-CLOSED: any hook allow is overridden to exit 2' : 'fail-open unless the hook blocks';
+    process.stderr.write(`[Hook] stdin exceeded ${MAX_STDIN} bytes for ${hookId || 'unknown'}; suppressing pass-through (${disposition})\n`);
   }
+
+  // #612: a hook that returns "allow" on a truncated payload never saw the whole
+  // document — GateGuard's parse-error path (`return rawInput`) allows precisely
+  // because the JSON was cut mid-stream. An allow computed from input the hook
+  // could not fully read is not a confirmed allow, so override it to a block for
+  // the pure-block gates. Advisory dispatches keep their historical exit 0:
+  // giving them a block they never had would let an oversized payload DoS every
+  // non-gate hook. Keyed off argv only, for the same injection reason as
+  // failOpenExitCode(). Only the exit-0 case is forced — a hook that already
+  // decided nonzero has spoken, and both live gate registrations wrap the runner
+  // with `|| exit 2` so any nonzero exit blocks anyway.
+  const enforceTruncation = code => {
+    if (!truncated || !failClosed || code !== 0) {
+      return code;
+    }
+    process.stderr.write(`[Hook] ${hookId || 'unknown'} allowed a payload truncated at ${MAX_STDIN} bytes; --fail-closed cannot confirm that allow — blocking (exit 2)\n`);
+    return 2;
+  };
 
   if (!hookId || !relScriptPath) {
     // A gate registration in hooks.json always supplies hookId + scriptRelPath;
@@ -252,7 +272,7 @@ async function main() {
         maxStdin: MAX_STDIN
       });
       const result = resolveHookResult(raw, output);
-      exitWithStdout(sanitizeEcho(result.stdout), result.exitCode);
+      exitWithStdout(sanitizeEcho(result.stdout), enforceTruncation(result.exitCode));
     } catch (runErr) {
       process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
       // A blocking gate whose hook crashed cannot confirm an allow → fail CLOSED when
@@ -288,7 +308,7 @@ async function main() {
     return;
   }
 
-  exitWithStdout(legacyStdout, Number.isInteger(result.status) ? result.status : 0);
+  exitWithStdout(legacyStdout, enforceTruncation(Number.isInteger(result.status) ? result.status : 0));
 }
 
 main().catch(err => {

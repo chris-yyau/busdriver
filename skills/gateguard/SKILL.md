@@ -216,13 +216,19 @@ to verify that you actually answered — a retry that presents nothing is allowe
 just the same. Its value is forcing the investigation *pause* on first touch,
 not proving the investigation happened.
 
-One further gap, in the hook rather than the registration — know it before you
-rely on this as coverage:
+One further behaviour, in the runner rather than the registration — know it
+before you read a block message:
 
-- **A `Write` payload over 1 MiB is not gated.** `run-with-flags.js` caps stdin
-  at `MAX_STDIN = 1024 * 1024`; past that the JSON arrives truncated, GateGuard
-  hits its parse-error path and returns the input unchanged, and the runner
-  suppresses the truncated output and exits 0 — even under `--fail-closed`.
+- **A payload over 1 MiB is BLOCKED, not inspected** (#612). `run-with-flags.js`
+  caps stdin at `MAX_STDIN = 1024 * 1024`; past that the JSON arrives truncated
+  and GateGuard hits its parse-error path, which returns the input unchanged —
+  an allow. Since that allow is computed from a document the hook never fully
+  read, the runner overrides it to exit 2 for `--fail-closed` dispatches (both
+  GateGuard registrations). It used to exit 0, which made any `Write` over 1 MiB
+  a way past the gate. Advisory (non-gate) dispatches still exit 0, so an
+  oversized payload cannot DoS them. The practical effect: a single >1 MiB
+  `Write` under the `strict` profile is refused outright — split it, rather than
+  reading the block as a GateGuard finding about the content.
 
 ### Option B: Full package with config
 

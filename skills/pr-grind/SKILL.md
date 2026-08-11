@@ -1012,11 +1012,20 @@ git fetch --no-tags -q origin \
 # commits whose concatenated bodies carry Grind-PR: lines, which is the whole
 # point of scoping the range.
 BASE_SHA=$(git merge-base "refs/bd-grind/<PR_NUMBER>/base-$$" HEAD) || {
+  # Delete on the FAILURE path too. Cleaning up only on success means every
+  # failed invocation leaves a hidden ref pinning objects indefinitely — and the
+  # comment above promises same-block cleanup, so this branch has to honour it.
+  git update-ref -d "refs/bd-grind/<PR_NUMBER>/base-$$" \
+    || echo "⚠️  also could not delete scratch ref refs/bd-grind/<PR_NUMBER>/base-$$ — remove it manually"
   echo "❌ Step 0 could not find a merge base between '$BASE_BRANCH' and the PR head"
   echo "   (unrelated histories?) — grind provenance unavailable."
   exit 1
 }
-git update-ref -d "refs/bd-grind/<PR_NUMBER>/base-$$" || true   # scratch pointer; already consumed
+# Scratch pointer, already consumed. A failure to delete does not invalidate
+# BASE_SHA, so it must not abort the grind — but it is not swallowed either:
+# a silent `|| true` here is how leaked refs go unnoticed.
+git update-ref -d "refs/bd-grind/<PR_NUMBER>/base-$$" \
+  || echo "⚠️  could not delete scratch ref refs/bd-grind/<PR_NUMBER>/base-$$ — remove it manually"
 # Cross-block record. Shell state does NOT survive across Claude Bash tool calls,
 # so Claude MUST remember this literal 40-hex value and template-substitute it
 # into every downstream block, exactly as it already does for WORKTREE_DIR and

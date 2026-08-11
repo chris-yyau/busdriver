@@ -228,17 +228,15 @@ while IFS= read -r _cand; do
         log -1 --format='%(trailers)' "$_cand")
     rc=$?
     [ "$rc" -eq 0 ] || scan_failed "trailer parse failed for $_cand (git log exit $rc)"
-    printf '%s\n' "$_block" | grep -qxF "Grind-PR: ${PR_NUMBER}"
-    rc=$?
-    # Only exit 1 means "no matching trailer". Exit 2 (grep error), 126, or 127
-    # means the predicate itself failed, and a bare `|| continue` would silently
-    # drop the candidate — under-counting provenance while still reporting
-    # STATUS=ok, which is the fail-OPEN direction.
-    if [ "$rc" -eq 0 ]; then
-        arm1="${arm1}${_cand}"$'\n'
-    elif [ "$rc" -ne 1 ]; then
-        scan_failed "trailer match failed for $_cand (grep exit $rc)"
-    fi
+    # Exact-line match in PURE BASH, no grep. Every external command here is
+    # another name an inherited function or PATH entry can shadow, and a stubbed
+    # `grep` returning 1 reads as "no matching trailer" — dropping every
+    # candidate and emitting GRIND_SHAS=none with STATUS=ok while grind commits
+    # sit in range. The git canary cannot see that, because `command git` still
+    # reaches real git. Removing the dependency closes it outright.
+    case $'\n'"$_block"$'\n' in
+        *$'\n'"Grind-PR: ${PR_NUMBER}"$'\n'*) arm1="${arm1}${_cand}"$'\n' ;;
+    esac
 done <<< "$arm1_candidates"
 
 # Arm 2 (transitional): the unconditional subject composed at
@@ -274,41 +272,49 @@ done <<< "$pairs"
 # Each scan's status was checked separately ABOVE, before any pipeline:
 # `{ a; b; } | sort -u` takes its status from sort, masking git's 128 and
 # returning an empty set with rc 0 - fail-open on the exact property Rail A
-# relies on. By here both scans have succeeded, so a no-match grep is a
-# legitimately empty set, not a failure.
+# relies on. By here both scans have succeeded, so an empty result is a
+# legitimately empty set rather than a failure.
 #
-# The width filter is derived from the repo's own OID length rather than
-# hardcoded to 40, so a SHA-256 repository cannot silently filter every SHA out.
+# Merge, filter and dedup in PURE BASH. `grep`, `sort` and `tr` are three more
+# names an inherited function or a PATH entry can shadow, and a stub returning 1
+# reads as "nothing matched" — GRIND_SHAS=none with STATUS=ok while grind
+# commits sit in range. The git canary cannot catch that (`command git` still
+# reaches real git), so the dependency is removed instead of guarded. `git` is
+# now the only external command this script runs.
+#
+# Width comes from the repo's own OID length rather than a hardcoded 40, so a
+# SHA-256 repository cannot silently filter every SHA out.
 sha_len=${#base_full}
-_filtered=$(printf '%s\n%s\n' "$arm1" "$arm2" | grep -E "^[0-9a-f]{${sha_len}}\$")
-rc=$?
-# grep exit 1 means "no lines matched" — a legitimately empty set. Anything else
-# (2 = error, 127 = missing binary) is a real failure, and a blanket `|| true`
-# here would turn it into GRIND_SHAS=none with STATUS=ok: fail-OPEN on the one
-# property this script exists to guarantee.
-[ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] \
-    || scan_failed "SHA filter failed (grep exit $rc)"
-
-combined=$(printf '%s' "$_filtered" | sort -u)
-rc=$?
-[ "$rc" -eq 0 ] || scan_failed "SHA dedup failed (sort exit $rc)"
+combined=""
+while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    case "$_line" in *[!0-9a-f]*) continue ;; esac
+    [ "${#_line}" -eq "$sha_len" ] || continue
+    case $'\n'"$combined" in
+        *$'\n'"$_line"$'\n'*) continue ;;   # dedup: already collected
+    esac
+    combined="${combined}${_line}"$'\n'
+done <<< "${arm1}${arm2}"
 
 if [ "$CONTEXT_MODE" -eq 1 ]; then
     if [ -z "$combined" ]; then
         printf 'GRIND_SHAS=none\n'
     else
-        # Capture the join separately. Nesting it inside printf's argument would
-        # let a failed `tr` be masked by printf succeeding, emitting a malformed
-        # GRIND_SHAS alongside STATUS=ok — the fail-OPEN direction, in the one
-        # line the whole contract is transported through.
-        _joined=$(printf '%s' "$combined" | tr '\n' ',')
-        rc=$?
-        [ "$rc" -eq 0 ] || scan_failed "failed to render the SHA list (tr exit $rc)"
+        _joined=""
+        while IFS= read -r _line; do
+            [ -n "$_line" ] || continue
+            if [ -z "$_joined" ]; then
+                _joined="$_line"
+            else
+                _joined="${_joined},${_line}"
+            fi
+        done <<< "$combined"
         printf 'GRIND_SHAS=%s\n' "$_joined"
     fi
     printf 'GRIND_SHAS_STATUS=ok\n'
 else
-    [ -z "$combined" ] || printf '%s\n' "$combined"
+    # $combined already carries one trailing newline per entry.
+    [ -z "$combined" ] || printf '%s' "$combined"
 fi
 
 exit 0

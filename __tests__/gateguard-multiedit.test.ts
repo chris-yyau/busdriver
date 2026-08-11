@@ -126,6 +126,21 @@ describe('gateguard MultiEdit branch (#615)', () => {
     }
   })
 
+  it('gates a first-touch MultiEdit inside a subagent (#611)', () => {
+    for (const marker of [{ agent_id: 'sub-1' }, { parent_tool_use_id: 'toolu_1' }]) {
+      expect(
+        decisionOf(
+          invoke({
+            ...marker,
+            session_id: `s-sub-multiedit-${Object.keys(marker)[0]}`,
+            tool_name: 'MultiEdit',
+            tool_input: { file_path: '/repo/src/sub-multiedit.ts', edits: [] },
+          }),
+        ),
+      ).toBe('deny')
+    }
+  })
+
   it('still exempts a subagent touching a file the parent already gated (#611)', () => {
     const filePath = '/repo/src/parent-gated.ts'
     // Parent gates it first...

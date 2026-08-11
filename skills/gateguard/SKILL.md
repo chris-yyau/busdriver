@@ -49,8 +49,9 @@ Both agents produce code that runs and passes tests. The difference is design de
 ### Edit / MultiEdit Gate (first edit per file)
 
 MultiEdit is handled identically — the batch's target file is gated on first
-touch, reading `tool_input.file_path` (where a real MultiEdit payload carries it)
-and falling back to any per-edit `file_path`. The code is the authority.
+touch, reading `tool_input.file_path` and `tool_input.filePath` (where a real
+MultiEdit payload carries it) and falling back to any per-edit `file_path` or
+`filePath`. The code is the authority.
 
 ```
 Before editing {file_path}, present these facts:
@@ -118,11 +119,12 @@ three-stage summary above suggests):
 - `Edit`/`Write` — the **first touch of each file** only. Paths under Claude's
   own settings are exempt (`isClaudeSettingsPath`).
 - `MultiEdit` — the **first touch of the batch's target file**, same as
-  `Edit`/`Write`. The branch reads `tool_input.file_path` (where a real MultiEdit
-  payload carries it) and falls back to any per-edit `file_path` for harness
-  variants that nest it there. Before #615 it read the per-edit field *only*, so
-  the loop body never executed and every MultiEdit fell through to allow —
-  `__tests__/gateguard-multiedit.test.ts` locks the fix in.
+  `Edit`/`Write`. The branch reads `tool_input.file_path` and `tool_input.filePath`
+  (where a real MultiEdit payload carries it) and falls back to any per-edit
+  `file_path` or `filePath` for harness variants that nest it there. Before #615
+  it read the per-edit field *only*, so the loop body never executed and every
+  MultiEdit fell through to allow — `__tests__/gateguard-multiedit.test.ts` locks
+  the fix in.
 - `Bash` — destructive commands (`rm -rf`, `git reset --hard`, force-push, `drop
   table`, …) are gated **once per distinct command string**, not every time: the
   hook keys state on a SHA-256 of the exact command

@@ -172,10 +172,12 @@ API, presence rather than conclusion — and matched on the reporting app, not
 the name alone, which incidentally gives the PR-scoped entries the `source_app`
 check (c) can never run on them. Run against this repo it reports GitGuardian
 live and reported by `gitguardian`, which is the answer #631 needed and could
-not get. It also refuses to answer when the sample cannot support one: an
-aged-out sample is reported as stale rather than as `ok`, because a required
-app going dark blocks every PR and therefore freezes the sample on pre-outage
-merges that all still carry the name.
+not get. It also refuses to answer when the sample cannot support one. Each
+required check is dated by its own most recent sighting, not by the sample's
+newest merge: a check whose last sighting has aged out is reported stale even
+when other checks are current. That matters because a required app going dark
+blocks every PR, which freezes the sample on pre-outage merges that all still
+carry the name — under one summary date those frozen sightings read as fresh.
 
 ### Lesson
 

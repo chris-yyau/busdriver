@@ -827,27 +827,28 @@ LIVENESS_SAMPLE=10
 # a true global top-10: a PR opened long ago and merged today can sit past
 # the 30.
 #
-# That residue is accepted because both of its effects are conservative.
-# Excluding a recent merge cannot add a name to the sample, so it cannot
-# manufacture an `ok`; and it can only lower the freshest mergedAt, so it
-# can only make the staleness check fire EARLIER. The surface may
-# under-claim, never over-claim, which is the direction this whole change
-# exists to enforce.
+# That residue is survivable only because freshness is tracked PER PAIR
+# below, never as one summary date for the sample. Under a summary date the
+# gap is a real fail-open: a recent long-lived merge displaced from the
+# window leaves an older PR in its place, and that older PR can be the only
+# thing carrying some required pair — so the surface would report a pair as
+# live on evidence the true window does not contain. Per-pair dating turns
+# that into what it is: evidence with an old date, which the staleness rule
+# below then rejects. An excluded merge can only make a pair's evidence look
+# OLDER, so the surface under-claims and never over-claims.
 LIVENESS_FETCH=30
-# How old the freshest sampled merge may be before the sample stops being
-# evidence about TODAY. The sample cannot refresh itself: if a required app
-# goes dark, branch protection blocks every PR, no new PR merges, and the
-# last 10 merged heads stay frozen on the pre-outage ones — all carrying the
-# name, so a presence-only test would report `ok` forever while nothing has
-# reported since. A stalled merge queue is the observable signature of that
-# outage, so an aged-out sample must not print `ok`.
+# How old a required check's most recent sighting may be before it stops
+# being evidence about TODAY. The sample cannot refresh itself: if a required
+# app goes dark, branch protection blocks every PR, no new PR merges, and the
+# sampled heads stay frozen on the pre-outage ones — all still carrying the
+# name, so presence alone would report `ok` forever while nothing has
+# reported since.
 LIVENESS_MAX_AGE_DAYS=30
 echo "[f] Checking required[] liveness across the last $LIVENESS_SAMPLE merged PR heads…"
 
 f_heads=0
 f_seen=""
 f_partial=0
-f_newest=""
 # Scoped to the branch whose protection (b) just read. A PR merged into a
 # release or maintenance branch runs a different workflow set, and letting
 # it into the union would satisfy a name that no longer runs against the
@@ -855,12 +856,12 @@ f_newest=""
 if ! f_prs=$(gh pr list --repo "$OWNER/$REPO" --base "$default_branch" --state merged \
                --limit "$LIVENESS_FETCH" --json headRefOid,mergedAt \
                --jq "sort_by(.mergedAt) | reverse | .[:$LIVENESS_SAMPLE]
-                     | .[] | \"\(.headRefOid) \(.mergedAt)\"" 2>/dev/null); then
+                     | .[] | .headRefOid" 2>/dev/null); then
   f_partial=1
   f_prs=""
 fi
 
-while IFS=' ' read -r head merged_at; do
+while IFS= read -r head; do
   [[ -z "$head" ]] && continue
   # REPORTER + name, not name alone. (c) can never verify a PR-scoped app's
   # source_app — it samples the default branch, where that app is absent by
@@ -875,37 +876,80 @@ while IFS=' ' read -r head merged_at; do
   # newline plus a forged `<app>\t<required-name>` line would inject a
   # matching record into a text blob and certify a source_app nobody posted.
   # JSON in, JSON compared: the name is a value, never a frame.
+  #
+  # Dated by the RUN, not by the merge. A long-lived PR merged today can
+  # carry check-runs from months ago, so borrowing the PR's mergedAt would
+  # let one stale run look like today's proof of life — the same
+  # evidence-about-something-else substitution this surface exists to stop.
   if ! head_runs=$(gh api "repos/$OWNER/$REPO/commits/$head/check-runs" --paginate \
-       --jq '.check_runs[] | [(.app.slug // "unknown"), .name] | @json' 2>/dev/null); then
+       --jq '.check_runs[]
+             | [(.app.slug // "unknown"), .name, (.completed_at // .started_at)]
+             | @json' 2>/dev/null); then
     f_partial=1
     continue
   fi
   [[ -z "$head_runs" ]] && continue
   f_heads=$((f_heads + 1))
   f_seen="$f_seen$head_runs"$'\n'
-  [[ "$merged_at" > "$f_newest" ]] && f_newest="$merged_at"
 done <<< "$f_prs"
 
-# Already rendered for display: a name is only ever emitted through tojson,
-# so a newline in one cannot forge an extra bullet either.
+# ISO-8601 UTC, so lexical comparison is chronological. jq is already a hard
+# dependency and `now` is portable across the BSD/GNU `date` split.
+f_cutoff=$(jq -rn "now - ($LIVENESS_MAX_AGE_DAYS * 86400) | todate")
+
+# Dated PER PAIR, not per sample. A single fresh PR that happens to carry one
+# required check must not vouch for a different check last seen a year ago —
+# under one summary date it would, which is the same "evidence about
+# something else counts as evidence about this" mistake #631 made.
+#
+# Both lists come out already rendered: a name reaches the terminal only via
+# tojson, so a newline inside one cannot forge an extra bullet.
 f_missing=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | $lock[0].required
   | map(select(. as $r | ($seen | any(.[0] == $r.source_app and .[1] == $r.name)) | not))
   | .[] | "    - \(.name | tojson) (expected source_app=\(.source_app | tojson))"
 ')
-
-# ISO-8601 UTC, so lexical comparison is chronological. jq is already a hard
-# dependency and `now` is portable across the BSD/GNU `date` split.
-f_cutoff=$(jq -rn "now - ($LIVENESS_MAX_AGE_DAYS * 86400) | todate")
+# The weakest link, reported alongside `ok`: with per-pair dating the useful
+# summary is the OLDEST of the per-check sightings, not the newest merge in
+# the sample — the newest merge is exactly the number that made a stale check
+# look current.
+f_oldest=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | [ $lock[0].required[]
+      | . as $r
+      | [$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]] | max ]
+  | map(select(. != null)) | min // "n/a"
+')
+f_stale=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" --arg cutoff "$f_cutoff" -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | $lock[0].required
+  | map(. as $r
+        | ([$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]]) as $dates
+        # Present-but-old only. A pair with no rows at all is MISSING and is
+        # reported by the list above; letting it fall through here too would
+        # print the same defect twice under two different names.
+        | select(($dates | length) > 0)
+        | ($dates | map(select(. != null)) | max) as $last
+        | select($last == null or $last < $cutoff)
+        | "    - \(.name | tojson) last reported \($last // "with no timestamp") by \(.source_app | tojson)")
+  | .[]
+')
 
 if [[ "$f_partial" -eq 1 ]]; then
   fail_or_warn "could not read part of the merged-PR sample — liveness below is incomplete"
 fi
 
+f_flagged=0
 if [[ "$f_heads" -eq 0 ]]; then
   fail_or_warn "no check-runs on any of the last $LIVENESS_SAMPLE PRs merged into $default_branch — cannot verify liveness"
-elif [[ -n "$f_missing" ]]; then
+  f_flagged=1
+fi
+# Missing and stale are reported TOGETHER, never as an if/elif chain. They are
+# independent per-check facts: one entry absent while another has gone quiet is
+# two defects, and hiding the second behind the first means the operator fixes
+# one, re-runs, and only then learns about the other.
+if [[ -n "$f_missing" ]]; then
   # Warn-by-default, drift under --strict-remote, and the window is named
   # in the message: a check added to required[] AFTER every sampled PR
   # merged is legitimately absent, and only the operator can tell that
@@ -915,20 +959,31 @@ elif [[ -n "$f_missing" ]]; then
   echo "  Either the app stopped reporting (branch protection now blocks every"
   echo "  PR on it) or the entry was added after those PRs merged. Confirm"
   echo "  against the Checks API on a PR head before concluding it is dead."
+  f_flagged=1
+fi
+if [[ -n "$f_stale" ]]; then
+  echo "  warn: required check(s) whose most recent sighting is older than $LIVENESS_MAX_AGE_DAYS days:"
+  printf '%s\n' "$f_stale"
+  echo "  Present in the sample, but nothing recent. A required app that goes"
+  echo "  dark blocks every PR, so the sample freezes on pre-outage merges that"
+  echo "  all still carry the name — age is the only thing that distinguishes"
+  echo "  that from a healthy check."
+  f_flagged=1
+fi
+
+if [[ "$f_flagged" -eq 1 ]]; then
   if [[ "$STRICT_REMOTE" -eq 1 ]]; then
-    echo "  DRIFT: unreported required check(s) (--strict-remote)"
+    echo "  DRIFT: required check(s) unreported or stale (--strict-remote)"
     drift=1
   fi
-elif [[ "$f_newest" < "$f_cutoff" ]]; then
-  fail_or_warn "every required check appears in the sample, but the freshest of the $f_heads merged PRs landed $f_newest — older than $LIVENESS_MAX_AGE_DAYS days, so this says nothing about today"
 elif [[ "$f_partial" -eq 1 ]]; then
   # Every name turned up in the part of the sample that WAS readable — which
   # is not the same claim as `ok`, and must not be written in the same words.
   # The unread heads could have held nothing contradicting this, or could
   # have held the outage.
-  echo "  incomplete: every required check was reported by its source_app on the $f_heads heads that could be read (newest merged $f_newest) — the rest of the sample was not read, so this is not a clean bill"
+  echo "  incomplete: every required check was reported by its source_app on the $f_heads heads that could be read (oldest per-check sighting $f_oldest) — the rest of the sample was not read, so this is not a clean bill"
 else
-  echo "  ok: every required check was reported by its source_app on at least one of the last $f_heads merged PR heads (newest merged $f_newest)"
+  echo "  ok: every required check was reported by its source_app on at least one of the last $f_heads merged PR heads (oldest per-check sighting $f_oldest)"
 fi
 
 exit "$drift"

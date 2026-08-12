@@ -121,12 +121,23 @@ LOCK='{"required":[
   {"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}
 ],"advisory":[]}'
 
-# run <name> renders one check-run object.
-run() { printf '{"name":"%s","app":{"slug":"%s"},"started_at":"2026-08-12T00:00:00Z"}' "$1" "$2"; }
+# Timestamps, computed at run time so the "fresh" fixtures can never age into
+# the staleness branch as this file gets older. (f) dates a sighting by the
+# CHECK-RUN, not by the PR merge, so these live on the runs.
+FRESH=$(jq -rn 'now | todate')
+STALE=$(jq -rn 'now - (400 * 86400) | todate')
+
+# run <name> <app> [completed_at] renders one check-run object.
+run() {
+  printf '{"name":"%s","app":{"slug":"%s"},"started_at":"%s","completed_at":"%s"}' \
+    "$1" "$2" "${3:-$FRESH}" "${3:-$FRESH}"
+}
 
 CODEQL_ONLY="[$(run 'Analyze (actions)' github-actions)]"
 BOTH="[$(run alpha github-actions),$(run 'Beta Check' github-actions)]"
+BOTH_STALE="[$(run alpha github-actions "$STALE"),$(run 'Beta Check' github-actions "$STALE")]"
 ALPHA_ONLY="[$(run alpha github-actions)]"
+ALPHA_ONLY_STALE="[$(run alpha github-actions "$STALE")]"
 ALPHA_SPOOFED="[$(run alpha evil-app),$(run 'Beta Check' github-actions)]"
 
 # mkcase <dir> — synthetic repo + empty fixture dir. Branch protection is
@@ -153,12 +164,9 @@ runcase() {
     >"$d/out.txt" 2>&1
 }
 
-# Merge timestamps for the (f) sample, computed at run time so the "fresh"
-# cases can never age into the staleness branch as this file gets older.
-FRESH=$(jq -rn 'now | todate')
-STALE=$(jq -rn 'now - (400 * 86400) | todate')
-
 # prheads <sha> [mergedAt] — writes the one-PR sample for the current case.
+# mergedAt drives only which heads are SAMPLED; the sighting dates come from
+# the check-runs themselves.
 prheads() { printf '%s %s\n' "$1" "${2:-$FRESH}" > "$D/fix/prheads.txt"; }
 
 ok_()   { PASS=$((PASS + 1)); echo "  ok   $1"; }
@@ -269,7 +277,7 @@ D="$TMPROOT/r9"; mkcase "$D"
 printf 'c1\n' > "$D/fix/commits.txt"
 printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
 prheads "p1" "$STALE"
-printf '%s' "$BOTH" > "$D/fix/checkruns-p1.json"
+printf '%s' "$BOTH_STALE" > "$D/fix/checkruns-p1.json"
 runcase "$D"
 assert_says "says the sample is too old to mean anything" "older than 30 days" "$D"
 assert_silent "does not report liveness ok" "every required check was reported" "$D"
@@ -302,20 +310,37 @@ prheads "p1"
 runcase "$D" --strict-remote; assert_exit "empty required[] is not drift" 0 $? "$D"
 assert_says "says there was nothing to verify" "lock declares no required checks" "$D"
 
-echo "== R12: the sample is ordered by mergedAt, not by the API's own order =="
-# `gh pr list` returns merged PRs in CREATED_AT order, so the freshest merge
-# can arrive last. If the script trusted that order, the staleness check
-# would read the wrong PR's date — here it would see a 400-day-old merge and
-# call a live repo stale.
+echo "== R12: freshness is dated PER CHECK, not once for the whole sample =="
+# One fresh PR carrying `alpha` must not vouch for `Beta Check`, whose only
+# sighting is 400 days old. A single summary date for the sample says both
+# are current; only per-check dating catches the one that went dark.
 D="$TMPROOT/r12"; mkcase "$D"
 printf 'c1\n' > "$D/fix/commits.txt"
 printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
 printf 'p1 %s\np2 %s\n' "$STALE" "$FRESH" > "$D/fix/prheads.txt"
-printf '%s' "$BOTH" > "$D/fix/checkruns-p1.json"
-printf '%s' "$BOTH" > "$D/fix/checkruns-p2.json"
-runcase "$D"; assert_exit "out-of-order sample is read by merge date" 0 $? "$D"
-assert_says "reports the newest merge, not the last row" "newest merged $FRESH" "$D"
-assert_silent "does not call a live repo stale" "older than 30 days" "$D"
+printf '%s' "$BOTH_STALE" > "$D/fix/checkruns-p1.json"
+printf '%s' "$ALPHA_ONLY" > "$D/fix/checkruns-p2.json"
+runcase "$D"
+assert_says "names the check whose evidence is old" "last reported $STALE" "$D"
+assert_silent "does not report liveness ok" "ok: every required check" "$D"
+
+echo "== R12b: the 10 sampled heads are chosen by mergedAt, not by API order =="
+# `gh pr list` returns merged PRs in CREATED_AT order. With more merged PRs
+# than the sample size, taking the API's first 10 would drop the one PR that
+# actually merged recently — and every check would then read as stale.
+D="$TMPROOT/r12b"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+: > "$D/fix/prheads.txt"
+for i in 01 02 03 04 05 06 07 08 09 10 11; do
+  printf 'p%s %s\n' "$i" "$STALE" >> "$D/fix/prheads.txt"
+  printf '%s' "$BOTH_STALE" > "$D/fix/checkruns-p$i.json"
+done
+# Created last, merged today: API order puts it 12th, merge order puts it 1st.
+printf 'p12 %s\n' "$FRESH" >> "$D/fix/prheads.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-p12.json"
+runcase "$D"; assert_exit "recent merge is inside the window" 0 $? "$D"
+assert_says "reads the fresh head, not the first ten" "oldest per-check sighting $FRESH" "$D"
 
 echo "== R13: an unreadable head is not an empty head =="
 # A failed Checks API call must not fold into "this head reported nothing" —
@@ -336,6 +361,31 @@ assert_says "says the sample was incomplete" "could not read part of the merged-
 assert_silent "does not issue a clean bill on a partial sample" "ok: every required check" "$D"
 assert_says "qualifies what it did verify" "incomplete: every required check" "$D"
 runcase "$D" --strict-remote; assert_exit "incomplete sample is drift under --strict-remote" 1 $? "$D"
+
+echo "== R14b: a sighting is dated by the RUN, not by the merge =="
+# A long-lived PR merged today can carry check-runs from months ago. Dating
+# the sighting by the PR's mergedAt would turn one such run into today's
+# proof of life for an app that has not posted since.
+D="$TMPROOT/r14b"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+prheads "p1" "$FRESH"
+printf '%s' "$BOTH_STALE" > "$D/fix/checkruns-p1.json"
+runcase "$D"
+assert_says "old runs on a fresh merge are still old" "older than 30 days" "$D"
+assert_silent "no clean bill from a fresh merge date" "ok: every required check" "$D"
+
+echo "== R15: a missing check and a stale one are BOTH reported =="
+# They are independent per-check facts. Reporting only the first means the
+# operator fixes it, re-runs, and only then learns about the second.
+D="$TMPROOT/r15"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+prheads "p1"
+printf '%s' "$ALPHA_ONLY_STALE" > "$D/fix/checkruns-p1.json"
+runcase "$D"
+assert_says "reports the absent check" '- "Beta Check"' "$D"
+assert_says "reports the stale one in the same run" "last reported $STALE" "$D"
 
 echo "== R14: a check-run NAME cannot forge a match =="
 # Check-run names are chosen by whoever installed the app. If the seen-set

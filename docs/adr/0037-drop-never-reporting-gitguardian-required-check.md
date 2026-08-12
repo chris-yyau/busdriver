@@ -162,6 +162,21 @@ diagnosis look confirmed:
   must sample **PR heads via the Checks API**, not `main` via `/statuses`, or it
   will reproduce this exact error.
 
+Both are now closed (#648). Surface (c) selects a sample commit that actually
+carries a required check-run — the old "has any check-run" rule stopped at
+`[skip ci]` release commits, which are not bare because CodeQL still posts
+there — and its `ok` line now names how many of the required checks it
+verified, because a partial sample is the normal state on `main`. Surface (f)
+is the liveness check, built to the constraint above: merged PR heads, Checks
+API, presence rather than conclusion — and matched on the reporting app, not
+the name alone, which incidentally gives the PR-scoped entries the `source_app`
+check (c) can never run on them. Run against this repo it reports GitGuardian
+live and reported by `gitguardian`, which is the answer #631 needed and could
+not get. It also refuses to answer when the sample cannot support one: an
+aged-out sample is reported as stale rather than as `ok`, because a required
+app going dark blocks every PR and therefore freezes the sample on pre-outage
+merges that all still carry the name.
+
 ### Lesson
 
 Before removing a security control on the evidence that it "never reports",

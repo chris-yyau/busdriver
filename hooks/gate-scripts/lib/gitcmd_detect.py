@@ -2719,7 +2719,10 @@ _READABLE_NAME = re.compile(r'^:$|^\[$|^\.$|^(?=.*\w)/?[\w.@:+-]+(?:/[\w.@:+-]+)
 _ENV_ASSIGN_TOK_RE = re.compile(r'^[^=]+=')
 
 def _env_selector_in_prefix(seg):
-    """True iff `seg` carries a `GH_REPO=` / `GH_HOST=` assignment in its PREFIX.
+    """True when `seg` carries a `GH_REPO=` / `GH_HOST=` assignment in its PREFIX,
+    OR when an operand-taking wrapper makes that prefix unresolvable (fail-CLOSED;
+    see the `#641` note in the body below). Callers must read True as "a selector
+    may be present", never as a confirmed assignment.
 
     Two opposed review findings settle the design between them:
 

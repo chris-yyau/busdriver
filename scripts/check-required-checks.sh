@@ -904,7 +904,24 @@ f_cutoff=$(jq -rn "now - ($LIVENESS_MAX_AGE_DAYS * 86400) | todate")
 #
 # Both lists come out already rendered: a name reaches the terminal only via
 # tojson, so a newline inside one cannot forge an extra bullet.
-f_missing=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
+#
+# `f_jq` exists so a jq failure cannot become an empty result. An empty
+# f_missing and an empty f_stale are exactly what "everything is fine" looks
+# like here, so an unevaluable filter would print `ok` for a sample it never
+# managed to read. `set -euo pipefail` would abort anyway, but only with jq's
+# own message and an exit code outside the documented set — and only for as
+# long as nobody moves this into a context where errexit is suppressed.
+f_jq() {
+  local out
+  if ! out=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" "$@"); then
+    echo "error: could not evaluate (f) liveness — refusing to report it clean" >&2
+    exit 2
+  fi
+  printf '%s' "$out"
+}
+
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+f_missing=$(f_jq -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | $lock[0].required
   | map(select(. as $r | ($seen | any(.[0] == $r.source_app and .[1] == $r.name)) | not))
@@ -914,14 +931,16 @@ f_missing=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
 # summary is the OLDEST of the per-check sightings, not the newest merge in
 # the sample — the newest merge is exactly the number that made a stale check
 # look current.
-f_oldest=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+f_oldest=$(f_jq -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | [ $lock[0].required[]
       | . as $r
       | [$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]] | max ]
   | map(select(. != null)) | min // "n/a"
 ')
-f_stale=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" --arg cutoff "$f_cutoff" -r '
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+f_stale=$(f_jq --arg cutoff "$f_cutoff" -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | $lock[0].required
   | map(. as $r

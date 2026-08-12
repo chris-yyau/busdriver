@@ -302,11 +302,26 @@ prheads "p1"
 runcase "$D" --strict-remote; assert_exit "empty required[] is not drift" 0 $? "$D"
 assert_says "says there was nothing to verify" "lock declares no required checks" "$D"
 
-echo "== R12: an unreadable head is not an empty head =="
+echo "== R12: the sample is ordered by mergedAt, not by the API's own order =="
+# `gh pr list` returns merged PRs in CREATED_AT order, so the freshest merge
+# can arrive last. If the script trusted that order, the staleness check
+# would read the wrong PR's date — here it would see a 400-day-old merge and
+# call a live repo stale.
+D="$TMPROOT/r12"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+printf 'p1 %s\np2 %s\n' "$STALE" "$FRESH" > "$D/fix/prheads.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-p1.json"
+printf '%s' "$BOTH" > "$D/fix/checkruns-p2.json"
+runcase "$D"; assert_exit "out-of-order sample is read by merge date" 0 $? "$D"
+assert_says "reports the newest merge, not the last row" "newest merged $FRESH" "$D"
+assert_silent "does not call a live repo stale" "older than 30 days" "$D"
+
+echo "== R13: an unreadable head is not an empty head =="
 # A failed Checks API call must not fold into "this head reported nothing" —
 # the remaining heads can then supply every name and the run would report a
 # sample it never finished reading.
-D="$TMPROOT/r12"; mkcase "$D"
+D="$TMPROOT/r13"; mkcase "$D"
 printf 'c1\n' > "$D/fix/commits.txt"
 printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
 printf 'p1 %s\np2 %s\n' "$FRESH" "$FRESH" > "$D/fix/prheads.txt"

@@ -35,9 +35,12 @@
 #       check is filtered out of the merge decision entirely — invisible,
 #       not pending — so failing required checks can report as green (#530).
 #
-#   (f) required[] liveness: a required context that nothing reports. If
-#       the app never posts, branch protection blocks every PR forever;
-#       if it silently STOPS posting, the gate quietly stops gating. (c)
+#   (f) required[] liveness: a required context that nothing reports.
+#       Under #515 that is not a silent hole — it counts as pending — so
+#       branch protection blocks every PR indefinitely, and the merge
+#       queue stops rather than the gate. What goes unnoticed is the
+#       CAUSE: it looks like slow CI until someone digs, and the wrong
+#       conclusion at the end of that dig is what #631 was. (c)
 #       cannot answer this — it samples the default branch, where a
 #       PR-scoped app is absent by design. (f) samples merged PR heads
 #       via the Checks API and asks whether each required name appeared
@@ -788,9 +791,10 @@ fi
 
 # ────────────────────────────────────────────────────────────────────
 # (f) required[] liveness — is each required context actually reported
-#     by anything? A required name nothing posts blocks every PR
-#     forever; a required name whose app silently stops posting stops
-#     gating, and nobody notices.
+#     by the app the lock says owns it? A required name nothing posts
+#     blocks every PR indefinitely (#515 counts it as pending, so it
+#     does not silently stop gating — it stops merging). The failure is
+#     loud but its cause is not, and misreading that cause is #631.
 #
 #     The population and the API are the whole design, because #631 got
 #     each of them wrong and removed a live security check as a result:
@@ -817,9 +821,18 @@ fi
 LIVENESS_SAMPLE=10
 # `gh pr list` orders by CREATED_AT DESC, not by merge time, so its own
 # --limit would hand back "the 10 most recently OPENED merged PRs" — a
-# long-lived PR merged yesterday would be excluded while a short-lived one
-# merged months ago stayed in. Over-fetch and sort by mergedAt here so the
-# population matches what the output and the ADR actually claim.
+# long-lived PR merged yesterday excluded while a short-lived one merged
+# months ago stayed in. Over-fetching and re-sorting by mergedAt gives the
+# 10 most recently merged OF THE 30 MOST RECENTLY OPENED, which is still not
+# a true global top-10: a PR opened long ago and merged today can sit past
+# the 30.
+#
+# That residue is accepted because both of its effects are conservative.
+# Excluding a recent merge cannot add a name to the sample, so it cannot
+# manufacture an `ok`; and it can only lower the freshest mergedAt, so it
+# can only make the staleness check fire EARLIER. The surface may
+# under-claim, never over-claim, which is the direction this whole change
+# exists to enforce.
 LIVENESS_FETCH=30
 # How old the freshest sampled merge may be before the sample stops being
 # evidence about TODAY. The sample cannot refresh itself: if a required app

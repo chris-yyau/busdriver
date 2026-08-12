@@ -49,6 +49,59 @@ _WRAPPERS = frozenset((
     'builtin', 'exec', 'stdbuf', 'setsid',
 ))
 
+# Wrappers that take a non-option OPERAND before the command word: a duration
+# (`timeout 5 CMD`) or a lockfile (`flock /tmp/l CMD`). `ionice` is here for
+# uniformity; its `-c3` form is an option and needs no operand rule.
+#
+# `xargs` is DELIBERATELY ABSENT although #641 names it. It is not a lexical
+# wrapper at all: it BUILDS the command line, taking argv from stdin and
+# re-running the result zero or many times. Modelling it as one produced answers
+# that were wrong rather than merely incomplete --
+# `printf '%s\n' --repo other/repo | xargs gh pr merge 1` reported merge=True
+# with override=False, so the gate would validate the CURRENT repo while gh
+# merged another, and `xargs -n1 gh pr merge` reported gh_pr_count=1 for a
+# command that can perform several, which is the number the pre-merge gate reads
+# to refuse a multi-PR merge. Detecting only the spelling that happens to name
+# `git` statically, while `printf commit | xargs git` sails past, buys coverage
+# of one shape at the price of a confident wrong answer on others. Left as a
+# documented miss and pinned in tests/test-gitcmd-detect.sh instead.
+#
+# This is a MEMBERSHIP set, deliberately NOT an arity table -- it carries no
+# counts, offsets, or per-flag knowledge, which is the ladder #587/#593 exist to
+# stop climbing (#593 non-goal 4) and which ADR 0032:368 already declines for
+# `unshare -- CMD` / `chroot -- NEWROOT CMD` / `script -c CMD`. The rule it
+# enables is uniform: inside one of these wrappers, a bare word that is NOT the
+# target does not end the walk. `timeout -s TERM 5 git commit` therefore
+# resolves without anyone teaching the walk what `-s` means.
+#
+# What this does and does not buy for `xargs`: the LITERAL spelling
+# (`xargs -0 git commit`) is reached like any other operand-bearing wrapper. The
+# ASSEMBLED spelling is not, and no token scan can reach it -- in
+# `printf git | xargs -I{} {} commit -m x` the command word is `{}` and the
+# executable arrives on stdin (verified: it really does run `git commit`). That
+# is the run-time-assembled-name residual ADR 0006 accepts and cmdword restates
+# at its own _WRAPPERS note; it is pinned as a known miss in
+# tests/test-gitcmd-detect.sh rather than chased here. Same for `flock`'s own
+# `-c` option, which hands a string to a shell without naming an interpreter.
+#
+# DELIBERATELY NOT MEMBERS OF `_WRAPPERS`, and recognised only when the caller
+# passes `wrapper_operands=True`. `_WRAPPERS` is read by the cd/pushd/popd walk
+# and by two other scans, so widening it leaked straight out of this change's
+# stated git/gh-only scope: with these names in it,
+# `ionice -c3 echo cd /other; git commit` and
+# `printf x | xargs -0 echo cd /other; git commit` began reporting `/other` as
+# untrusted_cd (measured against main, which reports ''), a NEW false stall for
+# a subprocess that cannot change the parent shell's directory. A separate set
+# consulted only on the git/gh path keeps the blast radius where the scope says
+# it is. (`timeout` did not show the same leak — its numeric operand stops that
+# walk — which is exactly why membership, not observation, has to be the rule.)
+#
+# Scoped to the git/gh detection call sites via `wrapper_operands=True`, never to
+# the cd/pushd/popd caller: walking past a bare word there would report a `cd`
+# that a subprocess wrapper never performed in this shell, and a MIS-SCOPED
+# detection is strictly worse than the miss it replaces (#593 bar 1).
+_OPERAND_WRAPPERS = frozenset(('timeout', 'flock', 'ionice'))
+
 # Compound-command keywords that can precede a real command inside one segment
 # (`then git commit`, `do gh pr merge 1`). Stripped so the command word behind
 # them is still reached. 'in' is deliberately ABSENT: in `for x in 1` the word
@@ -375,7 +428,7 @@ def _strip_group_punct(toks, raw_toks, i):
     return toks, raw_toks
 
 
-def _command_argv(seg, target, with_raw=False):
+def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
     """Return the argv beginning at the command word, after stripping a leading
     run of launcher tokens: env-assignments, wrapper words (basename-matched),
     wrapper dash-options, and a SINGLE option-argument after a dash-option — but
@@ -421,6 +474,7 @@ def _command_argv(seg, target, with_raw=False):
     i = 0
     saw_wrap = False
     saw_env = False
+    saw_operand_wrap = False
     opts_done = False
     prev_dash = False
     case_state = None
@@ -523,7 +577,8 @@ def _command_argv(seg, target, with_raw=False):
             # union this ambiguity is handled by everywhere else in this walk.
             i += 1
             prev_dash = False
-        elif base in _WRAPPERS:
+        elif (base in _WRAPPERS
+                or (wrapper_operands and base in _OPERAND_WRAPPERS)):
             saw_wrap = True
             # Only env(1) itself takes `name=value` OPERANDS. Tracked separately
             # from saw_wrap so the loose assignment rule below cannot fire after
@@ -538,6 +593,12 @@ def _command_argv(seg, target, with_raw=False):
             # assignment and walk on to the payload, although `command` exits
             # 127 there and the child never runs (verified).
             saw_env = base == 'env'
+            # Latched, not reset per wrapper: the operand run belongs to the
+            # OUTERMOST operand-taking wrapper still open, and `timeout 5 nice
+            # -n 5 git commit` stacks a plain wrapper inside one. Clearing it on
+            # the inner `nice` would put `5` back in command position, which is
+            # the miss this whole change removes.
+            saw_operand_wrap = saw_operand_wrap or base in _OPERAND_WRAPPERS
             opts_done = False   # a new wrapper restarts option parsing
             i += 1
             prev_dash = False
@@ -583,6 +644,60 @@ def _command_argv(seg, target, with_raw=False):
             # here: `_torn_assignment` matches this looser spelling as well, so
             # the fallbacks recover without one -- _shell_payloads the payload,
             # _torn_direct_hits a directly-torn `git`/`gh` (#593).
+            i += 1
+            prev_dash = False
+        elif (wrapper_operands and saw_operand_wrap and is_target
+                and i + 1 < len(toks)
+                and _is_target_word(toks[i + 1].rsplit('/', 1)[-1], targets)):
+            # #641, second round. A wrapper OPERAND can itself be target-SHAPED,
+            # and the `not is_target` guard below then stops the walk on it:
+            # `flock /tmp/git git commit -m x` returned argv
+            # ['/tmp/git', 'git', 'commit', …], so argv[1] read as the subcommand
+            # was `git`, not `commit`, and the commit ran unseen. `flock git git
+            # commit` and `xargs -E git git commit` are the same shape (the `-E`
+            # EOF-marker operand is protected from the option-argument branch by
+            # its own `not is_target` guard, so it lands here too).
+            #
+            # NOT a regression -- main misses all of these as well, since it does
+            # not know these wrappers at all -- but it is the fix's own blind
+            # spot, and an operand an attacker names is a poor place to have one.
+            #
+            # The rule is local and needs no arity: while an operand wrapper is
+            # open, a target-shaped token IMMEDIATELY FOLLOWED by another
+            # target-shaped token is the operand, not the executable. It is the
+            # lesson `_torn_direct_hits` records one route over -- the first
+            # match is not necessarily the real one -- in the cheapest form that
+            # covers this route, because a run of target-shaped tokens is exactly
+            # what "operand that looks like the executable" produces.
+            #
+            # It cannot swallow a real command word: the token is skipped ONLY
+            # when another target-shaped token follows it, and that successor is
+            # then what the walk lands on. `timeout 5 git commit -m git` is
+            # untouched (its second `git` does not follow the first), and outside
+            # an operand wrapper nothing changes at all.
+            i += 1
+            prev_dash = False
+        elif wrapper_operands and saw_operand_wrap and not is_target:
+            # #641. Inside timeout/flock/xargs/ionice a bare word is the
+            # WRAPPER'S OPERAND -- a duration, a lockfile, an -I template -- not
+            # the command word, so it must not end the walk. Skipping forward to
+            # the target instead of counting how many operands to drop is what
+            # keeps this free of an arity table: `timeout -s TERM 5 git commit`
+            # resolves without the walk knowing that `-s` takes a value, and
+            # `xargs`, which has no arity to tabulate, needs no special case.
+            #
+            # `not is_target` is the fail-CLOSED guard: the executable we are
+            # hunting can never be consumed as an operand, so this branch can
+            # only ever move the walk TOWARD a detection, never past one.
+            #
+            # When the segment holds no target at all the walk runs to the end
+            # and returns [], which is the same verdict as today (the old walk
+            # stopped on the operand, and argv[0] was not `git`/`gh` either) --
+            # so this cannot turn a current detection into a miss.
+            #
+            # Accepted cost, fail-CLOSED direction: `timeout 5 echo git commit`
+            # now reads as a commit. Priced at zero on a 31,381-command corpus
+            # (see the PR body); the shape is rare enough not to appear at all.
             i += 1
             prev_dash = False
         else:
@@ -1823,7 +1938,24 @@ def _shell_payloads(cmd):
         seen = set()
         _first_reading = _command_argv(seg, '')
         readings = [_first_reading,
-                    _command_argv(seg, tuple(_INTERPRETERS) + ('eval',))]
+                    # #641: the operand walk belongs on THIS reading too, or a
+                    # wrapper sitting OUTSIDE the interpreter hides the payload:
+                    # `timeout 5 bash -c "git commit"` stopped the walk on `5`,
+                    # argv[0] was not an interpreter, and the `-c` string was
+                    # never extracted (verified: the command runs). Note the
+                    # asymmetry that made this easy to miss -- `xargs -0 bash -c
+                    # …` was already detected, because `-0` is an OPTION and
+                    # leaves `bash` in command position; only the operand-bearing
+                    # spellings broke.
+                    #
+                    # Safe here and NOT on `_first_reading` above, which passes
+                    # target='': with no target to protect, the operand branch
+                    # would step over every bare word to the end of the segment
+                    # and return [], losing discovery entirely. This reading
+                    # names real targets, so `not is_target` stops it on the
+                    # interpreter.
+                    _command_argv(seg, tuple(_INTERPRETERS) + ('eval',),
+                                  wrapper_operands=True)]
         # ...plus a GRAMMAR-FREE reading: every interpreter token, wherever it
         # sits. This is the terminating move (PR #555, 2026-08-06 council).
         #
@@ -2222,7 +2354,8 @@ def _scan_commit(chunk, allow_cd):
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
             continue
-        argv, raw_argv = _command_argv(seg, 'git', with_raw=True)
+        argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
+                                       wrapper_operands=True)
         # #593. A tear anywhere in the prefix makes EVERY argv position in this
         # segment untrustworthy -- including a walk that appears to have
         # succeeded -- so recovery runs FIRST and its unresolvable scope wins.
@@ -2474,7 +2607,7 @@ def _iter_gh(chunk, subcommand, allow_cd):
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
             continue
-        argv = _command_argv(seg, 'gh')
+        argv = _command_argv(seg, 'gh', wrapper_operands=True)
         # Recovery first, same as _scan_commit -- see _gh_torn_recovery for the
         # tear-detection and single-result rationale. Falling through to the
         # ordinary walk after recovering would yield the SAME invocation twice.
@@ -2569,6 +2702,27 @@ def _env_selector_in_prefix(seg):
     Matching is on TOKENS and rejects any with whitespace, so prose never matches:
     `--body 'Document GH_REPO=owner/repo'` is one argument token, not a prefix.
     """
+    # #641. An operand-taking wrapper makes this prefix UNRESOLVABLE, and that is
+    # reported rather than guessed. The walk that finds the command word can step
+    # over `timeout 5` / `flock /tmp/l`; this scan cannot, because it has no
+    # target to stop on -- and once the walk started detecting commands behind
+    # those wrappers, a scan that quietly halted on `5` produced the worst
+    # possible pair: `timeout 5 env GH_REPO=other/repo gh pr merge 1` read as a
+    # merge with NO override, so the gate would validate the CURRENT repo while
+    # gh merged another. That is the mis-scoping #593 bar 1 forbids, introduced
+    # by detecting a command whose selector scan had not kept up.
+    #
+    # Three drafts tried to keep up by DERIVING a bound from `_command_argv`, and
+    # each was defeated one spelling at a time -- a target-shaped lockfile that
+    # stopped the bound early, a segment with no `gh` at all whose bound ran to
+    # end-of-segment and read a merely PRINTED assignment, then a nested
+    # `bash -c "gh pr merge 1"` whose outer segment has no `gh` token to bound
+    # with. That is the same position question the command-word walk itself
+    # declined to answer, and the same ladder #587/#593 exist to stop climbing.
+    #
+    # So: unresolvable prefix -> fail CLOSED. Cost is an over-report (the gate
+    # stalls on a command it could have scoped), which is the direction this repo
+    # chooses everywhere; the alternative is a silent wrong-repo validation.
     prev_dash = False
     for t in _tokenize(seg):
         # Strip subshell / brace-group punctuation, as _command_argv does, so
@@ -2591,6 +2745,9 @@ def _env_selector_in_prefix(seg):
         # command word. _command_argv skips it too; diverging here fails OPEN.
         if t == '!' or t in _SHELL_KEYWORDS or t.rsplit('/', 1)[-1] in _WRAPPERS:
             continue
+        if t.rsplit('/', 1)[-1] in _OPERAND_WRAPPERS:
+            # Unresolvable from here on -- see the note above. Fail CLOSED.
+            return True
         return False        # a real command word — the assignment prefix is over
     return False
 
@@ -2755,7 +2912,7 @@ def _gh_pr_argv(seg, subcommand):
 
     Split out of gh_pr_repo_override / gh_pr_auto_merge purely to reduce their branch
     count and nesting depth (#513); behavior unchanged."""
-    argv = _command_argv(seg, 'gh')
+    argv = _command_argv(seg, 'gh', wrapper_operands=True)
     if not argv or not _is_exe(argv[0], 'gh'):
         return None
     rest = argv[1:]

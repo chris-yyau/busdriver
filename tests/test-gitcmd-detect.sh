@@ -249,6 +249,373 @@ for c in CONTINUATION_ACCEPTED_FP:
 for c in COMMIT_KNOWN_MISS:
     check(f"commit~ (known pre-existing miss) {c!r}", g.git_commit(c)[0], False)
 
+# ── OPERAND-TAKING WRAPPERS (#641) ───────────────────────────────────
+# `timeout`, `flock` and `ionice` were absent from _WRAPPERS, so a
+# commit or merge behind any of them reached NO gate at all — a fail-OPEN in
+# three fail-CLOSED gates (pre-commit, pre-PR, pre-merge), not a stall.
+#
+# The three that matter take a non-option OPERAND before the command word (a
+# duration, a lockfile), so adding the name is not enough: the walk has to get
+# PAST the operand. It does that by skipping bare non-target words while an
+# operand-taking wrapper is open — never by counting them. _OPERAND_WRAPPERS is
+# a membership set with no arity data, which is why `timeout -s TERM 5 …`
+# resolves without anyone teaching the walk what `-s` means.
+#
+# `xargs` is NOT in that set — see the known-miss block below for why modelling
+# it lexically produced wrong answers rather than merely incomplete ones.
+# Do NOT "fix" any row below by introducing per-wrapper offsets; that ladder is
+# the #587/#593 non-goal and ADR 0032:368 declines it for the same family.
+WRAPPER_OPERAND_LIVE = [
+    'timeout 5 git commit -m x',
+    'timeout -s TERM 5 git commit -m x',      # option + its value + duration
+    'timeout --signal=TERM 5 git commit',     # attached option value
+    'timeout 5.5s git commit -m x',           # non-integer duration
+    'flock /tmp/l git commit -m x',
+    'flock -x /tmp/l git commit -m x',
+    'flock -w 10 /tmp/l git commit -m x',     # two operands before the command
+    'ionice -c3 git commit -m x',
+    '/usr/bin/timeout 5 git commit',          # absolute-path wrapper
+    'timeout 5 nice -n 5 git commit',         # plain wrapper nested inside
+    'nice -n 5 timeout 5 git commit',         # …and the other order
+    'timeout 5 git -C /other commit -m x',    # -C behind the wrapper
+    'cd /other && timeout 5 git commit -m x',
+    "sudo timeout 5 git commit -m x",
+]
+for c in WRAPPER_OPERAND_LIVE:
+    check(f"wrap641+ {c!r}", g.git_commit(c)[0], True)
+
+WRAPPER_OPERAND_NO = [
+    'timeout 30 git fetch origin',            # real git, different subcommand
+    'timeout 5 npm test',                     # no target at all
+    'flock /tmp/l ls',
+    'xargs -0 rm -f',
+    'env FOO git commit -m x',                # env is NOT operand-taking: bash
+                                              # execs `FOO` and the commit never
+                                              # runs, so detecting it would be a
+                                              # false positive, not a catch
+    "grep 'timeout 5 git commit' notes.txt",  # prose in a quoted operand
+    "echo 'timeout 5 git commit'",
+    'printf timeout 5 git commit',            # printf is not a wrapper
+]
+for c in WRAPPER_OPERAND_NO:
+    check(f"wrap641- {c!r}", g.git_commit(c)[0], False)
+
+# Accepted over-block, fail-CLOSED direction and deliberately pinned: a bare
+# word inside an operand-taking wrapper is indistinguishable from its operand,
+# so a commit spelled as data behind one reads as live. Priced at zero on a
+# 31,381-command corpus — the shape does not occur.
+WRAPPER_OPERAND_ACCEPTED_FP = [
+    'timeout 5 echo git commit',
+]
+for c in WRAPPER_OPERAND_ACCEPTED_FP:
+    check(f"wrap641~ (accepted FP) {c!r}", g.git_commit(c)[0], True)
+
+# gh side: the pre-merge gate shares the walk, and the PR NUMBER must survive.
+check("wrap641+ gh merge behind timeout",
+      g.gh_pr('timeout 5 gh pr merge 1', 'merge')[0], True)
+check("wrap641+ gh merge behind flock",
+      g.gh_pr('flock /tmp/l gh pr merge 1', 'merge')[0], True)
+check("wrap641+ gh merge PR number survives the wrapper",
+      g.gh_pr('timeout 5 gh pr merge 7', 'merge')[2], '7')
+
+# ── #593 bar 1: NO MIS-SCOPING ───────────────────────────────────────
+# A detection whose target_dir / -C authority differs from the untorn command
+# is strictly worse than the miss it replaces (#593). Assert the WHOLE TUPLE,
+# never just the boolean — a boolean-only test passes on a mis-scoped hit.
+SCOPE_PAIRS = [
+    ('cd /other && timeout 5 git commit -m x', 'cd /other && git commit -m x'),
+    ('cd /other && flock /tmp/l git commit -m x', 'cd /other && git commit -m x'),
+    ('timeout 5 git -C /other commit -m x', 'git -C /other commit -m x'),
+    ('flock /tmp/l git -C /other commit -m x', 'git -C /other commit -m x'),
+]
+for wrapped, plain in SCOPE_PAIRS:
+    check(f"wrap641= scope {wrapped!r}", g.git_commit(wrapped), g.git_commit(plain))
+check("wrap641= scope gh merge behind a wrapper",
+      g.gh_pr('cd /other && timeout 5 gh pr merge 7', 'merge'),
+      g.gh_pr('cd /other && gh pr merge 7', 'merge'))
+
+# The operand walk is scoped to the git/gh callers. Handing it to the
+# cd/pushd/popd caller would report a directory change that a SUBPROCESS
+# wrapper never performed in this shell — a mis-scope, not a catch.
+check("wrap641= timeout does not manufacture a cd",
+      g.effective_cwd('timeout 5 cd /other', ''), ('', True))
+check("wrap641= flock does not manufacture a cd",
+      g.effective_cwd('flock /tmp/l cd /other', ''), ('', True))
+
+# Nested route: payload extraction re-runs this same walk, so the fix reaches
+# an interpreter payload for free. Pinned so a future refactor cannot quietly
+# lose it.
+check("wrap641+ nested bash -c payload",
+      g.git_commit("bash -c 'timeout 5 git commit -m x'")[0], True)
+check("wrap641+ nested sh -c payload",
+      g.git_commit('sh -c "flock /tmp/l git commit -m x"')[0], True)
+check("wrap641+ nested gh merge payload",
+      g.gh_pr("bash -c 'timeout 5 gh pr merge 1'", 'merge')[0], True)
+
+# ...and the OTHER ordering, which is a different code path and was missed by
+# the first draft of this change: the wrapper sits OUTSIDE the interpreter, so
+# it is INTERPRETER DISCOVERY that has to walk the operand, not the git/gh scan.
+# `timeout 5 bash -c "git commit"` stopped the discovery walk on `5`, argv[0]
+# was not an interpreter, and the payload was never extracted (verified: it
+# runs). Note the asymmetry that hid it — `xargs -0 bash -c …` was ALREADY
+# detected, because `-0` is an option and leaves `bash` in command position;
+# only the operand-bearing spellings broke.
+WRAPPER_OUTSIDE_INTERPRETER = [
+    'timeout 5 bash -c "git commit -m x"',
+    'timeout -s TERM 5 bash -c "git commit -m x"',
+    'flock /tmp/l bash -c "git commit -m x"',
+    'flock -w 10 /tmp/l sh -c "git commit -m x"',
+    'ionice -c3 bash -c "git commit -m x"',
+]
+for c in WRAPPER_OUTSIDE_INTERPRETER:
+    check(f"wrap641+ outside-interp {c!r}", g.git_commit(c)[0], True)
+check("wrap641+ outside-interp gh merge",
+      g.gh_pr('timeout 5 bash -c "gh pr merge 1"', 'merge')[0], True)
+check("wrap641+ outside-interp gh merge via sh",
+      g.gh_pr('flock /tmp/l sh -c "gh pr merge 1"', 'merge')[0], True)
+
+# ── TARGET-SHAPED OPERANDS ───────────────────────────────────────────
+# The operand a wrapper takes can itself look like the executable, and the
+# `not is_target` guard that protects a real command word then stops the walk on
+# it: `flock /tmp/git git commit -m x` produced argv ['/tmp/git','git','commit',…]
+# so the SUBCOMMAND read as `git`, not `commit`, and the commit ran unseen. Same
+# shape for `xargs -E git` (the EOF-marker operand is protected from the
+# option-argument branch by its own `not is_target` guard, so it lands here too).
+#
+# Not a regression — main misses all of these as well — but it was this change's
+# own blind spot, and an operand an attacker names is a poor place to have one.
+# The rule is local and arity-free: while an operand wrapper is open, a
+# target-shaped token IMMEDIATELY FOLLOWED by another target-shaped token is the
+# operand. Do NOT "fix" a row here by teaching the walk which wrappers take
+# paths.
+TARGET_SHAPED_OPERAND = [
+    'flock /tmp/git git commit -m x',
+    'flock git git commit -m x',              # bare, no directory
+    'flock -x /tmp/git git commit -m x',
+    'flock -w 10 /tmp/git git commit -m x',
+    'timeout 5 /usr/bin/git git commit -m x',  # absolute-path operand
+]
+for c in TARGET_SHAPED_OPERAND:
+    check(f"wrap641+ shaped-operand {c!r}", g.git_commit(c)[0], True)
+check("wrap641+ shaped-operand gh lockfile",
+      g.gh_pr('flock /tmp/gh gh pr merge 1', 'merge')[0], True)
+check("wrap641+ shaped-operand gh keeps PR number",
+      g.gh_pr('flock /tmp/gh gh pr merge 9', 'merge')[2], '9')
+
+# The skip fires ONLY on a run of target-shaped tokens, so it can never swallow
+# a real command word. These pin that boundary.
+check("wrap641- shaped-operand does not eat a lone command word",
+      g.git_commit('timeout 5 git commit -m git')[0], True)
+check("wrap641- a later target token is not a run",
+      g.git_commit('timeout 5 git log -- git')[0], False)
+check("wrap641- outside an operand wrapper nothing changes",
+      g.git_commit('git git commit -m x')[0], False)
+check("wrap641= shaped-operand scope matches untorn",
+      g.git_commit('cd /other && flock /tmp/git git commit -m x'),
+      g.git_commit('cd /other && git commit -m x'))
+
+# ── ...BUT NOT WITH ANYTHING BETWEEN THEM (documented miss) ───────────
+# Insert ANY valid token between the target-shaped operand and the executable —
+# a second wrapper, a redirection, `env` — and the adjacency rule no longer
+# fires. These are MISSES, asserted as such, and they are misses on main too.
+#
+# A candidate-window fallback that covered them was built and REVERTED. It
+# worked, but it was rung N+1: it generated a fresh defect in each of three
+# consecutive review rounds — a repo-override scan that had not kept up, an
+# option VALUE spelled like a wrapper arming it, an ordinary `git log -1 -- git
+# commit` reported as a commit — and #593 non-goal 4 says to prefer the
+# documented miss over that ladder. The reverted approach is described in the
+# PR body for whoever picks this up.
+#
+# Verified EXECUTING on this host in the forms whose binaries exist:
+#   timeout 5 nice -n 5 echo …   -> runs
+#   timeout 5 >/tmp/f echo …     -> runs (redirection between wrapper and cmd)
+# `flock` is absent on this host; its operand grammar is documented and the
+# parser does not depend on the binary existing.
+OPERAND_THEN_ANYTHING_MISS = [
+    'flock /tmp/git nice -n 5 git commit -m x',    # wrapper between
+    'flock /tmp/git env git commit -m x',          # another wrapper
+    'flock /tmp/git >/tmp/o git commit -m x',      # redirection between
+    'flock /tmp/git 2>/dev/null git commit -m x',  # fd redirection
+    'timeout 5 /tmp/git nice -n 5 git commit -m x',
+]
+for c in OPERAND_THEN_ANYTHING_MISS:
+    check(f"wrap641~ (miss) operand-then-any {c!r}", g.git_commit(c)[0], False)
+check("wrap641~ (miss) operand-then-any gh",
+      g.gh_pr('flock /tmp/gh nice -n 5 gh pr merge 1', 'merge')[0], False)
+
+# The ordinary spellings keep REAL scope — no stall, no guessed directory.
+check("wrap641= ordinary spelling keeps REAL scope",
+      g.git_commit('cd /other && timeout 5 git commit -m x')[1], '/other')
+check("wrap641= ordinary spelling is not a torn stall",
+      g.git_commit('cd /other && timeout 5 git commit -m x',
+                   with_untrusted_cd=True)[3] == g._TORN_SCOPE, False)
+
+# The fallback is gated on an operand wrapper in the PREAMBLE. Without that gate
+# it is the any-position over-reach _torn_direct_hits warns about, reading an
+# ordinary argument VALUE as a command word.
+check("wrap641- fallback needs an operand wrapper",
+      g.git_commit('echo git commit')[0], False)
+check("wrap641- fallback does not fire behind a plain wrapper",
+      g.git_commit('nice -n 5 /tmp/git git commit -m x')[0], False)
+
+# ── KNOWN MISSES, pinned rather than chased (ADR 0006 residual class) ──
+# No token scan can reach either of these, and both are asserted as MISSES so a
+# future change that closes them is visible rather than silent.
+#
+#   `printf git | xargs -I{} {} commit -m x`  — the command word is `{}` and the
+#   executable arrives on STDIN. Verified to really run `git commit`. This is
+#   the run-time-assembled-name class ADR 0006 accepts; closing it needs data-
+#   flow, not parsing.
+#
+#   `flock /tmp/l -c "git commit"` — flock's OWN -c hands a string to a shell
+#   without naming an interpreter, so discovery has no target to stop on. Same
+#   shape as `env -S`, which needed its own extractor; this one has not been
+#   reported and is not built here.
+WRAPPER_KNOWN_MISS = [
+    'printf git | xargs -I{} {} commit -m x',
+    'echo git | xargs -n1 -I@ @ commit -m x',
+    'flock /tmp/l -c "git commit -m x"',
+    # `xargs` is not modelled as a wrapper AT ALL, so even its literal spellings
+    # are misses. That is deliberate and is the narrower of two bad options.
+    # xargs BUILDS a command line: argv comes from stdin and the result may run
+    # zero or many times, so modelling it lexically produced answers that were
+    # WRONG rather than merely incomplete —
+    #   printf '%s\n' --repo other/repo | xargs gh pr merge 1
+    #       reported merge=True with override=False, i.e. the gate would have
+    #       validated the CURRENT repo while gh merged another;
+    #   xargs -n1 gh pr merge
+    #       reported gh_pr_count=1 for a command that can perform several, which
+    #       is the number the pre-merge gate reads to refuse a multi-PR merge.
+    # Catching `xargs -0 git commit` while `printf commit | xargs git` sails past
+    # buys one spelling at the price of a confident wrong answer on others.
+    'xargs -0 git commit -m x',
+    'xargs -I{} git commit -m x',
+    'xargs -0 bash -c "git commit -m x"',
+    'printf 1 | xargs -E git git commit -m x',
+    'printf commit | xargs git',
+]
+for c in WRAPPER_KNOWN_MISS:
+    check(f"wrap641~ (known miss, ADR 0006) {c!r}", g.git_commit(c)[0], False)
+check("wrap641~ (known miss) assembled gh via xargs",
+      g.gh_pr('printf gh | xargs -I{} {} pr merge 1', 'merge')[0], False)
+check("wrap641~ (known miss) literal gh behind xargs",
+      g.gh_pr('xargs -0 gh pr merge 1', 'merge')[0], False)
+# The reason xargs is excluded, asserted rather than only argued: a wrong ANSWER
+# is worse than a miss. If a future change models xargs lexically, these two are
+# the rows that should force it to answer for the repo-override and count paths.
+check("wrap641~ xargs stdin cannot supply a repo override",
+      g.gh_pr_repo_override(
+          "printf '%s\\n' --repo other/repo | xargs gh pr merge 1", 'merge'),
+      False)
+check("wrap641~ xargs repeat-invocation is not counted as one",
+      g.gh_pr_count('xargs -n1 gh pr merge', 'merge'), 0)
+
+# An option VALUE spelled like a wrapper is not a wrapper. The fallback's gate
+# comes from the walk's own report, not from a token scan that cannot tell the
+# two apart — `env -u timeout echo git commit` runs only `echo`.
+OPTION_VALUE_NAMED_LIKE_WRAPPER = [
+    'env -u timeout echo git commit',
+    'sudo -u timeout echo git commit',
+    'env -u flock echo git commit',
+]
+for c in OPTION_VALUE_NAMED_LIKE_WRAPPER:
+    check(f"wrap641- option-value {c!r}", g.git_commit(c)[0], False)
+check("wrap641- option-value gh",
+      g.gh_pr('env -u timeout echo gh pr merge 1', 'merge')[0], False)
+
+# A REAL executable with a non-commit subcommand ends the matter. Trailing words
+# that merely spell `git commit` are arguments, not another invocation — the
+# reverted fallback read them as one and reported a commit for a `git log`.
+check("wrap641- git log with trailing commit words",
+      g.git_commit('timeout 5 git log -1 -- git commit')[0], False)
+check("wrap641- gh issue view with trailing merge words",
+      g.gh_pr('timeout 5 gh issue view gh pr merge 1', 'merge')[0], False)
+
+# Structural: the set carries names only. If a future change gives it offsets,
+# counts, or per-flag knowledge, this is the assertion that should fail first.
+check("wrap641= _OPERAND_WRAPPERS is a bare name set",
+      sorted(g._OPERAND_WRAPPERS), ['flock', 'ionice', 'timeout'])
+check("wrap641= xargs is NOT modelled as a wrapper",
+      'xargs' in (g._OPERAND_WRAPPERS | g._WRAPPERS), False)
+# DISJOINT from _WRAPPERS, deliberately. _WRAPPERS is read by the cd/pushd/popd
+# walk and two other scans, so putting these names in it leaked outside this
+# change's git/gh-only scope: `ionice -c3 echo cd /other; git commit` began
+# reporting `/other` as untrusted_cd (main reports ''), a new false stall for a
+# subprocess that cannot change the parent shell's directory. If a future change
+# merges the sets, this row is the one that should fail.
+check("wrap641= operand wrappers stay OUT of _WRAPPERS",
+      sorted(g._OPERAND_WRAPPERS & g._WRAPPERS), [])
+check("wrap641- subprocess wrapper manufactures no untrusted cd",
+      g.git_commit('ionice -c3 echo cd /other; git commit -m x',
+                   with_untrusted_cd=True)[3], '')
+check("wrap641- xargs manufactures no untrusted cd",
+      g.git_commit('printf x | xargs -0 echo cd /other; git commit -m x',
+                   with_untrusted_cd=True)[3], '')
+
+# ── THE REPO-OVERRIDE SELECTOR MUST KEEP UP WITH THE WALK ────────────
+# Detecting a merge the override scan cannot see is WORSE than not detecting it:
+# the gate then validates the CURRENT repo's marker while gh merges another.
+# Before this row, `timeout 5 env GH_REPO=other/repo gh pr merge 1` reported
+# merge=True / override=False — a mis-scope this change itself introduced by
+# teaching one walk about operand wrappers and not the other (#593 bar 1).
+# The scan's prefix bound is now DERIVED from `_command_argv`, so the two cannot
+# drift apart again by omission.
+OVERRIDE_SEEN = [
+    'timeout 5 env GH_REPO=other/repo gh pr merge 1',
+    'flock /tmp/l env GH_REPO=other/repo gh pr merge 1',
+    'ionice -c3 env GH_HOST=example.com gh pr merge 1',
+    'env GH_REPO=other/repo gh pr merge 1',          # unwrapped, unchanged
+]
+for c in OVERRIDE_SEEN:
+    check(f"wrap641= override seen {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
+# ACCEPTED OVER-REPORT, and the reason the whole family is here. This scan has
+# no target to stop on, so it cannot step over `timeout 5` / `flock /tmp/l` the
+# way the command-word walk can. Three drafts tried to DERIVE a bound from
+# `_command_argv` and each was defeated one spelling at a time — a target-shaped
+# lockfile that stopped it early, a segment with no `gh` whose bound ran to
+# end-of-segment, then a nested `bash -c "gh pr merge 1"` with no `gh` token in
+# the outer segment to bound with. Answering "where does the prefix end behind
+# an operand wrapper" is the position question the walk itself declined; so this
+# reports the prefix UNRESOLVABLE and fails CLOSED.
+#
+# Consequence, asserted so it stays deliberate: any segment carrying an operand
+# wrapper reports a possible override, and the gate stalls on a command it could
+# once have scoped. The alternative is a SILENT wrong-repo validation — the gate
+# anchoring the current repo while gh merges another — which is strictly worse.
+# Priced on the corpus in the PR body.
+OPERAND_WRAPPER_UNRESOLVABLE = [
+    'timeout 5 gh pr merge 1',
+    'timeout 5 gh pr merge 1 --body "GH_REPO=other/repo"',
+    'timeout 5 echo GH_REPO=other/repo; gh pr merge 1',
+    'flock GH_HOST=example.com gh pr merge 1',
+    # the one that matters: nested, so the outer segment has no `gh` at all
+    'timeout 5 env GH_REPO=other/repo bash -c "gh pr merge 1"',
+]
+for c in OPERAND_WRAPPER_UNRESOLVABLE:
+    check(f"wrap641~ (fail-closed) unresolvable prefix {c!r}",
+          g.gh_pr_repo_override(c, 'merge'), True)
+# The bound is derived for `gh` ONLY. Protecting `git` here too made a
+# target-shaped lockfile stop it early, so the override went unseen while
+# _iter_gh — which protects only `gh` — read the merge. The two scans must
+# protect the same word or they disagree about where the command starts.
+check("wrap641= override seen behind a target-shaped lockfile",
+      g.gh_pr_repo_override(
+          'flock /tmp/git env GH_REPO=other/repo gh pr merge 1', 'merge'), True)
+# WITHOUT an operand wrapper the scan is unchanged from before this PR. These
+# pin that the fail-closed rule is scoped to the unresolvable case and has not
+# become a blanket over-report.
+UNWRAPPED_SELECTOR_UNCHANGED = [
+    ('env GH_REPO=other/repo gh pr merge 1', True),
+    ('gh pr merge 1', False),
+    ('gh pr merge 1 --body "GH_REPO=o/r"', False),
+    ('echo GH_REPO=o/r; gh pr merge 1', False),
+    ('nice -n 5 gh pr merge 1', False),
+]
+for c, want in UNWRAPPED_SELECTOR_UNCHANGED:
+    check(f"wrap641= unwrapped selector {c!r}",
+          g.gh_pr_repo_override(c, 'merge'), want)
+
 # ── COMPOUND-COMMAND KEYWORDS (fail-OPEN) ────────────────────────────
 # Segment splitting cuts on ';', so a compound keyword lands at the head of the
 # segment and USED TO BE READ AS THE COMMAND WORD — hiding the real command from

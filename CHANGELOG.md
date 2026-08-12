@@ -1,3 +1,10 @@
+## [1.106.4](https://github.com/chris-yyau/busdriver/compare/v1.106.3...v1.106.4) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ci:** restore the GitGuardian required check — the app was never dead ([#631](https://github.com/chris-yyau/busdriver/issues/631)) ([#646](https://github.com/chris-yyau/busdriver/issues/646)) ([48d55d3](https://github.com/chris-yyau/busdriver/commit/48d55d37815f4fb5a09dce7868e71b96eb7495f7)), closes [#630](https://github.com/chris-yyau/busdriver/issues/630) [#630](https://github.com/chris-yyau/busdriver/issues/630) [#607](https://github.com/chris-yyau/busdriver/issues/607) [#609](https://github.com/chris-yyau/busdriver/issues/609) [#610](https://github.com/chris-yyau/busdriver/issues/610) [#613](https://github.com/chris-yyau/busdriver/issues/613) [#614](https://github.com/chris-yyau/busdriver/issues/614) [#617](https://github.com/chris-yyau/busdriver/issues/617) [#619](https://github.com/chris-yyau/busdriver/issues/619) [#620](https://github.com/chris-yyau/busdriver/issues/620) [#621](https://github.com/chris-yyau/busdriver/issues/621) [#628](https://github.com/chris-yyau/busdriver/issues/628) [#630](https://github.com/chris-yyau/busdriver/issues/630) [#633](https://github.com/chris-yyau/busdriver/issues/633) [#636](https://github.com/chris-yyau/busdriver/issues/636) [#634](https://github.com/chris-yyau/busdriver/issues/634)
+
 ## [1.106.3](https://github.com/chris-yyau/busdriver/compare/v1.106.2...v1.106.3) (2026-08-12)
 
 

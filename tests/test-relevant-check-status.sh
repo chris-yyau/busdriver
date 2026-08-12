@@ -136,6 +136,40 @@ assert_line1 "12b all required reported → pending unchanged" "1 0 required 2" 
 D=$(mktemp -d "$TMPROOT/c12d.XXXX")
 assert_line1 "12d no lock → missing-check logic does not apply" "1 1 all 3" "$D" "$SYNTH"
 
+# 13 (#647): GitHub counts `success`, `skipped` AND `neutral` as satisfying a
+# required check, so a required check reporting one of the latter two must be
+# neither a failure nor pending. Today that holds only INCIDENTALLY — `neutral`
+# and `skipping` appear in neither the failed-status list nor the pending-status
+# list, so they fall through both. Nothing pins it: adding either word to the
+# pending list (an easy mistake — "not a pass, so wait for it") would strand
+# every merge on a check GitHub already considers satisfied, and the suite would
+# stay green. These cases make that a test failure instead.
+#
+# The second half is the one that actually needs the row: the check must also
+# count as REPORTED, or #515's missing-required logic re-adds it as pending from
+# the other direction and the "0 pending" above is undone silently.
+D=$(mktemp -d "$TMPROOT/c13a.XXXX")
+mklock "$D" '{"required":[{"name":"GitGuardian Security Checks"}]}'
+assert_line1 "13a required neutral check is satisfied, not failed or pending" "0 0 required 1" "$D" \
+  "$(printf 'GitGuardian Security Checks\tneutral\t1m16s\thttps://dashboard.gitguardian.com\n')"
+
+# 13b: same for `skipping` — gh's rendering of the `skipped` conclusion, named in
+# the same GitHub sentence as `neutral` and reachable on any `paths`-filtered or
+# conditional required job.
+D=$(mktemp -d "$TMPROOT/c13b.XXXX")
+mklock "$D" '{"required":[{"name":"compliance"}]}'
+assert_line1 "13b required skipping check is satisfied, not failed or pending" "0 0 required 1" "$D" \
+  "$(printf 'compliance\tskipping\t0\thttps://x\n')"
+
+# 13c: the no-row control, kept deliberately separate (#515 must still fire). It
+# is what proves 13a passes because the neutral ROW satisfied the requirement —
+# not because the missing-check accounting happens to be switched off. Same lock
+# as 13a, same expected `failed`, opposite pending.
+D=$(mktemp -d "$TMPROOT/c13c.XXXX")
+mklock "$D" '{"required":[{"name":"GitGuardian Security Checks"}]}'
+assert_line1 "13c required check with NO row is still pending" "0 1 required 0" "$D" \
+  "$(printf 'shellcheck\tpass\t5s\thttps://x\n')"
+
 # 11: row emission — failing case emits verbatim rows on lines 2..N; no-fail case does not
 D=$(mktemp -d "$TMPROOT/c11.XXXX"); mklock "$D" '{"required":[{"name":"commitlint"}]}'
 rows=$(printf '%s\n' "$SYNTH" | bash "$SCRIPT" "$D" 2>/dev/null | tail -n +2)

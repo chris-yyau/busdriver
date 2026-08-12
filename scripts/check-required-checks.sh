@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in five places, all of which can silently break merge:
+# Drift surfaces in six places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -35,20 +35,35 @@
 #       check is filtered out of the merge decision entirely — invisible,
 #       not pending — so failing required checks can report as green (#530).
 #
-# Runtime order: (a), (d) and (e) are local (no API) and run first; (b)
-# and (c) require gh API calls and run after. Output labels appear in the
-# order they ran — `[a]`, `[d]`, `[e]`, `[b]`, `[c]` — not alphabetically.
-# `--local-only` runs (a), (d) and (e).
+#   (f) required[] liveness: a required context that nothing reports.
+#       Under #515 that is not a silent hole — it counts as pending — so
+#       branch protection blocks every PR indefinitely, and the merge
+#       queue stops rather than the gate. What goes unnoticed is the
+#       CAUSE: it looks like slow CI until someone digs, and the wrong
+#       conclusion at the end of that dig is what #631 was. (c)
+#       cannot answer this — it samples the default branch, where a
+#       PR-scoped app is absent by design. (f) samples merged PR heads
+#       via the Checks API and asks whether each required name appeared
+#       there at all, reported by its declared source_app — which also
+#       gives the PR-scoped entries the reporter check (c) cannot run on
+#       them. Population and API are load-bearing: #631 concluded a live
+#       app was dead from `/statuses` on main, and the required check was
+#       removed from branch protection on that basis (see ADR 0037).
 #
-# Only (a), (d) and (e) can run in CI on this repo: (b) and (c) need
+# Runtime order: (a), (d) and (e) are local (no API) and run first; (b),
+# (c) and (f) require gh API calls and run after. Output labels appear in
+# the order they ran — `[a]`, `[d]`, `[e]`, `[b]`, `[c]`, `[f]` — not
+# alphabetically. `--local-only` runs (a), (d) and (e).
+#
+# Only (a), (d) and (e) can run in CI on this repo: (b), (c) and (f) need
 # `administration: read` / check-run reads that GITHUB_TOKEN cannot be
 # granted, so tests.yml invokes `--local-only`. (e) exists precisely so the
 # token-free subset still guards the failure mode (b) was meant to catch.
 #
 # Modes:
-#   ./check-required-checks.sh                      # all 5 surfaces (default)
+#   ./check-required-checks.sh                      # all 6 surfaces (default)
 #   ./check-required-checks.sh --local-only         # skip API calls; runs (a), (d), (e)
-#   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
+#   ./check-required-checks.sh --strict-remote      # turn (b)/(c)/(f) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
 #                                                    # = current git remote)
@@ -77,11 +92,13 @@ while [[ $# -gt 0 ]]; do
     # usable during repo onboarding (when branch protection isn't configured
     # yet); ON in CI / scheduled drift checks where missing remote = real
     # drift. Applies to (b) API/auth/shape failures, (c) "no recent commit
-    # had check-runs" path, and the two pre-flight conditions that would
-    # otherwise prevent any server verification at all: missing git remote
-    # 'origin' and missing gh CLI. Per-check missing in (c) (e.g., PR-only
-    # checks like version-drift on a main commit) stays warn-only because
-    # those are routine and expected.
+    # carried a required check-run" path, (f) unreported required checks,
+    # and the two pre-flight conditions that would otherwise prevent any
+    # server verification at all: missing git remote 'origin' and missing
+    # gh CLI. Per-check missing in (c) (e.g., PR-only checks like
+    # GitGuardian on a main commit) stays warn-only because those are
+    # routine and expected — but (c) examining NOTHING is drift
+    # unconditionally, strict-remote or not (#648).
     --strict-remote) STRICT_REMOTE=1; shift ;;
     # `--owner` and `--repo` each consume the next arg as a value. Validate
     # that the next arg exists and isn't itself another flag (leading `-`)
@@ -102,9 +119,9 @@ while [[ $# -gt 0 ]]; do
       REPO="$2"; shift 2 ;;
     -h|--help)
       # Range must cover the header block through "Exit codes" — it grew when
-      # surface (e) was added, and a stale upper bound silently truncates
-      # --help mid-sentence.
-      sed -n '3,59p' "$0" | sed 's/^# \{0,1\}//'
+      # surfaces (e) and (f) were added, and a stale upper bound silently
+      # truncates --help mid-sentence.
+      sed -n '3,69p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -540,6 +557,7 @@ fi
 if [[ "$LOCAL_ONLY" -eq 1 ]]; then
   echo "[b] Skipped (--local-only)"
   echo "[c] Skipped (--local-only)"
+  echo "[f] Skipped (--local-only)"
   exit "$drift"
 fi
 
@@ -555,6 +573,7 @@ if ! command -v gh >/dev/null 2>&1; then
   fi
   echo "[b] Skipped (gh CLI not installed). Re-run with gh available or pass --local-only."
   echo "[c] Skipped (gh CLI not installed)."
+  echo "[f] Skipped (gh CLI not installed)."
   exit "$drift"
 fi
 
@@ -578,13 +597,13 @@ else
   api_ok=0
 fi
 
-# Two failure paths share a common ladder: emit a label, then either drift
-# (under --strict-remote) or warn (default). The (b) check's whole purpose
-# is verifying lock matches server, so "couldn't verify" is structurally
-# the same shape as drift. Default-warn keeps onboarding ergonomic;
-# strict-remote opt-in is for CI / scheduled drift checks where the
+# Several failure paths share a common ladder: emit a label, then either drift
+# (under --strict-remote) or warn (default). The (b) and (f) checks' whole
+# purpose is verifying the lock against the server, so "couldn't verify" is
+# structurally the same shape as drift. Default-warn keeps onboarding
+# ergonomic; strict-remote opt-in is for CI / scheduled drift checks where the
 # absence of a verifiable answer is itself a problem.
-fail_or_warn_b() {
+fail_or_warn() {
   local msg="$1"
   if [[ "$STRICT_REMOTE" -eq 1 ]]; then
     echo "  DRIFT: $msg (--strict-remote)"
@@ -595,14 +614,14 @@ fail_or_warn_b() {
 }
 
 if [[ "$api_ok" -eq 0 ]]; then
-  fail_or_warn_b "could not read required_status_checks (no branch protection? insufficient scope?)"
+  fail_or_warn "could not read required_status_checks (no branch protection? insufficient scope?)"
 elif ! contexts_count=$(printf '%s' "$server_response" \
        | jq -er 'if (has("contexts") and (.contexts | type == "array")) then .contexts | length else error("missing-contexts") end' 2>/dev/null); then
   # API returned 200 but the response shape is unexpected: either `.contexts`
   # is absent, or it's not an array. The bare jq form `.contexts | length`
   # would have returned 0 for missing fields (since `null | length` is 0),
   # conflating "missing" with "real-empty".
-  fail_or_warn_b "required_status_checks response missing .contexts field — unexpected API shape"
+  fail_or_warn "required_status_checks response missing .contexts field — unexpected API shape"
 else
   # Force C locale so shell `sort` matches jq's codepoint ordering. Without
   # this, en_US.UTF-8 dictionary order interleaves cases ("commitlint" sorts
@@ -664,9 +683,27 @@ fi
 # ────────────────────────────────────────────────────────────────────
 echo "[c] Checking lock source_app against latest check-run reporters…"
 
+# An empty `required` is a legal lock — (b) above handles the empty/empty
+# case explicitly — and there is then nothing for (c) or (f) to verify.
+# Without this, the selection predicate below matches no commit and
+# --strict-remote reports "cannot verify" for a lock with nothing in it.
+lock_required_count=$(jq '.required | length' "$LOCK")
+if [[ "$lock_required_count" -eq 0 ]]; then
+  echo "  Skipped (lock declares no required checks)"
+  echo "[f] Skipped (lock declares no required checks)"
+  exit "$drift"
+fi
+
 # Walk back through recent commits to find one that actually ran CI.
-# Release commits often use `[skip ci]` and have no check-runs, which is
-# expected — keep stepping back until we find a real commit.
+#
+# The sample must carry at least one REQUIRED name, not merely "some
+# check-run" (#648). Release commits are `[skip ci]`, but that does not
+# leave them bare: workflows the skip does not reach still post — on this
+# repo CodeQL's `Analyze (…)`. A "has any check-run" predicate therefore
+# selected exactly such a commit, every required name was then absent from
+# it, and (c) printed `ok` having examined nothing. That is the fail-open
+# this surface exists to prevent, in the surface itself.
+want_names=$(jq -c '[.required[].name]' "$LOCK")
 runs_json=""
 sha=""
 for offset in 0 1 2 3 4 5 6 7 8 9; do
@@ -681,7 +718,10 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
   rj=$(gh api "repos/$OWNER/$REPO/commits/$candidate/check-runs" --paginate \
          --jq '.check_runs[]' 2>/dev/null \
        | jq -sc '.' || true)
-  count=$(echo "$rj" | jq 'length' 2>/dev/null || echo 0)
+  # Same name equality the per-entry loop below uses. If the two ever
+  # disagreed, a commit could be selected here and still verify nothing.
+  count=$(printf '%s' "$rj" | jq --argjson want "$want_names" \
+    '[.[] | select(.name as $n | any($want[]; . == $n))] | length' 2>/dev/null || echo 0)
   if [[ "${count:-0}" -gt 0 ]]; then
     runs_json="$rj"
     sha="$candidate"
@@ -690,40 +730,325 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
 done
 
 if [[ -z "$runs_json" ]]; then
-  # Same fail-closed ladder as (b): under --strict-remote, "couldn't fetch
-  # any check-runs from the last 10 commits" means we can't verify the
-  # source-app contract — that's drift, not an info skip.
-  if [[ "$STRICT_REMOTE" -eq 1 ]]; then
-    echo "  DRIFT: no recent commit (last 10) had check-runs — cannot verify source_app (--strict-remote)"
-    drift=1
-  else
-    echo "  warn: no recent commit (last 10) had check-runs — skipping app check"
-  fi
-  exit "$drift"
-fi
-echo "  using commit: ${sha:0:7}"
+  # Same fail-closed ladder as (b): under --strict-remote, "no commit in the
+  # last 10 carried a required check-run" means we can't verify the
+  # source-app contract — that's drift, not an info skip. Default stays
+  # warn-only for the onboarding case (see --strict-remote above).
+  #
+  # Falls THROUGH to (f) rather than exiting. (f) samples merged PR heads,
+  # a different population entirely, so "the default branch told us
+  # nothing" is no reason to skip it — that would let one surface's blind
+  # spot silence the surface added to cover it.
+  fail_or_warn "no recent commit (last 10) carried a required check-run — cannot verify source_app"
+else
+  echo "  using commit: ${sha:0:7}"
 
-while IFS= read -r entry; do
-  name=$(echo "$entry" | jq -r '.name')
-  expected_app=$(echo "$entry" | jq -r '.source_app')
-  # Pick the most recent check-run for this name (highest started_at).
-  actual=$(echo "$runs_json" | jq -r --arg n "$name" '
-    [.[] | select(.name == $n)] | sort_by(.started_at) | last
-  ')
-  if [[ "$actual" == "null" || -z "$actual" ]]; then
-    echo "  warn: no check-run named '$name' on HEAD — skipping app check"
+  c_checked=0
+  c_skipped=""
+  while IFS= read -r entry; do
+    name=$(echo "$entry" | jq -r '.name')
+    expected_app=$(echo "$entry" | jq -r '.source_app')
+    # Pick the most recent check-run for this name (highest started_at).
+    actual=$(echo "$runs_json" | jq -r --arg n "$name" '
+      [.[] | select(.name == $n)] | sort_by(.started_at) | last
+    ')
+    if [[ "$actual" == "null" || -z "$actual" ]]; then
+      echo "  warn: no check-run named '$name' on HEAD — skipping app check"
+      c_skipped="${c_skipped:+$c_skipped, }$name"
+      continue
+    fi
+    c_checked=$((c_checked + 1))
+    actual_slug=$(echo "$actual" | jq -r '.app.slug // "unknown"')
+    if [[ "$actual_slug" != "$expected_app" ]]; then
+      echo "  DRIFT: '$name' expected source_app='$expected_app' but reported by '$actual_slug'"
+      drift=1
+      c_drift=1
+    fi
+  done < <(jq -c '.required[]' "$LOCK")
+
+  c_total=$(jq '.required | length' "$LOCK")
+
+  if [[ "$c_checked" -eq 0 ]]; then
+    # NOT on the --strict-remote ladder, deliberately. The commit above was
+    # selected BECAUSE it carried a required check-run, so reaching zero here
+    # means the selection predicate and the per-entry match disagree — an
+    # impossible state, not an unconfigured repo. "Examined nothing" must
+    # never share an exit code with "examined everything and it was fine".
+    echo "  DRIFT: examined 0 of $c_total required checks on ${sha:0:7} — cannot verify source_app"
+    drift=1
+  elif [[ "$c_drift" -eq 0 ]]; then
+    # Count-bearing on purpose. A partial sample is the NORMAL case on the
+    # default branch — a PR-scoped app (GitGuardian) never posts there — so a
+    # bare "ok" would report 1-of-12 verified in the same words as 12-of-12.
+    if [[ -n "$c_skipped" ]]; then
+      echo "  ok: $c_checked/$c_total required checks reported by their expected source app"
+      echo "      (not present on this commit, unverified: $c_skipped)"
+    else
+      echo "  ok: all $c_total required checks are reported by their expected source app"
+    fi
+  fi
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (f) required[] liveness — is each required context actually reported
+#     by the app the lock says owns it? A required name nothing posts
+#     blocks every PR indefinitely (#515 counts it as pending, so it
+#     does not silently stop gating — it stops merging). The failure is
+#     loud but its cause is not, and misreading that cause is #631.
+#
+#     The population and the API are the whole design, because #631 got
+#     each of them wrong and removed a live security check as a result:
+#
+#       - MERGED PR heads, not commits on the default branch. A check
+#         that runs `on: pull_request` never appears on main, so absence
+#         there is its normal state rather than evidence of death.
+#       - the Checks API, not `/statuses`. Apps post check-runs; the
+#         legacy statuses endpoint shows nothing for them.
+#       - PRESENCE only, never conclusion. GitHub counts success, skipped
+#         AND neutral as satisfying a required check, so testing the
+#         conclusion would condemn a healthy `neutral` app.
+#       - matched on REPORTER + name, not name alone. (c) can never check a
+#         PR-scoped app's source_app, so name-only matching here would let
+#         any installed app stand in for the expected one and leave that
+#         contract unverified on every surface.
+#       - already-MERGED PRs, which disposes of the latency trap for
+#         free: the merge itself proves branch protection was satisfied,
+#         so every then-required check had finished. Sampling an open PR
+#         mid-run reads `pending` and means nothing — GitGuardian took
+#         27m57s on #630, and a snapshot inside that window is what
+#         "never reports" was originally concluded from.
+# ────────────────────────────────────────────────────────────────────
+LIVENESS_SAMPLE=10
+# `gh pr list` orders by CREATED_AT DESC, not by merge time, so its own
+# --limit would hand back "the 10 most recently OPENED merged PRs" — a
+# long-lived PR merged yesterday excluded while a short-lived one merged
+# months ago stayed in. Over-fetching and re-sorting by mergedAt gives the
+# 10 most recently merged OF THE 30 MOST RECENTLY OPENED, which is still not
+# a true global top-10: a PR opened long ago and merged today can sit past
+# the 30.
+#
+# That residue is survivable only because freshness is tracked PER PAIR
+# below, never as one summary date for the sample. Under a summary date the
+# gap is a real fail-open: a recent long-lived merge displaced from the
+# window leaves an older PR in its place, and that older PR can be the only
+# thing carrying some required pair — so the surface would report a pair as
+# live on evidence the true window does not contain. Per-pair dating turns
+# that into what it is: evidence with an old date, which the staleness rule
+# below then rejects. An excluded merge can only make a pair's evidence look
+# OLDER, so the surface under-claims and never over-claims.
+LIVENESS_FETCH=30
+# How old a required check's most recent sighting may be before it stops
+# being evidence about TODAY. The sample cannot refresh itself: if a required
+# app goes dark, branch protection blocks every PR, no new PR merges, and the
+# sampled heads stay frozen on the pre-outage ones — all still carrying the
+# name, so presence alone would report `ok` forever while nothing has
+# reported since.
+LIVENESS_MAX_AGE_DAYS=30
+echo "[f] Checking required[] liveness across the last $LIVENESS_SAMPLE merged PR heads…"
+
+f_heads=0
+f_seen=""
+f_partial=0
+# Scoped to the branch whose protection (b) just read. A PR merged into a
+# release or maintenance branch runs a different workflow set, and letting
+# it into the union would satisfy a name that no longer runs against the
+# protected branch at all.
+if ! f_prs=$(gh pr list --repo "$OWNER/$REPO" --base "$default_branch" --state merged \
+               --limit "$LIVENESS_FETCH" --json headRefOid,mergedAt \
+               --jq "sort_by(.mergedAt) | reverse | .[:$LIVENESS_SAMPLE]
+                     | .[] | .headRefOid" 2>/dev/null); then
+  f_partial=1
+  f_prs=""
+fi
+
+while IFS= read -r head; do
+  [[ -z "$head" ]] && continue
+  # REPORTER + name, not name alone. (c) can never verify a PR-scoped app's
+  # source_app — it samples the default branch, where that app is absent by
+  # design — so if (f) matched on the name only, any other installed app
+  # posting a same-named run would stand in for the expected one and the
+  # blind spot would be total. A failed fetch is NOT an absent check-run
+  # either: folding the two together lets a sample that was never read
+  # report as a sample that contained nothing, which is #648 one surface over.
+  # `@json` per run, and the comparison below is done in jq — NOT by framing
+  # the pair into text and grepping for it. A check-run name is attacker-
+  # adjacent data (any installed app picks its own), so a name containing a
+  # newline plus a forged `<app>\t<required-name>` line would inject a
+  # matching record into a text blob and certify a source_app nobody posted.
+  # JSON in, JSON compared: the name is a value, never a frame.
+  #
+  # Dated by the RUN, not by the merge. A long-lived PR merged today can
+  # carry check-runs from months ago, so borrowing the PR's mergedAt would
+  # let one stale run look like today's proof of life — the same
+  # evidence-about-something-else substitution this surface exists to stop.
+  if ! head_runs=$(gh api "repos/$OWNER/$REPO/commits/$head/check-runs" --paginate \
+       --jq '.check_runs[]
+             | [(.app.slug // "unknown"), .name, (.completed_at // .started_at)]
+             | @json' 2>/dev/null); then
+    f_partial=1
     continue
   fi
-  actual_slug=$(echo "$actual" | jq -r '.app.slug // "unknown"')
-  if [[ "$actual_slug" != "$expected_app" ]]; then
-    echo "  DRIFT: '$name' expected source_app='$expected_app' but reported by '$actual_slug'"
-    drift=1
-    c_drift=1
-  fi
-done < <(jq -c '.required[]' "$LOCK")
+  # Count every successfully fetched head here, BEFORE the empty-check-runs
+  # test below. A head with zero check-runs was still successfully read —
+  # it just carried no evidence — so folding it into "not counted" would
+  # undercount the sample size reported to the operator and could let a
+  # newest-head-was-empty sample claim evidence exists on "the last 1"
+  # head when it actually read more (and vice versa: a fully-empty sample
+  # must show f_heads=0, which is why the `f_heads -eq 0` gate below still
+  # works — an empty $f_seen with a nonzero f_heads means every fetched
+  # head had zero check-runs, not that nothing was read).
+  f_heads=$((f_heads + 1))
+  [[ -z "$head_runs" ]] && continue
+  f_seen="$f_seen$head_runs"$'\n'
+done <<< "$f_prs"
 
-if [[ "$c_drift" -eq 0 ]]; then
-  echo "  ok: every required check is reported by its expected source app"
+# ISO-8601 UTC, so lexical comparison is chronological. jq is already a hard
+# dependency and `now` is portable across the BSD/GNU `date` split.
+f_cutoff=$(jq -rn "now - ($LIVENESS_MAX_AGE_DAYS * 86400) | todate")
+
+# Dated PER PAIR, not per sample. A single fresh PR that happens to carry one
+# required check must not vouch for a different check last seen a year ago —
+# under one summary date it would, which is the same "evidence about
+# something else counts as evidence about this" mistake #631 made.
+#
+# Both lists come out already rendered: a name reaches the terminal only via
+# tojson, so a newline inside one cannot forge an extra bullet.
+#
+# `f_jq` exists so a jq failure cannot become an empty result. An empty
+# f_missing and an empty f_stale are exactly what "everything is fine" looks
+# like here, so an unevaluable filter would print `ok` for a sample it never
+# managed to read. `set -euo pipefail` protects the three call sites below
+# today (a failing assignment aborts the script under errexit), but that
+# protection is scoped to THIS context — a future caller run with errexit
+# suppressed would see `exit 2` terminate only the command-substitution
+# subshell, leaving `$?` unchecked and $out empty. Returning failure
+# explicitly and checking every assignment removes that dependency on the
+# caller's shell options.
+f_jq() {
+  local out
+  if ! out=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" "$@"); then
+    echo "error: could not evaluate (f) liveness — refusing to report it clean" >&2
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_missing=$(f_jq -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | $lock[0].required
+  | map(select(. as $r | ($seen | any(.[0] == $r.source_app and .[1] == $r.name)) | not))
+  | .[] | "    - \(.name | tojson) (expected source_app=\(.source_app | tojson))"
+'); then
+  exit 2
+fi
+# The weakest link, reported alongside `ok`: with per-pair dating the useful
+# summary is the OLDEST of the per-check sightings, not the newest merge in
+# the sample — the newest merge is exactly the number that made a stale check
+# look current.
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_oldest=$(f_jq -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | [ $lock[0].required[]
+      | . as $r
+      | [$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]] | max ]
+  | map(select(. != null)) | min // "n/a"
+'); then
+  exit 2
+fi
+# shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_stale=$(f_jq --arg cutoff "$f_cutoff" -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | $lock[0].required
+  | map(. as $r
+        | ([$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]]) as $dates
+        # Present-but-old only. A pair with no rows at all is MISSING and is
+        # reported by the list above; letting it fall through here too would
+        # print the same defect twice under two different names.
+        | select(($dates | length) > 0)
+        | ($dates | map(select(. != null)) | max) as $last
+        | select($last == null or $last < $cutoff)
+        | "    - \(.name | tojson) last reported \($last // "with no timestamp") by \(.source_app | tojson)")
+  | .[]
+'); then
+  exit 2
+fi
+
+if [[ "$f_partial" -eq 1 ]]; then
+  fail_or_warn "could not read part of the merged-PR sample — liveness below is incomplete"
+fi
+
+f_flagged=0
+# Zero evidence is judged on $f_seen, not on $f_heads: since (f_heads now
+# counts every successfully fetched head, not just the ones that happened to
+# carry check-runs), a head can be fetched and still contribute nothing —
+# f_heads > 0 with f_seen empty is a real, if unusual, state (e.g. a merge
+# whose checks hadn't posted yet at fetch time). Gating on f_heads alone
+# would let that state slip past this "no evidence" branch and into the
+# f_missing report below, which would then list every required check as
+# unreported despite reading zero check-runs — the #631 misreading this
+# surface exists to prevent.
+if [[ -z "$f_seen" ]]; then
+  fail_or_warn "no check-runs on any of the last $LIVENESS_SAMPLE PRs merged into $default_branch — cannot verify liveness"
+  f_flagged=1
+fi
+# Missing and stale are reported TOGETHER, never as an if/elif chain. They are
+# independent per-check facts: one entry absent while another has gone quiet is
+# two defects, and hiding the second behind the first means the operator fixes
+# one, re-runs, and only then learns about the other.
+#
+# Gated on $f_seen being non-empty: with zero evidence collected, every
+# required entry is absent from $f_missing by construction (see f_jq above),
+# and printing that list would restate "no evidence" as "these checks are
+# dead" — the exact misreading (f) exists to prevent (#631).
+if [[ -n "$f_seen" && -n "$f_missing" ]]; then
+  # Warn-by-default, drift under --strict-remote, and the window is named
+  # in the message: a check added to required[] AFTER every sampled PR
+  # merged is legitimately absent, and only the operator can tell that
+  # apart from an app that went dark.
+  echo "  warn: required check(s) not reported by their source_app on ANY of the last $f_heads merged PR heads:"
+  printf '%s\n' "$f_missing"
+  echo "  Either the app stopped reporting (branch protection now blocks every"
+  echo "  PR on it) or the entry was added after those PRs merged. Confirm"
+  echo "  against the Checks API on a PR head before concluding it is dead."
+  f_flagged=1
+fi
+# Same $f_seen gate as the missing report above, for the same reason. The jq
+# filter already makes this branch unreachable with zero evidence (a pair with
+# no rows is dropped by `select(($dates | length) > 0)` before the age test),
+# but that invariant lives inside a jq program two screens up. Repeating the
+# gate here keeps "no evidence never renders as a diagnosis" checkable at the
+# point it matters, and keeps the two reports symmetric so a future edit to
+# one filter cannot silently reopen the other path.
+if [[ -n "$f_seen" && -n "$f_stale" ]]; then
+  echo "  warn: required check(s) whose most recent sighting is older than $LIVENESS_MAX_AGE_DAYS days:"
+  printf '%s\n' "$f_stale"
+  echo "  Present in the sample, but nothing recent. A required app that goes"
+  echo "  dark blocks every PR, so the sample freezes on pre-outage merges that"
+  echo "  all still carry the name — age is the only thing that distinguishes"
+  echo "  that from a healthy check."
+  f_flagged=1
+fi
+
+if [[ "$f_flagged" -eq 1 ]]; then
+  if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+    echo "  DRIFT: required check(s) unreported or stale (--strict-remote)"
+    drift=1
+  fi
+elif [[ "$f_partial" -eq 1 ]]; then
+  # Every name turned up in the part of the sample that WAS readable — which
+  # is not the same claim as `ok`, and must not be written in the same words.
+  # The unread heads could have held nothing contradicting this, or could
+  # have held the outage.
+  echo "  incomplete: every required check was reported by its source_app on the $f_heads heads that could be read (oldest per-check sighting $f_oldest) — the rest of the sample was not read, so this is not a clean bill"
+else
+  echo "  ok: every required check was reported by its source_app on at least one of the last $f_heads merged PR heads (oldest per-check sighting $f_oldest)"
 fi
 
 exit "$drift"

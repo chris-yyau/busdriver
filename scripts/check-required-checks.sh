@@ -869,8 +869,14 @@ while IFS=' ' read -r head merged_at; do
   # blind spot would be total. A failed fetch is NOT an absent check-run
   # either: folding the two together lets a sample that was never read
   # report as a sample that contained nothing, which is #648 one surface over.
+  # `@json` per run, and the comparison below is done in jq — NOT by framing
+  # the pair into text and grepping for it. A check-run name is attacker-
+  # adjacent data (any installed app picks its own), so a name containing a
+  # newline plus a forged `<app>\t<required-name>` line would inject a
+  # matching record into a text blob and certify a source_app nobody posted.
+  # JSON in, JSON compared: the name is a value, never a frame.
   if ! head_runs=$(gh api "repos/$OWNER/$REPO/commits/$head/check-runs" --paginate \
-       --jq '.check_runs[] | "\(.app.slug // "unknown")\t\(.name)"' 2>/dev/null); then
+       --jq '.check_runs[] | [(.app.slug // "unknown"), .name] | @json' 2>/dev/null); then
     f_partial=1
     continue
   fi
@@ -880,14 +886,14 @@ while IFS=' ' read -r head merged_at; do
   [[ "$merged_at" > "$f_newest" ]] && f_newest="$merged_at"
 done <<< "$f_prs"
 
-f_missing=""
-while IFS= read -r pair; do
-  [[ -z "$pair" ]] && continue
-  # -x -F: whole line, literal. Required names contain spaces ('Secret
-  # scanning') and regex metacharacters are not impossible in a check name.
-  printf '%s' "$f_seen" | grep -qxF -- "$pair" && continue
-  f_missing="$f_missing$pair"$'\n'
-done < <(jq -r '.required[] | "\(.source_app)\t\(.name)"' "$LOCK")
+# Already rendered for display: a name is only ever emitted through tojson,
+# so a newline in one cannot forge an extra bullet either.
+f_missing=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" -r '
+  (split("\n") | map(select(length > 0) | fromjson)) as $seen
+  | $lock[0].required
+  | map(select(. as $r | ($seen | any(.[0] == $r.source_app and .[1] == $r.name)) | not))
+  | .[] | "    - \(.name | tojson) (expected source_app=\(.source_app | tojson))"
+')
 
 # ISO-8601 UTC, so lexical comparison is chronological. jq is already a hard
 # dependency and `now` is portable across the BSD/GNU `date` split.
@@ -905,10 +911,7 @@ elif [[ -n "$f_missing" ]]; then
   # merged is legitimately absent, and only the operator can tell that
   # apart from an app that went dark.
   echo "  warn: required check(s) not reported by their source_app on ANY of the last $f_heads merged PR heads:"
-  while IFS=$'\t' read -r m_app m_name; do
-    [[ -z "$m_name" ]] && continue
-    echo "    - '$m_name' (expected source_app='$m_app')"
-  done <<< "$f_missing"
+  printf '%s\n' "$f_missing"
   echo "  Either the app stopped reporting (branch protection now blocks every"
   echo "  PR on it) or the entry was added after those PRs merged. Confirm"
   echo "  against the Checks API on a PR head before concluding it is dead."
@@ -918,6 +921,12 @@ elif [[ -n "$f_missing" ]]; then
   fi
 elif [[ "$f_newest" < "$f_cutoff" ]]; then
   fail_or_warn "every required check appears in the sample, but the freshest of the $f_heads merged PRs landed $f_newest — older than $LIVENESS_MAX_AGE_DAYS days, so this says nothing about today"
+elif [[ "$f_partial" -eq 1 ]]; then
+  # Every name turned up in the part of the sample that WAS readable — which
+  # is not the same claim as `ok`, and must not be written in the same words.
+  # The unread heads could have held nothing contradicting this, or could
+  # have held the outage.
+  echo "  incomplete: every required check was reported by its source_app on the $f_heads heads that could be read (newest merged $f_newest) — the rest of the sample was not read, so this is not a clean bill"
 else
   echo "  ok: every required check was reported by its source_app on at least one of the last $f_heads merged PR heads (newest merged $f_newest)"
 fi

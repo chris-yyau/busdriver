@@ -238,7 +238,7 @@ printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
 prheads "p1"
 printf '%s' "$ALPHA_ONLY" > "$D/fix/checkruns-p1.json"
 runcase "$D"; assert_exit "unreported required check warns by default" 0 $? "$D"
-assert_says "names the unreported check" "- 'Beta Check'" "$D"
+assert_says "names the unreported check" '- "Beta Check"' "$D"
 runcase "$D" --strict-remote; assert_exit "…and is drift under --strict-remote" 1 $? "$D"
 
 echo "== R7: (f) passes when every required check appears on a merged head =="
@@ -285,7 +285,7 @@ printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
 prheads "p1"
 printf '%s' "$ALPHA_SPOOFED" > "$D/fix/checkruns-p1.json"
 runcase "$D"
-assert_says "flags the name reported by the wrong app" "expected source_app='github-actions'" "$D"
+assert_says "flags the name reported by the wrong app" 'expected source_app="github-actions"' "$D"
 assert_silent "does not report liveness ok" "every required check was reported" "$D"
 
 echo "== R11: an EMPTY required[] is nothing to verify, not a failure =="
@@ -331,7 +331,29 @@ printf '%s' "$BOTH" > "$D/fix/checkruns-p1.json"
 printf 'p2\n' > "$D/fix/apifail.txt"
 runcase "$D"
 assert_says "says the sample was incomplete" "could not read part of the merged-PR sample" "$D"
+# The readable remainder held every required pair. That must not then be
+# written up as `ok` — a partial pass and a clean pass are different claims.
+assert_silent "does not issue a clean bill on a partial sample" "ok: every required check" "$D"
+assert_says "qualifies what it did verify" "incomplete: every required check" "$D"
 runcase "$D" --strict-remote; assert_exit "incomplete sample is drift under --strict-remote" 1 $? "$D"
+
+echo "== R14: a check-run NAME cannot forge a match =="
+# Check-run names are chosen by whoever installed the app. If the seen-set
+# were framed as text, a name carrying a newline plus a forged
+# '<expected-app><TAB><required-name>' line would inject a matching record
+# and certify a source_app that never posted. The comparison is done in JSON
+# for exactly this reason.
+D="$TMPROOT/r14"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+prheads "p1"
+# One run, from the wrong app, whose NAME embeds the record a text-framed
+# matcher would accept for 'Beta Check'.
+printf '[{"name":"x\\ngithub-actions\\tBeta Check","app":{"slug":"evil-app"},"started_at":"2026-08-12T00:00:00Z"},%s]' \
+  "$(run alpha github-actions)" > "$D/fix/checkruns-p1.json"
+runcase "$D"
+assert_says "the forged record does not satisfy 'Beta Check'" 'expected source_app="github-actions"' "$D"
+assert_silent "no clean bill from a forged name" "ok: every required check" "$D"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

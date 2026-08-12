@@ -1,3 +1,10 @@
+## [1.106.5](https://github.com/chris-yyau/busdriver/compare/v1.106.4...v1.106.5) (2026-08-12)
+
+
+### Bug Fixes
+
+* **ci:** stop surface (c) certifying what it never checked, add (f) liveness ([#648](https://github.com/chris-yyau/busdriver/issues/648)) ([#649](https://github.com/chris-yyau/busdriver/issues/649)) ([81b11c7](https://github.com/chris-yyau/busdriver/commit/81b11c74be18fe891aaf2f29a6393af95f2084f8)), closes [#631](https://github.com/chris-yyau/busdriver/issues/631) [#631](https://github.com/chris-yyau/busdriver/issues/631) [#631](https://github.com/chris-yyau/busdriver/issues/631) [#515](https://github.com/chris-yyau/busdriver/issues/515) [#631](https://github.com/chris-yyau/busdriver/issues/631) [#631](https://github.com/chris-yyau/busdriver/issues/631)
+
 ## [1.106.4](https://github.com/chris-yyau/busdriver/compare/v1.106.3...v1.106.4) (2026-08-12)
 
 

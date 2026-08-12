@@ -60,6 +60,12 @@ emit() {
 
 case "${1:-}" in
   pr)
+    # prfail marker: the LIST call itself fails. Distinct from a per-head
+    # check-runs failure (apifail.txt, covered by R13): this fails before
+    # any head is even known, so the sample is empty AND incomplete.
+    if [[ -f "$FIX/prfail" ]]; then
+      echo "stub gh: simulated 'pr list' failure" >&2; exit 1
+    fi
     # gh pr list --base <branch> --state merged --json headRefOid,mergedAt
     #
     # The --base assertion is the test for it: without it a PR merged into a
@@ -404,6 +410,33 @@ printf '[{"name":"x\\ngithub-actions\\tBeta Check","app":{"slug":"evil-app"},"st
 runcase "$D"
 assert_says "the forged record does not satisfy 'Beta Check'" 'expected source_app="github-actions"' "$D"
 assert_silent "no clean bill from a forged name" "ok: every required check" "$D"
+
+echo "== R16: a fetched-but-empty head is 'cannot verify', not a list of dead checks =="
+# p1 is fetched successfully (no apifail entry) but carries no fixture, so
+# the stub returns an empty check_runs list — a head that WAS read, but
+# contributed zero evidence. f_heads counts it (it was fetched), yet f_seen
+# stays empty; the report must say "cannot verify" and must NOT also list
+# every required check as unreported — that would restate "no evidence" as
+# "these checks are dead", the #631 misreading this surface exists to stop.
+D="$TMPROOT/r16"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+prheads "p1"
+runcase "$D"
+assert_says "says liveness could not be verified" "cannot verify liveness" "$D"
+assert_silent "does not report liveness ok" "ok: every required check" "$D"
+assert_silent "does not list required checks as unreported with zero evidence" '- "Beta Check"' "$D"
+runcase "$D" --strict-remote; assert_exit "unverifiable (f) fails closed" 1 $? "$D"
+
+echo "== R17: a failed 'pr list' is an incomplete sample, not an empty one =="
+D="$TMPROOT/r17"; mkcase "$D"
+printf 'c1\n' > "$D/fix/commits.txt"
+printf '%s' "$BOTH" > "$D/fix/checkruns-c1.json"
+: > "$D/fix/prfail"
+runcase "$D"
+assert_says "says the sample could not be read" "could not read part of the merged-PR sample" "$D"
+assert_silent "does not report liveness ok" "ok: every required check" "$D"
+runcase "$D" --strict-remote; assert_exit "unreadable sample is drift under --strict-remote" 1 $? "$D"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

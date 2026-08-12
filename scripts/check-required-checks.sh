@@ -888,8 +888,17 @@ while IFS= read -r head; do
     f_partial=1
     continue
   fi
-  [[ -z "$head_runs" ]] && continue
+  # Count every successfully fetched head here, BEFORE the empty-check-runs
+  # test below. A head with zero check-runs was still successfully read —
+  # it just carried no evidence — so folding it into "not counted" would
+  # undercount the sample size reported to the operator and could let a
+  # newest-head-was-empty sample claim evidence exists on "the last 1"
+  # head when it actually read more (and vice versa: a fully-empty sample
+  # must show f_heads=0, which is why the `f_heads -eq 0` gate below still
+  # works — an empty $f_seen with a nonzero f_heads means every fetched
+  # head had zero check-runs, not that nothing was read).
   f_heads=$((f_heads + 1))
+  [[ -z "$head_runs" ]] && continue
   f_seen="$f_seen$head_runs"$'\n'
 done <<< "$f_prs"
 
@@ -908,39 +917,53 @@ f_cutoff=$(jq -rn "now - ($LIVENESS_MAX_AGE_DAYS * 86400) | todate")
 # `f_jq` exists so a jq failure cannot become an empty result. An empty
 # f_missing and an empty f_stale are exactly what "everything is fine" looks
 # like here, so an unevaluable filter would print `ok` for a sample it never
-# managed to read. `set -euo pipefail` would abort anyway, but only with jq's
-# own message and an exit code outside the documented set — and only for as
-# long as nobody moves this into a context where errexit is suppressed.
+# managed to read. `set -euo pipefail` protects the three call sites below
+# today (a failing assignment aborts the script under errexit), but that
+# protection is scoped to THIS context — a future caller run with errexit
+# suppressed would see `exit 2` terminate only the command-substitution
+# subshell, leaving `$?` unchecked and $out empty. Returning failure
+# explicitly and checking every assignment removes that dependency on the
+# caller's shell options.
 f_jq() {
   local out
   if ! out=$(printf '%s' "$f_seen" | jq -R -s --slurpfile lock "$LOCK" "$@"); then
     echo "error: could not evaluate (f) liveness — refusing to report it clean" >&2
-    exit 2
+    return 1
   fi
   printf '%s' "$out"
 }
 
 # shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
-f_missing=$(f_jq -r '
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_missing=$(f_jq -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | $lock[0].required
   | map(select(. as $r | ($seen | any(.[0] == $r.source_app and .[1] == $r.name)) | not))
   | .[] | "    - \(.name | tojson) (expected source_app=\(.source_app | tojson))"
-')
+'); then
+  exit 2
+fi
 # The weakest link, reported alongside `ok`: with per-pair dating the useful
 # summary is the OLDEST of the per-check sightings, not the newest merge in
 # the sample — the newest merge is exactly the number that made a stale check
 # look current.
 # shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
-f_oldest=$(f_jq -r '
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_oldest=$(f_jq -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | [ $lock[0].required[]
       | . as $r
       | [$seen[] | select(.[0] == $r.source_app and .[1] == $r.name) | .[2]] | max ]
   | map(select(. != null)) | min // "n/a"
-')
+'); then
+  exit 2
+fi
 # shellcheck disable=SC2016  # jq program: $seen/$lock are jq vars, not shell
-f_stale=$(f_jq --arg cutoff "$f_cutoff" -r '
+# shellcheck disable=SC2310  # errexit suppression is the point: the `if !` is what
+#                            # lets us handle the failure explicitly (see f_jq)
+if ! f_stale=$(f_jq --arg cutoff "$f_cutoff" -r '
   (split("\n") | map(select(length > 0) | fromjson)) as $seen
   | $lock[0].required
   | map(. as $r
@@ -953,14 +976,25 @@ f_stale=$(f_jq --arg cutoff "$f_cutoff" -r '
         | select($last == null or $last < $cutoff)
         | "    - \(.name | tojson) last reported \($last // "with no timestamp") by \(.source_app | tojson)")
   | .[]
-')
+'); then
+  exit 2
+fi
 
 if [[ "$f_partial" -eq 1 ]]; then
   fail_or_warn "could not read part of the merged-PR sample — liveness below is incomplete"
 fi
 
 f_flagged=0
-if [[ "$f_heads" -eq 0 ]]; then
+# Zero evidence is judged on $f_seen, not on $f_heads: since (f_heads now
+# counts every successfully fetched head, not just the ones that happened to
+# carry check-runs), a head can be fetched and still contribute nothing —
+# f_heads > 0 with f_seen empty is a real, if unusual, state (e.g. a merge
+# whose checks hadn't posted yet at fetch time). Gating on f_heads alone
+# would let that state slip past this "no evidence" branch and into the
+# f_missing report below, which would then list every required check as
+# unreported despite reading zero check-runs — the #631 misreading this
+# surface exists to prevent.
+if [[ -z "$f_seen" ]]; then
   fail_or_warn "no check-runs on any of the last $LIVENESS_SAMPLE PRs merged into $default_branch — cannot verify liveness"
   f_flagged=1
 fi
@@ -968,7 +1002,12 @@ fi
 # independent per-check facts: one entry absent while another has gone quiet is
 # two defects, and hiding the second behind the first means the operator fixes
 # one, re-runs, and only then learns about the other.
-if [[ -n "$f_missing" ]]; then
+#
+# Gated on $f_seen being non-empty: with zero evidence collected, every
+# required entry is absent from $f_missing by construction (see f_jq above),
+# and printing that list would restate "no evidence" as "these checks are
+# dead" — the exact misreading (f) exists to prevent (#631).
+if [[ -n "$f_seen" && -n "$f_missing" ]]; then
   # Warn-by-default, drift under --strict-remote, and the window is named
   # in the message: a check added to required[] AFTER every sampled PR
   # merged is legitimately absent, and only the operator can tell that
@@ -980,7 +1019,14 @@ if [[ -n "$f_missing" ]]; then
   echo "  against the Checks API on a PR head before concluding it is dead."
   f_flagged=1
 fi
-if [[ -n "$f_stale" ]]; then
+# Same $f_seen gate as the missing report above, for the same reason. The jq
+# filter already makes this branch unreachable with zero evidence (a pair with
+# no rows is dropped by `select(($dates | length) > 0)` before the age test),
+# but that invariant lives inside a jq program two screens up. Repeating the
+# gate here keeps "no evidence never renders as a diagnosis" checkable at the
+# point it matters, and keeps the two reports symmetric so a future edit to
+# one filter cannot silently reopen the other path.
+if [[ -n "$f_seen" && -n "$f_stale" ]]; then
   echo "  warn: required check(s) whose most recent sighting is older than $LIVENESS_MAX_AGE_DAYS days:"
   printf '%s\n' "$f_stale"
   echo "  Present in the sample, but nothing recent. A required app that goes"

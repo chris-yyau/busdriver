@@ -254,12 +254,14 @@ for c in COMMIT_KNOWN_MISS:
 # commit or merge behind any of them reached NO gate at all — a fail-OPEN in
 # three fail-CLOSED gates (pre-commit, pre-PR, pre-merge), not a stall.
 #
-# The three that matter take a non-option OPERAND before the command word (a
-# duration, a lockfile), so adding the name is not enough: the walk has to get
-# PAST the operand. It does that by skipping bare non-target words while an
-# operand-taking wrapper is open — never by counting them. _OPERAND_WRAPPERS is
-# a membership set with no arity data, which is why `timeout -s TERM 5 …`
-# resolves without anyone teaching the walk what `-s` means.
+# Of these, only `timeout` and `flock` take a non-option OPERAND before the
+# command word (a duration, a lockfile), so adding their name is not enough:
+# the walk has to get PAST the operand. It does that by skipping bare
+# non-target words while an operand-taking wrapper is open — never by counting
+# them. `_OPERAND_WRAPPERS` is a membership set with no arity data, which is
+# why `timeout -s TERM 5 …` resolves without anyone teaching the walk what
+# `-s` means. (`ionice` is recognised too but takes only options — see
+# `_SCOPED_WRAPPERS` below.)
 #
 # `xargs` is NOT in that set — see the known-miss block below for why modelling
 # it lexically produced wrong answers rather than merely incomplete ones.
@@ -451,9 +453,11 @@ check("wrap641= ordinary spelling is not a torn stall",
       g.git_commit('cd /other && timeout 5 git commit -m x',
                    with_untrusted_cd=True)[3] == g._TORN_SCOPE, False)
 
-# The fallback is gated on an operand wrapper in the PREAMBLE. Without that gate
-# it is the any-position over-reach _torn_direct_hits warns about, reading an
-# ordinary argument VALUE as a command word.
+# The operand rule needs an `_OPERAND_WRAPPERS` name in the PREFIX to arm at
+# all. Without one the walk stops on the first bare word, so an ordinary
+# argument VALUE is never read as a command word. These two pin that boundary:
+# `echo git commit` never latches an operand wrapper, and `nice` is a plain
+# `_WRAPPERS` member (not `_OPERAND_WRAPPERS`), so `/tmp/git` ends the walk.
 check("wrap641- fallback needs an operand wrapper",
       g.git_commit('echo git commit')[0], False)
 check("wrap641- fallback does not fire behind a plain wrapper",
@@ -578,16 +582,60 @@ for c in ['sudo -n echo git commit',
           g.git_commit(c)[0], True)
 check("wrap641~ ionice joins that same pre-existing class",
       g.git_commit('ionice -c3 echo git commit')[0], True)
+
+# ── ATTACHED SCOPED-WRAPPER OPTION FOLLOWED BY AN OPERAND WRAPPER ─────
+# `ionice -c3` is an attached option -- self-contained, no separate value --
+# but the generic option-argument rule cannot tell that from a DETACHED option
+# awaiting its value, and read `timeout`/`flock` as `-c3`'s argument. That
+# skipped the wrapper branch entirely, so `saw_operand_wrap` never latched and
+# the walk broke on the wrapper's own operand (`5`, `/tmp/l`) -- a fail-OPEN
+# in three fail-CLOSED gates (cubic finding, PR #650): `argv[0]` came back as
+# the operand itself, never `git`/`gh`.
+SCOPED_ATTACHED_THEN_OPERAND_MISS = [
+    'ionice -c3 timeout 5 git commit -m x',
+    'ionice -c3 flock /tmp/l git commit -m x',
+]
+for c in SCOPED_ATTACHED_THEN_OPERAND_MISS:
+    check(f"wrap641~ (miss) scoped-attached-then-operand {c!r}",
+          g.git_commit(c)[0], False)
+check("wrap641~ (miss) scoped-attached-then-operand gh",
+      g.gh_pr('ionice -c3 timeout 5 gh pr merge 1', 'merge')[0], False)
+
+# The fix for the rows above was IMPLEMENTED AND REVERTED in review (PR #650),
+# and this is the row that killed it. Excluding wrapper-named tokens from the
+# option-argument branch rests on "a scoped wrapper takes options only, so
+# nothing after its dash-option can be a detached VALUE" — which is false:
+# `ionice -c 3` takes exactly that. With the exclusion in place,
+# `ionice -c timeout echo git commit` — where `timeout` IS `-c`'s value and only
+# `echo` runs — reported a commit. That is a wrong ANSWER traded for a miss, and
+# separating the two needs ionice's option arity: the ladder #587/#593 exist to
+# stop climbing. Do NOT re-attempt without an arity model.
+check("wrap641- detached scoped-option value is not a wrapper",
+      g.git_commit('ionice -c timeout echo git commit')[0], False)
+check("wrap641- detached scoped-option value, gh",
+      g.gh_pr('ionice -c timeout echo gh pr merge 1', 'merge')[0], False)
+# The detached spelling where the value is NOT wrapper-shaped still resolves —
+# `-c` takes `3`, prev_dash clears, and `timeout` is then a real wrapper.
+check("wrap641+ detached scoped option then operand wrapper",
+      g.git_commit('ionice -c 3 timeout 5 git commit -m x')[0], True)
+# A wrapper-shaped word genuinely spelled as an OPTION'S VALUE must stay a value.
+for c in ['env -u timeout echo git commit',
+          'sudo -u timeout echo git commit',
+          'env -u flock echo git commit']:
+    check(f"wrap641- option-value stays a value {c!r}", g.git_commit(c)[0], False)
+
 check("wrap641= xargs is NOT modelled as a wrapper",
-      'xargs' in (g._OPERAND_WRAPPERS | g._WRAPPERS), False)
+      'xargs' in (g._OPERAND_WRAPPERS | g._SCOPED_WRAPPERS | g._WRAPPERS), False)
 # DISJOINT from _WRAPPERS, deliberately. _WRAPPERS is read by the cd/pushd/popd
 # walk and two other scans, so putting these names in it leaked outside this
 # change's git/gh-only scope: `ionice -c3 echo cd /other; git commit` began
 # reporting `/other` as untrusted_cd (main reports ''), a new false stall for a
 # subprocess that cannot change the parent shell's directory. If a future change
-# merges the sets, this row is the one that should fail.
+# merges the sets, one of these two rows is the one that should fail.
 check("wrap641= operand wrappers stay OUT of _WRAPPERS",
       sorted(g._OPERAND_WRAPPERS & g._WRAPPERS), [])
+check("wrap641= scoped wrappers stay OUT of _WRAPPERS",
+      sorted(g._SCOPED_WRAPPERS & g._WRAPPERS), [])
 check("wrap641- subprocess wrapper manufactures no untrusted cd",
       g.git_commit('ionice -c3 echo cd /other; git commit -m x',
                    with_untrusted_cd=True)[3], '')
@@ -600,14 +648,22 @@ check("wrap641- xargs manufactures no untrusted cd",
 # the gate then validates the CURRENT repo's marker while gh merges another.
 # Before this row, `timeout 5 env GH_REPO=other/repo gh pr merge 1` reported
 # merge=True / override=False — a mis-scope this change itself introduced by
-# teaching one walk about operand wrappers and not the other (#593 bar 1).
-# The scan's prefix bound is now DERIVED from `_command_argv`, so the two cannot
-# drift apart again by omission.
+# teaching one walk about operand wrappers and not the other (#593 bar 1). The
+# scan now reports an operand-wrapper prefix UNRESOLVABLE and fails CLOSED
+# instead (see the fail-closed rows below), so the two walks cannot drift
+# apart again by omission — no bound is derived at all.
 OVERRIDE_SEEN = [
     'timeout 5 env GH_REPO=other/repo gh pr merge 1',
     'flock /tmp/l env GH_REPO=other/repo gh pr merge 1',
     'ionice -c3 env GH_HOST=example.com gh pr merge 1',
     'env GH_REPO=other/repo gh pr merge 1',          # unwrapped, unchanged
+    # #641 follow-up: `--` is an option TERMINATOR, not an option whose value
+    # follows. Treating it as an ordinary dash option let the NEXT token be
+    # swallowed as `--`'s "argument", so this never reached the operand-
+    # wrapper fail-closed arm and fell through to `return False` on `5` --
+    # reporting NO override for a merge that really does retarget
+    # `other/repo` (Codex finding, PR #650).
+    'env -- timeout 5 env GH_REPO=other/repo gh pr merge 1',
 ]
 for c in OVERRIDE_SEEN:
     check(f"wrap641= override seen {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
@@ -637,10 +693,10 @@ OPERAND_WRAPPER_UNRESOLVABLE = [
 for c in OPERAND_WRAPPER_UNRESOLVABLE:
     check(f"wrap641~ (fail-closed) unresolvable prefix {c!r}",
           g.gh_pr_repo_override(c, 'merge'), True)
-# The bound is derived for `gh` ONLY. Protecting `git` here too made a
-# target-shaped lockfile stop it early, so the override went unseen while
-# _iter_gh — which protects only `gh` — read the merge. The two scans must
-# protect the same word or they disagree about where the command starts.
+# A target-shaped lockfile is why the derived-bound drafts failed in the first
+# place: a bound that stopped on it ended early and the override went unseen
+# while `_iter_gh` read the merge behind it. The fail-closed arm above covers
+# this shape without deriving a bound at all.
 check("wrap641= override seen behind a target-shaped lockfile",
       g.gh_pr_repo_override(
           'flock /tmp/git env GH_REPO=other/repo gh pr merge 1', 'merge'), True)

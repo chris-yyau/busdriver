@@ -50,8 +50,10 @@ _WRAPPERS = frozenset((
 ))
 
 # Wrappers that take a non-option OPERAND before the command word: a duration
-# (`timeout 5 CMD`) or a lockfile (`flock /tmp/l CMD`). `ionice` is here for
-# uniformity; its `-c3` form is an option and needs no operand rule.
+# (`timeout 5 CMD`) or a lockfile (`flock /tmp/l CMD`). `ionice` is NOT one of
+# these -- it is option-only (`-c3`, `-c 3`) and needs no operand rule, so it
+# lives in `_SCOPED_WRAPPERS` below instead. See its own note there for why
+# latching the operand rule for it produced a verified false detection.
 #
 # `xargs` is DELIBERATELY ABSENT although #641 names it, and NO xargs spelling is
 # modelled -- not the stdin-assembled one, and not the literal `xargs -0 git
@@ -75,7 +77,7 @@ _WRAPPERS = frozenset((
 # target does not end the walk. `timeout -s TERM 5 git commit` therefore
 # resolves without anyone teaching the walk what `-s` means.
 #
-# `xargs` is out of scope entirely -- see its own note below, and the known-miss
+# `xargs` is out of scope entirely -- see its own note above, and the known-miss
 # rows in tests/test-gitcmd-detect.sh. So is `flock`'s own `-c` option, which
 # hands a string to a shell without naming an interpreter, and a run-time
 # ASSEMBLED command name (`printf git | xargs -I{} {} commit -m x`, where the
@@ -588,6 +590,18 @@ def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
             # spelling over. Reading 1 still loses `bash` to `-i` there; the
             # PROTECTED second reading is what recovers it, which is exactly the
             # union this ambiguity is handled by everywhere else in this walk.
+            #
+            # A wrapper-NAMED token here stays the option's argument, and
+            # `ionice -c3 timeout 5 git commit` is therefore a MISS. Excluding
+            # wrapper names from this branch was tried in review (PR #650) and
+            # reverted: it rests on "a scoped wrapper takes options only, so
+            # nothing after its dash-option can be a detached VALUE", which is
+            # false -- `ionice -c 3` takes exactly that. The exclusion turned
+            # `ionice -c timeout echo git commit`, where `timeout` IS `-c`'s
+            # value and only `echo` runs, into a reported commit: a wrong ANSWER
+            # traded for a miss. Separating the two needs ionice's option arity,
+            # which is the ladder #587/#593 exist to stop climbing, so the miss
+            # stays and is pinned in tests/test-gitcmd-detect.sh.
             i += 1
             prev_dash = False
         elif (base in _WRAPPERS
@@ -613,6 +627,13 @@ def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
             # the inner `nice` would put `5` back in command position, which is
             # the miss this whole change removes.
             saw_operand_wrap = saw_operand_wrap or base in _OPERAND_WRAPPERS
+            # Belongs to the CURRENT (innermost) wrapper, like saw_env -- reset
+            # on every new wrapper token, not latched. A `_SCOPED_WRAPPERS`
+            # member's options never take a detached value, so the exclusion
+            # above may safely fire while one is open; a plain or operand-
+            # taking wrapper's options might, so a new wrapper OPENED INSIDE a
+            # scoped one (`ionice -c3 sudo timeout 5 git commit`) must end that
+            # guarantee for the option run that follows.
             opts_done = False   # a new wrapper restarts option parsing
             i += 1
             prev_dash = False
@@ -692,13 +713,15 @@ def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
             i += 1
             prev_dash = False
         elif wrapper_operands and saw_operand_wrap and not is_target:
-            # #641. Inside timeout/flock/xargs/ionice a bare word is the
-            # WRAPPER'S OPERAND -- a duration, a lockfile, an -I template -- not
-            # the command word, so it must not end the walk. Skipping forward to
-            # the target instead of counting how many operands to drop is what
-            # keeps this free of an arity table: `timeout -s TERM 5 git commit`
-            # resolves without the walk knowing that `-s` takes a value, and
-            # `xargs`, which has no arity to tabulate, needs no special case.
+            # #641. Inside timeout/flock (the only `_OPERAND_WRAPPERS` members)
+            # a bare word is the WRAPPER'S OPERAND -- a duration, a lockfile --
+            # not the command word, so it must not end the walk. Skipping
+            # forward to the target instead of counting how many operands to
+            # drop is what keeps this free of an arity table: `timeout -s TERM
+            # 5 git commit` resolves without the walk knowing that `-s` takes a
+            # value. (`ionice` takes no bare operand at all -- see
+            # `_SCOPED_WRAPPERS` -- and `xargs` is not modelled as a wrapper;
+            # neither reaches `saw_operand_wrap`, so neither reaches this arm.)
             #
             # `not is_target` is the fail-CLOSED guard: the executable we are
             # hunting can never be consumed as an operand, so this branch can
@@ -2750,7 +2773,17 @@ def _env_selector_in_prefix(seg):
             prev_dash = False
             continue
         if t.startswith('-'):
-            prev_dash = True
+            # `--` is an option TERMINATOR, not an option whose value follows --
+            # `_command_argv`'s own wrapper-option branch makes the same call
+            # (`if t == '--': opts_done, prev_dash = True, False`). Treating it
+            # as an ordinary dash option let the NEXT token be swallowed as
+            # `--`'s "argument": `env -- timeout 5 env GH_REPO=other/repo gh pr
+            # merge 1` then never reached the operand-wrapper fail-closed arm
+            # below, and the scan fell through to `return False` on `5` --
+            # reporting NO override for a merge that really does retarget
+            # `other/repo`, the exact mis-scope this function exists to
+            # prevent (verified; Codex finding, PR #650).
+            prev_dash = t != '--'
             continue
         if prev_dash:
             prev_dash = False       # a wrapper option's ARGUMENT (`env -u FOO …`)

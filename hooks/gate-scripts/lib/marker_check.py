@@ -840,6 +840,79 @@ def _glob_helper(word):
     return next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
 
 
+def _glob_helper_targeted(word):
+    """The helper this glob names SPECIFICALLY, or None -- _glob_helper minus the
+    patterns that spell nothing at all.
+
+    #573. `**` is a valid fnmatch pattern that matches `lease_slot.py`, and it is also
+    what a markdown bold marker collapses to once the quote-flattening above has turned a
+    PR body into pseudo-shell. So a `gh pr create` whose description contained `**` was
+    refused for "calling lease_slot.py" -- a script the command spells nowhere, named by a
+    guard whose only evidence was a wildcard. Two independent operator reports, one of
+    them costing a skip-litmus token on the retry.
+
+    The discriminator is the narrowest one that answers the report: a pattern of NOTHING
+    BUT `*` matches every string that exists, so it distinguishes the helper from nothing
+    and is evidence of nothing. `lease_slo?.py` is a pattern ABOUT the helper -- the
+    wildcard stands in for one character of a name the rest of the pattern writes out --
+    and stays evidence, as does every other pattern.
+
+    FOUR WIDER DRAFTS WERE BROKEN IN REVIEW, three by codex and one by the backstop, and
+    the shape of the failures is why the rule ended up this severe. Each sounded principled
+    and each admitted a pattern that still aimed:
+      - "does it also match a decoy filename (main.py, README.md)?" `[lm][ea][ai]*.py`
+        matches the decoy AND `lease_slot.py`. Any "also matches a KNOWN X" test falls to
+        unioning alternatives into the character classes.
+      - "does it carry no ALPHANUMERIC character?" `?????_????.??*` carries none, yet `_`
+        and `.` are literals at the exact offsets of `lease_slot.py`. `str.isalnum` is the
+        wrong question: a literal ANYWHERE disqualifies, and `_`, `.`, `-` are literals
+        that happen not to be alphanumeric.
+      - the same test applied to `_bn(word)`. `<libdir>/*` has basename `*`, and the
+        directory that gets discarded is a literal naming the folder both helpers live in.
+      - "nothing but `*` and `?`, with at least one `*`." Each `?` imposes a minimum
+        length, so `?????????????*` selects by the length of `lease_slot.py`. Narrower than
+        everything is still narrower.
+    Every one of those was an attempt to say "this pattern is too vague to count" with a
+    rule wider than the vagueness it was licensing. Matching EVERY string is the only
+    version of that claim with nothing left over to argue about.
+
+    KNOWN over-block left standing: `*.py`, `*_*` and `*?*` in prose all still block. Only
+    the pure `*` run is released. That is the reported shape; every attempt to widen past
+    it has bought a bypass.
+
+    SCOPE, and why this is not a general loosening of _glob_helper: this is used by
+    _abandoned_scan_probe ONLY. At the structured call sites (the `python3 -` operand and
+    the runner-module walk) the word is a resolved command OPERAND, where a bare `*` is a
+    real invocation vector -- `python3 *` in the helper directory runs one -- so those keep
+    asking _glob_helper directly. Measured, post-change: `cd <libdir> && python3 *`,
+    `python3 *.py`, `python3 **`, `python3 ?????????????` and `python3 -m cProfile <lib>/*`
+    all still block, because the interpreter is in command position and the walk reaches
+    the operand.
+
+    RESIDUAL, accepted and deliberate: a bare `*` run reaching an interpreter where nothing
+    can see it as an operand -- `eval "cd <libdir> && python3 *"`, or the same inside a
+    heredoc too broken to segment. It selects the helper only by also selecting every
+    sibling file of whatever directory it lands in, and it cannot say which directory that
+    is: the moment it names one, the path characters are literals and it is not released.
+    Singling a helper out therefore needs a mechanism OUTSIDE the token -- a `cd`,
+    `GLOBIGNORE`, a pruned directory -- so the residual is "an unparseable command may run a
+    bare glob", which is where it already stood. careful-guard declines this trade
+    at `_matches_tok` (issue #585), and the two are not the same call: THAT loop reads
+    every token as a candidate command WORD, where `/bin/*` really is a command name, while
+    this one reads structureless text in which a token is as likely to be prose. Everything
+    else is unaffected -- a targeted glob still blocks in both shapes (`eval "python3
+    lease_slo?.py"`, and the same inside a broken heredoc), the literal-name probe in
+    _names_helper is untouched, and this guard is defence in depth over helpers that are
+    safe by construction (#519): lease_slot.py reads the skip-file mtime itself and
+    audit_append.py builds its record from fixed fields.
+    """
+    # The WHOLE word, NOT _bn(word): taking the basename first released `<libdir>/*`,
+    # whose discarded directory is a literal naming the folder both helpers live in.
+    if word and all(c == "*" for c in word):
+        return None
+    return _glob_helper(word)
+
+
 # A function definition, an alias definition, or eval can re-point a command name, so a
 # helper sitting in an operand may be what actually runs. See _helper_invoked.
 #
@@ -1906,12 +1979,17 @@ def _abandoned_scan_probe(text):
     whitespace-separated word is also asked, as a PATTERN, whether the shell could expand
     it onto a helper -- which is the question _glob_helper already answers for the
     parseable path.
+
+    _glob_helper_TARGETED, though, not _glob_helper: this text has no structure, so a word
+    here is as likely to be prose as an operand, and a pattern that matches every filename
+    ever written says nothing about the helper (#573). See that docstring for the residual
+    that buys.
     """
     hit = _names_helper(text)
     if hit:
         return hit
     return next((h for w in text.split() if any(c in w for c in "*?[")
-                 for h in [_glob_helper(w)] if h), None)
+                 for h in [_glob_helper_targeted(w)] if h), None)
 
 
 def _helper_invoked(cmd, _depth=0, _full=None):

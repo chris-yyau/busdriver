@@ -1,3 +1,10 @@
+## [1.106.2](https://github.com/chris-yyau/busdriver/compare/v1.106.1...v1.106.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* **gates:** recover git commit/gh pr hidden by a torn assignment ([#593](https://github.com/chris-yyau/busdriver/issues/593)) ([#634](https://github.com/chris-yyau/busdriver/issues/634)) ([7f5313d](https://github.com/chris-yyau/busdriver/commit/7f5313d22f60e76e0cdfd88a3c0d5cd4299cb57e)), closes [#587](https://github.com/chris-yyau/busdriver/issues/587) [#587](https://github.com/chris-yyau/busdriver/issues/587) [#515](https://github.com/chris-yyau/busdriver/issues/515) [#587](https://github.com/chris-yyau/busdriver/issues/587)
+
 ## [1.106.1](https://github.com/chris-yyau/busdriver/compare/v1.106.0...v1.106.1) (2026-08-11)
 
 

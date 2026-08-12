@@ -1,3 +1,10 @@
+## [1.106.3](https://github.com/chris-yyau/busdriver/compare/v1.106.2...v1.106.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* **gate:** a bare wildcard is not evidence that a helper was invoked ([#573](https://github.com/chris-yyau/busdriver/issues/573)) ([#642](https://github.com/chris-yyau/busdriver/issues/642)) ([cad36be](https://github.com/chris-yyau/busdriver/commit/cad36be9ff02c09cbdcb9f3801a916d896dace0c)), closes [#639](https://github.com/chris-yyau/busdriver/issues/639) [#640](https://github.com/chris-yyau/busdriver/issues/640)
+
 ## [1.106.2](https://github.com/chris-yyau/busdriver/compare/v1.106.1...v1.106.2) (2026-08-12)
 
 

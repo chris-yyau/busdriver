@@ -99,10 +99,12 @@ still required and still reporting.
 
 ## Reversal (2026-08-12)
 
-**The app was never dead.** The first revisit trigger above fired immediately —
-not because anything was reconnected, but because the premise was wrong. Every
-line of evidence in Context was a measurement artifact, each from a different
-cause:
+**The app was live for the measured PR-head sample.** The first revisit trigger
+above fired immediately — not because anything was reconnected, but because the
+premise was wrong. Every line of evidence in Context was a measurement
+artifact, each from a different cause. Re-measurement below covers 14 PR heads
+observed on 2026-08-12; it does not claim the app never failed outside that
+sample:
 
 | Probe used | Why it saw nothing |
 |---|---|

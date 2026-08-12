@@ -535,7 +535,49 @@ check("wrap641- gh issue view with trailing merge words",
 # Structural: the set carries names only. If a future change gives it offsets,
 # counts, or per-flag knowledge, this is the assertion that should fail first.
 check("wrap641= _OPERAND_WRAPPERS is a bare name set",
-      sorted(g._OPERAND_WRAPPERS), ['flock', 'ionice', 'timeout'])
+      sorted(g._OPERAND_WRAPPERS), ['flock', 'timeout'])
+check("wrap641= _SCOPED_WRAPPERS is a bare name set",
+      sorted(g._SCOPED_WRAPPERS), ['ionice'])
+check("wrap641= the two wrapper sets are disjoint",
+      sorted(g._OPERAND_WRAPPERS & g._SCOPED_WRAPPERS), [])
+
+# ── A WRAPPER WITH NO BARE OPERAND MUST NOT LATCH THE OPERAND RULE ────
+# `ionice` takes only options (`-c3`, `-c 3`), never a bare operand before the
+# command. Latching the operand rule for it let the walk step over an ordinary
+# command word and land on an ARGUMENT, so `ionice echo git commit` — which only
+# prints — read as a commit. That is not the `timeout 5 echo git commit`
+# ambiguity (there, the skipped word really could be the duration); it was
+# simply the wrong grammar, so `ionice` lives in `_SCOPED_WRAPPERS` instead:
+# recognised as a wrapper, but it does not open an operand run.
+SCOPED_WRAPPER_NO_OPERAND = [
+    'ionice echo git commit',
+    'ionice -c 3 echo git commit',       # detached option value
+    'ionice echo gh pr merge 1',
+]
+for c in SCOPED_WRAPPER_NO_OPERAND:
+    check(f"wrap641- scoped-wrapper {c!r}", g.git_commit(c)[0], False)
+check("wrap641- scoped-wrapper gh",
+      g.gh_pr('ionice echo gh pr merge 1', 'merge')[0], False)
+# ...while its DIRECT forms still resolve, which is the point of listing it.
+for c in ['ionice git commit -m x', 'ionice -c3 git commit -m x']:
+    check(f"wrap641+ scoped-wrapper direct {c!r}", g.git_commit(c)[0], True)
+check("wrap641+ scoped-wrapper direct gh",
+      g.gh_pr('ionice -c3 gh pr merge 1', 'merge')[0], True)
+
+# `ionice -c3 echo git commit` is STILL a detection, and that is the file's
+# PRE-EXISTING attached-option ambiguity, not this change's operand rule: an
+# option whose value is attached leaves `prev_dash` set, so the next bare word is
+# read as the option's argument and the walk continues past it. Every wrapper
+# already in _WRAPPERS behaves identically on main — asserted here so the class
+# is visible and `ionice` is not mistaken for a new defect.
+for c in ['sudo -n echo git commit',
+          'nice -n5 echo git commit',
+          'stdbuf -oL echo git commit',
+          'env -i echo git commit']:
+    check(f"wrap641~ (pre-existing attached-option FP) {c!r}",
+          g.git_commit(c)[0], True)
+check("wrap641~ ionice joins that same pre-existing class",
+      g.git_commit('ionice -c3 echo git commit')[0], True)
 check("wrap641= xargs is NOT modelled as a wrapper",
       'xargs' in (g._OPERAND_WRAPPERS | g._WRAPPERS), False)
 # DISJOINT from _WRAPPERS, deliberately. _WRAPPERS is read by the cd/pushd/popd

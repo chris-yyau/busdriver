@@ -53,10 +53,11 @@ _WRAPPERS = frozenset((
 # (`timeout 5 CMD`) or a lockfile (`flock /tmp/l CMD`). `ionice` is here for
 # uniformity; its `-c3` form is an option and needs no operand rule.
 #
-# `xargs` is DELIBERATELY ABSENT although #641 names it. It is not a lexical
-# wrapper at all: it BUILDS the command line, taking argv from stdin and
-# re-running the result zero or many times. Modelling it as one produced answers
-# that were wrong rather than merely incomplete --
+# `xargs` is DELIBERATELY ABSENT although #641 names it, and NO xargs spelling is
+# modelled -- not the stdin-assembled one, and not the literal `xargs -0 git
+# commit` either. It is not a lexical wrapper at all: it BUILDS the command line,
+# taking argv from stdin and re-running the result zero or many times. Modelling
+# it as one produced answers that were wrong rather than merely incomplete --
 # `printf '%s\n' --repo other/repo | xargs gh pr merge 1` reported merge=True
 # with override=False, so the gate would validate the CURRENT repo while gh
 # merged another, and `xargs -n1 gh pr merge` reported gh_pr_count=1 for a
@@ -74,15 +75,13 @@ _WRAPPERS = frozenset((
 # target does not end the walk. `timeout -s TERM 5 git commit` therefore
 # resolves without anyone teaching the walk what `-s` means.
 #
-# What this does and does not buy for `xargs`: the LITERAL spelling
-# (`xargs -0 git commit`) is reached like any other operand-bearing wrapper. The
-# ASSEMBLED spelling is not, and no token scan can reach it -- in
-# `printf git | xargs -I{} {} commit -m x` the command word is `{}` and the
-# executable arrives on stdin (verified: it really does run `git commit`). That
-# is the run-time-assembled-name residual ADR 0006 accepts and cmdword restates
-# at its own _WRAPPERS note; it is pinned as a known miss in
-# tests/test-gitcmd-detect.sh rather than chased here. Same for `flock`'s own
-# `-c` option, which hands a string to a shell without naming an interpreter.
+# `xargs` is out of scope entirely -- see its own note below, and the known-miss
+# rows in tests/test-gitcmd-detect.sh. So is `flock`'s own `-c` option, which
+# hands a string to a shell without naming an interpreter, and a run-time
+# ASSEMBLED command name (`printf git | xargs -I{} {} commit -m x`, where the
+# command word is `{}` and the executable arrives on stdin -- verified to really
+# run `git commit`), which is the residual ADR 0006 accepts and cmdword restates
+# at its own _WRAPPERS note.
 #
 # DELIBERATELY NOT MEMBERS OF `_WRAPPERS`, and recognised only when the caller
 # passes `wrapper_operands=True`. `_WRAPPERS` is read by the cd/pushd/popd walk
@@ -100,7 +99,21 @@ _WRAPPERS = frozenset((
 # the cd/pushd/popd caller: walking past a bare word there would report a `cd`
 # that a subprocess wrapper never performed in this shell, and a MIS-SCOPED
 # detection is strictly worse than the miss it replaces (#593 bar 1).
-_OPERAND_WRAPPERS = frozenset(('timeout', 'flock', 'ionice'))
+_OPERAND_WRAPPERS = frozenset(('timeout', 'flock'))
+
+# Recognised as wrappers on the same call sites, but they take NO bare operand
+# before the command word -- everything they accept is an option (`ionice -c3`,
+# `ionice -c 3`). They therefore must NOT latch the operand rule: doing so let
+# the walk step over an ordinary command word and land on an ARGUMENT, so
+# `ionice -c3 echo git commit` -- which only prints -- read as a commit
+# (verified). Unlike the `timeout 5 echo git commit` over-block, which is a real
+# ambiguity between an operand and a command word, this one was purely the wrong
+# grammar: there is no operand to be ambiguous with.
+#
+# Kept out of `_WRAPPERS` for the same reason as `_OPERAND_WRAPPERS` -- that set
+# is read by the cd/pushd/popd walk, where a subprocess wrapper must not
+# manufacture a directory change.
+_SCOPED_WRAPPERS = frozenset(('ionice',))
 
 # Compound-command keywords that can precede a real command inside one segment
 # (`then git commit`, `do gh pr merge 1`). Stripped so the command word behind
@@ -578,7 +591,8 @@ def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
             i += 1
             prev_dash = False
         elif (base in _WRAPPERS
-                or (wrapper_operands and base in _OPERAND_WRAPPERS)):
+                or (wrapper_operands
+                    and (base in _OPERAND_WRAPPERS or base in _SCOPED_WRAPPERS))):
             saw_wrap = True
             # Only env(1) itself takes `name=value` OPERANDS. Tracked separately
             # from saw_wrap so the loose assignment rule below cannot fire after
@@ -2743,7 +2757,13 @@ def _env_selector_in_prefix(seg):
             continue
         # `!` is pipeline negation — the command still runs, so it is not the
         # command word. _command_argv skips it too; diverging here fails OPEN.
-        if t == '!' or t in _SHELL_KEYWORDS or t.rsplit('/', 1)[-1] in _WRAPPERS:
+        if (t == '!' or t in _SHELL_KEYWORDS
+                or t.rsplit('/', 1)[-1] in _WRAPPERS
+                # A scoped wrapper takes no bare operand, so it leaves the prefix
+                # RESOLVABLE -- step over it like any other wrapper rather than
+                # failing closed. `ionice -c3 env GH_REPO=o/r gh pr merge 1` must
+                # still find the selector.
+                or t.rsplit('/', 1)[-1] in _SCOPED_WRAPPERS):
             continue
         if t.rsplit('/', 1)[-1] in _OPERAND_WRAPPERS:
             # Unresolvable from here on -- see the note above. Fail CLOSED.

@@ -1,6 +1,10 @@
 # ADR 0037 — Drop the never-reporting `GitGuardian Security Checks` required context
 
-**Status:** Accepted
+**Status:** REVERSED 2026-08-12 — see [Reversal](#reversal-2026-08-12). The
+decision below was acted on (PR #630) and then undone. The Context section is
+retained verbatim as the historical record: its three probes are each a
+plausible-looking way to conclude a live app is dead, and knowing them is the
+durable value of this ADR.
 **Date:** 2026-08-11
 
 ## Context
@@ -90,3 +94,94 @@ still required and still reporting.
   report in a recent window → this ADR's evidence-gathering becomes automated,
   and the manual commit-status archaeology above is no longer the detection
   mechanism.
+
+---
+
+## Reversal (2026-08-12)
+
+**The app was live for the measured PR-head sample.** The first revisit trigger
+above fired immediately — not because anything was reconnected, but because the
+premise was wrong. Every line of evidence in Context was a measurement
+artifact, each from a different cause. Re-measurement below covers 14 PR heads
+observed on 2026-08-12; it does not claim the app never failed outside that
+sample:
+
+| Probe used | Why it saw nothing |
+|---|---|
+| `commits/<sha>/statuses` on the PR head | GitGuardian posts a **check-run**, not a legacy commit status. The same commit `e30f7567` reports `completed/neutral`, `app=gitguardian`, via `commits/<sha>/check-runs`. |
+| Six most recent commits on `main` | GitGuardian is **PR-scoped** and does not run on pushes to `main` at all. Confirmed absent on `7f5313d2`, `ca5caf4b`, `82990ad4` while each of the PR heads that produced them reported. Absence on `main` is this app's normal state. |
+| `gh pr checks 630` → `pending`, 0s | A **sampling window**, not a permanent state. GitGuardian took **27m57s** on #630; this ADR was written inside that window. It later completed, and `gh pr checks 630` now shows `skipping 27m57s`. |
+
+Re-measured across recent PRs: **14/14 final heads reported**
+(`#607 #609 #610 #613 #614 #617 #619 #620 #621 #628 #630 #633 #636 #634`).
+Conclusions are a mix of `success` and `neutral`. Intermediate commits of a
+multi-commit push have no run — expected, since checks run per push.
+
+### `neutral` was the second wrong assumption
+
+`neutral` never blocked anything, so it was not evidence of a broken gate:
+
+- GitHub's own docs: *"Required status checks must have a `successful`,
+  `skipped`, or `neutral` status before collaborators can make changes to a
+  protected branch."*
+- This repo's tooling agrees. `gh pr checks` renders `neutral` as `skipping`;
+  `scripts/relevant-check-status.sh` counts a row failed only for
+  `fail|failure|cancel|cancelled` and pending only for
+  `pending|queued|in_progress|expected`. `skipping` is neither, and the name is
+  present in `reported`, so it does not trip the #515 no-row rule either.
+
+The `pending=1` / `mergeStateStatus=BLOCKED` reading was therefore correct **for
+that moment** — the check genuinely had not finished yet.
+
+### What the removal actually did
+
+It created the exact downgrade the original Consequences section named as the
+one way this could go wrong: a real GitGuardian `failure` conclusion could not
+block a merge. Gitleaks (`Secret scanning`) remained required throughout, so
+secrets were never wholly ungated, but the two tools' coverage is not identical.
+
+### Decision (reversed)
+
+Restore `GitGuardian Security Checks` to **both** halves — branch protection and
+`required[]` — in that order, since surface (b) enforces set equality. Back to
+12 required contexts.
+
+Accepted cost: **wait time, not blockage.** A check that can take ~28 minutes
+now sits on the merge path, so pr-grind must outwait it; verify that against
+`--max-wait` rather than assuming the default 8 rounds covers it.
+
+### What still stands from #631
+
+The two tooling gaps are real and worth fixing regardless — arguably more so,
+since a surface that reports `ok` after skipping every input is what let a wrong
+diagnosis look confirmed:
+
+- Surface (c) must not print `ok` when it skipped **all** of its inputs.
+  No-evidence should fail closed.
+- A liveness surface for `required[]` entries is still worth having — but it
+  must sample **PR heads via the Checks API**, not `main` via `/statuses`, or it
+  will reproduce this exact error.
+
+Both are now closed (#648). Surface (c) selects a sample commit that actually
+carries a required check-run — the old "has any check-run" rule stopped at
+`[skip ci]` release commits, which are not bare because CodeQL still posts
+there — and its `ok` line now names how many of the required checks it
+verified, because a partial sample is the normal state on `main`. Surface (f)
+is the liveness check, built to the constraint above: merged PR heads, Checks
+API, presence rather than conclusion — and matched on the reporting app, not
+the name alone, which incidentally gives the PR-scoped entries the `source_app`
+check (c) can never run on them. Run against this repo it reports GitGuardian
+live and reported by `gitguardian`, which is the answer #631 needed and could
+not get. It also refuses to answer when the sample cannot support one. Each
+required check is dated by its own most recent sighting, not by the sample's
+newest merge: a check whose last sighting has aged out is reported stale even
+when other checks are current. That matters because a required app going dark
+blocks every PR, which freezes the sample on pre-outage merges that all still
+carry the name — under one summary date those frozen sightings read as fresh.
+
+### Lesson
+
+Before removing a security control on the evidence that it "never reports",
+check that you queried the API it actually posts to, on the population it
+actually runs against, outside its latency window. All three were wrong here,
+and each independently produced a confident null.

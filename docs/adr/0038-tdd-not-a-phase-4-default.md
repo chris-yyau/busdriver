@@ -95,6 +95,17 @@ Recorded here because the first draft of this change over-read it:
    does not mandate ordering and a TDD skill that mandates ordering *while doing
    TDD* are not in contradiction.
 6. The Phase 4 bullet says **"Advisory, not gate-enforced"** in as many words.
+7. The **frontmatter descriptions** of `skills/test-driven-development` ("Use when
+   implementing any feature or bugfix") and `skills/tdd-workflow` ("Use this skill
+   when writing new features, fixing bugs, or refactoring code") are narrowed to
+   explicit invocation. A skill body loads on demand, but its description is
+   ambient — it is the routing signal, and one that says "any feature or bugfix"
+   re-acquires the default through the back door, exactly as `Use PROACTIVELY` did
+   on the agent in point 3. This does not touch point 5: the Iron Law still governs
+   the workflow, it just stops advertising for work nobody asked it to take.
+8. `skills/orchestrator/README.md` and `INSTALL.md` are corrected to match — they
+   described Phase 4 as "TDD + code review" and listed TDD as an example always-on
+   discipline.
 
 ## Alternatives considered
 

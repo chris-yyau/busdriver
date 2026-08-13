@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Use when implementing any feature or bugfix, before writing implementation code
+description: Use when TDD is explicitly requested — via `/tdd` or a direct ask for red-green-refactor. Not a default for every feature or bugfix (ADR 0038); the Iron Law below governs the workflow once you are doing TDD.
 ---
 
 # Test-Driven Development (TDD)

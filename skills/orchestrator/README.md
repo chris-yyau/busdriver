@@ -23,7 +23,7 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 - **Phase 1** → `busdriver:brainstorming`
 - **Phase 2** → `busdriver:writing-plans`
 - **Phase 3** → `busdriver:using-git-worktrees`
-- **Phase 4** → execution mode + TDD + code review
+- **Phase 4** → execution mode + tests + code review (test ordering is not mandated — `/tdd` on demand, ADR 0038)
 - **Phase 5** → `busdriver:verification-loop` then `busdriver:verification-before-completion`
 - **Phase 6** → `busdriver:finishing-a-development-branch`
 

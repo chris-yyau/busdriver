@@ -19,13 +19,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH="$ROOT/skills/orchestrator/SKILL.md"
 GUIDE="$ROOT/agents/tdd-guide.md"
 TDD_SKILL="$ROOT/skills/test-driven-development/SKILL.md"
+TDD_WORKFLOW="$ROOT/skills/tdd-workflow/SKILL.md"
 ADR="$ROOT/docs/adr/0038-tdd-not-a-phase-4-default.md"
 
 pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-for f in "$ORCH" "$GUIDE" "$TDD_SKILL" "$ADR"; do
+for f in "$ORCH" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$ADR"; do
   [[ -f "$f" ]] || { echo "FAIL missing required file: $f"; exit 1; }
 done
 
@@ -39,6 +40,13 @@ has_unconditional_tdd_dispatch() {
 }
 has_proactive_tdd_description() {
   grep -q 'Use PROACTIVELY' "$1"
+}
+# A skill BODY loads on demand, but its frontmatter description is ambient — it is the
+# routing signal. A description saying "any feature or bugfix" re-acquires the Phase 4
+# default through the back door, exactly as `Use PROACTIVELY` did on the agent, so
+# ADR 0038 point 7 narrows both TDD skills to explicit invocation. Same guard shape.
+has_broad_tdd_routing() {
+  grep -qE 'implementing any feature or bugfix|writing new features, fixing bugs, or refactoring code' "$1"
 }
 # The Phase 4 "Tests" bullet is the sole place ADR 0038's ordering/advisory statements
 # are required to live. Scoping to just that bullet (rather than the whole file) means
@@ -71,6 +79,14 @@ if has_proactive_tdd_description "$GUIDE"; then
 else
   ok "tdd-guide is not advertised as proactive"
 fi
+
+for f in "$TDD_SKILL" "$TDD_WORKFLOW"; do
+  if has_broad_tdd_routing "$f"; then
+    bad "${f##*/skills/} restored a broad 'every feature/bugfix/refactor' routing description (ADR 0038 point 7)"
+  else
+    ok "${f##*/skills/} does not auto-route every feature/bugfix to strict TDD"
+  fi
+done
 
 TESTS_BULLET_COUNT="$(count_tests_bullets "$ORCH")"
 TESTS_BULLET="$(phase4_tests_bullet "$ORCH")"
@@ -151,6 +167,14 @@ printf '%s\n' \
   '- **Tests** — behavioral changes ship with tests.' \
   '- **Tests** — Ordering is not mandated. Advisory, not gate-enforced.' \
   > "$TMP/decoy-orch.md"
+printf '%s\n' 'description: Use when implementing any feature or bugfix, before writing implementation code' \
+  > "$TMP/violating-tdd-skill.md"
+if has_broad_tdd_routing "$TMP/violating-tdd-skill.md"; then
+  ok "negative control: the broad-routing assertion fires on a violating description"
+else
+  bad "negative control FAILED — the broad-routing assertion cannot detect a violation"
+fi
+
 if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else

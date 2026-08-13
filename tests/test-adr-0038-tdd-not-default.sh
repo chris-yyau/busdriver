@@ -175,6 +175,19 @@ else
   bad "negative control FAILED — the broad-routing assertion cannot detect a violation"
 fi
 
+# has_broad_tdd_routing guards TWO regex alternatives (the tdd-workflow skill's phrasing
+# differs from test-driven-development's), but only the first had a negative control
+# above. A guard that has never been observed firing on its second alternative is not
+# proven to catch a regression there — exactly the gap this repo's own canon warns
+# about. Prove the second alternative independently.
+printf '%s\n' 'description: Use this skill when writing new features, fixing bugs, or refactoring code' \
+  > "$TMP/violating-tdd-workflow.md"
+if has_broad_tdd_routing "$TMP/violating-tdd-workflow.md"; then
+  ok "negative control: the broad-routing assertion fires on the tdd-workflow phrasing too"
+else
+  bad "negative control FAILED — the broad-routing assertion cannot detect the tdd-workflow phrasing"
+fi
+
 if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else

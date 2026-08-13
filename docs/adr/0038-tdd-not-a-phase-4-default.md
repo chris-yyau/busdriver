@@ -106,6 +106,17 @@ Recorded here because the first draft of this change over-read it:
 8. `skills/orchestrator/README.md` and `INSTALL.md` are corrected to match — they
    described Phase 4 as "TDD + code review" and listed TDD as an example always-on
    discipline.
+9. Domain `Testing:` skills (`golang-testing`, `python-testing`, `rust-testing`,
+   etc., listed in `skills/orchestrator/domain-supplements.md`) still load
+   automatically once a task touches that language — same as `golang-patterns` or
+   `python-patterns`. Their RED-GREEN-REFACTOR walkthroughs are unchanged content
+   (point 5's reasoning applies identically: a guide that shows *how* to do TDD
+   is not itself a mandate that a given task *do* TDD). What changed is the
+   routing text around them: `SKILL.md`'s Phase 4 "Domain skills" line and
+   `domain-supplements.md`'s header now say explicitly that a Testing entry is
+   reference material, not an ordering mandate, so loading `golang-testing` for
+   an ordinary Go bugfix does not re-import point 1's default through a
+   language-specific side door.
 
 ## Alternatives considered
 

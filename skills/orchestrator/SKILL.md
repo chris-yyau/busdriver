@@ -110,7 +110,7 @@ Creates isolated workspace, verifies baseline tests pass.
 **When build fails — DISPATCH immediately, don't debug manually first:**
 DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver` (vault). React: `react-build-resolver`. Django: `django-build-resolver` (vault). Java/Quarkus/Spring: `java-build-resolver` (vault). HarmonyOS: `harmonyos-app-resolver` (vault). No resolver: use `busdriver:systematic-debugging`.
 
-**Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`.
+**Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`. A language's `Testing:` entry is reference material, not an ordering mandate — RED-GREEN-REFACTOR stays opt-in per the Tests discipline above, even when the domain guide walks through it (ADR 0038).
 
 ### Phase 5: Verification
 

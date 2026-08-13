@@ -40,16 +40,24 @@ seen, hits, reached = {}, [], 0
 for url, key, field in CATALOGS:
     try:
         entries = json.load(urllib.request.urlopen(url, timeout=30))[key]
-        reached += 1
     except Exception as e:            # one dead catalog must not hide the other two
         print(f"! {url} unavailable: {e}", file=sys.stderr)
         continue
+    if not isinstance(entries, list):  # counted only when usable, so a schema
+        print(f"! {url} returned {key} as {type(entries).__name__}, not a list",
+              file=sys.stderr)         # change cannot masquerade as an empty answer
+        continue
+    reached += 1
     for m in entries:
-        outs = [o.lower() for o in (m.get(field) or [])]
+        if not isinstance(m, dict):       # a malformed entry must not abort the rest
+            continue
+        raw = m.get(field)
+        outs = [o.lower() for o in raw if isinstance(o, str)] if isinstance(raw, list) else []
         for o in outs:
             seen[o] = seen.get(o, 0) + 1
-        if want and want in outs:
-            hits.append((m.get("id") or m.get("name"), tuple(outs)))
+        mid = m.get("id") or m.get("name")
+        if want and want in outs and isinstance(mid, str) and mid:
+            hits.append((mid, tuple(outs)))   # no id => not selectable, so not listed
 if reached == 0:                      # every catalog down != "ZenMux has nothing"
     sys.exit("all catalogs unreachable — discovery failed, draw no conclusion")
 print(f"reached {reached}/{len(CATALOGS)} catalogs")

@@ -270,6 +270,35 @@ fi
 grep -qF '"$_aud_exit" -eq 4' "$LOOP" \
   && ok "blueprint-review handles rc=4 as a distinct witness state" \
   || fail "blueprint-review does not branch on rc=4 in $LOOP"
+
+# Structural presence is not routing. A PR reviewer read the rc=4 arm as
+# unreachable, reasoning that execute_review's stderr warning lands in $_aud_raw
+# (2>&1), so the non-empty first branch wins and the warning gets parsed as JSON.
+# That misses the `-eq 0` conjunct on that branch — but nothing in-tree proved it,
+# so prove it here: run the SHIPPED classification block with stubs, seeding
+# $_aud_raw with exactly that stderr warning, and check where each rc lands.
+_route() {   # <rc> → the message the block produces
+  ( set +e
+    local BLOCK; BLOCK="$(awk '/^      if \[\[ "\$_aud_exit" -eq 0 \]\]/,/^      fi$/' "$LOOP")"
+    create_error_json() { printf 'msg=%s' "$2"; }
+    python3() { return 1; }        # reachable only from the first branch
+    SCRIPT_DIR=/nonexistent; AUDITOR_OUTPUT_FILE=/dev/null
+    local _aud_exit="$1" _aud_raw _aud_tmp
+    _aud_raw="$(mktemp)"; _aud_tmp="$(mktemp)"
+    # The exact shape the reviewer described: non-empty, and NOT valid JSON.
+    printf 'busdriver: no usable .auditor.model ... skipping the Mechanism Witness\n' > "$_aud_raw"
+    eval "$BLOCK" >/dev/null 2>&1
+    cat "$_aud_tmp"; rm -f "$_aud_raw" "$_aud_tmp" )
+}
+case "$(_route 4)" in
+  *"no .auditor.model configured"*) ok "rc=4 routes to ABSENT even when \$_aud_raw holds the stderr warning" ;;
+  *"unparseable"*) fail "rc=4 was parsed as review output — the absent branch is unreachable" ;;
+  *) fail "rc=4 routed somewhere unexpected: $(_route 4)" ;;
+esac
+case "$(_route 1)" in
+  *"failed or returned empty"*) ok "rc=1 still routes to FAILED (absent branch did not swallow it)" ;;
+  *) fail "rc=1 no longer routes to the failure branch: $(_route 1)" ;;
+esac
 # The absent-vs-failed render keys off the message text, so the rc=4 artifact must
 # carry a phrase the case statement matches — otherwise it prints FAILED anyway.
 grep -qF 'no .auditor.model configured' "$LOOP" \

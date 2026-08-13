@@ -42,6 +42,38 @@ def _snippet() -> str:
     return src
 
 
+def _exec_snippet(fake_urlopen, argv):
+    """Swap urlopen/stdout/stderr/argv, exec the SKILL.md snippet, restore.
+
+    Shared by every test that runs the snippet, so the swap/restore dance and
+    the SystemExit-to-code conversion live in exactly one place — this file's
+    own stated purpose is to prevent drift, and three copies of this harness
+    would be exactly that kind of drift-prone repetition.
+    """
+    real_urlopen, real_argv = urllib.request.urlopen, sys.argv
+    out, err = io.StringIO(), io.StringIO()
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    code = 0
+    try:
+        urllib.request.urlopen = fake_urlopen
+        sys.argv = argv
+        sys.stdout, sys.stderr = out, err
+        # Executing the snippet is the POINT: a re-implementation here would
+        # drift from the doc and guard nothing. The input is not external — it
+        # is a fixed code fence in a checked-in file next to this test, read
+        # from `__file__`'s own directory, and `_snippet()` asserts on its
+        # content. Anyone who can change it can already change this test.
+        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+        exec(compile(_snippet(), "SKILL.md", "exec"), {"__name__": "__main__"})
+    except SystemExit as e:
+        code = 1 if isinstance(e.code, str) else (e.code or 0)
+    finally:
+        urllib.request.urlopen = real_urlopen
+        sys.argv = real_argv
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+    return code, out.getvalue(), err.getvalue()
+
+
 def _run(responses, want="speech"):
     """Execute the snippet with a stubbed urlopen.
 
@@ -58,28 +90,7 @@ def _run(responses, want="speech"):
                 return io.BytesIO(json.dumps(payload).encode())
         raise AssertionError(f"unstubbed URL: {url}")
 
-    real_urlopen, real_argv = urllib.request.urlopen, sys.argv
-    out, err = io.StringIO(), io.StringIO()
-    real_stdout, real_stderr = sys.stdout, sys.stderr
-    code = 0
-    try:
-        urllib.request.urlopen = fake_urlopen
-        sys.argv = ["snippet", want]
-        sys.stdout, sys.stderr = out, err
-        # Executing the snippet is the POINT: a re-implementation here would
-        # drift from the doc and guard nothing. The input is not external — it
-        # is a fixed code fence in a checked-in file next to this test, read
-        # from `__file__`'s own directory, and `_snippet()` asserts on its
-        # content. Anyone who can change it can already change this test.
-        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-        exec(compile(_snippet(), "SKILL.md", "exec"), {"__name__": "__main__"})
-    except SystemExit as e:
-        code = 1 if isinstance(e.code, str) else (e.code or 0)
-    finally:
-        urllib.request.urlopen = real_urlopen
-        sys.argv = real_argv
-        sys.stdout, sys.stderr = real_stdout, real_stderr
-    return code, out.getvalue(), err.getvalue()
+    return _exec_snippet(fake_urlopen, ["snippet", want])
 
 
 OPENAI = "api/v1/models"
@@ -145,33 +156,18 @@ def test_page_cap_is_reached_and_classified_partial():
                 "has_more": True, "last_id": f"cursor{counter['n']}"}
         return io.BytesIO(json.dumps(body).encode())
 
-    real_urlopen, real_argv = urllib.request.urlopen, sys.argv
-    real_stdout, real_stderr = sys.stdout, sys.stderr
-    out, err = io.StringIO(), io.StringIO()
-    code = 0
-    try:
-        urllib.request.urlopen = endless
-        sys.argv = ["snippet", "speech"]
-        sys.stdout, sys.stderr = out, err
-        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-        exec(compile(_snippet(), "SKILL.md", "exec"), {"__name__": "__main__"})
-    except SystemExit as e:
-        code = 1 if isinstance(e.code, str) else (e.code or 0)
-    finally:
-        urllib.request.urlopen = real_urlopen
-        sys.argv = real_argv
-        sys.stdout, sys.stderr = real_stdout, real_stderr
+    code, out, err = _exec_snippet(endless, ["snippet", "speech"])
 
     # EVERY catalog pages forever, so none is fully read. All four assertions
     # are needed: without the exit-code check a regression that counts a capped
     # catalog as fully read still passes; without the lower bound on fetches a
     # regression that stops after ONE page also passes, since it too prints
     # PARTIAL and exits non-zero.
-    assert code != 0, out.getvalue()                    # must not report success
-    assert "fully read 0/3" in out.getvalue()           # nothing was fully read
-    assert "PARTIAL" in err.getvalue()
+    assert code != 0, out                                # must not report success
+    assert "fully read 0/3" in out                       # nothing was fully read
+    assert "PARTIAL" in err
     # Positive evidence from pages that DID return survives the non-zero exit.
-    assert "x/tts" in out.getvalue()
+    assert "x/tts" in out
     assert counter["n"] > 3, counter["n"]               # actually paginated
     assert counter["n"] <= 3 * 20 + 3, counter["n"]     # and stayed bounded
 
@@ -240,24 +236,10 @@ def test_midway_failure_keeps_earlier_pages():
             return io.BytesIO(json.dumps(body).encode())
         raise OSError("page 2 died")
 
-    real_urlopen, real_argv = urllib.request.urlopen, sys.argv
-    real_stdout, real_stderr = sys.stdout, sys.stderr
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        urllib.request.urlopen = flaky
-        sys.argv = ["snippet", "speech"]
-        sys.stdout, sys.stderr = out, err
-        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-        exec(compile(_snippet(), "SKILL.md", "exec"), {"__name__": "__main__"})
-    except SystemExit:
-        pass
-    finally:
-        urllib.request.urlopen = real_urlopen
-        sys.argv = real_argv
-        sys.stdout, sys.stderr = real_stdout, real_stderr
+    _code, out, err = _exec_snippet(flaky, ["snippet", "speech"])
 
-    assert "x/page1" in out.getvalue(), out.getvalue()   # page 1 survived
-    assert "SOME READS PARTIAL" in out.getvalue()        # but flagged partial
+    assert "x/page1" in out, out                          # page 1 survived
+    assert "SOME READS PARTIAL" in out                    # but flagged partial
 
 
 def test_malformed_entry_skipped_without_aborting():

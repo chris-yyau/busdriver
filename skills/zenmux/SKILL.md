@@ -100,10 +100,10 @@ for url, key, field in CATALOGS:
                   f"repeated — catalog read is PARTIAL", file=sys.stderr)
             cat_partial = True
             page_url = None
-    if page_url is not None:                # exited on the page cap or the deadline
-        print(f"! {url}: pagination stopped after {pages} page(s) "
-              f"(cap or time budget) — catalog read is PARTIAL", file=sys.stderr)
-        cat_partial = True
+    if page_url is not None and not cat_partial:  # exited on the page cap or the
+        print(f"! {url}: pagination stopped after {pages} page(s) "     # deadline —
+              f"(cap or time budget) — catalog read is PARTIAL", file=sys.stderr)  # a
+        cat_partial = True                    # break already reported its own cause
     # `reached` counts FULLY-read catalogs only. Both partial shapes must be
     # excluded, and they exit the loop differently: the cap leaves page_url set,
     # the missing-cursor case clears it. Keying on page_url alone (as the first
@@ -209,15 +209,16 @@ Never echo, log, or commit the value; a leaked key here bills real money.
 
 ## The catalogs are incomplete — absence is not proof
 
-Measured 2026-08-14: the three catalogs union to **170 distinct models**, while
-the web catalog advertises **191**. Image and embeddings matched exactly; speech,
-transcription, video, and rerank were all **under-reported or entirely missing**
-from the API while the site listed them.
+Snapshot from 2026-08-14: the union of the three catalogs contained **170
+distinct models**, while the web catalog advertised **191**. Image and
+embeddings matched exactly; speech, transcription, video, and rerank were all
+**under-reported or entirely missing** from the API while the site listed
+them. These counts will drift — re-measure rather than trusting them as current.
 
 So: a capability missing from an API query is **not** evidence ZenMux lacks it.
 Check <https://zenmux.ai/models> before telling the user something is unavailable.
-This bit once already — a single-catalog query showed zero speech models and the
-conclusion "ZenMux has no TTS" was wrong.
+This has bitten us once already — a single-catalog query showed zero speech
+models and the conclusion "ZenMux has no TTS" was wrong.
 
 ## Boundaries
 

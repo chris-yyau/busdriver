@@ -624,6 +624,51 @@ for c in ['env -u timeout echo git commit',
           'env -u flock echo git commit']:
     check(f"wrap641- option-value stays a value {c!r}", g.git_commit(c)[0], False)
 
+# A REDIRECTION-SHAPED TOKEN IN THE PREFIX FAILS CLOSED, and the position
+# question is not asked. `_tokenize` drops quote provenance, so after
+# tokenization a quoted `>` handed to an option and a real redirection operator
+# are the SAME token. Both orderings were built and both mis-scoped a real merge:
+#   redirection-first      `env -u ">" GH_REPO=other/repo gh pr merge 1` read the
+#                          QUOTED `>` as an operator and swallowed the assignment
+#                          as its filename.
+#   option-argument-first  `env -i > /dev/null env GH_REPO=other/repo gh pr
+#                          merge 1` read a REAL detached redirection as `-i`'s
+#                          value, then returned False on `/dev/null`.
+# Each reported "no override" for a merge that really does retarget another repo
+# — the wrong-repo validation of #593 bar 1, strictly worse than a stall. Both
+# collapse into one fail-closed branch (Codex findings, PR #650).
+for c in ['env -u ">" GH_REPO=other/repo gh pr merge 1',
+          'env -u "2>" GH_REPO=other/repo gh pr merge 1',
+          'env -i > /dev/null env GH_REPO=other/repo gh pr merge 1',
+          'env -i 2> /dev/null env GH_REPO=other/repo gh pr merge 1']:
+    check(f"wrap641= redirection-shaped prefix token fails closed {c!r}",
+          g.gh_pr_repo_override(c, 'merge'), True)
+# ...and real leading redirections still reach the selector.
+for c in ['>/dev/null timeout 5 env GH_REPO=o/r gh pr merge 1',
+          '> /dev/null env GH_REPO=o/r gh pr merge 1']:
+    check(f"wrap641= leading redirection still scanned {c!r}",
+          g.gh_pr_repo_override(c, 'merge'), True)
+# ACCEPTED OVER-REPORT, pinned so the trade stays visible. A merge with NO
+# selector at all now reports one when a redirection stands BEFORE the command
+# word. That is the price of not asking the position question, and it is the
+# direction this file always takes — a visible stall beats a silent wrong-repo
+# validation.
+#
+# PRICED, not assumed: two-way diff against origin/main over 32,617 recorded
+# agent commands = 4 changed, all this branch. The ORDINARY spelling is
+# unaffected (the row below pins it), so the flips are not live redirections in
+# front of a real command — every one traced to a heredoc OPENER left in a
+# continuation-split segment, or to literal prose in a heredoc PR body
+# (`cd <path> && <cmd>`, where `<cmd>` reads as a `<` redirection). That is the
+# #639 family, widened here rather than introduced. Measured live cost: one
+# `gh pr create` out of 257 recorded.
+for c in ['>/dev/null gh pr merge 1',
+          '> /dev/null gh pr merge 1']:
+    check(f"wrap641~ (accepted) redirected merge, no selector {c!r}",
+          g.gh_pr_repo_override(c, 'merge'), True)
+check("wrap641- trailing redirection is not a prefix",
+      g.gh_pr_repo_override('gh pr merge 1 >/dev/null', 'merge'), False)
+
 check("wrap641= xargs is NOT modelled as a wrapper",
       'xargs' in (g._OPERAND_WRAPPERS | g._SCOPED_WRAPPERS | g._WRAPPERS), False)
 # DISJOINT from _WRAPPERS, deliberately. _WRAPPERS is read by the cd/pushd/popd
@@ -664,6 +709,13 @@ OVERRIDE_SEEN = [
     # reporting NO override for a merge that really does retarget
     # `other/repo` (Codex finding, PR #650).
     'env -- timeout 5 env GH_REPO=other/repo gh pr merge 1',
+    # A leading redirection is punctuation, not a command word -- fused
+    # (`>/dev/null`) and detached (`> /dev/null`) forms both left the scan
+    # falling through to `return False` on the operator itself before this
+    # fix, reporting NO override for a merge that really does retarget
+    # `other/repo` (cubic-dev-ai + Codex finding, PR #650).
+    '>/dev/null timeout 5 env GH_REPO=other/repo gh pr merge 1',
+    '> /dev/null timeout 5 env GH_REPO=other/repo gh pr merge 1',
 ]
 for c in OVERRIDE_SEEN:
     check(f"wrap641= override seen {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
@@ -741,6 +793,21 @@ for c in KEYWORD_LIVE:
 # 'in' must NOT be stripped — its operand is a list item, not a command.
 check("keyword- for-list operand is not a command",
       g.git_commit('for x in git; do echo "$x"; done')[0], False)
+# A `for`/`select` loop VARIABLE named after a wrapper was walked as if it
+# OPENED that wrapper, landing on the loop's word list and reporting a commit
+# that never runs -- the words are just strings assigned to the variable one
+# at a time (a FALSE POSITIVE, i.e. fail-CLOSED: the gate stalls a command that
+# performs no commit. The safe direction, not a fail-OPEN -- fixed anyway;
+# verified; Codex finding, PR #650).
+check("keyword- for-loop variable shaped like a wrapper name is not a wrapper",
+      g.git_commit('for timeout in git commit; do echo "$timeout"; done')[0], False)
+check("keyword- select-loop variable shaped like a wrapper name is not a wrapper",
+      g.git_commit('select flock in git commit; do echo "$flock"; done')[0], False)
+# The wrapper name is still detected as a WRAPPER once it stops being the
+# declared loop variable -- confirms the skip is positional, not a blanket
+# name exemption.
+check("keyword+ for-loop body still detects a real wrapper",
+      g.git_commit('for timeout in x; do timeout 5 git commit; done')[0], True)
 
 # ── GROUPING BEHIND A KEYWORD (fail-OPEN) ────────────────────────────
 # The pre-loop grouping strip only sees a segment's FIRST token, so a group

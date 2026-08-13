@@ -342,7 +342,8 @@ def _is_case_label(t, is_target, toks, i, case_state):
 
 def _skips_declared_name(toks, i, base, targets):
     """True iff `toks[i]` is a DECLARED NAME to skip past rather than the command word
-    -- `function f { git commit; }` or `coproc NAME { git commit; }`.
+    -- `function f { git commit; }`, `coproc NAME { git commit; }`, or the loop
+    variable of `for NAME in ...` / `select NAME in ...`.
 
     The name follows the keyword and would otherwise be read as the command word,
     hiding the body (verified: `function f { gh pr merge 1; }; f` runs the merge but
@@ -356,6 +357,17 @@ def _skips_declared_name(toks, i, base, targets):
     compound may open with '{' / '(' OR with a KEYWORD (`coproc JOB if git commit;
     then :; fi`) -- both shapes are accepted.
 
+    `for`/`select` bind their loop variable in the SAME position, and a variable
+    named after a wrapper (`for timeout in git commit; do echo "$timeout"; done`)
+    was walked as if it OPENED that wrapper, landing on the loop's word LIST and
+    reporting a commit that never runs -- the words are just strings the loop
+    assigns to `$timeout` one at a time (a FALSE POSITIVE, i.e. fail-CLOSED: the
+    gate stalls a command that performs no commit. Still worth fixing, but it is
+    the safe direction, not the fail-OPEN this walk mostly guards against;
+    verified; Codex finding, PR #650). Guarded by the identifier shape so the C-style `for (( i=0; ...))` form,
+    whose next token is `((` and not a name, is left to the normal walk instead of
+    being skipped on a guess.
+
     Never skips the target executable itself, so a program legitimately named e.g.
     `f` cannot hide one. Split out of _command_argv purely to reduce its complexity
     (#510); behavior unchanged (the conjuncts are all pure, so hoisting the bounds and
@@ -364,6 +376,8 @@ def _skips_declared_name(toks, i, base, targets):
         return False
     if base == 'function':
         return True
+    if base in ('for', 'select'):
+        return bool(re.match(r'^[A-Za-z_]\w*$', toks[i]))
     return bool(base == 'coproc' and i + 1 < len(toks)
                 and re.match(r'^[A-Za-z_]\w*$', toks[i])
                 and (toks[i + 1][:1] in ('{', '(')
@@ -629,11 +643,11 @@ def _command_argv(seg, target, with_raw=False, wrapper_operands=False):
             saw_operand_wrap = saw_operand_wrap or base in _OPERAND_WRAPPERS
             # Belongs to the CURRENT (innermost) wrapper, like saw_env -- reset
             # on every new wrapper token, not latched. A `_SCOPED_WRAPPERS`
-            # member's options never take a detached value, so the exclusion
-            # above may safely fire while one is open; a plain or operand-
-            # taking wrapper's options might, so a new wrapper OPENED INSIDE a
-            # scoped one (`ionice -c3 sudo timeout 5 git commit`) must end that
-            # guarantee for the option run that follows.
+            # member opens no operand run, but it can take a detached option
+            # value (`ionice -c 3`) -- keep option-argument handling
+            # conservative. A nested wrapper restarts its own option parsing,
+            # so a new wrapper OPENED INSIDE a scoped one (`ionice -c3 sudo
+            # timeout 5 git commit`) must end the outer wrapper's option run.
             opts_done = False   # a new wrapper restarts option parsing
             i += 1
             prev_dash = False
@@ -2764,16 +2778,60 @@ def _env_selector_in_prefix(seg):
     # stalls on a command it could have scoped), which is the direction this repo
     # chooses everywhere; the alternative is a silent wrong-repo validation.
     prev_dash = False
-    for t in _tokenize(seg):
+    toks = list(_tokenize(seg))
+    j = 0
+    while j < len(toks):
+        t = toks[j]
         # Strip subshell / brace-group punctuation, as _command_argv does, so
         # `(GH_REPO=o/r gh …)` and `{ GH_REPO=o/r gh …; }` expose the assignment.
         t = t.lstrip('({')
         if not t:
+            j += 1
             continue
+        if _REDIR_RE.match(t):
+            # A redirection-shaped token in the prefix is UNRESOLVABLE, so it is
+            # reported rather than classified -- the same move the operand-wrapper
+            # arm below already makes, for the same reason.
+            #
+            # `_tokenize` drops quote provenance, so after tokenization a quoted
+            # `>` handed to an option and a real redirection operator are the SAME
+            # token. Both orderings were built and both mis-scoped a real merge:
+            #
+            #   redirection-first    `env -u ">" GH_REPO=other/repo gh pr merge 1`
+            #                        reads the QUOTED `>` as an operator and
+            #                        swallows the assignment as its filename.
+            #   option-argument-first `env -i > /dev/null env GH_REPO=other/repo
+            #                        gh pr merge 1` reads a REAL detached
+            #                        redirection as `-i`'s value, then hits
+            #                        `/dev/null` and returns False.
+            #
+            # Each reports "no override" for a merge that really does retarget
+            # another repo -- the wrong-repo validation of #593 bar 1, which is
+            # strictly worse than a stall. The position question has no answer at
+            # this layer, so it is not asked (verified; Codex findings, PR #650).
+            #
+            # PRICED, not assumed. Two-way diff against origin/main over 32,617
+            # recorded agent commands: 4 changed, all of them this branch. The
+            # ordinary trailing form (`gh pr merge 1 >/dev/null`) is untouched --
+            # it returns False on `gh` long before reaching any redirection --
+            # so the flips are NOT live redirections in front of a real command.
+            # Every one traced back to text that is not a live redirection at all:
+            #   * a heredoc OPENER (`<<PROMPT`) left in a continuation-split
+            #     segment whose real command word was split off, and
+            #   * literal PROSE inside a heredoc PR body (`cd <path> && <cmd>`),
+            #     where `<cmd>` reads as `<` redirecting into a file named `cmd`.
+            # That is the #639 family (prose inside an unparseable heredoc), which
+            # this branch WIDENS rather than introduces. Measured live cost: one
+            # `gh pr create` over 257 recorded, which stalls VISIBLY. The
+            # alternative is a silent wrong-repo validation, so the direction is
+            # the one this repo takes everywhere -- but the residue is real and
+            # belongs with #639, not with a cleverer reading of this position.
+            return True
         if _GH_ENV_ASSIGN_RE.match(t) and not _WS_RE.search(t):
             return True
         if _ASSIGN_TOK_RE.match(t):
             prev_dash = False
+            j += 1
             continue
         if t.startswith('-'):
             # `--` is an option TERMINATOR, not an option whose value follows --
@@ -2787,9 +2845,11 @@ def _env_selector_in_prefix(seg):
             # `other/repo`, the exact mis-scope this function exists to
             # prevent (verified; Codex finding, PR #650).
             prev_dash = t != '--'
+            j += 1
             continue
         if prev_dash:
             prev_dash = False       # a wrapper option's ARGUMENT (`env -u FOO …`)
+            j += 1
             continue
         # `!` is pipeline negation — the command still runs, so it is not the
         # command word. _command_argv skips it too; diverging here fails OPEN.
@@ -2800,6 +2860,7 @@ def _env_selector_in_prefix(seg):
                 # failing closed. `ionice -c3 env GH_REPO=o/r gh pr merge 1` must
                 # still find the selector.
                 or t.rsplit('/', 1)[-1] in _SCOPED_WRAPPERS):
+            j += 1
             continue
         if t.rsplit('/', 1)[-1] in _OPERAND_WRAPPERS:
             # Unresolvable from here on -- see the note above. Fail CLOSED.

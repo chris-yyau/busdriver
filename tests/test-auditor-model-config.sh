@@ -225,6 +225,35 @@ guard_before_dispatch "$DISPATCH" \
   'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' \
   '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "dispatch.sh"
 
+# Ordering alone is NOT protection — dispatch.sh's guard only sets exit_code=1, so
+# what actually stops the launch is the `exit_code -eq 0` gate between them. A PR
+# reviewer read the guard as non-blocking precisely because the ordering assertion
+# above does not prove this. Assert the gate really sits in between.
+_g="$(grep -nE 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' "$DISPATCH" | head -1 | cut -d: -f1)"
+_m="$(grep -nE '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "$DISPATCH" | head -1 | cut -d: -f1)"
+_gate="$(awk -v a="$_g" -v b="$_m" 'NR>a && NR<b && /if \[\[ "\$exit_code" -eq 0 \]\]; then/{print NR; exit}' "$DISPATCH")"
+if [[ -n "$_gate" ]]; then
+  ok "dispatch.sh: exit_code gate at line $_gate stands between the guard and -m"
+else
+  fail "dispatch.sh: nothing gates -m on exit_code between lines $_g and $_m — the guard would NOT stop the launch"
+fi
+
+# Both guards bail BEFORE the sandbox is staged, which is what makes "no cleanup
+# on this path" correct. If someone moves the $_oc_cwd allocation above a guard,
+# that bail starts leaking a temp dir and the reasoning in both comments silently
+# becomes false — so pin the ordering rather than the prose.
+cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
+  local f="$1" g="$2" label="$3" gl al
+  gl="$(grep -nE "$g" "$f" | head -1 | cut -d: -f1)"
+  al="$(grep -nE '^\s*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"' "$f" | head -1 | cut -d: -f1)"
+  if [[ -z "$gl" || -z "$al" ]]; then fail "$label: could not locate guard ($gl) or _oc_cwd allocation ($al)"
+  elif (( al > gl )); then ok "$label: sandbox allocated at $al, after the guard at $gl (nothing to clean up)"
+  else fail "$label: _oc_cwd allocated at $al BEFORE the guard at $gl — the no-cleanup bail now leaks a temp dir"
+  fi
+}
+cwd_alloc_after_guard "$LIB" 'if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then' "resolve-cli.sh"
+cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' "dispatch.sh"
+
 # The library skip must return 4 (SKIPPED), not 1 (failed) or 3 (BUILTIN_FALLBACK).
 # blueprint-review treats any nonzero as "witness failed or returned empty", so
 # collapsing this into 1 reports the Mechanism Witness as FAILED for a config key

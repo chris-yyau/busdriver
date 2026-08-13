@@ -2324,6 +2324,10 @@ execute_review() {
              # this witness. Collapsing it into 1 makes blueprint-review report the
              # Mechanism Witness as FAILED for a config key the operator simply
              # never set. Reported by Codex on this change.
+             # No cleanup needed on this path: $_oc_cwd is still the empty `local`
+             # init here — the sandbox is not staged until inside the subshell
+             # further down — so there is no temp dir to reclaim. Bailing before
+             # any allocation is the whole point of guarding this early.
              if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
                echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
                return 4

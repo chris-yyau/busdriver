@@ -944,7 +944,13 @@ dispatch_one() {
                     # precondition for routing an opencode bail to `skipped` (the
                     # batch banner would otherwise print "(no output)" and lose it).
                     printf 'Skipped: %s\n' "no usable .auditor.model and no --model — auditor not dispatched" >> "$outfile" 2>/dev/null || true
-                    /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
+                    # NO cleanup here, deliberately: $_oc_cwd is not created until
+                    # the sandbox is staged inside the subshell below, so at this
+                    # point it is still the empty `local` init. An rmdir here would
+                    # be a no-op that falsely implies a temp dir exists to reclaim
+                    # (it read as a missing-cleanup asymmetry to a PR reviewer).
+                    # Nothing has been allocated yet — that is the point of bailing
+                    # this early. resolve-cli.sh's sibling guard is symmetric.
                     # `skipped`, NOT `error`: an absent optional config is a refusal
                     # before the attempt, not an attempt that failed. As `error` this
                     # would fail an entire `--cli all` batch for every other voice

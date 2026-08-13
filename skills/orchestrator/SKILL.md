@@ -101,7 +101,7 @@ Creates isolated workspace, verifies baseline tests pass.
 | Multiple independent problems | `busdriver:dispatching-parallel-agents` |
 
 **Always-on disciplines (no exceptions):**
-- **TDD** — `busdriver:test-driven-development` (RED → GREEN → REFACTOR). Detailed coverage: `busdriver:tdd-workflow`.
+- **Tests** — behavioral changes ship with tests. **Ordering is not mandated** — RED → GREEN → REFACTOR is available on demand via `/tdd` (`busdriver:test-driven-development`, detail `busdriver:tdd-workflow`), not a Phase 4 default. Advisory, not gate-enforced: no hook checks test ordering or existence (ADR 0038).
 - **Verification** — `busdriver:verification-before-completion` (no claims without fresh evidence).
 - **Debugging** — `busdriver:systematic-debugging` when stuck — root cause first.
 - **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer` (vault), `java-reviewer` (vault), `kotlin-reviewer` (vault), `flutter-reviewer` (vault), `csharp-reviewer` (vault), `swift-reviewer` (vault), `react-reviewer`, `django-reviewer` (vault), `fastapi-reviewer`, `fsharp-reviewer` (vault), `mle-reviewer`, `vue-reviewer` (vault), `php-reviewer` (vault)). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
@@ -110,9 +110,7 @@ Creates isolated workspace, verifies baseline tests pass.
 **When build fails — DISPATCH immediately, don't debug manually first:**
 DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver` (vault). React: `react-build-resolver`. Django: `django-build-resolver` (vault). Java/Quarkus/Spring: `java-build-resolver` (vault). HarmonyOS: `harmonyos-app-resolver` (vault). No resolver: use `busdriver:systematic-debugging`.
 
-**DISPATCH `tdd-guide` agent** to produce test files. The discipline governs process; the agent produces tests.
-
-**Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`.
+**Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`. A language's `Testing:` entry is reference material, not an ordering mandate — RED-GREEN-REFACTOR stays opt-in per the Tests discipline above, even when the domain guide walks through it (ADR 0038).
 
 ### Phase 5: Verification
 

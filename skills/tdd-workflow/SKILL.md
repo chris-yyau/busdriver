@@ -1,6 +1,6 @@
 ---
 name: tdd-workflow
-description: Use this skill when writing new features, fixing bugs, or refactoring code. Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
+description: Use when TDD is explicitly requested — via `/tdd`, `/go-test`, `/rust-test`, `/react-test`, or a direct ask. Not a default for every feature, bugfix, or refactor (ADR 0038). Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
 argument-hint: <path/to/*.plan.md>
 metadata:
   origin: ECC

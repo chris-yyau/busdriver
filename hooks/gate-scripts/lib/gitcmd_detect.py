@@ -371,14 +371,27 @@ def _skips_declared_name(toks, i, base, targets):
     Never skips the target executable itself, so a program legitimately named e.g.
     `f` cannot hide one. Split out of _command_argv purely to reduce its complexity
     (#510); behavior unchanged (the conjuncts are all pure, so hoisting the bounds and
-    target guards ahead of the shape test only short-circuits earlier)."""
+    target guards ahead of the shape test only short-circuits earlier).
+
+    The `coproc` shape test is further split into `_is_coproc_declared_name`,
+    purely to keep this function's own complexity under CodeScene's threshold
+    after the `for`/`select` branch was added (PR #650); behavior unchanged."""
     if i >= len(toks) or _is_target_word(toks[i].rsplit('/', 1)[-1], targets):
         return False
     if base == 'function':
         return True
     if base in ('for', 'select'):
         return bool(re.match(r'^[A-Za-z_]\w*$', toks[i]))
-    return bool(base == 'coproc' and i + 1 < len(toks)
+    return base == 'coproc' and _is_coproc_declared_name(toks, i)
+
+
+def _is_coproc_declared_name(toks, i):
+    """True iff `toks[i]` is a `coproc NAME <compound>` declared name -- see
+    `_skips_declared_name`'s docstring for the shape this guards against.
+
+    Extracted purely to reduce `_skips_declared_name`'s cyclomatic complexity
+    (CodeScene "Complex Method", PR #650); behavior unchanged."""
+    return bool(i + 1 < len(toks)
                 and re.match(r'^[A-Za-z_]\w*$', toks[i])
                 and (toks[i + 1][:1] in ('{', '(')
                      or toks[i + 1].rsplit('/', 1)[-1] in _SHELL_KEYWORDS))

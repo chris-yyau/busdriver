@@ -1701,9 +1701,50 @@ EOF
     log_warning "  Pending review tokens left ARMED — implementation stays gated."
     log_warning "  Address the findings and re-run, or create skip-design-review.local to proceed knowingly."
     if [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
-      _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"
-      log_warning "  Stale PASS from a prior run downgraded to PENDING."
+      # shellcheck disable=SC2310  # predicate used in a condition by design
+      if _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"; then
+        log_warning "  Stale PASS from a prior run downgraded to PENDING."
+      else
+        # Rewrite failed (temp-file create/swap error, read-only dir, full disk).
+        # STOP HERE — deliberately do NOT fall through to mark_review_complete.
+        #
+        # It is tempting to continue so the review does not stay "active" forever,
+        # and an earlier revision of this branch did exactly that on the grounds
+        # that "pending tokens stay ARMED, so the gate blocks regardless of what
+        # the doc marker says". That reasoning is WRONG and was caught in review:
+        # the pre-implementation gate is token-EXISTENCE based, and a review can be
+        # run against a document that never had a token armed (init-design-review.sh
+        # accepts any readable document). In that case there is no token to block
+        # on, the doc's stale PASS is the ONLY signal a reader sees, and continuing
+        # would let implementation proceed on a design the arbiter FAILED.
+        #
+        # So this is the fail-CLOSED direction: a review left "active" is a visible
+        # stall the operator can see and fix; a honored stale PASS is a silent
+        # authorization they cannot. Exit non-zero WITHOUT completing the review.
+        log_error "  Stale PASS downgrade FAILED and the doc still reads PASS."
+        log_error "  Refusing to complete the review — that PASS would otherwise be honored."
+        log_error "  Fix the write error, then either re-run the review or hand-edit"
+        log_error "  '$DESIGN_FILE' to '<!-- design-reviewed: PENDING -->'."
+        exit 1
+      fi
     fi
+    # Coverage provenance summary + trend entry belong on every terminal path,
+    # parked included — otherwise repeated degraded parked runs are invisible to
+    # the chronic-coverage warning (this park path was the only terminal branch
+    # skipping it).
+    #
+    # Called PLAINLY, exactly as the other two terminal sites do (max-iterations at
+    # :447, approved/degraded at :1809). An `if ! record_coverage_finalize` wrapper was
+    # tried and removed: putting the call in a condition disables `set -e` for the
+    # whole function, so an early failure (append_to_state) is masked whenever the
+    # final command (append_coverage_trend) succeeds — the wrapper would report
+    # success and swallow the warning while state.md silently lacks its COVERAGE line.
+    # A guard that reports success on a partial failure is worse than no guard.
+    #
+    # So the failure posture here is `set -e` abort, matching every sibling path. That
+    # leaves the review "active" — which on THIS branch is the deliberate fail-closed
+    # stance already adopted for the downgrade failure above, not an oversight.
+    record_coverage_finalize
     mark_review_complete "parked_no_progress"
     exit 1
   fi

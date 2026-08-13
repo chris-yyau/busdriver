@@ -35,14 +35,20 @@ no(){ printf "  FAIL  %s :: %s\n" "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 bash -n "$LOOP" 2>/dev/null && ok "loop script parses" || no "loop script parses"
 
 # (1) Neither trajectory early-stop may resolve to a PASS state. Both branches are
-# identified by their log line, then the following 4 lines are checked for the
-# assignment — narrow enough that an unrelated low_issues_only elsewhere cannot mask a
-# regression here.
+# identified by their log line, then a WIDE window (20 lines) after that line number is
+# checked for the assignment — anchored on the log line's own line number (not a fixed
+# `-A4` context count) so a comment/log line added inside the branch cannot push the
+# assignment outside the window and produce a false "assigns neither known state"
+# failure on an otherwise-unrelated edit. 20 lines is still narrow enough that an
+# unrelated low_issues_only elsewhere in the file cannot mask a regression here.
 for sev in HIGH MEDIUM; do
-  blk=$(grep -A4 "plan-blocking ${sev} did not decrease" "$LOOP" 2>/dev/null || true)
-  if [[ -z "$blk" ]]; then
+  logln=$(grep -n "plan-blocking ${sev} did not decrease" "$LOOP" 2>/dev/null | head -1 | cut -d: -f1)
+  if [[ -z "$logln" ]]; then
     no "${sev} early-stop branch found" "log line missing — branch renamed or removed?"
-  elif grep -q 'PROGRESS_STATUS="low_issues_only"' <<<"$blk"; then
+    continue
+  fi
+  blk=$(sed -n "${logln},$((logln + 20))p" "$LOOP")
+  if grep -q 'PROGRESS_STATUS="low_issues_only"' <<<"$blk"; then
     no "${sev} early-stop does not approve" "still assigns low_issues_only (#656 regression)"
   elif grep -q 'PROGRESS_STATUS="parked_no_progress"' <<<"$blk"; then
     ok "${sev} early-stop parks instead of approving"
@@ -70,6 +76,14 @@ fi
 # (4) Posture: the parked branch must terminate the review (so the caller stops
 # re-invoking) and exit non-zero (so no caller reads it as success). Checked within the
 # branch body — from its `if` to the next line that closes it at that indent.
+if [[ -z "$parked_ln" ]]; then
+  # Without this guard `body` is empty and every grep below silently reports the
+  # absence it is looking for — checks (5) and (7) would print PASS on a file with
+  # no parked branch at all. An empty body is a hard failure, not a quiet pass.
+  no "parked branch body extracted" "no parked branch — cannot check its posture"
+  printf "\n  %d passed, %d failed\n" "$PASS" "$FAIL"
+  exit 1
+fi
 body=$(sed -n "${parked_ln},\$p" "$LOOP" | sed -n '1,/^  fi$/p')
 grep -q 'mark_review_complete "parked_no_progress"' <<<"$body" \
   && ok "parked branch marks the review complete" \
@@ -80,9 +94,18 @@ grep -q '^[[:space:]]*exit 1' <<<"$body" \
 
 # (5) The parked branch must NOT write a PASS marker. This is the invariant the whole
 # issue is about, so it is asserted directly rather than inferred from (1).
-if grep -q 'design-reviewed: PASS -->' <<<"$body" \
-   && ! grep -q 's|$_RE_PASS|<!-- design-reviewed: PENDING -->|' <<<"$body"; then
-  no "parked branch writes no PASS" "a PASS write appears in the parked body"
+#
+# The earlier form of this check could not fire. It only failed when the body BOTH
+# contained a literal PASS write AND lacked the downgrade sed line — and since the
+# body's legitimate PASS references all go through `$_RE_PASS`, the literal string
+# never appears here at all, so the condition was permanently false and the check
+# printed PASS unconditionally. A guard that cannot fail is not a guard.
+#
+# Correct form: the literal marker text must not appear ANYWHERE in the parked body.
+# The legitimate detect/downgrade pair uses `$_RE_PASS` and the PENDING literal, so a
+# literal `design-reviewed: PASS -->` in this branch can only be a PASS write.
+if grep -q 'design-reviewed: PASS -->' <<<"$body"; then
+  no "parked branch writes no PASS" "a literal PASS marker write appears in the parked body"
 else
   ok "parked branch writes no PASS"
 fi
@@ -109,6 +132,29 @@ grep -q '_MARKER_SNAP' <<<"$body" \
 [[ "$(grep -c "_RE_PASS=" "$LOOP")" == 1 ]] \
   && ok "_RE_PASS defined exactly once" \
   || no "_RE_PASS defined exactly once" "$(grep -c '_RE_PASS=' "$LOOP") definitions"
+
+# (9) If the stale-PASS downgrade FAILS, the branch must fail CLOSED — exit without
+# reaching mark_review_complete. An earlier revision guarded the downgrade so the
+# review would always be marked complete, reasoning that the armed tokens block
+# implementation regardless of the doc marker. That is false when the review was run
+# against a document that never had a token armed: there is then nothing for the
+# token-existence gate to block on, and the doc's surviving PASS is the only signal a
+# reader sees. Completing the review in that state silently authorizes implementation
+# on a design the arbiter FAILED — so `exit` must precede `mark_review_complete`.
+failln=$(grep -n 'Stale PASS downgrade FAILED' <<<"$body" | head -1 | cut -d: -f1)
+if [[ -z "$failln" ]]; then
+  no "downgrade failure fails closed" "no downgrade-failure branch found"
+else
+  ftail=$(sed -n "${failln},\$p" <<<"$body")
+  exit_rel=$(grep -n '^[[:space:]]*exit ' <<<"$ftail" | head -1 | cut -d: -f1)
+  mrc_rel=$(grep -n 'mark_review_complete' <<<"$ftail" | head -1 | cut -d: -f1)
+  if [[ -n "$exit_rel" ]] && { [[ -z "$mrc_rel" ]] || [[ "$exit_rel" -lt "$mrc_rel" ]]; }; then
+    ok "downgrade failure fails closed (exits before completing the review)"
+  else
+    no "downgrade failure fails closed" \
+       "reaches mark_review_complete with the stale PASS intact — it would be honored"
+  fi
+fi
 
 printf "\n  %d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

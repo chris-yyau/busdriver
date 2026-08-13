@@ -846,5 +846,11 @@ npm test                                     # JS suite green
 - Merging firecrawl/tavily content into single files (vaulting achieves the registry saving without a content refactor)
 - Re-vendoring impeccable, provider scrub, arbiter chain (SETTLED per CLAUDE.md)
 
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
 <!-- design-review-coverage: FULL 3/3  -->
+<!-- marker-downgraded: 2026-08-14. The PASS this document carried was not a convergence.
+     The review early-stopped on `no_improvement_trajectory` with plan-blocking HIGH at
+     `[0,0,1]` — the count ROSE to one on the final iteration, meaning the last revision
+     introduced a finding rather than resolving one — and the loop resolved that to
+     `low_issues_only`, a PASS state. See issue #656 and its blast-radius audit.
+     Re-review before relying on this marker. -->

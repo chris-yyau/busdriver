@@ -73,7 +73,9 @@ Plus one **advisory** voice that is deliberately NOT a coverage slot:
 
 **Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
 
-**Auto-stop on no progress:** Trajectory checks fire starting at iteration 2 for both blocking states. If `plan_blocking_high` fails to strictly decrease while state is `blocked_by_high_issues`, OR if `plan_blocking_medium` fails to strictly decrease while state is `medium_issues_remaining`, the loop accepts the current state as `low_issues_only` rather than grinding to `max_iterations`. The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file. Both `high_issues_history` and `medium_issues_history` track per-iteration counts.
+**Auto-stop on no progress:** Trajectory checks fire starting at iteration 2 for both blocking states. If `plan_blocking_high` fails to strictly decrease while state is `blocked_by_high_issues`, OR if `plan_blocking_medium` fails to strictly decrease while state is `medium_issues_remaining`, the loop **PARKS** — terminal state `parked_no_progress` — rather than grinding to `max_iterations`. The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file. Both `high_issues_history` and `medium_issues_history` track per-iteration counts.
+
+**Parking is NOT approval (#656).** Until 2026-08-14 the auto-stop resolved to `low_issues_only`, which is a PASS state — so a no-progress *process* signal was laundered into a *quality* verdict and stamped `design-reviewed: PASS` onto documents whose arbiter verdict was FAIL with plan-blocking HIGH still open. Six such markers were found on this repo (audit in #656), one of them on ADR 0003 — the ADR that introduced the fresh-subagent arbiter precisely to stop a human-shaped version of that failure. `parked_no_progress` now takes the same posture as `degraded_coverage` (#355): **PASS withheld, any stale PASS downgraded to PENDING, pending tokens left ARMED, `mark_review_complete`, exit non-zero.** Tokens are what the pre-implementation gate actually keys on, so leaving them armed is what keeps implementation blocked. Enforced by `tests/test-blueprint-early-stop-parks.sh` — a contract test, so that an upstream sync cannot quietly restore `low_issues_only`.
 
 **Default max iterations:** 5. (Briefly lowered to 3 after the v3.1 cascades-11-12 incident; raised back to 5 once MEDIUM-trajectory protection landed in v3.2 — see Version History. The trajectory early-stops are the real circuit breakers; max-iter is just a final cap.)
 
@@ -349,6 +351,7 @@ Replaces binary FAIL/PASS with explicit severity breakdown. **Counts are categor
 | `blocked_by_high_issues` | Plan-blocking HIGH issues remain | Must fix before proceeding |
 | `medium_issues_remaining` | Plan-blocking MEDIUM issues remain | Should fix before proceeding |
 | `low_issues_only` | Only LOW or deferred issues | PASS — proceed to implementation |
+| `parked_no_progress` | Trajectory auto-stop fired with plan-blocking issues still open | **NOT a pass** — PASS withheld, tokens stay armed, exit 1 (#656) |
 | `passed` | No issues | PASS — proceed to implementation |
 
 **Plan-blocking vs. deferred:**
@@ -456,7 +459,7 @@ The arbiter subagent needs codebase access for validation. In auto mode, the cal
 **Issue: Iteration loop doesn't converge**
 
 - Check progress in state file: `cat docs/reviews/<slug>/state.md` — look at `high_issues_history` and `medium_issues_history` for the trajectories.
-- If the trajectory for the currently-blocking severity is flat or oscillating, the auto-stop fires after iteration 2 and accepts current state as `low_issues_only`.
+- If the trajectory for the currently-blocking severity is flat or oscillating, the auto-stop fires after iteration 2 and **parks** (`parked_no_progress`, exit 1) — it does not approve. Fix the findings and re-run, or proceed knowingly via `skip-design-review.local`.
 - If `early_stopped: "no_improvement_trajectory"` appears in state, the loop exited early because adding detail to the plan was creating new findings (asymptote chasing).
 - Check `follow-up-issues.md` — many findings may have been deferred there, leaving fewer plan-blocking issues than the raw HIGH/MEDIUM totals suggest.
 - If stuck despite all that, break design into smaller pieces.

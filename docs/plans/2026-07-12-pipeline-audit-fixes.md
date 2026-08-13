@@ -209,5 +209,24 @@ Iteration 4 cleared all plan-blocking HIGHs but surfaced MEDIUMs concentrated in
 - A stashed-revert of Task 1 or Task 2 turns the CI shell-test step red (proves Task 4 closed the coverage gap).
 - All `.upstream-sources.json` status flips for edited `sync` files are present (`test-provenance-guard.sh` green).
 
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
 <!-- design-review-coverage: DEGRADED 1/3 reviewer_1=runtime-droid-rescue reviewer_3=runtime-failed -->
+<!-- marker-downgraded: 2026-08-14. This is the most clearly wrong PASS on the repo and it
+     failed THREE separate guards:
+     (1) the recorded final state is `progress_status: medium_issues_remaining` — not a PASS
+         state at all, so no convergence path should have written this marker;
+     (2) `coverage_status: DEGRADED` at 1/3 (reviewer_1=runtime-droid-rescue,
+         reviewer_3=runtime-failed) — per #355 a non-FULL run WITHHOLDS the PASS and
+         downgrades any stale one to PENDING;
+     (3) this document's own line ~196 instructs: "Do NOT stamp `design-reviewed: PASS` under
+         DEGRADED coverage — a security-gate plan should carry the honest coverage marker,
+         not a bare PASS."
+     On (2): this marker PREDATES the fix. The withholding path landed in `e95777e3`
+     (2026-07-17 22:49, "#355 refuse to authorize implementation on DEGRADED coverage");
+     this PASS was committed in `c0bdaf7f` (2026-07-17 01:37), ~21h earlier. So it is
+     historical residue, NOT evidence that #355's path fails today. An earlier draft of this
+     note claimed a live second defect — that claim was checked against git log and withdrawn.
+     What remains untested: whether a CURRENT run reaching `medium_issues_remaining` can still
+     stamp PASS, i.e. whether guard (1) is live independent of coverage. Worth one probe
+     before closing #656; not assumed either way here.
+     This is a security-gate remediation plan. Re-review before relying on it. -->

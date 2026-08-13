@@ -1,4 +1,11 @@
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
+<!-- marker-downgraded: 2026-08-14. The PASS this document carried was not a convergence.
+     The review early-stopped on `no_improvement_trajectory` with plan-blocking HIGH at
+     `[3,2,2]` — two still open — and the loop resolved that no-progress signal to
+     `low_issues_only`, a PASS state. See issue #656 and its blast-radius audit.
+     This document also carries NO `design-review-coverage` marker, despite being the
+     design that introduced coverage provenance; the durable-marker upsert it specifies
+     did not run on its own review. Re-review before relying on this marker. -->
 # DESIGN: blueprint-review coverage provenance / UNFULFILLED tracking
 
 **Status:** spec for review (iter 3) · **Date:** 2026-06-06

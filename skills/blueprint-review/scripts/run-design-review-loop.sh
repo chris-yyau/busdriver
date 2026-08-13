@@ -1603,8 +1603,10 @@ EOF
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
       log_warning ""
       log_warning "  Trajectory: plan-blocking HIGH did not decrease from prior iteration ($HISTORY)"
-      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
-      PROGRESS_STATUS="low_issues_only"
+      log_warning "  Auto-stop: convergence loop unproductive — PARKING (this is not an approval)"
+      # #656: was low_issues_only, i.e. a PASS state. A no-progress signal is not a
+      # quality verdict; park instead. Handled at the parked_no_progress branch in Phase 5.
+      PROGRESS_STATUS="parked_no_progress"
       update_state_field "progress_status" "\"$PROGRESS_STATUS\""
       update_state_field "early_stopped" "\"no_improvement_trajectory\""
     fi
@@ -1620,15 +1622,132 @@ EOF
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$MEDIUM_HISTORY" 1; then
       log_warning ""
       log_warning "  Trajectory: plan-blocking MEDIUM did not decrease from prior iteration ($MEDIUM_HISTORY)"
-      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
-      PROGRESS_STATUS="low_issues_only"
+      log_warning "  Auto-stop: convergence loop unproductive — PARKING (this is not an approval)"
+      # #656: was low_issues_only, i.e. a PASS state. See the HIGH branch above.
+      PROGRESS_STATUS="parked_no_progress"
       update_state_field "progress_status" "\"$PROGRESS_STATUS\""
       update_state_field "early_stopped" "\"no_improvement_trajectory\""
     fi
   fi
 
+  # Atomic in-place sed via an UNPREDICTABLE mktemp sibling — never a fixed
+  # `${DESIGN_FILE}.tmp`/.covtmp name a pre-existing symlink could hijack into
+  # truncating an arbitrary target. (Concurrent reviews of the SAME doc are already
+  # prevented upstream by the loop's review-pointer guard, so this only needs to be
+  # single-writer-safe.) The mode is copied from the source AFTER sed writes the
+  # temp — before-write would make a read-only (0444) source's redirect fail — so the
+  # replacement keeps the doc's original perms rather than mktemp's 0600. The temp is
+  # always removed, including on an mv failure, so no `.dr-edit.*` copy is leaked.
+  #
+  # HOISTED (#656) out of the approved-only branch below: the parked terminal state
+  # added by #656 must also be able to downgrade a stale PASS, and a second copy of
+  # this helper is exactly the "third copy drifting" defect this repo already tracks.
+  # Pure move — no logic change; it depends only on DESIGN_FILE.
+  _dr_atomic_sed() {  # <sed-expr> <file>
+    local _e="$1" _f="$2" _d _t _m
+    _d=$(dirname -- "$_f") || return 1
+    _t=$(mktemp "$_d/.dr-edit.XXXXXX") || return 1
+    # `if` guards throughout (never `cmd && ...`): a failing left-of-&& would trip
+    # set -e and skip the temp cleanup below.
+    if sed "$_e" "$_f" > "$_t"; then
+      # Copy the source mode onto the temp (GNU `stat -c` / BSD `stat -f`) before the
+      # swap; best-effort, and 0600 is the safe fallback if the mode is unreadable.
+      _m=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || true)
+      if [[ -n "$_m" ]]; then chmod "$_m" "$_t" 2>/dev/null || true; fi
+      if mv -f "$_t" "$_f"; then return 0; fi
+    fi
+    rm -f "$_t"
+    return 1
+  }
+
+  # WHOLE-LINE marker regexes (the writer always emits each marker on its own line).
+  # Every detect (grep) and rewrite (sed) below anchors to these so a marker string
+  # embedded in PROSE — `... the <!-- design-reviewed: PASS --> marker ...` — is never
+  # matched or corrupted. A marker ALONE on its own line is treated as a real marker
+  # by BOTH the writer here AND the reader (_doc_reviewed matches any occurrence): this
+  # is inherent to the machine-consumed marker design, so a tracked design doc must not
+  # place a bare-line marker example (even inside a ``` fence). No ERE-only metachars,
+  # so the same pattern is valid in grep BRE and sed BRE.
+  # _RE_COV keys on a line STARTING with the coverage prefix (not a complete `-->`),
+  # matching the reader's total count — so the upsert/strip below can also REPAIR a
+  # truncated/split/malformed stale marker line, not just a well-formed one. `.*$`
+  # consumes the rest of that line so the whole line is replaced/deleted. A prefix
+  # mid-line in prose is not at line start ⇒ untouched.
+  _RE_COV='^[[:space:]]*<!-- design-review-coverage:.*$'
+  _RE_PASS='^[[:space:]]*<!-- design-reviewed: PASS -->[[:space:]]*$'
+  _RE_PEND='^[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*$'
+
   # ── Phase 5: Convergence (Critic #4: Claude verdict) ──────────────
   log_info "Phase 5: Convergence check..."
+
+  # #656: an early stop is a PROCESS signal ("this loop stopped making progress"),
+  # NEVER a quality verdict. Resolving it to low_issues_only laundered it into a PASS
+  # state and stamped `design-reviewed: PASS` onto documents whose arbiter verdict was
+  # FAIL with plan-blocking HIGH still open (six such markers found on this repo, one of
+  # them on the ADR that introduced the arbiter). The correct terminal state for "we
+  # stopped improving with findings open" is PARKED, not APPROVED.
+  #
+  # Posture is deliberately identical to the degraded_coverage branch below (#355):
+  # withhold the PASS, downgrade any stale PASS so the doc does not contradict the
+  # verdict, leave the pending tokens ARMED (never prune — the pre-implementation gate
+  # keys on tokens, so this is what actually keeps implementation blocked),
+  # mark_review_complete so the caller stops re-invoking, and exit non-zero.
+  if [[ "$PROGRESS_STATUS" == "parked_no_progress" ]]; then
+    log_warning ""
+    log_warning "=== DESIGN NOT CONVERGED — PARKED ==="
+    log_warning "  The loop stopped making progress with plan-blocking issues still open."
+    log_warning "  Run: $RUN_ID | High: $HIGH_COUNT | Medium: $MEDIUM_COUNT | Low: $LOW_COUNT"
+    log_warning "  PASS is WITHHELD — this is not an approval. Review stays PENDING."
+    log_warning "  Pending review tokens left ARMED — implementation stays gated."
+    log_warning "  Address the findings and re-run, or create skip-design-review.local to proceed knowingly."
+    if [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
+      # shellcheck disable=SC2310  # predicate used in a condition by design
+      if _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"; then
+        log_warning "  Stale PASS from a prior run downgraded to PENDING."
+      else
+        # Rewrite failed (temp-file create/swap error, read-only dir, full disk).
+        # STOP HERE — deliberately do NOT fall through to mark_review_complete.
+        #
+        # It is tempting to continue so the review does not stay "active" forever,
+        # and an earlier revision of this branch did exactly that on the grounds
+        # that "pending tokens stay ARMED, so the gate blocks regardless of what
+        # the doc marker says". That reasoning is WRONG and was caught in review:
+        # the pre-implementation gate is token-EXISTENCE based, and a review can be
+        # run against a document that never had a token armed (init-design-review.sh
+        # accepts any readable document). In that case there is no token to block
+        # on, the doc's stale PASS is the ONLY signal a reader sees, and continuing
+        # would let implementation proceed on a design the arbiter FAILED.
+        #
+        # So this is the fail-CLOSED direction: a review left "active" is a visible
+        # stall the operator can see and fix; a honored stale PASS is a silent
+        # authorization they cannot. Exit non-zero WITHOUT completing the review.
+        log_error "  Stale PASS downgrade FAILED and the doc still reads PASS."
+        log_error "  Refusing to complete the review — that PASS would otherwise be honored."
+        log_error "  Fix the write error, then either re-run the review or hand-edit"
+        log_error "  '$DESIGN_FILE' to '<!-- design-reviewed: PENDING -->'."
+        exit 1
+      fi
+    fi
+    # Coverage provenance summary + trend entry belong on every terminal path,
+    # parked included — otherwise repeated degraded parked runs are invisible to
+    # the chronic-coverage warning (this park path was the only terminal branch
+    # skipping it).
+    #
+    # Called PLAINLY, exactly as the other two terminal sites do (max-iterations at
+    # :447, approved/degraded at :1809). An `if ! record_coverage_finalize` wrapper was
+    # tried and removed: putting the call in a condition disables `set -e` for the
+    # whole function, so an early failure (append_to_state) is masked whenever the
+    # final command (append_coverage_trend) succeeds — the wrapper would report
+    # success and swallow the warning while state.md silently lacks its COVERAGE line.
+    # A guard that reports success on a partial failure is worse than no guard.
+    #
+    # So the failure posture here is `set -e` abort, matching every sibling path. That
+    # leaves the review "active" — which on THIS branch is the deliberate fail-closed
+    # stance already adopted for the downgrade failure above, not an oversight.
+    record_coverage_finalize
+    mark_review_complete "parked_no_progress"
+    exit 1
+  fi
 
   if [[ "$PROGRESS_STATUS" == "passed" || "$PROGRESS_STATUS" == "low_issues_only" ]]; then
     log_info ""
@@ -1656,47 +1775,8 @@ EOF
       fi
     fi
 
-    # Atomic in-place sed via an UNPREDICTABLE mktemp sibling — never a fixed
-    # `${DESIGN_FILE}.tmp`/.covtmp name a pre-existing symlink could hijack into
-    # truncating an arbitrary target. (Concurrent reviews of the SAME doc are already
-    # prevented upstream by the loop's review-pointer guard, so this only needs to be
-    # single-writer-safe.) The mode is copied from the source AFTER sed writes the
-    # temp — before-write would make a read-only (0444) source's redirect fail — so the
-    # replacement keeps the doc's original perms rather than mktemp's 0600. The temp is
-    # always removed, including on an mv failure, so no `.dr-edit.*` copy is leaked.
-    _dr_atomic_sed() {  # <sed-expr> <file>
-      local _e="$1" _f="$2" _d _t _m
-      _d=$(dirname -- "$_f") || return 1
-      _t=$(mktemp "$_d/.dr-edit.XXXXXX") || return 1
-      # `if` guards throughout (never `cmd && ...`): a failing left-of-&& would trip
-      # set -e and skip the temp cleanup below.
-      if sed "$_e" "$_f" > "$_t"; then
-        # Copy the source mode onto the temp (GNU `stat -c` / BSD `stat -f`) before the
-        # swap; best-effort, and 0600 is the safe fallback if the mode is unreadable.
-        _m=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || true)
-        if [[ -n "$_m" ]]; then chmod "$_m" "$_t" 2>/dev/null || true; fi
-        if mv -f "$_t" "$_f"; then return 0; fi
-      fi
-      rm -f "$_t"
-      return 1
-    }
-
-    # WHOLE-LINE marker regexes (the writer always emits each marker on its own line).
-    # Every detect (grep) and rewrite (sed) below anchors to these so a marker string
-    # embedded in PROSE — `... the <!-- design-reviewed: PASS --> marker ...` — is never
-    # matched or corrupted. A marker ALONE on its own line is treated as a real marker
-    # by BOTH the writer here AND the reader (_doc_reviewed matches any occurrence): this
-    # is inherent to the machine-consumed marker design, so a tracked design doc must not
-    # place a bare-line marker example (even inside a ``` fence). No ERE-only metachars,
-    # so the same pattern is valid in grep BRE and sed BRE.
-    # _RE_COV keys on a line STARTING with the coverage prefix (not a complete `-->`),
-    # matching the reader's total count — so the upsert/strip below can also REPAIR a
-    # truncated/split/malformed stale marker line, not just a well-formed one. `.*$`
-    # consumes the rest of that line so the whole line is replaced/deleted. A prefix
-    # mid-line in prose is not at line start ⇒ untouched.
-    _RE_COV='^[[:space:]]*<!-- design-review-coverage:.*$'
-    _RE_PASS='^[[:space:]]*<!-- design-reviewed: PASS -->[[:space:]]*$'
-    _RE_PEND='^[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*$'
+    # (_dr_atomic_sed and the _RE_* marker regexes are defined above Phase 5 — hoisted
+    # out of this branch by #656 so the parked terminal state can share them.)
 
     # Write the coverage provenance marker FIRST — BEFORE any PASS — so a durable
     # PASS is never present without its coverage marker beside it. A crash between the

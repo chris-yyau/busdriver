@@ -207,5 +207,13 @@ script-level enforcement listed in Alternatives and Revisit triggers.
 - A stale-verdict convergence is observed despite the Decision 7 guard → the
   conservative arm (current-run `run_id`) has a bypass; escalate to the full
   context-hash arm (hash of design + all three reviewer JSONs + coverage).
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
 <!-- design-review-coverage: FULL 3/3  -->
+<!-- marker-downgraded: 2026-08-14. The PASS this document carried was not a convergence.
+     The review early-stopped on `no_improvement_trajectory` with plan-blocking HIGH at
+     `[1,1]` — one still open — and the loop resolved that no-progress signal to
+     `low_issues_only`, a PASS state. See issue #656 and its blast-radius audit.
+     Note what this document is: the ADR that introduced the fresh-subagent arbiter,
+     written because the 2026-03-10 class-roll incident had Claude stamp PASS with "only
+     low-severity items". The same failure then recurred in automated form, on the document
+     specifying the control. Re-review before relying on this marker. -->

@@ -48,14 +48,25 @@ resolve() {  # <json-or-empty> → stdout model, stderr dropped unless $2=keep-s
     printf '%s' "$_BD_AUDITOR_MODEL" )
 }
 
-DEFAULT="$(grep -E '^BUSDRIVER_AUDITOR_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
-[[ -n "$DEFAULT" ]] && ok "default constant present → $DEFAULT" || fail "no BUSDRIVER_AUDITOR_MODEL_DEFAULT in $LIB"
+# The auditor has NO shipped default, deliberately. A built-in model id is only
+# ever consulted by an operator who configured none — the one person guaranteed
+# to hold no credential for whichever provider we picked — so it cannot work by
+# default, and it goes stale. Unconfigured now means the advisory voice is
+# SKIPPED. Assert the constant stays deleted: reintroducing one silently
+# restores both the failure mode and the drift class this test exists to catch.
+if grep -qE '^BUSDRIVER_AUDITOR_MODEL_DEFAULT=' "$LIB"; then
+  fail "BUSDRIVER_AUDITOR_MODEL_DEFAULT is back in $LIB — the auditor must ship no default model"
+else
+  ok "no shipped auditor default constant in $LIB"
+fi
+# Every unconfigured/rejected case below resolves to the empty string.
+DEFAULT=""
 
-# dispatch.sh's library-missing shim repeats the default literal (no config
-# reader exists without the library). Nothing else catches drift between the
-# two, so assert equality directly.
+# dispatch.sh's library-missing shim must resolve to empty for the same reason:
+# with no library there is no config reader, and inventing a model there would
+# reintroduce exactly the default we just deleted.
 SHIM_DEFAULT="$(grep -E 'resolve_auditor_model\(\) \{ _BD_AUDITOR_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
-eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh shim default matches BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+eq "$SHIM_DEFAULT" "" "dispatch.sh shim resolves the auditor to empty (no default)"
 
 # pi's shim mirrors the auditor's: same library-missing fallback pattern, same
 # drift risk between dispatch.sh's shim literal and the LIB constant. The
@@ -67,8 +78,8 @@ PI_DEFAULT="$(grep -E '^BUSDRIVER_PI_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
 PI_SHIM_DEFAULT="$(grep -E 'resolve_pi_model\(\) \{ _BD_PI_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
 eq "$PI_SHIM_DEFAULT" "$PI_DEFAULT" "dispatch.sh pi shim default matches BUSDRIVER_PI_MODEL_DEFAULT"
 
-eq "$(resolve '')"                                        "$DEFAULT"        "no config → default"
-eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → default"
+eq "$(resolve '')"                                        "$DEFAULT"        "no config → empty (voice skipped)"
+eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → empty (voice skipped)"
 eq "$(resolve '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}')" \
    "zenmux/deepseek/deepseek-v4-pro"                                        "configured model honored"
 eq "$(resolve '{"auditor":{"model":"opencode-go/kimi-k3"}}')" \
@@ -83,7 +94,7 @@ eq "$(resolve '{"auditor":{"model":"--dangerously-x"}}')"  "$DEFAULT"        "le
 eq "$(resolve '{"auditor":{"model":"a b"}}')"              "$DEFAULT"        "whitespace rejected"
 eq "$(resolve '{"auditor":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"
 eq "$(resolve '{"auditor":{"model":"zenmux/"}}')"          "$DEFAULT"        "empty segment rejected"
-eq "$(resolve 'not json at all')"                          "$DEFAULT"        "corrupt config → default"
+eq "$(resolve 'not json at all')"                          "$DEFAULT"        "corrupt config → empty (voice skipped)"
 
 # Traversal via BUSDRIVER_STATE_DIR (repo-injectable through settings.json) must
 # not escape the home dir into a path the reviewed repo can plant.
@@ -179,13 +190,89 @@ got="$( BUSDRIVER_PLUGIN_ROOT="$EMPTY_ROOT" bash -c "
   printf '%s' \"\$_BD_AUDITOR_MODEL\"
 " )"
 rm -rf "$EMPTY_ROOT"
-eq "$got" "zenmux/moonshotai/kimi-k3" "exported resolve_auditor_model cannot bypass the library-missing shim (P1)"
+eq "$got" "" "exported resolve_auditor_model cannot bypass the library-missing shim (P1)"
 
 # ── Golden-grep: no model id hardcoded at either dispatch site ───
 if grep -nE '^[^#]*-m +[A-Za-z0-9][A-Za-z0-9._/-]*/' "$LIB" "$DISPATCH"; then
   fail "a literal model id is still hardcoded after -m (see lines above)"
 else
   ok "neither dispatch site hardcodes a model id after -m"
+fi
+
+# ── The empty-model guard, proven to fire AND to stay out of the way ──
+# Deleting the default made "no model" reachable, so an empty `-m` must never
+# get to opencode — it would silently run that CLI's own default, i.e. a
+# provider nobody chose. Two things are asserted: the guard EXISTS at both
+# dispatch sites and sits BEFORE the -m line, and its real condition text
+# evaluates correctly in both directions. A guard never observed failing is not
+# a guard, so the behavioural check evals the grepped line rather than a
+# hand-copied duplicate that could drift from it.
+
+guard_before_dispatch() {   # <file> <guard-regex> <dispatch-regex> <label>
+  local f="$1" g="$2" d="$3" label="$4" gl dl
+  gl="$(grep -nE "$g" "$f" | head -1 | cut -d: -f1)"
+  dl="$(grep -nE "$d" "$f" | head -1 | cut -d: -f1)"
+  if [[ -z "$gl" ]]; then fail "$label: empty-model guard is missing"
+  elif [[ -z "$dl" ]]; then fail "$label: could not find the -m dispatch line"
+  elif (( gl < dl )); then ok "$label: guard at line $gl precedes -m at line $dl"
+  else fail "$label: guard (line $gl) does not precede -m (line $dl)"
+  fi
+}
+guard_before_dispatch "$LIB" \
+  'if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then' \
+  '\-m "\$_BD_AUDITOR_MODEL"' "resolve-cli.sh"
+guard_before_dispatch "$DISPATCH" \
+  'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' \
+  '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "dispatch.sh"
+
+# The library skip must return 4 (SKIPPED), not 1 (failed) or 3 (BUILTIN_FALLBACK).
+# blueprint-review treats any nonzero as "witness failed or returned empty", so
+# collapsing this into 1 reports the Mechanism Witness as FAILED for a config key
+# the operator simply never set — the ABSENT-vs-FAILED distinction from ADR 0027.
+LOOP="$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
+if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/return 4/{print;exit}' "$LIB" | grep -q 'return 4'; then
+  ok "resolve-cli.sh no-model guard returns 4 (SKIPPED), not a generic failure"
+else
+  fail "resolve-cli.sh no-model guard does not return 4 — blueprint-review will call it FAILED"
+fi
+grep -qF '"$_aud_exit" -eq 4' "$LOOP" \
+  && ok "blueprint-review handles rc=4 as a distinct witness state" \
+  || fail "blueprint-review does not branch on rc=4 in $LOOP"
+# The absent-vs-failed render keys off the message text, so the rc=4 artifact must
+# carry a phrase the case statement matches — otherwise it prints FAILED anyway.
+grep -qF 'no .auditor.model configured' "$LOOP" \
+  && ok "rc=4 artifact carries an ABSENT-matching message" \
+  || fail "rc=4 message will not match the absent render case in $LOOP"
+
+# The skip must classify as `skipped`, never `error`: as `error` an absent
+# optional .auditor.model would fail an entire `--cli all` batch for every other
+# voice whenever opencode is installed (the #594 failure mode). And the flag must
+# be `local` to dispatch_one — a leak across calls would mark a later voice
+# skipped for an earlier one's missing config.
+grep -qE '^\s*local _oc_no_model=0' "$DISPATCH" \
+  && ok "_oc_no_model is local to dispatch_one (no cross-call leak)" \
+  || fail "_oc_no_model is not declared local in $DISPATCH"
+grep -qE '\[\[ "\$\{_oc_no_model:-0\}" == "1" \]\] && status="skipped"' "$DISPATCH" \
+  && ok "no-model bail classifies as skipped, not error" \
+  || fail "_oc_no_model is not wired to status=skipped in $DISPATCH"
+# Routing an opencode bail to `skipped` is conditional on the reason reaching
+# "$outfile" — stderr alone would print "(no output)" in the batch banner.
+grep -qF 'printf '"'"'Skipped: %s\n'"'"'' "$DISPATCH" \
+  && ok "skip reason is written to \$outfile (not stderr alone)" \
+  || fail "no-model skip does not write its reason to \$outfile"
+
+GUARD_COND="$(grep -F 'if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" ]]; then' "$DISPATCH")"
+if [[ -z "$GUARD_COND" ]]; then
+  fail "could not extract the dispatch.sh guard condition to exercise it"
+else
+  run_guard() {   # <auditor-model> [<--model override>] → fire | dispatch
+    ( MODEL="${2:-}"; _BD_AUDITOR_MODEL="$1"
+      # shellcheck disable=SC2294  # deliberate: exercise the SHIPPED condition, not a copy
+      eval "$GUARD_COND printf fire; else printf dispatch; fi" )
+  }
+  eq "$(run_guard '')"                    "fire"     "guard FIRES: no .auditor.model and no --model"
+  eq "$(run_guard 'opencode-go/model-x')" "dispatch" "guard stands down: .auditor.model configured"
+  eq "$(run_guard '' 'openai/gpt-5.2')"   "dispatch" "guard stands down: --model given"
 fi
 
 grep -qE '\-m "\$_BD_AUDITOR_MODEL"' "$LIB" \

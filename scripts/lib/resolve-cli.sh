@@ -204,7 +204,7 @@ _read_user_config_value() {
 # The model id handed to `opencode run -m`. Configurable so the operator can
 # switch provider or model without editing dispatch code:
 #
-#   ~/.claude/busdriver.json  →  { "auditor": { "model": "zenmux/moonshotai/kimi-k3" } }
+#   ~/.claude/busdriver.json  →  { "auditor": { "model": "opencode-go-lb/deepseek-v4-flash" } }
 #
 # USER config ONLY, and no env override — both by the same rule the rest of this
 # file follows for external-transmission surfaces (#325 / ADR 0016): the value
@@ -305,8 +305,19 @@ printf '%s' "$m"
 CHILD
 }
 
-BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
-
+# NO shipped default, deliberately. The auditor is an AUXILIARY advisory voice,
+# and a built-in model id is only ever consulted by an operator who has NOT
+# configured one — i.e. the one person guaranteed to hold no credential for
+# whichever provider we picked. That dispatch does not "work by default", it
+# fails at the provider, so the honest unconfigured outcome is no auditor at
+# all. Deleting the constant also ends the drift class for THIS key: there is no
+# longer an auditor model id in-tree to go stale. (Other ids remain and are
+# unaffected — the `.pi.model` default below, and the config example above.)
+#
+# Consequence to know: a MALFORMED `.auditor.model` now also yields empty, so a
+# typo skips the voice instead of degrading to a default. The loud stderr note
+# from the reader is unchanged, so the operator still learns why.
+#
 # Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
 # `printf`/`echo` on the value's path, undoing the child (verified — an injected
 # BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
@@ -314,8 +325,14 @@ BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
 # only command word left is the absolute `/usr/bin/env` inside the reader.
 _BD_AUDITOR_MODEL=""
 resolve_auditor_model() {
-  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
-  [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "")"
+  # Explicit success: the assignment is now the last statement, so without this
+  # the reader's exit status would become the function's, and a call under
+  # `set -e` would abort the whole lane. A failed read is not fatal here — it
+  # yields an empty model, and the dispatch-site guard turns that into a skipped
+  # advisory voice. (The old body ended with a `[[ -n ]] ||` fallback, which
+  # returned 0 incidentally; that prop went out with the default.)
+  return 0
 }
 
 # ── Operator home config validation for the opencode arms ────────────
@@ -2288,10 +2305,29 @@ execute_review() {
              # It is the TOOL path (_oc_trust's system half), not the arm's
              # narrower utility pin: on a Mac whose jq/python3 come only from
              # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
-             # configured model silently degrades to the default — i.e. the
-             # prompt goes to a provider they configured away from. These dirs
-             # are root-owned system install paths, not repo-writable.
+             # configured model reads as empty — which now skips the voice via the
+             # guard below instead of dispatching somewhere they configured away
+             # from. These dirs are root-owned system install paths, not
+             # repo-writable.
              PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
+             # No model → no auditor. There is no shipped default (see
+             # resolve_auditor_model), so an unconfigured or unparseable
+             # `.auditor.model` lands here. Skipping is correct for an ADVISORY
+             # voice and is the same shape as the `missing:*` / `unsupported:*`
+             # arms below: warn on stderr, return non-zero, never dispatch. An
+             # empty `-m` must never reach opencode — it would silently fall back
+             # to whatever model that CLI defaults to, which is precisely the
+             # unasked-for provider choice this deletion exists to prevent.
+             # rc 4 = SKIPPED, distinct from 1 (failed) and 3 (BUILTIN_FALLBACK).
+             # Callers must be able to tell "never ran, nothing was configured"
+             # from "ran and failed" — ADR 0027's ABSENT-vs-FAILED distinction for
+             # this witness. Collapsing it into 1 makes blueprint-review report the
+             # Mechanism Witness as FAILED for a config key the operator simply
+             # never set. Reported by Codex on this change.
+             if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
+               echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
+               return 4
+             fi
              # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
              # opencode loads these in EVERY environment — including this
              # sandbox — so they are a fourth config surface the three isolation

@@ -209,7 +209,11 @@ fi
 # function exists to provide.
 if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_AUDITOR_MODEL=""
-  resolve_auditor_model() { _BD_AUDITOR_MODEL="zenmux/moonshotai/kimi-k3"; }
+  # Library missing → no config reader exists, and there is no shipped default to
+  # fall back on (see resolve_auditor_model in resolve-cli.sh). Resolve to empty;
+  # the guard at the dispatch site turns that into a skipped advisory voice rather
+  # than a dispatch to a model nobody chose.
+  resolve_auditor_model() { _BD_AUDITOR_MODEL=""; }
   _BD_PI_MODEL=""
   resolve_pi_model() { _BD_PI_MODEL="opencode-go/deepseek-v4-flash"; }
 fi
@@ -670,6 +674,10 @@ dispatch_one() {
     # `--cli all` would otherwise still read as 1 for the NEXT voice and rob it
     # of its retries. `local` also keeps it out of the caller's scope entirely.
     local _pi_setup_failed=0
+    # Same shape as _pi_setup_failed: a deterministic precondition refusal, not a
+    # failed attempt. MUST be `local` — a leak across dispatch_one calls would
+    # mark a later voice skipped for an earlier one's missing config.
+    local _oc_no_model=0
     # Set ONLY where a teardown ran and could not confirm the jail was removed,
     # i.e. a projected credential may still be on disk. It is deliberately NOT
     # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
@@ -923,6 +931,30 @@ dispatch_one() {
                 # neither depends on line order within this long case arm.
                 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
                   HOME="$_oc_home" resolve_auditor_model
+                # No model → no auditor. The operator's --model ($MODEL) still
+                # wins; this fires only when they gave neither it nor a usable
+                # `.auditor.model`, because there is no shipped default to fall
+                # back on (see resolve_auditor_model in resolve-cli.sh). Skipping
+                # an ADVISORY voice is the honest outcome. Handing opencode an
+                # empty `-m` is NOT — it would silently run whatever that CLI
+                # defaults to, i.e. a provider nobody chose.
+                if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" ]]; then
+                    echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json and no --model — skipping the auditor (advisory voice)." >&2
+                    # Reason goes to "$outfile" too, not stderr alone — that is the
+                    # precondition for routing an opencode bail to `skipped` (the
+                    # batch banner would otherwise print "(no output)" and lose it).
+                    printf 'Skipped: %s\n' "no usable .auditor.model and no --model — auditor not dispatched" >> "$outfile" 2>/dev/null || true
+                    /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
+                    # `skipped`, NOT `error`: an absent optional config is a refusal
+                    # before the attempt, not an attempt that failed. As `error` this
+                    # would fail an entire `--cli all` batch for every other voice
+                    # whenever opencode is installed without .auditor.model (#594's
+                    # failure mode, reported again by Codex on this change). An
+                    # EXPLICIT `--cli opencode` still fails, because there the voice
+                    # that cannot run IS the request.
+                    _oc_no_model=1
+                    exit_code=1
+                fi
                 # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
                 # opencode loads these in EVERY environment — including this
                 # sandbox (verified 2026-08-09) — so they are a fourth config
@@ -1879,11 +1911,14 @@ CHILD
     # `error` is what let ONE ineligible voice fail a whole `--cli all` batch for
     # every other voice (#594). An EXPLICIT `--cli pi` still fails, because there
     # the voice that cannot run IS the request.
-    # Only the pi arm sets this flag today (`_pi_setup_fail`). The status itself
-    # is shared; wire a second arm to it when a second arm needs it. opencode's
-    # setup bails are deliberately NOT routed here yet — they write their reason
-    # to stderr only, never to "$outfile", so a skipped opencode would print
-    # "(no output)" in the batch banner with the reason lost.
+    # Two arms set a flag today: the pi arm (`_pi_setup_fail`) and opencode's
+    # no-model bail (`_oc_no_model`, added when the auditor's shipped default was
+    # deleted — an absent `.auditor.model` must not fail a whole batch). The
+    # status itself is shared; wire a further arm to it when one needs it.
+    # opencode's OTHER setup bails are still deliberately NOT routed here: they
+    # write their reason to stderr only, never to "$outfile", so a skipped
+    # opencode would print "(no output)" in the batch banner with the reason
+    # lost. The no-model bail is routed precisely because it does write there.
     # ...but NEVER when a teardown left a credential behind. The projection
     # failure path runs `_pi_wipe` and then records whether the jail name survived
     # it; if it did, a projected API key may still be on disk. That case must stay
@@ -1893,6 +1928,9 @@ CHILD
     # whole point is that `skipped` is not a failure — which is exactly why a
     # leaked credential must never be classified as one.
     [[ "${_pi_setup_failed:-0}" == "1" && "${_pi_jail_survived:-0}" != "1" ]] && status="skipped"
+    # No credential ever enters the picture on this path — the bail happens before
+    # any sandbox staging — so it carries no leaked-key caveat of its own.
+    [[ "${_oc_no_model:-0}" == "1" ]] && status="skipped"
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }

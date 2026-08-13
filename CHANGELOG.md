@@ -1,3 +1,10 @@
+## [1.106.6](https://github.com/chris-yyau/busdriver/compare/v1.106.5...v1.106.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **gate:** walk past an operand-taking wrapper to reach git/gh ([#641](https://github.com/chris-yyau/busdriver/issues/641)) ([#650](https://github.com/chris-yyau/busdriver/issues/650)) ([113811d](https://github.com/chris-yyau/busdriver/commit/113811db21ba3e3ee2ed57f5f707be642f8349f5)), closes [587/#593](https://github.com/chris-yyau/busdriver/issues/593) [#593](https://github.com/chris-yyau/busdriver/issues/593) [#593](https://github.com/chris-yyau/busdriver/issues/593) [#639](https://github.com/chris-yyau/busdriver/issues/639) [#654](https://github.com/chris-yyau/busdriver/issues/654)
+
 ## [1.106.5](https://github.com/chris-yyau/busdriver/compare/v1.106.4...v1.106.5) (2026-08-12)
 
 

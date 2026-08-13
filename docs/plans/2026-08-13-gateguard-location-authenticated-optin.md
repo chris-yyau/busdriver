@@ -1,17 +1,28 @@
 # DESIGN: GateGuard consent moves from an env var to an out-of-tree operator marker (#616, unblocks #629)
 
-**Status: PARKED — do NOT implement from this document as written.**
+**Status: PARKED after round 4 — do NOT implement from this document as written.**
 Blueprint-review round 1 FAIL (2 high / 10 medium); round 2 FAIL (3 high / 10 medium);
-round 3 FAIL (6 high — 5 plan-blocking — / 7 medium / 3 low, coverage FULL 3/3). Round 3 was
-run after the three round-2 blockers were answered in the **header only**; the body below is
-still the round-2 design, and that is most of what round 3 found. It also found that
-**resolution 1 below is aimed at the wrong component** (see its correction note) and that
-**step 1 inverts the fail direction** — a new defect, not a leftover.
+round 3 FAIL (6 high — 5 plan-blocking — / 7 medium / 3 low, coverage FULL 3/3);
+round 4 FAIL (4 high — 3 plan-blocking — / 11 medium — 6 plan-blocking — / 5 low, coverage
+FULL 3/3, 6 deferred).
 
-What is durable and reusable from this round: the five-channel inventory, resolution 2
-(containment belongs at the launch condition), resolution 3 (drop the revocation hint), and
-the three round-3 findings recorded under **Round 3** below. Round 4 is a rewrite of the
-change list, not another header pass. See the three #616 comments of 2026-08-11/13.
+**Round 4 is the first round that made progress**: plan-blocking HIGH went 5 → 3, so the
+loop's no-progress circuit breaker did NOT fire — this park is a time decision, not the
+trajectory rule of round 3. Round 4 was the change-list rewrite round 3 demanded (step 1 for
+findings 1 and 5, step 4 for finding 4, step 6 for finding 2, step 7 for finding 6, new step 8
+for finding 3, V12-V16 added). Five of the six round-3 findings are answered and survived;
+what failed is the *new* material, recorded below.
+
+**Round 5 is tractable and small in scope — but it is design work, not editing.** The body
+below is the round-4 design and remains implementable-looking while carrying the three
+plan-blocking defects in the Round 4 table. Do not implement it.
+
+Durable from earlier rounds: the five-channel inventory, resolution 2 (containment belongs at
+the launch condition), resolution 3 (drop the revocation hint). See the #616 comment thread
+(2026-08-11 → 2026-08-13), including the blocker-1 comment that this revision implements —
+note that comment's own prescription ("keep the `case` guard") is **superseded here**: keeping
+it would have reinstated `ECC_HOOK_PROFILE` as a repo-injectable off-switch, which is channel 5
+of the five this issue closes.
 
 **The scope grew while resolving them.** The env-channel inventory is **five**, not one, and
 one of them (`ECC_HOOK_PROFILE`) disables the gate *by default*. A build that closes only
@@ -30,7 +41,7 @@ resolved, and none of them was a product decision — each was an empirical ques
 
 | # | round-2 blocker | resolution |
 |---|---|---|
-| 1 | resolver contract vs test-fixture contract | **STILL OPEN.** The "dissolved by decision 2" answer below targets the wrong component — see the correction note under it |
+| 1 | resolver contract vs test-fixture contract | **RESOLVED in round 4, at step 7.** The contracts were never exclusive — the wrapper already sanitizes `HOME` (`sanitized-node.sh:56-70`), so the resolver reads it instead of re-deriving it and tests set a temp `HOME`. The "dissolved by decision 2" answer below targets the wrong component and both candidates in its correction note are dead ends; step 7 records why |
 | 2 | scope escalation: may #616 rework the state-dir model? | **Not separable.** Containment must move to the launch condition (ADR 0016). It is in scope by necessity |
 | 3 | recovery hint becomes a model-executable off-switch | **Drop the revocation hint.** Keep compliance. Neither stderr nor a marker path |
 
@@ -85,7 +96,9 @@ what was actually wrong, each followed by its resolution.
    > a use-time resolver closes blocker 2's env channel and does nothing for blocker 1.
    > So all 8 deny assertions in `__tests__/gateguard-multiedit.test.ts` still flip to allow.
    > The real question is unchanged and unanswered: **what seam lets a test point the shell
-   > resolver at a temp home without giving production one?** Candidates not yet evaluated —
+   > resolver at a temp home without giving production one?** **[Round 4: answered at step 7 —
+   > neither candidate below survives; the wrapper's existing passwd derivation removes the
+   > need for a seam at all.]** Candidates evaluated and rejected in round 4 —
    > an explicit positional argument on the resolver (production passes none), or testing the
    > resolver directly in the shell suite and stubbing it at the JS boundary. Note the JS-side
    > `:35` fix is still required for blocker 2; it is simply not this.
@@ -183,6 +196,41 @@ launch-condition containment move as the primary change, `:35` as a use-time res
 (blocker 2 only), the `SKILL.md:207` deletion, and a replacement session key for the
 `env -i` + `cd /` collapse.
 
+### Round 4 (FAIL) — what a round 5 has to fix
+
+Coverage FULL 3/3 (agy 5 issues, codex 10, grok 10; arbiter `executed_model: opus`). Mechanism
+Witness FAILED unparseable (auxiliary, non-gating — third such failure in two days). 4 high
+(3 plan-blocking), 11 medium (6 plan-blocking), 5 low, 6 deferred to `follow-up-issues.md`.
+
+| # | finding | where |
+|---|---------|-------|
+| 1 | **`--fail-open` is structurally incomplete, and the incompleteness is silent.** `sanitized-node.sh:160-161` binds `$1`/`$2` with **no option parsing**, and `:193` forwards `"$@"` verbatim — so the flag reaches the runner as a positional. Worse, `_block` (`:85-89`) writes `{"decision":"block"}` to **stdout** before exiting 2 at **eight** call sites; step 1 remaps only the `:196-199` runner-rc arm. `\|\| exit 0` therefore rewrites the exit code while the block JSON still ships, producing a block with a mismatched exit code rather than the intended allow | step 1 |
+| 2 | **V13 is unsatisfiable against step 1's own text** — "exactly one hook id carries `--fail-open`" versus two registrations at `hooks.json:151` and `:161`. Restate as a hook-id count, or as an allowlist of the two GateGuard entries | V13 |
+| 3 | **Step 7's fixture cannot reach V1/V7/V9/V16.** Those rows require the **contained** path, where `sanitized-node.sh:56-70` overwrites `HOME` from passwd — a temp `HOME` is discarded before the resolver sees it. The temp-HOME unlock is real but covers the *uncontained* vitest suite only, so round-2 blocker 1 is **half** resolved, not resolved | step 7 |
+| 4 | **V15 has the polarity backwards.** A resolver that reads `$HOME` and rejects only empty/relative/non-existent prints `1`, not `0`, when an uncontained caller poisons `HOME` at a real directory holding a marker. The bound that was supposed to make step 7's inherited trust fail safely does not bind | V15 |
+
+**Pre-existing defect no round caught until now:** **V7 pins `BUSDRIVER_STATE_DIR`, which
+GateGuard never reads** (zero hits in `gateguard-fact-force.js`; it is read at
+`advisory-downgrade-optin.sh:42`, and step 2 says it is not read). It is a guard whose failure
+branch cannot exist, inside a Verification section whose own preamble forbids exactly that —
+and it displaces the row that should cover the real channel: `GATEGUARD_STATE_DIR` →
+`mkdirSync` (`:527`) → `allowWithStateWarning()` (`:793`) → pass-through allow.
+
+**Cleared by the arbiter, on evidence — do not re-litigate:** the #629 sequencing claim holds
+(`gateguard-fact-force.js` contains none of `discover_exit2()`'s tokens; guards #1/#2/#4
+iterate the `CONTAINED` array only, so both containment suites stay green). Agy's state-GC
+finding describes a **pre-existing** condition (`:35` already roots state at
+`<HOME>/.gateguard`; `loadState:492-498` unlinks only on re-read), not something step 8
+introduces. Agy's EACCES premise is weaker than stated — this repo tracks shell scripts at
+mode `100755`. Codex's ancestor-symlink issue was kept but downgraded to low.
+
+**Candidate direction for round 5, unevaluated:** the contained rows in finding 3 may only be
+reachable by enrolling a **throwaway git repo** in the operator's real `~/.gateguard/enabled/`
+and cleaning up after — the marker is keyed by repo hash, so the blast radius is one file for a
+temp repo. This document currently rejects "writing the operator's real `~/.gateguard`", but
+that objection was made about **unit** tests and does not obviously carry to contained
+integration tests. Decide it before rewriting V1/V7/V9/V16.
+
 **Operator decision already taken:** option **(b)** of the
 [#616 comment of 2026-08-11](https://github.com/chris-yyau/busdriver/issues/616) —
 "location-authenticated opt-in". This document specifies it. It does not re-open that choice.
@@ -279,28 +327,72 @@ GateGuard *because* GateGuard is not a boundary. Do not cite this document for
 
 ## Change list
 
-1. **`hooks/hooks.json` lines 151, 161.** Drop the outer `case` guard and the `"strict"`
-   profile argument; adopt the containment prefix the five security gates use, passing
-   `"standard,strict"` so the wiped profile cannot retire the gate:
+1. **`hooks/hooks.json` lines 151, 161 — and a new fail-open disposition in the wrapper.**
+   Drop the outer `case` guard and the `"strict"` profile argument; adopt the containment
+   prefix the five security gates use. Two corrections to round 2's version of this step,
+   both from round-3 findings:
+
+   **(a) The profile allowlist must name every valid profile, not two of three** (finding 5).
+   `hook-flags.js:12` defines `VALID_PROFILES = {minimal, standard, strict}`. Passing
+   `"standard,strict"` leaves `ECC_HOOK_PROFILE=minimal` as a working off-switch — the same
+   channel this issue closes, moved one value over. Pass all three, and pin the CSV against
+   `VALID_PROFILES` in a test (V12) so a future fourth profile cannot silently reopen it.
+
+   **(b) `sanitized-node.sh` is fail-CLOSED by construction, and GateGuard is not a boundary**
+   (finding 1). This is structural, not a wording defect: `sanitized-node.sh:193` appends
+   `--fail-closed` **unconditionally** to every invocation. Adopting the wrapper therefore
+   converts three independent infra paths into a hard block on the user's Edit/Write/Bash:
+   `failOpenExitCode()` (`run-with-flags.js:117`) turns a caught `run()` throw, a
+   missing/rejected script or a spawn failure into exit 2; `enforceTruncation()` (`:195-206`)
+   overrides an exit-0 allow to exit 2 whenever the payload was truncated at `MAX_STDIN`; and
+   `sanitized-node.sh:196-199` blocks on any other non-zero. **Every one of these fires in
+   marker-absent sessions**, i.e. against operators who never enrolled — the precise inverse
+   of this document's fail direction, and a worse regression than the bypass being fixed,
+   because #612 exists precisely because oversized payloads occur in practice.
+
+   The fix is an explicit, argv-only fail-open disposition on the wrapper:
 
    ```
-   /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" \
+   /usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" \
      CLAUDE_HOOK_EVENT_NAME="$CLAUDE_HOOK_EVENT_NAME" \
      bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh" \
+     --fail-open \
      "pre:edit-write:gateguard-fact-force" "scripts/hooks/gateguard-fact-force.js" \
-     "standard,strict" || exit 2
+     "minimal,standard,strict" || exit 0
    ```
 
-   `|| exit 2` is retained: it is what makes the registration legible to #629's
-   registration-derived discovery. **`BUSDRIVER_STATE_DIR` is deliberately not forwarded.**
-   Both entries' `description` fields (`:154`, `:164`) currently say "The case guard and the
-   `strict` arg are deliberately redundant" — both are rewritten, since step 1 deletes both.
+   `--fail-open` suppresses the `--fail-closed` append at `:193` and maps the `_block` arm at
+   `:196-199` to exit 0. It is a positional arg for exactly the reason the existing
+   `--fail-closed` is (`sanitized-node.sh:187-191`): argv is settable only from `hooks.json`,
+   which is review-visible, never from the settings-env channel this containment defeats.
+   `HOME` is no longer forwarded — the wrapper re-derives it from passwd at `:56-70` and
+   overwrites anything passed, so forwarding it only implies a trust that is not there.
+
+   **This contradicts round 2's "does not touch `sanitized-node.sh`" claim, which is retracted
+   below.** The risk is real and is stated rather than minimised: a shared wrapper that five
+   security gates depend on now has two dispositions, and the failure mode of getting it wrong
+   is a gate that silently stops blocking. It is bounded by V13 — exactly one registration may
+   carry `--fail-open`, and the five security gates must still block on every infra path. The
+   two rejected alternatives are recorded: a GateGuard-specific copy of the wrapper reinstates
+   round 1's "third copy drifting" finding on a 129-line security script; and accepting
+   fail-closed for GateGuard means a missing `node` or one oversized payload hard-blocks
+   operators who never enabled the gate.
+
+   `|| exit 0` replaces `|| exit 2`. That removes the token #629's registration-derived
+   discovery was going to key on, so **#629 must key on `--fail-closed` / `--fail-open`
+   explicitly** rather than on `|| exit 2`; recorded in the sequencing section.
+   **`BUSDRIVER_STATE_DIR` is deliberately not forwarded.** Both entries' `description` fields
+   (`:154`, `:164`) currently say "The case guard and the `strict` arg are deliberately
+   redundant" — both are rewritten, since this step deletes both.
 
 2. **New resolver `scripts/gateguard-optin.sh`.** Prints exactly `1` or `0`; always exits 0.
    Not a clone of `advisory-downgrade-optin.sh` — it shares only the main-worktree resolution:
 
-   - Derive HOME from `getent`/`dscl` (mirroring `sanitized-node.sh:56-70`), **never** from
-     the inherited value. Underivable ⇒ `0`.
+   - **Read `$HOME`; do not re-derive it** (amended by step 7). The wrapper already re-derived
+     it from passwd at `sanitized-node.sh:56-70` and exported it, so on the contained path the
+     inherited value *is* the passwd value and a second derivation buys nothing while costing
+     the test seam that blocked rounds 2 and 3. Empty, relative, or non-existent ⇒ `0`.
+     This makes the resolver's safety inherited from the launch condition — see step 7 and V15.
    - Neutralize repo-supplied git-environment injection: unset the *discovery* variables
      `GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_NAMESPACE`.
@@ -337,6 +429,15 @@ GateGuard *because* GateGuard is not a boundary. Do not cite this document for
      is called at `:810`, after the parse at `:801-806`, so this ordering already holds.)
    - Require `typeof data.cwd === 'string' && path.isAbsolute(data.cwd)`, else OFF —
      the house rule `config-protection.js:83-93` already establishes, for the same reason.
+   - **Consent is session-scoped, the gate is file-scoped, and that asymmetry is declared
+     rather than incidental** (finding 4). Enrollment keys on the session's repo (`data.cwd`);
+     the gate then applies to every gated tool call in that session, including edits to files
+     outside the enrolled repo (`~/.zshrc`, another checkout). Keying consent to `file_path`
+     instead was rejected: `file_path` is absent on Bash payloads and on the MultiEdit
+     top-level shape #615 exists for, so a file-keyed consent check would silently stop gating
+     exactly the payloads this gate was last fixed to catch. The residual is friction in one
+     direction only — an enrolled operator gets fact-forcing outside the enrolled repo — which
+     is consistent with GateGuard being a quality gate, not a boundary. V14 pins it.
    - Resolver path `path.join(pluginRoot, 'scripts/gateguard-optin.sh')`, **absolute**: a
      relative path is ENOENT from the wrapper's `cd /`.
    - Invoke shell-free (`execFileSync`) with `{ cwd: data.cwd, timeout: <bounded> }`.
@@ -356,8 +457,17 @@ GateGuard *because* GateGuard is not a boundary. Do not cite this document for
    to `skills/gateguard/SKILL.md:103-158` and missed three:
    - `withRecoveryHint()` (`gateguard-fact-force.js:758-764`) appends "run this session with
      `ECC_GATEGUARD=off` or add `<hookId>` to `ECC_DISABLED_HOOKS`" to **every deny the model
-     sees**. Under `env -i` that is an instruction for an action that silently does nothing.
-     Replace with "remove `<HOME>/.gateguard/enabled/<hash>`" (or `gateguard-enable.sh --off`).
+     sees**. **Delete the revocation hint entirely — do not replace it with the marker path**
+     (finding 2; settled by the 2026-08-13 ultimate-council against the going-in position).
+     Round 2's "replace with `remove <HOME>/.gateguard/enabled/<hash>`" recreates the defect in
+     a more durable form: it hands the model a *persistent, out-of-band* off-switch where the
+     env hint was merely session advice the model could not apply. Keep the compliance half of
+     the hint (what facts to present). Routing it to stderr was also rejected — stderr's
+     human-only property is path-conditional (the exit-2 path does reach the model) and a solo
+     operator never reads that stream.
+   - **`skills/gateguard/SKILL.md:206-208` must be deleted in the same change**, or the
+     removal is theatre: it publishes the same disable recipe to the model from a file the
+     model reads directly. A hint deleted from code and left in the skill is not deleted.
    - `skills/gateguard/SKILL.md:103-208` in full — including the `ECC_HOOK_PROFILE=strict claude`
      enable instruction (`:105-109`), the three switches repeated at `:207-208`, and the entire
      "shell guard skips; it never enables" rationale (`:160-204`) that step 1 invalidates. Its
@@ -369,12 +479,60 @@ GateGuard *because* GateGuard is not a boundary. Do not cite this document for
 7. **`__tests__/gateguard-multiedit.test.ts`.** It passes `GATEGUARD_STATE_DIR`,
    `GATEGUARD_DISABLED: '0'`, `ECC_GATEGUARD: '1'` on every invocation (`:41`) and its payloads
    carry no `cwd` (`:61-70`). Under this design all eight deny-expecting assertions flip to
-   allow, silently unguarding the #615 MultiEdit regression this suite exists to lock in. New
-   fixture contract: a temp git repo, an enabled marker in a temp HOME, that repo's absolute
-   path as `payload.cwd`, the deleted env switches removed, plus a marker-absent allow case —
-   without weakening the first-touch, retry, MultiEdit, or subagent assertions. Note that
-   `GATEGUARD_STATE_DIR` isolation is unavailable on the contained path, so contained
-   integration tests isolate by `session_id`.
+   allow, silently unguarding the #615 MultiEdit regression this suite exists to lock in.
+
+   **Round-2 blocker 1 is dissolved, and by a different route than either candidate recorded
+   in the round-3 correction note.** Both were dead ends, measured:
+
+   - *An explicit positional argument on the resolver* is unreachable from this suite. `:38`
+     spawns `node -e DRIVER HOOK`, and DRIVER (`:24-33`) `require`s the hook and calls the
+     exported `run(stdin)` directly, bypassing `run-with-flags.js` and the wrapper. The suite
+     never invokes the resolver, so it has no handle on which to pass an argument — `run()`
+     calls it internally with none. The candidate survives only if `run()` grows a test-only
+     option, i.e. a new API on the gate's hot path.
+   - *Testing the resolver directly in the shell suite* only relocates the same question: what
+     points **it** at a temp home.
+
+   **There is no seam to invent, because the wrapper already sanitizes `HOME`.**
+   `sanitized-node.sh:56-70` re-derives `HOME` from passwd (`id -un` → `getent`/`dscl`) and
+   exports it, so on the contained path `$HOME` is passwd-derived and unreachable from a
+   committed `settings.json` `env` block. The resolver therefore **reads `$HOME` and does not
+   re-derive it** (step 2 is amended accordingly), and the suite — which spawns bare `node`,
+   uncontained — simply sets `HOME` to a temp directory. No new API, no env consent channel,
+   no writing to the operator's real home.
+
+   The trade this makes must be stated, because it is the same trade finding 1 is about: the
+   resolver's safety is now *inherited from the launch condition* rather than self-contained.
+   That is only sound while every registration reaches the resolver through the wrapper, which
+   is why step 1's disposition work and this step are one change and cannot be reviewed apart.
+   V15 pins the uncontained direction: invoked with a poisoned `HOME` and no wrapper, the
+   resolver prints `0` — GateGuard's off, not on, so the inherited-trust failure lands on the
+   fail-open side.
+
+   New fixture contract: a temp git repo, an enabled marker under a temp `HOME`, that repo's
+   absolute path as `payload.cwd`, the deleted env switches removed, plus a marker-absent allow
+   case — without weakening the first-touch, retry, MultiEdit, or subagent assertions. Note
+   that these eight assertions exercise `run()`, which after step 4 is no longer the layer
+   deciding consent; they keep their subject (first-touch gating) and gain a sibling shell-suite
+   case covering the resolver itself. `GATEGUARD_STATE_DIR` isolation is unavailable on the
+   contained path, so contained integration tests isolate by `session_id`.
+
+8. **Replace the state dir and the session key** (finding 3 — resolution 2's obligation was
+   stated in the header and absent from every round-2 step). `gateguard-fact-force.js:35` is a
+   module-load `const` reading `GATEGUARD_STATE_DIR || HOME || USERPROFILE`; step 5 deletes the
+   env read, and under `env -i` + `cd /` the remaining fallbacks collapse — `resolveSessionKey()`
+   loses every env fallback and `process.cwd()` is literally `/`, so session-less payloads would
+   share one machine-wide state file and leak first-touch state across sessions.
+
+   - `STATE_DIR` becomes a **use-time resolver** rooted at the wrapper-sanitized `$HOME`
+     (`<HOME>/.gateguard/state`), not a require-time constant. This is the part of round 2's
+     blocker-1 answer that was aimed correctly — it closes blocker 2's env channel; it was only
+     ever wrong as an answer to blocker 1.
+   - The replacement session key is `data.session_id` from the payload, required and validated
+     as a non-empty string; absent or malformed ⇒ gate OFF for that call, never a shared file.
+     The payload is the one input the wrapper cannot strip and a repo cannot forge.
+   - V16 pins it: two concurrent sessions under `env -i` + `cd /` must not observe each other's
+     first-touch state.
 
 ## Verification
 
@@ -394,8 +552,14 @@ failure branch has never been observed is not a guard.
 | V9 | Strict profile + no marker ⇒ OFF; standard profile + marker ⇒ ON — neither relying on the deleted env vars | the pre-change tree, where the profile is the switch |
 | V10 | `npm test` green, `__tests__/gateguard-multiedit.test.ts` included | the un-migrated fixture (all eight denies flip to allow) |
 | V11 | The other four contained gates unaffected | `test-gate-env-containment.sh`, `test-node-hook-containment.sh` |
+| V12 | The profile CSV in both registrations equals `VALID_PROFILES` (`hook-flags.js:12`) exactly | round 2's `"standard,strict"`, where `ECC_HOOK_PROFILE=minimal` is still an off-switch |
+| V13 | Exactly one hook id carries `--fail-open`; each of the five security gates still exits 2 on a forced spawn failure AND on a truncated payload | a `--fail-open` that leaks to a security gate — the failure mode that justifies the wrapper change being bounded |
+| V14 | An enrolled session editing a path outside the enrolled repo is still gated; a Bash payload and a top-level-only MultiEdit payload (no `file_path`) are still gated | a `file_path`-keyed consent check, which stops gating exactly the #615 shapes |
+| V15 | Resolver invoked **uncontained** with a poisoned `HOME` ⇒ prints `0` | an implementation where inherited-trust failure lands on the gate-ON side |
+| V16 | Two concurrent sessions under `env -i` + `cd /` do not observe each other's first-touch state | the collapsed `process.cwd()` key, where they share one machine-wide file |
 
-V4, V5 and V7 are the three that would have shipped broken from iteration 1.
+V4, V5 and V7 are the three that would have shipped broken from iteration 1. V12-V16 are the
+round-3 findings; V13 and V15 are the two that pin the risk step 1 and step 7 take on.
 
 ## Sequencing, and the #629 coupling
 
@@ -412,8 +576,12 @@ Therefore, explicitly:
 2. **#616 does not touch `tests/test-node-hook-containment.sh`.** Its own new tests (V1-V11)
    cover the wrapping. The containment suite stays exactly as green as it is today.
 3. **#629 replaces both `discover_exit2()` and guard #4** with registration-derived detection
-   (`|| exit 2` / `--fail-closed` in `hooks.json`), which is what makes a
-   permissionDecision-blocking hook classifiable at all — and only then adds GateGuard.
+   — keyed on the **`--fail-closed` / `--fail-open` argv**, not on `|| exit 2`, which step 1
+   removes from GateGuard's registration. That keying is strictly better for #629's purpose:
+   it classifies a hook by its declared disposition rather than by a shell idiom, and it is
+   the token that actually decides the runner's behaviour. GateGuard then classifies as a
+   *contained, fail-open* hook — a third category the current binary CONTAINED/uncontained
+   array cannot express, which is why #629 owns the suite change and #616 still does not.
 
 That ordering is what keeps both PRs green at every point. It is a change from round 1's
 claim that the two are cleanly separable: they are sequential, and #629 owns the suite change.
@@ -426,8 +594,11 @@ claim that the two are cleanly separable: they are sequential, and #629 owns the
   session launched `ECC_HOOK_PROFILE=strict claude` loses GateGuard until enrolled via
   step 3's helper. Stated here because a gate that stops firing is indistinguishable from a
   gate that is working.
-- It does not touch the four other contained gates or `sanitized-node.sh`. #616's body claimed
-  this needs a "shared allowlist contract change"; its own comment thread corrected that — the
+- **RETRACTED (round 4): it does now touch `sanitized-node.sh`.** Round 2 asserted this change
+  edits "GateGuard's two lines and nothing else". That is false given finding 1: the wrapper
+  appends `--fail-closed` unconditionally at `:193`, so a fail-open consumer cannot exist
+  without the `--fail-open` disposition step 1 adds. It still does not touch the four other
+  contained gates, and V13 is what keeps that true. The narrower original claim stands: the
   wrapper has **no** trusted-var allowlist, the re-import is written per-registration in
-  `hooks.json`, so this edits GateGuard's two lines and nothing else.
+  `hooks.json`, so no "shared allowlist contract change" is required.
 - It does not land #629.

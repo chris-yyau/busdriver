@@ -51,38 +51,17 @@ Pick the right tool for the job:
 
 Build videos with code. Best for repeatable, templated, or data-driven video at scale.
 
-### Hyperframes (HTML/CSS — recommended for agents)
+### HyperFrames (HTML/CSS — recommended for agents)
 
-Open-source, Apache 2.0, from HeyGen. Uses plain HTML/CSS/JS — no framework DSL to learn. LLM-native: AI models generate better HTML than React components.
+Open-source, Apache 2.0, from HeyGen. Plain HTML/CSS/JS composition → deterministic MP4.
+Ships its own Claude Code skills — **invoke `/hyperframes` (the router) and follow it**; don't
+hand-roll an API call from here.
 
-```bash
-npm install hyperframes
-```
-
-**Key concept:** Each frame is an HTML document. Compose frames into a timeline, render to MP4.
-
-```typescript
-import { render } from "hyperframes";
-
-await render({
-  frames: [
-    { html: "<h1>Welcome to Acme</h1>", duration: 3 },
-    { html: "<h2>Here's what we built</h2>", duration: 3 },
-    { html: "<p>Try it free →</p>", duration: 2 },
-  ],
-  output: "intro.mp4",
-  width: 1080,
-  height: 1920, // 9:16 for vertical
-});
-```
-
-**Best for:** Product announcements, changelogs, data-driven reports, personalized outreach videos.
-
-**Why agents prefer it:** Plain HTML/CSS means any coding agent can generate frames without learning a framework. Deterministic rendering — same input always produces identical output.
+Not installed? `npx skills add heygen-com/hyperframes --full-depth`
 
 ### Remotion (React)
 
-Mature open-source framework. More powerful than Hyperframes but requires React knowledge.
+Mature open-source framework. Comparable power to HyperFrames, but requires React knowledge.
 
 ```bash
 npx create-video@latest
@@ -112,11 +91,11 @@ export const ProductDemo: React.FC<{ title: string; features: string[] }> = ({
 
 ### When to Pick Which
 
-| Factor | Hyperframes | Remotion |
+| Factor | HyperFrames | Remotion |
 |--------|-------------|----------|
-| Agent compatibility | Better (plain HTML) | Good (React) |
-| Animation complexity | Basic (CSS transitions) | Advanced (Spring, interpolate) |
-| Batch rendering | Local | Lambda (AWS) for scale |
+| Agent compatibility | Better (plain HTML + its own skills) | Good (React) |
+| Animation complexity | Advanced (GSAP, Lottie, Three.js, WAAPI adapters) | Advanced (Spring, interpolate) |
+| Batch rendering | Local, HeyGen cloud, or AWS Lambda | Lambda (AWS) for scale |
 | Learning curve | Minimal | Moderate (React + Remotion API) |
 | License | Apache 2.0 | Company license for commercial use |
 

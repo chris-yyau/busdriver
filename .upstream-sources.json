@@ -477,8 +477,9 @@
     {
       "path": "agents/tdd-guide.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/tdd-guide.md"
+      "status": "custom",
+      "upstream_path": "agents/tdd-guide.md",
+      "custom_reason": "narrowed trigger description to opt-in TDD routing (ADR 0038)"
     },
     {
       "path": "agents/type-design-analyzer.md",
@@ -6737,8 +6738,9 @@
     {
       "path": "skills/tdd-workflow/SKILL.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/tdd-workflow/SKILL.md"
+      "status": "custom",
+      "upstream_path": "skills/tdd-workflow/SKILL.md",
+      "custom_reason": "narrowed trigger description to opt-in TDD routing (ADR 0038)"
     },
     {
       "path": "skills/team-builder/SKILL.md",
@@ -6749,8 +6751,9 @@
     {
       "path": "skills/test-driven-development/SKILL.md",
       "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/test-driven-development/SKILL.md"
+      "status": "custom",
+      "upstream_path": "skills/test-driven-development/SKILL.md",
+      "custom_reason": "narrowed trigger description to opt-in TDD routing (ADR 0038)"
     },
     {
       "path": "skills/test-driven-development/testing-anti-patterns.md",

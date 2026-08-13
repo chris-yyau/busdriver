@@ -99,7 +99,8 @@ additionally groups **Audio**, **Video**, and **Rerank**.
 |---|---|---|
 | Text / chat | `text` | `POST https://zenmux.ai/api/v1/chat/completions` (also Anthropic + Vertex shapes) |
 | **Reasoning** | `text` **plus** `capabilities.reasoning == true` (Vertex: `thinking`) — measured 2026-08-14, 43 text-output models have it **false**, so filtering on `text` alone will hand you a non-reasoning model | same endpoint |
-| Image generation / edit | `image` | Same base URL; several are also on the Vertex endpoint |
+| Image **generation** | `output_modalities` has `image` | Same base URL; several are also on the Vertex endpoint |
+| Image **editing** | `output_modalities` has `image` **and `input_modalities` also has `image`** — output alone does not imply the model accepts an image to edit | same endpoint |
 | Text → speech (TTS) | `speech` | OpenAI-compatible |
 | Speech → text | `transcription` | OpenAI-compatible; takes `audio` input |
 | Embeddings | `embeddings` | `/v1/embeddings` |

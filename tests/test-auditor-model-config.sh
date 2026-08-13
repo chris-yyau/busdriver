@@ -245,7 +245,10 @@ fi
 cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
   local f="$1" g="$2" label="$3" gl al
   gl="$(grep -nE "$g" "$f" | head -1 | cut -d: -f1)"
-  al="$(grep -nE '^\s*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"' "$f" | head -1 | cut -d: -f1)"
+  # [[:space:]] not \s — \s is a GNU extension, not POSIX ERE, so a BSD/macOS
+  # grep can silently fail to match the indented assignment and turn this into a
+  # false FAIL (or, worse, a false pass elsewhere).
+  al="$(grep -nE '^[[:space:]]*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"' "$f" | head -1 | cut -d: -f1)"
   if [[ -z "$gl" || -z "$al" ]]; then fail "$label: could not locate guard ($gl) or _oc_cwd allocation ($al)"
   elif (( al > gl )); then ok "$label: sandbox allocated at $al, after the guard at $gl (nothing to clean up)"
   else fail "$label: _oc_cwd allocated at $al BEFORE the guard at $gl — the no-cleanup bail now leaks a temp dir"
@@ -278,7 +281,7 @@ grep -qF 'no .auditor.model configured' "$LOOP" \
 # voice whenever opencode is installed (the #594 failure mode). And the flag must
 # be `local` to dispatch_one — a leak across calls would mark a later voice
 # skipped for an earlier one's missing config.
-grep -qE '^\s*local _oc_no_model=0' "$DISPATCH" \
+grep -qE '^[[:space:]]*local _oc_no_model=0' "$DISPATCH" \
   && ok "_oc_no_model is local to dispatch_one (no cross-call leak)" \
   || fail "_oc_no_model is not declared local in $DISPATCH"
 grep -qE '\[\[ "\$\{_oc_no_model:-0\}" == "1" \]\] && status="skipped"' "$DISPATCH" \

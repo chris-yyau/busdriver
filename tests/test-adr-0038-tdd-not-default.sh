@@ -48,6 +48,29 @@ has_proactive_tdd_description() {
 has_broad_tdd_routing() {
   grep -qE 'implementing any feature or bugfix|writing new features, fixing bugs, or refactoring code' "$1"
 }
+# The two predicates above are BLOCKLISTS: they reject the specific phrasings that were
+# there before ADR 0038. That is necessary but not sufficient — a description that never
+# uses those words (`Use for every code change`) restores the default and passes both.
+# A blocklist can only ever enumerate the broad phrasings someone already thought of.
+#
+# So require the POSITIVE routing signal instead: every TDD-metadata description must say
+# activation is explicit AND name the route. All three files already carry both, so this
+# is an allowlist over the wording ADR 0038 actually settled on, and any rewrite that
+# drops it fails regardless of what it says instead.
+#
+# Scoped to the frontmatter `description:` line, not the whole file — the description is
+# the ambient routing signal; body prose is not, and matching it would let a mention in
+# the body cover for a broad description.
+description_line() {
+  grep -m1 -E '^description:' "$1" || true
+}
+has_explicit_request_routing() {
+  local d
+  d="$(description_line "$1")"
+  [[ -n "$d" ]] \
+    && printf '%s\n' "$d" | grep -q 'explicitly requested' \
+    && printf '%s\n' "$d" | grep -q '`/tdd`'
+}
 # The Phase 4 "Tests" bullet is the sole place ADR 0038's ordering/advisory statements
 # are required to live. Scoping to just that bullet (rather than the whole file) means
 # a future sync can't relocate or duplicate the phrases elsewhere and still pass.
@@ -88,6 +111,19 @@ for f in "$TDD_SKILL" "$TDD_WORKFLOW"; do
   fi
 done
 
+# The allowlist, applied to every piece of TDD metadata the harness routes on — the
+# agent as well as both skills. This is what catches a broad rewrite the blocklists
+# above have no phrase for.
+for f in "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW"; do
+  # Repo-relative, not basename: both skills' files are named SKILL.md, so a basename
+  # label would print the same line twice and name neither.
+  if has_explicit_request_routing "$f"; then
+    ok "${f#"$ROOT"/} description requires explicit TDD activation and names the /tdd route"
+  else
+    bad "${f#"$ROOT"/} description no longer states TDD is explicitly requested via \`/tdd\` — routing may have widened back to a default (ADR 0038)"
+  fi
+done
+
 TESTS_BULLET_COUNT="$(count_tests_bullets "$ORCH")"
 TESTS_BULLET="$(phase4_tests_bullet "$ORCH")"
 if [[ "$TESTS_BULLET_COUNT" -eq 1 ]]; then
@@ -116,6 +152,16 @@ if [[ -n "$TESTS_BULLET" ]] && printf '%s\n' "$TESTS_BULLET" | grep -q 'Advisory
   ok "Phase 4 Tests bullet discloses the rule is advisory, not gate-enforced"
 else
   bad "Phase 4 Tests bullet lost its 'Advisory, not gate-enforced' disclosure (ADR 0038)"
+fi
+
+# ADR 0038 removed the mandated ORDERING, not the requirement that behavioral changes
+# come with tests. The two assertions above only pin the ordering/advisory qualifiers, so
+# a bullet rewritten to make tests themselves optional would satisfy both and still lose
+# the thing ADR 0038 explicitly kept. Assert the requirement it preserved.
+if [[ -n "$TESTS_BULLET" ]] && printf '%s\n' "$TESTS_BULLET" | grep -q 'behavioral changes ship with tests'; then
+  ok "Phase 4 Tests bullet still requires behavioral changes to ship with tests"
+else
+  bad "Phase 4 Tests bullet lost the 'behavioral changes ship with tests' requirement — ADR 0038 relaxed ordering, not the tests themselves"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------
@@ -186,6 +232,42 @@ if has_broad_tdd_routing "$TMP/violating-tdd-workflow.md"; then
   ok "negative control: the broad-routing assertion fires on the tdd-workflow phrasing too"
 else
   bad "negative control FAILED — the broad-routing assertion cannot detect the tdd-workflow phrasing"
+fi
+
+# The allowlist exists because the blocklists cannot enumerate every broad phrasing.
+# Prove exactly that with a description neither blocklist has a phrase for: it must slip
+# past has_broad_tdd_routing and still be caught by has_explicit_request_routing. The
+# first of these two assertions is the demonstration of the gap; the second is the fix.
+printf '%s\n' 'description: Use for every code change to enforce test-first development' \
+  > "$TMP/broad-alt-description.md"
+if has_broad_tdd_routing "$TMP/broad-alt-description.md"; then
+  bad "fixture is not the intended case — the blocklist already matches it, so it proves nothing about the allowlist"
+else
+  ok "negative control: the blocklist alone misses 'Use for every code change' — this is the gap"
+fi
+if has_explicit_request_routing "$TMP/broad-alt-description.md"; then
+  bad "negative control FAILED — the allowlist accepted a broad description carrying no explicit-request wording"
+else
+  ok "negative control: the allowlist rejects the broad description the blocklist missed"
+fi
+
+# And the allowlist must accept the real wording, or it would fail closed on everything
+# and its rejections above would mean nothing.
+printf '%s\n' 'description: Use when TDD is explicitly requested — via `/tdd` or a direct ask.' \
+  > "$TMP/valid-description.md"
+if has_explicit_request_routing "$TMP/valid-description.md"; then
+  ok "negative control: the allowlist accepts the approved explicit-request wording"
+else
+  bad "negative control FAILED — the allowlist rejects the approved wording, so it always fails"
+fi
+
+# A Tests bullet that keeps both ADR 0038 qualifiers but drops the tests requirement.
+printf '%s\n' '- **Tests** — Ordering is not mandated. Advisory, not gate-enforced.' \
+  > "$TMP/optional-tests-bullet.md"
+if printf '%s\n' "$(phase4_tests_bullet "$TMP/optional-tests-bullet.md")" | grep -q 'behavioral changes ship with tests'; then
+  bad "negative control FAILED — the behavioral-tests assertion cannot detect a bullet that dropped the requirement"
+else
+  ok "negative control: the behavioral-tests assertion fires on a bullet that made tests optional"
 fi
 
 if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then

@@ -222,14 +222,14 @@ guard_before_dispatch "$LIB" \
   'if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then' \
   '\-m "\$_BD_AUDITOR_MODEL"' "resolve-cli.sh"
 guard_before_dispatch "$DISPATCH" \
-  'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' \
+  'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" && "\$\{_BD_RESOLVE_CLI_SOURCED:-0\}" == "1" \]\]; then' \
   '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "dispatch.sh"
 
 # Ordering alone is NOT protection — dispatch.sh's guard only sets exit_code=1, so
 # what actually stops the launch is the `exit_code -eq 0` gate between them. A PR
 # reviewer read the guard as non-blocking precisely because the ordering assertion
 # above does not prove this. Assert the gate really sits in between.
-_g="$(grep -nE 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' "$DISPATCH" | head -1 | cut -d: -f1)"
+_g="$(grep -nE 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" && "\$\{_BD_RESOLVE_CLI_SOURCED:-0\}" == "1" \]\]; then' "$DISPATCH" | head -1 | cut -d: -f1)"
 _m="$(grep -nE '\-m "\$\{MODEL:-\$_BD_AUDITOR_MODEL\}"' "$DISPATCH" | head -1 | cut -d: -f1)"
 _gate="$(awk -v a="$_g" -v b="$_m" 'NR>a && NR<b && /if \[\[ "\$exit_code" -eq 0 \]\]; then/{print NR; exit}' "$DISPATCH")"
 if [[ -n "$_gate" ]]; then
@@ -255,7 +255,7 @@ cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
   fi
 }
 cwd_alloc_after_guard "$LIB" 'if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then' "resolve-cli.sh"
-cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" \]\]; then' "dispatch.sh"
+cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDITOR_MODEL" && "\$\{_BD_RESOLVE_CLI_SOURCED:-0\}" == "1" \]\]; then' "dispatch.sh"
 
 # The library skip must return 4 (SKIPPED), not 1 (failed) or 3 (BUILTIN_FALLBACK).
 # blueprint-review treats any nonzero as "witness failed or returned empty", so
@@ -322,18 +322,28 @@ grep -qF 'printf '"'"'Skipped: %s\n'"'"'' "$DISPATCH" \
   && ok "skip reason is written to \$outfile (not stderr alone)" \
   || fail "no-model skip does not write its reason to \$outfile"
 
-GUARD_COND="$(grep -F 'if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" ]]; then' "$DISPATCH")"
+GUARD_COND="$(grep -F 'if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" && "${_BD_RESOLVE_CLI_SOURCED:-0}" == "1" ]]; then' "$DISPATCH")"
 if [[ -z "$GUARD_COND" ]]; then
   fail "could not extract the dispatch.sh guard condition to exercise it"
 else
-  run_guard() {   # <auditor-model> [<--model override>] → fire | dispatch
-    ( MODEL="${2:-}"; _BD_AUDITOR_MODEL="$1"
+  run_guard() {   # <auditor-model> [<--model override>] [<sourced:0|1>] → fire | dispatch
+    ( MODEL="${2:-}"; _BD_AUDITOR_MODEL="$1"; _BD_RESOLVE_CLI_SOURCED="${3:-1}"
       # shellcheck disable=SC2294  # deliberate: exercise the SHIPPED condition, not a copy
       eval "$GUARD_COND printf fire; else printf dispatch; fi" )
   }
-  eq "$(run_guard '')"                    "fire"     "guard FIRES: no .auditor.model and no --model"
+  eq "$(run_guard '')"                    "fire"     "guard FIRES: no .auditor.model and no --model (resolver sourced)"
   eq "$(run_guard 'opencode-go/model-x')" "dispatch" "guard stands down: .auditor.model configured"
   eq "$(run_guard '' 'openai/gpt-5.2')"   "dispatch" "guard stands down: --model given"
+  # Cubic finding (PR #666): when resolve-cli.sh was NOT sourced, the fallback
+  # shim (resolve_auditor_model() { _BD_AUDITOR_MODEL=""; }) makes
+  # $_BD_AUDITOR_MODEL empty unconditionally — without the _BD_RESOLVE_CLI_SOURCED
+  # conjunct this guard would still fire and classify a genuine fail-closed
+  # resolver error as `skipped` (status=skipped via _oc_no_model), letting
+  # `--cli all` exit 0 while the operator's ~/.opencode home config was never
+  # actually validated. The guard must stand DOWN here so the dedicated
+  # "resolve-cli.sh not sourced" branch below it — which classifies as `error`
+  # — is what fires instead.
+  eq "$(run_guard '' '' 0)" "dispatch" "guard stands down when resolve-cli.sh was NOT sourced (falls through to the error branch, not skipped)"
 fi
 
 grep -qE '\-m "\$_BD_AUDITOR_MODEL"' "$LIB" \

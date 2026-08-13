@@ -31,23 +31,88 @@ view. Query all three and union them:
 
 ```bash
 python3 - speech <<'PY'          # ← argument = the capability you need
-import json, sys, urllib.request
+import json, sys, time, urllib.request, urllib.parse
+PAGE_CAP, TIME_BUDGET = 20, 60      # per catalog: page count, and a start-deadline
+# Be precise about what these bound, because a page cap alone bounds almost
+# nothing: PAGE_CAP pages x a 30s socket timeout is ~10 minutes for ONE catalog
+# at the values above, and grows with any larger cap.
+# TIME_BUDGET is checked BEFORE each request, so it caps how long we keep
+# STARTING new pages — it is not a total-runtime guarantee. urllib's `timeout`
+# is per-socket-operation, so a response that trickles a byte at a time can
+# outlive both. Residual accepted for a discovery helper: the realistic failure
+# here is a pager that loops, which these do bound. If you need a hard ceiling,
+# run it under `timeout 120 python3 - ...`.
 CATALOGS = [("https://zenmux.ai/api/v1/models", "data", "output_modalities"),
             ("https://zenmux.ai/api/anthropic/v1/models", "data", "output_modalities"),
             ("https://zenmux.ai/api/vertex-ai/v1beta/models", "models", "outputModalities")]
 want = sys.argv[1].lower() if len(sys.argv) > 1 else ""
-seen, hits, reached = {}, [], 0
+seen, hits, reached, partial = {}, [], 0, False
 for url, key, field in CATALOGS:
-    try:
-        entries = json.load(urllib.request.urlopen(url, timeout=30))[key]
-    except Exception as e:            # one dead catalog must not hide the other two
-        print(f"! {url} unavailable: {e}", file=sys.stderr)
-        continue
-    if not isinstance(entries, list):  # counted only when usable, so a schema
-        print(f"! {url} returned {key} as {type(entries).__name__}, not a list",
-              file=sys.stderr)         # change cannot masquerade as an empty answer
-        continue
-    reached += 1
+    entries, page_url, pages, cat_partial, cursors = [], url, 0, False, set()
+    deadline = time.monotonic() + TIME_BUDGET
+    # Cursor pagination: only the Anthropic catalog's payload carries `has_more`
+    # today (verified live 2026-08-14 — the OpenAI-compatible and Vertex
+    # payloads carry no such field), but the loop is generic rather than
+    # Anthropic-specific so it stays correct if another catalog starts paging.
+    # A live probe with `limit=5` still returned the full 125-row set with
+    # `has_more: false`, so ZenMux's Anthropic endpoint does not paginate in
+    # practice right now — but the field is part of the documented Anthropic
+    # models-list contract this endpoint mirrors, and silently reading only
+    # page 1 forever if that changes is exactly the "absence is not evidence
+    # of absence" trap this skill exists to warn against. Bounded by PAGE_CAP
+    # AND the wall-clock deadline above, so a misbehaving pager cannot hang it.
+    # KNOWN RESIDUAL: an ABSENT `has_more` is read as "last page", because that
+    # is exactly what the two non-paginating catalogs look like. So a truncated
+    # response that DROPS the field is indistinguishable from one that never
+    # had it, and would count as fully read. Closing that needs a per-catalog
+    # "this one must carry has_more" expectation, which is its own staleness
+    # risk. A malformed (non-bool) value IS caught below.
+    while page_url and pages < PAGE_CAP and time.monotonic() < deadline:
+        pages += 1
+        try:
+            payload = json.load(urllib.request.urlopen(page_url, timeout=30))
+        except Exception as e:            # one dead catalog must not hide the other two
+            print(f"! {page_url} unavailable: {e}", file=sys.stderr)
+            cat_partial = True            # KEEP earlier pages: a failure on page
+            break                         # 3 does not unsee pages 1-2
+        page_entries = payload.get(key) if isinstance(payload, dict) else None
+        if not isinstance(page_entries, list):  # counted only when usable, so a
+            print(f"! {page_url} returned {key} as "
+                  f"{type(page_entries).__name__}, not a list", file=sys.stderr)
+            cat_partial = True            # schema change cannot masquerade as
+            break                         # an empty (but "usable") answer
+        entries.extend(page_entries)
+        last_id = payload.get("last_id") if isinstance(payload, dict) else None
+        more = payload.get("has_more", False)
+        if more is False:                   # explicit false, or field absent
+            page_url = None                 # (non-paginating catalogs) = done
+        elif more is not True:              # present but null/str/int = malformed
+            print(f"! {url}: has_more is {type(more).__name__}, not a bool — "
+                  f"catalog read is PARTIAL", file=sys.stderr)
+            cat_partial = True
+            page_url = None
+        elif isinstance(last_id, str) and last_id and last_id not in cursors:
+            cursors.add(last_id)            # a repeated cursor never advances:
+            sep = "&" if "?" in url else "?"  # without this it refetches the SAME
+            page_url = f"{url}{sep}after_id={urllib.parse.quote(last_id)}"  # page 50x
+        else:                               # no usable / non-advancing cursor
+            print(f"! {url}: has_more set but last_id missing, invalid, or "
+                  f"repeated — catalog read is PARTIAL", file=sys.stderr)
+            cat_partial = True
+            page_url = None
+    if page_url is not None:                # exited on the page cap or the deadline
+        print(f"! {url}: pagination stopped after {pages} page(s) "
+              f"(cap or time budget) — catalog read is PARTIAL", file=sys.stderr)
+        cat_partial = True
+    # `reached` counts FULLY-read catalogs only. Both partial shapes must be
+    # excluded, and they exit the loop differently: the cap leaves page_url set,
+    # the missing-cursor case clears it. Keying on page_url alone (as the first
+    # draft did) let the no-cursor case count as complete — caught by a synthetic
+    # payload test, not by review. Hence the explicit per-catalog flag.
+    if cat_partial:
+        partial = True
+    else:
+        reached += 1
     for m in entries:
         if not isinstance(m, dict):       # a malformed entry must not abort the rest
             continue
@@ -58,12 +123,19 @@ for url, key, field in CATALOGS:
         mid = m.get("id") or m.get("name")
         if want and want in outs and isinstance(mid, str) and mid:
             hits.append((mid, tuple(outs)))   # no id => not selectable, so not listed
-if reached == 0:                      # every catalog down != "ZenMux has nothing"
-    sys.exit("all catalogs unreachable — discovery failed, draw no conclusion")
-print(f"reached {reached}/{len(CATALOGS)} catalogs")
+# ALWAYS print what was actually observed, then exit non-zero if nothing was
+# fully read. A model seen on a page that DID return is real positive evidence
+# and stays useful even when the read was truncated — only the ABSENCE of a
+# capability is unprovable from a partial read. Exiting before printing would
+# throw away the half of the result that is still sound.
+print(f"fully read {reached}/{len(CATALOGS)} catalogs"
+      + ("  (SOME READS PARTIAL — absence below proves nothing)" if partial else ""))
 print("output_modalities present right now:", dict(sorted(seen.items())))
 for mid, outs in sorted(set(hits)):
     print(f"  {mid}  -> {list(outs)}")
+if reached == 0:                      # every catalog down != "ZenMux has nothing"
+    sys.exit("no catalog fully read — anything listed above is real, "
+             "but absence proves nothing")
 PY
 ```
 

@@ -59,4 +59,11 @@ run_suite "litmus/parse_narrative" \
   uv run --quiet --with 'pytest==9.0.3' \
     pytest skills/litmus/scripts/lib/test_parse_narrative.py -q
 
+# Guards the catalog-discovery snippet embedded in skills/zenmux/SKILL.md. The
+# test EXTRACTS the snippet from the doc rather than copying it, so the doc and
+# its guard cannot drift apart.
+run_suite "zenmux/catalog_pagination" \
+  uv run --quiet --with 'pytest==9.0.3' \
+    pytest skills/zenmux/test_catalog_pagination.py -q
+
 exit "$fail"

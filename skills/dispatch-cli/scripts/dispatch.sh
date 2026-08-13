@@ -938,7 +938,17 @@ dispatch_one() {
                 # an ADVISORY voice is the honest outcome. Handing opencode an
                 # empty `-m` is NOT — it would silently run whatever that CLI
                 # defaults to, i.e. a provider nobody chose.
-                if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" ]]; then
+                # Gated on _BD_RESOLVE_CLI_SOURCED too: when the library is missing,
+                # the fallback shim at the top of this file (`resolve_auditor_model()
+                # { _BD_AUDITOR_MODEL=""; }`) makes $_BD_AUDITOR_MODEL empty
+                # unconditionally, which would otherwise satisfy this same condition
+                # and route a genuine fail-closed resolver error (line ~973 below)
+                # through the `skipped` classification instead of `error` — letting
+                # `--cli all` silently exit 0 while the operator config could never
+                # actually be validated (Cubic finding on PR #666). Requiring the
+                # library to have been sourced keeps "no configured model" (skip)
+                # and "resolver missing" (error) on separate branches.
+                if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" && "${_BD_RESOLVE_CLI_SOURCED:-0}" == "1" ]]; then
                     echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json and no --model — skipping the auditor (advisory voice)." >&2
                     # Reason goes to "$outfile" too, not stderr alone — that is the
                     # precondition for routing an opencode bail to `skipped` (the

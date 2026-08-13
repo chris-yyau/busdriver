@@ -20,7 +20,7 @@ Busdriver enforces a 6-phase development pipeline and gates every commit and PR 
 | **1. Brainstorming** | Explore intent, requirements, and design before writing code |
 | **2. Planning** | Produce TDD task lists with file paths, commands, expected output |
 | **3. Worktree** | Create isolated git worktree, verify baseline tests pass |
-| **4. Execution** | TDD (red/green/refactor), code review, language-specific patterns |
+| **4. Execution** | Tests (TDD ordering advisory, opt-in via `/tdd`), code review, language-specific patterns |
 | **5. Verification** | Build + lint + tests, security scan, specialist review agents |
 | **6. Finishing** | Commit (litmus-reviewed), PR or merge, worktree cleanup |
 
@@ -157,9 +157,9 @@ Claude Code                        Busdriver Plugin
                     │
                     ├─► Phase 3: git worktree isolation
                     │
-                    ├─► Phase 4: TDD + domain skills + code review
+                    ├─► Phase 4: tests + domain skills + code review
                     │     ├─► Language patterns loaded by detection
-                    │     ├─► tdd-guide agent enforces red/green/refactor
+                    │     ├─► Tests required; TDD ordering advisory (opt-in via /tdd)
                     │     └─► {lang}-reviewer agent reviews every task
                     │
                     ├─► Phase 5: verification loop

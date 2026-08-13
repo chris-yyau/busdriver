@@ -1,3 +1,10 @@
+## [1.106.7](https://github.com/chris-yyau/busdriver/compare/v1.106.6...v1.106.7) (2026-08-13)
+
+
+### Bug Fixes
+
+* **orchestrator:** stop mandating TDD ordering as a Phase 4 default ([#652](https://github.com/chris-yyau/busdriver/issues/652)) ([9ad8dd9](https://github.com/chris-yyau/busdriver/commit/9ad8dd913ba042326f2472a98aa6ed254da5a16c))
+
 ## [1.106.6](https://github.com/chris-yyau/busdriver/compare/v1.106.5...v1.106.6) (2026-08-13)
 
 

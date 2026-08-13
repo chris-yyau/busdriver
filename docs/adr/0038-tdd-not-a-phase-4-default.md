@@ -57,8 +57,8 @@ bucketed them correctly (198 `busdriver:pr-grinder`, 18 `general-purpose`,
 it appears 273 times across transcripts in the agent-type listing — so the zero
 is disobedience of a live instruction, not a wiring defect.
 
-`grep -riE "tdd|test.?first|red.?green" hooks/` returns 0 hits. No gate has ever
-enforced this.
+`grep -riE "tdd|test.?first|red.?green" hooks/` returns 0 hits. No registered gate
+currently enforces TDD ordering.
 
 ### What the audit does NOT establish
 
@@ -74,8 +74,10 @@ Recorded here because the first draft of this change over-read it:
   processes and are absent from these transcripts.
 - **One operator.** busdriver is public. This is canonical dogfooding evidence,
   not population telemetry.
-- **The counterfactual is unmeasured.** 91% of code sessions shipped tests *with
-  the mandate loaded*; whether removing it changes that is untested.
+- **The counterfactual is unmeasured.** 42 of 46 code-writing sessions contained a
+  test-file write *with the mandate loaded* (the audit measured transcript writes,
+  not test execution, pass status, or shipment); whether removing the mandate
+  changes that rate is untested.
 
 ## Decision
 
@@ -116,8 +118,8 @@ Recorded here because the first draft of this change over-read it:
   leaving a false "no exceptions" in place is itself a defect. Revisit if the
   falsifier below fires.
 - **Delete the TDD skills.** Rejected. 118 shell tests, 16 vitest files and 7
-  pytest files exist and 91% of code sessions ship tests. The repo has the
-  outcome; what was dead is the ritual and the dispatch.
+  pytest files exist, and 42 of 46 code-writing sessions contained a test-file
+  write; what was dead is the ritual and the dispatch, not test-writing itself.
 
 ## Consequences
 

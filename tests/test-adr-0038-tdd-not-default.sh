@@ -31,9 +31,34 @@ done
 
 # --- The mandate is gone ------------------------------------------------------------
 
+# Shared predicates: scope every assertion below to what it actually claims to check,
+# so a future edit that removes the guarantee from the RIGHT place but leaves stray
+# matching text elsewhere cannot make these pass on an incorrect policy.
+has_unconditional_tdd_dispatch() {
+  grep -qE '^\*\*DISPATCH `tdd-guide` agent\*\*' "$1"
+}
+has_proactive_tdd_description() {
+  grep -q 'Use PROACTIVELY' "$1"
+}
+# The Phase 4 "Tests" bullet is the sole place ADR 0038's ordering/advisory statements
+# are required to live. Scoping to just that bullet (rather than the whole file) means
+# a future sync can't relocate or duplicate the phrases elsewhere and still pass.
+#
+# Uniqueness is part of the guard, not a nicety. Without it these are "does ANY
+# '- **Tests**' line carry the phrases", so an edit that weakens the real Phase 4
+# bullet while any other such line elsewhere in the file still carried them would keep
+# both assertions green on a policy that no longer holds. Requiring exactly one match
+# is what makes "the Phase 4 Tests bullet" name a single identifiable line.
+phase4_tests_bullet() {
+  grep -E '^- \*\*Tests\*\*' "$1" || true
+}
+count_tests_bullets() {
+  grep -cE '^- \*\*Tests\*\*' "$1" || true
+}
+
 # The unconditional Phase 4 dispatch. Measured 0 dispatches in 234 over ~5 months
 # before removal (ADR 0038); it must not come back as a default.
-if grep -qE '^\*\*DISPATCH `tdd-guide` agent\*\*' "$ORCH"; then
+if has_unconditional_tdd_dispatch "$ORCH"; then
   bad "orchestrator restored the unconditional 'DISPATCH tdd-guide agent' line (ADR 0038)"
 else
   ok "orchestrator has no unconditional tdd-guide dispatch"
@@ -41,28 +66,40 @@ fi
 
 # The agent must not advertise itself as proactive, or the harness re-acquires the
 # default through the agent description rather than through the orchestrator.
-if grep -q 'Use PROACTIVELY' "$GUIDE"; then
+if has_proactive_tdd_description "$GUIDE"; then
   bad "agents/tdd-guide.md restored 'Use PROACTIVELY' (ADR 0038)"
 else
   ok "tdd-guide is not advertised as proactive"
 fi
 
-# The Phase 4 bullet must say ordering is not mandated. Asserting the POSITIVE claim
-# too, not just the absence of the old one: a sync that dropped the bullet entirely
-# would pass an absence-only check while losing the decision.
-if grep -q 'Ordering is not mandated' "$ORCH"; then
-  ok "Phase 4 states ordering is not mandated"
+TESTS_BULLET_COUNT="$(count_tests_bullets "$ORCH")"
+TESTS_BULLET="$(phase4_tests_bullet "$ORCH")"
+if [[ "$TESTS_BULLET_COUNT" -eq 1 ]]; then
+  ok "orchestrator has exactly one '- **Tests**' bullet to anchor the assertions below"
 else
-  bad "Phase 4 lost the 'Ordering is not mandated' statement (ADR 0038)"
+  # Clear TESTS_BULLET so the two phrase assertions below report the loss rather than
+  # matching against an ambiguous multi-line blob.
+  TESTS_BULLET=""
+  bad "expected exactly one '- **Tests**' bullet in orchestrator SKILL.md, found $TESTS_BULLET_COUNT — the ADR 0038 assertions below cannot be anchored"
+fi
+
+# The Phase 4 Tests bullet must say ordering is not mandated. Asserting the POSITIVE
+# claim too, not just the absence of the old one: a sync that dropped the bullet
+# entirely would pass an absence-only check while losing the decision.
+if [[ -n "$TESTS_BULLET" ]] && printf '%s\n' "$TESTS_BULLET" | grep -q 'Ordering is not mandated'; then
+  ok "Phase 4 Tests bullet states ordering is not mandated"
+else
+  bad "Phase 4 Tests bullet lost the 'Ordering is not mandated' statement (ADR 0038)"
 fi
 
 # ADR 0038 turned down writing an unenforced "must fail on the base revision" rule into
-# the orchestrator; the bullet must keep disclosing that it is advisory until a gate
-# actually runs the check. Dropping this word is how prose starts posing as assurance.
-if grep -q 'Advisory, not gate-enforced' "$ORCH"; then
-  ok "Phase 4 discloses the rule is advisory, not gate-enforced"
+# the orchestrator; the Tests bullet must keep disclosing that it is advisory until a
+# gate actually runs the check. Dropping this word is how prose starts posing as
+# assurance.
+if [[ -n "$TESTS_BULLET" ]] && printf '%s\n' "$TESTS_BULLET" | grep -q 'Advisory, not gate-enforced'; then
+  ok "Phase 4 Tests bullet discloses the rule is advisory, not gate-enforced"
 else
-  bad "Phase 4 lost its 'Advisory, not gate-enforced' disclosure (ADR 0038)"
+  bad "Phase 4 Tests bullet lost its 'Advisory, not gate-enforced' disclosure (ADR 0038)"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------
@@ -95,15 +132,29 @@ trap 'rm -rf "$TMP"' EXIT
 printf '%s\n' '**DISPATCH `tdd-guide` agent** to produce test files.' > "$TMP/violating-orch.md"
 printf '%s\n' 'description: ... Use PROACTIVELY when writing new features ...' > "$TMP/violating-guide.md"
 
-if grep -qE '^\*\*DISPATCH `tdd-guide` agent\*\*' "$TMP/violating-orch.md"; then
+if has_unconditional_tdd_dispatch "$TMP/violating-orch.md"; then
   ok "negative control: the dispatch assertion fires on a violating file"
 else
   bad "negative control FAILED — the dispatch assertion cannot detect a violation"
 fi
-if grep -q 'Use PROACTIVELY' "$TMP/violating-guide.md"; then
+if has_proactive_tdd_description "$TMP/violating-guide.md"; then
   ok "negative control: the PROACTIVELY assertion fires on a violating file"
 else
   bad "negative control FAILED — the PROACTIVELY assertion cannot detect a violation"
+fi
+
+# The uniqueness requirement is the guard that stops a weakened Phase 4 bullet from
+# being covered by a decoy elsewhere in the file. Prove it detects the decoy: the
+# fixture's FIRST bullet has lost both phrases, the second still carries them, and a
+# count-blind check would pass. Exactly the failure litmus flagged.
+printf '%s\n' \
+  '- **Tests** — behavioral changes ship with tests.' \
+  '- **Tests** — Ordering is not mandated. Advisory, not gate-enforced.' \
+  > "$TMP/decoy-orch.md"
+if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
+  ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
+else
+  bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

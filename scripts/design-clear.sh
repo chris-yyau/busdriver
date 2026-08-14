@@ -53,9 +53,13 @@
 # is named (stable, unlike an index), no other doc can be touched, and the trail
 # still gets one design-marker-cleared event per released token.
 # It clears every token the CLASSIFIER LISTED. The classifier's emit budget is
-# PER-KIND: TOKEN records are capped at 20, legacy records are uncapped, so an
-# unrelated legacy backlog can never hide a doc's tokens. A doc holding more
-# than 20 tokens takes more than one run and the closing line says so. It is not
+# PER-KIND: TOKEN records are capped at 20, legacy records at a far higher
+# backstop, so an unrelated legacy backlog can never hide a doc's tokens. When
+# either budget truncates, the classifier says so explicitly and this helper acts
+# on the signal rather than guessing (#671): a cut TOKEN listing under-reports
+# and the closing line says to re-run; a cut LEGACY listing makes the
+# same-document screen unsound, so every by-name release is refused outright.
+# A doc holding more than 20 tokens takes more than one run. It is not
 # a promise to empty the directory in one shot; it is a promise never to touch a
 # token belonging to another doc.
 #
@@ -133,40 +137,53 @@ fi
 
 SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
 
-# The classifier caps emitted records at K=20 (marker_ops.py, ADR-C) — the gate
-# only needs "is anything pending", so it stops counting. Hitting the cap means
-# this listing may be INCOMPLETE, which bounds what the helper may honestly say:
-# no remaining-count arithmetic, and a doc selector that finds no match could
-# still be pending but unlisted. Clearing stays exact (one named token), so a
-# truncated list never over-deletes — it only under-reports.
-# ponytail: warn on truncation instead of adding an uncapped classify-all mode —
-# that means editing a fail-CLOSED security classifier for a case needing 21
-# simultaneously-pending design docs. Add the mode if that ever happens for real.
-CAP=20
+# The classifier's emit budgets are PER-KIND, and a truncated kind is announced
+# EXPLICITLY: one trailing `overflow` record naming which kind was cut (#671).
+# Read that signal rather than inferring truncation from "I counted exactly the
+# cap" — the old inference false-positived on a set that landed on the cap
+# exactly, and could not see valid tokens dropped before they ever reached the
+# emitter (marker_ops _classify_tokens buffers at K).
+#
+# The two kinds mean different things and are handled differently:
+#   token-overflow  — under-reports. Clearing stays exact (one named token), so
+#                     a short list never over-deletes; say so and let the
+#                     operator drain what IS listed and re-run. Refusing here
+#                     instead would refuse in #665's own motivating scenario.
+#   legacy-overflow — NOT safe the same way. The all-or-nothing screen below can
+#                     only refuse on records it was handed, so a cut legacy list
+#                     may be hiding the very entry that names the doc being
+#                     released. Every name-based selector is refused outright.
 TRUNCATED=0
-# Count TOKEN records only. The classifier's budget is per-kind and legacy is
-# uncapped (marker_ops _CAPS), so a large legacy list no longer means the token
-# listing was cut short — testing the combined total would report truncation on
-# a run where every token was in fact shown, and tell the operator to re-run for
-# tokens that do not exist.
-_ntok=0
+LEGACY_OVERFLOW=0
 _n=0
 while [ "$_n" -lt "${#KINDS[@]}" ]; do
-    [ "${KINDS[$_n]}" = "token" ] && _ntok=$(( _ntok + 1 ))
+    if [ "${KINDS[$_n]}" = "overflow" ]; then
+        case "${REASONS[$_n]}" in
+            token-overflow)  TRUNCATED=1 ;;
+            legacy-overflow) LEGACY_OVERFLOW=1 ;;
+        esac
+    fi
     _n=$(( _n + 1 ))
 done
-[ "$_ntok" -ge "$CAP" ] && TRUNCATED=1
 
 truncation_note() {
-    [ "$TRUNCATED" -eq 1 ] || return 0
-    printf '\nNOTE: the classifier caps its listing at %d records and that cap was hit.\n' "$CAP"
-    printf '      More tokens may be pending than are shown. Clear a few, then re-run.\n'
+    if [ "$TRUNCATED" -eq 1 ]; then
+        printf '\nNOTE: the classifier truncated its TOKEN listing (it said so explicitly).\n'
+        printf '      More tokens are pending than are shown. Clear a few, then re-run.\n'
+    fi
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf '\nNOTE: the classifier truncated its LEGACY listing (it said so explicitly).\n'
+        printf '      Releasing by doc path is refused while that is true: the same-document\n'
+        printf '      screen needs the complete legacy set, and an unlisted entry could name\n'
+        printf '      the very doc being released. Trim the legacy list file first.\n'
+    fi
 }
 
 list_tokens() {
     # `gate_marker_owner_note` shells out to git once or twice PER RECORD, and
-    # legacy records are no longer capped by the classifier (marker_ops _CAPS),
-    # so a long legacy list would mean unbounded subprocess work here. Bound the
+    # the classifier's legacy budget is a high BACKSTOP (marker_ops L=500), not
+    # a listing size, so a long legacy list still means hundreds of subprocesses
+    # here where the token cap alone would have bounded it. Bound the
     # NOTES rather than the listing: this is the tool that is supposed to show
     # the complete set, and the note is a which-worktree convenience, not part
     # of the record. Records past the budget still list, just without it.
@@ -208,8 +225,14 @@ if [ -z "$SELECTOR" ]; then
         exit 2
     fi
     list_tokens
-    printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
-    printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf '\nLEGACY listing is truncated: by-name release (doc-path or --all-for-doc) is\n'
+        printf 'refused until you trim the legacy list file. Until then:\n'
+        printf '  design-clear.sh <index>   # needs a tty — an index is refused with --yes\n'
+    else
+        printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
+        printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
+    fi
     exit 0
 fi
 
@@ -248,6 +271,27 @@ if [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
         TARGETS+=( "$(( SELECTOR - 1 ))" )
     fi
 else
+    # #671 — fail CLOSED on a truncated LEGACY listing. Both name-based forms
+    # depend on having been handed every legacy record for the doc: --all-for-doc
+    # refuses all-or-nothing on a non-token record in the set, and the plain
+    # selector's ">1 match" refusal is the same screen wearing a different hat.
+    # Neither can refuse on a record it never saw, so a cut legacy list would
+    # release a doc's tokens while an unlisted legacy entry for it stayed armed —
+    # the bypass PR #670 spent seven rounds closing, through a new door. An index
+    # selector never claimed that screen (it releases exactly one named token),
+    # so it stays available, as does the no-arg listing.
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf 'design-clear: refusing a doc-path selector — the legacy listing was truncated.\n\n' >&2
+        printf 'Releasing by name screens for a legacy list entry naming the SAME document,\n' >&2
+        printf 'and that screen can only see records the classifier emitted. It did not emit\n' >&2
+        printf 'them all, so an entry for %s could be pending and unlisted.\n\n' "$SELECTOR" >&2
+        printf 'Trim the legacy list file, then re-run — or, AT A TERMINAL, release one\n' >&2
+        printf 'token by its listed index, which never depended on that screen:\n' >&2
+        printf '  design-clear.sh            # full listing, names the file to trim\n' >&2
+        printf '  design-clear.sh <index>    # needs a tty — an index is refused with --yes,\n' >&2
+        printf '                             # so the prompt that names the doc always runs\n' >&2
+        exit 2
+    fi
     # Match on the doc path the classifier VALIDATED (token body), not on user
     # spelling: normalize the selector the same way arming did, so a relative
     # path or a `..` spelling still resolves to the one true token.
@@ -346,6 +390,17 @@ fi
 _t=0
 while [ "$_t" -lt "${#TARGETS[@]}" ]; do
 TARGET="${TARGETS[$_t]}"
+if [ "${KINDS[$TARGET]}" = "overflow" ]; then
+    # Not a marker at all — the classifier's "this listing was cut" signal
+    # (#671). It occupies an index, so an index selector can land on it; there
+    # is nothing on disk behind it to release.
+    printf 'design-clear: [%d] is a listing-truncation notice (%s), not a marker.\n' \
+        "$(( TARGET + 1 ))" "${REASONS[$TARGET]}" >&2
+    printf 'It records that the classifier stopped emitting records of that kind;\n' >&2
+    printf 'there is nothing to clear. Re-run for the rest, or trim:\n  %s\n' \
+        "${SRCS[$TARGET]}" >&2
+    exit 1
+fi
 if [ "${KINDS[$TARGET]}" != "token" ]; then
     # A legacy list-file marker holds several docs at once, so removing it is the
     # blanket wipe this helper exists to avoid.
@@ -368,13 +423,19 @@ fi
 _t=$(( _t + 1 ))
 done
 
-# NOTE on the cap and the all-or-nothing check above. The check can only refuse
-# on records the classifier EMITTED, and the emitter budget is capped — so it is
-# only sound if a same-doc anomaly can never be the thing that got truncated.
-# That is now guaranteed upstream rather than here: marker_ops.cmd_classify runs
-# _classify_legacy BEFORE _classify_tokens (#665 review, Codex), so if any token
-# for this doc is visible then every legacy record is too. Truncation can only
-# drop TOKENS, which under-drains — handled honestly by the closing message.
+# NOTE on the caps and the all-or-nothing check above. The check can only refuse
+# on records the classifier EMITTED, and the emitter budgets are capped — so it
+# is only sound if a same-doc anomaly can never be the thing that got truncated.
+# Two mechanisms hold that, both upstream rather than here:
+#   * marker_ops.cmd_classify runs _classify_legacy BEFORE _classify_tokens and
+#     the budgets are per-kind (#665 review, Codex), so a token being visible
+#     never implies a legacy record was crowded out;
+#   * when the legacy budget itself truncates, the classifier says so with an
+#     explicit overflow record and every name-based selector is refused before
+#     reaching this point (#671) — the screen is never run against a set that is
+#     knowably partial.
+# What remains is TOKEN truncation, which only under-drains — handled honestly
+# by the closing message.
 #
 # A blanket "refuse whenever TRUNCATED" was the other candidate fix and is NOT
 # used: the cap is hit at ~20 pending records, which is precisely the backlog
@@ -659,13 +720,14 @@ while [ "$_t" -lt "$N_TARGETS" ]; do
 done
 
 if [ "$TRUNCATED" -eq 1 ]; then
-    # The classifier stopped counting at CAP, so this doc may still hold tokens
-    # that were never listed — "all for doc" is all the tokens it could SEE.
-    # "MAY remain", not "remain": at exactly CAP pending tokens the cap is hit
-    # with nothing behind it, and asserting a leftover backlog that isn't there
-    # sends the operator back for a re-run that finds nothing.
-    printf 'Cleared %d token(s). Others MAY remain (the listing was capped at %d) — re-run to check.\n' \
-        "$CLEARED" "$CAP"
+    # The classifier declared that it dropped token records (#671), so this doc
+    # may still hold tokens that were never listed — "all for doc" is all the
+    # tokens it could SEE. The old wording hedged ("MAY remain") because
+    # truncation was INFERRED from a count landing on the cap, which is also
+    # what an exactly-full-but-complete listing looks like. The signal is
+    # positive now: records really were dropped.
+    printf 'Cleared %d token(s). More tokens were pending than were listed — re-run to check.\n' \
+        "$CLEARED"
 else
     # SRCS holds every listed record across ALL docs (plus non-token markers),
     # not just this one's tokens — say so, or an operator reads the count as

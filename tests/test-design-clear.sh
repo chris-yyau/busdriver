@@ -677,8 +677,12 @@ EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes 2>&1)"; RC=$?
 check "cap: all-for-doc still exits 0 past the cap" "0" "$RC"
 case "$OUT" in
-  *"Others MAY remain"*"re-run to check"*) ok "cap: says others may remain, not an exact count" ;;
-  *) no "cap: says others may remain, not an exact count" "$OUT" ;;
+  # #671 — the hedge is gone: truncation is now an explicit overflow record
+  # rather than "the count landed on the cap", so records really were dropped.
+  # Still no exact count: what remains is what the classifier never listed.
+  *"More tokens were pending than were listed"*"re-run to check"*)
+    ok "cap: says more were pending, not an exact count" ;;
+  *) no "cap: says more were pending, not an exact count" "$OUT" ;;
 esac
 check "cap: at least one zeta token survives the capped drain" "1" \
   "$([ "$(doc_tokens zeta-design.md)" -ge 1 ] && echo 1 || echo 0)"
@@ -829,7 +833,8 @@ rm -f "$MARKER_DIR/$IOTA_SHA."*
 check "cap-malformed: fixture drained" "0" "$(doc_tokens iota-design.md)"
 
 # -- An unrelated legacy backlog must not starve token records ---------------
-# The emit budget is PER-KIND and legacy is uncapped (marker_ops _CAPS). With a
+# The emit budget is PER-KIND, and legacy's is a high backstop rather than a
+# listing size (marker_ops _CAPS: L=500 vs K=20). With a
 # single shared budget, a legacy list holding >= K=20 pending entries consumed
 # it entirely and NO token record was emitted, so no audited release was
 # possible at all -- and re-running never helped, because the same entries
@@ -908,6 +913,197 @@ case "$OUT" in
   *"design-clear.sh --all-for-doc"*) ok "mixed-selector: clean multi-token doc keeps the bulk hint" ;;
   *) no "mixed-selector: clean multi-token doc keeps the bulk hint" "$OUT" ;;
 esac
+
+# -- The render window must not UNDERCOUNT a doc's tokens ---------------------
+# #671 finding 1 (Codex + cubic, independently). gate_render_pending_records
+# caps RENDERING at 20 records for latency, and used to take each doc's token
+# count from that same window. Legacy records are emitted first, so 19 of them
+# ahead of a multi-token doc made it look single-token: the gate then
+# recommended the plain `<doc>` selector, which design-clear.sh -- scanning the
+# COMPLETE set -- refuses with ">1 match". A hint that cannot succeed is the
+# exact class #665 set out to remove, reintroduced through the window. The
+# counting pass now scans the whole stream and bounds its KEY ARRAY instead.
+rm -f "$MARKER_DIR"/*
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 19 ]; do
+  : >"$REPO/docs/plans/win$_i-design.md"
+  printf -- '- %s\n' "$REPO/docs/plans/win$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+: >"$REPO/docs/plans/window-design.md"
+arm "$REPO/docs/plans/window-design.md"
+arm "$REPO/docs/plans/window-design.md"
+RECS_WIN="$TMP/recs-window"
+in_repo gate_marker_pending "$REPO" >"$RECS_WIN"; RECS_RC=$?
+check "render-window: classifier reports pending, not a fail-closed error" "1" "$RECS_RC"
+check "render-window: the doc's 2nd token really is past the 20-record window" "1" \
+  "$([ "$(tr '\0' '\n' <"$RECS_WIN" | awk 'NR%4==1' | grep -c . || true)" -gt 20 ] && echo 1 || echo 0)"
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_WIN" "$REPO")")"
+check "render-window: multi-token doc past 19 legacy records gets the bulk hint" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'window-design.md.*--all-for-doc' || true)"
+check "render-window: and NOT the plain selector, which would refuse" "0" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'window-design.md.*release with an audit record' || true)"
+# The hinted command must actually work -- the whole point of counting.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/window-design.md" --yes 2>&1)"; RC=$?
+check "render-window: the hinted bulk release succeeds" "0" "$RC"
+check "render-window: both tokens released" "0" "$(doc_tokens window-design.md)"
+rm -f "$LEGACY_MARKER"
+
+# -- Explicit overflow protocol -----------------------------------------------
+# #671 finding 2. Uncapping legacy (the PR #670 state) kept the same-document
+# screen sound at the cost of unbounded consumer work: this script reads the
+# whole stream into bash arrays. A bare cap would trade that back for a silent
+# partial screen. The classifier now does BOTH -- a high legacy backstop L=500
+# plus one trailing `overflow` record naming the kind that was cut -- so a
+# consumer can tell a complete set from a partial one and fail closed on the
+# screens that need a complete one.
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/omega-design.md"
+arm "$REPO/docs/plans/omega-design.md"
+RECS_OF="$TMP/recs-overflow"
+
+# Baseline: a NORMAL run must carry no overflow record at all, or the refusal
+# below would fire on every ordinary invocation.
+rm -f "$LEGACY_MARKER"
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"
+check "overflow: an untruncated listing emits no overflow record" "0" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^overflow$' || true)"
+OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/omega-design.md" --yes 2>&1 )"; RC=$?
+check "overflow: by-name release works when nothing was truncated" "0" "$RC"
+check "overflow: baseline token released" "0" "$(doc_tokens omega-design.md)"
+
+# Now overflow the LEGACY listing: L=500, so 501 pending entries cut it.
+arm "$REPO/docs/plans/omega-design.md"
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 501 ]; do
+  : >"$REPO/docs/plans/many$_i-design.md"
+  printf -- '- %s\n' "$REPO/docs/plans/many$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"; RECS_RC=$?
+check "overflow: classifier reports pending, not a fail-closed error" "1" "$RECS_RC"
+check "overflow: legacy records stop at the backstop" "500" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^legacy$' || true)"
+check "overflow: exactly one overflow record, naming the kind" "1" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==0' | grep -c '^legacy-overflow$' || true)"
+# Tokens keep their own budget even here -- the per-kind split (#670) must not
+# regress just because legacy now has a ceiling.
+check "overflow: token records survive a legacy overflow" "1" \
+  "$([ "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^token$' || true)" -ge 1 ] && echo 1 || echo 0)"
+
+# Both name-based forms must refuse: neither screen can refuse on a record it
+# was never handed, so a doc's tokens could be released while an unlisted legacy
+# entry for that same doc stayed armed.
+BEFORE="$(doc_tokens omega-design.md)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/omega-design.md" --yes 2>&1)"; RC=$?
+check "overflow: --all-for-doc refuses on a truncated legacy listing" "2" "$RC"
+( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/omega-design.md" --yes ) >/dev/null 2>&1; RC2=$?
+check "overflow: the plain doc-path selector refuses too" "2" "$RC2"
+check "overflow: not one token released" "$BEFORE" "$(doc_tokens omega-design.md)"
+check "overflow: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+case "$OUT" in
+  *"legacy listing was truncated"*) ok "overflow: refusal names the cause" ;;
+  *) no "overflow: refusal names the cause" "$OUT" ;;
+esac
+# ...and an action a NON-interactive caller can actually take. Index release
+# needs a tty (see below), so trimming has to be the lead, not a footnote.
+case "$OUT" in
+  *"Trim the legacy list file"*) ok "overflow: refusal leads with a tty-free action" ;;
+  *) no "overflow: refusal leads with a tty-free action" "$OUT" ;;
+esac
+# ...and the listing still works, still says so, and index release -- which never
+# depended on the same-document screen -- stays available.
+OUT="$( cd "$REPO" && "$CLEAR" 2>&1 )"
+case "$OUT" in
+  *"truncated its LEGACY listing"*) ok "overflow: the no-arg listing warns" ;;
+  *) no "overflow: the no-arg listing warns" "$OUT" ;;
+esac
+# The refusal above ADVERTISES index release as the way through. Prove that path
+# actually works while the refusal is active: a refusal that names an escape
+# hatch which is itself blocked leaves the operator with NO release path at all,
+# and pointing at a command that cannot succeed is the exact defect #665/#670
+# exist to remove -- landing here, in the message that closes them.
+IDX="$( cd "$REPO" && "$CLEAR" 2>/dev/null \
+        | sed -n 's/^  \[\([0-9][0-9]*\)\] .*omega-design\.md.*/\1/p' | head -1 )"
+check "overflow: the doc's token is listed (index found)" "1" \
+  "$([ -n "$IDX" ] && echo 1 || echo 0)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+# On a real PTY, not no_tty_run: an index selector is refused with --yes (an
+# index shifts between runs), so the confirm prompt ALWAYS runs and a terminal
+# is required. That is why the refusal above says "AT A TERMINAL" and leads with
+# trimming the list file -- the action a non-interactive caller actually has.
+OUT="$(tty_run y "$IDX" 2>&1)"; RC=$?
+check "overflow: index release still works, as the refusal promises" "0" "$RC"
+check "overflow: the token really was released" "0" "$(doc_tokens omega-design.md)"
+check "overflow: and it was audited" "$(( EVENTS_BEFORE + 1 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$LEGACY_MARKER"
+
+# TOKEN overflow is the other kind, and is NOT a refusal: it under-reports, so
+# draining what was listed and re-running is correct (#665's own scenario).
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/sigma-design.md"
+_i=0
+while [ "$_i" -lt 21 ]; do
+  arm "$REPO/docs/plans/sigma-design.md"
+  _i=$(( _i + 1 ))
+done
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"
+check "overflow: a cut token listing is declared too" "1" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==0' | grep -c '^token-overflow$' || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/sigma-design.md" --yes 2>&1)"; RC=$?
+check "overflow: token overflow still RELEASES, it does not refuse" "0" "$RC"
+
+# -- A pre-#671 `//`-bodied token stays UNREACHABLE by name, deliberately ------
+# #674 (Codex finding, escalated by litmus to HIGH). #671 taught
+# gate_marker_norm_path to collapse a leading `//`, so a token armed before that
+# still carries the old spelling in its body and no canonical selector matches
+# it. Teaching _classify_tokens to collapse the EMITTED doc_path looks like the
+# fix and is a BYPASS: the token FILENAME is sha256(body), and the malformed-
+# sibling screen matches filenames against sha256(the CANONICAL spelling).
+# Rewrite the emitted key without the filename and a truncated pre-upgrade
+# sibling keeps the OLD digest, the screen misses it, and every healthy sibling
+# drains while the anomaly stays armed — the all-or-nothing bypass #670 spent
+# seven rounds closing. This pins the fail-CLOSED behavior instead: the
+# canonical selector matches nothing, so nothing is released. It FAILS if the
+# collapse is ever re-applied.
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/preup-design.md"
+PREUP_CANON="$(cd "$REPO/docs/plans" && pwd -P)/preup-design.md"
+PREUP_SHA="$(in_repo bash -c 'python3 -I "$1/marker_ops.py" sha "$2"' _ \
+  "$REPO_ROOT/hooks/gate-scripts/lib" "//$PREUP_CANON")"
+# A VALID pre-upgrade token: filename keyed to the `//` body, body `//<path>`.
+in_repo bash -c 'python3 -I "$1/marker_ops.py" arm "$2" "$3"' _ \
+  "$REPO_ROOT/hooks/gate-scripts/lib" "$MARKER_DIR" "//$PREUP_CANON" \
+  || no "pre-upgrade: fixture arm failed" "marker_ops arm returned non-zero"
+# ...plus a MALFORMED sibling sharing that same old digest (no trailing LF), the
+# record the screen has to catch and the one a collapsed key would hide.
+printf 'truncated' >"$MARKER_DIR/$PREUP_SHA.deadbeefdeadbeef"
+# Glob, not `ls | grep`: a token name is operator-visible state and the marker
+# dir is shared, so counting has to survive a non-alphanumeric neighbour.
+preup_files() {
+  local _n=0 _f
+  for _f in "$MARKER_DIR/$PREUP_SHA."*; do
+    [ -e "$_f" ] && _n=$(( _n + 1 ))
+  done
+  printf '%s\n' "$_n"
+}
+check "pre-upgrade: fixture holds the valid token and its malformed sibling" "2" "$(preup_files)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$PREUP_CANON" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "pre-upgrade: canonical --all-for-doc must NOT release a '//'-bodied token" "exited 0: $OUT"
+else
+  ok "pre-upgrade: canonical --all-for-doc must NOT release a '//'-bodied token"
+fi
+check "pre-upgrade: not one token released" "2" "$(preup_files)"
+check "pre-upgrade: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$MARKER_DIR"/*
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

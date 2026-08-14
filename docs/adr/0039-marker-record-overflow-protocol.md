@@ -48,8 +48,8 @@ Keep per-kind budgets, and make truncation **knowable** rather than silent.
 
 1. **`_CAPS = {"token": K, "legacy": L}`** with `K = 20` (a working ceiling, hit
    routinely — token count grows one per edit) and `L = 500` (a backstop against
-   a generated file, not a working limit — the legacy union is the `- ` lines of
-   a file the operator wrote).
+   a generated file, not a working limit — the legacy union is the lines of a
+   file the operator wrote that begin with `-`).
 
 2. **When a budget truncates a kind, the classifier says so**: one extra record
    closes the stream — `kind = "overflow"`, empty `doc_path`, `reason =
@@ -95,8 +95,8 @@ A second classifier mode, on a fail-CLOSED security path, for a case that has
 never occurred. Rejected as more surface than the problem.
 
 **Refuse on ANY overflow.** One branch, no per-kind reasoning — and it re-breaks
-#665: a 23-token doc trips `token-overflow` on the run that is supposed to drain
-it. The asymmetry is not incidental; it is the decision.
+issue #665: a 23-token doc trips `token-overflow` on the run that is supposed to
+drain it. The asymmetry is not incidental; it is the decision.
 
 ## Consequences
 

@@ -225,8 +225,14 @@ if [ -z "$SELECTOR" ]; then
         exit 2
     fi
     list_tokens
-    printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
-    printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf '\nLEGACY listing is truncated: by-name release (doc-path or --all-for-doc) is\n'
+        printf 'refused until you trim the legacy list file. Until then:\n'
+        printf '  design-clear.sh <index>   # needs a tty — an index is refused with --yes\n'
+    else
+        printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
+        printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
+    fi
     exit 0
 fi
 

@@ -383,6 +383,23 @@ def _classify_tokens(marker_dir, em):
         if not norm.startswith("/") or _sha(norm) != m.group(1):
             em.add("token", tok, "", "unparseable")
             continue
+        # DO NOT canonicalize `norm` here — emit the body VERBATIM. #671 taught
+        # gate_marker_norm_path to collapse a leading `//`, so a token armed
+        # before that keeps the old spelling in its body and is reachable only by
+        # index, not by `design-clear.sh --all-for-doc <doc>`. Collapsing it here
+        # looks like the fix and is a BYPASS (#674, Codex finding + litmus HIGH):
+        # the token FILENAME is sha256(body), and design-clear.sh's screen for
+        # unvalidated same-document siblings matches filenames against
+        # sha256(canonical spelling). Rewriting the emitted key without the
+        # filename splits that correspondence — a truncated pre-upgrade sibling
+        # then carries the OLD digest, the screen misses it, and the healthy
+        # siblings drain while the anomaly stays armed. That is exactly the
+        # all-or-nothing bypass #670 spent seven rounds closing.
+        #
+        # The body IS the key; they move together or not at all. A pre-upgrade
+        # token self-heals on the next edit that arms the doc, and until then it
+        # stays index-releasable — fail-CLOSED and inconvenient, which is the
+        # correct direction. tests/test-design-clear.sh pins this ("pre-upgrade").
         # DEFER valid tokens; anomalies above were emitted immediately. Same
         # budget-priority rule as legacy-before-tokens in cmd_classify, and for
         # the same reason (#665 review, Codex): consumers screen for anomalous

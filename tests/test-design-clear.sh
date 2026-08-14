@@ -1058,5 +1058,52 @@ check "overflow: a cut token listing is declared too" "1" \
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/sigma-design.md" --yes 2>&1)"; RC=$?
 check "overflow: token overflow still RELEASES, it does not refuse" "0" "$RC"
 
+# -- A pre-#671 `//`-bodied token stays UNREACHABLE by name, deliberately ------
+# #674 (Codex finding, escalated by litmus to HIGH). #671 taught
+# gate_marker_norm_path to collapse a leading `//`, so a token armed before that
+# still carries the old spelling in its body and no canonical selector matches
+# it. Teaching _classify_tokens to collapse the EMITTED doc_path looks like the
+# fix and is a BYPASS: the token FILENAME is sha256(body), and the malformed-
+# sibling screen matches filenames against sha256(the CANONICAL spelling).
+# Rewrite the emitted key without the filename and a truncated pre-upgrade
+# sibling keeps the OLD digest, the screen misses it, and every healthy sibling
+# drains while the anomaly stays armed — the all-or-nothing bypass #670 spent
+# seven rounds closing. This pins the fail-CLOSED behavior instead: the
+# canonical selector matches nothing, so nothing is released. It FAILS if the
+# collapse is ever re-applied.
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/preup-design.md"
+PREUP_CANON="$(cd "$REPO/docs/plans" && pwd -P)/preup-design.md"
+PREUP_SHA="$(in_repo bash -c 'python3 -I "$1/marker_ops.py" sha "$2"' _ \
+  "$REPO_ROOT/hooks/gate-scripts/lib" "//$PREUP_CANON")"
+# A VALID pre-upgrade token: filename keyed to the `//` body, body `//<path>`.
+in_repo bash -c 'python3 -I "$1/marker_ops.py" arm "$2" "$3"' _ \
+  "$REPO_ROOT/hooks/gate-scripts/lib" "$MARKER_DIR" "//$PREUP_CANON" \
+  || no "pre-upgrade: fixture arm failed" "marker_ops arm returned non-zero"
+# ...plus a MALFORMED sibling sharing that same old digest (no trailing LF), the
+# record the screen has to catch and the one a collapsed key would hide.
+printf 'truncated' >"$MARKER_DIR/$PREUP_SHA.deadbeefdeadbeef"
+# Glob, not `ls | grep`: a token name is operator-visible state and the marker
+# dir is shared, so counting has to survive a non-alphanumeric neighbour.
+preup_files() {
+  local _n=0 _f
+  for _f in "$MARKER_DIR/$PREUP_SHA."*; do
+    [ -e "$_f" ] && _n=$(( _n + 1 ))
+  done
+  printf '%s\n' "$_n"
+}
+check "pre-upgrade: fixture holds the valid token and its malformed sibling" "2" "$(preup_files)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$PREUP_CANON" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "pre-upgrade: canonical --all-for-doc must NOT release a '//'-bodied token" "exited 0: $OUT"
+else
+  ok "pre-upgrade: canonical --all-for-doc must NOT release a '//'-bodied token"
+fi
+check "pre-upgrade: not one token released" "2" "$(preup_files)"
+check "pre-upgrade: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$MARKER_DIR"/*
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

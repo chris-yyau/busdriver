@@ -849,7 +849,12 @@ arm "$REPO/docs/plans/mine-design.md"
 arm "$REPO/docs/plans/mine-design.md"
 arm "$REPO/docs/plans/mine-design.md"
 RECS_OUT="$TMP/recs-starve"
-in_repo gate_marker_pending "$REPO" >"$RECS_OUT" 2>/dev/null
+# Capture the status: 1 == records pending, 2 == fail-closed. Since exit 2 can
+# now carry PARTIAL legacy output (cmd_classify emits legacy before it can fail
+# on the token dir), a silent 2 would make the counts below fail for the wrong
+# reason and hide the real cause.
+in_repo gate_marker_pending "$REPO" >"$RECS_OUT"; RECS_RC=$?
+check "starvation: classifier reports pending, not a fail-closed error" "1" "$RECS_RC"
 check "starvation: every one of the 25 legacy entries is emitted" "25" \
   "$(tr '\0' '\n' < "$RECS_OUT" | awk 'NR%4==1' | grep -c '^legacy$' || true)"
 check "starvation: token records survive the legacy backlog" "1" \

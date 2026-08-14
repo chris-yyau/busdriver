@@ -201,8 +201,9 @@ if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
 # Ditto for the Auditor model resolver — without the library there is no config
-# reader, so the opencode arm falls back to the same built-in default. Gate on
-# whether the trusted library was actually sourced (_BD_RESOLVE_CLI_SOURCED),
+# reader, so the opencode arm resolves to an empty model (skip; see below —
+# there is no shipped default to fall back on). Gate on whether the trusted
+# library was actually sourced (_BD_RESOLVE_CLI_SOURCED),
 # not on `type resolve_auditor_model` — an inherited/exported function of that
 # name in the caller's environment would satisfy the `type` check and silently
 # stand in for the real resolver, defeating the model-selection hardening this
@@ -919,8 +920,9 @@ dispatch_one() {
                 # the child process CWD to the neutral dir so startup cannot read
                 # cwd-relative files from the reviewed repo. --model honored:
                 # $MODEL (operator --model flag) wins, else `.auditor.model` from
-                # the USER busdriver.json, else the built-in default (see
-                # resolve_auditor_model in resolve-cli.sh). The EXIT/TERM
+                # the USER busdriver.json, else no model — there is no shipped
+                # default (see resolve_auditor_model in resolve-cli.sh; the
+                # no-model case is handled by the skip guard below). The EXIT/TERM
                 # trap rm -rf's the neutral dir even on a council grace-period
                 # kill, and handles the case where opencode created files in it
                 # (a bare rmdir would leak a non-empty dir).
@@ -953,7 +955,13 @@ dispatch_one() {
                     # Reason goes to "$outfile" too, not stderr alone — that is the
                     # precondition for routing an opencode bail to `skipped` (the
                     # batch banner would otherwise print "(no output)" and lose it).
-                    printf 'Skipped: %s\n' "no usable .auditor.model and no --model — auditor not dispatched" >> "$outfile" 2>/dev/null || true
+                    # Gate `_oc_no_model=1` on the write actually succeeding
+                    # (CodeRabbit finding on PR #666): with `|| true` alone, an
+                    # unwritable/full "$outfile" would silently classify as
+                    # `skipped` with no durable `Skipped:` marker anywhere — the
+                    # council loses the signal but the batch treats the voice as
+                    # non-failing. Leave the branch as `error` (via exit_code=1
+                    # falling through un-skipped) when the marker can't be written.
                     # NO cleanup here, deliberately: $_oc_cwd is not created until
                     # the sandbox is staged inside the subshell below, so at this
                     # point it is still the empty `local` init. An rmdir here would
@@ -968,7 +976,11 @@ dispatch_one() {
                     # failure mode, reported again by Codex on this change). An
                     # EXPLICIT `--cli opencode` still fails, because there the voice
                     # that cannot run IS the request.
-                    _oc_no_model=1
+                    if printf 'Skipped: %s\n' "no usable .auditor.model and no --model — auditor not dispatched" >> "$outfile" 2>/dev/null; then
+                        _oc_no_model=1
+                    else
+                        echo "busdriver: could not write the skip marker to \$outfile — classifying as error, not skipped" >&2
+                    fi
                     exit_code=1
                 fi
                 # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].

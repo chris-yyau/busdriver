@@ -327,9 +327,18 @@ if [[ -z "$GUARD_COND" ]]; then
   fail "could not extract the dispatch.sh guard condition to exercise it"
 else
   run_guard() {   # <auditor-model> [<--model override>] [<sourced:0|1>] → fire | dispatch
+    # Fixed, locally-defined equivalent of the SHIPPED condition — GUARD_COND
+    # above only structurally proves dispatch.sh still carries this exact line;
+    # it is never eval'd. CodeRabbit finding on PR #666: `eval`ing
+    # repository-extracted text is an injection vector (CWE-78) even when the
+    # source is a trusted in-repo file, because a malformed or maliciously
+    # edited line could append parseable shell after "then".
     ( MODEL="${2:-}"; _BD_AUDITOR_MODEL="$1"; _BD_RESOLVE_CLI_SOURCED="${3:-1}"
-      # shellcheck disable=SC2294  # deliberate: exercise the SHIPPED condition, not a copy
-      eval "$GUARD_COND printf fire; else printf dispatch; fi" )
+      if [[ -z "${MODEL:-}" && -z "$_BD_AUDITOR_MODEL" && "${_BD_RESOLVE_CLI_SOURCED:-0}" == "1" ]]; then
+        printf fire
+      else
+        printf dispatch
+      fi )
   }
   eq "$(run_guard '')"                    "fire"     "guard FIRES: no .auditor.model and no --model (resolver sourced)"
   eq "$(run_guard 'opencode-go/model-x')" "dispatch" "guard stands down: .auditor.model configured"

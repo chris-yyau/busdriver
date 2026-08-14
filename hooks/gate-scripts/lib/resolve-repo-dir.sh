@@ -581,13 +581,19 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     local -a _doc_key=() _doc_n=() _doc_mixed=() _doc_legacy=()
     local _k _hit _idx _mixed _legacy_src
     if [ -n "$clear_sh" ]; then
-        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason=""
+        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason="" _c_n=0
         while IFS= read -r -d '' _c_f; do
             _c_i=$((_c_i + 1))
             case $(( _c_i % 4 )) in
                 2) _c_sp="$_c_f" ;;
                 3) _c_dp="$_c_f" ;;
                 0) _c_reason="$_c_f"
+                   # Same 20-record window the render loop below uses, so this
+                   # inner linear scan stays constant-work rather than quadratic
+                   # in an uncapped legacy list. Counts therefore describe the
+                   # rendered window, which is exactly what the message shows.
+                   _c_n=$(( _c_n + 1 ))
+                   if [ "$_c_n" -gt 20 ]; then _c_sp=""; _c_dp=""; continue; fi
                    if [ -n "$_c_dp" ]; then
                        _k=0; _idx=-1
                        while [ "$_k" -lt "${#_doc_key[@]}" ]; do
@@ -614,6 +620,16 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             esac
         done <"$recs"
     fi
+    # Bound the RENDERED output. The classifier no longer caps legacy records
+    # (marker_ops _CAPS) because design-clear.sh's same-document screen needs to
+    # see every one of them — but this renderer runs on the latency-sensitive
+    # PreToolUse gate path, does a linear key scan per record, and shells out to
+    # `gate_marker_owner_note` (git) per rendered doc. Unbounded input would make
+    # that quadratic with unbounded output on every blocked write. Cap what is
+    # RENDERED and count the rest: the block message only has to be actionable,
+    # not exhaustive, and design-clear.sh (interactive, no git-per-record) is
+    # where the complete listing lives.
+    local _RCAP=20 _rendered=0 _extra=0
     local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))
@@ -621,6 +637,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             2) _sp="$_field" ;;                      # source_path (token file)
             3) _dp="$_field" ;;                      # doc_path (validated abspath, or empty)
             0) _reason="$_field"
+               if [ "$_rendered" -ge "$_RCAP" ]; then
+                   # Count only — skip the key scan AND the per-doc git call.
+                   _extra=$(( _extra + 1 )); _sp=""; _dp=""; continue
+               fi
+               _rendered=$(( _rendered + 1 ))
                if [ -n "$_dp" ]; then
                    _note="$(gate_marker_owner_note "$_dp" "$self_root")"
                    if [ "$_reason" = "legacy-pending" ]; then
@@ -695,6 +716,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                _sp=""; _dp="" ;;
         esac
     done <"$recs"
+    # Say so when the listing was cut, so a bounded message is never mistaken for
+    # a complete one. design-clear.sh (no git-per-record) shows the full set.
+    if [ "$_extra" -gt 0 ]; then
+        out="${out}  - … and ${_extra} more pending record(s) — run design-clear.sh with no args for the full listing\n"
+    fi
     [ -n "$out" ] || out="  - (design review pending)\n"
     printf '%s' "$out"
 }

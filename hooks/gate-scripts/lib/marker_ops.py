@@ -201,22 +201,46 @@ def cmd_arm(argv):
     return 1
 
 
+# Per-KIND emit budgets. A kind absent from this map is UNCAPPED.
+#
+# Only tokens are capped, and the asymmetry is the point (#665 review, Codex).
+# Token count grows on its own — one per edit that arms a review — so it is
+# unbounded in practice and needs a ceiling. The legacy union is bounded by the
+# `- ` lines of a list file the OPERATOR wrote, which the classifier already
+# reads in full; capping it buys nothing and costs both of the invariants below.
+#
+# A SHARED budget cannot satisfy both at once, which is what the two failed
+# attempts during PR #670 showed:
+#   * tokens emitted first  -> a doc with >= K tokens buries its own same-doc
+#     legacy marker, and design-clear.sh's all-or-nothing screen drains past it;
+#   * legacy emitted first  -> an unrelated legacy backlog of >= K entries emits
+#     ZERO token records, so no audited release is possible at all and
+#     re-running never helps (the same entries refill the cap every time);
+#   * a split budget (K each) -> the first bug returns whenever legacy > K.
+# Uncapping legacy satisfies both: every legacy record is always visible (so the
+# same-doc screen can never miss one), and tokens keep a full budget of their own
+# (so they can never be starved).
+_CAPS = {"token": K}
+
+
 class _Emitter:
-    """Streams NUL-terminated fields, four per pending record, capped at K."""
+    """Streams NUL-terminated fields, four per pending record, capped per KIND."""
 
     def __init__(self):
         self.pending = False
-        self._n = 0
+        self._n = {}
         self._w = sys.stdout.buffer
 
     def add(self, kind, source_path, doc_path, reason):
         self.pending = True
-        if self._n >= K:
+        cap = _CAPS.get(kind)
+        n = self._n.get(kind, 0)
+        if cap is not None and n >= cap:
             return
         for field in (kind, source_path, doc_path, reason):
             self._w.write(field.encode("utf-8", "surrogateescape"))
             self._w.write(b"\0")
-        self._n += 1
+        self._n[kind] = n + 1
 
 
 def _worktree_roots(anchor):
@@ -407,23 +431,17 @@ def cmd_classify(argv):
     if roots is None:
         return 2  # git enumeration failure -> cannot build the set
     em = _Emitter()
-    # LEGACY FIRST, deliberately (#665 review, Codex). The emitter budget K is
-    # SHARED, so whichever classifier runs first can starve the other. With
-    # tokens first, a doc holding >= K tokens filled the budget and its own
-    # same-doc legacy marker never got emitted at all — invisible to every
-    # consumer, including design-clear.sh's all-or-nothing refusal, which would
-    # then drain the doc's whole token set and report success while that marker
-    # stayed armed.
+    # Legacy first, and UNCAPPED (see _CAPS). The budgets are per-kind, so this
+    # ordering no longer carries the invariant on its own — it is kept because a
+    # doc's anomalous state is what an operator most needs to see first in a
+    # truncated block message.
     #
-    # Reversing the order makes the invariant unconditional: legacy records
-    # either fit entirely under the cap, or fill it and NO token is emitted (so
-    # there is nothing for a bulk release to drain). Either way, if a token for
-    # doc X is visible then every legacy record is too. Truncation can now only
-    # ever drop TOKENS, which under-reports — the safe direction, and what the
-    # "others MAY remain, re-run" messaging already tells the operator.
-    #
-    # Legacy entries cannot realistically starve tokens: the union is one small
-    # list file per worktree root, not a directory that grows one entry per edit.
+    # The invariant that matters: every legacy record is always emitted, so
+    # design-clear.sh's same-document screen can never miss one, while tokens
+    # keep a full budget of their own and can never be starved by an unrelated
+    # legacy backlog. Truncation can only ever drop healthy TOKENS, which
+    # under-reports — the safe direction, and what the "others MAY remain,
+    # re-run" messaging tells the operator.
     #
     # CONTRACT CHANGE: exit 2 (token dir unlistable) can now carry partial legacy
     # records on stdout, where before it always emitted nothing. Verified safe for

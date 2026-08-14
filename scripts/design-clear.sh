@@ -52,10 +52,12 @@
 # accumulates a dozen or more (#665). --all-for-doc drains exactly that: the doc
 # is named (stable, unlike an index), no other doc can be touched, and the trail
 # still gets one design-marker-cleared event per released token.
-# It clears every token the CLASSIFIER LISTED, which is capped at 20 records —
-# so a doc holding more than that takes more than one run, and the closing line
-# says when the cap was hit. It is not a promise to empty the directory in one
-# shot; it is a promise never to touch a token belonging to another doc.
+# It clears every token the CLASSIFIER LISTED. The classifier's emit budget is
+# PER-KIND: TOKEN records are capped at 20, legacy records are uncapped, so an
+# unrelated legacy backlog can never hide a doc's tokens. A doc holding more
+# than 20 tokens takes more than one run and the closing line says so. It is not
+# a promise to empty the directory in one shot; it is a promise never to touch a
+# token belonging to another doc.
 #
 # Exit: 0 ok / 1 nothing to do or refused / 2 cannot resolve marker state.
 
@@ -142,7 +144,18 @@ SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
 # simultaneously-pending design docs. Add the mode if that ever happens for real.
 CAP=20
 TRUNCATED=0
-[ "${#SRCS[@]}" -ge "$CAP" ] && TRUNCATED=1
+# Count TOKEN records only. The classifier's budget is per-kind and legacy is
+# uncapped (marker_ops _CAPS), so a large legacy list no longer means the token
+# listing was cut short — testing the combined total would report truncation on
+# a run where every token was in fact shown, and tell the operator to re-run for
+# tokens that do not exist.
+_ntok=0
+_n=0
+while [ "$_n" -lt "${#KINDS[@]}" ]; do
+    [ "${KINDS[$_n]}" = "token" ] && _ntok=$(( _ntok + 1 ))
+    _n=$(( _n + 1 ))
+done
+[ "$_ntok" -ge "$CAP" ] && TRUNCATED=1
 
 truncation_note() {
     [ "$TRUNCATED" -eq 1 ] || return 0
@@ -151,11 +164,20 @@ truncation_note() {
 }
 
 list_tokens() {
-    local n=0 note
+    # `gate_marker_owner_note` shells out to git once or twice PER RECORD, and
+    # legacy records are no longer capped by the classifier (marker_ops _CAPS),
+    # so a long legacy list would mean unbounded subprocess work here. Bound the
+    # NOTES rather than the listing: this is the tool that is supposed to show
+    # the complete set, and the note is a which-worktree convenience, not part
+    # of the record. Records past the budget still list, just without it.
+    local n=0 note notes_left=20
     printf 'Pending design-review tokens:\n\n'
     while [ "$n" -lt "${#SRCS[@]}" ]; do
         note=""
-        [ -n "${DOCS[$n]}" ] && note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
+        if [ -n "${DOCS[$n]}" ] && [ "$notes_left" -gt 0 ]; then
+            note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
+            notes_left=$(( notes_left - 1 ))
+        fi
         if [ -n "${DOCS[$n]}" ] && [ "${KINDS[$n]}" = "token" ]; then
             printf '  [%d] %s%s\n' "$(( n + 1 ))" "${DOCS[$n]}" "$note"
         elif [ -n "${DOCS[$n]}" ]; then
@@ -230,23 +252,40 @@ else
     # spelling: normalize the selector the same way arming did, so a relative
     # path or a `..` spelling still resolves to the one true token.
     NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null || printf '%s' "$SELECTOR")"
+    # Collect EVERY match first, then decide what to say. Erroring on the second
+    # match (as this used to) meant the message was chosen before the rest of the
+    # set was known — so a doc whose set includes a legacy record still got told
+    # to run --all-for-doc, which the all-or-nothing check below then refuses.
+    # Same rule the gate renderer follows: never print a command that cannot
+    # succeed (Codex, PR #670).
+    MIXED_SRC=""
     n=0
     while [ "$n" -lt "${#DOCS[@]}" ]; do
         if [ -n "${DOCS[$n]}" ] && [ "${DOCS[$n]}" = "$NORM" ]; then
-            if [ "$ALL_FOR_DOC" -eq 0 ] && [ "${#TARGETS[@]}" -ge 1 ]; then
-                printf "design-clear: '%s' matches more than one token.\n\n" "$SELECTOR" >&2
-                printf 'Editing a doc arms a fresh token each time, so this is the normal state\n' >&2
-                printf 'of a doc that went through a few review rounds. Release them together:\n' >&2
-                # Shell-quote it: this line is meant to be COPIED and run, so a
-                # path with a space or apostrophe must survive the round trip.
-                printf "  design-clear.sh --all-for-doc '%s'\n\n" "${SELECTOR//\'/\'\\\'\'}" >&2
-                printf 'Or pick exactly one by its listed index:  design-clear.sh <index>\n' >&2
-                exit 2
-            fi
             TARGETS+=( "$n" )
+            if [ "${KINDS[$n]}" != "token" ] && [ -z "$MIXED_SRC" ]; then
+                MIXED_SRC="${SRCS[$n]}"
+            fi
         fi
         n=$(( n + 1 ))
     done
+    if [ "$ALL_FOR_DOC" -eq 0 ] && [ "${#TARGETS[@]}" -gt 1 ]; then
+        printf "design-clear: '%s' matches more than one pending record.\n\n" "$SELECTOR" >&2
+        if [ -n "$MIXED_SRC" ]; then
+            printf 'One of them is a legacy list-file marker, which names several docs at\n' >&2
+            printf 'once — clearing it would be a blanket wipe, so NO selector can release\n' >&2
+            printf 'this doc while that entry stands (--all-for-doc refuses it too). Remove\n' >&2
+            printf 'this doc from the list file by hand first:\n  %s\n' "$MIXED_SRC" >&2
+        else
+            printf 'Editing a doc arms a fresh token each time, so this is the normal state\n' >&2
+            printf 'of a doc that went through a few review rounds. Release them together:\n' >&2
+            # Shell-quote it: this line is meant to be COPIED and run, so a
+            # path with a space or apostrophe must survive the round trip.
+            printf "  design-clear.sh --all-for-doc '%s'\n\n" "${SELECTOR//\'/\'\\\'\'}" >&2
+            printf 'Or pick exactly one by its listed index:  design-clear.sh <index>\n' >&2
+        fi
+        exit 2
+    fi
     # --all-for-doc: also catch UNVALIDATED "token" records for the SAME doc.
     # `arm` names a token `<sha(norm)>.<nonce>` before writing its body, so a
     # write that fails partway (truncated/forged) leaves a correctly-named file

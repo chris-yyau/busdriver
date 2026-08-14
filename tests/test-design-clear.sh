@@ -828,5 +828,81 @@ check "cap-malformed: no audit event written" "$EVENTS_BEFORE" \
 rm -f "$MARKER_DIR/$IOTA_SHA."*
 check "cap-malformed: fixture drained" "0" "$(doc_tokens iota-design.md)"
 
+# -- An unrelated legacy backlog must not starve token records ---------------
+# The emit budget is PER-KIND and legacy is uncapped (marker_ops _CAPS). With a
+# single shared budget, a legacy list holding >= K=20 pending entries consumed
+# it entirely and NO token record was emitted, so no audited release was
+# possible at all -- and re-running never helped, because the same entries
+# refilled the cap every time. Uncapping legacy keeps every legacy record
+# visible (the same-doc screen above depends on that) while tokens keep a full
+# budget of their own (Codex, PR #670).
+LEGACY_MARKER="$REPO/.claude/design-review-needed.local.md"
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 25 ]; do
+  : >"$REPO/docs/plans/old$_i-design.md"
+  printf -- '- %s\n' "$REPO/docs/plans/old$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+: >"$REPO/docs/plans/mine-design.md"
+arm "$REPO/docs/plans/mine-design.md"
+arm "$REPO/docs/plans/mine-design.md"
+arm "$REPO/docs/plans/mine-design.md"
+RECS_OUT="$TMP/recs-starve"
+in_repo gate_marker_pending "$REPO" >"$RECS_OUT" 2>/dev/null
+check "starvation: every one of the 25 legacy entries is emitted" "25" \
+  "$(tr '\0' '\n' < "$RECS_OUT" | awk 'NR%4==1' | grep -c '^legacy$' || true)"
+check "starvation: token records survive the legacy backlog" "1" \
+  "$([ "$(tr '\0' '\n' < "$RECS_OUT" | awk 'NR%4==1' | grep -c '^token$' || true)" -ge 3 ] && echo 1 || echo 0)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/mine-design.md" --yes 2>&1)"; RC=$?
+check "starvation: the operator can still release their own doc" "0" "$RC"
+check "starvation: all 3 of its tokens released" "0" "$(doc_tokens mine-design.md)"
+check "starvation: one audit event per released token" "$(( EVENTS_BEFORE + 3 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+# ...and the closing line must not claim truncation: TRUNCATED counts TOKEN
+# records, so a big legacy list no longer reports tokens that were never cut.
+case "$OUT" in
+  *"MAY remain"*) no "starvation: does not misreport truncation" "$OUT" ;;
+  *) ok "starvation: does not misreport truncation" ;;
+esac
+rm -f "$LEGACY_MARKER"
+
+# -- The multi-match message must not recommend a doomed bulk command ---------
+# A doc with a token AND a legacy entry matches >1 record, so the plain selector
+# refuses -- but --all-for-doc refuses it too (all-or-nothing on the non-token
+# record). Recommending it sends the operator to a command that cannot work; the
+# gate renderer already says "edit the legacy list first" and this message must
+# agree (Codex, PR #670).
+arm "$REPO/docs/plans/mine-design.md"
+MINE_NORM="$(cat "$(grep -rl -- '/mine-design.md' "$MARKER_DIR" | head -1)")"
+printf -- '- %s\n' "$MINE_NORM" >"$LEGACY_MARKER"
+OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/mine-design.md" 2>&1 )"; RC=$?
+check "mixed-selector: still refuses" "2" "$RC"
+case "$OUT" in
+  *"design-clear.sh --all-for-doc"*)
+    no "mixed-selector: must NOT recommend the bulk command" "$OUT" ;;
+  *) ok "mixed-selector: must NOT recommend the bulk command" ;;
+esac
+case "$OUT" in
+  *"legacy list-file marker"*) ok "mixed-selector: names the legacy marker as the blocker" ;;
+  *) no "mixed-selector: names the legacy marker as the blocker" "$OUT" ;;
+esac
+case "$OUT" in
+  *"$LEGACY_MARKER"*) ok "mixed-selector: names the file to edit" ;;
+  *) no "mixed-selector: names the file to edit" "$OUT" ;;
+esac
+# A clean multi-token doc DOES still get the bulk recommendation. Needs TWO
+# tokens to reach the multi-match branch -- with one, the plain selector just
+# clears it.
+rm -f "$LEGACY_MARKER"
+arm "$REPO/docs/plans/mine-design.md"
+OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/mine-design.md" 2>&1 )"; RC=$?
+check "mixed-selector: clean multi-token doc still refuses" "2" "$RC"
+case "$OUT" in
+  *"design-clear.sh --all-for-doc"*) ok "mixed-selector: clean multi-token doc keeps the bulk hint" ;;
+  *) no "mixed-selector: clean multi-token doc keeps the bulk hint" "$OUT" ;;
+esac
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

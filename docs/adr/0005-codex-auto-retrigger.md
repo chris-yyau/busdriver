@@ -9,6 +9,36 @@ Amended (2026-07-18): pr-grind's inline `--opus` execution mode was removed
 — the dispatcher loop and the worker's Step 6.5. References below to the "Inline
 `--opus`" detection site and the three-way ledger mirror are historical.
 
+**Amended (2026-08-15, issue #673): one-shot → bounded N, paced.** The re-trigger
+is now at most `PR_GRIND_CODEX_RETRIGGER_MAX` attempts (default 3) per (PR, HEAD),
+spaced by `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` (default 900s). Every "one-shot"
+reference below should be read as "bounded budget"; `MAX=1` restores the original
+behavior exactly.
+
+*Why the original reasoning does not survive.* This ADR justified one-shot purely
+as ANTI-SPAM (see the first Guards bullet) — never as a safety boundary. What it
+did not know is how much load the nudge carries. #673 measured it: after the FIRST
+fix round, the Codex ack tiers can no longer clear on their own. `ack-ledger.sh`'s
+outdated short-circuit (`:500-508`) fires forever once any Codex thread goes
+outdated, and its ALL-OR-STALE freshness proof (`:558-594`) is re-broken by every
+push, because a thread disposed in round N never gains a newer resolver comment
+afterwards. Both were reproduced against PR #670's live thread data, and each is
+independently sufficient to hold Codex `stale` for the life of the PR.
+
+So from round 2 onward a fresh Tier-F 👍 is the *only* exit, and this nudge is the
+only thing that asks for one. A single-use mechanism was holding up a gate it is
+structurally required to clear: one dropped or ignored nudge (PR #670 — delivered
+at 10:32:19Z, no Codex activity for the following 66 minutes) made
+`.claude/skip-pr-grind.local` the sole remaining exit, turning a deliberate risk
+acceptance into routine plumbing. The budget stays bounded, so this ADR's anti-spam
+intent is preserved; only its assumption that one attempt always suffices is
+retracted.
+
+**This does not close #673.** A bounded retry raises the probability of a Tier-F
+ack; it cannot manufacture one if Codex is genuinely unresponsive. The
+terminal-but-unacked classification that would close the dead end is merge-gate
+semantics and is tracked separately.
+
 ## Context
 
 pr-grind gates a merge on a *fresh per-HEAD* ack from each AI reviewer. Codex
@@ -70,7 +100,10 @@ above) is the caller's, because those signals live in the caller's context.
 
 **Guards / safety:**
 
-- **One-shot per (PR, HEAD)** — the marker prevents re-trigger spam across
+- **One-shot per (PR, HEAD)** *(amended 2026-08-15 → bounded N + cooldown, #673 —
+  this bullet's anti-spam rationale is exactly why the change is safe: it names no
+  safety boundary, so raising the budget from 1 to a small N loosens nothing)* —
+  the marker prevents re-trigger spam across
   consecutive wait-rounds on one HEAD; a new push (new HEAD) is eligible again.
   Per-(PR,HEAD) scoping means concurrent grinds on different PRs never race on a
   shared marker (same rationale as pr-grind's per-PR solo-opt-in snapshot).
@@ -153,7 +186,13 @@ expressions of trigger condition #1:
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (9 cases, `gh` stubbed): one-shot post,
+- Covered by `tests/test-codex-retrigger.sh` (16 cases since #673, `gh` stubbed).
+  The #673 cases pin the budget in BOTH directions — it spends across rounds AND
+  stops at MAX — plus `MAX=1` restoring one-shot, a pre-#673 marker counting as
+  attempt 1 spent (so an upgrade cannot hand in-flight PRs a fresh budget), the
+  cooldown blocking while hot and releasing once elapsed, a malformed `MAX` falling
+  back to the default rather than unlimited, and a failed post spending no attempt.
+  The original 9: one-shot post,
   marker idempotency, opt-out, fail-safe (post failure → released claim, exit 0, no
   marker), custom phrase, bad-input skip, usage error, `gh` missing, and sequential
   idempotency (two real runs → exactly one post).
@@ -202,9 +241,15 @@ expressions of trigger condition #1:
 - Codex's GitHub integration changes its signal (e.g. starts emitting an `APPROVED`
   `/reviews` entry or a check-run on re-review) → the re-trigger may become
   unnecessary; reassess whether the ledger can ack Codex without it.
-- A repo reports re-trigger comment noise → consider tightening the trigger (e.g.
-  require N consecutive Codex-only-stale wait-rounds before posting) or lengthening
-  the one-shot scope.
+- A repo reports re-trigger comment noise → lower `PR_GRIND_CODEX_RETRIGGER_MAX`
+  (1 restores one-shot) or raise `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` before
+  changing code; only if neither knob helps, consider tightening the trigger (e.g.
+  require N consecutive Codex-only-stale wait-rounds before posting).
+- Codex answers the *first* nudge essentially always, across many PRs → the budget
+  is dead weight; drop `MAX` back to 1 and keep the cooldown.
+- Codex ignores all N attempts often enough that operators still reach for the skip
+  file → the budget is not the binding constraint, and the terminal-but-unacked
+  classification (#673) is what needs shipping, not a larger N.
 - The trigger phrase or connector login changes upstream → update the
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` default / the `chatgpt-codex-connector` login.
 

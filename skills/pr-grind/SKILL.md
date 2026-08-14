@@ -550,8 +550,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # silently skipped on exactly the PRs that end in an operator bail. Firing here,
   │     # before any merge-path branching, makes the nudge independent of that shortcut;
   │     # the bounded grace POLL stays in COMPLETION (it only matters right before merge).
-  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's one-shot per-(PR,HEAD)
-  │     # marker dedupes the POST, so at most one `@codex review` is ever posted per HEAD.
+  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's per-(PR,HEAD) attempt
+  │     # markers plus its cooldown bound the POST, so the two call sites cannot compound —
+  │     # at most PR_GRIND_CODEX_RETRIGGER_MAX (default 3) `@codex review` posts per HEAD,
+  │     # spaced by PR_GRIND_CODEX_RETRIGGER_COOLDOWN (default 900s). Pre-#673 this was a
+  │     # hard one-shot; that made a single dropped nudge terminal for the PR (see ADR 0005).
   │     # COST (stated honestly, per the #467 review): on a clean `none` round this block runs
   │     # the wrapper's detection (`gh repo view` + the Codex-active GraphQL probe) ONCE, and
   │     # COMPLETION later re-derives active-ness independently — so a Codex-active / force-on

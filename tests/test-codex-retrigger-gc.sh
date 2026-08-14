@@ -93,5 +93,28 @@ D="$TMP/nomarkers"; mkdir -p "$D/.claude"
 RC=0; ( cd "$D" && "$BASH_BIN" "$GC" 123 ) || RC=$?
 [ "$RC" = 0 ] && ok "no matching markers → clean no-op (exit 0)" || fail "no markers: RC=$RC"
 
+# 8. #673 slot markers — codex-retrigger.sh now writes one marker PER ATTEMPT
+#    (`...-<HEAD8>.local` for attempt 1, `...-<HEAD8>-<n>.local` for n >= 2). The
+#    prune glob `...-pr<PR>-*.local` covers the suffixed forms only because `*`
+#    spans the slot suffix too — true, but true by accident. Pin it: an orphaned
+#    slot marker would suppress a whole attempt budget on a REUSED head (a force-push
+#    back to a previously-nudged SHA), which is exactly the silent
+#    no-more-nudges state #673 exists to remove.
+D="$TMP/slots"; mkdir -p "$D/.claude"
+mk "$(marker "$D/.claude" 789 dddddddd)"                                  # attempt 1
+mk "$D/.claude/.pr-grind-codex-retriggered-pr789-dddddddd-2.local"        # attempt 2
+mk "$D/.claude/.pr-grind-codex-retriggered-pr789-dddddddd-3.local"        # attempt 3
+mk "$D/.claude/.pr-grind-codex-retriggered-pr7890-eeeeeeee-2.local"       # different PR
+RC=0; ( cd "$D" && "$BASH_BIN" "$GC" 789 ) || RC=$?
+if [ "$RC" = 0 ] \
+   && [ ! -e "$(marker "$D/.claude" 789 dddddddd)" ] \
+   && [ ! -e "$D/.claude/.pr-grind-codex-retriggered-pr789-dddddddd-2.local" ] \
+   && [ ! -e "$D/.claude/.pr-grind-codex-retriggered-pr789-dddddddd-3.local" ] \
+   && [ -e "$D/.claude/.pr-grind-codex-retriggered-pr7890-eeeeeeee-2.local" ]; then
+  ok "slot markers (#673): pruned every attempt slot for pr789, kept pr7890"
+else
+  fail "slot markers: RC=$RC $(ls "$D/.claude")"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

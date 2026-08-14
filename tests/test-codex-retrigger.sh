@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # tests/test-codex-retrigger.sh
 #
-# Verifies scripts/codex-retrigger.sh — the one-shot-per-(PR,HEAD) `@codex review`
+# Verifies scripts/codex-retrigger.sh — the bounded, paced per-(PR,HEAD) `@codex review`
 # re-trigger that breaks the Codex-stale-on-unchanged-HEAD wait-round dead-end.
 #
 # `gh` is stubbed (a fake on PATH) that records every invocation and the --body it
 # was given; the script's marker is redirected to a temp BUSDRIVER_STATE_DIR so the
 # real repo is never touched. We assert the OBSERVABLE contract: when (and only
-# when) a post happens, and that a failed post never writes the one-shot marker
+# when) a post happens, and that a failed post never writes the attempt marker
 # (so the next wait-round retries) and never returns non-zero (never stales gate).
 
 set -euo pipefail
@@ -70,7 +70,7 @@ posts_in() { [ -f "$1" ] && grep -c 'pr comment' "$1" 2>/dev/null || echo 0; }
 
 # ============================================================
 # 1. HAPPY PATH — marker absent, opt-in default ON: posts exactly one
-#    `@codex review` and writes the one-shot marker. Exit 0.
+#    `@codex review` and writes the attempt-1 marker. Exit 0.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
@@ -84,7 +84,9 @@ else
 fi
 
 # ============================================================
-# 2. ONE-SHOT — marker already present for this (PR,HEAD): no post, exit 0.
+# 2. SECOND ROUND, DEFAULT CONFIG — attempt-1 marker already present for this
+#    (PR,HEAD): no post, exit 0. Held by the default 900s cooldown since #673
+#    (pre-#673 it was the hard one-shot marker); the observable contract is the same.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 : > "$STATE/$MARKER_NAME"          # pre-existing marker
@@ -92,9 +94,9 @@ rc=0
 ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
        "$BASH_BIN" "$RT" "$PR" "$HEAD" ) || rc=$?
 if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ]; then
-  ok "one-shot: marker present → no second post (exit 0)"
+  ok "default config: attempt-1 marker present → no second post (exit 0)"
 else
-  fail "one-shot: expected no post, rc=$rc posts=$(posts_in "$CALLLOG")"
+  fail "default config: expected no post, rc=$rc posts=$(posts_in "$CALLLOG")"
 fi
 
 # ============================================================
@@ -195,8 +197,8 @@ fi
 
 # ============================================================
 # 9. SEQUENTIAL IDEMPOTENCY — two real invocations on the same (PR,HEAD): the
-#    first posts + claims the marker, the second is a no-op. Validates the one-shot
-#    guarantee end-to-end (real post, then real re-run), not just a pre-seeded marker.
+#    first posts + claims the marker, the second is a no-op. Validates the dedup
+#    end-to-end (real post, then real re-run), not just a pre-seeded marker.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
@@ -208,6 +210,114 @@ if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$STATE/$MARKER_NAM
   ok "sequential idempotency: two real runs → exactly one post, marker held"
 else
   fail "sequential idempotency: rc=$rc posts=$(posts_in "$CALLLOG") (expected 1)"
+fi
+
+# ============================================================
+# #673 — BOUNDED-N RE-TRIGGER. ADR 0005 shipped one-shot per (PR,HEAD) for
+# anti-spam reasons only, which made a single dropped nudge terminal for the PR —
+# and #673 showed the Codex ack tiers cannot self-clear after the first fix round,
+# so this nudge is the ONLY exit. It is now N attempts (default 3) paced by a
+# cooldown. Cases 1–9 above already pin the DEFAULT-config behavior (the default
+# 900s cooldown is what holds cases 2 and 9 to a single post); these pin that the
+# budget both SPENDS and STOPS, that a failure costs nothing, and that a marker
+# from the pre-#673 plugin is honored rather than granting a fresh budget.
+# ============================================================
+marker_n() {
+  if [ "$1" = 1 ]; then printf '%s' "$MARKER_NAME"
+  else printf '.pr-grind-codex-retriggered-pr%s-%s-%s.local' "$PR" "$HEAD8" "$1"; fi
+}
+# Run once in a sandbox; extra `VAR=value` args are passed as environment.
+run_rt() {
+  ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
+    env "$@" "$BASH_BIN" "$RT" "$PR" "$HEAD" ) >/dev/null 2>&1
+}
+
+# --- 10/11. The budget spends across rounds, then STOPS. Both directions of the
+#            same guard: a guard that only ever passes is not a guard.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in 1 2 3 4; do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3; done
+if [ "$(posts_in "$CALLLOG")" = 3 ] \
+   && [ -e "$STATE/$(marker_n 1)" ] && [ -e "$STATE/$(marker_n 2)" ] && [ -e "$STATE/$(marker_n 3)" ]; then
+  ok "bounded-N: 4 rounds with cooldown disabled → exactly 3 posts, one marker per attempt"
+else
+  fail "bounded-N: posts=$(posts_in "$CALLLOG") (expected 3) slots=$([ -e "$STATE/$(marker_n 1)" ] && printf 1)$([ -e "$STATE/$(marker_n 2)" ] && printf 2)$([ -e "$STATE/$(marker_n 3)" ] && printf 3)"
+fi
+
+# --- 12. MAX=1 restores ADR 0005's exact one-shot (the documented escape hatch).
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=1
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=1
+if [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$STATE/$(marker_n 2)" ]; then
+  ok "MAX=1: restores one-shot exactly (2 rounds → 1 post, no slot 2)"
+else
+  fail "MAX=1: posts=$(posts_in "$CALLLOG") (expected 1)"
+fi
+
+# --- 13. A marker left by the PRE-#673 plugin uses the unsuffixed slot-1 name, so
+#         it must read as "attempt 1 already spent". If the scan missed it, the
+#         upgrade would silently hand every in-flight PR a fresh full budget.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+: > "$STATE/$MARKER_NAME"
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$STATE/$(marker_n 2)" ] && [ ! -e "$STATE/$(marker_n 3)" ]; then
+  ok "legacy marker: counted as attempt 1 spent → next post lands in slot 2"
+else
+  fail "legacy marker: posts=$(posts_in "$CALLLOG") slot2=$([ -e "$STATE/$(marker_n 2)" ] && echo yes || echo no)"
+fi
+
+# --- 14. The cooldown must BLOCK while hot and RELEASE once elapsed. Backdated with
+#         `touch -t` (POSIX) rather than a sleep, so the elapsed branch is genuinely
+#         executed without slowing the suite.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # attempt 1
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # blocked: still hot
+hot=$(posts_in "$CALLLOG")
+touch -t 202001010000 "$STATE/$(marker_n 1)"               # age it past any cooldown
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # attempt 2: cooldown elapsed
+if [ "$hot" = 1 ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$(marker_n 2)" ]; then
+  ok "cooldown: blocks while hot (1 post), releases once elapsed (2 posts)"
+else
+  fail "cooldown: hot=$hot (expected 1) after-elapse=$(posts_in "$CALLLOG") (expected 2)"
+fi
+
+# --- 15. A malformed budget knob must fall back to the DEFAULT, never to unlimited.
+#         Fail-safe direction matters here: the wrong fallback spams the PR.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in 1 2 3 4 5; do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=not-a-number; done
+if [ "$(posts_in "$CALLLOG")" = 3 ]; then
+  ok "malformed MAX: falls back to default 3, not unlimited"
+else
+  fail "malformed MAX: posts=$(posts_in "$CALLLOG") (expected 3)"
+fi
+
+# --- 15b. MAX has a CEILING, and it is load-bearing rather than tidiness: MAX drives
+#          the slot-scan loop, so an accidental huge-but-valid integer would run that
+#          many filesystem probes every wait-round and hang the merge gate (litmus
+#          MEDIUM on this PR). Out-of-range must land on the DEFAULT, not the ceiling
+#          and not unlimited. 10 is accepted; 11 and a fat-fingered 999999999 are not.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in $(seq 1 12); do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=10; done
+at_ceiling=$(posts_in "$CALLLOG")
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in $(seq 1 12); do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=999999999; done
+over_ceiling=$(posts_in "$CALLLOG")
+if [ "$at_ceiling" = 10 ] && [ "$over_ceiling" = 3 ]; then
+  ok "MAX ceiling: 10 honored, 999999999 rejected to default 3 (bounds the scan loop)"
+else
+  fail "MAX ceiling: at-ceiling=$at_ceiling (expected 10) over-ceiling=$over_ceiling (expected 3)"
+fi
+
+# --- 16. A failed post must spend NO attempt and start NO cooldown — the claim is
+#         released, so the next round re-derives the SAME slot. This is why the scan
+#         takes the highest occupied slot rather than counting markers.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt STUB_GH_FAIL=1 PR_GRIND_CODEX_RETRIGGER_MAX=3
+failed_marker=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$failed_marker" = no ] && [ -e "$STATE/$(marker_n 1)" ] && [ ! -e "$STATE/$(marker_n 2)" ]; then
+  ok "failed post: spends no attempt, no cooldown — next round reclaims slot 1"
+else
+  fail "failed post: marker-after-failure=$failed_marker slot2=$([ -e "$STATE/$(marker_n 2)" ] && echo yes || echo no)"
 fi
 
 echo "Results: $passed passed, $failed failed"

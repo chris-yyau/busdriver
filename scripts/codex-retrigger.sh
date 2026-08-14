@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/codex-retrigger.sh — one-shot-per-(PR,HEAD) `@codex review` re-trigger.
+# scripts/codex-retrigger.sh — bounded, paced `@codex review` re-trigger per (PR,HEAD).
 #
 # WHY: Codex (`chatgpt-codex-connector`) only re-reviews a PR on a *push*. On a
 # pr-grind WAIT-round where HEAD is unchanged (no fix to ship) and Codex is the
@@ -10,34 +10,76 @@
 # pr-grind exhausts `--max-wait`, and bails. Posting a manual `@codex review`
 # re-triggers Codex (it re-reviews the current HEAD and emits a fresh 👍 → Tier-F
 # ack, OR new findings → worker triages next round). This helper does that
-# automatically, AT MOST ONCE per HEAD, so the gate becomes convergent instead of
-# dead-ending. Same class of dead-end as PR #217's content-identity carry-forward
-# (ack-freshness gating with no recovery path) — applied to Codex's reaction tier.
+# automatically, so the gate becomes convergent instead of dead-ending. Same class
+# of dead-end as PR #217's content-identity carry-forward (ack-freshness gating
+# with no recovery path) — applied to Codex's reaction tier.
 #
-# SCOPE — this helper is pure MECHANISM. It posts the comment at most once per
-# (PR, HEAD) and writes a marker. The POLICY (Codex is the sole stale blocker, the
-# round is a wait-round, HEAD is unchanged, CI is green, no unresolved actionable
-# threads) is evaluated by the CALLER (pr-grind dispatcher / worker) from its
-# RESULT_* context; this script trusts the caller's decision to invoke and only
-# guards against spam (one-shot marker) and operator opt-out.
+# WHY BOUNDED-N RATHER THAN ONE-SHOT (#673). ADR 0005 shipped this as one-shot per
+# (PR, HEAD) and named its rationale explicitly and only ANTI-SPAM ("prevents
+# re-trigger spam across consecutive wait-rounds on one HEAD") — never a safety
+# boundary. That made a single dropped or ignored nudge terminal for the whole PR,
+# and #673 measured how much rides on it: after the FIRST fix round, the Codex ack
+# tiers can no longer clear on their own. `ack-ledger.sh`'s outdated short-circuit
+# (:500-508) fires forever once any Codex thread goes outdated, and its ALL-OR-STALE
+# freshness proof (:558-594) is re-broken by every push, because a thread disposed
+# in round N never gains a newer resolver comment afterwards. Both were reproduced
+# against PR #670 and each is independently sufficient. So from round 2 onward a
+# fresh Tier-F 👍 is the ONLY exit, and this nudge is the only thing that asks for
+# one — a single-use mechanism holding up a gate it is structurally required to
+# clear. It is now N attempts (default 3) spaced by a cooldown: still bounded, so
+# ADR 0005's anti-spam intent holds, but a dropped nudge is recoverable without an
+# operator. Set PR_GRIND_CODEX_RETRIGGER_MAX=1 to restore the exact old behavior.
+#
+# SCOPE — this helper is pure MECHANISM. It posts the comment at most N times per
+# (PR, HEAD), paced, and writes a marker per attempt. The POLICY (Codex is the sole
+# stale blocker, the round is a wait-round, HEAD is unchanged, CI is green, no
+# unresolved actionable threads) is evaluated by the CALLER (pr-grind dispatcher /
+# worker) from its RESULT_* context; this script trusts the caller's decision to
+# invoke and only guards against spam (attempt budget + cooldown) and operator opt-out.
 #
 # CONTRACT — fail-SAFE: a failed re-trigger must NEVER stale the gate.
 #   Usage:  codex-retrigger.sh <pr-number> <head-sha> [owner/repo]
 #   Exit 2 ONLY on missing required args (a wiring bug; surfaced by tests).
-#   Exit 0 on every OPERATIONAL path — opt-out, bad input, marker present, gh
-#   missing, post failure — so a caller that forgets `|| true` still cannot block
-#   merge. Wired call sites SHOULD nevertheless append `|| true` for defence.
-#   The marker is written ONLY after a CONFIRMED successful post, so a transient
-#   `gh` failure is retried on the next wait-round (still bounded by `--max-wait`).
+#   Exit 0 on every OPERATIONAL path — opt-out, bad input, budget spent, cooling
+#   down, gh missing, post failure — so a caller that forgets `|| true` still cannot
+#   block merge. Wired call sites SHOULD nevertheless append `|| true` for defence.
+#   A marker is written ONLY after a CONFIRMED successful post, so a transient
+#   `gh` failure is retried on the next wait-round WITHOUT spending an attempt or
+#   starting a cooldown (still bounded by `--max-wait`).
 #
 # Opt-out:  PR_GRIND_CODEX_RETRIGGER=0           (default ON; any non-"0" => on)
 # Phrase:   PR_GRIND_CODEX_RETRIGGER_PHRASE      (default "@codex review"; for
 #                                                 forks whose Codex connector uses
 #                                                 a different trigger phrase)
-# Marker:   ${BUSDRIVER_STATE_DIR:-.claude}/.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local
+# Budget:   PR_GRIND_CODEX_RETRIGGER_MAX         (default 3; attempts per (PR,HEAD).
+#                                                 1 restores ADR 0005 one-shot.)
+# Pacing:   PR_GRIND_CODEX_RETRIGGER_COOLDOWN    (default 900s between attempts; 0
+#                                                 disables pacing. Without pacing,
+#                                                 consecutive wait-rounds seconds
+#                                                 apart would burn the whole budget
+#                                                 before Codex could plausibly answer
+#                                                 — re-creating the dead end AND
+#                                                 spamming the PR, losing on both
+#                                                 axes at once.)
+#           MAX is an integer in [1,10] (0 would be a second, silently-spelled off
+#           switch competing with PR_GRIND_CODEX_RETRIGGER=0; the ceiling bounds the
+#           slot-scan loop and the spam budget). COOLDOWN is an integer in [0,86400].
+#           Anything outside those ranges falls back to the default — a malformed or
+#           fat-fingered knob must never widen the budget OR stale the gate.
+# Markers:  ${BUSDRIVER_STATE_DIR:-.claude}/.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local
+#           for attempt 1, and `...-<HEAD8>-<n>.local` for attempts n >= 2.
+#           Attempt 1 deliberately keeps ADR 0005's exact filename, so a marker left
+#           by an older plugin version reads as "attempt 1 already spent" rather than
+#           silently granting a fresh budget, and `codex-retrigger-gc.sh`'s
+#           `...-pr<PR>-*.local` prune glob already covers every slot unchanged.
 #           Per-(PR,HEAD) so concurrent grinds on different PRs never race on a
 #           shared marker, and a new push (new HEAD) is eligible again. Gitignored
 #           via `.claude/*.local`.
+#           ONE MARKER PER ATTEMPT, never a mutable counter: the claim below is an
+#           O_CREAT|O_EXCL create, which the kernel grants to exactly one racer. A
+#           count in a single rewritten file would need read-modify-write and would
+#           race two concurrent grinds into a double-post (repo prior art: the
+#           design-marker token directory).
 set -u
 
 PR="${1:-}"
@@ -67,15 +109,81 @@ case "$HEAD_SHA" in *[!0-9A-Fa-f]*) echo "ℹ️  codex-retrigger: non-hex HEAD 
 
 HEAD8="${HEAD_SHA:0:8}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
-MARKER="${STATE_DIR}/.pr-grind-codex-retriggered-pr${PR}-${HEAD8}.local"
+MARKER_BASE="${STATE_DIR}/.pr-grind-codex-retriggered-pr${PR}-${HEAD8}"
 
-# One-shot per (PR, HEAD), fast path: if we already re-triggered this exact HEAD
-# this grind, do nothing (clear message; avoids a needless gh lookup). The atomic
-# claim below is the authoritative race-safe gate — this is just the common case.
-if [ -e "$MARKER" ]; then
-    echo "ℹ️  codex-retrigger: already re-triggered PR #$PR @ $HEAD8 (marker present); skipping." >&2
+# Attempt n's marker. n=1 keeps ADR 0005's exact filename (backward compatibility —
+# see the Markers note in the header); n>=2 gets an `-n` slot suffix.
+marker_for() {
+    if [ "$1" = "1" ]; then printf '%s.local\n' "$MARKER_BASE"
+    else printf '%s-%s.local\n' "$MARKER_BASE" "$1"; fi
+}
+
+# Read an integer knob ($1) against a default ($2) and an inclusive range [$3,$4],
+# falling back to the default on ANY value outside it (empty, non-digit, too small,
+# too large). Fail-SAFE in the spam direction: a typo'd budget must never widen it,
+# and must never stale the gate by erroring out.
+#
+# The minimums differ on purpose. MAX floors at 1: zero attempts would be a second,
+# silently-spelled off switch competing with PR_GRIND_CODEX_RETRIGGER=0. COOLDOWN
+# floors at 0, because "no pacing" is a real operator choice (and the only way to
+# exercise the budget without waiting out a real clock) — so 0 must survive the
+# validator rather than being read as malformed and bounced to the default.
+#
+# The CEILINGS are load-bearing, not tidiness. MAX drives the slot-scan loop below,
+# so an accidental `PR_GRIND_CODEX_RETRIGGER_MAX=999999999` (a plausible fat-finger,
+# and perfectly "valid" as a positive integer) would run a billion filesystem probes
+# on every wait-round and hang the merge gate — while also authorizing a nudge budget
+# far past anything defensible as non-spam. 10 is already well beyond any useful
+# number of nudges. COOLDOWN caps at a day for the same fat-finger reason; anything
+# longer is indistinguishable from "never re-nudge", which the opt-out already spells.
+read_int_knob() {
+    case "$1" in ''|*[!0-9]*) printf '%s\n' "$2"; return ;; esac
+    if [ "$1" -ge "$3" ] && [ "$1" -le "$4" ]; then printf '%s\n' "$1"
+    else printf '%s\n' "$2"; fi
+}
+MAX_ATTEMPTS=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_MAX:-}" 3 1 10)
+COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 900 0 86400)
+
+# Highest attempt already spent for this (PR, HEAD). Scanned by slot rather than
+# counted, so a hole (an attempt whose failed post released its claim) can never
+# read as a fresh budget. A missing STATE_DIR simply yields 0.
+SPENT=0
+_n=1
+while [ "$_n" -le "$MAX_ATTEMPTS" ]; do
+    [ -e "$(marker_for "$_n")" ] && SPENT="$_n"
+    _n=$(( _n + 1 ))
+done
+
+if [ "$SPENT" -ge "$MAX_ATTEMPTS" ]; then
+    echo "ℹ️  codex-retrigger: attempt budget spent for PR #$PR @ $HEAD8 ($SPENT/$MAX_ATTEMPTS); skipping." >&2
     exit 0
 fi
+
+# Pace the attempts. Without this, consecutive wait-rounds seconds apart would burn
+# the whole budget before Codex could plausibly answer — restoring the #673 dead end
+# AND spamming the PR, i.e. losing on both axes at once.
+# GNU-first `stat`: on Linux `stat -f` is --file-system and prints block info to
+# stdout (corrupting the value); `stat -c` is GNU's format flag, and BSD lacks -c so
+# it falls through to -f. (Mirrors hooks/gate-scripts/post-merge-confirm-bypass.sh.)
+# An unreadable mtime is treated as "still cooling" — fail-SAFE toward NOT posting,
+# consistent with this helper's never-spam posture.
+if [ "$SPENT" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
+    _last="$(marker_for "$SPENT")"
+    _mtime=$(stat -c %Y "$_last" 2>/dev/null || stat -f %m "$_last" 2>/dev/null || echo "")
+    _now=$(date +%s 2>/dev/null || echo "")
+    if [ -z "$_mtime" ] || [ -z "$_now" ]; then
+        echo "ℹ️  codex-retrigger: cannot read attempt-$SPENT mtime for PR #$PR @ $HEAD8; skipping (fail-safe: no post)." >&2
+        exit 0
+    fi
+    _age=$(( _now - _mtime ))
+    if [ "$_age" -lt "$COOLDOWN" ]; then
+        echo "ℹ️  codex-retrigger: attempt $SPENT/$MAX_ATTEMPTS posted ${_age}s ago for PR #$PR @ $HEAD8; cooling down (${COOLDOWN}s); skipping." >&2
+        exit 0
+    fi
+fi
+
+ATTEMPT=$(( SPENT + 1 ))
+MARKER="$(marker_for "$ATTEMPT")"
 
 # No gh => cannot post. Skip safely BEFORE claiming the marker, so we never leave a
 # claim that would block a later round where gh is available. `--max-wait` still
@@ -89,11 +197,28 @@ PHRASE="${PR_GRIND_CODEX_RETRIGGER_PHRASE:-@codex review}"
 [ -n "$PHRASE" ] || PHRASE="@codex review"
 
 # Atomic pre-claim — closes the check-then-post-then-write TOCTOU. Two concurrent
-# grinds on the same (PR,HEAD) could both pass the fast-path check above and both
-# post. `set -o noclobber` turns `: > "$MARKER"` into an O_CREAT|O_EXCL create the
-# kernel grants to exactly ONE racer; the loser's redirect fails and it skips. We
-# claim BEFORE posting, then RELEASE (rm) the claim if the post fails, so a later
-# wait-round can retry — preserving the fail-SAFE retry semantics.
+# grinds on the same (PR,HEAD) could both compute the same next ATTEMPT from the slot
+# scan above and both post. `set -o noclobber` turns `: > "$MARKER"` into an
+# O_CREAT|O_EXCL create the kernel grants to exactly ONE racer; the loser's redirect
+# fails and it skips (it does NOT fall forward to the next slot). We claim BEFORE
+# posting, then RELEASE (rm) the claim if the post fails, so a later wait-round can
+# retry — preserving the fail-SAFE retry semantics. Releasing also means a failed post
+# spends NO attempt and starts NO cooldown: the slot scan re-derives the same ATTEMPT
+# next round, which is why the scan takes the highest occupied slot rather than a count.
+#
+# BE PRECISE ABOUT WHAT THIS GUARANTEES, because the one-shot version guaranteed more.
+# O_EXCL only makes each SLOT single-use; it does NOT serialize the slot scan. A racer
+# arriving after another has claimed slot n — but before that one finished posting —
+# reads slot n as spent and legitimately proceeds to slot n+1. What actually prevents
+# that is the COOLDOWN: the newly-created marker is seconds old, so the check above
+# turns the second racer away. Pacing is therefore the concurrency guard here, not a
+# convenience.
+# RESIDUAL, accepted and bounded: with COOLDOWN=0 that protection is gone by
+# construction, and concurrent grinds on one (PR,HEAD) can spend several slots at once.
+# The blast radius is at most MAX_ATTEMPTS duplicate `@codex review` comments (never
+# unbounded, since the slots themselves are finite and MAX is ceiling-clamped above),
+# and a duplicate nudge is idempotent to Codex. COOLDOWN=0 exists for tests and
+# single-runner setups; do not set it on a repo where two grinds can race.
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 # Arm the release trap BEFORE the claim, so there is NO create→arm window in which a
@@ -109,13 +234,15 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 #    claim-FAILURE path below we DISARM first, so a normal "already claimed" skip
 #    never deletes the owner's marker.
 # All three are disarmed after a confirmed post (below), at which point the marker is
-# the durable one-shot record. SIGKILL (kill -9) is the single uncoverable case —
-# see ADR 0005 Known limitations; recover by removing the marker or pushing a commit.
+# the durable record that this attempt was spent. SIGKILL (kill -9) is the single
+# uncoverable case — see ADR 0005 Known limitations; it now costs one attempt out of
+# MAX_ATTEMPTS rather than the PR's only nudge (#673), so a later round still recovers
+# on its own. Recover immediately by removing the marker or pushing a commit.
 trap 'rm -f "$MARKER" 2>/dev/null' EXIT
 trap 'rm -f "$MARKER" 2>/dev/null; exit 130' INT TERM
 if ! ( set -o noclobber; : > "$MARKER" ) 2>/dev/null; then
     trap - EXIT INT TERM   # not ours — disarm so we never delete the owner's marker
-    echo "ℹ️  codex-retrigger: another run already claimed PR #$PR @ $HEAD8; skipping." >&2
+    echo "ℹ️  codex-retrigger: another run already claimed attempt $ATTEMPT for PR #$PR @ $HEAD8; skipping." >&2
     exit 0
 fi
 chmod 600 "$MARKER" 2>/dev/null || true
@@ -129,8 +256,10 @@ chmod 600 "$MARKER" 2>/dev/null || true
 # invocations; a within-call retry can at worst re-post once on a false-negative
 # transient — the same bounded trade the cross-round retry already makes, and a
 # duplicate `@codex review` is harmless (idempotent nudge).
+# (`_try` is the within-call transport retry — distinct from $ATTEMPT, the
+# across-round nudge budget. Two different loops; do not conflate them.)
 post_rc=0
-for _attempt in 1 2; do
+for _try in 1 2; do
     if [ -n "$REPO" ]; then
         gh pr comment "$PR" -R "$REPO" --body "$PHRASE" >/dev/null 2>&1
     else
@@ -138,7 +267,7 @@ for _attempt in 1 2; do
     fi
     post_rc=$?
     [ "$post_rc" -eq 0 ] && break
-    [ "$_attempt" -lt 2 ] && sleep 1
+    [ "$_try" -lt 2 ] && sleep 1
 done
 
 if [ "$post_rc" -ne 0 ]; then
@@ -152,9 +281,10 @@ fi
 # Confirmed posted: DISARM the release trap FIRST — before the (best-effort,
 # non-fatal) forensic-content write — so an INT/TERM arriving during that write
 # cannot remove a marker whose post already succeeded. The empty claimed marker
-# already enforces the one-shot; the content is only forensic. Never block the gate
-# over marker I/O.
+# already spends the attempt; the content is only forensic. Never block the gate
+# over marker I/O. (The write also re-stamps mtime, which is the cooldown anchor for
+# the NEXT attempt — a wholly benign few-millisecond shift from the claim.)
 trap - EXIT INT TERM
-printf 'pr=%s head=%s phrase=%s\n' "$PR" "$HEAD_SHA" "$PHRASE" > "$MARKER" 2>/dev/null || true
-echo "✅ codex-retrigger: posted '$PHRASE' on PR #$PR @ $HEAD8 (one-shot)." >&2
+printf 'pr=%s head=%s phrase=%s attempt=%s/%s\n' "$PR" "$HEAD_SHA" "$PHRASE" "$ATTEMPT" "$MAX_ATTEMPTS" > "$MARKER" 2>/dev/null || true
+echo "✅ codex-retrigger: posted '$PHRASE' on PR #$PR @ $HEAD8 (attempt $ATTEMPT/$MAX_ATTEMPTS)." >&2
 exit 0

@@ -310,6 +310,27 @@ def _classify_tokens(marker_dir, em):
     return True
 
 
+def _norm_legacy_doc_path(doc):
+    """Canonicalize a legacy-marker doc path the same way gate_marker_norm_path
+    (shell) canonicalizes a token's doc_path at arm time: realpath the
+    DIRECTORY, then rejoin the literal basename. Tokens are matched/grouped by
+    exact doc_path string equality (design-clear.sh's NORM selector match,
+    resolve-repo-dir.sh's gate_render_pending_records doc-key grouping), so a
+    legacy marker naming the same document via `..`-segments or a symlinked
+    directory must canonicalize to the identical key or it silently reads as a
+    DIFFERENT document -- letting `--all-for-doc` drain every token for a doc
+    while leaving that doc's legacy marker armed (the all-or-nothing refusal
+    it was supposed to trip). Falls back to the raw path, unchanged, when the
+    directory cannot be resolved -- same fail-open-to-raw-string behavior
+    gate_marker_norm_path's shell callers use (`2>/dev/null || printf '%s'`).
+    """
+    try:
+        d = os.path.realpath(os.path.dirname(doc))
+    except OSError:
+        return doc
+    return os.path.join(d, os.path.basename(doc))
+
+
 def _classify_legacy(roots, state_dir, em):
     """Bounded per-worktree-root legacy union (PASS-keyed). No subtree walk."""
     for root in roots:
@@ -339,7 +360,7 @@ def _classify_legacy(roots, state_dir, em):
             except OSError:
                 reviewed = False  # absent / unreadable doc -> pending (fail-closed)
             if not reviewed:
-                em.add("legacy", m, doc if os.path.isabs(doc) else "", "legacy-pending")
+                em.add("legacy", m, _norm_legacy_doc_path(doc) if os.path.isabs(doc) else "", "legacy-pending")
 
 
 def cmd_classify(argv):

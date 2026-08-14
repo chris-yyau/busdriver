@@ -575,5 +575,77 @@ else
 fi
 rm -f "$REPO/.claude/design-review-needed.local.md"
 
+# A legacy marker naming the SAME doc through a non-canonical spelling (a `..`
+# segment here; a symlinked directory has the identical failure mode) must
+# still be recognized as the same document. Tokens are canonicalized at arm
+# time (gate_marker_norm_path: realpath the dir, rejoin the basename); a
+# legacy marker's doc entry must canonicalize the same way, or the doc-key
+# comparison in gate_render_pending_records / design-clear.sh's selector match
+# silently reads it as a DIFFERENT document — bulk-draining every token while
+# leaving the doc's legacy marker armed, exactly the all-or-nothing refusal
+# this feature exists to trigger.
+arm "$REPO/docs/plans/gamma-design.md"
+GAMMA_NORM="$(cat "$(grep -rl 'gamma-design.md' "$MARKER_DIR" | head -1)")"
+GAMMA_DIR="$(dirname "$GAMMA_NORM")"
+GAMMA_MIXED_SPELLING="$GAMMA_DIR/../plans/gamma-design.md"
+printf -- '- %s\n' "$GAMMA_MIXED_SPELLING" >"$REPO/.claude/design-review-needed.local.md"
+BEFORE="$(token_count)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/gamma-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "all-or-nothing: canonicalizes a mixed-spelling legacy marker" "exited 0: $OUT"
+else
+  ok "all-or-nothing: canonicalizes a mixed-spelling legacy marker"
+fi
+check "mixed-spelling legacy: not one token released" "$BEFORE" "$(token_count)"
+check "mixed-spelling legacy: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+in_repo gate_marker_pending "$REPO" >"$RECS" 2>/dev/null
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS" "$REPO")")"
+check "mixed-spelling legacy: hint withholds the bulk command" "0" \
+  "$(printf '%s\n' "$RENDER" | grep 'gamma-design.md' | grep -c -- '--all-for-doc' || true)"
+rm -f "$REPO/.claude/design-review-needed.local.md"
+( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/gamma-design.md" --yes >/dev/null 2>&1 )
+check "mixed-spelling legacy: drains once the legacy marker is gone" "0" "$(doc_tokens gamma-design.md)"
+
+# ── Classifier-cap truncation (CAP=20 in design-clear.sh, K=20 in marker_ops.py) ──
+# --all-for-doc is not a promise to empty the directory: the classifier stops
+# COUNTING at K=20 records total (existence-keyed, ADR-C), so a doc that alone
+# holds more than the cap only has its first (cap - other-pending) tokens visible
+# to this run. The drain must clear exactly what it saw and say "Others MAY
+# remain ... re-run to check" — never claim an exact "N token(s) still pending"
+# count it cannot know past the cap.
+: >"$REPO/docs/plans/zeta-design.md"
+# ZETA itself must exceed the cap — arm 21 regardless of what else is pending.
+# Topping the GLOBAL count up to 21 is not equivalent and is flaky: the
+# classifier emits an arbitrary os.listdir() subset, so when the one record
+# above the cap belongs to another doc, every zeta token is listed and the
+# drain leaves nothing behind. With 21 zeta tokens, at most 20 can ever be
+# listed, so at least one survives no matter how listdir orders them.
+_i=0
+while [ "$_i" -lt 21 ]; do
+  arm "$REPO/docs/plans/zeta-design.md"
+  _i=$(( _i + 1 ))
+done
+check "cap: enough tokens armed to exceed the classifier cap" "1" \
+  "$([ "$(doc_tokens zeta-design.md)" -ge 21 ] && echo 1 || echo 0)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes 2>&1)"; RC=$?
+check "cap: all-for-doc still exits 0 past the cap" "0" "$RC"
+case "$OUT" in
+  *"Others MAY remain"*"re-run to check"*) ok "cap: prints the capped-listing warning, not an exact count" ;;
+  *) no "cap: prints the capped-listing warning, not an exact count" "$OUT" ;;
+esac
+case "$OUT" in
+  *"token(s) still pending"*) no "cap: does NOT claim an exact remaining count" "$OUT" ;;
+  *) ok "cap: does NOT claim an exact remaining count" ;;
+esac
+check "cap: at least one zeta token survives the capped drain" "1" \
+  "$([ "$(doc_tokens zeta-design.md)" -ge 1 ] && echo 1 || echo 0)"
+# Drain the rest so the fixture doesn't leak an armed doc past the suite.
+while [ "$(doc_tokens zeta-design.md)" -gt 0 ]; do
+  ( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes >/dev/null 2>&1 ) || break
+done
+check "cap: fully drains once under the cap" "0" "$(doc_tokens zeta-design.md)"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

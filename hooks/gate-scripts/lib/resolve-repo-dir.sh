@@ -656,13 +656,13 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             esac
         done <"$recs"
     fi
-    # Bound the RENDERED output. The classifier no longer caps legacy records
-    # (marker_ops _CAPS) because design-clear.sh's same-document screen needs to
-    # see every one of them — but this renderer runs on the latency-sensitive
-    # PreToolUse gate path, does a linear key scan per record, and shells out to
-    # `gate_marker_owner_note` (git) per rendered doc. Unbounded input would make
-    # that quadratic with unbounded output on every blocked write. Cap what is
-    # RENDERED and count the rest: the block message only has to be actionable,
+    # Bound the RENDERED output. The classifier's legacy budget is a BACKSTOP
+    # (marker_ops L=500), set that high because design-clear.sh's same-document
+    # screen wants every legacy record — but this renderer runs on the
+    # latency-sensitive PreToolUse gate path, does a linear key scan per record,
+    # and shells out to `gate_marker_owner_note` (git) per rendered doc. 500
+    # records of that would be a slow block message with nothing to act on. Cap
+    # what is RENDERED and count the rest: the block message only has to be actionable,
     # not exhaustive, and design-clear.sh (interactive, no git-per-record) is
     # where the complete listing lives.
     local _rendered=0 _extra=0

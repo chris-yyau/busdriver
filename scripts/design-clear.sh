@@ -181,8 +181,9 @@ truncation_note() {
 
 list_tokens() {
     # `gate_marker_owner_note` shells out to git once or twice PER RECORD, and
-    # legacy records are no longer capped by the classifier (marker_ops _CAPS),
-    # so a long legacy list would mean unbounded subprocess work here. Bound the
+    # the classifier's legacy budget is a high BACKSTOP (marker_ops L=500), not
+    # a listing size, so a long legacy list still means hundreds of subprocesses
+    # here where the token cap alone would have bounded it. Bound the
     # NOTES rather than the listing: this is the tool that is supposed to show
     # the complete set, and the note is a which-worktree convenience, not part
     # of the record. Records past the budget still list, just without it.
@@ -278,10 +279,11 @@ else
         printf 'Releasing by name screens for a legacy list entry naming the SAME document,\n' >&2
         printf 'and that screen can only see records the classifier emitted. It did not emit\n' >&2
         printf 'them all, so an entry for %s could be pending and unlisted.\n\n' "$SELECTOR" >&2
-        printf 'Trim the legacy list file, then re-run — or release one token by its listed\n' >&2
-        printf 'index, which never depended on that screen:\n' >&2
-        printf '  design-clear.sh            # full listing, names the file\n' >&2
-        printf '  design-clear.sh <index>\n' >&2
+        printf 'Trim the legacy list file, then re-run — or, AT A TERMINAL, release one\n' >&2
+        printf 'token by its listed index, which never depended on that screen:\n' >&2
+        printf '  design-clear.sh            # full listing, names the file to trim\n' >&2
+        printf '  design-clear.sh <index>    # needs a tty — an index is refused with --yes,\n' >&2
+        printf '                             # so the prompt that names the doc always runs\n' >&2
         exit 2
     fi
     # Match on the doc path the classifier VALIDATED (token body), not on user

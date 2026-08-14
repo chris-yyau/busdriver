@@ -833,7 +833,8 @@ rm -f "$MARKER_DIR/$IOTA_SHA."*
 check "cap-malformed: fixture drained" "0" "$(doc_tokens iota-design.md)"
 
 # -- An unrelated legacy backlog must not starve token records ---------------
-# The emit budget is PER-KIND and legacy is uncapped (marker_ops _CAPS). With a
+# The emit budget is PER-KIND, and legacy's is a high backstop rather than a
+# listing size (marker_ops _CAPS: L=500 vs K=20). With a
 # single shared budget, a legacy list holding >= K=20 pending entries consumed
 # it entirely and NO token record was emitted, so no audited release was
 # possible at all -- and re-running never helped, because the same entries
@@ -1008,6 +1009,12 @@ case "$OUT" in
   *"legacy listing was truncated"*) ok "overflow: refusal names the cause" ;;
   *) no "overflow: refusal names the cause" "$OUT" ;;
 esac
+# ...and an action a NON-interactive caller can actually take. Index release
+# needs a tty (see below), so trimming has to be the lead, not a footnote.
+case "$OUT" in
+  *"Trim the legacy list file"*) ok "overflow: refusal leads with a tty-free action" ;;
+  *) no "overflow: refusal leads with a tty-free action" "$OUT" ;;
+esac
 # ...and the listing still works, still says so, and index release -- which never
 # depended on the same-document screen -- stays available.
 OUT="$( cd "$REPO" && "$CLEAR" 2>&1 )"
@@ -1015,6 +1022,25 @@ case "$OUT" in
   *"truncated its LEGACY listing"*) ok "overflow: the no-arg listing warns" ;;
   *) no "overflow: the no-arg listing warns" "$OUT" ;;
 esac
+# The refusal above ADVERTISES index release as the way through. Prove that path
+# actually works while the refusal is active: a refusal that names an escape
+# hatch which is itself blocked leaves the operator with NO release path at all,
+# and pointing at a command that cannot succeed is the exact defect #665/#670
+# exist to remove -- landing here, in the message that closes them.
+IDX="$( cd "$REPO" && "$CLEAR" 2>/dev/null \
+        | sed -n 's/^  \[\([0-9][0-9]*\)\] .*omega-design\.md.*/\1/p' | head -1 )"
+check "overflow: the doc's token is listed (index found)" "1" \
+  "$([ -n "$IDX" ] && echo 1 || echo 0)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+# On a real PTY, not no_tty_run: an index selector is refused with --yes (an
+# index shifts between runs), so the confirm prompt ALWAYS runs and a terminal
+# is required. That is why the refusal above says "AT A TERMINAL" and leads with
+# trimming the list file -- the action a non-interactive caller actually has.
+OUT="$(tty_run y "$IDX" 2>&1)"; RC=$?
+check "overflow: index release still works, as the refusal promises" "0" "$RC"
+check "overflow: the token really was released" "0" "$(doc_tokens omega-design.md)"
+check "overflow: and it was audited" "$(( EVENTS_BEFORE + 1 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
 rm -f "$LEGACY_MARKER"
 
 # TOKEN overflow is the other kind, and is NOT a refusal: it under-reports, so

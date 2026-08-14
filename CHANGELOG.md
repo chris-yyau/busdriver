@@ -1,3 +1,10 @@
+## [1.106.8](https://github.com/chris-yyau/busdriver/compare/v1.106.7...v1.106.8) (2026-08-13)
+
+
+### Bug Fixes
+
+* **blueprint-review:** trajectory auto-stop must park, never approve ([#656](https://github.com/chris-yyau/busdriver/issues/656)) ([#663](https://github.com/chris-yyau/busdriver/issues/663)) ([6f3f71e](https://github.com/chris-yyau/busdriver/commit/6f3f71e261982ec1ec9958523c73d27fd4806bba)), closes [#355](https://github.com/chris-yyau/busdriver/issues/355) [#355](https://github.com/chris-yyau/busdriver/issues/355)
+
 ## [1.106.7](https://github.com/chris-yyau/busdriver/compare/v1.106.6...v1.106.7) (2026-08-13)
 
 

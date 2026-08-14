@@ -1,6 +1,6 @@
 {
   "name": "busdriver",
-  "version": "1.106.7",
+  "version": "1.106.8",
   "description": "Unified workflow orchestrator — consolidates pipeline process, domain tools, and enforcement gates into one plugin",
   "author": {
     "name": "Chris Yau"

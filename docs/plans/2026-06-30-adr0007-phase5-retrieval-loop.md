@@ -977,5 +977,10 @@ git commit -m "docs(ultraoracle): mark ADR 0007 Phase 5 Completed; document retr
 
 **Codex Handoff Eligibility:** Outcome 3 (default executor). Criteria 1, 2, 4, 5 hold, but criterion 3 fails — this is security-sensitive shell whose fail-closed semantics (symlink/traversal rejection, untrusted-JSON handling) warrant Claude's eyes between steps, not a purely verifier-led loop. Tasks are mildly dependent (2/3 depend on 1; 4 depends on 2/3) → `busdriver:executing-plans` (sequential with checkpoints) over subagent fan-out.
 
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
 <!-- design-review-coverage: FULL 3/3  -->
+<!-- marker-downgraded: 2026-08-14. The PASS this document carried was not a convergence.
+     The review early-stopped on `no_improvement_trajectory` with plan-blocking HIGH at
+     `[1,1]` — one still open — and the loop resolved that no-progress signal to
+     `low_issues_only`, a PASS state. See issue #656 and its blast-radius audit.
+     Re-review before relying on this marker. -->

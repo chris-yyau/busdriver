@@ -562,6 +562,51 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # command, so an operator (or agent) copying the hint would run something other
     # than what was intended.
     clear_sh="${clear_sh//\'/\'\\\'\'}"
+    # #665 — count tokens per validated doc BEFORE rendering, so the hint names a
+    # command that will actually run. Arming is per-EDIT, so a doc that went
+    # through a few review rounds holds many tokens; for those the plain
+    # `<doc-path>` selector REFUSES (">1 match"), and the un-counted render also
+    # repeated one identical hint line per token. Emitting a guaranteed-to-fail
+    # command N times at exactly the moment the backlog is largest is what pushed
+    # the operator toward an unaudited `rm` in the first place. Parallel arrays +
+    # linear scan, not an associative array: bash 3.2 has none, and the classifier
+    # caps records at 20 so the O(n²) is bounded and trivial.
+    # _doc_n counts only VALIDATED tokens (reason == "token"); _doc_mixed marks a
+    # doc that also has a non-token record. Counting every non-empty doc_path
+    # would fold in legacy-pending records — a doc with one token plus a legacy
+    # list-file marker would read as "2 tokens" and get hinted --all-for-doc,
+    # which design-clear.sh then refuses all-or-nothing. A hint that cannot
+    # succeed is the defect this whole change set out to remove, so a mixed doc
+    # keeps the per-record rendering it has today.
+    local -a _doc_key=() _doc_n=() _doc_mixed=()
+    local _k _hit _idx _mixed
+    if [ -n "$clear_sh" ]; then
+        local _c_i=0 _c_f _c_dp="" _c_reason=""
+        while IFS= read -r -d '' _c_f; do
+            _c_i=$((_c_i + 1))
+            case $(( _c_i % 4 )) in
+                3) _c_dp="$_c_f" ;;
+                0) _c_reason="$_c_f"
+                   if [ -n "$_c_dp" ]; then
+                       _k=0; _idx=-1
+                       while [ "$_k" -lt "${#_doc_key[@]}" ]; do
+                           if [ "${_doc_key[$_k]}" = "$_c_dp" ]; then _idx="$_k"; break; fi
+                           _k=$(( _k + 1 ))
+                       done
+                       if [ "$_idx" -lt 0 ]; then
+                           _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0)
+                           _idx=$(( ${#_doc_key[@]} - 1 ))
+                       fi
+                       if [ "$_c_reason" = "token" ]; then
+                           _doc_n[_idx]=$(( ${_doc_n[$_idx]} + 1 ))
+                       else
+                           _doc_mixed[_idx]=1
+                       fi
+                   fi
+                   _c_dp="" ;;
+            esac
+        done <"$recs"
+    fi
     local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))
@@ -573,7 +618,35 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                    _note="$(gate_marker_owner_note "$_dp" "$self_root")"
                    if [ -n "$clear_sh" ]; then
                        _dp_q="${_dp//\'/\'\\\'\'}"   # shell-escape for the hint
-                       out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                       # Find this doc's token count, then mark it rendered with
+                       # -1 so the remaining records for the same doc are skipped
+                       # instead of repeating an identical line and hint.
+                       # _hit defaults to 1 so a doc the counting pass somehow
+                       # missed still gets the plain hint: the two passes read the
+                       # same file the same way and cannot disagree, but dropping
+                       # a pending doc from the block message would hide a review
+                       # requirement, which is the wrong way to fail.
+                       _k=0; _hit=1; _idx=-1; _mixed=0
+                       while [ "$_k" -lt "${#_doc_key[@]}" ]; do
+                           if [ "${_doc_key[$_k]}" = "$_dp" ]; then
+                               _idx="$_k"; _hit="${_doc_n[$_k]}"; _mixed="${_doc_mixed[$_k]}"; break
+                           fi
+                           _k=$(( _k + 1 ))
+                       done
+                       # A non-token record, or any record of a doc that has one,
+                       # renders per-record with the plain hint — as it does today.
+                       # Only a clean all-tokens doc is deduped and bulk-hinted.
+                       if [ "$_reason" != "token" ] || [ "$_mixed" -eq 1 ]; then
+                           _hit=1; _idx=-1
+                       fi
+                       [ "$_idx" -ge 0 ] && _doc_n[_idx]=-1
+                       if [ "$_hit" -lt 0 ]; then
+                           :   # already rendered under its first record
+                       elif [ "$_hit" -gt 1 ]; then
+                           out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — release all with an audit record each: bash '${clear_sh}' --all-for-doc '${_dp_q}')\n"
+                       else
+                           out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                       fi
                    else
                        _sp_q="${_sp//\'/\'\\\'\'}"
                        out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"

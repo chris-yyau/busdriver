@@ -8,7 +8,8 @@
 #
 #   - lists pending tokens through the same `marker_ops.py classify` the gate
 #     uses (never a blind glob),
-#   - clears exactly ONE named token, never a blanket wipe,
+#   - clears exactly ONE named token — or, with --all-for-doc, every token bound
+#     to ONE NAMED document — never a blanket wipe,
 #   - requires deliberate confirmation (interactive y/N, or explicit --yes),
 #   - writes one bypass-log.jsonl event per clear — the durable audit trail that
 #     a review requirement was operator-released.
@@ -43,6 +44,18 @@
 #   design-clear.sh <index>         # clear the Nth listed token (confirms)
 #   design-clear.sh <doc-path>      # clear the token bound to that design doc
 #   design-clear.sh <sel> --yes     # skip the interactive confirmation
+#   design-clear.sh --all-for-doc <doc-path>
+#                                   # clear every LISTED token for that ONE named
+#                                   # doc, one audit event each, one confirmation
+#
+# Editing a design doc arms a FRESH token each time, so one document routinely
+# accumulates a dozen or more (#665). --all-for-doc drains exactly that: the doc
+# is named (stable, unlike an index), no other doc can be touched, and the trail
+# still gets one design-marker-cleared event per released token.
+# It clears every token the CLASSIFIER LISTED, which is capped at 20 records —
+# so a doc holding more than that takes more than one run, and the closing line
+# says when the cap was hit. It is not a promise to empty the directory in one
+# shot; it is a promise never to touch a token belonging to another doc.
 #
 # Exit: 0 ok / 1 nothing to do or refused / 2 cannot resolve marker state.
 
@@ -65,10 +78,15 @@ source "$_SELF_DIR/../hooks/gate-scripts/lib/resolve-repo-dir.sh"
 
 SELECTOR=""
 ASSUME_YES=0
+ALL_FOR_DOC=0
 for arg in "$@"; do
     case "$arg" in
         --yes|-y) ASSUME_YES=1 ;;
-        -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --all-for-doc) ALL_FOR_DOC=1 ;;
+        # Address the header block by its terminator, not by line numbers: the
+        # old '2,28p' silently stopped short of Usage:, so every mode added since
+        # was undiscoverable from --help. A pattern range cannot drift.
+        -h|--help) sed -n '2,/^# Exit:/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         -*) printf 'design-clear: unknown flag %s\n' "$arg" >&2; exit 2 ;;
         *)
             if [ -n "$SELECTOR" ]; then
@@ -151,8 +169,14 @@ list_tokens() {
 }
 
 if [ -z "$SELECTOR" ]; then
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        printf 'design-clear: --all-for-doc needs the design doc to drain.\n' >&2
+        printf '  design-clear.sh --all-for-doc <doc-path>\n' >&2
+        exit 2
+    fi
     list_tokens
     printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
+    printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
     exit 0
 fi
 
@@ -164,8 +188,21 @@ fi
 # confirmation prompt names the doc before anything is deleted. Under --yes
 # nothing re-checks it, so an index could silently release the WRONG review.
 # Non-interactive callers must name the doc, which is stable.
-TARGET=-1
+TARGETS=()
 if [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
+    # --all-for-doc releases a SET, and only a doc path can name a set: it is the
+    # stable key the classifier validated, so every token it selects is bound to
+    # the document the operator typed. An index names one position in a listing
+    # that reorders between runs — it cannot identify a set at all, and honoring
+    # it here would silently reinterpret "index 3" as "everything sharing index
+    # 3's doc", releasing reviews the operator never named.
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        printf 'design-clear: --all-for-doc takes a DOC PATH, not an index (%s).\n\n' "$SELECTOR" >&2
+        printf 'It releases every token bound to one document, so the selector has to name\n' >&2
+        printf 'that document. Indexes are positions in a listing that shift between runs:\n' >&2
+        printf '  design-clear.sh --all-for-doc <doc-path>\n' >&2
+        exit 2
+    fi
     if [ "$ASSUME_YES" -eq 1 ]; then
         printf 'design-clear: refusing an index selector with --yes.\n\n' >&2
         printf 'Indexes are positions in a listing that can shift between runs (a token\n' >&2
@@ -175,7 +212,7 @@ if [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
         exit 2
     fi
     if [ "$SELECTOR" -ge 1 ] && [ "$SELECTOR" -le "${#SRCS[@]}" ]; then
-        TARGET=$(( SELECTOR - 1 ))
+        TARGETS+=( "$(( SELECTOR - 1 ))" )
     fi
 else
     # Match on the doc path the classifier VALIDATED (token body), not on user
@@ -185,17 +222,23 @@ else
     n=0
     while [ "$n" -lt "${#DOCS[@]}" ]; do
         if [ -n "${DOCS[$n]}" ] && [ "${DOCS[$n]}" = "$NORM" ]; then
-            if [ "$TARGET" -ge 0 ]; then
-                echo "design-clear: '$SELECTOR' matches more than one token — select by index." >&2
+            if [ "$ALL_FOR_DOC" -eq 0 ] && [ "${#TARGETS[@]}" -ge 1 ]; then
+                printf "design-clear: '%s' matches more than one token.\n\n" "$SELECTOR" >&2
+                printf 'Editing a doc arms a fresh token each time, so this is the normal state\n' >&2
+                printf 'of a doc that went through a few review rounds. Release them together:\n' >&2
+                # Shell-quote it: this line is meant to be COPIED and run, so a
+                # path with a space or apostrophe must survive the round trip.
+                printf "  design-clear.sh --all-for-doc '%s'\n\n" "${SELECTOR//\'/\'\\\'\'}" >&2
+                printf 'Or pick exactly one by its listed index:  design-clear.sh <index>\n' >&2
                 exit 2
             fi
-            TARGET=$n
+            TARGETS+=( "$n" )
         fi
         n=$(( n + 1 ))
     done
 fi
 
-if [ "$TARGET" -lt 0 ]; then
+if [ "${#TARGETS[@]}" -eq 0 ]; then
     printf 'design-clear: no pending token matches %s\n\n' "$SELECTOR" >&2
     list_tokens >&2
     exit 1
@@ -208,6 +251,14 @@ fi
 # index selector delete a fail-CLOSED marker whose subject is unknown — releasing
 # a review requirement with nothing to name in the audit trail. Require the
 # reason to be "token" AND a non-empty validated doc.
+# Validate EVERY selected record before releasing any of them. Under
+# --all-for-doc this is all-or-nothing on purpose: a doc whose token set contains
+# an anomalous marker is exactly the state the gate blocks on deliberately, and
+# draining the healthy siblings around it would clear the block while leaving the
+# anomaly — quietly converting "inspect this" into "already released most of it".
+_t=0
+while [ "$_t" -lt "${#TARGETS[@]}" ]; do
+TARGET="${TARGETS[$_t]}"
 if [ "${KINDS[$TARGET]}" != "token" ]; then
     # A legacy list-file marker holds several docs at once, so removing it is the
     # blanket wipe this helper exists to avoid.
@@ -227,13 +278,27 @@ if [ "${REASONS[$TARGET]}" != "token" ] || [ -z "${DOCS[$TARGET]}" ]; then
         "${SRCS[$TARGET]}" >&2
     exit 1
 fi
+_t=$(( _t + 1 ))
+done
 
-TOKEN="${SRCS[$TARGET]}"
-DOC="${DOCS[$TARGET]}"
-TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+# Every target is a validated token for the same doc, so one name covers them all.
+DOC="${DOCS[${TARGETS[0]}]}"
+N_TARGETS="${#TARGETS[@]}"
 
-printf '\nAbout to release the design-review requirement for:\n\n  %s\n\ntoken: %s\n\n' "$DOC" "$TOKEN"
-printf 'The gate will stop blocking on this doc. This is logged to %s/bypass-log.jsonl.\n' "$STATE_DIR"
+printf '\nAbout to release the design-review requirement for:\n\n  %s\n\n' "$DOC"
+if [ "$N_TARGETS" -gt 1 ]; then
+    printf '%d tokens are bound to it (one per edit that armed a review):\n\n' "$N_TARGETS"
+    _t=0
+    while [ "$_t" -lt "$N_TARGETS" ]; do
+        printf '  %s\n' "${SRCS[${TARGETS[$_t]}]}"
+        _t=$(( _t + 1 ))
+    done
+    printf '\n'
+else
+    printf 'token: %s\n\n' "${SRCS[${TARGETS[0]}]}"
+fi
+printf 'The gate will stop blocking on this doc. This is logged to %s/bypass-log.jsonl\n' "$STATE_DIR"
+printf '(one event per released token).\n'
 
 # How this release was authorized, recorded in the audit event. `--yes` is
 # sanctioned by ADR 0017 (an operator scripting their own drain), but it is NOT a
@@ -257,7 +322,11 @@ else
         echo "design-clear: no terminal to confirm on. Re-run with --yes if you mean it." >&2
         exit 1
     fi
-    printf 'Clear it? [y/N] '
+    if [ "$N_TARGETS" -gt 1 ]; then
+        printf 'Clear all %d? [y/N] ' "$N_TARGETS"
+    else
+        printf 'Clear it? [y/N] '
+    fi
     read -r reply </dev/tty || reply=""
     case "$reply" in
         y|Y|yes|YES) : ;;
@@ -446,29 +515,56 @@ finally:
 # NOT 2>/dev/null: the writer prints a specific SHORT WRITE diagnostic telling
 # the operator the log must be REPAIRED, which the generic advice below would
 # contradict. The Python block exits quietly on the expected path errors.
-if ! log_event "design-marker-cleared"; then
-    printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
-    printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
-    exit 2
-fi
+# One event per released token, never a single summary event: the trail's unit is
+# the review requirement, and #665 asked for the drain to stay as legible as the
+# 14 individual clears it replaces. A partial run is therefore fully truthful —
+# every token released before the abort has its own durable record.
+CLEARED=0
+partial_note() {
+    [ "$CLEARED" -gt 0 ] || return 0
+    printf 'Released %d of %d token(s) for this doc before stopping; the rest stay armed.\n' \
+        "$CLEARED" "$N_TARGETS" >&2
+}
 
-if ! rm -f -- "$TOKEN"; then
-    # Already recorded as cleared, but it is not — emit the correction so the
-    # trail stays truthful rather than leaving a phantom release on the record.
-    if ! log_event "design-marker-clear-failed"; then
-        # The log now claims a release that did not happen and the correction
-        # could not be appended. Say so loudly — a silently inconsistent audit
-        # trail is worse than a noisy one.
-        printf 'design-clear: WARNING — the audit log records this token as CLEARED but it\n' >&2
-        printf 'was NOT removed, and the correcting entry could not be written. The log at\n' >&2
-        printf '%s is INCONSISTENT and needs manual reconciliation.\n' "$LOG" >&2
+_t=0
+while [ "$_t" -lt "$N_TARGETS" ]; do
+    TOKEN="${SRCS[${TARGETS[$_t]}]}"
+    TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+
+    if ! log_event "design-marker-cleared"; then
+        printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
+        printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
+        partial_note
+        exit 2
     fi
-    printf 'design-clear: could not remove %s.\n' "$TOKEN" >&2
-    exit 2
-fi
+
+    if ! rm -f -- "$TOKEN"; then
+        # Already recorded as cleared, but it is not — emit the correction so the
+        # trail stays truthful rather than leaving a phantom release on the record.
+        if ! log_event "design-marker-clear-failed"; then
+            # The log now claims a release that did not happen and the correction
+            # could not be appended. Say so loudly — a silently inconsistent audit
+            # trail is worse than a noisy one.
+            printf 'design-clear: WARNING — the audit log records this token as CLEARED but it\n' >&2
+            printf 'was NOT removed, and the correcting entry could not be written. The log at\n' >&2
+            printf '%s is INCONSISTENT and needs manual reconciliation.\n' "$LOG" >&2
+        fi
+        printf 'design-clear: could not remove %s.\n' "$TOKEN" >&2
+        partial_note
+        exit 2
+    fi
+    CLEARED=$(( CLEARED + 1 ))
+    _t=$(( _t + 1 ))
+done
 
 if [ "$TRUNCATED" -eq 1 ]; then
-    printf 'Cleared. Others remain pending (listing was capped — re-run to see them).\n'
+    # The classifier stopped counting at CAP, so this doc may still hold tokens
+    # that were never listed — "all for doc" is all the tokens it could SEE.
+    # "MAY remain", not "remain": at exactly CAP pending tokens the cap is hit
+    # with nothing behind it, and asserting a leftover backlog that isn't there
+    # sends the operator back for a re-run that finds nothing.
+    printf 'Cleared %d token(s). Others MAY remain (the listing was capped at %d) — re-run to check.\n' \
+        "$CLEARED" "$CAP"
 else
-    printf 'Cleared. %d token(s) still pending.\n' "$(( ${#SRCS[@]} - 1 ))"
+    printf 'Cleared %d token(s). %d token(s) still pending.\n' "$CLEARED" "$(( ${#SRCS[@]} - CLEARED ))"
 fi

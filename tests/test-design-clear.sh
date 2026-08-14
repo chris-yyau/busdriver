@@ -399,5 +399,181 @@ else
   printf "  SKIP  separate-git-dir (unsupported by this git)\n"
 fi
 
+# ── --all-for-doc drains every token for ONE named doc (#665) ─────────────────
+# Arming is per-EDIT: the token name is <sha(norm-path)>.<nonce> with a random
+# nonce and no dedup, so a doc that went through a few review rounds holds many
+# tokens. Before #665 that had no non-interactive release at all — the doc-path
+# selector refused (">1 match") and --yes refused an index — which pushed the
+# operator toward `rm -rf` on the token dir, destroying the audit trail this
+# helper exists to guarantee.
+doc_tokens() { grep -rl -- "$1" "$MARKER_DIR" 2>/dev/null | grep -c . || true; }
+
+# Delta-based: earlier sections leave alpha armed on purpose (the refusal cases
+# must not delete), so a hard-coded count here would assert the suite's history
+# rather than this feature.
+ALPHA_N=$(( $(doc_tokens alpha-design.md) + 3 ))
+arm "$REPO/docs/plans/alpha-design.md"
+arm "$REPO/docs/plans/alpha-design.md"
+arm "$REPO/docs/plans/alpha-design.md"
+check "all-for-doc fixture: one doc, several tokens" "$ALPHA_N" "$(doc_tokens alpha-design.md)"
+
+# The plain doc selector must STILL refuse a multi-token doc — the bulk mode is
+# opt-in, never an implicit widening of what `<doc-path>` releases.
+OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/alpha-design.md" --yes 2>&1 )"; RC=$?
+check "multi-token: plain doc selector still refused" "2" "$RC"
+check "multi-token: nothing deleted" "$ALPHA_N" "$(doc_tokens alpha-design.md)"
+case "$OUT" in
+  *--all-for-doc*) ok "multi-token: refusal points at the bulk mode" ;;
+  *) no "multi-token: refusal points at the bulk mode" "$OUT" ;;
+esac
+
+# An index cannot name a SET, and it shifts between runs — honoring it would
+# reinterpret "index 3" as "everything sharing index 3's doc".
+OUT="$( cd "$REPO" && "$CLEAR" --all-for-doc 1 2>&1 )"; RC=$?
+check "all-for-doc+index: exits 2" "2" "$RC"
+check "all-for-doc+index: nothing deleted" "$ALPHA_N" "$(doc_tokens alpha-design.md)"
+OUT="$( cd "$REPO" && "$CLEAR" --all-for-doc 2>&1 )"; RC=$?
+check "all-for-doc with no doc: exits 2" "2" "$RC"
+
+# One confirmation covers the whole set, and declining it releases nothing.
+BEFORE="$(token_count)"
+OUT="$(tty_run n --all-for-doc "$REPO/docs/plans/alpha-design.md" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then no "all-for-doc decline: aborts" "exited 0: $OUT"; else ok "all-for-doc decline: aborts"; fi
+check "all-for-doc decline: nothing deleted" "$BEFORE" "$(token_count)"
+case "$OUT" in
+  *"Clear all $ALPHA_N?"*) ok "all-for-doc decline: prompt names the set size" ;;
+  *) no "all-for-doc decline: prompt names the set size" "$OUT" ;;
+esac
+
+# The drain itself: every token for the named doc goes, nothing else does, and
+# the trail keeps one event per released token rather than one summary event.
+arm "$REPO/docs/plans/beta-design.md"
+BETA_BEFORE="$(doc_tokens beta-design.md)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
+check "all-for-doc: exits 0" "0" "$RC"
+check "all-for-doc: every token for the named doc released" "0" "$(doc_tokens alpha-design.md)"
+check "all-for-doc: the other doc is untouched" "$BETA_BEFORE" "$(doc_tokens beta-design.md)"
+check "all-for-doc: one audit event PER token, not one summary" "$(( EVENTS_BEFORE + ALPHA_N ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+if python3 -S -c '
+import json, sys
+evs = [json.loads(l) for l in open(sys.argv[1]) if "design-marker-cleared" in l][-3:]
+assert all(e["doc"].endswith("alpha-design.md") for e in evs), evs
+assert all(e["confirmed"] == "no-tty-assumed-yes" for e in evs), evs
+assert all(len(e["token_sha"]) == 64 for e in evs), evs
+' "$LOG" 2>/dev/null; then
+  ok "all-for-doc: each event names the doc and how it was authorized"
+else
+  no "all-for-doc: each event names the doc and how it was authorized" "$(tail -3 "$LOG")"
+fi
+
+# An unvalidated marker in the set aborts the WHOLE drain: releasing the healthy
+# siblings around it would lift the block while leaving the anomaly armed.
+arm "$REPO/docs/plans/alpha-design.md"
+arm "$REPO/docs/plans/alpha-design.md"
+STRAY="$MARKER_DIR/not-a-valid-token-name"
+: >"$STRAY"
+BEFORE="$(token_count)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
+check "all-for-doc: still drains alongside an unrelated stray" "0" "$RC"
+check "all-for-doc: the stray marker is not touched" "1" "$([ -e "$STRAY" ] && echo 1 || echo 0)"
+check "all-for-doc: two more events for the two tokens" "$(( EVENTS_BEFORE + 2 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$STRAY"
+
+# ...but a non-token marker bound to the SAME doc aborts the whole drain, before
+# anything is released. A legacy list-file marker holds several docs at once, so
+# removing it is the blanket wipe this helper exists to refuse — and draining the
+# healthy tokens around it would lift the block while the marker stayed armed,
+# quietly turning "inspect this" into "already released most of it".
+arm "$REPO/docs/plans/alpha-design.md"
+arm "$REPO/docs/plans/alpha-design.md"
+ALPHA_NORM="$(cat "$(grep -rl 'alpha-design.md' "$MARKER_DIR" | head -1)")"
+printf -- '- %s\n' "$ALPHA_NORM" >"$REPO/.claude/design-review-needed.local.md"
+BEFORE="$(token_count)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "all-or-nothing: refuses the whole drain" "exited 0: $OUT"
+else
+  ok "all-or-nothing: refuses the whole drain"
+fi
+check "all-or-nothing: not one token released" "$BEFORE" "$(token_count)"
+check "all-or-nothing: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+case "$OUT" in
+  *"blanket wipe"*) ok "all-or-nothing: says which marker blocked it" ;;
+  *) no "all-or-nothing: says which marker blocked it" "$OUT" ;;
+esac
+rm -f "$REPO/.claude/design-review-needed.local.md"
+( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes >/dev/null 2>&1 )
+check "all-or-nothing: drains once the anomaly is gone" "0" "$(doc_tokens alpha-design.md)"
+
+# A single-token doc goes through the same path unchanged.
+arm "$REPO/docs/plans/gamma-design.md"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/gamma-design.md" --yes 2>&1)"; RC=$?
+check "all-for-doc: single-token doc still clears" "0" "$RC"
+check "all-for-doc: single-token doc logs exactly one event" "$(( EVENTS_BEFORE + 1 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+
+# ── The gate's block message hints a command that actually RUNS (#665) ────────
+# The operator meets design-clear.sh through the gate's hint, never through
+# --help. Before #665 a multi-token doc got the plain `<doc-path>` hint repeated
+# once per token — the same line N times, each naming a command guaranteed to
+# refuse (">1 match"). A hint that cannot work is what sent the operator to `rm`.
+: >"$REPO/docs/plans/epsilon-design.md"
+DELTA_N=$(( $(doc_tokens delta-design.md) + 2 ))
+arm "$REPO/docs/plans/delta-design.md"
+arm "$REPO/docs/plans/delta-design.md"
+arm "$REPO/docs/plans/epsilon-design.md"
+RECS="$TMP/recs"
+in_repo gate_marker_pending "$REPO" >"$RECS" 2>/dev/null
+# The renderer emits literal \n escapes for its caller to expand; do that here so
+# the assertions below are per-line rather than against one long string.
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS" "$REPO")")"
+check "hint: multi-token doc listed once, not once per token" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md' || true)"
+check "hint: multi-token doc gets the bulk command" "1" \
+  "$(printf '%s\n' "$RENDER" | grep 'delta-design.md' | grep -c -- '--all-for-doc' || true)"
+check "hint: names how many tokens are bound to it" "1" \
+  "$(printf '%s\n' "$RENDER" | grep 'delta-design.md' | grep -c -- "$DELTA_N tokens, one per edit" || true)"
+check "hint: single-token doc keeps the plain selector" "0" \
+  "$(printf '%s\n' "$RENDER" | grep 'epsilon-design.md' | grep -c -- '--all-for-doc' || true)"
+check "hint: single-token doc still hinted at all" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'epsilon-design.md' || true)"
+# And the hint it prints is the command that works: run it verbatim.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/delta-design.md" --yes 2>&1)"; RC=$?
+check "hint: the hinted bulk command succeeds" "0" "$RC"
+check "hint: it released every token for that doc" "0" "$(doc_tokens delta-design.md)"
+
+# A doc that ALSO has a non-token marker must NOT be hinted --all-for-doc: the
+# drain refuses all-or-nothing on such a set, so counting legacy records as
+# tokens would print a command guaranteed to fail — the exact defect this hint
+# exists to remove. Mixed state keeps the per-record rendering it has today.
+arm "$REPO/docs/plans/delta-design.md"
+arm "$REPO/docs/plans/delta-design.md"
+DELTA_NORM="$(cat "$(grep -rl 'delta-design.md' "$MARKER_DIR" | head -1)")"
+printf -- '- %s\n' "$DELTA_NORM" >"$REPO/.claude/design-review-needed.local.md"
+in_repo gate_marker_pending "$REPO" >"$RECS" 2>/dev/null
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS" "$REPO")")"
+check "hint: mixed token+legacy doc is NOT hinted the bulk command" "0" \
+  "$(printf '%s\n' "$RENDER" | grep 'delta-design.md' | grep -c -- '--all-for-doc' || true)"
+# Falls back to one line per record (2 tokens + 1 legacy), which is what the
+# renderer did before the dedupe existed — withholding the bulk hint must not
+# also drop the doc from the message.
+check "hint: mixed doc still appears, one line per record" "3" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md.*release with an audit record' || true)"
+# Prove the hint was right to withhold it: the bulk command does refuse here.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/delta-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "hint: withheld because the bulk command would refuse" "it exited 0: $OUT"
+else
+  ok "hint: withheld because the bulk command would refuse"
+fi
+rm -f "$REPO/.claude/design-review-needed.local.md"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

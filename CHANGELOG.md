@@ -1,3 +1,10 @@
+## [1.106.9](https://github.com/chris-yyau/busdriver/compare/v1.106.8...v1.106.9) (2026-08-14)
+
+
+### Bug Fixes
+
+* **dispatch:** ship no auditor model default; add zenmux capability skill ([#666](https://github.com/chris-yyau/busdriver/issues/666)) ([45bde9c](https://github.com/chris-yyau/busdriver/commit/45bde9c000a8ee818f66f00855d3f6b5fd2c2d71)), closes [#594](https://github.com/chris-yyau/busdriver/issues/594)
+
 ## [1.106.8](https://github.com/chris-yyau/busdriver/compare/v1.106.7...v1.106.8) (2026-08-13)
 
 

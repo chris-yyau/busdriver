@@ -156,8 +156,19 @@ list_tokens() {
     while [ "$n" -lt "${#SRCS[@]}" ]; do
         note=""
         [ -n "${DOCS[$n]}" ] && note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
-        if [ -n "${DOCS[$n]}" ]; then
+        if [ -n "${DOCS[$n]}" ] && [ "${KINDS[$n]}" = "token" ]; then
             printf '  [%d] %s%s\n' "$(( n + 1 ))" "${DOCS[$n]}" "$note"
+        elif [ -n "${DOCS[$n]}" ]; then
+            # A legacy list-file record IS bound to a doc_path (needed for the
+            # all-or-nothing safety check below), but it can never be cleared by
+            # naming that doc -- unlinking it would drop the whole shared list
+            # file, releasing every OTHER doc named in it too (a blanket wipe).
+            # Rendering it identically to a real per-doc token, as before,
+            # advertised `design-clear.sh '<doc>'` / --all-for-doc for a
+            # selector that always refuses. Show the doc for context but drop
+            # the clearable-looking format (cubic, PR #670).
+            printf '  [%d] %s%s  [%s]  (not clearable by name — edit the legacy list file, see below)\n' \
+                "$(( n + 1 ))" "${DOCS[$n]}" "$note" "${REASONS[$n]}"
         else
             printf '  [%d] %s  [%s]  (not clearable here — see below)\n' \
                 "$(( n + 1 ))" "${SRCS[$n]}" "${REASONS[$n]}"
@@ -236,6 +247,43 @@ else
         fi
         n=$(( n + 1 ))
     done
+    # --all-for-doc: also catch UNVALIDATED "token" records for the SAME doc.
+    # `arm` names a token `<sha(norm)>.<nonce>` before writing its body, so a
+    # write that fails partway (truncated/forged) leaves a correctly-named file
+    # with an unparseable body -- _classify_tokens emits it with an EMPTY
+    # doc_path (the body is untrusted, so it cannot bind one) and the doc-match
+    # loop above can therefore never select it. Left out of TARGETS, it is
+    # invisible to the all-or-nothing check below: every healthy sibling for
+    # the doc drains, the command exits 0, and the malformed marker for the
+    # SAME document stays armed -- reopening Codex's bypass (PR #670) through
+    # an unvalidated TOKEN instead of an unbound legacy record. The filename
+    # prefix is server-derived (arm writes it, independent of the body it
+    # failed to write), so it is trustworthy enough to route the record into
+    # the refusal below even though its content cannot be shown.
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        DOC_SHA="$(python3 -I "$_SELF_DIR/../hooks/gate-scripts/lib/marker_ops.py" sha "$NORM" 2>/dev/null || true)"
+        # Fail CLOSED. Without the digest this scan cannot run, and skipping it
+        # silently is the whole bypass: the drain would proceed exactly as if no
+        # malformed same-doc token existed. python3 is already a hard dependency
+        # (the classifier above ran through it), so an empty digest here means
+        # something is broken, not absent — refuse rather than release blind.
+        if [ -z "$DOC_SHA" ]; then
+            printf 'design-clear: cannot compute the doc digest needed to screen for\n' >&2
+            printf 'malformed same-document tokens — refusing --all-for-doc.\n\n' >&2
+            printf 'Releasing without that screen could drain every healthy token for %s\n' "$SELECTOR" >&2
+            printf 'while leaving an unvalidated marker for the SAME doc armed.\n' >&2
+            exit 2
+        fi
+        n=0
+        while [ "$n" -lt "${#SRCS[@]}" ]; do
+            if [ "${KINDS[$n]}" = "token" ] && [ -z "${DOCS[$n]}" ]; then
+                case "$(basename -- "${SRCS[$n]}")" in
+                    "$DOC_SHA".*) TARGETS+=( "$n" ) ;;
+                esac
+            fi
+            n=$(( n + 1 ))
+        done
+    fi
 fi
 
 if [ "${#TARGETS[@]}" -eq 0 ]; then

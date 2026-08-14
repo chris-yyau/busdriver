@@ -487,6 +487,36 @@ check "all-for-doc: two more events for the two tokens" "$(( EVENTS_BEFORE + 2 )
   "$(grep -c 'design-marker-cleared' "$LOG" || true)"
 rm -f "$STRAY"
 
+# A malformed TOKEN that shares the doc's filename SHA is a different anomaly
+# from the unrelated stray above: arm names a token `<sha(norm)>.<nonce>` BEFORE
+# writing its body, so a write that failed partway leaves a correctly-named file
+# with an unparseable body. The classifier cannot bind a doc_path to it (the
+# body is untrusted), so a naive doc-path match would silently exclude it from
+# the selected set and drain every healthy sibling around it -- reopening
+# Codex's bypass (PR #670) through an unvalidated token instead of an unbound
+# legacy record. It must refuse the whole drain, same as the legacy-marker case
+# below.
+arm "$REPO/docs/plans/alpha-design.md"
+arm "$REPO/docs/plans/alpha-design.md"
+ALPHA_SHA="$(in_repo bash -c 'python3 -I "$1/marker_ops.py" sha "$2"' _ \
+  "$REPO_ROOT/hooks/gate-scripts/lib" "$(cat "$(grep -rl '/alpha-design.md' "$MARKER_DIR" | head -1)")")"
+MALFORMED="$MARKER_DIR/$ALPHA_SHA.deadbeefdeadbeef"
+printf 'not a valid body, no trailing sha match' >"$MALFORMED"
+BEFORE="$(token_count)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "all-for-doc: refuses a same-doc malformed token" "exited 0 -- malformed token left unbound: $OUT"
+else
+  ok "all-for-doc: refuses a same-doc malformed token"
+fi
+check "same-doc malformed token: not one token released" "$BEFORE" "$(token_count)"
+check "same-doc malformed token: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$MALFORMED"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
+check "same-doc malformed token: drains once the malformed token is gone" "0" "$(doc_tokens alpha-design.md)"
+
 # ...but a non-token marker bound to the SAME doc aborts the whole drain, before
 # anything is released. A legacy list-file marker holds several docs at once, so
 # removing it is the blanket wipe this helper exists to refuse — and draining the
@@ -703,6 +733,12 @@ check "cap-legacy: fixture drained for the cases below" "0" "$(doc_tokens eta-de
 # refusal reachable -- leaving it empty (keyed on the raw entry spelling) would
 # reopen the same bypass from another direction, since design-clear matches the
 # anomaly BY doc_path and an unbound record can never match.
+# The doc file itself must exist too, like every other doc exercised in this
+# suite (alpha/beta/gamma/delta/epsilon/zeta/eta) -- otherwise the relative
+# entry is validated against a document that was never real, and both the
+# refusal and the terminal drain assertions below could pass for the wrong
+# reason (cubic, PR #670).
+: >"$REPO/docs/plans/theta-design.md"
 arm "$REPO/docs/plans/theta-design.md"
 arm "$REPO/docs/plans/theta-design.md"
 LEGACY_MARKER="$REPO/.claude/design-review-needed.local.md"
@@ -723,6 +759,60 @@ rm -f "$LEGACY_MARKER"
 # the marker and not some unrelated failure.
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/theta-design.md" --yes 2>&1)"; RC=$?
 check "relative-legacy: drains once the marker is gone" "0" "$(doc_tokens theta-design.md)"
+
+# -- Malformed same-doc tokens buried PAST the cap still refuse ---------------
+# The malformed-token screen reads the classifier record set, which is capped at
+# K=20 -- so a doc with >= 20 healthy tokens could bury its own malformed
+# `<sha>.<nonce>` siblings beyond the cutoff, and the screen would pass on a set
+# that simply did not contain them. _classify_tokens therefore emits anomalous
+# records IMMEDIATELY and defers valid ones, the same budget-priority rule
+# cmd_classify applies to legacy records: if any valid token is visible, every
+# anomalous one is too -- regardless of os.listdir() order.
+#
+# FIVE malformed tokens, not one: emission order is arbitrary, so a single
+# anomaly lands inside the cap by luck most of the time and the test would pass
+# without the deferral. Requiring ALL FIVE to be visible is what makes the
+# assertion decisive rather than probabilistic.
+: >"$REPO/docs/plans/iota-design.md"
+arm "$REPO/docs/plans/iota-design.md"
+IOTA_TOKEN="$(grep -rl -- '/iota-design.md' "$MARKER_DIR" | head -1)"
+IOTA_SHA="$(basename -- "$IOTA_TOKEN")"; IOTA_SHA="${IOTA_SHA%%.*}"
+IOTA_BODY="$(cat "$IOTA_TOKEN")"
+# Healthy siblings written directly rather than via arm(): same bytes, but one
+# process instead of 25, which keeps the suite fast.
+_i=0
+while [ "$_i" -lt 25 ]; do
+  printf '%s\n' "$IOTA_BODY" > "$MARKER_DIR/$IOTA_SHA.$(printf 'aa%014x' "$_i")"
+  _i=$(( _i + 1 ))
+done
+# Correctly-named, body never written -- what arm() leaves behind when it names
+# the file and then fails mid-write.
+_i=0
+while [ "$_i" -lt 5 ]; do
+  : >"$MARKER_DIR/$IOTA_SHA.$(printf 'ff%014x' "$_i")"
+  _i=$(( _i + 1 ))
+done
+check "cap-malformed: doc holds far more tokens than the cap" "1" \
+  "$([ "$(doc_tokens iota-design.md)" -ge 26 ] && echo 1 || echo 0)"
+# The invariant itself: every anomalous record survives the cap.
+RECS_OUT="$TMP/recs-iota"
+in_repo gate_marker_pending "$REPO" >"$RECS_OUT" 2>/dev/null
+check "cap-malformed: all 5 anomalies emitted despite the cap" "5" \
+  "$(tr '\0' '\n' < "$RECS_OUT" | grep -c '^unparseable$' || true)"
+BEFORE="$(token_count)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/iota-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "cap-malformed: refuses the drain" "exited 0 -- malformed tokens buried past the cap: $OUT"
+else
+  ok "cap-malformed: refuses the drain"
+fi
+check "cap-malformed: not one token released" "$BEFORE" "$(token_count)"
+check "cap-malformed: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+# Clean the fixture directly so later state is not cap-bound.
+rm -f "$MARKER_DIR/$IOTA_SHA."*
+check "cap-malformed: fixture drained" "0" "$(doc_tokens iota-design.md)"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

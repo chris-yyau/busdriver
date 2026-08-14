@@ -279,6 +279,7 @@ def _classify_tokens(marker_dir, em):
         return not os.path.lexists(marker_dir)
     except OSError:
         return False  # existing dir we cannot list -> cannot build the set
+    deferred = []
     for name in names:
         tok = os.path.join(marker_dir, name)
         m = _TOKEN_RE.match(name)
@@ -306,6 +307,25 @@ def _classify_tokens(marker_dir, em):
         if not norm.startswith("/") or _sha(norm) != m.group(1):
             em.add("token", tok, "", "unparseable")
             continue
+        # DEFER valid tokens; anomalies above were emitted immediately. Same
+        # budget-priority rule as legacy-before-tokens in cmd_classify, and for
+        # the same reason (#665 review, Codex): consumers screen for anomalous
+        # SAME-DOC markers among the records they were given, so an anomaly that
+        # falls past the shared cap is invisible and the screen silently passes.
+        # A doc with >= K healthy tokens would otherwise bury its own malformed
+        # `<sha>.<nonce>` sibling, and design-clear.sh's --all-for-doc would
+        # drain every healthy token, exit 0, and leave that marker armed.
+        #
+        # Emitting anomalies first makes the invariant unconditional: if ANY
+        # valid token is visible, EVERY anomalous record is too. Truncation can
+        # then only ever drop healthy tokens, which under-reports — the safe
+        # direction.
+        #
+        # Buffer is bounded by K: past that the emitter would discard them
+        # anyway, so there is nothing to gain by holding more.
+        if len(deferred) < K:
+            deferred.append((tok, norm))
+    for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
     return True
 

@@ -360,7 +360,23 @@ def _classify_legacy(roots, state_dir, em):
             except OSError:
                 reviewed = False  # absent / unreadable doc -> pending (fail-closed)
             if not reviewed:
-                em.add("legacy", m, _norm_legacy_doc_path(doc) if os.path.isabs(doc) else "", "legacy-pending")
+                # ALWAYS bind the doc_path. `doc` is absolute either way by this
+                # point -- taken verbatim when the entry was absolute, joined
+                # with its owning worktree root when it was relative -- and a
+                # relative entry names a real document just as much as an
+                # absolute one does.
+                #
+                # The old `os.path.isabs(doc)` guard was indeed dead (CodeRabbit,
+                # PR #670), but the fix is to DROP it, not to re-key it on
+                # `entry.startswith("/")`. Re-keying leaves a relative entry with
+                # an EMPTY doc_path, which reopens Codex's bypass through another
+                # door: design-clear.sh matches the anomaly by doc_path, so an
+                # unbound legacy record can never match, and --all-for-doc would
+                # release every token for that document while its legacy marker
+                # stayed armed. Binding is what makes the all-or-nothing refusal
+                # reachable; it grants no new power, since a legacy marker is
+                # refused as a blanket wipe regardless of how it is spelled.
+                em.add("legacy", m, _norm_legacy_doc_path(doc), "legacy-pending")
 
 
 def cmd_classify(argv):
@@ -371,9 +387,32 @@ def cmd_classify(argv):
     if roots is None:
         return 2  # git enumeration failure -> cannot build the set
     em = _Emitter()
+    # LEGACY FIRST, deliberately (#665 review, Codex). The emitter budget K is
+    # SHARED, so whichever classifier runs first can starve the other. With
+    # tokens first, a doc holding >= K tokens filled the budget and its own
+    # same-doc legacy marker never got emitted at all — invisible to every
+    # consumer, including design-clear.sh's all-or-nothing refusal, which would
+    # then drain the doc's whole token set and report success while that marker
+    # stayed armed.
+    #
+    # Reversing the order makes the invariant unconditional: legacy records
+    # either fit entirely under the cap, or fill it and NO token is emitted (so
+    # there is nothing for a bulk release to drain). Either way, if a token for
+    # doc X is visible then every legacy record is too. Truncation can now only
+    # ever drop TOKENS, which under-reports — the safe direction, and what the
+    # "others MAY remain, re-run" messaging already tells the operator.
+    #
+    # Legacy entries cannot realistically starve tokens: the union is one small
+    # list file per worktree root, not a directory that grows one entry per edit.
+    #
+    # CONTRACT CHANGE: exit 2 (token dir unlistable) can now carry partial legacy
+    # records on stdout, where before it always emitted nothing. Verified safe for
+    # all three consumers — design-clear.sh exits 2 without reading the records,
+    # and both gates treat any non-zero code as fail-CLOSED, at worst rendering a
+    # partial block message (strictly more information than none).
+    _classify_legacy(roots, state_dir, em)
     if not _classify_tokens(marker_dir, em):
         return 2  # existing token dir could not be listed
-    _classify_legacy(roots, state_dir, em)
     return 1 if em.pending else 0
 
 

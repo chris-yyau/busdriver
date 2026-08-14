@@ -154,8 +154,8 @@ check "decline: nothing deleted" "2" "$(token_count)"
 # ...and answering "y" at that same prompt clears, recording confirmed:tty.
 
 # ── (2) Clearing a named token removes exactly it, and logs ───────────────────
-ALPHA_TOKEN="$(grep -rl "alpha-design.md" "$MARKER_DIR" 2>/dev/null | head -1)"
-BETA_TOKEN="$(grep -rl "beta-design.md" "$MARKER_DIR" 2>/dev/null | head -1)"
+ALPHA_TOKEN="$(grep -rl "/alpha-design.md" "$MARKER_DIR" 2>/dev/null | head -1)"
+BETA_TOKEN="$(grep -rl "/beta-design.md" "$MARKER_DIR" 2>/dev/null | head -1)"
 OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/alpha-design.md" --yes 2>&1 )"; RC=$?
 check "clear: exit 0" "0" "$RC"
 check "clear: one token left" "1" "$(token_count)"
@@ -406,7 +406,11 @@ fi
 # selector refused (">1 match") and --yes refused an index — which pushed the
 # operator toward `rm -rf` on the token dir, destroying the audit trail this
 # helper exists to guarantee.
-doc_tokens() { grep -rl -- "$1" "$MARKER_DIR" 2>/dev/null | grep -c . || true; }
+# Anchor on the leading "/" of the basename: a token body holds the absolute
+# doc path, and unanchored "eta-design.md" is a SUBSTRING of beta-, zeta- and
+# theta-design.md. Cross-counting made cap-dependent assertions flaky and let a
+# NORM lookup below resolve to a different document entirely.
+doc_tokens() { grep -rl -- "/$1" "$MARKER_DIR" 2>/dev/null | grep -c . || true; }
 
 # Delta-based: earlier sections leave alpha armed on purpose (the refusal cases
 # must not delete), so a hard-coded count here would assert the suite's history
@@ -468,13 +472,13 @@ else
   no "all-for-doc: each event names the doc and how it was authorized" "$(tail -3 "$LOG")"
 fi
 
-# An unvalidated marker in the set aborts the WHOLE drain: releasing the healthy
-# siblings around it would lift the block while leaving the anomaly armed.
+# An unvalidated marker that is NOT bound to the named doc has no doc_path, so it
+# never enters the selected set: the drain proceeds and leaves the stray in place.
+# The all-or-nothing refusal is covered by the next block.
 arm "$REPO/docs/plans/alpha-design.md"
 arm "$REPO/docs/plans/alpha-design.md"
 STRAY="$MARKER_DIR/not-a-valid-token-name"
 : >"$STRAY"
-BEFORE="$(token_count)"
 EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
 check "all-for-doc: still drains alongside an unrelated stray" "0" "$RC"
@@ -490,7 +494,7 @@ rm -f "$STRAY"
 # quietly turning "inspect this" into "already released most of it".
 arm "$REPO/docs/plans/alpha-design.md"
 arm "$REPO/docs/plans/alpha-design.md"
-ALPHA_NORM="$(cat "$(grep -rl 'alpha-design.md' "$MARKER_DIR" | head -1)")"
+ALPHA_NORM="$(cat "$(grep -rl '/alpha-design.md' "$MARKER_DIR" | head -1)")"
 printf -- '- %s\n' "$ALPHA_NORM" >"$REPO/.claude/design-review-needed.local.md"
 BEFORE="$(token_count)"
 EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
@@ -555,7 +559,7 @@ check "hint: it released every token for that doc" "0" "$(doc_tokens delta-desig
 # exists to remove. Mixed state keeps the per-record rendering it has today.
 arm "$REPO/docs/plans/delta-design.md"
 arm "$REPO/docs/plans/delta-design.md"
-DELTA_NORM="$(cat "$(grep -rl 'delta-design.md' "$MARKER_DIR" | head -1)")"
+DELTA_NORM="$(cat "$(grep -rl '/delta-design.md' "$MARKER_DIR" | head -1)")"
 printf -- '- %s\n' "$DELTA_NORM" >"$REPO/.claude/design-review-needed.local.md"
 in_repo gate_marker_pending "$REPO" >"$RECS" 2>/dev/null
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS" "$REPO")")"
@@ -585,7 +589,7 @@ rm -f "$REPO/.claude/design-review-needed.local.md"
 # leaving the doc's legacy marker armed, exactly the all-or-nothing refusal
 # this feature exists to trigger.
 arm "$REPO/docs/plans/gamma-design.md"
-GAMMA_NORM="$(cat "$(grep -rl 'gamma-design.md' "$MARKER_DIR" | head -1)")"
+GAMMA_NORM="$(cat "$(grep -rl '/gamma-design.md' "$MARKER_DIR" | head -1)")"
 GAMMA_DIR="$(dirname "$GAMMA_NORM")"
 GAMMA_MIXED_SPELLING="$GAMMA_DIR/../plans/gamma-design.md"
 printf -- '- %s\n' "$GAMMA_MIXED_SPELLING" >"$REPO/.claude/design-review-needed.local.md"
@@ -610,18 +614,18 @@ check "mixed-spelling legacy: drains once the legacy marker is gone" "0" "$(doc_
 
 # ── Classifier-cap truncation (CAP=20 in design-clear.sh, K=20 in marker_ops.py) ──
 # --all-for-doc is not a promise to empty the directory: the classifier stops
-# COUNTING at K=20 records total (existence-keyed, ADR-C), so a doc that alone
-# holds more than the cap only has its first (cap - other-pending) tokens visible
-# to this run. The drain must clear exactly what it saw and say "Others MAY
-# remain ... re-run to check" — never claim an exact "N token(s) still pending"
-# count it cannot know past the cap.
+# EMITTING at K=20 records total (existence-keyed, ADR-C). Draining only what
+# was listed is safe ONLY because cmd_classify emits _classify_legacy BEFORE
+# _classify_tokens (#665 review, Codex): if any token for a doc is visible then
+# every legacy record is too, so the cap can only ever truncate TOKENS, which
+# under-drains. Both halves are asserted -- the drain-and-rerun path here, and
+# the same-doc-legacy refusal past the cap immediately after.
 : >"$REPO/docs/plans/zeta-design.md"
-# ZETA itself must exceed the cap — arm 21 regardless of what else is pending.
-# Topping the GLOBAL count up to 21 is not equivalent and is flaky: the
-# classifier emits an arbitrary os.listdir() subset, so when the one record
-# above the cap belongs to another doc, every zeta token is listed and the
-# drain leaves nothing behind. With 21 zeta tokens, at most 20 can ever be
-# listed, so at least one survives no matter how listdir orders them.
+# ZETA itself must exceed the cap -- arm 21 regardless of what else is pending.
+# Topping the GLOBAL count up to 21 instead is flaky: the classifier emits an
+# arbitrary os.listdir() subset, so when the record above the cap belongs to
+# another doc, every zeta token is listed and the assertion below has nothing
+# left to find. With 21 zeta tokens at most 20 can ever be listed.
 _i=0
 while [ "$_i" -lt 21 ]; do
   arm "$REPO/docs/plans/zeta-design.md"
@@ -629,23 +633,96 @@ while [ "$_i" -lt 21 ]; do
 done
 check "cap: enough tokens armed to exceed the classifier cap" "1" \
   "$([ "$(doc_tokens zeta-design.md)" -ge 21 ] && echo 1 || echo 0)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes 2>&1)"; RC=$?
 check "cap: all-for-doc still exits 0 past the cap" "0" "$RC"
 case "$OUT" in
-  *"Others MAY remain"*"re-run to check"*) ok "cap: prints the capped-listing warning, not an exact count" ;;
-  *) no "cap: prints the capped-listing warning, not an exact count" "$OUT" ;;
-esac
-case "$OUT" in
-  *"token(s) still pending"*) no "cap: does NOT claim an exact remaining count" "$OUT" ;;
-  *) ok "cap: does NOT claim an exact remaining count" ;;
+  *"Others MAY remain"*"re-run to check"*) ok "cap: says others may remain, not an exact count" ;;
+  *) no "cap: says others may remain, not an exact count" "$OUT" ;;
 esac
 check "cap: at least one zeta token survives the capped drain" "1" \
   "$([ "$(doc_tokens zeta-design.md)" -ge 1 ] && echo 1 || echo 0)"
-# Drain the rest so the fixture doesn't leak an armed doc past the suite.
+# One audit event per token actually released -- a capped drain still records
+# every release it made, never a summary event.
+CAP_RELEASED=$(( 21 - $(doc_tokens zeta-design.md) ))
+check "cap: one audit event per released token" "$(( EVENTS_BEFORE + CAP_RELEASED ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+# Re-running finishes the job -- the drain-and-rerun contract #665 asked for,
+# and the reason a blanket refuse-when-truncated is NOT the fix here.
 while [ "$(doc_tokens zeta-design.md)" -gt 0 ]; do
   ( cd "$REPO" && "$CLEAR" --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes >/dev/null 2>&1 ) || break
 done
-check "cap: fully drains once under the cap" "0" "$(doc_tokens zeta-design.md)"
+check "cap: re-running drains the doc completely" "0" "$(doc_tokens zeta-design.md)"
+
+# -- A same-doc legacy marker stays visible PAST the cap, and still refuses ----
+# Codex #670, and the reason the classifier emits legacy first. With tokens
+# emitted first, a doc holding >= K tokens filled the shared budget and its own
+# legacy marker never reached the listing -- so the all-or-nothing check could
+# not see it and --all-for-doc drained the whole token set, wrote an audit event
+# per token, and exited 0 while that marker stayed armed. Verified against the
+# pre-fix ordering: 20 released, 20 events, exit 0.
+: >"$REPO/docs/plans/eta-design.md"
+_i=0
+while [ "$_i" -lt 21 ]; do
+  arm "$REPO/docs/plans/eta-design.md"
+  _i=$(( _i + 1 ))
+done
+ETA_NORM="$(cat "$(grep -rl '/eta-design.md' "$MARKER_DIR" | head -1)")"
+LEGACY_MARKER="$REPO/.claude/design-review-needed.local.md"
+printf -- '- %s\n' "$ETA_NORM" >"$LEGACY_MARKER"
+BEFORE="$(doc_tokens eta-design.md)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/eta-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "cap-legacy: refuses the drain" "exited 0 -- legacy marker invisible past the cap: $OUT"
+else
+  ok "cap-legacy: refuses the drain"
+fi
+check "cap-legacy: not one token released" "$BEFORE" "$(doc_tokens eta-design.md)"
+check "cap-legacy: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+case "$OUT" in
+  *"blanket wipe"*) ok "cap-legacy: names the legacy marker that blocked it" ;;
+  *) no "cap-legacy: names the legacy marker that blocked it" "$OUT" ;;
+esac
+rm -f "$LEGACY_MARKER"
+# Drop eta's 21 tokens directly (not via the CLI — the point above is that it
+# refuses). Left armed they keep the classifier at its cap for every later
+# case, which would silently turn subsequent drains into truncated ones.
+while [ "$(doc_tokens eta-design.md)" -gt 0 ]; do
+  _f="$(grep -rl -- '/eta-design.md' "$MARKER_DIR" 2>/dev/null | head -1)"
+  [ -n "$_f" ] || break
+  rm -f -- "$_f"
+done
+check "cap-legacy: fixture drained for the cases below" "0" "$(doc_tokens eta-design.md)"
+
+# -- ...and a RELATIVE legacy entry refuses too -------------------------------
+# A legacy list entry may be repo-relative (`- docs/plans/x.md`); it is resolved
+# against its owning worktree root and names a real document exactly as an
+# absolute entry does. Binding its doc_path is what makes the all-or-nothing
+# refusal reachable -- leaving it empty (keyed on the raw entry spelling) would
+# reopen the same bypass from another direction, since design-clear matches the
+# anomaly BY doc_path and an unbound record can never match.
+arm "$REPO/docs/plans/theta-design.md"
+arm "$REPO/docs/plans/theta-design.md"
+LEGACY_MARKER="$REPO/.claude/design-review-needed.local.md"
+printf -- '- %s\n' "docs/plans/theta-design.md" >"$LEGACY_MARKER"
+BEFORE="$(doc_tokens theta-design.md)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/theta-design.md" --yes 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  no "relative-legacy: refuses the drain" "exited 0 -- relative entry left unbound: $OUT"
+else
+  ok "relative-legacy: refuses the drain"
+fi
+check "relative-legacy: not one token released" "$BEFORE" "$(doc_tokens theta-design.md)"
+check "relative-legacy: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+rm -f "$LEGACY_MARKER"
+# ...and it drains normally once that marker is gone, proving the refusal was
+# the marker and not some unrelated failure.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/theta-design.md" --yes 2>&1)"; RC=$?
+check "relative-legacy: drains once the marker is gone" "0" "$(doc_tokens theta-design.md)"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

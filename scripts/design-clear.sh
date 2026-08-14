@@ -281,6 +281,20 @@ fi
 _t=$(( _t + 1 ))
 done
 
+# NOTE on the cap and the all-or-nothing check above. The check can only refuse
+# on records the classifier EMITTED, and the emitter budget is capped — so it is
+# only sound if a same-doc anomaly can never be the thing that got truncated.
+# That is now guaranteed upstream rather than here: marker_ops.cmd_classify runs
+# _classify_legacy BEFORE _classify_tokens (#665 review, Codex), so if any token
+# for this doc is visible then every legacy record is too. Truncation can only
+# drop TOKENS, which under-drains — handled honestly by the closing message.
+#
+# A blanket "refuse whenever TRUNCATED" was the other candidate fix and is NOT
+# used: the cap is hit at ~20 pending records, which is precisely the backlog
+# size #665 exists to drain, so it would refuse in the feature's own motivating
+# scenario (verified: 0 of 23 tokens released) and leave the gate's hint pointing
+# at a command that always fails — the defect this change set removes.
+
 # Every target is a validated token for the same doc, so one name covers them all.
 DOC="${DOCS[${TARGETS[0]}]}"
 N_TARGETS="${#TARGETS[@]}"
@@ -566,5 +580,9 @@ if [ "$TRUNCATED" -eq 1 ]; then
     printf 'Cleared %d token(s). Others MAY remain (the listing was capped at %d) — re-run to check.\n' \
         "$CLEARED" "$CAP"
 else
-    printf 'Cleared %d token(s). %d token(s) still pending.\n' "$CLEARED" "$(( ${#SRCS[@]} - CLEARED ))"
+    # SRCS holds every listed record across ALL docs (plus non-token markers),
+    # not just this one's tokens — say so, or an operator reads the count as
+    # leftovers for the doc just drained (CodeRabbit, PR #670).
+    printf 'Cleared %d token(s). %d marker record(s) still pending across all docs.\n' \
+        "$CLEARED" "$(( ${#SRCS[@]} - CLEARED ))"
 fi

@@ -578,13 +578,14 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # which design-clear.sh then refuses all-or-nothing. A hint that cannot
     # succeed is the defect this whole change set out to remove, so a mixed doc
     # keeps the per-record rendering it has today.
-    local -a _doc_key=() _doc_n=() _doc_mixed=()
-    local _k _hit _idx _mixed
+    local -a _doc_key=() _doc_n=() _doc_mixed=() _doc_legacy=()
+    local _k _hit _idx _mixed _legacy_src
     if [ -n "$clear_sh" ]; then
-        local _c_i=0 _c_f _c_dp="" _c_reason=""
+        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason=""
         while IFS= read -r -d '' _c_f; do
             _c_i=$((_c_i + 1))
             case $(( _c_i % 4 )) in
+                2) _c_sp="$_c_f" ;;
                 3) _c_dp="$_c_f" ;;
                 0) _c_reason="$_c_f"
                    if [ -n "$_c_dp" ]; then
@@ -594,16 +595,22 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                            _k=$(( _k + 1 ))
                        done
                        if [ "$_idx" -lt 0 ]; then
-                           _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0)
+                           _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0); _doc_legacy+=("")
                            _idx=$(( ${#_doc_key[@]} - 1 ))
                        fi
                        if [ "$_c_reason" = "token" ]; then
                            _doc_n[_idx]=$(( ${_doc_n[$_idx]} + 1 ))
                        else
+                           # Remember WHICH file has to be edited: for a mixed
+                           # doc no design-clear selector works at all, so every
+                           # line for it must point at this path instead of a
+                           # command. First one wins; one actionable path beats
+                           # an exhaustive list.
                            _doc_mixed[_idx]=1
+                           [ -n "${_doc_legacy[$_idx]}" ] || _doc_legacy[_idx]="$_c_sp"
                        fi
                    fi
-                   _c_dp="" ;;
+                   _c_sp=""; _c_dp="" ;;
             esac
         done <"$recs"
     fi
@@ -616,7 +623,23 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             0) _reason="$_field"
                if [ -n "$_dp" ]; then
                    _note="$(gate_marker_owner_note "$_dp" "$self_root")"
-                   if [ -n "$clear_sh" ]; then
+                   if [ "$_reason" = "legacy-pending" ]; then
+                       # A legacy list-file marker holds several docs at once, so
+                       # naming IT via design-clear.sh's plain or --all-for-doc
+                       # selector always refuses — releasing it would be the
+                       # blanket wipe this whole tool exists to avoid (it drops
+                       # every OTHER doc the list file names, not just this one).
+                       # design-clear.sh's own listing already says so (cubic,
+                       # PR #670); mirror that here instead of advertising a
+                       # command that is guaranteed to fail.
+                       # Name the list file itself rather than pointing at
+                       # design-clear.sh: this branch sits ABOVE the
+                       # `[ -n "$clear_sh" ]` check, so referring to that helper
+                       # would send the operator to a missing script whenever it
+                       # cannot be located — the exact case the fallback below
+                       # exists to handle. The path is what they need either way.
+                       out="${out}  - ${_dp}${_note}  [${_reason}]  (not clearable by name — edit the legacy list file: ${_sp})\n"
+                   elif [ -n "$clear_sh" ]; then
                        _dp_q="${_dp//\'/\'\\\'\'}"   # shell-escape for the hint
                        # Find this doc's token count, then mark it rendered with
                        # -1 so the remaining records for the same doc are skipped
@@ -626,26 +649,41 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                        # same file the same way and cannot disagree, but dropping
                        # a pending doc from the block message would hide a review
                        # requirement, which is the wrong way to fail.
-                       _k=0; _hit=1; _idx=-1; _mixed=0
+                       _k=0; _hit=1; _idx=-1; _mixed=0; _legacy_src=""
                        while [ "$_k" -lt "${#_doc_key[@]}" ]; do
                            if [ "${_doc_key[$_k]}" = "$_dp" ]; then
-                               _idx="$_k"; _hit="${_doc_n[$_k]}"; _mixed="${_doc_mixed[$_k]}"; break
+                               _idx="$_k"; _hit="${_doc_n[$_k]}"; _mixed="${_doc_mixed[$_k]}"
+                               _legacy_src="${_doc_legacy[$_k]}"; break
                            fi
                            _k=$(( _k + 1 ))
                        done
-                       # A non-token record, or any record of a doc that has one,
-                       # renders per-record with the plain hint — as it does today.
-                       # Only a clean all-tokens doc is deduped and bulk-hinted.
-                       if [ "$_reason" != "token" ] || [ "$_mixed" -eq 1 ]; then
-                           _hit=1; _idx=-1
-                       fi
-                       [ "$_idx" -ge 0 ] && _doc_n[_idx]=-1
-                       if [ "$_hit" -lt 0 ]; then
-                           :   # already rendered under its first record
-                       elif [ "$_hit" -gt 1 ]; then
-                           out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — release all with an audit record each: bash '${clear_sh}' --all-for-doc '${_dp_q}')\n"
+                       # MIXED doc: a legacy entry names it AND it has tokens.
+                       # NO design-clear selector works — the plain `<doc>` form
+                       # matches more than one record and refuses, and
+                       # --all-for-doc refuses all-or-nothing on the non-token
+                       # record. Printing either is the doomed hint this renderer
+                       # exists to stop emitting, so name the one action that
+                       # unblocks them instead. Deduped to a single line per doc:
+                       # repeating it per token adds nothing once no command is
+                       # on offer. `_hit < 0` means already rendered.
+                       if [ "$_mixed" -eq 1 ] && [ "$_idx" -ge 0 ] && [ "$_hit" -ge 0 ]; then
+                           _doc_n[_idx]=-1
+                           out="${out}  - ${_dp}${_note}  (not clearable while a legacy list entry names it — edit ${_legacy_src:-the legacy list file} first)\n"
+                       elif [ "$_mixed" -eq 1 ] && [ "$_idx" -ge 0 ]; then
+                           :   # this doc's mixed-state line was already emitted
                        else
-                           out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                           # Only a clean all-tokens doc is deduped and bulk-hinted.
+                           if [ "$_reason" != "token" ]; then
+                               _hit=1; _idx=-1
+                           fi
+                           [ "$_idx" -ge 0 ] && _doc_n[_idx]=-1
+                           if [ "$_hit" -lt 0 ]; then
+                               :   # already rendered under its first record
+                           elif [ "$_hit" -gt 1 ]; then
+                               out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — release all with an audit record each: bash '${clear_sh}' --all-for-doc '${_dp_q}')\n"
+                           else
+                               out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                           fi
                        fi
                    else
                        _sp_q="${_sp//\'/\'\\\'\'}"

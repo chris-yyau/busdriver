@@ -595,11 +595,21 @@ in_repo gate_marker_pending "$REPO" >"$RECS" 2>/dev/null
 RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS" "$REPO")")"
 check "hint: mixed token+legacy doc is NOT hinted the bulk command" "0" \
   "$(printf '%s\n' "$RENDER" | grep 'delta-design.md' | grep -c -- '--all-for-doc' || true)"
-# Falls back to one line per record (2 tokens + 1 legacy), which is what the
-# renderer did before the dedupe existed — withholding the bulk hint must not
-# also drop the doc from the message.
-check "hint: mixed doc still appears, one line per record" "3" \
-  "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md.*release with an audit record' || true)"
+# For a MIXED doc no design-clear selector works at all: the plain `<doc>` form
+# matches more than one record (2 tokens + 1 legacy) and refuses, and
+# --all-for-doc refuses all-or-nothing on the non-token record. So neither the
+# bulk hint NOR the plain per-record hint may be printed -- both are commands
+# that cannot succeed, which is the defect this renderer exists to remove. The
+# doc still has to appear (dropping it would hide a review requirement), and
+# every line for it names the one action that unblocks: edit the legacy list.
+check "hint: mixed doc still appears" "1" \
+  "$([ "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md' || true)" -ge 1 ] && echo 1 || echo 0)"
+check "hint: mixed doc offers NO design-clear command at all" "0" \
+  "$(printf '%s\n' "$RENDER" | grep 'delta-design.md' | grep -c 'release with an audit record' || true)"
+check "hint: mixed doc's legacy record is marked not clearable by name" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md.*not clearable by name' || true)"
+check "hint: mixed doc's tokens point at the legacy list file to edit" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'delta-design.md.*not clearable while a legacy list entry names it' || true)"
 # Prove the hint was right to withhold it: the bulk command does refuse here.
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/delta-design.md" --yes 2>&1)"; RC=$?
 if [ "$RC" -eq 0 ]; then
@@ -796,7 +806,11 @@ check "cap-malformed: doc holds far more tokens than the cap" "1" \
   "$([ "$(doc_tokens iota-design.md)" -ge 26 ] && echo 1 || echo 0)"
 # The invariant itself: every anomalous record survives the cap.
 RECS_OUT="$TMP/recs-iota"
-in_repo gate_marker_pending "$REPO" >"$RECS_OUT" 2>/dev/null
+in_repo gate_marker_pending "$REPO" >"$RECS_OUT"; RECS_RC=$?
+# 1 == records pending. 2 == fail-closed, in which case the stream may be
+# partial (cmd_classify emits legacy records before returning 2) and the
+# count below would fail for the wrong reason.
+check "cap-malformed: classifier reports pending records" "1" "$RECS_RC"
 check "cap-malformed: all 5 anomalies emitted despite the cap" "5" \
   "$(tr '\0' '\n' < "$RECS_OUT" | grep -c '^unparseable$' || true)"
 BEFORE="$(token_count)"

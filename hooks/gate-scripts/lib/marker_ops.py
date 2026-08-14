@@ -342,6 +342,29 @@ def _worktree_roots(anchor):
     return uniq
 
 
+def _read_token_body(tok):
+    """Read a token file's raw content, returning (body, error) with error in
+    {"unreadable", "unparseable", None}. A TOCTOU unlink between list and read
+    returns (None, None) — gone, not unreadable, not unparseable. Split out of
+    _classify_tokens purely to keep that function's branch count down
+    (CodeScene "Complex Method"); behavior is unchanged."""
+    try:
+        with open(tok, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return None, None  # TOCTOU: unlinked between list and read -> gone
+    except OSError:
+        return None, "unreadable"
+    # arm ALWAYS writes norm + exactly one trailing LF; a body missing it is a
+    # truncated/forged token → unparseable (not silently accepted).
+    if not raw.endswith(b"\n"):
+        return None, "unparseable"
+    body = raw[:-1]
+    if b"\n" in body or b"\r" in body:  # only the one trailing LF allowed
+        return None, "unparseable"
+    return body, None
+
+
 def _classify_tokens(marker_dir, em):
     """Existence-keyed scan of the token directory. Returns False on a hard
     list failure of an EXISTING dir (=> exit 2); True otherwise. An absent dir
@@ -362,23 +385,12 @@ def _classify_tokens(marker_dir, em):
         if not m:
             em.add("token", tok, "", "unparseable")  # stray file, fail-closed
             continue
-        try:
-            with open(tok, "rb") as fh:
-                raw = fh.read()
-        except FileNotFoundError:
-            continue  # TOCTOU: unlinked between list and read -> gone, not unreadable
-        except OSError:
-            em.add("token", tok, "", "unreadable")
+        body, err = _read_token_body(tok)
+        if err:
+            em.add("token", tok, "", err)
             continue
-        # arm ALWAYS writes norm + exactly one trailing LF; a body missing it is a
-        # truncated/forged token → unparseable (not silently accepted).
-        if not raw.endswith(b"\n"):
-            em.add("token", tok, "", "unparseable")
-            continue
-        body = raw[:-1]
-        if b"\n" in body or b"\r" in body:  # only the one trailing LF allowed
-            em.add("token", tok, "", "unparseable")
-            continue
+        if body is None:
+            continue  # TOCTOU: unlinked between list and read -> gone
         norm = body.decode("utf-8", "surrogateescape")
         if not norm.startswith("/") or _sha(norm) != m.group(1):
             em.add("token", tok, "", "unparseable")

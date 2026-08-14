@@ -201,22 +201,46 @@ def cmd_arm(argv):
     return 1
 
 
+# Per-KIND emit budgets. A kind absent from this map is UNCAPPED.
+#
+# Only tokens are capped, and the asymmetry is the point (#665 review, Codex).
+# Token count grows on its own — one per edit that arms a review — so it is
+# unbounded in practice and needs a ceiling. The legacy union is bounded by the
+# `- ` lines of a list file the OPERATOR wrote, which the classifier already
+# reads in full; capping it buys nothing and costs both of the invariants below.
+#
+# A SHARED budget cannot satisfy both at once, which is what the two failed
+# attempts during PR #670 showed:
+#   * tokens emitted first  -> a doc with >= K tokens buries its own same-doc
+#     legacy marker, and design-clear.sh's all-or-nothing screen drains past it;
+#   * legacy emitted first  -> an unrelated legacy backlog of >= K entries emits
+#     ZERO token records, so no audited release is possible at all and
+#     re-running never helps (the same entries refill the cap every time);
+#   * a split budget (K each) -> the first bug returns whenever legacy > K.
+# Uncapping legacy satisfies both: every legacy record is always visible (so the
+# same-doc screen can never miss one), and tokens keep a full budget of their own
+# (so they can never be starved).
+_CAPS = {"token": K}
+
+
 class _Emitter:
-    """Streams NUL-terminated fields, four per pending record, capped at K."""
+    """Streams NUL-terminated fields, four per pending record, capped per KIND."""
 
     def __init__(self):
         self.pending = False
-        self._n = 0
+        self._n = {}
         self._w = sys.stdout.buffer
 
     def add(self, kind, source_path, doc_path, reason):
         self.pending = True
-        if self._n >= K:
+        cap = _CAPS.get(kind)
+        n = self._n.get(kind, 0)
+        if cap is not None and n >= cap:
             return
         for field in (kind, source_path, doc_path, reason):
             self._w.write(field.encode("utf-8", "surrogateescape"))
             self._w.write(b"\0")
-        self._n += 1
+        self._n[kind] = n + 1
 
 
 def _worktree_roots(anchor):
@@ -279,6 +303,7 @@ def _classify_tokens(marker_dir, em):
         return not os.path.lexists(marker_dir)
     except OSError:
         return False  # existing dir we cannot list -> cannot build the set
+    deferred = []
     for name in names:
         tok = os.path.join(marker_dir, name)
         m = _TOKEN_RE.match(name)
@@ -306,8 +331,48 @@ def _classify_tokens(marker_dir, em):
         if not norm.startswith("/") or _sha(norm) != m.group(1):
             em.add("token", tok, "", "unparseable")
             continue
+        # DEFER valid tokens; anomalies above were emitted immediately. Same
+        # budget-priority rule as legacy-before-tokens in cmd_classify, and for
+        # the same reason (#665 review, Codex): consumers screen for anomalous
+        # SAME-DOC markers among the records they were given, so an anomaly that
+        # falls past the shared cap is invisible and the screen silently passes.
+        # A doc with >= K healthy tokens would otherwise bury its own malformed
+        # `<sha>.<nonce>` sibling, and design-clear.sh's --all-for-doc would
+        # drain every healthy token, exit 0, and leave that marker armed.
+        #
+        # Emitting anomalies first makes the invariant unconditional: if ANY
+        # valid token is visible, EVERY anomalous record is too. Truncation can
+        # then only ever drop healthy tokens, which under-reports — the safe
+        # direction.
+        #
+        # Buffer is bounded by K: past that the emitter would discard them
+        # anyway, so there is nothing to gain by holding more.
+        if len(deferred) < K:
+            deferred.append((tok, norm))
+    for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
     return True
+
+
+def _norm_legacy_doc_path(doc):
+    """Canonicalize a legacy-marker doc path the same way gate_marker_norm_path
+    (shell) canonicalizes a token's doc_path at arm time: realpath the
+    DIRECTORY, then rejoin the literal basename. Tokens are matched/grouped by
+    exact doc_path string equality (design-clear.sh's NORM selector match,
+    resolve-repo-dir.sh's gate_render_pending_records doc-key grouping), so a
+    legacy marker naming the same document via `..`-segments or a symlinked
+    directory must canonicalize to the identical key or it silently reads as a
+    DIFFERENT document -- letting `--all-for-doc` drain every token for a doc
+    while leaving that doc's legacy marker armed (the all-or-nothing refusal
+    it was supposed to trip). Falls back to the raw path, unchanged, when the
+    directory cannot be resolved -- same fail-open-to-raw-string behavior
+    gate_marker_norm_path's shell callers use (`2>/dev/null || printf '%s'`).
+    """
+    try:
+        d = os.path.realpath(os.path.dirname(doc))
+    except OSError:
+        return doc
+    return os.path.join(d, os.path.basename(doc))
 
 
 def _classify_legacy(roots, state_dir, em):
@@ -339,7 +404,23 @@ def _classify_legacy(roots, state_dir, em):
             except OSError:
                 reviewed = False  # absent / unreadable doc -> pending (fail-closed)
             if not reviewed:
-                em.add("legacy", m, doc if os.path.isabs(doc) else "", "legacy-pending")
+                # ALWAYS bind the doc_path. `doc` is absolute either way by this
+                # point -- taken verbatim when the entry was absolute, joined
+                # with its owning worktree root when it was relative -- and a
+                # relative entry names a real document just as much as an
+                # absolute one does.
+                #
+                # The old `os.path.isabs(doc)` guard was indeed dead (CodeRabbit,
+                # PR #670), but the fix is to DROP it, not to re-key it on
+                # `entry.startswith("/")`. Re-keying leaves a relative entry with
+                # an EMPTY doc_path, which reopens Codex's bypass through another
+                # door: design-clear.sh matches the anomaly by doc_path, so an
+                # unbound legacy record can never match, and --all-for-doc would
+                # release every token for that document while its legacy marker
+                # stayed armed. Binding is what makes the all-or-nothing refusal
+                # reachable; it grants no new power, since a legacy marker is
+                # refused as a blanket wipe regardless of how it is spelled.
+                em.add("legacy", m, _norm_legacy_doc_path(doc), "legacy-pending")
 
 
 def cmd_classify(argv):
@@ -350,9 +431,26 @@ def cmd_classify(argv):
     if roots is None:
         return 2  # git enumeration failure -> cannot build the set
     em = _Emitter()
+    # Legacy first, and UNCAPPED (see _CAPS). The budgets are per-kind, so this
+    # ordering no longer carries the invariant on its own — it is kept because a
+    # doc's anomalous state is what an operator most needs to see first in a
+    # truncated block message.
+    #
+    # The invariant that matters: every legacy record is always emitted, so
+    # design-clear.sh's same-document screen can never miss one, while tokens
+    # keep a full budget of their own and can never be starved by an unrelated
+    # legacy backlog. Truncation can only ever drop healthy TOKENS, which
+    # under-reports — the safe direction, and what the "others MAY remain,
+    # re-run" messaging tells the operator.
+    #
+    # CONTRACT CHANGE: exit 2 (token dir unlistable) can now carry partial legacy
+    # records on stdout, where before it always emitted nothing. Verified safe for
+    # all three consumers — design-clear.sh exits 2 without reading the records,
+    # and both gates treat any non-zero code as fail-CLOSED, at worst rendering a
+    # partial block message (strictly more information than none).
+    _classify_legacy(roots, state_dir, em)
     if not _classify_tokens(marker_dir, em):
         return 2  # existing token dir could not be listed
-    _classify_legacy(roots, state_dir, em)
     return 1 if em.pending else 0
 
 

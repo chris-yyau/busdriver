@@ -1,3 +1,10 @@
+# [1.107.0](https://github.com/chris-yyau/busdriver/compare/v1.106.9...v1.107.0) (2026-08-14)
+
+
+### Features
+
+* **design-clear:** add --all-for-doc bulk release ([#665](https://github.com/chris-yyau/busdriver/issues/665)) ([#670](https://github.com/chris-yyau/busdriver/issues/670)) ([56cd952](https://github.com/chris-yyau/busdriver/commit/56cd9529eb35bb33e595bd069de02bfd28e90ba0)), closes [#405](https://github.com/chris-yyau/busdriver/issues/405) [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
 ## [1.106.9](https://github.com/chris-yyau/busdriver/compare/v1.106.8...v1.106.9) (2026-08-14)
 
 

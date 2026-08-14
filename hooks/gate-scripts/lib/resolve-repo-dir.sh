@@ -325,11 +325,26 @@ _gate_marker_state_dir() {
 # ADR-B · Physical absolute path = the token GROUP KEY. Non-zero if the parent
 # dir can't be resolved (deleted/unreadable/not-yet-created) → §2 best-effort miss.
 gate_marker_norm_path() {
-    local f="$1" dir
+    local f="$1" dir out
     [ -n "$f" ] || return 1
     dir="$(cd "$(dirname -- "$f")" 2>/dev/null && pwd -P)" || return 1
     [ -n "$dir" ] || return 1
-    printf '%s/%s\n' "$dir" "$(basename -- "$f")"
+    out="$dir/$(basename -- "$f")"
+    # #671 — COLLAPSE a leading `//` so the single-slash spelling is the one
+    # canonical key. POSIX leaves exactly-two leading slashes implementation-
+    # defined and this host's bash keeps them (`cd //tmp && pwd -P` -> `//private/
+    # tmp`) while python's os.path.realpath collapses them. The doc_path this
+    # prints is compared for STRING EQUALITY against the python-side legacy key
+    # (marker_ops _norm_legacy_doc_path), so a divergence splits one document
+    # into two keys and design-clear.sh's same-document screen stops seeing the
+    # other half. Collapsing on BOTH sides is the fix; making python preserve
+    # `//` instead was tried during the #670 grind and reverted (it only helps
+    # when both spellings are `//`, and breaks the case that works today).
+    # Three-or-more slashes already collapse in both, so only `//` needs this.
+    # It also fixes a pre-existing root-dir case: dirname of `/x.md` is `/`, and
+    # the join above produced `//x.md` where python realpath yields `/x.md`.
+    while [ "${out:0:2}" = "//" ]; do out="${out#/}"; done
+    printf '%s\n' "$out"
 }
 
 # Repo-relative path of <path> within its OWNING worktree — for the ADR-B
@@ -578,22 +593,40 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # which design-clear.sh then refuses all-or-nothing. A hint that cannot
     # succeed is the defect this whole change set out to remove, so a mixed doc
     # keeps the per-record rendering it has today.
+    # Shared by the counting pass and the render loop: the docs that get rendered
+    # are exactly the docs appearing in the first _RCAP records, so ONE bound
+    # governs both. They must not drift — see the counting pass below.
+    local _RCAP=20
     local -a _doc_key=() _doc_n=() _doc_mixed=() _doc_legacy=()
     local _k _hit _idx _mixed _legacy_src
     if [ -n "$clear_sh" ]; then
-        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason="" _c_n=0
+        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason=""
         while IFS= read -r -d '' _c_f; do
             _c_i=$((_c_i + 1))
             case $(( _c_i % 4 )) in
                 2) _c_sp="$_c_f" ;;
                 3) _c_dp="$_c_f" ;;
                 0) _c_reason="$_c_f"
-                   # Same 20-record window the render loop below uses, so this
-                   # inner linear scan stays constant-work rather than quadratic
-                   # in an uncapped legacy list. Counts therefore describe the
-                   # rendered window, which is exactly what the message shows.
-                   _c_n=$(( _c_n + 1 ))
-                   if [ "$_c_n" -gt 20 ]; then _c_sp=""; _c_dp=""; continue; fi
+                   # Scan the WHOLE stream, but bound the KEY ARRAY — not the
+                   # window (#671 finding 1). This pass used to stop after
+                   # _RCAP records for the same latency reason the render loop
+                   # does, which meant a doc's token count described the
+                   # rendered window rather than the doc: with >= _RCAP - 1
+                   # legacy records emitted ahead of it, a doc holding several
+                   # tokens looked single-token and got hinted the plain
+                   # `<doc>` selector — which design-clear.sh, scanning the
+                   # complete set, then refuses with ">1 match". That is the
+                   # doomed-hint class #665 set out to remove.
+                   #
+                   # A doc can only be RENDERED if it appears in the first
+                   # _RCAP records, and those hold at most _RCAP distinct
+                   # keys — so refusing to add a NEW key once the array is
+                   # full drops only docs that will never be rendered, while
+                   # every later record still counts toward a key already in
+                   # it. Cost stays bounded at O(records x _RCAP) string
+                   # comparisons with no subprocess: the expensive parts
+                   # (gate_marker_owner_note, git) live in the render loop and
+                   # are still capped there.
                    if [ -n "$_c_dp" ]; then
                        _k=0; _idx=-1
                        while [ "$_k" -lt "${#_doc_key[@]}" ]; do
@@ -601,6 +634,9 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                            _k=$(( _k + 1 ))
                        done
                        if [ "$_idx" -lt 0 ]; then
+                           if [ "${#_doc_key[@]}" -ge "$_RCAP" ]; then
+                               _c_sp=""; _c_dp=""; continue    # never rendered
+                           fi
                            _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0); _doc_legacy+=("")
                            _idx=$(( ${#_doc_key[@]} - 1 ))
                        fi
@@ -629,7 +665,7 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # RENDERED and count the rest: the block message only has to be actionable,
     # not exhaustive, and design-clear.sh (interactive, no git-per-record) is
     # where the complete listing lives.
-    local _RCAP=20 _rendered=0 _extra=0
+    local _rendered=0 _extra=0
     local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))

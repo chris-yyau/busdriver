@@ -677,8 +677,12 @@ EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
 OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/zeta-design.md" --yes 2>&1)"; RC=$?
 check "cap: all-for-doc still exits 0 past the cap" "0" "$RC"
 case "$OUT" in
-  *"Others MAY remain"*"re-run to check"*) ok "cap: says others may remain, not an exact count" ;;
-  *) no "cap: says others may remain, not an exact count" "$OUT" ;;
+  # #671 — the hedge is gone: truncation is now an explicit overflow record
+  # rather than "the count landed on the cap", so records really were dropped.
+  # Still no exact count: what remains is what the classifier never listed.
+  *"More tokens were pending than were listed"*"re-run to check"*)
+    ok "cap: says more were pending, not an exact count" ;;
+  *) no "cap: says more were pending, not an exact count" "$OUT" ;;
 esac
 check "cap: at least one zeta token survives the capped drain" "1" \
   "$([ "$(doc_tokens zeta-design.md)" -ge 1 ] && echo 1 || echo 0)"
@@ -908,6 +912,125 @@ case "$OUT" in
   *"design-clear.sh --all-for-doc"*) ok "mixed-selector: clean multi-token doc keeps the bulk hint" ;;
   *) no "mixed-selector: clean multi-token doc keeps the bulk hint" "$OUT" ;;
 esac
+
+# -- The render window must not UNDERCOUNT a doc's tokens ---------------------
+# #671 finding 1 (Codex + cubic, independently). gate_render_pending_records
+# caps RENDERING at 20 records for latency, and used to take each doc's token
+# count from that same window. Legacy records are emitted first, so 19 of them
+# ahead of a multi-token doc made it look single-token: the gate then
+# recommended the plain `<doc>` selector, which design-clear.sh -- scanning the
+# COMPLETE set -- refuses with ">1 match". A hint that cannot succeed is the
+# exact class #665 set out to remove, reintroduced through the window. The
+# counting pass now scans the whole stream and bounds its KEY ARRAY instead.
+rm -f "$MARKER_DIR"/*
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 19 ]; do
+  : >"$REPO/docs/plans/win$_i-design.md"
+  printf -- '- %s\n' "$REPO/docs/plans/win$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+: >"$REPO/docs/plans/window-design.md"
+arm "$REPO/docs/plans/window-design.md"
+arm "$REPO/docs/plans/window-design.md"
+RECS_WIN="$TMP/recs-window"
+in_repo gate_marker_pending "$REPO" >"$RECS_WIN"; RECS_RC=$?
+check "render-window: classifier reports pending, not a fail-closed error" "1" "$RECS_RC"
+check "render-window: the doc's 2nd token really is past the 20-record window" "1" \
+  "$([ "$(tr '\0' '\n' <"$RECS_WIN" | awk 'NR%4==1' | grep -c . || true)" -gt 20 ] && echo 1 || echo 0)"
+RENDER="$(printf '%b' "$(in_repo gate_render_pending_records "$RECS_WIN" "$REPO")")"
+check "render-window: multi-token doc past 19 legacy records gets the bulk hint" "1" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'window-design.md.*--all-for-doc' || true)"
+check "render-window: and NOT the plain selector, which would refuse" "0" \
+  "$(printf '%s\n' "$RENDER" | grep -c 'window-design.md.*release with an audit record' || true)"
+# The hinted command must actually work -- the whole point of counting.
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/window-design.md" --yes 2>&1)"; RC=$?
+check "render-window: the hinted bulk release succeeds" "0" "$RC"
+check "render-window: both tokens released" "0" "$(doc_tokens window-design.md)"
+rm -f "$LEGACY_MARKER"
+
+# -- Explicit overflow protocol -----------------------------------------------
+# #671 finding 2. Uncapping legacy (the PR #670 state) kept the same-document
+# screen sound at the cost of unbounded consumer work: this script reads the
+# whole stream into bash arrays. A bare cap would trade that back for a silent
+# partial screen. The classifier now does BOTH -- a high legacy backstop L=500
+# plus one trailing `overflow` record naming the kind that was cut -- so a
+# consumer can tell a complete set from a partial one and fail closed on the
+# screens that need a complete one.
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/omega-design.md"
+arm "$REPO/docs/plans/omega-design.md"
+RECS_OF="$TMP/recs-overflow"
+
+# Baseline: a NORMAL run must carry no overflow record at all, or the refusal
+# below would fire on every ordinary invocation.
+rm -f "$LEGACY_MARKER"
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"
+check "overflow: an untruncated listing emits no overflow record" "0" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^overflow$' || true)"
+OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/omega-design.md" --yes 2>&1 )"; RC=$?
+check "overflow: by-name release works when nothing was truncated" "0" "$RC"
+check "overflow: baseline token released" "0" "$(doc_tokens omega-design.md)"
+
+# Now overflow the LEGACY listing: L=500, so 501 pending entries cut it.
+arm "$REPO/docs/plans/omega-design.md"
+: >"$LEGACY_MARKER"
+_i=0
+while [ "$_i" -lt 501 ]; do
+  : >"$REPO/docs/plans/many$_i-design.md"
+  printf -- '- %s\n' "$REPO/docs/plans/many$_i-design.md" >>"$LEGACY_MARKER"
+  _i=$(( _i + 1 ))
+done
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"; RECS_RC=$?
+check "overflow: classifier reports pending, not a fail-closed error" "1" "$RECS_RC"
+check "overflow: legacy records stop at the backstop" "500" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^legacy$' || true)"
+check "overflow: exactly one overflow record, naming the kind" "1" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==0' | grep -c '^legacy-overflow$' || true)"
+# Tokens keep their own budget even here -- the per-kind split (#670) must not
+# regress just because legacy now has a ceiling.
+check "overflow: token records survive a legacy overflow" "1" \
+  "$([ "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==1' | grep -c '^token$' || true)" -ge 1 ] && echo 1 || echo 0)"
+
+# Both name-based forms must refuse: neither screen can refuse on a record it
+# was never handed, so a doc's tokens could be released while an unlisted legacy
+# entry for that same doc stayed armed.
+BEFORE="$(doc_tokens omega-design.md)"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/omega-design.md" --yes 2>&1)"; RC=$?
+check "overflow: --all-for-doc refuses on a truncated legacy listing" "2" "$RC"
+( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/omega-design.md" --yes ) >/dev/null 2>&1; RC2=$?
+check "overflow: the plain doc-path selector refuses too" "2" "$RC2"
+check "overflow: not one token released" "$BEFORE" "$(doc_tokens omega-design.md)"
+check "overflow: no audit event written" "$EVENTS_BEFORE" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+case "$OUT" in
+  *"legacy listing was truncated"*) ok "overflow: refusal names the cause" ;;
+  *) no "overflow: refusal names the cause" "$OUT" ;;
+esac
+# ...and the listing still works, still says so, and index release -- which never
+# depended on the same-document screen -- stays available.
+OUT="$( cd "$REPO" && "$CLEAR" 2>&1 )"
+case "$OUT" in
+  *"truncated its LEGACY listing"*) ok "overflow: the no-arg listing warns" ;;
+  *) no "overflow: the no-arg listing warns" "$OUT" ;;
+esac
+rm -f "$LEGACY_MARKER"
+
+# TOKEN overflow is the other kind, and is NOT a refusal: it under-reports, so
+# draining what was listed and re-running is correct (#665's own scenario).
+rm -f "$MARKER_DIR"/*
+: >"$REPO/docs/plans/sigma-design.md"
+_i=0
+while [ "$_i" -lt 21 ]; do
+  arm "$REPO/docs/plans/sigma-design.md"
+  _i=$(( _i + 1 ))
+done
+in_repo gate_marker_pending "$REPO" >"$RECS_OF"
+check "overflow: a cut token listing is declared too" "1" \
+  "$(tr '\0' '\n' <"$RECS_OF" | awk 'NR%4==0' | grep -c '^token-overflow$' || true)"
+OUT="$(no_tty_run --all-for-doc "$REPO/docs/plans/sigma-design.md" --yes 2>&1)"; RC=$?
+check "overflow: token overflow still RELEASES, it does not refuse" "0" "$RC"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

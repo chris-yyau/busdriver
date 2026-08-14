@@ -24,6 +24,10 @@ Subcommands
         (source_kind, source_path, doc_path, reason). Never mutates.
         exit 0 = nothing pending; 1 = >=1 pending (records on stdout);
         2 = enumerate/list failure (caller blocks fail-CLOSED).
+        Emit budgets are PER-KIND (_CAPS). When a budget truncates a kind, ONE
+        extra record closes the stream — kind "overflow", empty doc_path,
+        reason "<kind>-overflow" — so a consumer can tell a complete set from a
+        partial one instead of screening blind against a partial one (#671).
 
 The classifier NEVER opens the design doc for new tokens: a token's *existence*
 is the pending signal (existence-keyed — kills the lost-rearm race by
@@ -201,34 +205,59 @@ def cmd_arm(argv):
     return 1
 
 
+# Legacy-record budget (#671 finding 2). Deliberately far above any real list
+# file — this is a backstop against a pathological one, not a working limit. The
+# legacy union is bounded by the `- ` lines of a file the OPERATOR wrote, so in
+# practice it is a handful; a run that reaches L means something generated it.
+# Uncapped (the PR #670 state) meant every consumer processed the whole thing:
+# design-clear.sh reads it all into bash arrays, and gate_render_pending_records
+# scans it per rendered doc. L bounds both, and — with the overflow protocol
+# below — bounds them WITHOUT reintroducing a silent partial screen. Reversible:
+# raise it if a legitimate list ever gets close.
+L = 500
+
 # Per-KIND emit budgets. A kind absent from this map is UNCAPPED.
 #
-# Only tokens are capped, and the asymmetry is the point (#665 review, Codex).
-# Token count grows on its own — one per edit that arms a review — so it is
-# unbounded in practice and needs a ceiling. The legacy union is bounded by the
-# `- ` lines of a list file the OPERATOR wrote, which the classifier already
-# reads in full; capping it buys nothing and costs both of the invariants below.
+# The token/legacy asymmetry is the point (#665 review, Codex). Token count grows
+# on its own — one per edit that arms a review — so K is a working ceiling hit
+# routinely. The legacy union is operator-written, so L is a backstop that should
+# never be reached.
 #
-# A SHARED budget cannot satisfy both at once, which is what the two failed
-# attempts during PR #670 showed:
+# A SHARED budget cannot satisfy both invariants at once, which is what the two
+# failed attempts during PR #670 showed:
 #   * tokens emitted first  -> a doc with >= K tokens buries its own same-doc
 #     legacy marker, and design-clear.sh's all-or-nothing screen drains past it;
 #   * legacy emitted first  -> an unrelated legacy backlog of >= K entries emits
 #     ZERO token records, so no audited release is possible at all and
 #     re-running never helps (the same entries refill the cap every time);
 #   * a split budget (K each) -> the first bug returns whenever legacy > K.
-# Uncapping legacy satisfies both: every legacy record is always visible (so the
-# same-doc screen can never miss one), and tokens keep a full budget of their own
-# (so they can never be starved).
-_CAPS = {"token": K}
+# Per-kind budgets satisfy both: tokens can never be starved by a legacy backlog,
+# and legacy has room for every entry a real list file holds.
+#
+# Where a cap CAN still hide a record, the overflow protocol below makes that
+# knowable instead of silent — see _Emitter.flush_overflow.
+_CAPS = {"token": K, "legacy": L}
 
 
 class _Emitter:
-    """Streams NUL-terminated fields, four per pending record, capped per KIND."""
+    """Streams NUL-terminated fields, four per pending record, capped per KIND.
+
+    A kind that loses a record to its cap is remembered, and cmd_classify emits
+    one explicit `overflow` record per affected kind at the end of the stream
+    (#671 finding 2). Consumers screen for same-document anomalies among the
+    records they were handed, so a truncated set can only be screened safely if
+    the consumer KNOWS it is truncated: with the signal, design-clear.sh refuses
+    the screens that need a complete set instead of passing them blind.
+
+    This replaces inferring truncation from "I counted exactly the cap", which
+    both false-positives on a set that lands on the cap exactly and cannot see
+    records dropped before they ever reached the emitter (see _classify_tokens).
+    """
 
     def __init__(self):
         self.pending = False
         self._n = {}
+        self._over = {}
         self._w = sys.stdout.buffer
 
     def add(self, kind, source_path, doc_path, reason):
@@ -236,11 +265,34 @@ class _Emitter:
         cap = _CAPS.get(kind)
         n = self._n.get(kind, 0)
         if cap is not None and n >= cap:
+            self.note_overflow(kind, source_path)
             return
+        self._write(kind, source_path, doc_path, reason)
+        self._n[kind] = n + 1
+
+    def note_overflow(self, kind, source_path):
+        """Record a drop for a record that never reached add(). _classify_tokens
+        stops BUFFERING valid tokens at K rather than handing the emitter records
+        it would discard, so those drops are invisible here unless it says so."""
+        self.pending = True
+        self._over.setdefault(kind, source_path)
+
+    def overflowed(self, kind):
+        return kind in self._over
+
+    def flush_overflow(self):
+        """One `overflow` record per truncated kind, after everything else.
+        Not subject to _CAPS by construction: it is the signal that a cap was
+        hit, so a cap must never be able to drop it. doc_path is empty — it
+        names no document — which routes it to the "not clearable here" branch
+        of both renderers."""
+        for kind in sorted(self._over):
+            self._write("overflow", self._over[kind], "", kind + "-overflow")
+
+    def _write(self, kind, source_path, doc_path, reason):
         for field in (kind, source_path, doc_path, reason):
             self._w.write(field.encode("utf-8", "surrogateescape"))
             self._w.write(b"\0")
-        self._n[kind] = n + 1
 
 
 def _worktree_roots(anchor):
@@ -349,6 +401,11 @@ def _classify_tokens(marker_dir, em):
         # anyway, so there is nothing to gain by holding more.
         if len(deferred) < K:
             deferred.append((tok, norm))
+        else:
+            # The emitter would discard it anyway, but the drop has to be
+            # declared HERE: these records never reach em.add(), so nothing
+            # downstream would otherwise notice them going missing (#671).
+            em.note_overflow("token", tok)
     for tok, norm in deferred:
         em.add("token", tok, norm, "token")  # valid: trusted doc_path for the message
     return True
@@ -372,7 +429,16 @@ def _norm_legacy_doc_path(doc):
         d = os.path.realpath(os.path.dirname(doc))
     except OSError:
         return doc
-    return os.path.join(d, os.path.basename(doc))
+    p = os.path.join(d, os.path.basename(doc))
+    # #671 -- collapse a leading `//` here TOO, so single-slash is canonical by
+    # construction on both sides rather than by realpath's empirical behavior.
+    # realpath collapses `//` for a dir that EXISTS, which is the case the issue
+    # measured; its non-strict path (a legacy entry naming a directory that does
+    # not exist) is not covered by that measurement. Two symmetric collapses cost
+    # two lines and remove the question. The shell half is gate_marker_norm_path.
+    while p.startswith("//"):
+        p = p[1:]
+    return p
 
 
 def _classify_legacy(roots, state_dir, em):
@@ -421,6 +487,12 @@ def _classify_legacy(roots, state_dir, em):
                 # reachable; it grants no new power, since a legacy marker is
                 # refused as a blanket wipe regardless of how it is spelled.
                 em.add("legacy", m, _norm_legacy_doc_path(doc), "legacy-pending")
+                if em.overflowed("legacy"):
+                    # Nothing further can be emitted for this kind, and every
+                    # remaining line still costs an open() of the doc it names.
+                    # The overflow record already tells consumers the set is
+                    # incomplete, which is all they can act on (#671).
+                    return
 
 
 def cmd_classify(argv):
@@ -431,17 +503,21 @@ def cmd_classify(argv):
     if roots is None:
         return 2  # git enumeration failure -> cannot build the set
     em = _Emitter()
-    # Legacy first, and UNCAPPED (see _CAPS). The budgets are per-kind, so this
-    # ordering no longer carries the invariant on its own — it is kept because a
-    # doc's anomalous state is what an operator most needs to see first in a
-    # truncated block message.
+    # Legacy first, under its own budget (see _CAPS). The budgets are per-kind,
+    # so this ordering no longer carries the invariant on its own — it is kept
+    # because a doc's anomalous state is what an operator most needs to see
+    # first in a truncated block message.
     #
-    # The invariant that matters: every legacy record is always emitted, so
-    # design-clear.sh's same-document screen can never miss one, while tokens
-    # keep a full budget of their own and can never be starved by an unrelated
-    # legacy backlog. Truncation can only ever drop healthy TOKENS, which
-    # under-reports — the safe direction, and what the "others MAY remain,
-    # re-run" messaging tells the operator.
+    # The invariant that matters: within its budget every legacy record is
+    # emitted, so design-clear.sh's same-document screen can never miss one,
+    # while tokens keep a full budget of their own and can never be starved by
+    # an unrelated legacy backlog. TOKEN truncation only under-reports — the
+    # safe direction, and what the "others MAY remain, re-run" messaging tells
+    # the operator. LEGACY truncation is NOT safe in that way (it can hide the
+    # very record the same-doc screen exists to find), which is why it is
+    # backstopped at L rather than at K and why the overflow record below makes
+    # it knowable: design-clear.sh refuses its name-based selectors outright
+    # when the legacy listing was cut (#671).
     #
     # CONTRACT CHANGE: exit 2 (token dir unlistable) can now carry partial legacy
     # records on stdout, where before it always emitted nothing. Verified safe for
@@ -451,6 +527,10 @@ def cmd_classify(argv):
     _classify_legacy(roots, state_dir, em)
     if not _classify_tokens(marker_dir, em):
         return 2  # existing token dir could not be listed
+    # Last, so it can never displace a real record, and only on the success
+    # path — an exit-2 run is already fail-CLOSED for every consumer, so an
+    # extra "and the listing was short" record adds nothing there (#671).
+    em.flush_overflow()
     return 1 if em.pending else 0
 
 

@@ -779,11 +779,13 @@ eq "$got_aud" "zenmux/openai/gpt-5.6-luna" ".auditor.model still resolves after 
 
 echo '{"pi":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
 got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-if [[ -n "$got_aud" && "$got_aud" != *glm* ]]; then
-  ok ".pi.model does not leak into the auditor lane"
-else
-  fail ".pi.model bled into the auditor lane or the auditor resolver returned nothing: '$got_aud'"
-fi
+# Only `.pi.model` is set here, so the AUDITOR is unconfigured — and the auditor
+# ships no default model, so the one correct answer is exactly empty. The old
+# assertion required non-empty, which only held while a default existed; it was
+# using "the default kicked in" as a proxy for "the resolver ran". Pinning the
+# exact value is strictly stronger than the old `!= *glm*`: a leak yields the pi
+# model, and any other regression yields something that is neither.
+eq "$got_aud" "" ".pi.model does not leak into the auditor lane (unconfigured → empty)"
 
 # An unknown config block must yield the default, never a wildcard read.
 got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_auditor_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"

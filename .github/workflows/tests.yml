@@ -269,6 +269,11 @@ jobs:
           pytest -q skills/litmus/scripts/lib/test_parse_narrative.py \
             --cov=skills/litmus/scripts/lib \
             --cov-report=xml:coverage-parse-narrative.xml
+      # No --cov target: the code under test is a snippet inside SKILL.md, which
+      # coverage cannot instrument. The suite still has to RUN in CI — it is the
+      # only guard on that snippet's pagination and partial-read handling.
+      - name: Coverage — zenmux catalog pagination
+        run: pytest -q skills/zenmux/test_catalog_pagination.py
       # Token is passed only to this step (never job-level env, so checked-out
       # PR code in earlier steps cannot read it). continue-on-error is scoped to
       # the two cases that legitimately lack the secret: fork PRs and Dependabot

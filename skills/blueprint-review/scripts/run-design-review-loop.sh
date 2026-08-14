@@ -908,6 +908,13 @@ with open(pending, "w") as f:
         if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" 2>&1 > "$_aud_tmp"); then
           create_error_json "auditor" "unparseable witness output: ${_x_err:-no detail}" > "$_aud_tmp"
         fi
+      elif [[ "$_aud_exit" -eq 4 ]]; then
+        # rc 4 = SKIPPED (execute_review contract): no `.auditor.model` configured,
+        # so the witness never ran. ADR 0027's ABSENT-vs-FAILED distinction — an
+        # unset optional config key must not be reported as a failure. The message
+        # deliberately contains "not available" so the render below classifies it
+        # as absent rather than FAILED.
+        create_error_json "auditor" "witness not available — no .auditor.model configured (never ran)" > "$_aud_tmp"
       else
         # Empty output on a clean exit is the observed silent-stall shape — must
         # read as "witness absent", never as "witness found nothing".
@@ -1098,6 +1105,7 @@ with open(pending, "w") as f:
     if [[ "$_mw_status" == "ERROR" ]]; then
       _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
       case "$_mw_err" in
+        *"no .auditor.model configured"*) log_info "  Mechanism Witness: absent — no .auditor.model configured (never ran; set it in ~/.claude/busdriver.json to enable)" ;;
         *"not available"*) log_info "  Mechanism Witness: absent — opencode unavailable (no fallback)" ;;
         *)                 log_info "  Mechanism Witness: FAILED — $_mw_err (auxiliary; review unaffected)" ;;
       esac

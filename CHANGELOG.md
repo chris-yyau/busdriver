@@ -1,3 +1,10 @@
+## [1.107.1](https://github.com/chris-yyau/busdriver/compare/v1.107.0...v1.107.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **design-marker:** make listing truncation knowable, doc keys canonical ([#671](https://github.com/chris-yyau/busdriver/issues/671)) ([#674](https://github.com/chris-yyau/busdriver/issues/674)) ([89bbf71](https://github.com/chris-yyau/busdriver/commit/89bbf71f3e29b07cba05ecb9f4def3b93dead737)), closes [#670](https://github.com/chris-yyau/busdriver/issues/670) [#670](https://github.com/chris-yyau/busdriver/issues/670) [#670](https://github.com/chris-yyau/busdriver/issues/670)
+
 # [1.107.0](https://github.com/chris-yyau/busdriver/compare/v1.106.9...v1.107.0) (2026-08-14)
 
 

@@ -1,3 +1,10 @@
+## [1.107.3](https://github.com/chris-yyau/busdriver/compare/v1.107.2...v1.107.3) (2026-08-15)
+
+
+### Bug Fixes
+
+* **pr-grind:** gate the worker Codex nudge on the staged index ([#678](https://github.com/chris-yyau/busdriver/issues/678)) ([#680](https://github.com/chris-yyau/busdriver/issues/680)) ([6167f9e](https://github.com/chris-yyau/busdriver/commit/6167f9e5885759ed452c8546c3602990e1f746f8)), closes [#673](https://github.com/chris-yyau/busdriver/issues/673)
+
 ## [1.107.2](https://github.com/chris-yyau/busdriver/compare/v1.107.1...v1.107.2) (2026-08-15)
 
 

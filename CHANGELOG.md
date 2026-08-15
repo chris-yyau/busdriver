@@ -1,3 +1,10 @@
+## [1.107.2](https://github.com/chris-yyau/busdriver/compare/v1.107.1...v1.107.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* **pr-grind:** make the Codex re-trigger bounded-N instead of one-shot ([#673](https://github.com/chris-yyau/busdriver/issues/673)) ([#676](https://github.com/chris-yyau/busdriver/issues/676)) ([3f7d1cf](https://github.com/chris-yyau/busdriver/commit/3f7d1cf64f69a89ad6e04ecd841d5d5603f5494a)), closes [#670](https://github.com/chris-yyau/busdriver/issues/670)
+
 ## [1.107.1](https://github.com/chris-yyau/busdriver/compare/v1.107.0...v1.107.1) (2026-08-14)
 
 

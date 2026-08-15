@@ -381,8 +381,15 @@ fi
 #         means pacing in ROUNDS rather than wall-clock, or having the dispatcher
 #         enforce a minimum wait-round duration; both are caller-side changes tracked
 #         separately, not something this helper can assert from mtimes alone.
-DEFAULT_MAX=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_MAX:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$')
-DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$')
+# `|| true` is REQUIRED, not defensive noise. This file runs under `set -euo pipefail`,
+# so a no-match `grep` exits 1, the pipeline fails, and the assignment aborts the whole
+# script — before the guard below can run. Observed: breaking either regex ends the run
+# at case 17 with exit 1, no `Results:` line and no failure message, i.e. a red CI build
+# that names nothing. That made the guard added for the previous finding dead code
+# (cubic P3, PR #676). Swallowing the status here is what lets an empty value REACH the
+# guard and fail loudly with a diagnosis.
+DEFAULT_MAX=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_MAX:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
 WAIT_BUDGET_WALLCLOCK=480   # ADR 0005 Context: `--max-wait 8` exhausts in ~8 min
 # 80% of the budget — integer arithmetic, no bc dependency.
 BUDGET_CEILING=$(( WAIT_BUDGET_WALLCLOCK * 8 / 10 ))

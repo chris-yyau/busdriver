@@ -775,23 +775,31 @@ echo "Codex ack: $CODEX_ACK"
 # Do NOT add a caller-side "already nudged" check; that would re-impose one-shot.
 #
 # Wait-round gate (ADR 0005 trigger condition #1): the worker STAGES fixes but
-# never commits (the dispatcher commit-block does), so a CLEAN working tree here
-# means no fix was made this round (HEAD unchanged) — a genuine wait-round. The
+# never commits (the dispatcher commit-block does), so an EMPTY STAGED INDEX here
+# means this round produces no push (HEAD unchanged) — a genuine wait-round. The
 # guard prevents firing right after a fix, where the push the dispatcher is about to
 # make re-triggers Codex on its own (so an auto-re-trigger would be redundant).
-# "Clean" must cover three states: no unstaged tracked changes (`git diff`), no
-# staged changes (`git diff --cached`), AND no NEW untracked files
-# (`git ls-files --others --exclude-standard` — a fix that adds a file the worker
-# hasn't staged yet would otherwise read as a wait-round). `--exclude-standard`
-# honors .gitignore, so the codex-retrigger `.local` marker and other ignored files
-# never trip the guard. The attempt budget + cooldown (PR_GRIND_CODEX_RETRIGGER_MAX,
+#
+# `git diff --cached --quiet` is the WHOLE predicate, and it is deliberately the
+# byte-identical expression the dispatcher routes on (`scripts/dispatcher-commit-block.sh`
+# `needs_more` branch): empty index → `emit_success_no_commit` → `RESULT_COMMIT_SHA=none`,
+# which ADR 0005 names the canonical wait-round classifier. Do NOT re-add clauses for
+# unstaged tracked changes (`git diff`) or untracked files (`git ls-files --others`).
+# The commit block contains ZERO `git add` calls — it commits the index and nothing
+# else — so neither state can ever become a push, and testing them only makes the
+# nudge fire LESS often than the round warrants. That was #678: this repo's
+# long-lived untracked `.claude/parked/` tripped the old third clause permanently,
+# so the worker-side nudge never fired here at all, silently, for weeks. A guard
+# stricter than the decision it guards is not extra safety — it is under-firing on
+# unrelated repo debris, and the nudge is the only exit from #673's dead end.
+#
+# The attempt budget + cooldown (PR_GRIND_CODEX_RETRIGGER_MAX,
 # PR_GRIND_CODEX_RETRIGGER_COOLDOWN) + opt-out (PR_GRIND_CODEX_RETRIGGER=0) + phrase
 # override (PR_GRIND_CODEX_RETRIGGER_PHRASE) live in the helper; `|| true` guarantees
 # a failed post never stales the gate. See ADR 0005. Distinct from the COMPLETION
 # first-engagement grace (skills/pr-grind/references/completion.md), which only RE-POLLS a `none`
 # Codex and never RE-TRIGGERS a `stale` one.
-if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null \
-   && [ -z "$(git ls-files --others --exclude-standard 2>/dev/null)" ] \
+if git diff --cached --quiet 2>/dev/null \
    && [ "$CODEX_ACK" = "stale" ] && ! printf '%s' "$ACKS" | grep -q '=stale'; then
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "${HEAD_FULL_SHA:-$HEAD_SHA}" || true
 fi

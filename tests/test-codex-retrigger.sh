@@ -320,5 +320,23 @@ else
   fail "failed post: marker-after-failure=$failed_marker slot2=$([ -e "$STATE/$(marker_n 2)" ] && echo yes || echo no)"
 fi
 
+# --- 17. HOLE REFILL. A slot can be free BELOW an occupied one: a `gh pr comment`
+#         still in flight when the cooldown elapses lets a second run legitimately
+#         claim slot 2, and if the first post then fails it releases slot 1. Reading
+#         the highest occupied slot would count that hole as spent — silently
+#         shrinking the budget and making "a failed post spends no attempt" false
+#         (litmus MEDIUM, PR mode). Occupancy + lowest-free must refill the hole.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+: > "$STATE/$(marker_n 2)"                       # slot 2 occupied, slot 1 a hole
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+refilled=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$refilled" = yes ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$(marker_n 3)" ]; then
+  ok "hole refill: free slot below an occupied one is reclaimed, full budget preserved"
+else
+  fail "hole refill: refilled=$refilled posts=$(posts_in "$CALLLOG") (expected 2, i.e. budget 3 minus the pre-seeded slot)"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

@@ -144,46 +144,68 @@ read_int_knob() {
 MAX_ATTEMPTS=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_MAX:-}" 3 1 10)
 COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 900 0 86400)
 
-# Highest attempt already spent for this (PR, HEAD). Scanned by slot rather than
-# counted, so a hole (an attempt whose failed post released its claim) can never
-# read as a fresh budget. A missing STATE_DIR simply yields 0.
-SPENT=0
+# Scan the slots ONCE for the three things the decision needs: how many attempts are
+# actually spent (occupancy), the LOWEST FREE slot to claim, and the NEWEST marker
+# mtime to pace against.
+#
+# Occupancy + lowest-free, NOT highest-occupied+1. The difference is a HOLE — a slot
+# whose failed post released its claim while a higher slot is occupied. That is
+# reachable: a `gh pr comment` still in flight after the cooldown elapses lets a
+# second run legitimately claim the next slot, and if the first post then fails and
+# releases, slot n is free below an occupied n+1. Reading the highest occupied slot
+# would count that hole as spent — which both silently shrinks the budget and makes
+# this file's "a failed post spends no attempt" claim false (litmus MEDIUM, PR mode).
+# Filling the lowest free slot instead makes the failed attempt genuinely retryable
+# and keeps occupancy the single definition of "spent".
+#
+# GNU-first `stat`: on Linux `stat -f` is --file-system and prints block info to
+# stdout (corrupting the value); `stat -c` is GNU's format flag, and BSD lacks -c so
+# it falls through to -f. (Mirrors hooks/gate-scripts/post-merge-confirm-bypass.sh.)
+# An unreadable mtime fails SAFE toward not posting, consistent with the never-spam
+# posture — so it is recorded as a flag rather than silently skipped.
+OCCUPIED=0
+FIRST_FREE=0
+NEWEST=0
+MTIME_UNREADABLE=0
 _n=1
 while [ "$_n" -le "$MAX_ATTEMPTS" ]; do
-    [ -e "$(marker_for "$_n")" ] && SPENT="$_n"
+    _f="$(marker_for "$_n")"
+    if [ -e "$_f" ]; then
+        OCCUPIED=$(( OCCUPIED + 1 ))
+        _m=$(stat -c %Y "$_f" 2>/dev/null || stat -f %m "$_f" 2>/dev/null || echo "")
+        case "$_m" in
+            ''|*[!0-9]*) MTIME_UNREADABLE=1 ;;
+            *) [ "$_m" -gt "$NEWEST" ] && NEWEST="$_m" ;;
+        esac
+    elif [ "$FIRST_FREE" -eq 0 ]; then
+        FIRST_FREE="$_n"
+    fi
     _n=$(( _n + 1 ))
 done
 
-if [ "$SPENT" -ge "$MAX_ATTEMPTS" ]; then
-    echo "ℹ️  codex-retrigger: attempt budget spent for PR #$PR @ $HEAD8 ($SPENT/$MAX_ATTEMPTS); skipping." >&2
+if [ "$OCCUPIED" -ge "$MAX_ATTEMPTS" ] || [ "$FIRST_FREE" -eq 0 ]; then
+    echo "ℹ️  codex-retrigger: attempt budget spent for PR #$PR @ $HEAD8 ($OCCUPIED/$MAX_ATTEMPTS); skipping." >&2
     exit 0
 fi
 
 # Pace the attempts. Without this, consecutive wait-rounds seconds apart would burn
 # the whole budget before Codex could plausibly answer — restoring the #673 dead end
 # AND spamming the PR, i.e. losing on both axes at once.
-# GNU-first `stat`: on Linux `stat -f` is --file-system and prints block info to
-# stdout (corrupting the value); `stat -c` is GNU's format flag, and BSD lacks -c so
-# it falls through to -f. (Mirrors hooks/gate-scripts/post-merge-confirm-bypass.sh.)
-# An unreadable mtime is treated as "still cooling" — fail-SAFE toward NOT posting,
-# consistent with this helper's never-spam posture.
-if [ "$SPENT" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
-    _last="$(marker_for "$SPENT")"
-    _mtime=$(stat -c %Y "$_last" 2>/dev/null || stat -f %m "$_last" 2>/dev/null || echo "")
+if [ "$OCCUPIED" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
     _now=$(date +%s 2>/dev/null || echo "")
-    if [ -z "$_mtime" ] || [ -z "$_now" ]; then
-        echo "ℹ️  codex-retrigger: cannot read attempt-$SPENT mtime for PR #$PR @ $HEAD8; skipping (fail-safe: no post)." >&2
+    if [ "$MTIME_UNREADABLE" = "1" ] || [ -z "$_now" ] || [ "$NEWEST" -eq 0 ]; then
+        echo "ℹ️  codex-retrigger: cannot read attempt mtimes for PR #$PR @ $HEAD8; skipping (fail-safe: no post)." >&2
         exit 0
     fi
-    _age=$(( _now - _mtime ))
+    _age=$(( _now - NEWEST ))
     if [ "$_age" -lt "$COOLDOWN" ]; then
-        echo "ℹ️  codex-retrigger: attempt $SPENT/$MAX_ATTEMPTS posted ${_age}s ago for PR #$PR @ $HEAD8; cooling down (${COOLDOWN}s); skipping." >&2
+        echo "ℹ️  codex-retrigger: attempt $OCCUPIED/$MAX_ATTEMPTS posted ${_age}s ago for PR #$PR @ $HEAD8; cooling down (${COOLDOWN}s); skipping." >&2
         exit 0
     fi
 fi
 
-ATTEMPT=$(( SPENT + 1 ))
-MARKER="$(marker_for "$ATTEMPT")"
+ATTEMPT=$(( OCCUPIED + 1 ))          # ordinal for messages: this is the Nth nudge
+MARKER="$(marker_for "$FIRST_FREE")"  # slot to claim: lowest free, so holes refill
 
 # No gh => cannot post. Skip safely BEFORE claiming the marker, so we never leave a
 # claim that would block a later round where gh is available. `--max-wait` still
@@ -204,7 +226,8 @@ PHRASE="${PR_GRIND_CODEX_RETRIGGER_PHRASE:-@codex review}"
 # posting, then RELEASE (rm) the claim if the post fails, so a later wait-round can
 # retry — preserving the fail-SAFE retry semantics. Releasing also means a failed post
 # spends NO attempt and starts NO cooldown: the slot scan re-derives the same ATTEMPT
-# next round, which is why the scan takes the highest occupied slot rather than a count.
+# next round, which is why the scan claims the LOWEST FREE slot rather than
+# highest-occupied+1 — a released slot below an occupied one must be refillable.
 #
 # BE PRECISE ABOUT WHAT THIS GUARANTEES, because the one-shot version guaranteed more.
 # O_EXCL only makes each SLOT single-use; it does NOT serialize the slot scan. A racer

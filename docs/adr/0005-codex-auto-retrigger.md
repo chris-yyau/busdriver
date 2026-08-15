@@ -228,16 +228,19 @@ expressions of trigger condition #1:
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (18 cases since #673, `gh` stubbed).
-  The #673 cases pin the budget in BOTH directions — it spends across rounds AND
-  stops at MAX — plus `MAX=1` restoring one-shot, a pre-#673 marker counting as
-  attempt 1 spent (so an upgrade cannot hand in-flight PRs a fresh budget), the
-  cooldown blocking while hot and releasing once elapsed, a malformed `MAX` falling
-  back to the default rather than unlimited, and a failed post spending no attempt.
-  The original 9: one-shot post,
-  marker idempotency, opt-out, fail-safe (post failure → released claim, exit 0, no
-  marker), custom phrase, bad-input skip, usage error, `gh` missing, and sequential
-  idempotency (two real runs → exactly one post).
+- Covered by `tests/test-codex-retrigger.sh` (19 cases total: 10 original + 9 added
+  by #673, `gh` stubbed). The #673 cases pin the budget in BOTH directions — it
+  spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
+  pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
+  PRs a fresh budget), the cooldown blocking while hot and releasing once elapsed,
+  a malformed `MAX` falling back to the default rather than unlimited, a `MAX`
+  ceiling, a failed post spending no attempt, hole refill, and the #676
+  wait-budget-coupling assertion.
+  The original 10: happy path, one-shot
+  (marker present → no second post), opt-out, fail-safe (post failure → released
+  claim, exit 0, no marker), transient recovery, custom phrase, bad-input skip,
+  usage error, `gh` missing, and sequential idempotency (two real runs → exactly
+  one post).
 - **Bootstrapping caveat:** when this fix grinds its *own* PR, the running pr-grind
   is the *installed* plugin (which predates the fix), so it can still hit the very
   dead-end the PR fixes — resolve with a manual `@codex review`, exactly as for #217.
@@ -305,7 +308,7 @@ expressions of trigger condition #1:
 - The trigger phrase or connector login changes upstream → update the
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` default / the `chatgpt-codex-connector` login.
 - **Raising `MAX` or `COOLDOWN`, or lowering the dispatcher's default `--max-wait`,
-  without re-checking `COOLDOWN * (MAX - 1) <= wait-budget wall-clock`** →
+  without re-checking `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`** →
   re-creates the #676 dead end (a scheduled attempt whose cooldown has not yet
   elapsed when `--max-wait` exhausts is never reached). Re-derive the inequality
   against the current `--max-wait` default before changing either knob.

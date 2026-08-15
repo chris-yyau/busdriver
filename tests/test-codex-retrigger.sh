@@ -386,11 +386,21 @@ DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOW
 WAIT_BUDGET_WALLCLOCK=480   # ADR 0005 Context: `--max-wait 8` exhausts in ~8 min
 # 80% of the budget — integer arithmetic, no bc dependency.
 BUDGET_CEILING=$(( WAIT_BUDGET_WALLCLOCK * 8 / 10 ))
-needed=$(( DEFAULT_COOLDOWN * (DEFAULT_MAX - 1) ))
-if [ -n "$DEFAULT_MAX" ] && [ -n "$DEFAULT_COOLDOWN" ] && [ "$needed" -le "$BUDGET_CEILING" ]; then
-  ok "wait-budget coupling: shipped defaults (MAX=$DEFAULT_MAX, COOLDOWN=$DEFAULT_COOLDOWN) need ${needed}s <= ${BUDGET_CEILING}s (80% of the ${WAIT_BUDGET_WALLCLOCK}s wait budget)"
+# Guard BEFORE the arithmetic, not after: a source reformat that breaks either
+# regex yields an empty DEFAULT_MAX/DEFAULT_COOLDOWN, and bash arithmetic
+# silently reads an empty operand as 0 — so `needed` would evaluate to 0 and
+# the case would report a misleading "need 0s <= 384s" PASS instead of failing
+# loudly on the real problem (the extraction itself), masking the case behind
+# defaults that were never actually read (cubic P3, PR #676).
+if [ -z "$DEFAULT_MAX" ] || [ -z "$DEFAULT_COOLDOWN" ]; then
+  fail "wait-budget coupling: could not extract DEFAULT_MAX/DEFAULT_COOLDOWN from $RT — the read_int_knob call(s) no longer match this case's extraction regex (source reformatted?); fix the regex before trusting this case's PASS/FAIL"
 else
-  fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
+  needed=$(( DEFAULT_COOLDOWN * (DEFAULT_MAX - 1) ))
+  if [ "$needed" -le "$BUDGET_CEILING" ]; then
+    ok "wait-budget coupling: shipped defaults (MAX=$DEFAULT_MAX, COOLDOWN=$DEFAULT_COOLDOWN) need ${needed}s <= ${BUDGET_CEILING}s (80% of the ${WAIT_BUDGET_WALLCLOCK}s wait budget)"
+  else
+    fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
+  fi
 fi
 
 echo "Results: $passed passed, $failed failed"

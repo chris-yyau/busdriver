@@ -51,6 +51,21 @@
 # Phrase:   PR_GRIND_CODEX_RETRIGGER_PHRASE      (default "@codex review"; for
 #                                                 forks whose Codex connector uses
 #                                                 a different trigger phrase)
+#           NOT forwarded through the sanitized `env -i` hook invocations in
+#           hooks/hooks.json, unlike MAX and COOLDOWN — so it governs direct
+#           invocations only, not the pre-merge / pre-create hook paths. That
+#           asymmetry is deliberate (PR #676). `env -i` is ADR 0016's (#325)
+#           deny-by-default boundary and a committed `.claude/settings.json` `env`
+#           block is repo-controlled, so every forwarded name is a value a hostile
+#           repo picks. MAX and COOLDOWN are clamped to a range, bounding the damage
+#           to a few extra nudges; PHRASE is UNCLAMPED and becomes the BODY of a
+#           comment posted with the operator's `gh` credentials — and that body is
+#           read by the AI reviewer whose ack gates the merge. Repo-controlled text →
+#           operator credentials → an LLM reviewer's input is the shape this repo
+#           refuses ("authenticate consent by location, not by content"). If a real
+#           operator needs a different phrase on the hook paths, give it a `.local`
+#           file, never an env var. Pinned by
+#           `__tests__/codex-nudge-env-allowlist.test.ts` so re-adding it fails.
 # Budget:   PR_GRIND_CODEX_RETRIGGER_MAX         (default 3; attempts per (PR,HEAD).
 #                                                 1 restores ADR 0005 one-shot.)
 # Pacing:   PR_GRIND_CODEX_RETRIGGER_COOLDOWN    (default 180s between attempts; 0

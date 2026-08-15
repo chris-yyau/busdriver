@@ -179,13 +179,40 @@ expressions of trigger condition #1:
 - **Dispatcher loop** (`skills/pr-grind/SKILL.md`) — `RESULT_COMMIT_SHA == "none"`
   (the canonical classifier; this site is authoritative since the dispatcher
   overwrites the worker's advisory acks and owns the loop).
-- **Worker Step 6.5** (`agents/pr-grinder.md`) — a clean working tree: no unstaged
-  tracked changes (`git diff --quiet`), no staged changes (`git diff --cached
-  --quiet`), AND no new untracked files (`git ls-files --others --exclude-standard`
-  empty). The worker stages fixes but never commits (the dispatcher commit-block
-  does), so a fully clean tree means no fix was made this round (HEAD unchanged).
-  `--exclude-standard` honors `.gitignore`, so the re-trigger `.local` marker and
-  other ignored files never trip the guard.
+- **Worker Step 6.5** (`agents/pr-grinder.md`) — an empty staged index
+  (`git diff --cached --quiet`). The worker stages fixes but never commits (the
+  dispatcher commit-block does), so an empty index means this round produces no
+  push (HEAD unchanged).
+
+**Amendment (2026-08-15, issue #678) — the worker site was NOT an equivalent
+expression, and now is.** As originally shipped, Worker Step 6.5 tested a *clean
+working tree*: `git diff --quiet` AND `git diff --cached --quiet` AND
+`git ls-files --others --exclude-standard` empty. That is a strict superset of the
+canonical classifier, so the sentence above ("all equivalent expressions of trigger
+condition #1") was false for this site — it could only ever under-fire relative to
+`RESULT_COMMIT_SHA == "none"`, never over-fire.
+
+The extra clauses test states that cannot produce a push: `scripts/dispatcher-commit-block.sh`
+contains **zero `git add` calls** and commits the index alone, and its `needs_more`
+branch routes on `git diff --cached --quiet` alone (empty index →
+`emit_success_no_commit` → `result_commit_sha:"none"`). Unstaged tracked edits and
+untracked files are therefore invisible to the commit decision.
+
+The untracked clause was the live defect. `git ls-files --others --exclude-standard`
+returns **any** untracked non-ignored path, not only paths this round created, so
+one long-lived untracked file disables the nudge permanently and silently. In this
+repo `.claude/parked/` had done exactly that for weeks: the worker-side call site
+had never fired, and #676's grind needed the dispatcher-side site invoked by hand.
+That matters beyond cosmetics — #673 established the nudge as the only exit once
+the Codex ack tiers go sticky after round 1, so halving the delivery paths on
+unrelated repo debris raises the odds of the dead end.
+
+The guard is now the byte-identical predicate the dispatcher routes on, which makes
+the equivalence claim true by construction rather than by assertion. Pinned by
+`__tests__/codex-nudge-waitround-guard.test.ts`. Rejected alternative: comparing
+untracked paths against a pre-dispatch snapshot — `PRE_DISPATCH_BASELINE` is a
+*staged-paths* baseline (dispatcher-commit-block.sh:115-131), not an untracked one,
+so that route needed new plumbing to reproduce a signal the index already carries.
 
 ## Alternatives
 

@@ -309,7 +309,8 @@ fi
 
 # --- 16. A failed post must spend NO attempt and start NO cooldown — the claim is
 #         released, so the next round re-derives the SAME slot. This is why the scan
-#         takes the highest occupied slot rather than counting markers.
+#         counts occupied markers and claims the lowest free slot, rather than
+#         taking the highest occupied slot (see case 17's hole-refill below).
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 run_rt STUB_GH_FAIL=1 PR_GRIND_CODEX_RETRIGGER_MAX=3
 failed_marker=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)

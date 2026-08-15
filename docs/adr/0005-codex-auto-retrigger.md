@@ -170,7 +170,7 @@ expressions of trigger condition #1:
 ## Consequences
 
 - A Codex-only-stale, unchanged-HEAD PR now converges automatically: pr-grind posts
-  exactly one `@codex review`, Codex re-reviews, and the next wait-round acks via
+  up to `PR_GRIND_CODEX_RETRIGGER_MAX` `@codex review` attempts, Codex re-reviews, and the next wait-round acks via
   Tier F (or surfaces new findings the worker triages) — instead of dead-ending at
   `--max-wait`.
 - The gate is **not** loosened: the merge authority (required status checks) is
@@ -186,7 +186,7 @@ expressions of trigger condition #1:
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (16 cases since #673, `gh` stubbed).
+- Covered by `tests/test-codex-retrigger.sh` (18 cases since #673, `gh` stubbed).
   The #673 cases pin the budget in BOTH directions — it spends across rounds AND
   stops at MAX — plus `MAX=1` restoring one-shot, a pre-#673 marker counting as
   attempt 1 spent (so an upgrade cannot hand in-flight PRs a fresh budget), the

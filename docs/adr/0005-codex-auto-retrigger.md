@@ -11,9 +11,51 @@ Amended (2026-07-18): pr-grind's inline `--opus` execution mode was removed
 
 **Amended (2026-08-15, issue #673): one-shot → bounded N, paced.** The re-trigger
 is now at most `PR_GRIND_CODEX_RETRIGGER_MAX` attempts (default 3) per (PR, HEAD),
-spaced by `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` (default 900s). Every "one-shot"
-reference below should be read as "bounded budget"; `MAX=1` restores the original
-behavior exactly.
+spaced by `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` (default 180s — see the
+**2026-08-15 (#676) cooldown correction** amendment below for why 180 replaced the
+originally-shipped 900, and why the intermediate 240 was itself insufficient). Every "one-shot" reference below should be read as
+"bounded budget"; `MAX=1` restores the original behavior exactly.
+
+**Amended (2026-08-15, PR #676): cooldown corrected from 900s to 180s — the
+shipped default was unreachable within the dispatcher's own documented wait
+budget.** `COOLDOWN * (MAX - 1)` must fit inside the dispatcher's
+`--max-wait` wall-clock, because an attempt whose cooldown has not yet elapsed
+when the dispatcher exhausts its wait budget is never reached. This Context
+section already documented `--max-wait 8` exhausting in "~8 min", but the
+originally-shipped `COOLDOWN=900` needs `900 * 2 = 1800s` (30 min) to spend all 3
+attempts — over 3x the ~8-minute default wait budget. Under default settings the
+bounded-N fix from the amendment above never actually reached attempt 2: the
+dispatcher bailed on `--max-wait` before the first cooldown elapsed, silently
+reproducing the exact one-shot dead end #673 shipped this ADR to close (Codex
+review, PR #676).
+
+The FIRST correction set `COOLDOWN=240` and tested it with a bare `<=` against the
+full 480s. That is exactly-equal, not inside: `240 * 2 = 480` places the last
+attempt at the precise instant the dispatcher bails, reachable only with zero
+trigger latency, zero marker-write time and perfectly aligned polling. Litmus
+caught that as MEDIUM on the same PR. The budget must be fit INSIDE, not filled, so
+the requirement carries an explicit 20% margin:
+
+    COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock
+
+Shipped defaults are `MAX=3, COOLDOWN=180` → `180 * 2 = 360s <= 384s`, leaving 120s
+of headroom. 180s still meets or exceeds the observed Codex turnaround (~3 minutes
+on PR #676); when it does not, this ADR's own Consequences section already settled
+the cost — Codex de-dupes, so the downside is one extra comment, never a
+correctness problem. See the coupling comment in `scripts/codex-retrigger.sh` and
+the pinned assertion in `tests/test-codex-retrigger.sh`, which is written against
+the 0.8 margin rather than a bare `<=` precisely so that restoring 240 fails.
+
+**Known residual — the inequality is a sanity bound, not a guarantee.** `--max-wait`
+counts wait-ROUNDS and the dispatcher enforces no minimum duration per round, so the
+480s figure is a documented typical rather than a contract. Eight fast rounds can
+exhaust the budget in well under 360s, leaving the later attempts unreachable even at
+`COOLDOWN=180`, with the pinned assertion still green. What the bound genuinely buys
+is rejection of order-of-magnitude and zero-margin defaults — the two live defects on
+PR #676. Closing the gap properly requires a caller-side change: pace in ROUNDS rather
+than wall-clock, or have the dispatcher enforce a minimum wait-round duration. Neither
+is derivable from the mtimes `codex-retrigger.sh` reads, so neither belongs in the
+helper; tracked as a follow-up.
 
 *Why the original reasoning does not survive.* This ADR justified one-shot purely
 as ANTI-SPAM (see the first Guards bullet) — never as a safety boundary. What it
@@ -244,7 +286,17 @@ expressions of trigger condition #1:
 - A repo reports re-trigger comment noise → lower `PR_GRIND_CODEX_RETRIGGER_MAX`
   (1 restores one-shot) or raise `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` before
   changing code; only if neither knob helps, consider tightening the trigger (e.g.
-  require N consecutive Codex-only-stale wait-rounds before posting).
+  require N consecutive Codex-only-stale wait-rounds before posting). **Raising the
+  cooldown re-opens the coupling below — check it.**
+- **Either default changes, or the dispatcher's default `--max-wait` changes** →
+  re-check `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`. Violating it does
+  not fail loudly at runtime; it silently makes the later attempts unreachable and
+  degrades the budget back toward one-shot — the #676 defect. `--max-wait` is owned
+  by `skills/pr-grind/SKILL.md`, so a change there can break this from the other
+  side, and the pinned assertion in `tests/test-codex-retrigger.sh` reads the two
+  script defaults but NOT the dispatcher's `--max-wait` (it hardcodes the ~8-minute
+  figure from this ADR's Context). Changing `--max-wait`'s default therefore requires
+  updating that constant by hand — the test cannot catch that one for you.
 - Codex answers the *first* nudge essentially always, across many PRs → the budget
   is dead weight; drop `MAX` back to 1 and keep the cooldown.
 - Codex ignores all N attempts often enough that operators still reach for the skip
@@ -252,6 +304,11 @@ expressions of trigger condition #1:
   classification (#673) is what needs shipping, not a larger N.
 - The trigger phrase or connector login changes upstream → update the
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` default / the `chatgpt-codex-connector` login.
+- **Raising `MAX` or `COOLDOWN`, or lowering the dispatcher's default `--max-wait`,
+  without re-checking `COOLDOWN * (MAX - 1) <= wait-budget wall-clock`** →
+  re-creates the #676 dead end (a scheduled attempt whose cooldown has not yet
+  elapsed when `--max-wait` exhausts is never reached). Re-derive the inequality
+  against the current `--max-wait` default before changing either knob.
 
 <!-- design-reviewed: PASS -->
 <!-- design-review-coverage: FULL 3/3  -->

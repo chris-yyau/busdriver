@@ -53,7 +53,7 @@
 #                                                 a different trigger phrase)
 # Budget:   PR_GRIND_CODEX_RETRIGGER_MAX         (default 3; attempts per (PR,HEAD).
 #                                                 1 restores ADR 0005 one-shot.)
-# Pacing:   PR_GRIND_CODEX_RETRIGGER_COOLDOWN    (default 900s between attempts; 0
+# Pacing:   PR_GRIND_CODEX_RETRIGGER_COOLDOWN    (default 180s between attempts; 0
 #                                                 disables pacing. Without pacing,
 #                                                 consecutive wait-rounds seconds
 #                                                 apart would burn the whole budget
@@ -66,6 +66,46 @@
 #           slot-scan loop and the spam budget). COOLDOWN is an integer in [0,86400].
 #           Anything outside those ranges falls back to the default — a malformed or
 #           fat-fingered knob must never widen the budget OR stale the gate.
+#
+# COUPLING WITH THE DISPATCHER'S WAIT BUDGET (#673 P1, Codex review on PR #676) — the
+# two knobs above are NOT independent of the caller's `--max-wait`. Every attempt
+# after the first only lands if it falls inside the dispatcher's remaining wait
+# wall-clock, so the defaults must satisfy, approximately:
+#     COOLDOWN * (MAX - 1) <= 0.8 * dispatcher wait budget in wall-clock seconds
+# because an attempt that would fall outside that window is never reached — the
+# dispatcher bails on --max-wait before the cooldown for that slot elapses. With
+# `--max-wait 8` the loop exhausts in roughly 8 minutes (ADR 0005's Context section
+# documents this figure), giving a 480s budget and a 384s ceiling.
+#
+# THE 0.8 IS THE POINT, not decoration. The first correction of this defect used
+# `<=` against the FULL 480s and shipped COOLDOWN=240, which makes `240 * 2 = 480`
+# exactly equal the budget — so the last attempt lands precisely at the moment the
+# dispatcher bails and is reachable only with zero trigger latency, zero marker-write
+# time, and perfectly aligned polling. That is "fits" on paper and "unreliable" in
+# practice (litmus MEDIUM on PR #676, caught immediately after the first fix). The
+# budget must be fit INSIDE, not filled. The shipped defaults are therefore MAX=3,
+# COOLDOWN=180 → `180 * 2 = 360s`, leaving 120s of headroom to absorb that latency.
+#
+# 180s remains at or above the observed Codex turnaround (it answered a nudge on
+# PR #676 in about 3 minutes), so pacing still normally gives Codex time to reply
+# before a re-nudge — and when it does not, ADR 0005 already settled the cost: Codex
+# de-dupes, so the downside is one extra comment, never a correctness problem.
+#
+# WHAT THE INEQUALITY IS AND IS NOT. `--max-wait` counts wait-ROUNDS, and the
+# dispatcher enforces no minimum duration per round — so 480s is a documented TYPICAL,
+# never a guarantee. Eight fast rounds can exhaust the budget in well under 360s, and
+# the later attempts would then be unreachable even at COOLDOWN=180. This bound
+# therefore catches order-of-magnitude and zero-margin mistakes (the two live defects
+# on PR #676: 900, wrong by ~4x, and 240, wrong by having no headroom) but it cannot
+# promise reachability. Closing that properly means pacing in ROUNDS instead of
+# wall-clock, or a dispatcher-enforced minimum wait-round duration — both caller-side,
+# neither derivable from the mtimes this helper reads. Tracked separately; do not
+# paper over it here by inventing a tighter constant.
+#
+# A future change to either knob — or to the dispatcher's default --max-wait — must
+# be re-checked against this inequality; see tests/test-codex-retrigger.sh's dedicated
+# assertion (which pins the 0.8 margin, not bare `<=`, precisely so restoring 240
+# fails) and ADR 0005's Revisit trigger list.
 # Markers:  ${BUSDRIVER_STATE_DIR:-.claude}/.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local
 #           for attempt 1, and `...-<HEAD8>-<n>.local` for attempts n >= 2.
 #           Attempt 1 deliberately keeps ADR 0005's exact filename, so a marker left
@@ -142,7 +182,7 @@ read_int_knob() {
     else printf '%s\n' "$2"; fi
 }
 MAX_ATTEMPTS=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_MAX:-}" 3 1 10)
-COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 900 0 86400)
+COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 180 0 86400)
 
 # Scan the slots ONCE for the three things the decision needs: how many attempts are
 # actually spent (occupancy), the LOWEST FREE slot to claim, and the NEWEST marker

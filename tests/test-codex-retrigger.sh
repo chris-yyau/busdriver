@@ -85,7 +85,7 @@ fi
 
 # ============================================================
 # 2. SECOND ROUND, DEFAULT CONFIG — attempt-1 marker already present for this
-#    (PR,HEAD): no post, exit 0. Held by the default 900s cooldown since #673
+#    (PR,HEAD): no post, exit 0. Held by the default 180s cooldown since #673/#676
 #    (pre-#673 it was the hard one-shot marker); the observable contract is the same.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
@@ -218,9 +218,16 @@ fi
 # and #673 showed the Codex ack tiers cannot self-clear after the first fix round,
 # so this nudge is the ONLY exit. It is now N attempts (default 3) paced by a
 # cooldown. Cases 1–9 above already pin the DEFAULT-config behavior (the default
-# 900s cooldown is what holds cases 2 and 9 to a single post); these pin that the
+# 180s cooldown is what holds cases 2 and 9 to a single post); these pin that the
 # budget both SPENDS and STOPS, that a failure costs nothing, and that a marker
 # from the pre-#673 plugin is honored rather than granting a fresh budget.
+#
+# #676 — COOLDOWN/WAIT-BUDGET COUPLING. #673 shipped MAX=3/COOLDOWN=900, which
+# needs 1800s to spend the full budget — over 3x the ~8-minute wait budget
+# `--max-wait 8` gives the dispatcher (ADR 0005's Context section), so under
+# default settings the loop bailed before attempt 2's cooldown ever elapsed,
+# silently reproducing the one-shot dead end #673 existed to close. Case 18 below
+# pins the corrected relationship as an executable assertion rather than prose.
 # ============================================================
 marker_n() {
   if [ "$1" = 1 ]; then printf '%s' "$MARKER_NAME"
@@ -337,6 +344,53 @@ if [ "$refilled" = yes ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$(m
   ok "hole refill: free slot below an occupied one is reclaimed, full budget preserved"
 else
   fail "hole refill: refilled=$refilled posts=$(posts_in "$CALLLOG") (expected 2, i.e. budget 3 minus the pre-seeded slot)"
+fi
+
+# --- 18. #676 — SHIPPED DEFAULTS MUST FIT THE DISPATCHER'S DEFAULT WAIT BUDGET.
+#         `COOLDOWN * (MAX - 1)` is the wall-clock needed to spend the full budget
+#         (MAX-1 gaps between MAX attempts); any attempt that would land later than
+#         the dispatcher's `--max-wait` wall-clock is never reached, because the
+#         dispatcher bails first. ADR 0005's Context section documents `--max-wait 8`
+#         exhausting in ~8 minutes (480s) — that is the wall-clock this pins against.
+#         A future default that violates this inequality makes the retry budget
+#         unreachable in practice: the exact #676 defect (900*2=1800s vs. a ~480s
+#         budget, i.e. attempt 2 would land 22.5 minutes after the dispatcher already
+#         bailed). Read the values out of the SHIPPED SCRIPT rather than hardcoding
+#         them here, so this fails loudly if either knob's default regresses.
+#
+#         THE MARGIN IS PART OF THE ASSERTION. A bare `<=` against the full 480s
+#         admits COOLDOWN=240 (240*2=480 exactly), which places the last attempt at
+#         the precise instant the dispatcher bails — reachable only with zero trigger
+#         latency, zero marker-write time and perfectly aligned polling. That was the
+#         FIRST attempt at fixing this defect and litmus flagged it MEDIUM on the same
+#         PR. So the budget must be fit INSIDE, not filled: require 20% headroom, and
+#         confirm this case rejects 240 as well as 900 before trusting it.
+#
+#         WHAT THIS DOES *NOT* PROVE — read before relying on it. `--max-wait` counts
+#         wait-ROUNDS, not seconds, and the dispatcher enforces no minimum duration per
+#         round. So 480s is a documented TYPICAL (ADR 0005's Context), never a
+#         guarantee: eight fast rounds can exhaust the budget in well under 360s, and
+#         the later attempts would be unreachable while this case still passes. Do not
+#         read a green result here as "the retry budget is always reachable" (litmus
+#         MEDIUM on PR #676 caught exactly that overclaim).
+#
+#         What it IS: a sanity bound on the two defaults against the only wall-clock
+#         figure the repo actually documents — enough to catch an order-of-magnitude
+#         mistake like COOLDOWN=900 (wrong by ~4x) or a zero-margin value like 240,
+#         which is what the two live defects on this PR were. Closing the gap properly
+#         means pacing in ROUNDS rather than wall-clock, or having the dispatcher
+#         enforce a minimum wait-round duration; both are caller-side changes tracked
+#         separately, not something this helper can assert from mtimes alone.
+DEFAULT_MAX=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_MAX:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$')
+DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$')
+WAIT_BUDGET_WALLCLOCK=480   # ADR 0005 Context: `--max-wait 8` exhausts in ~8 min
+# 80% of the budget — integer arithmetic, no bc dependency.
+BUDGET_CEILING=$(( WAIT_BUDGET_WALLCLOCK * 8 / 10 ))
+needed=$(( DEFAULT_COOLDOWN * (DEFAULT_MAX - 1) ))
+if [ -n "$DEFAULT_MAX" ] && [ -n "$DEFAULT_COOLDOWN" ] && [ "$needed" -le "$BUDGET_CEILING" ]; then
+  ok "wait-budget coupling: shipped defaults (MAX=$DEFAULT_MAX, COOLDOWN=$DEFAULT_COOLDOWN) need ${needed}s <= ${BUDGET_CEILING}s (80% of the ${WAIT_BUDGET_WALLCLOCK}s wait budget)"
+else
+  fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
 fi
 
 echo "Results: $passed passed, $failed failed"

@@ -553,7 +553,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's per-(PR,HEAD) attempt
   │     # markers plus its cooldown bound the POST, so the two call sites cannot compound —
   │     # at most PR_GRIND_CODEX_RETRIGGER_MAX (default 3) `@codex review` posts per HEAD,
-  │     # spaced by PR_GRIND_CODEX_RETRIGGER_COOLDOWN (default 900s). Pre-#673 this was a
+  │     # spaced by PR_GRIND_CODEX_RETRIGGER_COOLDOWN (default 180s). Pre-#673 this was a
   │     # hard one-shot; that made a single dropped nudge terminal for the PR (see ADR 0005).
   │     # COST (stated honestly, per the #467 review): on a clean `none` round this block runs
   │     # the wrapper's detection (`gh repo view` + the Codex-active GraphQL probe) ONCE, and

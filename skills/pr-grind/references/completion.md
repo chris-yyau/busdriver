@@ -141,7 +141,7 @@ FRESH_ACKS="cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo s
 # every 30s, so a fast Codex costs ~30s and a slow one is still caught.
 # This grace handles ONLY the `none` case (Codex never engaged). The `stale` case —
 # Codex reviewed but won't re-ack an UNCHANGED HEAD — is handled earlier, in the
-# LOOP, by the codex-retrigger one-shot (ADR 0005, scripts/codex-retrigger.sh):
+# LOOP, by the bounded codex-retrigger (ADR 0005 + #673, scripts/codex-retrigger.sh):
 # COMPLETION is unreachable while Codex is `stale` (Invariant 2 blocks `clean`), so
 # the recovery for `stale` must live in the wait-round, not here.
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')

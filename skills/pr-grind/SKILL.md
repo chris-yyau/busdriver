@@ -536,7 +536,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        legitimate grinds; loosening them silently allows the
   │        relabel-as-out-of-scope failure mode the rails exist to catch.
   │
-  ├── Codex first-engagement nudge on the CLEAN path (one-shot per HEAD) — issue #467.
+  ├── Codex first-engagement nudge on the CLEAN path (bounded-N per HEAD, ADR 0005 #673) — issue #467.
   │     # Fire the `none`-case nudge the INSTANT a round converges to clean, decoupled
   │     # from the COMPLETION merge machinery. Be precise about the gap this closes:
   │     # within a faithful top-to-bottom COMPLETION run the nudge ALREADY precedes the
@@ -550,14 +550,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # silently skipped on exactly the PRs that end in an operator bail. Firing here,
   │     # before any merge-path branching, makes the nudge independent of that shortcut;
   │     # the bounded grace POLL stays in COMPLETION (it only matters right before merge).
-  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's one-shot per-(PR,HEAD)
-  │     # marker dedupes the POST, so at most one `@codex review` is ever posted per HEAD.
+  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's per-(PR,HEAD) attempt
+  │     # markers plus its cooldown bound the POST, so the two call sites cannot compound —
+  │     # at most PR_GRIND_CODEX_RETRIGGER_MAX (default 3) `@codex review` posts per HEAD,
+  │     # spaced by PR_GRIND_CODEX_RETRIGGER_COOLDOWN (default 180s). Pre-#673 this was a
+  │     # hard one-shot; that made a single dropped nudge terminal for the PR (see ADR 0005).
   │     # COST (stated honestly, per the #467 review): on a clean `none` round this block runs
   │     # the wrapper's detection (`gh repo view` + the Codex-active GraphQL probe) ONCE, and
   │     # COMPLETION later re-derives active-ness independently — so a Codex-active / force-on
   │     # repo pays ONE extra codex-active probe per clean-none merge vs. pre-#467. This is a
-  │     # deliberate, bounded tradeoff: the marker dedupes the POST (never a double `@codex
-  │     # review`), but NOT the detection, because COMPLETION needs genuine active-ness for its
+  │     # deliberate, bounded tradeoff: the attempt markers + cooldown bound the POST (at most
+  │     # PR_GRIND_CODEX_RETRIGGER_MAX per HEAD, never unbounded), but NOT the detection, because
+  │     # COMPLETION needs genuine active-ness for its
   │     # "engaged on recent PRs" warning + full-grace wait and a nudge-marker cannot supply
   │     # that (it conflates force-on/kill-switched with historical activity). A detection-result
   │     # breadcrumb WOULD remove the extra probe but is not worth another per-HEAD state
@@ -610,16 +614,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # the dispatcher's tag-resolution step already canonicalized aliases
   │     # before this point (see "Resolution order" in Dispatch a Round below).
   │
-  │     # Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD) — ADR 0005.
+  │     # Codex sole-stale-blocker auto-re-trigger (bounded-N per HEAD, #673) — ADR 0005.
   │     # On this WAIT-round (RESULT_COMMIT_SHA == "none", so HEAD is unchanged)
   │     # where Codex is the SOLE stale ack — RESULT_CODEX_ACK == "stale" AND no
   │     # registered bot in RESULT_REVIEWER_ACKS is "stale" (they all acked HEAD) —
   │     # Codex will never self-ack the unchanged HEAD (it posts COMMENTED reviews /
   │     # 0 reactions; its thread resolutions predate the push, Tier-A.2 fail-closed),
   │     # so the next wait-rounds would just burn --max-wait and BAIL. Post `@codex
-  │     # review` ONCE so Codex re-reviews HEAD before the next round (→ fresh
+  │     # review` so Codex re-reviews HEAD before the next round (→ fresh
   │     # 👍/Tier-F ack → converge, or new findings → worker triages). The helper is
-  │     # idempotent (one-shot marker per (PR,HEAD)) so this is safe even though the
+  │     # deduped by attempt markers + cooldown (at most PR_GRIND_CODEX_RETRIGGER_MAX
+  │     # posts per (PR,HEAD)) so this is safe even though the
   │     # worker's Step 6.5 mirrors the same call. Opt out: PR_GRIND_CODEX_RETRIGGER=0;
   │     # phrase override (forks): PR_GRIND_CODEX_RETRIGGER_PHRASE. `|| true` keeps a
   │     # failed post from ever staling the gate. Distinct from the COMPLETION

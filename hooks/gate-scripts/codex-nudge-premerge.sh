@@ -56,10 +56,13 @@
 # ACCEPTED LIMITS (independently reviewed 2026-07-15 — inherent, NOT bugs; do not
 # "fix" without re-reading this):
 #   1. Fires on merge-INTENT, decoupled from the pre-merge GATE's verdict. The
-#      one-shot dedup is per-(PR,HEAD) (codex-retrigger.sh), so firing on an
-#      attempt the gate later blocks still did its job — Codex was asked about
-#      THIS code state; a same-HEAD retry needs no re-nudge, new commits earn a
-#      fresh one. Gating on the pr-grind-clean marker instead would duplicate the
+#      dedup is per-(PR,HEAD) (codex-retrigger.sh), so firing on an attempt the
+#      gate later blocks still did its job — Codex was asked about THIS code
+#      state; new commits earn a fresh budget. Since #673 that dedup is an
+#      attempt BUDGET (default 3) paced by a cooldown (default 900s) rather than a
+#      hard one-shot, so a same-HEAD merge retry can re-nudge once the cooldown
+#      elapses. That is intended — a dropped nudge must be recoverable — and it
+#      stays bounded, which is the property this hook's non-spam posture needs. Gating on the pr-grind-clean marker instead would duplicate the
 #      gate's admission logic AND re-exclude the bootstrap-bypass PRs this hook
 #      exists to cover — a strictly worse trade.
 #   2. A PreToolUse hook is a separate pre-exec process reading only the payload;

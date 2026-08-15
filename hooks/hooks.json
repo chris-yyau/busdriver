@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" PR_GRIND_CODEX_RETRIGGER_MAX=\"${PR_GRIND_CODEX_RETRIGGER_MAX:-}\" PR_GRIND_CODEX_RETRIGGER_COOLDOWN=\"${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
             "timeout": 20
           }
         ],
@@ -311,7 +311,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-precreate.sh",
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" PR_GRIND_CODEX_RETRIGGER_MAX=\"${PR_GRIND_CODEX_RETRIGGER_MAX:-}\" PR_GRIND_CODEX_RETRIGGER_COOLDOWN=\"${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-precreate.sh",
             "timeout": 20
           }
         ],

@@ -47,7 +47,13 @@ describe('pr-grinder Step 6.5: wait-round guard predicate', () => {
   };
 
   it('gates on the staged index, matching the dispatcher\'s classifier', () => {
-    expect(guard()).toContain('git diff --cached --quiet');
+    const text = guard();
+    expect(text).toContain('git diff --cached --quiet');
+    // Assert the guard contains exactly one Git worktree-state predicate — not
+    // just that it lacks `ls-files`/bare `git diff`, but that it can never grow
+    // a fourth clause (e.g. `git status --porcelain`) that reintroduces the
+    // same silent-suppression bug via a different Git command.
+    expect(text.match(/\bgit\s+[^&|;\n]+/g) ?? []).toHaveLength(1);
   });
 
   it('does NOT test untracked files (#678: repo debris silently kills the nudge)', () => {

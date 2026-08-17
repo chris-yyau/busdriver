@@ -959,6 +959,21 @@ dispatch_one() {
                         "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 fi
+            elif [[ -n "$_AGY_READ_LANE" && -n "$MODEL" ]]; then
+                # Reached only when _agy_wants_argv_prompt returned false — an
+                # agy 1.0.x install, which does not support --model (SKILL.md
+                # documents this at the "agy v1.0.0 does not support --model"
+                # note). The read lane above unconditionally resolves $MODEL
+                # from .agy_read.model, so every agy-read dispatch on a 1.0.x
+                # install would otherwise hand it an unsupported flag on the
+                # /dev/stdin transport path below. Silently dropping --model
+                # instead would run the request on agy's own default model,
+                # defeating .agy_read.model's whole purpose without saying so.
+                # Refuse loudly instead — same posture as the transport-helper
+                # guard above.
+                printf 'Error: agy read lane needs --model (%s), but this agy install does not support it (agy 1.0.x — see %s/skills/dispatch-cli/SKILL.md). Upgrade agy, or use --cli codex/droid for repo reads.\n' \
+                    "$MODEL" "$_PLUGIN_ROOT" > "$outfile" 2>&1
+                exit_code=1
             elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \

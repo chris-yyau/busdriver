@@ -255,5 +255,30 @@ if [[ -n "$agy_default" ]]; then
   done
 fi
 
+# ── 10. agy 1.0.x + the read lane refuses rather than dropping --model ───
+# (PR #687 Codex finding.) agy 1.0.x does not support --model (SKILL.md:310),
+# but the read lane always resolves $MODEL from .agy_read.model — so every
+# agy-read dispatch on a 1.0.x install reaches the /dev/stdin transport
+# branches with --model still attached, an unsupported flag on every attempt.
+# End-to-end: stub `agy --version` as 1.0.0 on PATH and pass --model explicitly
+# (skipping the real-$HOME-derived resolve_agy_read_model path entirely — that
+# derivation intentionally ignores an overridden $HOME, so this is the only way
+# to exercise the guard without touching the operator's real ~/.claude config).
+agy_stub_dir="$(mktemp -d)"
+cat > "$agy_stub_dir/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.0.0\n'; exit 0; fi
+printf 'AGY_WAS_INVOKED\n'
+STUB
+chmod +x "$agy_stub_dir/agy"
+out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy-read --model gemini-3.7-flash --prompt x 2>&1)"; rc=$?
+rm -rf "$agy_stub_dir"
+if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"gemini-3.7-flash"* \
+      && "$out" != *"AGY_WAS_INVOKED"* ]]; then
+  pass "agy-read on a 1.0.x agy install refuses loudly instead of dropping --model or invoking agy"
+else
+  fail "agy-read + agy 1.0.0 should refuse before invoking agy (rc=$rc): $out"
+fi
+
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-read-lane"; else echo "FAIL: test-agy-read-lane"; fi
 exit "$FAILED"

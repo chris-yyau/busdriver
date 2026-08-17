@@ -1,6 +1,6 @@
 # ADR 0035 — Drop Bugbot (cursor) and Devin from the pr-grind ack registry
 
-**Status:** Accepted
+**Status:** Accepted (cursor half amended by ADR 0041 — Bugbot is registered again; the devin drop stands)
 **Date:** 2026-08-09
 
 ## Context

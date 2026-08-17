@@ -125,7 +125,19 @@ describe('pr-grinder Step 6.5: wait-round guard predicate', () => {
   // `git -C "$r" ls-files --stage` — a real line in this script — from matching
   // on its `--stage` FLAG. `rm`/`mv` are included because both write the index.
   // Known-incomplete by design; see the docstring.
-  const STAGES = /\bgit\b(?:\s+(?:-[cC]\s+\S+|-\S+))*\s+(?:add|stage|rm|mv)\b/;
+  //
+  // The repeated group and the trailing `\s+` can both claim the same
+  // whitespace run, so a naive `(?:\s+(?:-[cC]\s+\S+|-\S+))*\s+` lets the
+  // engine re-partition long runs of short flag tokens in exponentially many
+  // ways — CodeQL flagged this as catastrophic backtracking (confirmed:
+  // `"-C\t-!\t".repeat(26)` took ~1.9s locally, growing exponentially with
+  // repeat count). The `(?=(...))\1` wrapper makes each loop iteration
+  // atomic — once a flag token matches, the engine commits to it and never
+  // re-tries a different split of the same substring — which removes the
+  // ambiguity without changing which strings match (see the fixture cases
+  // just below, all still pass).
+  const STAGES =
+    /\bgit\b(?:(?=(\s+(?:-[cC]\s+\S+|-\S+)))\1)*\s+(?:add|stage|rm|mv)\b/;
 
   it('the lint fires on the forms the anchored regex waved through', () => {
     // A guard never observed failing is not a guard. These are cases the old

@@ -271,9 +271,13 @@ if [ "$1" = "--version" ]; then printf '1.0.0\n'; exit 0; fi
 printf 'AGY_WAS_INVOKED\n'
 STUB
 chmod +x "$agy_stub_dir/agy"
-out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy-read --model gemini-3.7-flash --prompt x 2>&1)"; rc=$?
+# Model id deliberately avoids the leak-sweep's vendor-name patterns in
+# tests/test-auditor-model-config.sh — this is an arbitrary stand-in, not a
+# real provider/model, and the refusal path is triggered by the CLI version
+# alone, not by the value.
+out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy-read --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
 rm -rf "$agy_stub_dir"
-if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"gemini-3.7-flash"* \
+if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"stub-model-3.7"* \
       && "$out" != *"AGY_WAS_INVOKED"* ]]; then
   pass "agy-read on a 1.0.x agy install refuses loudly instead of dropping --model or invoking agy"
 else

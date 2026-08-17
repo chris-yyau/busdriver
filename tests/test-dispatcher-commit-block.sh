@@ -1815,8 +1815,29 @@ test_q_index_only_premise() {
         echo "test_q: the unstaged tracked modification was consumed by the commit"
         return 1
     fi
+    # `diff --quiet` only proves file.txt DIFFERS from HEAD — a destructive
+    # regression that deletes file.txt or overwrites it with different
+    # content still leaves that diff nonzero, so the check above would pass
+    # despite the tracked fixture not actually surviving intact. Assert the
+    # exact content directly, mirroring test_r's fix for the same weakness
+    # (CodeRabbit + Codex finding on PR #688).
+    [[ -f "$sandbox/file.txt" ]] || {
+        echo "test_q: the tracked file vanished"
+        return 1
+    }
+    [[ "$(cat "$sandbox/file.txt")" = "changed" ]] || {
+        echo "test_q: the tracked file's content changed unexpectedly"
+        return 1
+    }
     [[ -f "$sandbox/untracked.txt" ]] || {
         echo "test_q: untracked file vanished"
+        return 1
+    }
+    # Existence alone doesn't prove the untracked file survived intact — it
+    # could have been truncated or overwritten. Assert the exact content
+    # (same rationale as test_r's fix for the same weakness).
+    [[ "$(cat "$sandbox/untracked.txt")" = "untracked" ]] || {
+        echo "test_q: untracked file's content changed"
         return 1
     }
     git -C "$sandbox" ls-files --error-unmatch untracked.txt >/dev/null 2>&1 && {

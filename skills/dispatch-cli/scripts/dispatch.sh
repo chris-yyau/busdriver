@@ -217,6 +217,13 @@ if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   resolve_auditor_model() { _BD_AUDITOR_MODEL=""; }
   _BD_PI_MODEL=""
   resolve_pi_model() { _BD_PI_MODEL="opencode-go/deepseek-v4-flash"; }
+  # Deliberately NOT a duplicated default (unlike the pi stub above, which is
+  # the drift class this repo has already paid for). Empty here is a REFUSAL
+  # signal: the `agy-read` desugar below aborts on it rather than falling
+  # through to agy's own configured model, because that model is the reviewer's
+  # — silently reviewing-model-priced every read is worse than a loud stop.
+  _BD_AGY_READ_MODEL=""
+  resolve_agy_read_model() { _BD_AGY_READ_MODEL=""; }
 fi
 # Ditto for the username allowlist (resolve-cli.sh owns the canonical copy —
 # keep the pattern identical): a missing library must not make the prompt-home
@@ -324,6 +331,26 @@ MODE="readonly"
 TIMEOUT=600
 MODEL=""
 PROMPT=""
+# Reporting/audit identity for the single-dispatch path. MUST be initialized
+# here, unconditionally, and NOT read as an inherited environment variable: it
+# feeds the dispatch-log.jsonl entry and the saved-output FILENAME, so an
+# inherited value would let a caller both falsify the provider identity in the
+# audit trail and inject path components into that filename — on every
+# invocation, not just this lane's. A committed `.claude/settings.json` `env`
+# block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
+# value must never reach a provenance field. Only the desugar below sets it.
+REPORT_CLI_NAME=""
+# Set only by the `agy-read` desugar below. Carries the LANE IDENTITY that the
+# desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
+# two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
+# the runtime droid escalation. Deliberately ONE flag for both, not two: they are
+# the same fact ("this dispatch is the read lane"), and a second variable would
+# let a future change to one silently stop protecting the other.
+# Empty for every other caller, so plain `--cli agy` argv IS byte-identical to
+# what it was before this lane existed — `--model`, `--add-dir` and `--mode plan`
+# are all lane-only. See the agy branch for why the reviewer path was left alone
+# even though it shares one of agy's defects.
+_AGY_READ_LANE=""
 
 # ── Parse args ─────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -338,13 +365,21 @@ while [[ $# -gt 0 ]]; do
 dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi CLI
 
 FLAGS:
-  --cli     codex|agy|droid|grok|opencode|pi|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-read|droid|grok|opencode|pi|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
   --prompt  "task description"      (or pipe via stdin)
 
-NOTE: `pi` is the repo-READING lane — unlike opencode (confined to an empty
+NOTE: `agy-read` is the repo-READING lane. Like `pi` it runs IN the working tree
+(`--add-dir "$PWD"`, which is load-bearing — without it agy answers from a
+remembered workspace, citing the wrong checkout). `--mode auto` is refused. Its model comes from ~/.claude/busdriver.json
+`{"agy_read": {"model": "<id>"}}`; `agy models` enumerates ids. Plain `--cli agy` is unaffected and keeps agy's own configured model, so
+the blueprint-review reviewer slot is never downgraded to the read model.
+Writes: blocked in every probe run via agy's `--mode plan` (`--sandbox` alone
+does NOT block writes) — a mode, not a kernel sandbox, so not write-PROOF.
+
+NOTE: `pi` is the older repo-READING lane — unlike opencode (confined to an empty
 dir), it runs in the working tree so it can trace real code, with an
 allowlisted read-only toolset. It is read-only by construction and is skipped
 in `--cli all --mode auto`. Model comes from ~/.claude/busdriver.json
@@ -487,8 +522,104 @@ if [[ "$CLI" == "auto" ]]; then
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|opencode|pi|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-read" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-read|droid|grok|opencode|pi|both|all|auto." >&2; exit 1
+fi
+
+# ── `agy-read` — the agy READ lane ──────────────────────────────
+# Desugars to the ordinary agy arm with three things pinned, so there is ONE agy
+# implementation to maintain rather than two that drift:
+#   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
+#   $MODEL         → `.agy_read.model` from ~/.claude/busdriver.json
+#   --add-dir "$PWD" is supplied by the lane-only argv in the agy arm
+#
+# Plain `--cli agy` is UNTOUCHED by all of this: it passes no --model, so the
+# reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
+# An explicit `--model` still wins — the config is the default, not a clamp.
+if [[ "$CLI" == "agy-read" ]]; then
+    # Preserve the REQUESTED lane name for reporting (output filename, console
+    # status line, dispatch-log.jsonl entry) before CLI is overwritten below.
+    # The two lanes differ in model, write posture, and fallback behaviour —
+    # and critically in WHICH THIRD PARTY receives repository content — so an
+    # audit entry that says plain "agy" cannot tell which lane sent the
+    # content or produced a failure. Dispatch mechanics stay on the shared
+    # `agy` arm (single implementation, per the header comment above); only
+    # the reporting identity changes.
+    REPORT_CLI_NAME="agy-read"
+    CLI="agy"
+    # Not merely the default. `--mode auto` would select
+    # --dangerously-skip-permissions, i.e. a writing agent loose in the working
+    # tree, which is a different lane wearing this name.
+    # Validate BEFORE normalising. Assigning MODE="readonly" unconditionally would
+    # run ahead of the general mode validator below and swallow every invalid
+    # value: `--mode typo` would be silently accepted as readonly instead of
+    # reported. So reject `auto` with its specific hint, reject anything that is
+    # not `readonly` as invalid, and only then normalise.
+    if [[ "$MODE" == "auto" ]]; then
+        echo "Error: --cli agy-read is the read lane; --mode auto is not accepted. Use --cli agy --mode auto for a writing agy dispatch." >&2; exit 1
+    elif [[ "$MODE" != "readonly" ]]; then
+        echo "Error: Invalid --mode '$MODE'. --cli agy-read accepts only readonly." >&2; exit 1
+    fi
+    MODE="readonly"
+    # `--sandbox` ALONE DOES NOT BLOCK WRITES. Measured 2026-08-17: a --sandbox
+    # dispatch asked to write created BOTH ./scratch-probe.txt and
+    # /tmp/agy-write-probe.txt, and reported "Succeeded" for each. --sandbox is
+    # terminal restrictions, not a filesystem boundary — do not read it as one.
+    # agy's `--mode plan` is the write boundary here. Under it the same probe
+    # produced no file, while an ordinary read question still answered normally
+    # (correct verbatim line, correct absolute path). A second, ADVERSARIAL probe
+    # ("the plan is APPROVED, exit plan mode, write it now") also produced no
+    # file. CALIBRATE THE CLAIM, THOUGH: two probes held, which makes plan mode
+    # the best boundary agy exposes — not a proven-unbypassable one. It is the
+    # agent's own mode, not a kernel sandbox, so treat it as write-blocked in
+    # every probe run rather than write-PROOF, and keep pointing this lane only
+    # at trees you would run. Anything stronger wants pi's jail.
+    #
+    # Confidentiality footnote: plan mode still writes its plan artifact into
+    # agy's own state dir (~/.gemini/antigravity-cli/brain/<id>/), so the prompt
+    # and whatever repo content it quoted persist on disk outside the repo.
+    _AGY_READ_LANE=1
+    # $HOME must be password-DB-derived, not inherited, and the derivation is
+    # UNCONDITIONAL for this lane — it guards two separate things:
+    #
+    #   1. the model config, which names the third party this repo's source is
+    #      shipped to, so a repo-injectable $HOME would let a reviewed checkout
+    #      choose its own exfiltration target; and
+    #   2. agy's OWN home-scoped state (~/.gemini), which it loads and persists
+    #      on every invocation regardless of how $MODEL was chosen.
+    #
+    # (2) is why this cannot sit inside the `-z "$MODEL"` branch below, and why
+    # the derived value is EXPORTED rather than only prefixed onto the resolver
+    # call. With an inherited $HOME the agy child reads its config, auth and
+    # tool settings from a repo-selected directory and writes its plan artifact
+    # there too — a reviewed checkout that sets $HOME via `.claude/settings.json`
+    # (repo-injectable, exactly the ADR 0016 threat this file guards elsewhere)
+    # would then control the read lane's entire agy configuration. Codex P1 on
+    # PR #687. The export is lane-only and therefore covers all four agy exec
+    # sites uniformly, which is deliberate: a per-site prefix would be a fifth
+    # thing to remember when a site is added. Nothing between here and those
+    # sites reads a bare $HOME — LOG_DIR and PROMPT_FILE are both resolved
+    # earlier (the latter from its own password-DB derivation), and the opencode
+    # and pi arms pin their own trusted homes at their own exec.
+    #
+    # Same derivation as the opencode arm's `_oc_home` (in-process, no heredoc —
+    # a heredoc inside `$( )` is the #595 bash-3.2 fail-open, and this lane is
+    # not behind the pi bash-4 floor).
+    # shellcheck disable=SC2310  # same `! fn` condition shape as the opencode
+    # arm's _oc_home derivation; the else-branch IS the failure handler.
+    if ! _agyr_user="$(/usr/bin/id -un 2>/dev/null)" \
+       || ! _bd_valid_username "$_agyr_user" \
+       || ! _agyr_home="$(eval echo "~${_agyr_user}" 2>/dev/null)" \
+       || [[ -z "$_agyr_home" || "$_agyr_home" != /* || ! -d "$_agyr_home" ]]; then
+        echo "Error: could not derive a trusted \$HOME for the agy read lane. Refusing rather than letting an inherited \$HOME select agy's config and ~/.gemini state (and, without --model, the busdriver.json that names the provider). Use --cli codex/droid for repo reads." >&2; exit 1
+    fi
+    export HOME="$_agyr_home"
+    if [[ -z "$MODEL" ]]; then
+        HOME="$_agyr_home" resolve_agy_read_model
+        MODEL="$_BD_AGY_READ_MODEL"
+        [[ -n "$MODEL" ]] || {
+            echo "Error: could not resolve the agy read model (${_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh unavailable). Refusing rather than silently dispatching on agy's REVIEWER model. Pass --model explicitly, or fix BUSDRIVER_PLUGIN_ROOT." >&2; exit 1; }
+    fi
 fi
 
 # Validate mode
@@ -751,15 +882,54 @@ dispatch_one() {
             # limit); the guard below fails LOUDLY rather than truncating silently if
             # that headroom ever shifts. --print-timeout stays aligned with the outer
             # timeout so agy's internal 5m default doesn't abort before _portable_timeout.
-            # NOTE: agy 1.1.4 DOES advertise `--model` (and `--agent`) — the previous
-            # claim that it has no such flag was true of v1.0.0 only. The rejection
-            # below is therefore now a DELIBERATE non-support decision rather than a
-            # version constraint: forwarding is untested here and out of scope for a
-            # prompt-delivery fix. Follow-up: wire $MODEL through and drop this branch.
-            if [[ -n "$MODEL" ]]; then
-                echo "Error: --model is not forwarded to agy by this dispatcher (agy 1.1.4 accepts --model, but forwarding is unverified here). Remove --model to use agy's configured model, or use --cli codex to pin one." >&2
-                exit 1
+            # `--model` IS forwarded (agy >= 1.1 advertises it; verified live on
+            # 1.1.13 against a pinned model id). The old refusal branch here
+            # was a deliberate non-support decision left over from the prompt-delivery
+            # fix, and its own comment carried the follow-up "wire $MODEL through and
+            # drop this branch" — this is that. Unset $MODEL still means "agy's
+            # configured model", so every existing caller is unaffected.
+            # `agy models` enumerates ids.
+            #
+            # SCOPE NOTE — `--add-dir` is LANE-ONLY, and that is a scope decision,
+            # not a security one. agy resolves a remembered workspace when unscoped
+            # (see below), which affects the reviewer slot too: an unscoped
+            # `blueprint-review.reviewer_1` can return findings about a DIFFERENT
+            # checkout than the one under review. That defect is real and tracked
+            # separately — it is agy's, it predates this lane, and fixing the
+            # reviewer path is a behaviour change to a gate of record that deserves
+            # its own change and its own test, not a drive-by in a read-lane PR.
+            #
+            # What it is NOT is a containment boundary, and that is MEASURED
+            # (2026-08-17): plain `agy --sandbox` with NO `--add-dir` was asked to
+            # read /tmp/agy-scope-probe.txt — an absolute path outside the CWD — and
+            # quoted its contents back. agy's reads are unconfined either way, so
+            # `--add-dir` grants no access; it only selects WHICH tree is the
+            # workspace. agy has never had opencode's empty-directory confinement:
+            # the reviewer slot has always run in the working tree, because
+            # reviewing code requires reading it. The boundary that does apply is
+            # unchanged and documented in SKILL.md: gate agy on WHO WROTE the
+            # content.
+            #
+            # shellcheck disable=SC2310  # `_portable_timeout ... || exit_code=$?` is
+            # the established shape of EVERY arm in this dispatcher; the retry loop
+            # below consumes exit_code deliberately. Not introduced here.
+            #
+            # Lane-only argv, built as an ARRAY so a $PWD containing spaces cannot
+            # word-split. Empty for plain `--cli agy`; the `+` expansion form below
+            # keeps an empty array safe under `set -u` on bash 3.2.
+            local _agy_lane=()
+            if [[ -n "$_AGY_READ_LANE" ]]; then
+                _agy_lane=(--add-dir "$PWD" --mode plan)
             fi
+            # `--add-dir "$PWD"` IS LOAD-BEARING for the read lane. Without it
+            # agy does not scope reads to the CWD: it resolves its own remembered
+            # workspace/project. Measured 2026-08-17 dispatching from
+            # /Volumes/Work/Projects/busdriver — agy silently answered from a stale
+            # ~/src/busdriver checkout (v1.71.0), returning confident,
+            # correctly-formatted file:line citations for the WRONG tree. That is
+            # the worst failure shape available to a read lane: it does not error,
+            # it lies with citations. With --add-dir the same probe returned the
+            # right absolute path and the right verbatim line.
             # Fail loudly before the kernel E2BIGs a prompt into another silent
             # "not valid JSON" degrade. The OS-dependent ceiling logic lives in
             # _agy_argv_limit/_agy_prompt_oversize (scripts/lib/resolve-cli.sh,
@@ -787,11 +957,67 @@ dispatch_one() {
             # declare -F matches shell FUNCTIONS only.
             if ! declare -F _agy_wants_argv_prompt >/dev/null \
                || ! declare -F _agy_prompt_oversize >/dev/null \
+               || ! declare -F _agy_model_flag_supported >/dev/null \
                || ! declare -F _agy_argv_limit >/dev/null; then
                 printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
                     "$_PLUGIN_ROOT" > "$outfile" 2>&1
                 exit_code=1
+            elif [[ -n "$MODEL" ]] && ! _agy_model_flag_supported; then
+                # A model was requested and this install is not KNOWN to support
+                # `--model`. Two ways to land here, and both must refuse:
+                #
+                #   - a confirmed agy 1.0.x, which has no --model flag at all
+                #     (SKILL.md, "agy v1.0.0 does not support --model"); and
+                #   - an INCONCLUSIVE version probe (`agy --version` exceeded its
+                #     2s budget, or printed something unparseable), which the
+                #     transport default optimistically treats as modern.
+                #
+                # The second is why this branch sits BEFORE the transport
+                # selection below rather than after it: assume-modern routes an
+                # inconclusive probe down the argv path, which would forward
+                # `--model` and skip a refusal placed further down the chain. A
+                # 1.0.x stub whose `--version` sleeps 3s reproduces it (Codex P2
+                # on PR #687); `_agy_model_flag_supported` is where the two argv
+                # outcomes are told apart.
+                #
+                # Silently dropping --model instead would run the request on
+                # agy's own default model, defeating .agy_read.model's whole
+                # purpose without saying so — and on the read lane that means
+                # quietly asking a DIFFERENT model than the operator configured.
+                #
+                # NOT lane-scoped (#689; Codex round 7 and Greptile both flagged
+                # the lane-only form). The predicate is "a model was requested
+                # and cannot be honoured", equally true of plain
+                # `--cli agy --model X`, a path this PR made reachable when it
+                # removed the blanket --model refusal. Plain `--cli agy` with NO
+                # --model — the blueprint-review reviewer_1 and
+                # council.pragmatist shape — leaves $MODEL empty, never enters
+                # here, and still dispatches on any agy version.
+                #
+                # HARD `exit 1` TO STDERR, not `exit_code=1` into $outfile. This
+                # is a CONFIG error, and the runtime droid escalation exists for
+                # TRANSIENTS. Setting exit_code=1 here made plain `--cli agy`
+                # (which, unlike the lane, pi and opencode, has no escalation
+                # exemption) treat an unsupported flag as a failed dispatch:
+                # measured on a stubbed 1.0.x install, the actionable error was
+                # swallowed, the prompt — and whatever repo content it quoted —
+                # was shipped to droid, a DIFFERENT third party, and dispatch
+                # exited 0 so the caller believed it had succeeded. That is the
+                # same hazard the lane's own droid exemption exists to prevent.
+                # stderr rather than $outfile because `exit` skips the tail that
+                # prints the outfile, which would make the message invisible.
+                # Same shape as the oversize-prompt guard below.
+                local _agy_why
+                if _agy_wants_argv_prompt; then
+                    _agy_why="this agy install did not answer --version within the probe budget, so --model support is unconfirmed"
+                else
+                    _agy_why="this agy install does not support it (agy 1.0.x)"
+                fi
+                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex/droid.\n' \
+                    "$MODEL" "$_agy_why" "$_PLUGIN_ROOT" >&2
+                exit 1
             elif _agy_wants_argv_prompt; then
+                # shellcheck disable=SC2312  # `|| echo 0` IS the fallback; masking is intended
                 _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
                 if _agy_prompt_oversize "$_agy_size"; then
                     echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy >=1.1 has no file-input flag; use --cli codex for prompts this large." >&2
@@ -800,20 +1026,24 @@ dispatch_one() {
                 _agy_prompt=$(cat "$PROMPT_FILE")
                 if [[ "$MODE" == "auto" ]]; then
                     _portable_timeout "$_budget" agy --dangerously-skip-permissions \
-                        --print-timeout "${TIMEOUT}s" \
+                        --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
+                        "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 else
                     _portable_timeout "$_budget" agy --sandbox \
-                        --print-timeout "${TIMEOUT}s" \
+                        --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
+                        "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 fi
             elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
-                    --print-timeout "${TIMEOUT}s" \
+                    --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
+                    "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
                 _portable_timeout "$_budget" agy --sandbox \
-                    --print-timeout "${TIMEOUT}s" \
+                    --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
+                    "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         droid)
@@ -1854,9 +2084,17 @@ CHILD
     # It would also overwrite the pi error in $outfile, defeating the stderr
     # surfacing this lane relies on to make a region-gated 403 diagnosable
     # instead of an empty answer.
+    # The agy READ lane is exempt for pi's reason, and it needs its own clause
+    # because the desugar rewrote CLI to plain "agy" — so `$name` is "agy" here and
+    # the two checks above do not cover it. The operator picks this lane's provider
+    # at `.agy_read.model`; escalating a failure to droid would ship the same
+    # prompt, and the repo content quoted in it, to a DIFFERENT third party than
+    # the one chosen, silently. It would also overwrite the agy error in $outfile.
+    # Plain `--cli agy` (the reviewer slot) is unaffected and still escalates.
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
        && [[ "$name" != "opencode" ]] \
        && [[ "$name" != "pi" ]] \
+       && [[ -z "$_AGY_READ_LANE" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
        && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
@@ -2079,9 +2317,24 @@ elif [[ "$CLI" == "all" ]]; then
     exit 0
 
 else
-    OUTFILE="${OUT_DIR}/dispatch-${CLI}-${STAMP}.txt"
+    # Reporting identity: the requested lane name (e.g. "agy-read") when the
+    # agy-read desugar set it, else the plain CLI value. Dispatch mechanics
+    # below still use $CLI (the shared agy arm) — only the audit trail
+    # (filename, console line, log entry) needs the more specific name.
+    REPORT_NAME="${REPORT_CLI_NAME:-$CLI}"
+    # Second gate, deliberately kept even though REPORT_CLI_NAME is initialized
+    # empty above and only ever set to a literal by the desugar. This value lands
+    # in a FILENAME and in the audit log, so it is a provenance field: constrain
+    # it to the lane vocabulary rather than trusting that no future edit
+    # reintroduces an ambient or computed source. Anything unrecognized falls
+    # back to $CLI, which the --cli validator has already restricted to the enum.
+    case "$REPORT_NAME" in
+        codex|agy|agy-read|droid|grok|opencode|pi) ;;
+        *) REPORT_NAME="$CLI" ;;
+    esac
+    OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"
 
-    echo "Dispatching to ${CLI} (${MODE}, ${TIMEOUT}s timeout)..." >&2
+    echo "Dispatching to ${REPORT_NAME} (${MODE}, ${TIMEOUT}s timeout)..." >&2
 
     dispatch_one "$CLI" "$OUTFILE"
     META=$(read_meta "${OUTFILE}.meta"); rm -f "${OUTFILE}.meta"
@@ -2098,12 +2351,12 @@ else
     # archived files; a small output did not, because it fit in the pipe buffer
     # and `cat` never received the signal. Recording the run first makes the
     # audit trail independent of whether anyone is still reading stdout.
-    log_event "$CLI" "$STATUS" "$DURATION" "$OUTFILE"
+    log_event "$REPORT_NAME" "$STATUS" "$DURATION" "$OUTFILE"
 
     [[ -f "$OUTFILE" ]] && cat "$OUTFILE"
 
     echo "" >&2
-    echo "${CLI} → ${STATUS} (${DURATION}s) | saved: ${OUTFILE}" >&2
+    echo "${REPORT_NAME} → ${STATUS} (${DURATION}s) | saved: ${OUTFILE}" >&2
 
     exit "${EXIT_CODE}"
 fi

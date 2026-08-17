@@ -95,6 +95,10 @@ eq "$(resolve '{"auditor":{"model":"a b"}}')"              "$DEFAULT"        "wh
 eq "$(resolve '{"auditor":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"
 eq "$(resolve '{"auditor":{"model":"zenmux/"}}')"          "$DEFAULT"        "empty segment rejected"
 eq "$(resolve 'not json at all')"                          "$DEFAULT"        "corrupt config → empty (voice skipped)"
+# A JSON number/boolean must not be stringified by `jq -r` and forwarded to
+# argv — jq and the python3 fallback must agree (PR #687 Codex finding).
+eq "$(resolve '{"auditor":{"model":123}}')"                "$DEFAULT"        "numeric config value degrades to default"
+eq "$(resolve '{"auditor":{"model":true}}')"                "$DEFAULT"        "boolean config value degrades to default"
 
 # Traversal via BUSDRIVER_STATE_DIR (repo-injectable through settings.json) must
 # not escape the home dir into a path the reviewed repo can plant.
@@ -391,20 +395,46 @@ done
 # library-missing shim, and the config example next to it. docs/adr + CHANGELOG
 # are historical records and are not swept.
 # The same rule now also covers the pi read lane's `.pi.model`
-# (PI_MODEL_DEFAULT + its library-missing shim): two configurable model keys,
-# one invariant — an id may appear at its default constant and nowhere else, so
+# (PI_MODEL_DEFAULT + its library-missing shim) and the agy read lane's
+# `.agy_read.model` (AGY_READ_MODEL_DEFAULT): three configurable model keys, one
+# invariant — an id may appear at its default constant and nowhere else, so
 # rationale comments say "the shipped default" instead of naming a model and
-# going stale next to it.
+# going stale next to it. `gemini` joined the sweep with the agy lane; it caught
+# a real leak on that lane's first run (an example id in a rationale comment).
 # Scoped to the files that HOST the witness — a model name elsewhere (e.g. the
 # agent-tools catalog listing LLMs) is not this invariant's business.
-leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai' \
+# The agy lane added three more files that name a model id, and a reviewer was
+# right that leaving them unswept made the "one place" claim untrue: a default
+# change could leave the documented config and the tests stale while this passed.
+# They are swept, with ONE allowance — a config EXAMPLE naming the CURRENT
+# default's exact value (`"model": "<the live BUSDRIVER_*_MODEL_DEFAULT
+# value>"`), or a test FIXTURE (`check_model`), may name an id. Placeholder
+# examples (`"<id>"`, `"provider/id"`) never match the leak pattern below, so
+# they need no allowance. Rationale prose in those files may not name an id.
+#
+# (PR #687 CodeRabbit finding: a blanket `|"model":` exclusion dropped ANY
+# line containing that JSON-key substring, so a genuinely stale identifier —
+# `"model": "kimi-..."` left behind after a default change — would be
+# excluded from `leaks` right alongside the legitimate current-default
+# examples, and the scan would pass. Anchor the exclusion to the actual
+# constant VALUES instead, read live from $LIB, so a rename or a default bump
+# that isn't mirrored in the two doc examples below still gets caught.)
+agy_read_default="$(grep -oE 'BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"' "$LIB" | head -1 | sed -E 's/^[^"]*"([^"]*)"$/\1/')"
+pi_default="$(grep -oE 'BUSDRIVER_PI_MODEL_DEFAULT="[^"]*"' "$LIB" | head -1 | sed -E 's/^[^"]*"([^"]*)"$/\1/')"
+esc_regex() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\/]/\\&/g'; }
+model_value_allow="\"model\":[[:space:]]*\"($(esc_regex "${agy_read_default:-__none__}")|$(esc_regex "${pi_default:-__none__}"))\""
+
+leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
            "$ROOT/skills/council/SKILL.md" \
            "$ROOT/skills/blueprint-review/SKILL.md" \
            "$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh" \
            "$ROOT/skills/dispatch-cli/scripts/dispatch.sh" \
+           "$ROOT/skills/dispatch-cli/SKILL.md" \
+           "$ROOT/.claude/CLAUDE.md" \
+           "$ROOT/tests/test-agy-read-lane.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"|PI_MODEL_DEFAULT|resolve_pi_model\(\)' || true)"
+         | grep -vE "AUDITOR_MODEL_DEFAULT|resolve_auditor_model\\(\\)|\"auditor\": \\{ \"model\"|PI_MODEL_DEFAULT|resolve_pi_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model|$model_value_allow" || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

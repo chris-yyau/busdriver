@@ -257,10 +257,17 @@ default="$1"
 # the default rather than performing a wildcard read. Constructing a jq path
 # from a parameter would open a second injection surface inside the very child
 # that exists to escape one.
+# `shape` selects the validation grammar below. opencode-style lanes name a
+# provider AND a model (`provider/id`); agy's own ids are bare, with no provider
+# segment, so requiring a slash there would reject every valid value and
+# silently degrade to the default. Deliberately no example id in this comment:
+# an id may appear at its default constant and nowhere else (see
+# tests/test-auditor-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  auditor) jqf='.auditor.model // empty'; pykey='auditor' ;;
-  pi)      jqf='.pi.model // empty';      pykey='pi'      ;;
-  *)       printf '%s' "$default"; exit 0 ;;
+  auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
+  pi)       jqf='.pi.model | select(type=="string") // empty';       pykey='pi';       shape='slash' ;;
+  agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
+  *)        printf '%s' "$default"; exit 0 ;;
 esac
 cfg="$HOME/.claude/busdriver.json"
 m=""
@@ -295,9 +302,20 @@ fi
 # `#` silently dropped a valid user-selected reasoning/token variant. A bad
 # value degrades to the default with a loud note rather than killing an
 # AUXILIARY voice on a typo.
-if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$ ]]; then
+if [[ "$shape" == 'bare' ]]; then
+  # Same hazards, same guard, one less segment: leading `-` (option injection)
+  # and whitespace/control chars stay excluded by the character class. A bare id
+  # is the whole value, so no `/` and no `#variant` — those belong to the
+  # opencode reference grammar, not agy's.
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
+  _bd_want='a bare model id with no provider/ prefix'
+else
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$'
+  _bd_want='provider/model'
+fi
+if [[ ! "$m" =~ $_bd_re ]]; then
   if [[ -n "$m" ]]; then
-    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
+    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected ${_bd_want}) — using $default" >&2
   fi
   m="$default"
 fi
@@ -790,6 +808,24 @@ _BD_PI_MODEL=""
 resolve_pi_model() {
   _BD_PI_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_PI_MODEL_DEFAULT" pi)"
   [[ -n "$_BD_PI_MODEL" ]] || _BD_PI_MODEL="$BUSDRIVER_PI_MODEL_DEFAULT"
+}
+
+# ── agy READ-lane model ─────────────────────────────────────────
+# Scoped to `--cli agy-read` ONLY. Plain `--cli agy` — the blueprint-review
+# reviewer_1 slot and every other reviewer dispatch — passes no `--model` and so
+# keeps agy's own configured model. That separation is the point: the read lane
+# wants a cheap fast model per dispatch, the reviewer slot must not silently get
+# downgraded to it.
+#
+# Same trust rules as `.pi.model` (USER config only, no env override, no project
+# config, password-DB-derived $HOME): the value names the third party this
+# repo's source is shipped to. `agy models` enumerates ids.
+BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
+
+_BD_AGY_READ_MODEL=""
+resolve_agy_read_model() {
+  _BD_AGY_READ_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
+  [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────
@@ -1952,6 +1988,12 @@ _agy_bytelen() {
 # letting it be overridden. Only the two assignments below ever populate it, and
 # only with a literal 1 or 0.
 _AGY_ARGV_PROMPT=""
+# Companion to the above, recording WHETHER the probe actually learned the
+# version (1) or fell back to the assume-modern default (0). Same
+# never-inherited discipline and the same reason: an inherited "1" would forge
+# "version confirmed" and re-enable the --model forwarding that
+# `_agy_model_flag_supported` below exists to refuse.
+_AGY_PROBE_CONCLUSIVE=""
 _agy_wants_argv_prompt() {
     case "$_AGY_ARGV_PROMPT" in
         1) return 0 ;;
@@ -1969,12 +2011,41 @@ _agy_wants_argv_prompt() {
     # (Even then it degrades safely: the mis-route yields no valid review and the
     # caller's droid fallback rescues it — same safe direction as a real timeout.)
     v=$(_portable_timeout 2 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
+    if [[ -z "$v" ]]; then _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; return 0; fi
+    _AGY_PROBE_CONCLUSIVE=1
     maj="${v%%.*}"; min="${v#*.}"
     if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
         _AGY_ARGV_PROMPT=1; return 0
     fi
     _AGY_ARGV_PROMPT=0; return 1
+}
+
+# True only when the probe PARSED a version and that version supports `--model`
+# (>=1.1). Runs the probe itself, so callers need not order the two.
+#
+# The distinction that matters is between the probe's two "argv" outcomes, which
+# `_agy_wants_argv_prompt` alone cannot tell apart (both return 0):
+#
+#   parsed >=1.1        → --model supported.
+#   parsed 1.0.x        → not supported (no --model flag at all).
+#   INCONCLUSIVE        → not supported *as far as we know*. Assume-modern is the
+#     (timeout /          right default for prompt DELIVERY — every current
+#      unparseable)       release is >=1.1, and guessing "old" would reintroduce
+#                         the /dev/stdin bug on a working install — but it is a
+#                         guess, and a guess is not evidence of flag support.
+#
+# Treating the guess as support is what PR #687 measured: a 1.0.x install whose
+# `agy --version` takes longer than the 2s probe budget is classified modern, so
+# `--model` is forwarded and the confirmed-1.0.x refusal is never reached. The
+# read lane is exempt from droid escalation (deliberately — ADR 0040), so the
+# rescue the assume-modern default originally leaned on is gone there, and the
+# operator gets agy's raw option/path error instead of an actionable one.
+# Refusing an inconclusive probe is the fail-CLOSED direction: it costs a false
+# refusal on a merely-slow modern install, which says exactly what happened,
+# rather than a confusing failure on a genuinely old one. Codex P2 on PR #687.
+_agy_model_flag_supported() {
+    _agy_wants_argv_prompt || return 1
+    [[ "$_AGY_PROBE_CONCLUSIVE" == 1 ]]
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;

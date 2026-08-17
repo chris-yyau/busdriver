@@ -1823,6 +1823,21 @@ test_q_index_only_premise() {
         echo "test_q: committed blob must be the STAGED content, not the working tree's; got: [$committed_blob]"
         return 1
     }
+    # ...and the WORKING-TREE copy of that same path must still hold the
+    # divergent edit. Committing the right blob is only half the premise: a
+    # block that commits the staged blob and then restores the path (`git
+    # checkout -- staged.txt`) or deletes it satisfies every assertion above
+    # while silently destroying the user's uncommitted work. file.txt and
+    # untracked.txt are both checked for exact survival below; staged.txt was
+    # the one dirty fixture with no such check (Codex finding on PR #688).
+    [[ -f "$sandbox/staged.txt" ]] || {
+        echo "test_q: the staged path's working-tree copy vanished"
+        return 1
+    }
+    [[ "$(cat "$sandbox/staged.txt")" = "WORKTREE-ONLY" ]] || {
+        echo "test_q: the staged path's working-tree edit was discarded; got: [$(cat "$sandbox/staged.txt")]"
+        return 1
+    }
     # The non-index changes must still be sitting in the working tree —
     # proving they were not swept in and then cleaned up.
     if git -C "$sandbox" diff --quiet -- file.txt; then

@@ -11,6 +11,9 @@
 
 # Literal grep patterns ($PWD, ${...}) must never expand, and several checks
 # deliberately consume a command's output rather than its status.
+# Literal grep patterns ($PWD, ${...}) must never expand, and several checks
+# deliberately consume a command's output rather than its status.
+# shellcheck disable=SC2016,SC2312
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,6 +83,13 @@ check_model '"--dangerously-skip-permissions"' "$agy_default" \
   'leading-dash value is rejected (no option injection into agy argv)'
 check_model '"has space"' "$agy_default" \
   'whitespace value is rejected'
+# A JSON number or boolean must degrade to the default rather than being
+# stringified by `jq -r` and forwarded verbatim to `agy --model` — jq and the
+# python3 fallback must agree on this (PR #687 Codex finding).
+check_model '123' "$agy_default" \
+  'numeric config value degrades to the default (jq/python parity)'
+check_model 'true' "$agy_default" \
+  'boolean config value degrades to the default (jq/python parity)'
 
 # ── 4. pi's grammar is unchanged (no cross-contamination) ───────
 printf '{"pi":{"model":"bare-no-slash"}}\n' > "$tmp_home/.claude/busdriver.json"
@@ -156,6 +166,47 @@ else
   fail "no _AGY_READ_LANE clause in the droid-escalation guard — a failed read-lane dispatch would silently re-send to another provider"
 fi
 
+# ── 8. the audit trail names the read lane, not plain "agy" ─────
+# The desugar sets CLI=agy so dispatch mechanics stay on the shared arm, but
+# the two lanes send repo content to potentially different third parties and
+# differ in write posture — an audit entry that reads plain "agy" cannot tell
+# which lane ran. REPORT_CLI_NAME must be captured before CLI is overwritten,
+# and OUTFILE/the console status line/log_event must all key off it (falling
+# back to $CLI for every other --cli value). (PR #687 Codex finding.)
+if grep -qE '^[[:space:]]+REPORT_CLI_NAME="agy-read"$' "$DISPATCH"; then
+  pass "agy-read desugar captures REPORT_CLI_NAME before CLI is overwritten"
+else
+  fail "REPORT_CLI_NAME is not captured in the agy-read desugar — audit trail will say plain 'agy'"
+fi
+if grep -qE '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$' "$DISPATCH" \
+   && grep -qE 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"' "$DISPATCH" \
+   && grep -qE 'log_event "\$REPORT_NAME"' "$DISPATCH" \
+   && grep -qE 'echo "\$\{REPORT_NAME\} →' "$DISPATCH"; then
+  pass "OUTFILE, console status line, and log_event all key off REPORT_NAME"
+else
+  fail "single-dispatch reporting sites do not all use REPORT_NAME — filename/log/console may diverge on the lane name"
+fi
+
+# REPORT_CLI_NAME feeds a FILENAME and the audit log, so it is a provenance
+# field. It MUST be initialized at top level: without that, an INHERITED
+# environment variable would set the logged provider identity and inject path
+# components into the output filename on EVERY invocation — and a committed
+# .claude/settings.json `env` block is repo-controlled (#325 / ADR 0016), so an
+# ambient value is attacker-reachable. Litmus caught this as a HIGH.
+if grep -qE '^REPORT_CLI_NAME=""$' "$DISPATCH"; then
+  pass "REPORT_CLI_NAME is initialized empty (no inherited-env provenance forgery)"
+else
+  fail "REPORT_CLI_NAME has no unconditional empty initializer — an inherited env var could forge the audit identity and inject path components into OUTFILE"
+fi
+
+# Defense in depth: even if a future edit reintroduces a non-literal source, the
+# value must be constrained to the lane vocabulary before it reaches a path.
+if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|droid\|grok\|opencode\|pi\) ;;$' "$DISPATCH"; then
+  pass "REPORT_NAME is whitelisted against the lane vocabulary before use in a path"
+else
+  fail "REPORT_NAME has no vocabulary whitelist — an unexpected value could reach OUTFILE"
+fi
+
 # ── 8. the bare grammar's accept/reject boundaries ───────────────
 # This validator guards an argv slot, so the REJECT set matters as much as the
 # accept set: anything that could become a second option, a path, or a shell
@@ -174,6 +225,19 @@ else
   # actually be allowed, or the comment is the only thing enforcing them.
   for good in a A0 x.y x_9 m:tag m@ver a-b.c:d@e; do
     check_model "\"$good\"" "$good" "grammar accepts $good"
+  done
+fi
+
+# ── 9. jq/python parity across JSON value types ──────────────────
+# The reader has TWO backends (jq, then a python3 fallback) and they disagreed:
+# `jq -r` stringifies a number/boolean, so `{"model":123}` passed the bare-ID
+# regex and reached `agy --model`, while python's isinstance(v,str) rejected it.
+# The property that matters is backend-independent: NO non-string JSON type may
+# ever survive validation, whichever reader ran. Checked as a table, not one
+# example, because the original bug was exactly a missed type.
+if [[ -n "$agy_default" ]]; then
+  for badtype in 123 -1 0 1.5 true false null '[]' '["a"]' '{}' '{"a":1}'; do
+    check_model "$badtype" "$agy_default" "non-string JSON ($badtype) degrades to the default"
   done
 fi
 

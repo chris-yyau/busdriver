@@ -95,6 +95,10 @@ eq "$(resolve '{"auditor":{"model":"a b"}}')"              "$DEFAULT"        "wh
 eq "$(resolve '{"auditor":{"model":"kimi"}}')"             "$DEFAULT"        "providerless (no slash) rejected"
 eq "$(resolve '{"auditor":{"model":"zenmux/"}}')"          "$DEFAULT"        "empty segment rejected"
 eq "$(resolve 'not json at all')"                          "$DEFAULT"        "corrupt config → empty (voice skipped)"
+# A JSON number/boolean must not be stringified by `jq -r` and forwarded to
+# argv — jq and the python3 fallback must agree (PR #687 Codex finding).
+eq "$(resolve '{"auditor":{"model":123}}')"                "$DEFAULT"        "numeric config value degrades to default"
+eq "$(resolve '{"auditor":{"model":true}}')"                "$DEFAULT"        "boolean config value degrades to default"
 
 # Traversal via BUSDRIVER_STATE_DIR (repo-injectable through settings.json) must
 # not escape the home dir into a path the reviewed repo can plant.

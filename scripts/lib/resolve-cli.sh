@@ -264,9 +264,9 @@ default="$1"
 # an id may appear at its default constant and nowhere else (see
 # tests/test-auditor-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  auditor)  jqf='.auditor.model // empty';  pykey='auditor';  shape='slash' ;;
-  pi)       jqf='.pi.model // empty';       pykey='pi';       shape='slash' ;;
-  agy_read) jqf='.agy_read.model // empty'; pykey='agy_read'; shape='bare'  ;;
+  auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
+  pi)       jqf='.pi.model | select(type=="string") // empty';       pykey='pi';       shape='slash' ;;
+  agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
   *)        printf '%s' "$default"; exit 0 ;;
 esac
 cfg="$HOME/.claude/busdriver.json"

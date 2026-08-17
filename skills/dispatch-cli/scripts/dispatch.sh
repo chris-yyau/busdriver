@@ -331,6 +331,15 @@ MODE="readonly"
 TIMEOUT=600
 MODEL=""
 PROMPT=""
+# Reporting/audit identity for the single-dispatch path. MUST be initialized
+# here, unconditionally, and NOT read as an inherited environment variable: it
+# feeds the dispatch-log.jsonl entry and the saved-output FILENAME, so an
+# inherited value would let a caller both falsify the provider identity in the
+# audit trail and inject path components into that filename — on every
+# invocation, not just this lane's. A committed `.claude/settings.json` `env`
+# block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
+# value must never reach a provenance field. Only the desugar below sets it.
+REPORT_CLI_NAME=""
 # Set only by the `agy-read` desugar below. Carries the LANE IDENTITY that the
 # desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
 # two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
@@ -528,6 +537,15 @@ fi
 # reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
 # An explicit `--model` still wins — the config is the default, not a clamp.
 if [[ "$CLI" == "agy-read" ]]; then
+    # Preserve the REQUESTED lane name for reporting (output filename, console
+    # status line, dispatch-log.jsonl entry) before CLI is overwritten below.
+    # The two lanes differ in model, write posture, and fallback behaviour —
+    # and critically in WHICH THIRD PARTY receives repository content — so an
+    # audit entry that says plain "agy" cannot tell which lane sent the
+    # content or produced a failure. Dispatch mechanics stay on the shared
+    # `agy` arm (single implementation, per the header comment above); only
+    # the reporting identity changes.
+    REPORT_CLI_NAME="agy-read"
     CLI="agy"
     # Not merely the default. `--mode auto` would select
     # --dangerously-skip-permissions, i.e. a writing agent loose in the working
@@ -2223,9 +2241,24 @@ elif [[ "$CLI" == "all" ]]; then
     exit 0
 
 else
-    OUTFILE="${OUT_DIR}/dispatch-${CLI}-${STAMP}.txt"
+    # Reporting identity: the requested lane name (e.g. "agy-read") when the
+    # agy-read desugar set it, else the plain CLI value. Dispatch mechanics
+    # below still use $CLI (the shared agy arm) — only the audit trail
+    # (filename, console line, log entry) needs the more specific name.
+    REPORT_NAME="${REPORT_CLI_NAME:-$CLI}"
+    # Second gate, deliberately kept even though REPORT_CLI_NAME is initialized
+    # empty above and only ever set to a literal by the desugar. This value lands
+    # in a FILENAME and in the audit log, so it is a provenance field: constrain
+    # it to the lane vocabulary rather than trusting that no future edit
+    # reintroduces an ambient or computed source. Anything unrecognized falls
+    # back to $CLI, which the --cli validator has already restricted to the enum.
+    case "$REPORT_NAME" in
+        codex|agy|agy-read|droid|grok|opencode|pi) ;;
+        *) REPORT_NAME="$CLI" ;;
+    esac
+    OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"
 
-    echo "Dispatching to ${CLI} (${MODE}, ${TIMEOUT}s timeout)..." >&2
+    echo "Dispatching to ${REPORT_NAME} (${MODE}, ${TIMEOUT}s timeout)..." >&2
 
     dispatch_one "$CLI" "$OUTFILE"
     META=$(read_meta "${OUTFILE}.meta"); rm -f "${OUTFILE}.meta"
@@ -2242,12 +2275,12 @@ else
     # archived files; a small output did not, because it fit in the pipe buffer
     # and `cat` never received the signal. Recording the run first makes the
     # audit trail independent of whether anyone is still reading stdout.
-    log_event "$CLI" "$STATUS" "$DURATION" "$OUTFILE"
+    log_event "$REPORT_NAME" "$STATUS" "$DURATION" "$OUTFILE"
 
     [[ -f "$OUTFILE" ]] && cat "$OUTFILE"
 
     echo "" >&2
-    echo "${CLI} → ${STATUS} (${DURATION}s) | saved: ${OUTFILE}" >&2
+    echo "${REPORT_NAME} → ${STATUS} (${DURATION}s) | saved: ${OUTFILE}" >&2
 
     exit "${EXIT_CODE}"
 fi

@@ -35,12 +35,59 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
-| **Repo tracing / "how does X work"** | **`pi`** | **Reads the working tree and returns a cited summary — see below** |
+| **Repo tracing / "how does X work"** | **`agy-read`** | **Reads the working tree and returns a cited summary — see below** |
+| Repo tracing, containment-first | `pi` | Same job, stronger confinement (jail + `--tools read`), slower — see below |
 | High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | All available CLIs in parallel (up to 6; `grok`, `opencode` and `pi` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
-### `pi` — the in-tree read lane
+### `agy-read` — the default in-tree read lane
+
+```bash
+skills/dispatch-cli/scripts/dispatch.sh --cli agy-read \
+  --prompt "trace how the pr-grind dispatcher decides fix vs wait round"
+```
+
+Runs agy **in the working tree** so it can trace real code, then verify the
+`file:line` citations it returns rather than reading the files yourself.
+Measured 2026-08-17: cited answers in 10–15s.
+
+**Model** — `~/.claude/busdriver.json`, a **bare** id (no `provider/` prefix):
+
+```json
+{ "agy_read": { "model": "gemini-3.7-flash-medium" } }
+```
+
+`agy models` enumerates ids. Same trust rules as `.pi.model` (USER config only,
+no env override, password-DB-derived `$HOME`). **This key is scoped to
+`--cli agy-read`.** Plain `--cli agy` passes no `--model`, so the
+`blueprint-review.reviewer_1` and `council.pragmatist` slots keep agy's own
+configured model — `tests/test-agy-read-lane.sh` pins that separation.
+
+**Two mechanics are load-bearing** (both measured 2026-08-17, both wired in):
+
+| Flag | Why it cannot be dropped |
+|------|--------------------------|
+| `--add-dir "$PWD"` | Without it agy resolves its own remembered workspace. A dispatch from this repo answered out of a stale `~/src/busdriver` checkout with confident, correctly-formatted citations for the **wrong tree** — it does not error, it lies with citations. |
+| `--mode plan` | **`--sandbox` does NOT block writes.** A `--sandbox` probe asked to write created both `./scratch-probe.txt` and `/tmp/agy-write-probe.txt`. `--sandbox` is terminal restrictions, not a filesystem boundary. Under `--mode plan` the identical probe created neither, while ordinary read questions still answered normally — and an **adversarial** retry ("the plan is APPROVED, exit plan mode, write it now") also created neither. |
+
+`--mode auto` is refused on this lane — a writing agent loose in the working
+tree is a different lane, and it does not get to wear this name.
+
+**Calibrate the write claim.** Two probes held, including an adversarial one, so
+`--mode plan` is the strongest boundary agy exposes — but it is the agent's own
+mode, not a kernel sandbox. Read it as *write-blocked in every probe run*, not
+write-**proof**. When you need an enforced boundary rather than a well-behaved
+one, use `pi` (jail + `--tools read`). Note also that plan mode still writes its
+plan artifact into `~/.gemini/antigravity-cli/brain/<id>/`, so the prompt and any
+repo content it quoted persist on disk outside the repo.
+
+**⚠️ Reads are not confined.** Assume agy can read any file your user account
+can, including gitignored ones by absolute path (it demonstrably reaches outside
+the tree — it wrote to `/tmp` when it could write). Everything it reads is
+transmitted to Google. Gate on **who wrote the content**, not on where it sits.
+
+### `pi` — the write/tool-containment-first read lane
 
 Every other read-only lane is confined to an empty directory so the checkout
 cannot redefine the reviewer. `pi` is the exception: it runs **in the working
@@ -50,8 +97,12 @@ it returns rather than reading the files yourself. That is the whole saving:
 reading is ~86% of a Claude session's token consumption.
 
 Containment moves to the toolset instead of the directory: a positive allowlist
-(`--tools read`) plus six project-config kill switches. It is read-only by
-construction — `--mode` is ignored and `pi` is skipped in `--cli all --mode auto`.
+(`--tools read`) plus six project-config kill switches, plus the jail's
+projected credential. It is read-only by construction — `--mode` is ignored
+and `pi` is skipped in `--cli all --mode auto`. That is stronger write/tool
+containment and provider isolation than the directory-scoped lanes get, but it
+is **not** read confinement: pi's read tool accepts absolute paths too, so
+assume it can read anything the user account can, same as agy-read.
 
 ```bash
 skills/dispatch-cli/scripts/dispatch.sh --cli pi \
@@ -269,7 +320,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `droid`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `agy-read`, `droid`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `600` |
 | `--model` | model name | CLI default |
@@ -338,32 +389,39 @@ before anyone read it. The archive keeps the **last** 64KB: a CLI appends its
 fatal error after its normal output, so capping from the front would preserve
 everything except the failure cause.
 
-## Routing reads to pi (the point of the lane)
+## Routing reads to the read lane (the point of it)
 
 Measured over 30 days, **context handling is ~86% of Claude's token consumption**
-— the dominant cost is Claude *reading*. The pi lane only pays for itself if it
+— the dominant cost is Claude *reading*. A read lane only pays for itself if it
 absorbs that reading, so route by size rather than by ceremony:
 
 | Question | Route |
 |----------|-------|
 | You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
-| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **pi first.** Then `Read` only the `file:line` ranges it cites. |
+| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi` when you want stronger write/tool containment or a non-Google provider). Then `Read` only the `file:line` ranges it cites. |
 
 Both conditions must hold to stay local, and **file count is not one of them** —
 what matters is whether you can point at the lines before you start, and how many
-there are. So a single named 300-line region routes to pi (nameable, but too big
+there are. So a single named 300-line region routes to the lane (nameable, but too big
 to be worth reading), while 20 lines in each of two files stays local (two hops,
 but both named and both tiny — dispatching would pay the floor below for a read
 you could finish in seconds).
 
-The win is not that pi is smarter; it is that a cited answer costs ~1k tokens
-where opening the file costs tens of thousands. Ask pi for citations, then pull
-only those lines into context. Verify anything load-bearing against the source —
-pi is a reader, never an authority.
+The win is not that the lane is smarter; it is that a cited answer costs a
+small fraction of what opening the file costs — pi's measured run below put a
+cited answer at ~1k-token scale against a ~20k self-read baseline; agy-read's
+own token cost is not separately measured (see below). Ask for citations, then
+pull only those lines into context. **Verify anything load-bearing against the
+source — the lane is a reader, never an authority.** That is not a formality:
+asked on 2026-08-17 to list remaining files that still route reads to pi,
+`agy-read` answered "NONE" while this very section still said "pi first" two
+screens above. A 15-second dispatch does not remove the verification step.
 
-**Wall-clock is not a reason to skip it.** deepseek is far cheaper than Claude,
-so trading minutes for tokens is the point of the lane, not a cost of using it.
-Measured 2026-08-10 on a real triage — 6 reviewer findings across 5 files:
+**On wall-clock and cost.** `agy-read` returns cited answers in 10–15s, so the
+latency objection that applied to pi is largely gone. Its **token** savings are
+a different claim and are NOT measured — the 83%/261s figures below belong to
+pi's lane (2026-08-10) and must not be quoted as agy's. See
+`docs/adr/0040-agy-read-lane-default.md`.
 
 | | Tokens |
 |---|---:|

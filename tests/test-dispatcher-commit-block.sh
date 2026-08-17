@@ -6,7 +6,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$REPO_ROOT/scripts/dispatcher-commit-block.sh"
+# Overridable so the index-only premise test (test_q) can be re-run against a
+# deliberately-broken copy to prove it fails — see that test's header.
+SCRIPT="${DISPATCHER_COMMIT_BLOCK:-$REPO_ROOT/scripts/dispatcher-commit-block.sh}"
 
 fail_test() {
     echo "FAIL: $1"
@@ -249,8 +251,14 @@ run_dispatcher_capture() {
 }
 
 # Helper: run script with controlled env; capture last JSON line.
+# `bash "$SCRIPT"`, never a bare `"$SCRIPT"`: since SCRIPT became overridable
+# (DISPATCHER_COMMIT_BLOCK, #683) it routinely points at a doctored copy built
+# by a `> /tmp/broken.sh` redirect, which lands at mode 0644. Executing that
+# directly dies with `Permission denied` in t1 — before test_q, the very test
+# the override exists to exercise, ever runs. Every other call site already
+# used `bash`; this one was the odd one out. Keep them consistent.
 run_dispatcher() {
-    "$SCRIPT" 2>&1 | tail -n 1
+    bash "$SCRIPT" 2>&1 | tail -n 1
 }
 
 # t1: missing required env -> bail with env (not judgment; missing vars are env failures).
@@ -1747,6 +1755,202 @@ test_grind_g_non_numeric_pr_number_rejected() {
         echo "test_grind_g: a rejected PR number still produced a commit"
         return 1
     }
+}
+
+# test_q: the INDEX-ONLY premise, proven behaviourally (#683).
+#
+# The #678 wait-round guard in agents/pr-grinder.md gates the Codex nudge on
+# `git diff --cached --quiet` ALONE, and that is only correct because this
+# script commits the index and nothing else. If it ever staged working-tree
+# content, a round the worker classified as a wait-round would actually push,
+# and the nudge would fire on a fix-round.
+#
+# That premise was previously pinned by a regex over the script's text. Four
+# review rounds each found another lexical evasion — compound commands, wrapper
+# binaries, shell keyword positions, unlisted git global options, `git rm`/`mv`,
+# `commit -a`/`--include`/pathspec, comment-vs-continuation ordering, and
+# `bash -c "…"` nesting. A regex cannot decide this; the shell can. So the
+# premise is asserted by OBSERVING the commit, which no lexical trick evades.
+#
+# To prove this test fails when the premise breaks (it must, or it certifies
+# nothing), run it against a doctored copy:
+#   awk '/^printf .* \| git commit -F -/{print "git add -A"} {print}' \
+#     scripts/dispatcher-commit-block.sh > /tmp/broken.sh
+#   DISPATCHER_COMMIT_BLOCK=/tmp/broken.sh bash tests/test-dispatcher-commit-block.sh
+#
+# awk, not sed: BSD sed (macOS) rejects the one-line `i text` form this used to
+# use, so the documented command failed on the maintainer's own platform — a
+# reproduction that does not run proves nothing. The anchor is deliberately the
+# full `printf ... | git commit -F -` line, not a bare `git commit -F -`, which
+# also matches a COMMENT above it and would inject a second stray `git add -A`.
+# The redirect leaves /tmp/broken.sh at mode 0644; that is fine, because every
+# call site runs it as `bash "$SCRIPT"` (see run_dispatcher).
+test_q_index_only_premise() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json committed committed_blob
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Build all the states the premise distinguishes. The fixture leaves
+    # file.txt staged; unstage it so it becomes the tracked-but-UNSTAGED case.
+    git -C "$sandbox" reset -q
+    printf 'staged\n' > "$sandbox/staged.txt"
+    git -C "$sandbox" add staged.txt          # (1) staged      -> MUST be committed
+    # ...then make the WORKING TREE copy of that same path diverge from what was
+    # staged. Checking path NAMES alone is not enough: `git commit --only
+    # staged.txt` (or a bare pathspec) commits this path's working-tree blob
+    # instead of its staged blob — same name, wrong content — and would sail
+    # through a names-only assertion while breaking the premise outright.
+    printf 'WORKTREE-ONLY\n' > "$sandbox/staged.txt"
+    printf 'untracked\n' > "$sandbox/untracked.txt"   # (2) untracked -> must NOT be
+    # (3) file.txt is tracked, modified, unstaged  -> must NOT be committed
+
+    run_dispatcher_capture
+
+    printf '%s\n' "$dispatcher_json" | jq -e '.status == "success"' >/dev/null || {
+        echo "test_q: expected a fix-round success envelope; got exit=$dispatcher_exit json=$dispatcher_json"
+        return 1
+    }
+
+    committed=$(git -C "$sandbox" show --name-only --pretty=format: HEAD | sed '/^$/d' | sort | tr '\n' ' ')
+    [[ "$committed" = "staged.txt " ]] || {
+        echo "test_q: commit must contain ONLY the staged path; got: [$committed]"
+        return 1
+    }
+    # CONTENT, not just the name: the committed blob must be what was STAGED.
+    committed_blob=$(git -C "$sandbox" show HEAD:staged.txt)
+    [[ "$committed_blob" = "staged" ]] || {
+        echo "test_q: committed blob must be the STAGED content, not the working tree's; got: [$committed_blob]"
+        return 1
+    }
+    # ...and the WORKING-TREE copy of that same path must still hold the
+    # divergent edit. Committing the right blob is only half the premise: a
+    # block that commits the staged blob and then restores the path (`git
+    # checkout -- staged.txt`) or deletes it satisfies every assertion above
+    # while silently destroying the user's uncommitted work. file.txt and
+    # untracked.txt are both checked for exact survival below; staged.txt was
+    # the one dirty fixture with no such check (Codex finding on PR #688).
+    [[ -f "$sandbox/staged.txt" ]] || {
+        echo "test_q: the staged path's working-tree copy vanished"
+        return 1
+    }
+    [[ "$(cat "$sandbox/staged.txt")" = "WORKTREE-ONLY" ]] || {
+        echo "test_q: the staged path's working-tree edit was discarded; got: [$(cat "$sandbox/staged.txt")]"
+        return 1
+    }
+    # The non-index changes must still be sitting in the working tree —
+    # proving they were not swept in and then cleaned up.
+    if git -C "$sandbox" diff --quiet -- file.txt; then
+        echo "test_q: the unstaged tracked modification was consumed by the commit"
+        return 1
+    fi
+    # `diff --quiet` only proves file.txt DIFFERS from HEAD — a destructive
+    # regression that deletes file.txt or overwrites it with different
+    # content still leaves that diff nonzero, so the check above would pass
+    # despite the tracked fixture not actually surviving intact. Assert the
+    # exact content directly, mirroring test_r's fix for the same weakness
+    # (CodeRabbit + Codex finding on PR #688).
+    [[ -f "$sandbox/file.txt" ]] || {
+        echo "test_q: the tracked file vanished"
+        return 1
+    }
+    [[ "$(cat "$sandbox/file.txt")" = "changed" ]] || {
+        echo "test_q: the tracked file's content changed unexpectedly"
+        return 1
+    }
+    [[ -f "$sandbox/untracked.txt" ]] || {
+        echo "test_q: untracked file vanished"
+        return 1
+    }
+    # Existence alone doesn't prove the untracked file survived intact — it
+    # could have been truncated or overwritten. Assert the exact content
+    # (same rationale as test_r's fix for the same weakness).
+    [[ "$(cat "$sandbox/untracked.txt")" = "untracked" ]] || {
+        echo "test_q: untracked file's content changed"
+        return 1
+    }
+    git -C "$sandbox" ls-files --error-unmatch untracked.txt >/dev/null 2>&1 && {
+        echo "test_q: untracked file became tracked — the block staged it"
+        return 1
+    }
+    return 0
+}
+
+# test_r: the WAIT-ROUND half of the same premise (#683).
+#
+# test_q above proves a fix-round commits only the index — but it stages
+# something first, so it only ever exercises the fix-round branch. The wait-round
+# guard's correctness rests on the OTHER branch: with an EMPTY index and dirty
+# working tree, the block must classify a wait-round (`result_commit_sha: none`),
+# stage nothing, and leave HEAD where it was. A regression that staged only when
+# `git diff --cached --quiet` succeeds would slip past test_q entirely and turn a
+# real wait-round into a push — precisely the failure #678's guard exists to
+# prevent. So assert that branch directly.
+test_r_wait_round_stages_nothing() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Drain the fixture's staged change so the index is genuinely EMPTY.
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    # Dirty working tree, clean index — the exact wait-round shape.
+    printf 'unstaged edit\n' > "$sandbox/file.txt"      # tracked, modified, UNSTAGED
+    printf 'untracked\n' > "$sandbox/untracked.txt"     # untracked
+
+    run_dispatcher_capture needs_more "none"
+
+    printf '%s\n' "$dispatcher_json" | jq -e '.status == "success" and .result_commit_sha == "none"' >/dev/null || {
+        echo "test_r: dirty tree + empty index must classify a WAIT-round; got exit=$dispatcher_exit json=$dispatcher_json"
+        return 1
+    }
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+    [[ "$before_sha" = "$after_sha" ]] || {
+        echo "test_r: a wait-round moved HEAD ($before_sha -> $after_sha) — it committed something"
+        return 1
+    }
+    git -C "$sandbox" diff --cached --quiet || {
+        echo "test_r: a wait-round left content STAGED: $(git -C "$sandbox" diff --cached --name-only | tr '\n' ' ')"
+        return 1
+    }
+    if git -C "$sandbox" diff --quiet -- file.txt; then
+        echo "test_r: the unstaged tracked modification disappeared on a wait-round"
+        return 1
+    fi
+    # `diff --quiet` only proves file.txt DIFFERS from HEAD — a destructive
+    # regression that deletes file.txt or overwrites it with different
+    # content still leaves that diff nonzero, so the check above would pass
+    # despite the tracked fixture not actually surviving intact. Assert the
+    # exact content directly (CodeRabbit + Codex finding on PR #688).
+    [[ -f "$sandbox/file.txt" ]] || {
+        echo "test_r: the tracked file vanished on a wait-round"
+        return 1
+    }
+    [[ "$(cat "$sandbox/file.txt")" = "unstaged edit" ]] || {
+        echo "test_r: the tracked file's content changed on a wait-round"
+        return 1
+    }
+    # Assert the file SURVIVES (and is unmodified) before checking it stayed
+    # untracked — `ls-files --error-unmatch` alone returns nonzero both when
+    # the path is untracked AND when it no longer exists at all, so it can't
+    # distinguish "correctly untracked" from "destructively removed" (Codex
+    # finding on PR #688).
+    [[ -f "$sandbox/untracked.txt" ]] || {
+        echo "test_r: untracked file vanished on a wait-round"
+        return 1
+    }
+    [[ "$(cat "$sandbox/untracked.txt")" = "untracked" ]] || {
+        echo "test_r: untracked file's content changed on a wait-round"
+        return 1
+    }
+    git -C "$sandbox" ls-files --error-unmatch untracked.txt >/dev/null 2>&1 && {
+        echo "test_r: untracked file became tracked on a wait-round"
+        return 1
+    }
+    return 0
 }
 
 failed=0

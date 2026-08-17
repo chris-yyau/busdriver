@@ -184,7 +184,9 @@ eq "$R" "cubic-dev-ai" "another bot's unresolved thread -> this bot still suppre
 # `git rev-parse HEAD | cut -c1-8`. Under the old strict-equality join those never
 # matched, so a full-SHA release was logged and then silently refused at merge —
 # the entire ADR 0012 path was unreachable and fail-CLOSED made it look correct
-# (hit live on PR #680). The join now normalizes both sides to 8 chars.
+# (hit live on PR #680). The join now compares over the shorter of the two SHA
+# lengths — a mixed full/short pair matches on their shared short prefix, while
+# two full 40-char SHAs are still compared at full length (see 16c2 below).
 #
 # 16c/16d are the load-bearing half: normalizing a join key is exactly the change
 # that can destroy its discriminating power (a botched slice comparing "" to ""

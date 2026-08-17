@@ -104,7 +104,7 @@ distinct event `advisory_stale_timeout_downgrade`, carrying at least: `event`,
 **Amendment (2026-08-17, issue #682) — `head_sha` is a join key, not forensics.**
 Two fields in that event are load-bearing at COMPLETION, not merely recorded:
 `timestamp` (the re-engagement reference, already anchored to GitHub's clock by
-#302) and `head_sha`. `advisory-downgrade-revalidate.sh` will not suppress a bot
+\#302) and `head_sha`. `advisory-downgrade-revalidate.sh` will not suppress a bot
 whose downgrade event it cannot match by `(bot, head_sha)` — so an unmatchable
 event is a refused release.
 

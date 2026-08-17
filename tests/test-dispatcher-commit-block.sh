@@ -1870,6 +1870,19 @@ test_r_wait_round_stages_nothing() {
         echo "test_r: the unstaged tracked modification disappeared on a wait-round"
         return 1
     fi
+    # Assert the file SURVIVES (and is unmodified) before checking it stayed
+    # untracked — `ls-files --error-unmatch` alone returns nonzero both when
+    # the path is untracked AND when it no longer exists at all, so it can't
+    # distinguish "correctly untracked" from "destructively removed" (Codex
+    # finding on PR #688).
+    [[ -f "$sandbox/untracked.txt" ]] || {
+        echo "test_r: untracked file vanished on a wait-round"
+        return 1
+    }
+    [[ "$(cat "$sandbox/untracked.txt")" = "untracked" ]] || {
+        echo "test_r: untracked file's content changed on a wait-round"
+        return 1
+    }
     git -C "$sandbox" ls-files --error-unmatch untracked.txt >/dev/null 2>&1 && {
         echo "test_r: untracked file became tracked on a wait-round"
         return 1

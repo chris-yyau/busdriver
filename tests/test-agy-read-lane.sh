@@ -173,18 +173,32 @@ fi
 # which lane ran. REPORT_CLI_NAME must be captured before CLI is overwritten,
 # and OUTFILE/the console status line/log_event must all key off it (falling
 # back to $CLI for every other --cli value). (PR #687 Codex finding.)
-if grep -qE '^[[:space:]]+REPORT_CLI_NAME="agy-read"$' "$DISPATCH"; then
-  pass "agy-read desugar captures REPORT_CLI_NAME before CLI is overwritten"
+#
+# CodeRabbit finding (PR #687, efcd4b9d): independent `grep -q` checks only
+# prove each pattern exists SOMEWHERE in the file — they pass even if
+# REPORT_CLI_NAME is captured AFTER $CLI is overwritten, or if REPORT_NAME is
+# built from something other than the validated REPORT_CLI_NAME/CLI pair. Pin
+# the actual control-flow order with line numbers instead: init empty →
+# agy-read desugar capture → REPORT_NAME assignment → vocabulary whitelist →
+# OUTFILE construction, each strictly after the last.
+line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
+
+l_init="$(line_of '^REPORT_CLI_NAME=""$')"
+l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-read"$')"
+l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|droid\|grok\|opencode\|pi\) ;;$')"
+l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
+l_log="$(line_of 'log_event "\$REPORT_NAME"')"
+l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"
+
+if [[ -n "$l_init" && -n "$l_capture" && -n "$l_assign" && -n "$l_whitelist" \
+      && -n "$l_outfile" && -n "$l_log" && -n "$l_console" ]] \
+   && (( l_init < l_capture && l_capture < l_assign \
+         && l_assign < l_whitelist && l_whitelist < l_outfile \
+         && l_outfile <= l_log && l_outfile <= l_console )); then
+  pass "REPORT_CLI_NAME/REPORT_NAME control-flow order: init < agy-read capture < assign < whitelist < OUTFILE/log/console"
 else
-  fail "REPORT_CLI_NAME is not captured in the agy-read desugar — audit trail will say plain 'agy'"
-fi
-if grep -qE '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$' "$DISPATCH" \
-   && grep -qE 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"' "$DISPATCH" \
-   && grep -qE 'log_event "\$REPORT_NAME"' "$DISPATCH" \
-   && grep -qE 'echo "\$\{REPORT_NAME\} →' "$DISPATCH"; then
-  pass "OUTFILE, console status line, and log_event all key off REPORT_NAME"
-else
-  fail "single-dispatch reporting sites do not all use REPORT_NAME — filename/log/console may diverge on the lane name"
+  fail "REPORT_CLI_NAME/REPORT_NAME sites are out of order or missing (init=$l_init capture=$l_capture assign=$l_assign whitelist=$l_whitelist outfile=$l_outfile log=$l_log console=$l_console) — audit identity or path safety could regress silently"
 fi
 
 # REPORT_CLI_NAME feeds a FILENAME and the audit log, so it is a provenance
@@ -193,7 +207,7 @@ fi
 # components into the output filename on EVERY invocation — and a committed
 # .claude/settings.json `env` block is repo-controlled (#325 / ADR 0016), so an
 # ambient value is attacker-reachable. Litmus caught this as a HIGH.
-if grep -qE '^REPORT_CLI_NAME=""$' "$DISPATCH"; then
+if [[ -n "$l_init" ]]; then
   pass "REPORT_CLI_NAME is initialized empty (no inherited-env provenance forgery)"
 else
   fail "REPORT_CLI_NAME has no unconditional empty initializer — an inherited env var could forge the audit identity and inject path components into OUTFILE"
@@ -201,7 +215,7 @@ fi
 
 # Defense in depth: even if a future edit reintroduces a non-literal source, the
 # value must be constrained to the lane vocabulary before it reaches a path.
-if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|droid\|grok\|opencode\|pi\) ;;$' "$DISPATCH"; then
+if [[ -n "$l_whitelist" ]]; then
   pass "REPORT_NAME is whitelisted against the lane vocabulary before use in a path"
 else
   fail "REPORT_NAME has no vocabulary whitelist — an unexpected value could reach OUTFILE"

@@ -31,8 +31,8 @@ and `skills/dispatch-cli/SKILL.md`.
 | Pinned | Value | Why |
 |--------|-------|-----|
 | model | `.agy_read.model` (default Gemini 3.7 Flash) | Read lane gets its own cheap/fast model |
-| workspace | `--add-dir "$PWD"` (lane-only) | Scope reads to the CWD; reviewer path split to #686 |
-| writes | `--mode plan` | Block writes |
+| workspace | `--add-dir "$PWD"` (lane-only) | Selects the CWD as the workspace — does not confine reads, which agy performs on absolute paths regardless; reviewer path split to #686 |
+| writes | `--mode plan` | Measured write-blocked in every probe run — the agent's own mode, not a kernel sandbox |
 | provider | exempt from runtime droid escalation | Keep the operator's provider choice |
 
 `--mode auto` is refused on the lane. Plain `--cli agy` passes no `--model`, so
@@ -115,7 +115,10 @@ Three findings, each of which changed the implementation:
   `~/.gemini/antigravity-cli/brain/<id>/`, so the prompt and any repo content it
   quoted land on disk outside the repo.
 - **pi stays.** `--cli pi`, `.pi.model` and ADR 0034 are unchanged. It remains
-  the lane for when you want enforced containment or a non-Google provider.
+  the lane for when you want stronger write/tool containment (a jail, a
+  projected credential, a `--tools read` allowlist) or a non-Google provider —
+  not for confined reads, which neither lane has: pi's read tool also accepts
+  absolute paths outside the tree.
 - The model-id staleness invariant in `tests/test-auditor-model-config.sh` now
   sweeps `gemini-*` and allows `BUSDRIVER_AGY_READ_MODEL_DEFAULT` — three
   configurable keys, one invariant. It caught a real leak on its first run.

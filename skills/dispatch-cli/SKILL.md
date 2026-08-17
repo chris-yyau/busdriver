@@ -87,7 +87,7 @@ can, including gitignored ones by absolute path (it demonstrably reaches outside
 the tree — it wrote to `/tmp` when it could write). Everything it reads is
 transmitted to Google. Gate on **who wrote the content**, not on where it sits.
 
-### `pi` — the containment-first read lane
+### `pi` — the write/tool-containment-first read lane
 
 Every other read-only lane is confined to an empty directory so the checkout
 cannot redefine the reviewer. `pi` is the exception: it runs **in the working
@@ -97,8 +97,12 @@ it returns rather than reading the files yourself. That is the whole saving:
 reading is ~86% of a Claude session's token consumption.
 
 Containment moves to the toolset instead of the directory: a positive allowlist
-(`--tools read`) plus six project-config kill switches. It is read-only by
-construction — `--mode` is ignored and `pi` is skipped in `--cli all --mode auto`.
+(`--tools read`) plus six project-config kill switches, plus the jail's
+projected credential. It is read-only by construction — `--mode` is ignored
+and `pi` is skipped in `--cli all --mode auto`. That is stronger write/tool
+containment and provider isolation than the directory-scoped lanes get, but it
+is **not** read confinement: pi's read tool accepts absolute paths too, so
+assume it can read anything the user account can, same as agy-read.
 
 ```bash
 skills/dispatch-cli/scripts/dispatch.sh --cli pi \
@@ -394,7 +398,7 @@ absorbs that reading, so route by size rather than by ceremony:
 | Question | Route |
 |----------|-------|
 | You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
-| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi` when you want its containment). Then `Read` only the `file:line` ranges it cites. |
+| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi` when you want stronger write/tool containment or a non-Google provider). Then `Read` only the `file:line` ranges it cites. |
 
 Both conditions must hold to stay local, and **file count is not one of them** —
 what matters is whether you can point at the lines before you start, and how many

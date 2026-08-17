@@ -9,6 +9,8 @@
 # (2026-08-17: read lane -> "Gemini 3.1 Pro", reviewer -> "Gemini 3.7 Flash",
 # from the same config); this file is what keeps it true.
 
+# Literal grep patterns ($PWD, ${...}) must never expand, and several checks
+# deliberately consume a command's output rather than its status.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,52 +73,59 @@ got="$(
   HOME="$tmp_home" resolve_pi_model 2>/dev/null
   printf '%s' "$_BD_PI_MODEL"
 )"
-if [[ "$got" == "opencode-go/deepseek-v4-flash" ]]; then
+pi_default_line=""
+if ! pi_default_line="$(grep -oE '^BUSDRIVER_PI_MODEL_DEFAULT="[^"]+"' "$RESOLVE")"; then
+  pi_default_line=""
+fi
+pi_default="${pi_default_line#*\"}"; pi_default="${pi_default%\"}"
+if [[ -z "$pi_default" ]]; then
+  fail "could not read BUSDRIVER_PI_MODEL_DEFAULT from resolve-cli.sh"
+elif [[ "$got" == "$pi_default" ]]; then
   pass "pi still requires provider/model (bare id degrades to its default)"
 else
   fail "pi grammar leaked the bare shape (got '$got')"
 fi
 
-# ── 5. the agy arm scopes reads to CWD ──────────────────────────
-# --add-dir is load-bearing: without it agy answers from a remembered workspace
-# and cites a different checkout with confident file:line refs.
-# Anchored to the INVOCATION shape (leading whitespace, trailing continuation)
-# so the prose above that explains --add-dir is not counted as an arg.
-# The two readonly sites additionally carry the plan-mode guard (checked below),
-# so the optional group is what keeps this counting ALL FOUR rather than the two
-# write-path sites — the failure this pattern had on its first run.
-# shellcheck disable=SC2016  # literal grep pattern; $PWD must NOT expand here
-adddir_sites="$(grep -cE '^[[:space:]]+--add-dir "\$PWD"( \$\{_AGY_READ_LANE:\+--mode plan\})? \\$' "$DISPATCH")"
-# shellcheck disable=SC2016  # literal pattern; must not expand
+# ── 5/6. the lane-only argv: --add-dir + --mode plan, and ONLY for the lane ──
+# Both flags are load-bearing for the read lane and both are MEASURED:
+#   --add-dir : without it agy resolves a remembered workspace and cited a stale
+#               checkout with confident file:line refs (wrong tree, no error).
+#   --mode plan: `agy --sandbox` ALONE created ./scratch-probe.txt and
+#               /tmp/agy-write-probe.txt; under plan mode the same probe, and an
+#               adversarial "plan approved, write it now" retry, created neither.
+# And they must stay LANE-ONLY: plain `--cli agy` is the blueprint-review
+# reviewer_1 / council.pragmatist slot, whose argv this PR deliberately does not
+# change. A reviewer silently switched into plan mode stops producing findings.
+lane_build="$(grep -cE '^[[:space:]]+_agy_lane=\(--add-dir "\$PWD" --mode plan\)$' "$DISPATCH")"
+lane_sites="$(grep -cE '^[[:space:]]+"\$\{_agy_lane\[@\]\+"\$\{_agy_lane\[@\]\}"\}" \\$' "$DISPATCH")"
 agy_sites="$(grep -cE '^[[:space:]]+_portable_timeout "\$_budget" agy ' "$DISPATCH")"
-if [[ "$adddir_sites" == "$agy_sites" && "$adddir_sites" == "4" ]]; then
-  pass "all $agy_sites agy call sites pass --add-dir \"\$PWD\""
+if [[ "$lane_build" == "1" && "$lane_sites" == "$agy_sites" && "$lane_sites" == "4" ]]; then
+  pass "lane argv built once, expanded at all $agy_sites agy call sites"
 else
-  fail "agy call sites=$agy_sites but --add-dir sites=$adddir_sites (expected both 4)"
+  fail "lane_build=$lane_build lane_sites=$lane_sites agy_sites=$agy_sites (want 1/4/4)"
 fi
 
-# ── 6. the write boundary is --mode plan, on the readonly sites only ──
-# LIVE-VERIFIED 2026-08-17, and the reason this check exists: `agy --sandbox`
-# alone DID create ./scratch-probe.txt and /tmp/agy-write-probe.txt. Under
-# `--mode plan` the identical probe created neither. If this guard regresses,
-# the "read lane" silently becomes a writing agent pointed at the working tree.
-# shellcheck disable=SC2016  # literal grep pattern; $PWD must NOT expand here
-plan_sites="$(grep -cE '^[[:space:]]+--add-dir "\$PWD" \$\{_AGY_READ_LANE:\+--mode plan\} \\$' "$DISPATCH")"
-# shellcheck disable=SC2016  # literal pattern; must not expand
-sandbox_sites="$(grep -cE '^[[:space:]]+_portable_timeout "\$_budget" agy --sandbox \\$' "$DISPATCH")"
-if [[ "$plan_sites" == "$sandbox_sites" && "$plan_sites" == "2" ]]; then
-  pass "both --sandbox (readonly) agy sites carry the _AGY_READ_LANE guard"
+# The array must be EMPTY unless the read lane set the flag — that empties
+# --add-dir AND --mode plan for every reviewer dispatch in one place.
+if grep -qE '^[[:space:]]+local _agy_lane=\(\)$' "$DISPATCH" \
+   && grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \]\]; then$' "$DISPATCH"; then
+  pass "lane argv is empty by default (plain --cli agy argv unchanged)"
 else
-  fail "--sandbox sites=$sandbox_sites but plan-guarded sites=$plan_sites (expected both 2)"
+  fail "lane argv is not gated on _AGY_READ_LANE — reviewer dispatches may inherit --add-dir/--mode plan"
 fi
 
-# The guard must be EMPTY for every non-agy-read caller, or reviewer_1 silently
-# starts running in plan mode and stops producing review findings.
-# shellcheck disable=SC2016  # literal pattern; must not expand
+# No bare --add-dir may survive on a call site: that would re-widen it to every
+# agy dispatch, which is the scope regression this PR backed out of.
+if [[ "$(grep -cE '^[[:space:]]+--add-dir "\$PWD"' "$DISPATCH")" == "0" ]]; then
+  pass "no unconditional --add-dir on any agy call site"
+else
+  fail "an unconditional --add-dir call-site arg is back — it would apply to reviewer dispatches too"
+fi
+
 if grep -qE '^_AGY_READ_LANE=""$' "$DISPATCH"; then
-  pass "_AGY_READ_LANE defaults empty (no --model/--mode plan for plain agy)"
+  pass "_AGY_READ_LANE defaults empty"
 else
-  fail "_AGY_READ_LANE has no empty default — reviewer dispatches may inherit the read model/plan mode"
+  fail "_AGY_READ_LANE has no empty default"
 fi
 
 # ── 7. the read lane never escalates to droid ───────────────────
@@ -125,7 +134,6 @@ fi
 # clause a failed agy-read ships the prompt — and the repo content quoted in it —
 # to droid, i.e. a DIFFERENT third party than the one the operator selected at
 # .agy_read.model. Plain --cli agy must still escalate.
-# shellcheck disable=SC2016  # literal pattern; must not expand
 if grep -qE '^[[:space:]]+&& \[\[ -z "\$_AGY_READ_LANE" \]\] \\$' "$DISPATCH"; then
   pass "read lane is exempt from the runtime droid escalation"
 else
@@ -140,7 +148,6 @@ fi
 # staleness invariant in test-auditor-model-config.sh allows the id at exactly
 # one place, and duplicating it into this file is what that invariant forbids.
 agy_default_line=""
-# shellcheck disable=SC2016  # literal pattern; must not expand
 if ! agy_default_line="$(grep -oE '^BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]+"' "$RESOLVE")"; then
   agy_default_line=""
 fi
@@ -151,7 +158,7 @@ if [[ -z "$agy_default" ]]; then
   fail "could not read BUSDRIVER_AGY_READ_MODEL_DEFAULT from resolve-cli.sh"
 else
   # Rejected: each must fall back to the shipped default.
-  for bad in '"opencode-go/deepseek-v4-flash"' '"has\ttab"' '"-lead"' '"/lead"' \
+  for bad in '"prov/model"' '"has\ttab"' '"-lead"' '"/lead"' \
              '"trail/"' '"a/b"' '"semi;colon"' '"dollar$var"' '"pipe|x"' \
              '"amp&x"' '"paren(x)"' '""' '"  "'; do
     check_model "$bad" "$agy_default" "grammar rejects $bad"

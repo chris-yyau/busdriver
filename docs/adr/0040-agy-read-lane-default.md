@@ -31,7 +31,7 @@ and `skills/dispatch-cli/SKILL.md`.
 | Pinned | Value | Why |
 |--------|-------|-----|
 | model | `.agy_read.model` (default Gemini 3.7 Flash) | Read lane gets its own cheap/fast model |
-| workspace | `--add-dir "$PWD"` | Scope reads to the CWD |
+| workspace | `--add-dir "$PWD"` (lane-only) | Scope reads to the CWD; reviewer path split to #686 |
 | writes | `--mode plan` | Block writes |
 | provider | exempt from runtime droid escalation | Keep the operator's provider choice |
 
@@ -40,16 +40,25 @@ and `skills/dispatch-cli/SKILL.md`.
 model. That separation was the operator's explicit requirement and is pinned by
 `tests/test-agy-read-lane.sh`.
 
-**One deliberate exception to "the reviewer path is untouched", also from litmus
-review.** `--add-dir "$PWD"` is applied to all four agy sites, not just the read
-lane. The remembered-workspace defect (finding 1 below) is an *agy* defect, not a
-read-lane one, and the reviewer slot was equally exposed: an unscoped agy can
-resolve a different checkout and return findings about code that is not under
-review — a reviewer silently reviewing the wrong tree is worse than a reader
-citing it. Scoping the fix to `agy-read` would have bought a tidier "argv
-unchanged" claim while knowingly leaving that armed, so the claim was corrected
-instead. It is not a permission widening: `--add-dir` selects WHICH tree agy
-operates on; the write path already wrote, potentially to the wrong checkout.
+**`--add-dir` is lane-only, and the reviewer defect is split out (#686).** The
+remembered-workspace defect (finding 1 below) is agy's, not the lane's, and the
+reviewer slot shares it: plain `--cli agy` passes no `--add-dir`, so
+`blueprint-review.reviewer_1` can return findings about a different checkout than
+the one under review. This PR briefly applied `--add-dir` to all four agy sites to
+fix that, then scoped it back to the lane: the reviewer path is a gate of record,
+and changing its behaviour deserves its own change and its own regression test
+rather than a drive-by in a read-lane PR. Tracked as #686.
+
+For the record, because a PR-mode reviewer read the unconditional form as
+"breaks the documented empty-directory containment pattern": that premise is
+false, and it was measured. Plain `agy --sandbox` with **no** `--add-dir` was
+asked to read an absolute path outside the CWD (`/tmp/agy-scope-probe.txt`) and
+quoted it back. agy's reads are unconfined either way, so `--add-dir` grants no
+access — it selects WHICH tree is the workspace. The empty-directory pattern is
+**opencode's**; agy has never had it, because the reviewer slot has always run in
+the working tree in order to read the code it reviews. The boundary that does
+apply is unchanged: gate agy on **who wrote the content**. So the scope-back above
+is a scope decision, not a security fix.
 
 The droid exemption came out of litmus review and is worth naming, because the
 desugar is what creates the hazard: it rewrites `CLI` to plain `agy`, so `$name`

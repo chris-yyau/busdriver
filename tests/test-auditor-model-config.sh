@@ -399,14 +399,24 @@ done
 # a real leak on that lane's first run (an example id in a rationale comment).
 # Scoped to the files that HOST the witness — a model name elsewhere (e.g. the
 # agent-tools catalog listing LLMs) is not this invariant's business.
+# The agy lane added three more files that name a model id, and a reviewer was
+# right that leaving them unswept made the "one place" claim untrue: a default
+# change could leave the documented config and the tests stale while this passed.
+# They are swept, with ONE allowance — a line that is a config EXAMPLE (`"model":`)
+# or a test FIXTURE (`check_model`) may name an id, because an example with a
+# placeholder teaches nothing and a fixture is asserting on that exact string.
+# Rationale prose in those files may not.
 leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini-[0-9]' \
            "$ROOT/skills/council/SKILL.md" \
            "$ROOT/skills/blueprint-review/SKILL.md" \
            "$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh" \
            "$ROOT/skills/dispatch-cli/scripts/dispatch.sh" \
+           "$ROOT/skills/dispatch-cli/SKILL.md" \
+           "$ROOT/.claude/CLAUDE.md" \
+           "$ROOT/tests/test-agy-read-lane.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"|PI_MODEL_DEFAULT|resolve_pi_model\(\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\(\)' || true)"
+         | grep -vE 'AUDITOR_MODEL_DEFAULT|resolve_auditor_model\(\)|"auditor": \{ "model"|PI_MODEL_DEFAULT|resolve_pi_model\(\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\(\)|"model":|check_model' || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

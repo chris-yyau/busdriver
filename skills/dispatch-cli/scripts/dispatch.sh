@@ -337,11 +337,10 @@ PROMPT=""
 # the runtime droid escalation. Deliberately ONE flag for both, not two: they are
 # the same fact ("this dispatch is the read lane"), and a second variable would
 # let a future change to one silently stop protecting the other.
-# Empty for every other caller. Note what that does and does NOT mean: the
-# lane-only additions are `--model` and `--mode plan`. `--add-dir "$PWD"` is
-# UNCONDITIONAL on all four agy sites, so plain `--cli agy` argv is deliberately
-# NOT byte-identical to what it was before this lane existed — see the agy branch
-# for why that is a fix rather than scope creep.
+# Empty for every other caller, so plain `--cli agy` argv IS byte-identical to
+# what it was before this lane existed — `--model`, `--add-dir` and `--mode plan`
+# are all lane-only. See the agy branch for why the reviewer path was left alone
+# even though it shares one of agy's defects.
 _AGY_READ_LANE=""
 
 # ── Parse args ─────────────────────────────────
@@ -852,25 +851,38 @@ dispatch_one() {
             # configured model", so every existing caller is unaffected.
             # `agy models` enumerates ids.
             #
-            # WHY `--add-dir` IS UNCONDITIONAL (all four sites, reviewer and write
-            # paths included) rather than scoped to the read lane. The
-            # remembered-workspace bug below is not a read-lane bug — it is an agy
-            # bug, and the reviewer slot had it too: `blueprint-review.reviewer_1`
-            # dispatches agy at this repo, and an unscoped agy can resolve a
-            # DIFFERENT checkout and return findings about code that is not under
-            # review. A reviewer silently reviewing the wrong tree is worse than a
-            # reader citing it. Scoping the fix to `agy-read` would have preserved a
-            # tidier "reviewer argv unchanged" claim while knowingly leaving that
-            # bug armed, so the claim was corrected instead (see `_AGY_READ_LANE`).
-            # This is not a permission widening: `--add-dir` names WHICH tree agy
-            # operates on, it does not add capability — the write path already wrote,
-            # just potentially to the wrong checkout.
+            # SCOPE NOTE — `--add-dir` is LANE-ONLY, and that is a scope decision,
+            # not a security one. agy resolves a remembered workspace when unscoped
+            # (see below), which affects the reviewer slot too: an unscoped
+            # `blueprint-review.reviewer_1` can return findings about a DIFFERENT
+            # checkout than the one under review. That defect is real and tracked
+            # separately — it is agy's, it predates this lane, and fixing the
+            # reviewer path is a behaviour change to a gate of record that deserves
+            # its own change and its own test, not a drive-by in a read-lane PR.
+            #
+            # What it is NOT is a containment boundary, and that is MEASURED
+            # (2026-08-17): plain `agy --sandbox` with NO `--add-dir` was asked to
+            # read /tmp/agy-scope-probe.txt — an absolute path outside the CWD — and
+            # quoted its contents back. agy's reads are unconfined either way, so
+            # `--add-dir` grants no access; it only selects WHICH tree is the
+            # workspace. agy has never had opencode's empty-directory confinement:
+            # the reviewer slot has always run in the working tree, because
+            # reviewing code requires reading it. The boundary that does apply is
+            # unchanged and documented in SKILL.md: gate agy on WHO WROTE the
+            # content.
             #
             # shellcheck disable=SC2310  # `_portable_timeout ... || exit_code=$?` is
             # the established shape of EVERY arm in this dispatcher; the retry loop
             # below consumes exit_code deliberately. Not introduced here.
             #
-            # `--add-dir "$PWD"` IS LOAD-BEARING, not belt-and-braces. Without it
+            # Lane-only argv, built as an ARRAY so a $PWD containing spaces cannot
+            # word-split. Empty for plain `--cli agy`; the `+` expansion form below
+            # keeps an empty array safe under `set -u` on bash 3.2.
+            local _agy_lane=()
+            if [[ -n "$_AGY_READ_LANE" ]]; then
+                _agy_lane=(--add-dir "$PWD" --mode plan)
+            fi
+            # `--add-dir "$PWD"` IS LOAD-BEARING for the read lane. Without it
             # agy does not scope reads to the CWD: it resolves its own remembered
             # workspace/project. Measured 2026-08-17 dispatching from
             # /Volumes/Work/Projects/busdriver — agy silently answered from a stale
@@ -911,6 +923,7 @@ dispatch_one() {
                     "$_PLUGIN_ROOT" > "$outfile" 2>&1
                 exit_code=1
             elif _agy_wants_argv_prompt; then
+                # shellcheck disable=SC2312  # `|| echo 0` IS the fallback; masking is intended
                 _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
                 if _agy_prompt_oversize "$_agy_size"; then
                     echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy >=1.1 has no file-input flag; use --cli codex for prompts this large." >&2
@@ -920,23 +933,23 @@ dispatch_one() {
                 if [[ "$MODE" == "auto" ]]; then
                     _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                         --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
-                        --add-dir "$PWD" \
+                        "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 else
                     _portable_timeout "$_budget" agy --sandbox \
                         --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
-                        --add-dir "$PWD" ${_AGY_READ_LANE:+--mode plan} \
+                        "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 fi
             elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
-                    --add-dir "$PWD" \
+                    "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
                 _portable_timeout "$_budget" agy --sandbox \
                     --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \
-                    --add-dir "$PWD" ${_AGY_READ_LANE:+--mode plan} \
+                    "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         droid)

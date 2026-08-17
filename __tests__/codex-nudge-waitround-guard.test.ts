@@ -92,130 +92,68 @@ describe('pr-grinder Step 6.5: wait-round guard predicate', () => {
    * precise — the normalizer below already drops whole-line comments and the
    * commit check already ignores quoted prose; extend those.
    *
-   * The check is an ALLOWLIST, not a blacklist, and that inversion is the whole
-   * design. Three successive review rounds each found another way to smuggle a
-   * staging command past a blacklist — `git rm`/`git mv` (both write the index:
-   * a staged deletion and a staged rename respectively), wrappers (`command`,
-   * `env`, `xargs`), shell keyword positions (`if`, `while`), unlisted global
-   * options (`--no-optional-locks`), backslash continuations. Enumerating
-   * dangerous forms cannot converge. Enumerating this script's ACTUAL git verbs
-   * can: the set is small, it is the property we care about, and anything new
-   * fails the test until a human looks at it.
+   * De-anchoring is necessary but nowhere near sufficient, and four successive
+   * review rounds proved a regex cannot decide this at all: wrapper binaries
+   * (`command git add`), shell keyword positions (`if git add …; then`), git
+   * global options (`git -C "$R" add -A`), `git rm`/`git mv` (both write the
+   * index — a staged deletion and a staged rename), `commit -a`/`--include`/
+   * pathspec, comment-vs-continuation ordering, and `bash -c "git add -A"`
+   * nesting. Every fix drew another counterexample. Deciding "does this shell
+   * text write the index" is not a regex problem.
    *
-   * Extraction is deliberately over-broad — it ignores command position entirely
-   * and skips ANY `-…` option — because for an allowlist, over-detection is a
-   * false alarm (safe) while under-detection is the silent failure (unsafe).
+   * So the real proof moved to where the shell can answer it:
+   * `tests/test-dispatcher-commit-block.sh::test_q_index_only_premise` runs the
+   * block in a sandbox holding a staged file, an unstaged tracked modification
+   * and an untracked file, then asserts the resulting commit contains ONLY the
+   * staged path. That is immune to every evasion above — verified by running it
+   * against five doctored copies (plain, compound, wrapper, `bash -c` nested,
+   * and `commit -a`), each of which it correctly fails.
    *
-   * Adding a git verb here is not automatically wrong; it just has to be a
-   * deliberate, reviewed act. Add it to ALLOWED_VERBS with a reason. The one
-   * thing NOT to do is loosen the extractor.
+   * What survives HERE is a LINT: it catches a naive regression in-editor,
+   * seconds after it is typed, instead of waiting on the shell suite. It is
+   * deliberately NOT complete and must never be described as if it were. If you
+   * find a form it misses, add a case to test_q — do not grow this back into a
+   * parser, and do not re-anchor it.
    */
 
-  // Read it the way bash does: join backslash-continuations FIRST, then drop
-  // whole-line comments. The order is load-bearing — stripping comments first
-  // lets `echo x \` + `# comment` + `git add -A` re-join into a single echo
-  // command, hiding a real staging call from the matcher.
-  const NORMALIZE = (src: string): string =>
-    src
-      .replace(/\\\n[ \t]*/g, ' ')
-      .split('\n')
-      .filter((l) => !/^\s*#/.test(l))
-      .join('\n');
+  const NON_COMMENT = (src: string): string =>
+    src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+  // Unanchored on purpose — the anchor WAS the bug. Command position is NOT
+  // required, so wrappers (`command git add`) and keyword positions (`if git
+  // add`) are caught. The verb must be the SUBCOMMAND though: leading global
+  // options are skipped (with `-c`/`-C` consuming their value), which keeps
+  // `git -C "$r" ls-files --stage` — a real line in this script — from matching
+  // on its `--stage` FLAG. `rm`/`mv` are included because both write the index.
+  // Known-incomplete by design; see the docstring.
+  const STAGES = /\bgit\b(?:\s+(?:-[cC]\s+\S+|-\S+))*\s+(?:add|stage|rm|mv)\b/;
 
-  // Every `git` occurrence → the first token that is not a global option.
-  // `-c`/`-C` consume their separate value, so `git -c trailer.separators=':' log`
-  // yields `log`, not `trailer`.
-  const verbsOf = (src: string): Set<string> => {
-    const out = new Set<string>();
-    const re = /\bgit\b(?:[\s]+(?:-[cC][\s]+\S+|-[a-zA-Z-]+(?:=\S+)?))*[\s]+([a-z][a-z-]*)/g;
-    for (const m of src.matchAll(re)) out.add(m[1]);
-    return out;
-  };
-
-  // The verbs this script legitimately uses. All of them read state or write
-  // history; none stages working-tree content.
-  const ALLOWED_VERBS = new Set([
-    'status', 'diff', 'push', 'commit', 'ls-files', 'rev-parse', 'rev-list', 'log', 'reset',
-  ]);
-
-  // `commit` is allowlisted but not self-evidently safe: `-a`/`--all`,
-  // `-i`/`--include`, `-o`/`--only` and a bare pathspec all read the WORKING
-  // TREE instead of the index. So its operands are pinned to the one legal form.
-  // A `git commit` sitting inside a double-quoted string (an error message) is
-  // skipped via an odd-quote-count test on the line prefix.
-  const REDIR = /(?:\d*>>?&?\s*\S+|<\s*\S+)/g;
-  const ALLOWED_COMMIT_OPERANDS = '-F -';
-  const badCommits = (src: string): string[] => {
-    const out: string[] = [];
-    for (const line of src.split('\n')) {
-      const re = /\bgit\b(?:[\s]+(?:-[cC][\s]+\S+|-[a-zA-Z-]+(?:=\S+)?))*[\s]+commit\b(.*)$/g;
-      for (const m of line.matchAll(re)) {
-        if (((line.slice(0, m.index).match(/"/g) ?? []).length % 2) === 1) continue;
-        const ops = m[1].replace(REDIR, '').replace(/\s+/g, ' ').trim();
-        if (ops !== ALLOWED_COMMIT_OPERANDS) out.push(line.trim());
-      }
-    }
-    return out;
-  };
-
-  const breaches = (src: string): string[] => {
-    const n = NORMALIZE(src);
-    return [
-      ...[...verbsOf(n)].filter((v) => !ALLOWED_VERBS.has(v)).map((v) => `git ${v}`),
-      ...badCommits(n),
-    ];
-  };
-
-  it('the premise check actually fires (both outcomes)', () => {
-    // A guard that has never been observed failing is not a guard. Every entry
-    // below writes the index, and every one was invisible to the old anchored
-    // regex `/^\s*git add\b/m`.
+  it('the lint fires on the forms the anchored regex waved through', () => {
+    // A guard never observed failing is not a guard. These are cases the old
+    // `/^\s*git add\b/m` missed; the lint catches them, and test_q catches these
+    // plus the ones no regex can.
     for (const breach of [
       'cd "$REPO" && git add -A',
       'stage(){ git add .; }',
       'false || git add -u',
-      'if git add -A; then :; fi',        // keyword command position
-      'while git rm tracked; do :; done', // `git rm` stages a deletion
-      'command git add -A',               // wrapper
-      'env FOO=1 git add -A',
-      'echo f | xargs git add',
-      'git mv old new',                   // stages a rename
+      'if git add -A; then :; fi',
+      'command git add -A',
+      'git -C "$R" add -A',
+      'git rm tracked',
+      'git mv old new',
       'git stage -A',
-      'git -C "$R" add -A',               // global option before the subcommand
-      'git --no-optional-locks add -A',   // option no blacklist would have listed
-      'git \\\n  add -A',                 // backslash-continued
-      'echo x \\\n# c\ngit add -A',       // continuation/comment interaction
     ]) {
-      expect(breaches(breach), `should catch: ${JSON.stringify(breach)}`).not.toHaveLength(0);
+      expect(NON_COMMENT(breach), `lint should catch: ${breach}`).toMatch(STAGES);
     }
-    for (const breach of [
-      '| git commit -am wip',
-      '| git commit --all -F -',
-      '| git commit --include tracked.txt -F -',
-      '| git commit -o tracked.txt -F -',
-      '| git commit tracked.txt -F -',    // bare pathspec bypasses the index
-      '| git -C "$R" commit -a',
-    ]) {
-      expect(breaches(breach), `should catch: ${breach}`).not.toHaveLength(0);
-    }
-    // ...and stay silent on the legal forms, a comment, and quoted prose.
-    expect(breaches('printf x | git commit -F - >/dev/null 2>&1')).toEqual([]);
-    expect(breaches('  # we never git add here')).toEqual([]);
-    expect(breaches('emit_bail "judgment" "git commit failed (exit $E)"')).toEqual([]);
-    expect(breaches("git -c trailer.separators=':' log -1")).toEqual([]);
-    // The old anchored regex is what this test exists to retire — prove it was
-    // blind to the compound form, so the fix can never be silently reverted.
+    expect(NON_COMMENT('  # we never git add here')).not.toMatch(STAGES);
+    // The retired regex, proven blind — so the fix cannot be silently reverted.
     expect('cd "$REPO" && git add -A').not.toMatch(/^\s*git add\b/m);
   });
 
-  it('the dispatcher commit block still commits the index alone (the premise)', () => {
-    // If this ever fails, the guard's justification is gone: anything that writes
-    // the index here makes unstaged/untracked files reachable by a push, and the
-    // staged-index-only predicate starts under-reporting fix-rounds.
+  it('the dispatcher commit block stages nothing (lint; test_q is the proof)', () => {
     const block = readFileSync(
       join(__dirname, '..', 'scripts', 'dispatcher-commit-block.sh'),
       'utf8',
     );
-    expect(breaches(block)).toEqual([]);
+    expect(NON_COMMENT(block)).not.toMatch(STAGES);
   });
 });

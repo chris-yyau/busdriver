@@ -115,11 +115,11 @@ PR_NUMBER="$PR"; AUGMENT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/augment-equiv-ack
 [ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-# Codex (chatgpt-codex-connector) is appended as a fourth gated reviewer here:
+# Codex (chatgpt-codex-connector) is appended as a fifth gated reviewer here:
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value
 # (still reviewing, or hasn't re-acked HEAD after the last push) must block the
 # merge exactly like a stale registered bot. It is NOT in RESULT_REVIEWER_ACKS
-# (the three SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
+# (the four SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
 FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-

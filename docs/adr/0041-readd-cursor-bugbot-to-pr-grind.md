@@ -1,7 +1,7 @@
 # ADR 0041 — Re-add Bugbot (cursor) to the pr-grind ack registry
 
 **Status:** Accepted
-**Date:** 2026-08-18
+**Date:** 2026-08-17
 **Amends:** ADR 0035 (cursor half only; the devin half stands)
 
 ## Context

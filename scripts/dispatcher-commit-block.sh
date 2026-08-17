@@ -106,11 +106,13 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-# cursor (Bugbot) and devin-ai-integration were DROPPED from the registry
-# (ADR 0035): both are review-once-at-create bots that never re-review fix-round
-# pushes, their findings were ~75-92% redundant with the remaining bots, and
-# dropping them removes the Case-4 devin whitelist machinery (ADR 0027).
-REGISTERED_ACK_BOTS=(cubic-dev-ai coderabbitai greptile-apps)
+# cursor (Bugbot) is RE-ADDED (ADR 0041): ADR 0035 dropped it because the then-$20
+# plan made it review-once-at-create (never re-reviewing fix-round pushes). On the
+# Cursor Ultra plan with run-on-every-push enabled it re-reviews each push like the
+# other registered bots, so the sole structural objection is gone.
+# devin-ai-integration stays DROPPED (ADR 0035): 34% fix rate on its exclusive
+# findings, and the Case-4 whitelist machinery (ADR 0027) it needed stays deleted.
+REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai greptile-apps)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -180,7 +182,7 @@ case "$RESULT_STATUS" in
         # must survive). Fall back to all-`none` tiers / "none" codex only when
         # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
         emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
-            "${RESULT_ACK_TIERS:-cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
+            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
             "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)

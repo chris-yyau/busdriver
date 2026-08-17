@@ -4,7 +4,8 @@
 # WHY: Codex (`chatgpt-codex-connector`) only re-reviews a PR on a *push*. On a
 # pr-grind WAIT-round where HEAD is unchanged (no fix to ship) and Codex is the
 # SOLE stale ack blocker, no event makes Codex re-evaluate and emit a fresh clean
-# signal: it posts COMMENTED reviews (0 reactions) rather than a Tier-F 👍, and
+# signal: it posts COMMENTED reviews (0 reactions) rather than a Tier-F 👍 or a
+# Tier-G clean-verdict comment (#690), and
 # its thread resolutions predate the last push (Tier-A.2 fails CLOSED, #186/#189).
 # The ack ledger (scripts/ack-ledger.sh) therefore reads Codex `stale` forever,
 # pr-grind exhausts `--max-wait`, and bails. Posting a manual `@codex review`
@@ -24,9 +25,14 @@
 # freshness proof (:558-594) is re-broken by every push, because a thread disposed
 # in round N never gains a newer resolver comment afterwards. Both were reproduced
 # against PR #670 and each is independently sufficient. So from round 2 onward a
-# fresh Tier-F 👍 is the ONLY exit, and this nudge is the only thing that asks for
-# one — a single-use mechanism holding up a gate it is structurally required to
-# clear. It is now N attempts (default 3) spaced by a cooldown: still bounded, so
+# fresh CODEX-AUTHORED verdict on HEAD is the only exit, and this nudge is the only
+# thing that asks for one — a single-use mechanism holding up a gate it is
+# structurally required to clear. (#690 widened what counts as that verdict: a
+# clean review can arrive as an issue COMMENT naming the reviewed SHA rather than
+# as a 👍, and Tier G now reads it. That closed a dead-end the nudge could NOT
+# solve — three landed nudges on PR #688 all answered in comment form — but it did
+# not remove the need for the nudge, which is still what makes Codex re-review an
+# unchanged HEAD at all.) It is now N attempts (default 3) spaced by a cooldown: still bounded, so
 # ADR 0005's anti-spam intent holds, but a dropped nudge is recoverable without an
 # operator. Set PR_GRIND_CODEX_RETRIGGER_MAX=1 to restore the exact old behavior.
 #

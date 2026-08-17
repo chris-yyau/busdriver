@@ -78,19 +78,26 @@
 # ACK_CONTENT_IDENTITY=0.
 #
 # Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
-# suffixed ":<tier>" where <tier> is the letter A–F of the tier that produced
+# suffixed ":<tier>" where <tier> is the letter A–G of the tier that produced
 # the ack (A=inline threads — non-Codex disposed thread, or Codex resolved-current
 # thread proven via the push-anchored resolver-last-comment signal (A.2); B=/reviews
 # on HEAD, C=issue-comment body
 # SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
-# than HEAD_PUSH_DATE — the push event time; fails closed when absent, #189).
+# than HEAD_PUSH_DATE — the push event time; fails closed when absent, #189;
+# G=Codex clean-verdict issue comment whose "**Reviewed commit:**" line names
+# HEAD — SHA-keyed, so no timestamp anchor, #690).
 # `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
 # HEAD-acked bot from the n_total>=1 coverage gate — see ADR 0001 and
-# skills/pr-grind/SKILL.md. Soundness: tier order is A→F (A→E for non-Codex bots;
-# Tier F is Codex-only), returning at the first HEAD-ack, and Tier A returns
+# skills/pr-grind/SKILL.md. Soundness: tier order is A→E for non-Codex bots, and
+# A.1→G→F→A.2→C→D→E for Codex (Tiers F and G are Codex-only; B is excluded for
+# Codex; G evaluates early — immediately after the live-thread check and before
+# the eyes-override — because a comment-form verdict leaves the 👀 in place, and
+# a Codex comment that G declined then blocks every tier below it, so a leftover
+# 👍 cannot ack past a comment-form finding, #690),
+# returning at the first HEAD-ack, and Tier A returns
 # `stale`/Tier-A-ack on any Source-2 thread, so reaching D/E proves zero live
 # Source-2 inline threads.
 #
@@ -166,7 +173,7 @@ unset _self_dir _git_root _remote
 login="$1"
 
 # Emit a HEAD-ack: bare SHA by default, or "<sha>:<tier>" when ACK_EMIT_TIER=1.
-# $1 = 8-char SHA, $2 = tier letter (A–E). Centralizes the suffix so all five
+# $1 = 8-char SHA, $2 = tier letter (A–G). Centralizes the suffix so all six
 # HEAD-ack exit points stay consistent. Default output is byte-identical to the
 # pre-tier contract; only opt-in callers see the suffix.
 emit_head_ack() {
@@ -175,6 +182,19 @@ emit_head_ack() {
   else
     printf '%s\n' "$1"
   fi
+}
+
+# num_or <value> <fallback> — echo <value> when it is a bare non-negative integer,
+# else <fallback>. Every count in this file comes from `jq ... || echo N`, and jq
+# can also SUCCEED with empty output on a schema drift, which leaves `[ "$x" -gt 0 ]`
+# a bash error (rc=2, "integer expected") that a script without `set -e` sails
+# straight past — the fail-OPEN shape #364 hit on FETCH_OK. Callers pass the
+# FAIL-CLOSED value as <fallback>: the count that makes the tier block.
+num_or() {
+  case "$1" in
+    ''|*[!0-9]*) printf '%s' "$2" ;;
+    *)           printf '%s' "$1" ;;
+  esac
 }
 
 # acks_head <candidate_sha> — returns 0 (true) when a bot's ack recorded against
@@ -413,20 +433,6 @@ _unprovable_rate_limit_notice() {
 # source, and a genuine Tier-B HEAD-ack was reported as `none` (non-gating).
 if [[ "${FETCH_OK:-0}" != "1" ]]; then echo "stale"; exit 0; fi
 
-# Codex eyes-override (HOISTED above every tier): a current 👀 reaction means
-# Codex is actively (re-)reviewing HEAD → stale, regardless of any thread/review
-# state below. Codex re-adds 👀 whenever HEAD advances, so this is the robust,
-# timestamp-independent guard for the re-review race — and it MUST run before
-# Tier A so a resolved-current-head thread (Tier A.2) cannot ack while Codex is
-# still mid-review of a newer push. Codex-only and guarded on non-empty
-# ALL_REACTIONS, so it is a strict no-op for every other login and for callers
-# not yet upgraded to fetch reactions.
-if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_REACTIONS" ]; then
-  codex_eyes=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "eyes")] | length' 2>/dev/null || echo 0)
-  if [ "${codex_eyes:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
-fi
-
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?
 # Bots like Copilot post their findings as inline threads. If unresolved+
 # non-outdated, those are real findings to address → stale.
@@ -445,8 +451,140 @@ fi
 unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[].data.repository.pullRequest.reviewThreads.nodes[]
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-    | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+    | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 1)
+# Fail CLOSED on a broken count. This query is Tier G's proof that no LIVE finding
+# exists on HEAD (#690), so a jq error or schema drift resolving to 0 would let a
+# clean comment ack past a live thread the ledger simply failed to read.
+unresolved=$(num_or "$unresolved" 1)
 if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
+
+# (G) Codex clean-verdict COMMENT (#690). Codex's own footer promises "If Codex
+# has suggestions, it will comment; otherwise it will react with 👍" — but
+# observed live on PR #687 AND PR #688 (2026-08-17, within the same hour), a
+# findings-free review can instead arrive as an ISSUE COMMENT naming the SHA it
+# reviewed, with no 👍 anywhere and the 👀 left in place. That shape acks through
+# NO existing tier: it is not a review (Tier B), opens no thread (Tier A), writes
+# no check-run or status (D/E), and carries no reaction (F) — so Codex read
+# `stale` forever once its earlier threads went outdated. Both PRs exhausted
+# their nudge budget and merged only under an operator skip file.
+#
+# Freshness here is the SHA ITSELF, not a timestamp: the body names the commit
+# Codex reviewed, so no push anchor is consulted and none is needed. Same proof
+# shape as Tiers B and C — and, exactly like them, the comparison is `acks_head`,
+# which accepts the named SHA OR an ADR 0004 content-identical predecessor (same
+# tree AND same parents). So a message-only `--amend` of a reviewed commit does
+# carry the verdict forward. That is the settled repo-wide reading of "reviewed"
+# (nothing reviewable changed), not an oversight specific to this tier; if it is
+# ever revisited it must be revisited for B and C in the same change.
+#
+# Placement is load-bearing in BOTH directions:
+#   BELOW Tier A.1 — a live unresolved+non-outdated Codex thread on this HEAD
+#     must always block, even when a clean comment also names HEAD (Codex can
+#     re-review the same commit after a nudge and file a finding).
+#   ABOVE the eyes-override — comment-form completion does NOT remove the 👀
+#     (observed on #687: the eyes from 17:39:45Z outlived clean verdicts at
+#     17:43:20Z and 17:50:56Z), so an eyes-first order would swallow this ack in
+#     exactly the case it exists to fix. What the eyes-override is really
+#     approximating is "a review started after the last thing I know about", so
+#     this tier keeps that property PRECISELY instead of ordering around it: it
+#     declines when a 👀 is newer than the verdict itself, which is the genuine
+#     re-review-in-flight case, while a 👀 that predates the verdict is just the
+#     residue of the review that produced it.
+#
+# Fail-CLOSED matching, three independent narrowings — a findings comment must
+# never reach the ack:
+#   (i)   LAST Codex comment only (Tier C's semantics). A clean verdict FOLLOWED
+#         by a findings comment is not an ack; scanning every comment would let a
+#         superseded clean verdict outvote the finding that replaced it.
+#   (ii)  The clean TEMPLATE, anchored at the START of the body. Codex's findings
+#         comments open "### 💡 Codex Review" and can QUOTE arbitrary text from
+#         the diff, so an unanchored search is forgeable by the reviewed code
+#         itself. Only the stable prefix is matched: the tail varies ("🚀" on
+#         #687, "Swish!" on #688), so pinning the whole line would have matched
+#         one PR and missed the other.
+#   (iii) The SHA is read ONLY from the "**Reviewed commit:** `<sha>`" line, never
+#         by a body-wide hex scan. #688's findings comment embeds HEAD's own SHA
+#         in a blob permalink (github.com/.../blob/<sha>/path#L1-L2), so a generic
+#         scan would have acked a comment carrying an unaddressed P2 finding.
+# Anything else from Codex falls through unchanged → the tiers below, then stale.
+# Codex-only and guarded on non-empty ALL_COMMENTS: a strict no-op for every
+# other login and for callers not yet upgraded to fetch comments.
+if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
+  # A non-empty ALL_COMMENTS this file cannot READ is a BROKEN snapshot, not an
+  # absent one: FETCH_OK=1 asserted the fetch succeeded. Validate the SHAPE, not
+  # just the syntax — every query below uses `.comments[]?`, whose `?` swallows a
+  # schema drift as silently as it swallows a null, so a payload like
+  # `{"nodes":[]}` would parse cleanly, yield no comments, and read as "Codex said
+  # nothing" (→ `none`, non-gating). The empty string is reserved for the caller
+  # that never fetched comments at all, and is guarded above.
+  codex_comments_ok=$(printf '%s' "$ALL_COMMENTS" \
+    | jq -r 'if (type == "object" and ((.comments | type) == "array")) then "1" else "0" end' 2>/dev/null || echo 0)
+  if [ "$codex_comments_ok" != "1" ]; then echo "stale"; exit 0; fi
+  codex_last_comment=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+  case "$codex_last_comment" in
+    "Codex Review: Didn't find any major issues."*)
+      # Line-anchored extraction; tail -1 keeps the last such line if a future
+      # template ever repeats it. No match (renamed label, SHA unbackticked,
+      # findings body) → empty → no ack → fall through to stale.
+      codex_clean_sha=$(printf '%s' "$codex_last_comment" \
+        | sed -n 's/^\*\*Reviewed commit:\*\*[[:space:]]*`\([0-9a-fA-F]\{7,64\}\)`.*/\1/p' | tail -1)
+      # When the verdict was published. Required, not best-effort: it is the
+      # reference point for the re-review check below, so a payload without it
+      # (an old caller shape) cannot ack.
+      codex_clean_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+        '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .createdAt // empty' 2>/dev/null || echo "")
+      # ANY Codex activity AT OR AFTER the verdict means Codex is not done with
+      # this HEAD, so the verdict must not ack. Two shapes count, and both are
+      # checked because either alone leaves a hole:
+      #   👀 at-or-after — Codex started ANOTHER review of this same HEAD after
+      #     publishing the verdict, and it may yet file a finding.
+      #   a /reviews entry at-or-after — a Codex review is ALWAYS a findings post
+      #     (see the Tier B exclusion below), and a body-only one opens no inline
+      #     thread, so Tier A.1 would not have caught it.
+      # The comparison is `>=`, not `>`: GitHub timestamps have one-second
+      # resolution, and a re-review kicked off inside the verdict's own second
+      # would compare EQUAL and slip through a strict `>`. A tie is exactly the
+      # ambiguous case, so it declines.
+      # Reactions carry `created_at` and reviews `submitted_at` (REST underscore
+      # form) against the comment's `createdAt` (GraphQL camel form) — all are
+      # GitHub-emitted UTC 'Z' ISO-8601, so lexicographic comparison is a correct
+      # time comparison. A record missing its timestamp sorts as "9999", i.e.
+      # newer than everything → declines.
+      codex_eyes_after=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+        --arg at "$codex_clean_at" \
+        '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)
+          | select(.content == "eyes") | select((.created_at // "9999") >= $at)] | length' 2>/dev/null || echo 1)
+      codex_reviews_after=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+        --arg at "$codex_clean_at" \
+        '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)
+          | select((.submitted_at // "9999") >= $at)] | length' 2>/dev/null || echo 1)
+      if [ -n "$codex_clean_sha" ] && [ -n "$codex_clean_at" ] \
+         && [ "$(num_or "$codex_eyes_after" 1)" -eq 0 ] \
+         && [ "$(num_or "$codex_reviews_after" 1)" -eq 0 ] \
+         && acks_head "$codex_clean_sha"; then
+        emit_head_ack "$HEAD_SHA" G; exit 0
+      fi
+      ;;
+  esac
+fi
+
+# Codex eyes-override (HOISTED above every tier below it): a current 👀 reaction
+# means Codex is actively (re-)reviewing HEAD → stale, regardless of any
+# thread/review state below. Codex re-adds 👀 whenever HEAD advances, so this is
+# the robust, timestamp-independent guard for the re-review race — and it MUST
+# run before Tier A.2 so a resolved-current-head thread cannot ack while Codex is
+# still mid-review of a newer push. It sits below Tier A.1 and Tier G (#690):
+# A.1 also exits `stale`, so that order is output-neutral; Tier G must precede it
+# because a comment-form verdict leaves the 👀 behind. Codex-only and guarded on
+# non-empty ALL_REACTIONS, so it is a strict no-op for every other login and for
+# callers not yet upgraded to fetch reactions.
+if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_REACTIONS" ]; then
+  codex_eyes=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "eyes")] | length' 2>/dev/null || echo 1)
+  if [ "$(num_or "$codex_eyes" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
+fi
+
 # Non-Codex bots: any DISPOSED thread (resolved OR outdated) acks HEAD — the
 # bot's prior findings are no longer actionable.
 # Codex: only a RESOLVED + NON-OUTDATED thread acks (a finding the worker
@@ -456,8 +594,9 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # Codex `stale` until `--max-wait` bails (the deadlock Codex's own review of
 # this PR flagged). An OUTDATED-only Codex thread is from superseded code (HEAD
 # advanced past it) and must NOT ack — Codex has to re-review the new HEAD,
-# caught as `stale` and cleared later by a fresh 👍 (Tier F) or a new
-# resolved-current-head thread. The hoisted eyes-override above guarantees Codex
+# caught as `stale` and cleared later by a fresh 👍 (Tier F), a clean-verdict
+# comment naming the new HEAD (Tier G, #690), or a new resolved-current-head
+# thread. The hoisted eyes-override above guarantees Codex
 # is not mid-review when this acks.
 if [ "$login" = "chatgpt-codex-connector" ]; then
   # Effective freshness anchor (#269): prefer HEAD_PUSH_DATE (push event) unchanged;
@@ -473,6 +612,29 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   # Consolidated Codex resolution; precedence order is load-bearing. Tier A.1
   # above (unresolved+non-outdated → stale) already ran login-agnostically, so a
   # LIVE finding has blocked.
+  # (0) A POST-ANCHOR COMMENT THAT TIER G DECLINED BLOCKS EVERYTHING BELOW (#690).
+  #     Since the mechanism switch, a Codex finding routinely arrives as an issue
+  #     COMMENT with no thread and no review — PR #688's P2 at 17:36:38Z did. If
+  #     that check sat at the BOTTOM of this block, a 👍 left over from an earlier
+  #     clean pass would satisfy Tier F first and the gate would merge past the
+  #     finding: reaction and comment are separate objects, so publishing a finding
+  #     does not retract a prior +1. Reaching here means Tier G already looked at
+  #     the last comment and refused it — so whatever Codex has said about the
+  #     current head is NOT a clean verdict on it, and nothing below may ack.
+  #     Scoped to comments that POSTDATE $anchor_date so the block cannot deadlock:
+  #     a findings comment from BEFORE the last push is about superseded code (the
+  #     comment-form twin of the outdated-thread case at (2)) and must not veto the
+  #     fresh 👍 that answered it. Fail-CLOSED in three ways — an empty anchor makes
+  #     every comment post-anchor, a comment with no createdAt sorts as "9999", and
+  #     a jq error counts 1 — because each of those is a snapshot we cannot reason
+  #     about, on a merge gate.
+  if [ -n "$ALL_COMMENTS" ]; then
+    codex_comments_after=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+      --arg anchor "$anchor_date" \
+      '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+        | select((.createdAt // "9999") >= $anchor)] | length' 2>/dev/null || echo 1)
+    if [ "$(num_or "$codex_comments_after" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
+  fi
   # (1) FRESH 👍 FIRST — a +1 newer than HEAD means Codex re-reviewed the CURRENT
   #     HEAD and is satisfied → ack. Checked before the OUTDATED short-circuit
   #     because GitHub retains outdated threads FOREVER once code changes: a
@@ -601,6 +763,23 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   codex_reacted=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)] | length' 2>/dev/null || echo 0)
   if [ "${codex_reacted:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  # (5) ENGAGED VIA COMMENT (#690). A Codex-authored issue comment is engagement
+  #     exactly as a reaction is, and since the mechanism switch it is the shape
+  #     Codex actually uses. (0) above already blocked on any comment that
+  #     postdates the anchor, so what lands here is a PRE-anchor comment with no
+  #     ack from any tier: Codex spoke about superseded code and has not spoken
+  #     since. Without this branch that falls through to the `none` early-return
+  #     and is NON-GATING — a PR where Codex only ever comments would be mergeable
+  #     with no Codex verdict on HEAD at all, which is exactly the `none`-means-
+  #     "not on this PR" misreading the field cannot afford. `stale` is right:
+  #     Codex IS on this PR, and it owes HEAD a verdict.
+  #     Cost of the strict reading: an off-topic Codex comment (a Q&A reply to
+  #     "@codex address that feedback") also holds the gate until Codex re-reviews
+  #     clean. That is the correct direction to be wrong in on a merge gate, and
+  #     --max-wait remains the operator-visible backstop.
+  codex_commented=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | length' 2>/dev/null || echo 1)
+  if [ -n "$ALL_COMMENTS" ] && [ "$(num_or "$codex_commented" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
 else
   disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
@@ -617,8 +796,9 @@ commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login
 # NO suggestions and only opens a review when it DOES (per OpenAI's integration).
 # Treating that as a clean HEAD-ack would merge past untriaged findings, so Codex
 # is excluded here and falls through to the downgrade block → `stale` (block
-# until the worker triages and Codex re-reviews clean). Codex's only positive ack
-# is the Tier F 👍. `commit_id` is still computed above for that downgrade block.
+# until the worker triages and Codex re-reviews clean). Codex's positive acks are
+# the Tier F 👍 and the Tier G clean-verdict comment (#690) — never a /reviews
+# entry. `commit_id` is still computed above for that downgrade block.
 if [ -n "$commit_id" ] && acks_head "$commit_id" && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "$HEAD_SHA" B; exit 0; fi
 
 # (C) Issue-comment body SHA: bots like Greptile update a single comment with

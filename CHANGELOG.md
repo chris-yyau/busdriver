@@ -1,3 +1,10 @@
+# [1.109.0](https://github.com/chris-yyau/busdriver/compare/v1.108.0...v1.109.0) (2026-08-17)
+
+
+### Features
+
+* **pr-grind:** re-add cursor (Bugbot) to the ack registry (ADR 0041) ([#691](https://github.com/chris-yyau/busdriver/issues/691)) ([830d68e](https://github.com/chris-yyau/busdriver/commit/830d68eb9050542ca08a40b1121f664a3da208f2))
+
 # [1.108.0](https://github.com/chris-yyau/busdriver/compare/v1.107.4...v1.108.0) (2026-08-17)
 
 

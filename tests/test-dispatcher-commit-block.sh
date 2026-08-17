@@ -1870,6 +1870,19 @@ test_r_wait_round_stages_nothing() {
         echo "test_r: the unstaged tracked modification disappeared on a wait-round"
         return 1
     fi
+    # `diff --quiet` only proves file.txt DIFFERS from HEAD — a destructive
+    # regression that deletes file.txt or overwrites it with different
+    # content still leaves that diff nonzero, so the check above would pass
+    # despite the tracked fixture not actually surviving intact. Assert the
+    # exact content directly (CodeRabbit + Codex finding on PR #688).
+    [[ -f "$sandbox/file.txt" ]] || {
+        echo "test_r: the tracked file vanished on a wait-round"
+        return 1
+    }
+    [[ "$(cat "$sandbox/file.txt")" = "unstaged edit" ]] || {
+        echo "test_r: the tracked file's content changed on a wait-round"
+        return 1
+    }
     # Assert the file SURVIVES (and is unmodified) before checking it stayed
     # untracked — `ls-files --error-unmatch` alone returns nonzero both when
     # the path is untracked AND when it no longer exists at all, so it can't

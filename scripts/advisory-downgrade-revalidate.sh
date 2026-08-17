@@ -40,26 +40,39 @@
 #   ALL_COMMENTS      fresh `gh pr view --json comments` output.
 #   ALL_CHECK_RUNS    fresh /commits/HEAD/check-runs pages (ack-ledger Tier D surface).
 #   ALL_STATUSES      fresh /commits/HEAD/statuses pages (ack-ledger Tier E surface).
-#   HEAD_SHA          8-char HEAD sha (matched against the logged event's head_sha).
+#   HEAD_SHA          HEAD sha, FULL (40-char) or SHORT (8-char) — either form works.
+#                     It is a JOIN KEY, not forensics: it is matched against the
+#                     logged event's `head_sha` over the SHORTER of the two lengths,
+#                     with an 8-char floor (#682 — see _ref_ts). Fewer than 8 chars
+#                     joins nothing and fail-CLOSES.
 #   BYPASS_LOG        the audit log to read downgrade timestamps from
 #                     (default: .claude/bypass-log.jsonl).
 # Output (stdout): comma-separated logins with NO activity since their downgrade
 # (subset of DOWNGRADED_BOTS). Empty when none qualify. Always exit 0.
+# Output (stderr): one diagnostic line naming the branch that dropped each login,
+# and one per global fail-CLOSED refusal. Every path here refuses SILENTLY on
+# stdout — an empty result is indistinguishable from "the bot re-engaged", which
+# is how #682's join-key mismatch stayed invisible through a whole grind. The
+# caller must NOT discard stderr (see references/completion.md).
 set -u
+
+# Diagnostics go to stderr ONLY: stdout is the machine-read eligible list and any
+# stray byte there would be parsed as a login.
+_why() { printf 'advisory-downgrade-revalidate: %s\n' "$1" >&2; }
 
 [[ -n "${DOWNGRADED_BOTS:-}" ]] || { printf ''; exit 0; }
 # A failed fresh fetch leaves a source EMPTY, which jq reads as "no activity" —
 # fail-OPEN (a re-engaged bot with an unfetched review would be suppressed). The
 # caller sets FETCH_OK=1 only when EVERY source fetch succeeded; anything else
 # means we cannot trust the fresh state → suppress nothing (fail-CLOSED).
-[[ "${FETCH_OK:-0}" == 1 ]] || { printf ''; exit 0; }
-command -v jq >/dev/null 2>&1 || { printf ''; exit 0; }   # no jq → can't prove freshness → suppress nothing
+[[ "${FETCH_OK:-0}" == 1 ]] || { _why "FETCH_OK != 1 (a fresh source failed to fetch) — suppressing nothing"; printf ''; exit 0; }
+command -v jq >/dev/null 2>&1 || { _why "jq not found — cannot prove freshness, suppressing nothing"; printf ''; exit 0; }
 # HEAD_SHA is REQUIRED: the per-bot reference event is matched by (bot, head_sha).
 # Without it we cannot confirm the logged downgrade is for THIS HEAD, so a stale
 # ack on a different HEAD could be suppressed — fail-CLOSED and suppress nothing.
-[[ -n "${HEAD_SHA:-}" ]] || { printf ''; exit 0; }
+[[ -n "${HEAD_SHA:-}" ]] || { _why "HEAD_SHA is empty — cannot confirm the logged downgrade is for this HEAD, suppressing nothing"; printf ''; exit 0; }
 BYPASS_LOG="${BYPASS_LOG:-.claude/bypass-log.jsonl}"
-[[ -f "$BYPASS_LOG" ]] || { printf ''; exit 0; }          # no audit log → no reference ts → fail-CLOSED
+[[ -f "$BYPASS_LOG" ]] || { _why "audit log not found at '$BYPASS_LOG' — no reference timestamp, suppressing nothing"; printf ''; exit 0; }
 
 # A far-future sentinel emitted on ANY jq parse error so a malformed/truncated
 # source is treated as "activity newer than the downgrade" (re-engaged → block),
@@ -68,9 +81,41 @@ _FUTURE="9999-12-31T23:59:59Z"
 
 # Latest downgrade-event timestamp for this bot on THIS HEAD (empty if none →
 # caller fail-CLOSES that login). head_sha match is mandatory (no empty escape).
+#
+# #682: the join compares over the SHORTER of the two lengths, requiring at least
+# 8 chars — not string equality, and not a blanket 8-char truncation.
+# advisory-stale-downgrade.sh writes `HEAD_SHA` VERBATIM, and its caller (SKILL.md
+# ON_LOOP_EXHAUSTED step 4) may pass either form — the full 40-char OID is the
+# natural reading there, since REVIEWED_HEAD and --match-head-commit are both
+# full-length on the same path, while COMPLETION derives its HEAD_SHA as
+# `git rev-parse HEAD | cut -c1-8`. Under strict equality those two never joined,
+# so the whole ADR 0012 release path was unreachable for a full-SHA caller and
+# fail-CLOSED into a merge refusal that looked like correct strictness (hit live
+# on PR #680). Normalizing here rather than at the producer keeps the log at full
+# forensic fidelity AND repairs events already written.
+#
+# Comparing over min(len) rather than truncating both sides to 8 keeps the key as
+# strong as the SHORTER side actually is: two FULL shas are compared over all 40
+# chars, so tolerating the short form costs nothing when nobody used it. Only the
+# genuinely mixed-form case (the #682 pair) degrades to an 8-char prefix, which is
+# exactly the discrimination COMPLETION's own `cut -c1-8` already relied on.
+#
+# The `>= 8` floor is the fail-CLOSED direction: a truncated or malformed sha
+# shorter than 8 chars can no longer join ANY event, where a blanket `[0:8]`
+# truncation would have let a 3-char value match on 3 chars. Cost: a caller who
+# passes fewer than 8 chars gets a refused release (visible on stderr), never a
+# release for a HEAD it could not name.
+#
+# Residual, accepted: two DIFFERENT commits sharing an 8-char prefix cannot be
+# told apart IF one side supplied only the short form. That is a ~2^32 birthday
+# collision, scoped to one bot inside one PR's log, and it is the pre-existing
+# property of the short-form path — not something this change introduces.
 _ref_ts() { # $1 login
   jq -rs --arg bot "$1" --arg head "$HEAD_SHA" \
-    '[ .[] | select(.event == "advisory_stale_timeout_downgrade" and .bot == $bot and .head_sha == $head) ]
+    'def joins($a; $b): ([($a|length), ($b|length)] | min) as $n
+       | $n >= 8 and ($a[0:$n] == $b[0:$n]);
+     [ .[] | select(.event == "advisory_stale_timeout_downgrade" and .bot == $bot
+                    and joins((.head_sha // ""); $head)) ]
      | sort_by(.timestamp) | last | .timestamp // empty' "$BYPASS_LOG" 2>/dev/null || printf ''
 }
 
@@ -138,12 +183,14 @@ for L in $DOWNGRADED_BOTS; do
   [[ -n "$L" ]] || { IFS=','; continue; }
   ref="$(_ref_ts "$L")"
   # No logged downgrade for this bot+HEAD → cannot establish a reference → block.
-  [[ -n "$ref" ]] || { IFS=','; continue; }
+  # Name the HEAD in the diagnostic: this is the branch #682 landed in, and "which
+  # HEAD did I look for" is the single fact that made it diagnosable.
+  [[ -n "$ref" ]] || { _why "$L: no advisory_stale_timeout_downgrade event in '$BYPASS_LOG' for head ${HEAD_SHA:0:8} — cannot establish a reference, NOT suppressed"; IFS=','; continue; }
   # The reference is compared LEXICALLY against activity timestamps, so it MUST be
   # a real ISO-8601 UTC instant. A corrupt/forged event like {"timestamp":"zzzz"}
   # would sort AFTER every real activity ("z" > "9") and silently suppress a
   # re-engaged bot. Reject any ref that isn't strict YYYY-MM-DDThh:mm:ssZ → block.
-  [[ "$ref" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { IFS=','; continue; }
+  [[ "$ref" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { _why "$L: downgrade event timestamp '$ref' is not strict ISO-8601 UTC — NOT suppressed"; IFS=','; continue; }
   newest="$(_newest_activity "$L")"
   # ISO-8601 UTC strings sort lexically. Both the downgrade event and GitHub
   # activity are second-resolution, so re-engagement in the SAME second as the
@@ -152,11 +199,18 @@ for L in $DOWNGRADED_BOTS; do
   # `! (newest < ref)`. Suppress ONLY when the bot has been silent since (no
   # activity, or newest strictly < ref); activity at-or-after the downgrade blocks.
   _reengaged=0
-  if [[ -n "$newest" ]] && ! [[ "$newest" < "$ref" ]]; then _reengaged=1; fi
+  if [[ -n "$newest" ]] && ! [[ "$newest" < "$ref" ]]; then
+    _reengaged=1
+    _why "$L: activity at $newest is at/after its downgrade at $ref — re-engaged, NOT suppressed"
+  fi
   # Timestamp-independent state gate: a currently-live unresolved thread the bot
   # opened is a fresh finding regardless of when it was posted (a resolved→reopened
   # flip carries no new timestamp). ack-ledger would return `stale`; suppress NOTHING.
-  if [[ "$(_live_unresolved "$L")" -gt 0 ]]; then _reengaged=1; fi
+  _live="$(_live_unresolved "$L")"
+  if [[ "$_live" -gt 0 ]]; then
+    _reengaged=1
+    _why "$L: $_live live unresolved thread(s) on HEAD — NOT suppressed"
+  fi
   if [[ "$_reengaged" -eq 0 ]]; then
     eligible="${eligible:+$eligible,}$L"
   fi

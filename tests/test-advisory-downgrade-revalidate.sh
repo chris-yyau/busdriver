@@ -17,8 +17,8 @@ LOG="$tmp/bypass-log.jsonl"
 REF="2026-07-08T10:00:00Z"          # downgrade event time
 BEFORE="2026-07-08T09:00:00Z"       # activity before downgrade (the stale review)
 AFTER="2026-07-08T11:00:00Z"        # activity after downgrade (re-engagement)
-mk_log() {  # write a downgrade event for $1 at $REF, head=head1
-  printf '{"event":"advisory_stale_timeout_downgrade","bot":"%s","head_sha":"head1","timestamp":"%s"}\n' "$1" "$REF" > "$LOG"
+mk_log() {  # write a downgrade event for $1 at $REF, head=aabbccdd
+  printf '{"event":"advisory_stale_timeout_downgrade","bot":"%s","head_sha":"aabbccdd","timestamp":"%s"}\n' "$1" "$REF" > "$LOG"
 }
 EMPTY_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
 NO_RXN='[]'
@@ -26,10 +26,12 @@ NO_COMMENTS='{"comments":[]}'
 NO_CHECKS='{"check_runs":[]}'
 NO_STATUSES='[]'
 
+# stderr carries the per-bot drop diagnostics (#682) and is discarded here so the
+# OK/FAIL lines stay legible; test 17 asserts the diagnostic separately.
 run() { # $1 downgraded $2 threads $3 reviews $4 reactions $5 comments [$6 check_runs $7 statuses] -> $R
   R=$(DOWNGRADED_BOTS="$1" FETCH_OK=1 ALL_THREADS="$2" ALL_REVIEWS="$3" ALL_REACTIONS="$4" \
     ALL_COMMENTS="$5" ALL_CHECK_RUNS="${6:-}" ALL_STATUSES="${7:-}" \
-    HEAD_SHA=head1 BYPASS_LOG="$LOG" bash "$SCRIPT")
+    HEAD_SHA=aabbccdd BYPASS_LOG="$LOG" bash "$SCRIPT" 2>/dev/null)
 }
 
 # 1. Silent since downgrade (only the pre-downgrade stale review) -> suppress.
@@ -70,8 +72,8 @@ empty "$R" "no logged downgrade event -> fail-closed (not suppressed)"
 
 # 7. Missing bypass-log file -> fail-CLOSED.
 R=$(DOWNGRADED_BOTS="cubic-dev-ai" FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$STALE_REV" \
-    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=head1 \
-    BYPASS_LOG="$tmp/does-not-exist.jsonl" bash "$SCRIPT")
+    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=aabbccdd \
+    BYPASS_LOG="$tmp/does-not-exist.jsonl" bash "$SCRIPT" 2>/dev/null)
 empty "$R" "missing bypass-log -> fail-closed"
 
 # 8. Empty DOWNGRADED_BOTS -> empty (no-op).
@@ -80,7 +82,7 @@ run "" "$EMPTY_THREADS" "$STALE_REV" "$NO_RXN" "$NO_COMMENTS"
 empty "$R" "empty DOWNGRADED_BOTS -> empty"
 
 # 9. Mixed: one silent (suppress) + one re-engaged (block).
-printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"head1","timestamp":"%s"}\n{"event":"advisory_stale_timeout_downgrade","bot":"greptile-apps","head_sha":"head1","timestamp":"%s"}\n' "$REF" "$REF" > "$LOG"
+printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"aabbccdd","timestamp":"%s"}\n{"event":"advisory_stale_timeout_downgrade","bot":"greptile-apps","head_sha":"aabbccdd","timestamp":"%s"}\n' "$REF" "$REF" > "$LOG"
 MIX_REV=$(printf '[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","submitted_at":"%s"},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","submitted_at":"%s"}]' "$BEFORE" "$AFTER")
 run "cubic-dev-ai,greptile-apps" "$EMPTY_THREADS" "$MIX_REV" "$NO_RXN" "$NO_COMMENTS"
 eq "$R" "cubic-dev-ai" "mixed: silent cubic suppressed, re-engaged greptile blocked"
@@ -90,24 +92,24 @@ eq "$R" "cubic-dev-ai" "mixed: silent cubic suppressed, re-engaged greptile bloc
 #     re-engaged bot whose review failed to fetch would be wrongly suppressed.
 mk_log cubic-dev-ai
 R=$(DOWNGRADED_BOTS="cubic-dev-ai" FETCH_OK=0 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$STALE_REV" \
-    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=head1 BYPASS_LOG="$LOG" bash "$SCRIPT")
+    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=aabbccdd BYPASS_LOG="$LOG" bash "$SCRIPT" 2>/dev/null)
 empty "$R" "FETCH_OK=0 (a source failed) -> fail-closed (suppress nothing)"
 
 # 10b. FETCH_OK unset entirely -> same fail-CLOSED default.
 R=$(DOWNGRADED_BOTS="cubic-dev-ai" ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$STALE_REV" \
-    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=head1 BYPASS_LOG="$LOG" bash "$SCRIPT")
+    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" HEAD_SHA=aabbccdd BYPASS_LOG="$LOG" bash "$SCRIPT" 2>/dev/null)
 empty "$R" "FETCH_OK unset -> fail-closed (suppress nothing)"
 
 # 11. Corrupt/forged reference timestamp in the log -> block (even when silent).
 #     "zzzz" sorts AFTER real activity; without ISO-8601 validation the bot would
 #     be treated as silent and wrongly suppressed. The bot IS silent here (only the
 #     pre-downgrade stale review), so a pass proves the format guard — not activity.
-printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"head1","timestamp":"zzzz"}\n' > "$LOG"
+printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"aabbccdd","timestamp":"zzzz"}\n' > "$LOG"
 run "cubic-dev-ai" "$EMPTY_THREADS" "$STALE_REV" "$NO_RXN" "$NO_COMMENTS"
 empty "$R" "non-ISO-8601 reference timestamp -> fail-closed (not suppressed)"
 
 # 11b. Well-formed-but-not-UTC ref (no trailing Z) -> also rejected.
-printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"head1","timestamp":"2026-07-08T10:00:00"}\n' > "$LOG"
+printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","head_sha":"aabbccdd","timestamp":"2026-07-08T10:00:00"}\n' > "$LOG"
 run "cubic-dev-ai" "$EMPTY_THREADS" "$STALE_REV" "$NO_RXN" "$NO_COMMENTS"
 empty "$R" "reference timestamp without trailing Z -> fail-closed (not suppressed)"
 
@@ -175,5 +177,124 @@ mk_log cubic-dev-ai
 OTHER_THREAD=$(printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"},"createdAt":"%s"}]}}]}}}}}' "$AFTER")
 run "cubic-dev-ai" "$OTHER_THREAD" "$STALE_REV" "$NO_RXN" "$NO_COMMENTS"
 eq "$R" "cubic-dev-ai" "another bot's unresolved thread -> this bot still suppressed"
+
+# --- #682: head_sha is a JOIN KEY and must match across SHA forms ------------
+# advisory-stale-downgrade.sh writes HEAD_SHA verbatim and its caller may pass the
+# full 40-char OID or the 8-char short form; COMPLETION passes
+# `git rev-parse HEAD | cut -c1-8`. Under the old strict-equality join those never
+# matched, so a full-SHA release was logged and then silently refused at merge —
+# the entire ADR 0012 path was unreachable and fail-CLOSED made it look correct
+# (hit live on PR #680). The join now normalizes both sides to 8 chars.
+#
+# 16c/16d are the load-bearing half: normalizing a join key is exactly the change
+# that can destroy its discriminating power (a botched slice comparing "" to ""
+# matches every event), and until now NO test exercised this join with differing
+# values at all. A different HEAD must still fail to match.
+FULL_SHA="2f9058d07a203823ccb3ca7f842a9451c361e7ba"
+SHORT_SHA="2f9058d0"
+OTHER_FULL="9c11881eb0f4a7c2d3e5f6a7b8c9d0e1f2a3b4c5"   # differs within the first 8
+OTHER_SHORT="9c11881e"
+
+mk_log_head() {  # $1 bot, $2 head_sha value written verbatim into the event
+  printf '{"event":"advisory_stale_timeout_downgrade","bot":"%s","head_sha":"%s","timestamp":"%s"}\n' "$1" "$2" "$REF" > "$LOG"
+}
+run_head() {  # $1 downgraded, $2 HEAD_SHA the caller passes -> $R. Bot is silent throughout.
+  R=$(DOWNGRADED_BOTS="$1" FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$STALE_REV" \
+    ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" ALL_CHECK_RUNS="$NO_CHECKS" \
+    ALL_STATUSES="$NO_STATUSES" HEAD_SHA="$2" BYPASS_LOG="$LOG" bash "$SCRIPT" 2>/dev/null)
+}
+
+# 16a. Event logged with the FULL sha, caller passes the SHORT form -> match.
+#      This is #680's exact shape and is RED before the fix.
+mk_log_head cubic-dev-ai "$FULL_SHA"
+run_head "cubic-dev-ai" "$SHORT_SHA"
+eq "$R" "cubic-dev-ai" "#682: full-sha event + short-sha caller -> joins (suppressed)"
+
+# 16b. Mirror: event logged SHORT, caller passes FULL -> match.
+mk_log_head cubic-dev-ai "$SHORT_SHA"
+run_head "cubic-dev-ai" "$FULL_SHA"
+eq "$R" "cubic-dev-ai" "#682: short-sha event + full-sha caller -> joins (suppressed)"
+
+# 16b2. Both full (a caller consistent on the long form) -> match.
+mk_log_head cubic-dev-ai "$FULL_SHA"
+run_head "cubic-dev-ai" "$FULL_SHA"
+eq "$R" "cubic-dev-ai" "#682: full-sha event + full-sha caller -> joins (suppressed)"
+
+# 16c. Event belongs to a DIFFERENT head (full form) -> no join -> fail-CLOSED.
+#      Proves the normalization did not turn the join into a wildcard.
+mk_log_head cubic-dev-ai "$OTHER_FULL"
+run_head "cubic-dev-ai" "$FULL_SHA"
+empty "$R" "#682: event for a different head (full) -> no join -> fail-closed"
+
+# 16d. Same, short form on both sides -> still discriminates.
+mk_log_head cubic-dev-ai "$OTHER_SHORT"
+run_head "cubic-dev-ai" "$SHORT_SHA"
+empty "$R" "#682: event for a different head (short) -> no join -> fail-closed"
+
+# 16c2. Two DIFFERENT full shas that SHARE the first 8 chars -> no join.
+#       Codex's litmus finding on this change: 16c/16d only use shas that differ
+#       WITHIN the first 8, so a blanket `[0:8]` truncation on both sides passes
+#       them while still confusing two real commits. Comparing over min(len)
+#       instead means two full shas are compared over all 40 chars, so this is
+#       RED under truncation and GREEN under the shipped join.
+mk_log_head cubic-dev-ai "2f9058d0ffffffffffffffffffffffffffffffff"
+run_head "cubic-dev-ai" "$FULL_SHA"
+empty "$R" "#682: different full shas sharing an 8-char prefix -> no join -> fail-closed"
+
+# 16c3. The residual on the COMPATIBILITY path, asserted so it is a KNOWN property
+#       and not an accident: when one side supplied only the short form there is
+#       nothing left to disambiguate with, so an 8-char prefix match IS the join.
+#       This is NOT the production path — COMPLETION passes HEAD_FULL_SHA and
+#       SKILL.md step 4 logs the full sha, so the real comparison is 40-char exact
+#       (16b2). It is reachable only for a legacy short-form event or a caller that
+#       ignores that guidance, and it is the pre-existing property of `cut -c1-8`.
+mk_log_head cubic-dev-ai "2f9058d0ffffffffffffffffffffffffffffffff"
+run_head "cubic-dev-ai" "$SHORT_SHA"
+eq "$R" "cubic-dev-ai" "#682: short caller cannot disambiguate a shared prefix (accepted residual)"
+
+# 16c4/16c5. A sha shorter than 8 chars on EITHER side joins nothing -> fail-CLOSED.
+#            These two hold under a blanket truncation as well (a 3-char value
+#            truncates to itself and cannot equal an 8-char one) — they pin the
+#            contract, they do not distinguish the implementations. 16c6 is the
+#            case that does.
+mk_log_head cubic-dev-ai "$FULL_SHA"
+run_head "cubic-dev-ai" "2f9"
+empty "$R" "#682: caller sha under 8 chars -> no join -> fail-closed"
+
+mk_log_head cubic-dev-ai "2f9"
+run_head "cubic-dev-ai" "$FULL_SHA"
+empty "$R" "#682: event head_sha under 8 chars -> no join -> fail-closed"
+
+# 16c6. BOTH sides carry the SAME under-8 value (a truncated or garbage sha written
+#       by one caller and echoed by the other). A blanket `[0:8]` truncation reads
+#       that as a match and releases the bot on 3 chars of "identity"; the floor
+#       refuses it. RED under truncation — this is what the `>= 8` buys.
+mk_log_head cubic-dev-ai "2f9"
+run_head "cubic-dev-ai" "2f9"
+empty "$R" "#682: same under-8 value on both sides -> still no join (8-char floor)"
+
+# 16e. Event carries no head_sha at all -> no join (the `// ""` fallback must not
+#      match a real caller sha).
+printf '{"event":"advisory_stale_timeout_downgrade","bot":"cubic-dev-ai","timestamp":"%s"}\n' "$REF" > "$LOG"
+run_head "cubic-dev-ai" "$FULL_SHA"
+empty "$R" "#682: event missing head_sha -> no join -> fail-closed"
+
+# 17. The refusal is DIAGNOSABLE, not silent (#682's other half). An empty stdout
+#     reads identically whether the bot re-engaged or the join failed; without a
+#     stderr reason that ambiguity cost a live diagnosis. Assert the no-reference
+#     branch names the bot and the head it searched for.
+mk_log_head cubic-dev-ai "$OTHER_FULL"
+ERR=$(DOWNGRADED_BOTS="cubic-dev-ai" FETCH_OK=1 ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$STALE_REV" \
+  ALL_REACTIONS="$NO_RXN" ALL_COMMENTS="$NO_COMMENTS" ALL_CHECK_RUNS="$NO_CHECKS" \
+  ALL_STATUSES="$NO_STATUSES" HEAD_SHA="$FULL_SHA" BYPASS_LOG="$LOG" bash "$SCRIPT" 2>&1 >/dev/null)
+case "$ERR" in
+  *cubic-dev-ai*"$SHORT_SHA"*) ok "#682: unmatched join explains itself on stderr (names bot + head)" ;;
+  *) bad "#682: unmatched join explains itself on stderr (names bot + head) (got '$ERR')" ;;
+esac
+
+# 17b. Diagnostics must never contaminate stdout — it is parsed as a login list.
+#      (17's own stdout was discarded; re-run capturing stdout alone.)
+run_head "cubic-dev-ai" "$FULL_SHA"
+empty "$R" "#682: diagnostics go to stderr only, stdout stays empty"
 
 [[ "$FAIL" == 0 ]] && echo "PASS test-advisory-downgrade-revalidate" || exit 1

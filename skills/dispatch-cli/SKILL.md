@@ -316,7 +316,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `droid`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `agy-read`, `droid`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `600` |
 | `--model` | model name | CLI default |
@@ -403,8 +403,10 @@ to be worth reading), while 20 lines in each of two files stays local (two hops,
 but both named and both tiny — dispatching would pay the floor below for a read
 you could finish in seconds).
 
-The win is not that the lane is smarter; it is that a cited answer costs ~1k
-tokens where opening the file costs tens of thousands. Ask for citations, then
+The win is not that the lane is smarter; it is that a cited answer costs a
+small fraction of what opening the file costs — pi's measured run below put a
+cited answer at ~1k-token scale against a ~20k self-read baseline; agy-read's
+own token cost is not separately measured (see below). Ask for citations, then
 pull only those lines into context. **Verify anything load-bearing against the
 source — the lane is a reader, never an authority.** That is not a formality:
 asked on 2026-08-17 to list remaining files that still route reads to pi,

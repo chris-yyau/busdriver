@@ -522,7 +522,7 @@ fi
 # implementation to maintain rather than two that drift:
 #   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
 #   $MODEL         → `.agy_read.model` from ~/.claude/busdriver.json
-#   --add-dir "$PWD" is already unconditional in the arm (see the agy branch)
+#   --add-dir "$PWD" is supplied by the lane-only argv in the agy arm
 #
 # Plain `--cli agy` is UNTOUCHED by all of this: it passes no --model, so the
 # reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
@@ -886,7 +886,7 @@ dispatch_one() {
             # agy does not scope reads to the CWD: it resolves its own remembered
             # workspace/project. Measured 2026-08-17 dispatching from
             # /Volumes/Work/Projects/busdriver — agy silently answered from a stale
-            # /Users/vfrvndtt/src/busdriver checkout (v1.71.0), returning confident,
+            # ~/src/busdriver checkout (v1.71.0), returning confident,
             # correctly-formatted file:line citations for the WRONG tree. That is
             # the worst failure shape available to a read lane: it does not error,
             # it lies with citations. With --add-dir the same probe returned the

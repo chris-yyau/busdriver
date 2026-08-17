@@ -6,8 +6,8 @@
 #
 # The invariant that matters: `--cli agy` (the blueprint-review reviewer_1 slot)
 # must NEVER pick up the read lane's model. That was verified live once
-# (2026-08-17: read lane -> "Gemini 3.1 Pro", reviewer -> "Gemini 3.7 Flash",
-# from the same config); this file is what keeps it true.
+# (2026-08-17: the read lane and the reviewer resolved to two DIFFERENT
+# configured models from the same config); this file is what keeps it true.
 
 # Literal grep patterns ($PWD, ${...}) must never expand, and several checks
 # deliberately consume a command's output rather than its status.
@@ -55,14 +55,30 @@ check_model() {  # <json-value> <expected> <label>
   if [[ "$got" == "$2" ]]; then pass "$3"; else fail "$3 (got '$got', want '$2')"; fi
 }
 
+# The shipped fallback is read from the constant rather than restated here —
+# the staleness invariant in test-auditor-model-config.sh allows the id at
+# exactly one place, and duplicating it into this file is what that invariant
+# forbids. Computed once, reused by every fallback assertion below (including
+# the grammar boundary checks further down).
+agy_default_line=""
+if ! agy_default_line="$(grep -oE '^BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]+"' "$RESOLVE")"; then
+  agy_default_line=""
+fi
+agy_default="${agy_default_line#*\"}"
+agy_default="${agy_default%\"}"
+
+if [[ -z "$agy_default" ]]; then
+  fail "could not read BUSDRIVER_AGY_READ_MODEL_DEFAULT from resolve-cli.sh"
+fi
+
 check_model '"gemini-3.7-flash-medium"' 'gemini-3.7-flash-medium' \
   'bare agy id is accepted verbatim'
 check_model '"gemini-3.1-pro-high"' 'gemini-3.1-pro-high' \
   'a different bare id is honoured (config actually drives the lane)'
 # Option injection and junk must degrade to the default, not reach argv.
-check_model '"--dangerously-skip-permissions"' 'gemini-3.7-flash-medium' \
+check_model '"--dangerously-skip-permissions"' "$agy_default" \
   'leading-dash value is rejected (no option injection into agy argv)'
-check_model '"has space"' 'gemini-3.7-flash-medium' \
+check_model '"has space"' "$agy_default" \
   'whitespace value is rejected'
 
 # ── 4. pi's grammar is unchanged (no cross-contamination) ───────
@@ -144,18 +160,9 @@ fi
 # This validator guards an argv slot, so the REJECT set matters as much as the
 # accept set: anything that could become a second option, a path, or a shell
 # metacharacter must degrade to the default instead of reaching agy's argv.
-# The expected value is read from the constant rather than restated here — the
-# staleness invariant in test-auditor-model-config.sh allows the id at exactly
-# one place, and duplicating it into this file is what that invariant forbids.
-agy_default_line=""
-if ! agy_default_line="$(grep -oE '^BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]+"' "$RESOLVE")"; then
-  agy_default_line=""
-fi
-agy_default="${agy_default_line#*\"}"
-agy_default="${agy_default%\"}"
-
+# $agy_default was computed once, above (section 3), and is reused here.
 if [[ -z "$agy_default" ]]; then
-  fail "could not read BUSDRIVER_AGY_READ_MODEL_DEFAULT from resolve-cli.sh"
+  : # already reported by section 3's guard above
 else
   # Rejected: each must fall back to the shipped default.
   for bad in '"prov/model"' '"has\ttab"' '"-lead"' '"/lead"' \

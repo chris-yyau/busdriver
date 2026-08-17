@@ -117,8 +117,8 @@ Three findings, each of which changed the implementation:
 - **pi stays.** `--cli pi`, `.pi.model` and ADR 0034 are unchanged. It remains
   the lane for when you want enforced containment or a non-Google provider.
 - The model-id staleness invariant in `tests/test-auditor-model-config.sh` now
-  sweeps `gemini-*` and allows `AGY_READ_MODEL_DEFAULT` — three configurable
-  keys, one invariant. It caught a real leak on its first run.
+  sweeps `gemini-*` and allows `BUSDRIVER_AGY_READ_MODEL_DEFAULT` — three
+  configurable keys, one invariant. It caught a real leak on its first run.
 
 ## Revisit trigger
 

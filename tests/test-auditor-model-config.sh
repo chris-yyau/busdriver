@@ -406,7 +406,7 @@ done
 # or a test FIXTURE (`check_model`) may name an id, because an example with a
 # placeholder teaches nothing and a fixture is asserting on that exact string.
 # Rationale prose in those files may not.
-leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini-[0-9]' \
+leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
            "$ROOT/skills/council/SKILL.md" \
            "$ROOT/skills/blueprint-review/SKILL.md" \
            "$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh" \

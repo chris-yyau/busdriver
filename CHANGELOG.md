@@ -1,3 +1,10 @@
+# [1.108.0](https://github.com/chris-yyau/busdriver/compare/v1.107.4...v1.108.0) (2026-08-17)
+
+
+### Features
+
+* **dispatch-cli:** route repo reads to a new agy-read lane ([#687](https://github.com/chris-yyau/busdriver/issues/687)) ([c409d76](https://github.com/chris-yyau/busdriver/commit/c409d76714cb05c512cc57d8e668fb0c7ea5bc36)), closes [#689](https://github.com/chris-yyau/busdriver/issues/689)
+
 ## [1.107.4](https://github.com/chris-yyau/busdriver/compare/v1.107.3...v1.107.4) (2026-08-17)
 
 

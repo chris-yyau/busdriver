@@ -767,6 +767,17 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              `SERVER_NOW=$(bash "<PLUGIN_ROOT>/scripts/github-server-now.sh")`
                              (empty on any gh/parse failure → the call below fails CLOSED and downgrades
                              nothing — the safe direction). Then:
+                             **Pass the FULL 40-char sha** as `HEAD_SHA` (the same value as
+                             `REVIEWED_HEAD`). It is a JOIN KEY, not forensics: it is written
+                             verbatim into the event and COMPLETION's revalidator matches against
+                             it before it will honor any release, and COMPLETION now passes its own
+                             full sha — so full-on-both-sides is an exact 40-char match. The 8-char
+                             short form still joins (the revalidator compares over the shorter of
+                             the two lengths, with an 8-char floor below which nothing joins at
+                             all), but it caps that comparison at a prefix, so prefer the full one.
+                             #682: before that fix the comparison was strict equality against
+                             COMPLETION's `git rev-parse HEAD | cut -c1-8`, so a full-SHA caller
+                             here made the whole release path silently unreachable. Then:
                              `DOWNGRADED=$(SOLO_OPTIN=1 CI_GREEN=<0|1> LITMUS_GREEN=<0|1> HEAD_SHA=<sha> \
                                SERVER_NOW="$SERVER_NOW" \
                                PR=<PR_NUMBER> REPO=<owner/repo> WAIT_ROUNDS=<MAX_WAIT> \

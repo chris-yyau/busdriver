@@ -28,7 +28,20 @@
 #                        compares it against (issue #302: a local clock ahead of
 #                        GitHub fails OPEN). REQUIRED and fail-CLOSED: absent or
 #                        non-ISO => no downgrade (never a skew-prone local fallback).
-#   HEAD_SHA PR REPO     forensic context for the log.
+#   HEAD_SHA             the HEAD the release is for. NOT forensics — it is written
+#                        verbatim into the event and used as a JOIN KEY by
+#                        advisory-downgrade-revalidate.sh at COMPLETION, which
+#                        refuses to suppress any bot it cannot match. Documenting
+#                        it as forensic-only is what let #682 ship: callers were
+#                        free to pick a form, the revalidator compared for strict
+#                        equality against COMPLETION's 8-char short sha, and a
+#                        full-40-char caller silently made the entire ADR 0012
+#                        release path unreachable. Either form is accepted now —
+#                        the revalidator joins over the shorter of the two lengths
+#                        with an 8-char floor — and the value is logged verbatim,
+#                        so do NOT truncate here: a full sha logged in full is what
+#                        lets that join stay exact when both sides are full.
+#   PR REPO              forensic context for the log.
 #   WAIT_ROUNDS          --max-wait value that was exhausted (forensics).
 #   OPERATOR             operator identity for the log (default: git user.name).
 #   CANDIDATES           comma-separated stale advisory bots to evaluate, each

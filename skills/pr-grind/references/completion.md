@@ -480,12 +480,24 @@ if [ -n "$DOWNGRADED_BOTS" ]; then
   _MAIN_ROOT=""
   _GCD=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   case "$_GCD" in /*) _MAIN_ROOT=$(dirname "$_GCD") ;; esac
+  # Pass the FULL 40-char sha, not the 8-char $HEAD_SHA (#682). This is the join
+  # key against the logged downgrade event, and the revalidator compares over the
+  # shorter of the two sides: full-vs-full is an exact 40-char match, while the
+  # 8-char form would cap every comparison at a prefix even when the event carries
+  # the full sha. Short still joins (that is what #682 fixed) — this just stops
+  # COMPLETION from being the side that throws the precision away.
   REVALIDATED_DOWNGRADE=$(DOWNGRADED_BOTS="$DOWNGRADED_BOTS" FETCH_OK="$FETCH_OK" \
     ALL_THREADS="$ALL_THREADS" ALL_REVIEWS="$ALL_REVIEWS" ALL_REACTIONS="$ALL_REACTIONS" \
     ALL_COMMENTS="$ALL_COMMENTS" ALL_CHECK_RUNS="$ALL_CHECK_RUNS" ALL_STATUSES="$ALL_STATUSES" \
-    HEAD_SHA="$HEAD_SHA" \
+    HEAD_SHA="$HEAD_FULL_SHA" \
     BYPASS_LOG="${_MAIN_ROOT}/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" \
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/advisory-downgrade-revalidate.sh" 2>/dev/null || echo "")
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/advisory-downgrade-revalidate.sh" || echo "")
+  # stderr is deliberately NOT discarded (#682). `$( )` captures stdout only, so the
+  # revalidator's per-bot drop reasons print for the operator without contaminating
+  # REVALIDATED_DOWNGRADE. Every refusal path here is otherwise silent — an empty
+  # result reads identically whether the bot re-engaged, the audit log was missing,
+  # or the head_sha never joined. #682 was exactly that: a form mismatch presented as
+  # "the bot must have re-engaged" and cost a live diagnosis to tell apart.
   if [ "$REVALIDATED_DOWNGRADE" != "$DOWNGRADED_BOTS" ]; then
     echo "⚠️  ADR 0012: a downgraded bot re-engaged before merge — only re-validated release(s) suppressed: '${REVALIDATED_DOWNGRADE:-<none>}' (was '$DOWNGRADED_BOTS'). Re-engaged bot(s) stay stale and block."
   fi

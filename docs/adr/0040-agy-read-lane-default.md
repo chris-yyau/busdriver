@@ -88,6 +88,27 @@ between the desugar block and those sites reads a bare `$HOME`. Proven by a
 behavioural check (stub agy prints the `$HOME` it received, dispatch runs with
 `$HOME` pointed at a decoy) that was confirmed to fail with the export removed.
 
+**The 1.0.x `--model` refusal is NOT lane-scoped, and it hard-exits (#689).**
+agy 1.0.x has no `--model`, and this PR removed the blanket `--model` refusal in
+order to wire the flag through — which made plain `--cli agy --model X` reachable
+on a 1.0.x install for the first time. Scoped to the lane, that path forwarded an
+unsupported flag; Codex (round 7) and Greptile both flagged it. Measuring it found
+something worse than either reported: the refusal set `exit_code=1`, and plain
+`--cli agy` — unlike the lane, pi and opencode — has no droid-escalation
+exemption, so a **config** error was treated as a failed dispatch. The actionable
+message was swallowed, the prompt and whatever repo content it quoted were shipped
+to droid (a different third party), and dispatch exited **0**, so the caller
+believed it had succeeded. Exactly the hazard the lane's own exemption exists to
+prevent. So the condition is `-n "$MODEL"` — "a model was requested and this
+install cannot honour it", true of both shapes — and the refusal is a hard
+`exit 1` to **stderr**, matching the oversize-prompt guard in the same arm
+(`exit` skips the tail that prints `$outfile`, so an `$outfile` message would be
+invisible). Plain `--cli agy` with no `--model`, the `reviewer_1` /
+`council.pragmatist` shape, leaves `$MODEL` empty and still dispatches; that is
+pinned by its own check so the widening cannot over-reach. Side benefit: the test
+suite is offline again — the `exit_code=1` form fired a live ~17s droid dispatch
+on every run.
+
 `.agy_read.model` reuses the hardened `.auditor.model` reader (USER config only,
 no env override, password-DB-derived `$HOME`) with one new grammar: agy ids are
 **bare**, with no `provider/` segment, so a `shape` branch was added rather than

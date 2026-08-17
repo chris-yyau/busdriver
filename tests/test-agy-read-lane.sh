@@ -276,13 +276,43 @@ chmod +x "$agy_stub_dir/agy"
 # real provider/model, and the refusal path is triggered by the CLI version
 # alone, not by the value.
 out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy-read --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
-rm -rf "$agy_stub_dir"
 if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"stub-model-3.7"* \
       && "$out" != *"AGY_WAS_INVOKED"* ]]; then
   pass "agy-read on a 1.0.x agy install refuses loudly instead of dropping --model or invoking agy"
 else
   fail "agy-read + agy 1.0.0 should refuse before invoking agy (rc=$rc): $out"
 fi
+
+# The refusal is NOT lane-scoped (#689). Removing the blanket --model refusal in
+# this PR made plain `--cli agy --model X` reachable, so on 1.0.x it would
+# forward an unsupported flag and surface agy's own internal error instead of the
+# dispatcher's actionable one. Codex (round 7) and Greptile both flagged it.
+# The refusal is a HARD exit, not exit_code=1: plain `--cli agy` has no droid
+# escalation exemption, so treating a config error as a failed dispatch swallowed
+# the message, shipped the prompt to droid (a different third party) and exited
+# 0. Asserting "no droid" is the point of this check, and it also keeps the suite
+# OFFLINE — the exit_code=1 form fired a live ~17s droid dispatch here.
+out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
+if [[ $rc -ne 0 && "$out" == *"does not support it"* && "$out" == *"stub-model-3.7"* \
+      && "$out" != *"AGY_WAS_INVOKED"* \
+      && "$out" != *"falling back to droid"* && "$out" != *"droid-fallback"* ]]; then
+  # (matched on the escalation lines, NOT a bare "droid" — the refusal message
+  # itself names droid as an alternative CLI, so a bare match self-defeats.)
+  pass "plain --cli agy --model on a 1.0.x install refuses loudly too (not lane-scoped, no droid escalation)"
+else
+  fail "plain --cli agy --model + agy 1.0.0 should refuse before invoking agy or droid (rc=$rc): $out"
+fi
+
+# ...but plain `--cli agy` with NO --model is the reviewer_1 / council.pragmatist
+# shape and MUST still reach agy on a 1.0.x install. Guards the widening above
+# against over-reach: the predicate is "a model was requested", not "agy is old".
+out="$(PATH="$agy_stub_dir:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"; rc=$?
+if [[ "$out" == *"AGY_WAS_INVOKED"* && "$out" != *"does not support it"* ]]; then
+  pass "plain --cli agy with no --model still dispatches on a 1.0.x install"
+else
+  fail "plain --cli agy (no --model) must still reach agy on 1.0.x (rc=$rc): $out"
+fi
+rm -rf "$agy_stub_dir"
 
 # ── 11. the lane pins a trusted $HOME on the agy PROCESS ─────────
 # (PR #687 Codex P1.) The trusted, password-DB-derived home was originally used

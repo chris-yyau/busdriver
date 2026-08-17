@@ -1,3 +1,10 @@
+## [1.107.4](https://github.com/chris-yyau/busdriver/compare/v1.107.3...v1.107.4) (2026-08-17)
+
+
+### Bug Fixes
+
+* **pr-grind:** make the ADR 0012 head_sha join reachable across sha forms ([#682](https://github.com/chris-yyau/busdriver/issues/682)) ([#684](https://github.com/chris-yyau/busdriver/issues/684)) ([3dee6d0](https://github.com/chris-yyau/busdriver/commit/3dee6d05842b45228b5715c58f0957dc43e867c9)), closes [#302](https://github.com/chris-yyau/busdriver/issues/302)
+
 ## [1.107.3](https://github.com/chris-yyau/busdriver/compare/v1.107.2...v1.107.3) (2026-08-15)
 
 

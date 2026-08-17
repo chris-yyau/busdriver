@@ -957,10 +957,65 @@ dispatch_one() {
             # declare -F matches shell FUNCTIONS only.
             if ! declare -F _agy_wants_argv_prompt >/dev/null \
                || ! declare -F _agy_prompt_oversize >/dev/null \
+               || ! declare -F _agy_model_flag_supported >/dev/null \
                || ! declare -F _agy_argv_limit >/dev/null; then
                 printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
                     "$_PLUGIN_ROOT" > "$outfile" 2>&1
                 exit_code=1
+            elif [[ -n "$MODEL" ]] && ! _agy_model_flag_supported; then
+                # A model was requested and this install is not KNOWN to support
+                # `--model`. Two ways to land here, and both must refuse:
+                #
+                #   - a confirmed agy 1.0.x, which has no --model flag at all
+                #     (SKILL.md, "agy v1.0.0 does not support --model"); and
+                #   - an INCONCLUSIVE version probe (`agy --version` exceeded its
+                #     2s budget, or printed something unparseable), which the
+                #     transport default optimistically treats as modern.
+                #
+                # The second is why this branch sits BEFORE the transport
+                # selection below rather than after it: assume-modern routes an
+                # inconclusive probe down the argv path, which would forward
+                # `--model` and skip a refusal placed further down the chain. A
+                # 1.0.x stub whose `--version` sleeps 3s reproduces it (Codex P2
+                # on PR #687); `_agy_model_flag_supported` is where the two argv
+                # outcomes are told apart.
+                #
+                # Silently dropping --model instead would run the request on
+                # agy's own default model, defeating .agy_read.model's whole
+                # purpose without saying so — and on the read lane that means
+                # quietly asking a DIFFERENT model than the operator configured.
+                #
+                # NOT lane-scoped (#689; Codex round 7 and Greptile both flagged
+                # the lane-only form). The predicate is "a model was requested
+                # and cannot be honoured", equally true of plain
+                # `--cli agy --model X`, a path this PR made reachable when it
+                # removed the blanket --model refusal. Plain `--cli agy` with NO
+                # --model — the blueprint-review reviewer_1 and
+                # council.pragmatist shape — leaves $MODEL empty, never enters
+                # here, and still dispatches on any agy version.
+                #
+                # HARD `exit 1` TO STDERR, not `exit_code=1` into $outfile. This
+                # is a CONFIG error, and the runtime droid escalation exists for
+                # TRANSIENTS. Setting exit_code=1 here made plain `--cli agy`
+                # (which, unlike the lane, pi and opencode, has no escalation
+                # exemption) treat an unsupported flag as a failed dispatch:
+                # measured on a stubbed 1.0.x install, the actionable error was
+                # swallowed, the prompt — and whatever repo content it quoted —
+                # was shipped to droid, a DIFFERENT third party, and dispatch
+                # exited 0 so the caller believed it had succeeded. That is the
+                # same hazard the lane's own droid exemption exists to prevent.
+                # stderr rather than $outfile because `exit` skips the tail that
+                # prints the outfile, which would make the message invisible.
+                # Same shape as the oversize-prompt guard below.
+                local _agy_why
+                if _agy_wants_argv_prompt; then
+                    _agy_why="this agy install did not answer --version within the probe budget, so --model support is unconfirmed"
+                else
+                    _agy_why="this agy install does not support it (agy 1.0.x)"
+                fi
+                printf 'Error: --cli agy was given --model (%s), but %s — see %s/skills/dispatch-cli/SKILL.md. Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex/droid.\n' \
+                    "$MODEL" "$_agy_why" "$_PLUGIN_ROOT" >&2
+                exit 1
             elif _agy_wants_argv_prompt; then
                 # shellcheck disable=SC2312  # `|| echo 0` IS the fallback; masking is intended
                 _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
@@ -980,47 +1035,6 @@ dispatch_one() {
                         "${_agy_lane[@]+"${_agy_lane[@]}"}" \
                         --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
                 fi
-            elif [[ -n "$MODEL" ]]; then
-                # Reached only when _agy_wants_argv_prompt returned false — an
-                # agy 1.0.x install, which does not support --model (SKILL.md
-                # documents this at the "agy v1.0.0 does not support --model"
-                # note). The read lane above unconditionally resolves $MODEL
-                # from .agy_read.model, so every agy-read dispatch on a 1.0.x
-                # install would otherwise hand it an unsupported flag on the
-                # /dev/stdin transport path below. Silently dropping --model
-                # instead would run the request on agy's own default model,
-                # defeating .agy_read.model's whole purpose without saying so.
-                # Refuse loudly instead — same posture as the transport-helper
-                # guard above.
-                #
-                # The condition is `-n "$MODEL"` and deliberately NOT
-                # lane-scoped (#689; Codex round 7 and Greptile both flagged the
-                # lane-only form). The predicate that matters is "a model was
-                # requested and this install cannot honour it" — which is true
-                # of plain `--cli agy --model X` on 1.0.x too, and that path
-                # became reachable in this PR when the blanket `--model` refusal
-                # was removed. Lane-scoping it would forward an unsupported flag
-                # and surface agy's own internal error instead of this
-                # actionable one. Plain `--cli agy` with NO --model (the
-                # blueprint-review reviewer_1 / council.pragmatist shape) leaves
-                # $MODEL empty and is unaffected — it falls through below.
-                #
-                # HARD `exit 1` TO STDERR, not `exit_code=1` into $outfile. This
-                # is a CONFIG error, and the runtime droid escalation exists for
-                # TRANSIENTS. Setting exit_code=1 here made plain `--cli agy`
-                # (which, unlike the lane, pi and opencode, has no escalation
-                # exemption) treat an unsupported flag as a failed dispatch:
-                # measured on a stubbed 1.0.x install, the actionable error was
-                # swallowed, the prompt — and whatever repo content it quoted —
-                # was shipped to droid, a DIFFERENT third party, and dispatch
-                # exited 0 so the caller believed it had succeeded. That is the
-                # same hazard the lane's own droid exemption exists to prevent.
-                # stderr rather than $outfile because `exit` skips the tail that
-                # prints the outfile, which would make the message invisible.
-                # Same shape as the oversize-prompt guard above.
-                printf 'Error: --cli agy was given --model (%s), but this agy install does not support it (agy 1.0.x — see %s/skills/dispatch-cli/SKILL.md). Upgrade agy, drop --model to use agy'"'"'s own configured model, or use --cli codex/droid.\n' \
-                    "$MODEL" "$_PLUGIN_ROOT" >&2
-                exit 1
             elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" ${MODEL:+--model "$MODEL"} \

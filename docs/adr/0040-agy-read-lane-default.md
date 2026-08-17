@@ -109,6 +109,25 @@ pinned by its own check so the widening cannot over-reach. Side benefit: the tes
 suite is offline again — the `exit_code=1` form fired a live ~17s droid dispatch
 on every run.
 
+**An inconclusive version probe refuses too, and that is the same guard.** The
+transport probe (`_agy_wants_argv_prompt`) bounds `agy --version` at 2s and
+classifies a timeout or unparseable output as *modern*. That is the right default
+for prompt **delivery** — every current release is >=1.1, and guessing "old"
+would reintroduce the `/dev/stdin` bug on a working install — but it is a guess,
+and a guess is not evidence of `--model` support. So a 1.0.x install whose
+version command is merely slow was routed down the argv path with `--model`
+attached, skipping the confirmed-1.0.x refusal entirely; and because the lane is
+exempt from droid escalation, the rescue that default originally leaned on is
+gone there, leaving agy's raw option/path error. Codex P2, reproduced with its
+own shape (a 1.0.x stub whose `--version` sleeps 3s). The fix records whether the
+probe actually *parsed* a version (`_AGY_PROBE_CONCLUSIVE`, never inherited from
+the environment for the same reason `_AGY_ARGV_PROMPT` is not — an inherited "1"
+would forge confirmation) and asks one predicate,
+`_agy_model_flag_supported`, ahead of transport selection. Refusing an
+inconclusive probe is the fail-CLOSED direction: it costs a false refusal on a
+slow-but-modern install, which says exactly what happened, instead of a confusing
+failure on a genuinely old one. Both refusal branches collapsed into this one.
+
 `.agy_read.model` reuses the hardened `.auditor.model` reader (USER config only,
 no env override, password-DB-derived `$HOME`) with one new grammar: agy ids are
 **bare**, with no `provider/` segment, so a `shape` branch was added rather than

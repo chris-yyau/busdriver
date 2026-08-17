@@ -1988,6 +1988,12 @@ _agy_bytelen() {
 # letting it be overridden. Only the two assignments below ever populate it, and
 # only with a literal 1 or 0.
 _AGY_ARGV_PROMPT=""
+# Companion to the above, recording WHETHER the probe actually learned the
+# version (1) or fell back to the assume-modern default (0). Same
+# never-inherited discipline and the same reason: an inherited "1" would forge
+# "version confirmed" and re-enable the --model forwarding that
+# `_agy_model_flag_supported` below exists to refuse.
+_AGY_PROBE_CONCLUSIVE=""
 _agy_wants_argv_prompt() {
     case "$_AGY_ARGV_PROMPT" in
         1) return 0 ;;
@@ -2005,12 +2011,41 @@ _agy_wants_argv_prompt() {
     # (Even then it degrades safely: the mis-route yields no valid review and the
     # caller's droid fallback rescues it — same safe direction as a real timeout.)
     v=$(_portable_timeout 2 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
+    if [[ -z "$v" ]]; then _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; return 0; fi
+    _AGY_PROBE_CONCLUSIVE=1
     maj="${v%%.*}"; min="${v#*.}"
     if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
         _AGY_ARGV_PROMPT=1; return 0
     fi
     _AGY_ARGV_PROMPT=0; return 1
+}
+
+# True only when the probe PARSED a version and that version supports `--model`
+# (>=1.1). Runs the probe itself, so callers need not order the two.
+#
+# The distinction that matters is between the probe's two "argv" outcomes, which
+# `_agy_wants_argv_prompt` alone cannot tell apart (both return 0):
+#
+#   parsed >=1.1        → --model supported.
+#   parsed 1.0.x        → not supported (no --model flag at all).
+#   INCONCLUSIVE        → not supported *as far as we know*. Assume-modern is the
+#     (timeout /          right default for prompt DELIVERY — every current
+#      unparseable)       release is >=1.1, and guessing "old" would reintroduce
+#                         the /dev/stdin bug on a working install — but it is a
+#                         guess, and a guess is not evidence of flag support.
+#
+# Treating the guess as support is what PR #687 measured: a 1.0.x install whose
+# `agy --version` takes longer than the 2s probe budget is classified modern, so
+# `--model` is forwarded and the confirmed-1.0.x refusal is never reached. The
+# read lane is exempt from droid escalation (deliberately — ADR 0040), so the
+# rescue the assume-modern default originally leaned on is gone there, and the
+# operator gets agy's raw option/path error instead of an actionable one.
+# Refusing an inconclusive probe is the fail-CLOSED direction: it costs a false
+# refusal on a merely-slow modern install, which says exactly what happened,
+# rather than a confusing failure on a genuinely old one. Codex P2 on PR #687.
+_agy_model_flag_supported() {
+    _agy_wants_argv_prompt || return 1
+    [[ "$_AGY_PROBE_CONCLUSIVE" == 1 ]]
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;

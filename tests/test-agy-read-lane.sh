@@ -314,6 +314,53 @@ else
 fi
 rm -rf "$agy_stub_dir"
 
+# ── 10b. an INCONCLUSIVE version probe refuses a model-pinned dispatch ──
+# (Codex P2 on PR #687.) `_agy_wants_argv_prompt` bounds `agy --version` at 2s
+# and classifies timeout/unparseable as MODERN — the right default for prompt
+# delivery, but not evidence of `--model` support. A 1.0.x install whose version
+# command is slow was therefore routed down the argv path with `--model`
+# attached, skipping the confirmed-1.0.x refusal entirely; and because the read
+# lane is exempt from droid escalation, the operator got agy's raw option/path
+# error instead of an actionable one. Reproduced with Codex's own shape: a stub
+# whose `--version` sleeps past the probe budget.
+agyv_stub="$(mktemp -d)"
+cat > "$agyv_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then sleep 3; printf '1.0.0\n'; exit 0; fi
+printf 'AGY_WAS_INVOKED\n'
+STUB
+chmod +x "$agyv_stub/agy"
+out="$(PATH="$agyv_stub:$PATH" "$DISPATCH" --cli agy-read --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
+if [[ $rc -ne 0 && "$out" == *"support is unconfirmed"* && "$out" == *"stub-model-3.7"* \
+      && "$out" != *"AGY_WAS_INVOKED"* && "$out" != *"falling back to droid"* ]]; then
+  pass "an inconclusive agy --version probe refuses a model-pinned dispatch (does not assume support)"
+else
+  fail "slow-version 1.0.x + --model should refuse, not forward --model (rc=$rc): $out"
+fi
+
+# Same slow probe, but NO --model: the reviewer_1 / council.pragmatist shape must
+# still dispatch. Guards the refusal above against over-reach — the predicate is
+# "a model was requested we cannot honour", never "the probe was slow".
+out="$(PATH="$agyv_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"; rc=$?
+if [[ "$out" == *"AGY_WAS_INVOKED"* && "$out" != *"support is unconfirmed"* ]]; then
+  pass "an inconclusive probe with no --model still dispatches (reviewer path unaffected)"
+else
+  fail "plain --cli agy (no --model) must still dispatch on a slow-version install (rc=$rc): $out"
+fi
+# The conclusive-probe flag must not be forgeable from the environment. A
+# committed .claude/settings.json `env` block is repo-controlled (#325 / ADR
+# 0016), so an inherited "1" would forge "version confirmed" and re-enable
+# exactly the --model forwarding the guard above exists to refuse. Same
+# discipline (and same reason) as `_AGY_ARGV_PROMPT`, whose own env-override
+# check lives in tests/test-agy-argv-limit.sh.
+out="$(PATH="$agyv_stub:$PATH" _AGY_PROBE_CONCLUSIVE=1 "$DISPATCH" --cli agy-read --model stub-model-3.7 --prompt x 2>&1)"; rc=$?
+if [[ $rc -ne 0 && "$out" == *"support is unconfirmed"* && "$out" != *"AGY_WAS_INVOKED"* ]]; then
+  pass "an inherited _AGY_PROBE_CONCLUSIVE=1 cannot forge version confirmation"
+else
+  fail "env _AGY_PROBE_CONCLUSIVE=1 must not bypass the inconclusive-probe refusal (rc=$rc): $out"
+fi
+rm -rf "$agyv_stub"
+
 # ── 11. the lane pins a trusted $HOME on the agy PROCESS ─────────
 # (PR #687 Codex P1.) The trusted, password-DB-derived home was originally used
 # only to read .agy_read.model, so the agy child still inherited $HOME — which

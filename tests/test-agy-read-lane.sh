@@ -284,5 +284,45 @@ else
   fail "agy-read + agy 1.0.0 should refuse before invoking agy (rc=$rc): $out"
 fi
 
+# ── 11. the lane pins a trusted $HOME on the agy PROCESS ─────────
+# (PR #687 Codex P1.) The trusted, password-DB-derived home was originally used
+# only to read .agy_read.model, so the agy child still inherited $HOME — which
+# `.claude/settings.json` can set from a reviewed checkout. agy loads and
+# persists its own ~/.gemini config, auth and plan artifacts from $HOME on EVERY
+# invocation, so an inherited one hands the read lane's entire agy configuration
+# to the repo under review. Behavioural, not structural: stub agy so it prints
+# the $HOME it actually received, dispatch with $HOME pointed at a decoy, and
+# assert the child saw the password-DB home. Run for BOTH model paths, because
+# the original defect was specifically that `--model` skipped the derivation.
+agyh_real="$(eval echo "~$(/usr/bin/id -un)")"
+agyh_decoy="$(mktemp -d)"
+agyh_stub="$(mktemp -d)"
+cat > "$agyh_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+printf 'AGY_SAW_HOME=[%s]\n' "$HOME"
+STUB
+chmod +x "$agyh_stub/agy"
+for agyh_case in explicit-model resolved-model; do
+  if [[ "$agyh_case" == explicit-model ]]; then
+    set -- --model stub-model-3.7
+  else
+    set --
+  fi
+  out="$(HOME="$agyh_decoy" PATH="$agyh_stub:$PATH" \
+         "$DISPATCH" --cli agy-read "$@" --prompt x 2>&1)" || true
+  if [[ "$out" != *"AGY_SAW_HOME="* ]]; then
+    fail "$agyh_case: stub agy was never invoked, so the \$HOME pin is unproven: $out"
+  elif [[ "$out" == *"AGY_SAW_HOME=[$agyh_decoy]"* ]]; then
+    fail "$agyh_case: agy inherited the injectable \$HOME ($agyh_decoy) instead of the password-DB home"
+  elif [[ "$out" == *"AGY_SAW_HOME=[$agyh_real]"* ]]; then
+    pass "$agyh_case: agy-read pins the password-DB \$HOME on the agy process"
+  else
+    fail "$agyh_case: agy saw an unexpected \$HOME (wanted $agyh_real): $out"
+  fi
+done
+set --
+rm -rf "$agyh_decoy" "$agyh_stub"
+
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-read-lane"; else echo "FAIL: test-agy-read-lane"; fi
 exit "$FAILED"

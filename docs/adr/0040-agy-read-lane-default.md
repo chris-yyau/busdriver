@@ -34,6 +34,7 @@ and `skills/dispatch-cli/SKILL.md`.
 | workspace | `--add-dir "$PWD"` (lane-only) | Selects the CWD as the workspace — does not confine reads, which agy performs on absolute paths regardless; reviewer path split to #686 |
 | writes | `--mode plan` | Measured write-blocked in every probe run — the agent's own mode, not a kernel sandbox |
 | provider | exempt from runtime droid escalation | Keep the operator's provider choice |
+| `$HOME` | password-DB-derived, **exported** | agy loads `~/.gemini` config/auth and writes its plan artifact from `$HOME` on every invocation; an inherited one is repo-injectable |
 
 `--mode auto` is refused on the lane. Plain `--cli agy` passes no `--model`, so
 `blueprint-review.reviewer_1` and `council.pragmatist` keep agy's own configured
@@ -71,6 +72,21 @@ That is precisely the reason ADR 0034 gave pi its exemption. The lane flag
 `--mode plan`", and is deliberately ONE flag read in both places: they are the
 same fact, and a second variable would let a change to one silently stop
 protecting the other. Plain `--cli agy` still escalates normally.
+
+**The trusted `$HOME` covers the agy PROCESS, not just the config read.** The
+first cut derived a password-DB `$HOME` only to read `.agy_read.model`, and only
+when `--model` was absent — so the agy child still inherited `$HOME`. A Codex P1
+on this PR pointed out what that leaves open: agy loads its own `~/.gemini`
+config, auth and tool settings on every invocation and writes its plan artifact
+there, so a reviewed checkout setting `$HOME` through `.claude/settings.json`
+(repo-injectable — the ADR 0016 threat this dispatcher guards everywhere else)
+would control the read lane's entire agy configuration, and could land the plan
+artifact inside the checkout. The derivation is therefore unconditional for the
+lane and the value is **exported**, which covers all four agy exec sites at once
+rather than adding a fifth thing to remember when a site is added. Nothing
+between the desugar block and those sites reads a bare `$HOME`. Proven by a
+behavioural check (stub agy prints the `$HOME` it received, dispatch runs with
+`$HOME` pointed at a decoy) that was confirmed to fail with the export removed.
 
 `.agy_read.model` reuses the hardened `.auditor.model` reader (USER config only,
 no env override, password-DB-derived `$HOME`) with one new grammar: agy ids are

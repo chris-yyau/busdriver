@@ -579,21 +579,42 @@ if [[ "$CLI" == "agy-read" ]]; then
     # agy's own state dir (~/.gemini/antigravity-cli/brain/<id>/), so the prompt
     # and whatever repo content it quoted persist on disk outside the repo.
     _AGY_READ_LANE=1
+    # $HOME must be password-DB-derived, not inherited, and the derivation is
+    # UNCONDITIONAL for this lane — it guards two separate things:
+    #
+    #   1. the model config, which names the third party this repo's source is
+    #      shipped to, so a repo-injectable $HOME would let a reviewed checkout
+    #      choose its own exfiltration target; and
+    #   2. agy's OWN home-scoped state (~/.gemini), which it loads and persists
+    #      on every invocation regardless of how $MODEL was chosen.
+    #
+    # (2) is why this cannot sit inside the `-z "$MODEL"` branch below, and why
+    # the derived value is EXPORTED rather than only prefixed onto the resolver
+    # call. With an inherited $HOME the agy child reads its config, auth and
+    # tool settings from a repo-selected directory and writes its plan artifact
+    # there too — a reviewed checkout that sets $HOME via `.claude/settings.json`
+    # (repo-injectable, exactly the ADR 0016 threat this file guards elsewhere)
+    # would then control the read lane's entire agy configuration. Codex P1 on
+    # PR #687. The export is lane-only and therefore covers all four agy exec
+    # sites uniformly, which is deliberate: a per-site prefix would be a fifth
+    # thing to remember when a site is added. Nothing between here and those
+    # sites reads a bare $HOME — LOG_DIR and PROMPT_FILE are both resolved
+    # earlier (the latter from its own password-DB derivation), and the opencode
+    # and pi arms pin their own trusted homes at their own exec.
+    #
+    # Same derivation as the opencode arm's `_oc_home` (in-process, no heredoc —
+    # a heredoc inside `$( )` is the #595 bash-3.2 fail-open, and this lane is
+    # not behind the pi bash-4 floor).
+    # shellcheck disable=SC2310  # same `! fn` condition shape as the opencode
+    # arm's _oc_home derivation; the else-branch IS the failure handler.
+    if ! _agyr_user="$(/usr/bin/id -un 2>/dev/null)" \
+       || ! _bd_valid_username "$_agyr_user" \
+       || ! _agyr_home="$(eval echo "~${_agyr_user}" 2>/dev/null)" \
+       || [[ -z "$_agyr_home" || "$_agyr_home" != /* || ! -d "$_agyr_home" ]]; then
+        echo "Error: could not derive a trusted \$HOME for the agy read lane. Refusing rather than letting an inherited \$HOME select agy's config and ~/.gemini state (and, without --model, the busdriver.json that names the provider). Use --cli codex/droid for repo reads." >&2; exit 1
+    fi
+    export HOME="$_agyr_home"
     if [[ -z "$MODEL" ]]; then
-        # $HOME must be password-DB-derived, not inherited: the config it selects
-        # names the third party this repo's source is shipped to, so a
-        # repo-injectable $HOME would let a reviewed checkout choose its own
-        # exfiltration target. Same derivation as the opencode arm's `_oc_home`
-        # (in-process, no heredoc — a heredoc inside `$( )` is the #595 bash-3.2
-        # fail-open, and this lane is not behind the pi bash-4 floor).
-        # shellcheck disable=SC2310  # same `! fn` condition shape as the opencode
-        # arm's _oc_home derivation; the else-branch IS the failure handler.
-        if ! _agyr_user="$(/usr/bin/id -un 2>/dev/null)" \
-           || ! _bd_valid_username "$_agyr_user" \
-           || ! _agyr_home="$(eval echo "~${_agyr_user}" 2>/dev/null)" \
-           || [[ -z "$_agyr_home" || "$_agyr_home" != /* || ! -d "$_agyr_home" ]]; then
-            echo "Error: could not derive a trusted \$HOME for the agy read model config. Refusing rather than reading ~/.claude/busdriver.json from an inherited \$HOME. Pass --model explicitly." >&2; exit 1
-        fi
         HOME="$_agyr_home" resolve_agy_read_model
         MODEL="$_BD_AGY_READ_MODEL"
         [[ -n "$MODEL" ]] || {

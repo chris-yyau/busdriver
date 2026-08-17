@@ -257,10 +257,17 @@ default="$1"
 # the default rather than performing a wildcard read. Constructing a jq path
 # from a parameter would open a second injection surface inside the very child
 # that exists to escape one.
+# `shape` selects the validation grammar below. opencode-style lanes name a
+# provider AND a model (`provider/id`); agy's own ids are bare, with no provider
+# segment, so requiring a slash there would reject every valid value and
+# silently degrade to the default. Deliberately no example id in this comment:
+# an id may appear at its default constant and nowhere else (see
+# tests/test-auditor-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  auditor) jqf='.auditor.model // empty'; pykey='auditor' ;;
-  pi)      jqf='.pi.model // empty';      pykey='pi'      ;;
-  *)       printf '%s' "$default"; exit 0 ;;
+  auditor)  jqf='.auditor.model // empty';  pykey='auditor';  shape='slash' ;;
+  pi)       jqf='.pi.model // empty';       pykey='pi';       shape='slash' ;;
+  agy_read) jqf='.agy_read.model // empty'; pykey='agy_read'; shape='bare'  ;;
+  *)        printf '%s' "$default"; exit 0 ;;
 esac
 cfg="$HOME/.claude/busdriver.json"
 m=""
@@ -295,9 +302,20 @@ fi
 # `#` silently dropped a valid user-selected reasoning/token variant. A bad
 # value degrades to the default with a loud note rather than killing an
 # AUXILIARY voice on a typo.
-if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$ ]]; then
+if [[ "$shape" == 'bare' ]]; then
+  # Same hazards, same guard, one less segment: leading `-` (option injection)
+  # and whitespace/control chars stay excluded by the character class. A bare id
+  # is the whole value, so no `/` and no `#variant` — those belong to the
+  # opencode reference grammar, not agy's.
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
+  _bd_want='a bare model id with no provider/ prefix'
+else
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$'
+  _bd_want='provider/model'
+fi
+if [[ ! "$m" =~ $_bd_re ]]; then
   if [[ -n "$m" ]]; then
-    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
+    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected ${_bd_want}) — using $default" >&2
   fi
   m="$default"
 fi
@@ -790,6 +808,24 @@ _BD_PI_MODEL=""
 resolve_pi_model() {
   _BD_PI_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_PI_MODEL_DEFAULT" pi)"
   [[ -n "$_BD_PI_MODEL" ]] || _BD_PI_MODEL="$BUSDRIVER_PI_MODEL_DEFAULT"
+}
+
+# ── agy READ-lane model ─────────────────────────────────────────
+# Scoped to `--cli agy-read` ONLY. Plain `--cli agy` — the blueprint-review
+# reviewer_1 slot and every other reviewer dispatch — passes no `--model` and so
+# keeps agy's own configured model. That separation is the point: the read lane
+# wants a cheap fast model per dispatch, the reviewer slot must not silently get
+# downgraded to it.
+#
+# Same trust rules as `.pi.model` (USER config only, no env override, no project
+# config, password-DB-derived $HOME): the value names the third party this
+# repo's source is shipped to. `agy models` enumerates ids.
+BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
+
+_BD_AGY_READ_MODEL=""
+resolve_agy_read_model() {
+  _BD_AGY_READ_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
+  [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────

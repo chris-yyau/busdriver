@@ -353,6 +353,121 @@ else
   fail "schema-drifted comments expected 'stale', got '$got'"
 fi
 
+# --- Test 23: a proof source ABSENT (not empty-but-present) → stale ------
+# `jq -rs` over an empty ALL_REACTIONS/ALL_REVIEWS returns a valid 0, and the A.1
+# threads query does too — so a partial caller would collect vacuous "nothing
+# newer, nothing live" answers. Absence of a source is not proof of absence.
+# The `null` / `{}` rows go further: those are non-empty strings that parse
+# cleanly and still yield zero records, so an existence test alone would let an
+# unread source pose as a quiet one.
+DRIFT_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{}]}}}}}'
+# Booleans present, but the comments the liveness query reads are gone.
+NODELESS_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false}]}}}}}'
+# A LIVE thread whose first comment carries no author key at all: the liveness
+# query keys on comments.nodes[0].author.login, so it would count zero.
+NULL_LOGIN_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":null}}]}}]}}}}}'
+EMPTY_AUTHOR_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{}}]}}]}}}}}'
+AUTHORLESS_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{}]}}]}}}}}'
+for missing in THREADS REVIEWS REACTIONS THREADS=null REVIEWS=null 'REACTIONS={}' 'THREADS={}' \
+               'REVIEWS=[{}]' 'REACTIONS=[{}]' "THREADS=$DRIFT_THREADS" \
+               'REVIEWS=[{"submitted_at":"2026-08-17T18:30:00Z","user":{}}]' \
+               'REACTIONS=[{"content":"eyes","created_at":"2026-08-17T18:30:00Z","user":{}}]' \
+               "THREADS=$NODELESS_THREADS" "THREADS=$AUTHORLESS_THREADS" \
+               "THREADS=$EMPTY_AUTHOR_THREADS" \
+               'REVIEWS=[{"submitted_at":0,"user":{"login":"chatgpt-codex-connector[bot]"}}]' \
+               'REACTIONS=[{"content":"eyes","created_at":0,"user":{"login":"chatgpt-codex-connector[bot]"}}]' \
+               'REACTIONS=[{"content":"eyes","created_at":"0","user":{"login":"chatgpt-codex-connector[bot]"}}]' \
+               'REVIEWS=[{"submitted_at":"0","user":{"login":"chatgpt-codex-connector[bot]"}}]' \
+               'REACTIONS=[{"content":{},"created_at":"2026-08-17T18:30:00Z","user":{"login":"x"}}]' \
+               'REACTIONS=[{"content":"eyes","created_at":"2026-08-17T18:30:00Z","user":{"login":null}}]' \
+               "THREADS=$NULL_LOGIN_THREADS"; do
+  t="$EMPTY_THREADS"; r="$EMPTY_REVIEWS"; x="$NO_REACTIONS"
+  drift="${missing#*=}"; [ "$drift" = "$missing" ] && drift=""
+  case "${missing%%=*}" in
+    THREADS)   t="$drift" ;;
+    REVIEWS)   r="$drift" ;;
+    REACTIONS) x="$drift" ;;
+  esac
+  got=$(FETCH_OK=1 \
+    ALL_THREADS="$t" ALL_REVIEWS="$r" \
+    ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$x" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+  if [ "$got" = "stale" ]; then
+    ok "clean verdict, ALL_${missing%%=*} unreadable as '${drift:-<absent>}' → stale (an unread source proves nothing)"
+  else
+    fail "ALL_${missing%%=*} as '${drift:-<absent>}' expected 'stale', got '$got'"
+  fi
+done
+
+# --- Test 23b: a malformed verdict timestamp → stale --------------------
+# codex_clean_at is the REFERENCE POINT for the at-or-after guards, and the
+# comparison is lexicographic: "zzzz" sorts after every real date, silently
+# suppressing the activity those guards exist to find.
+JUNK_TS_COMMENTS=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" \
+  '{comments:[{author:{login:$login}, createdAt:"zzzz", body:$body}]}')
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$JUNK_TS_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "verdict with a malformed createdAt → stale (reference point must be a real timestamp)"
+else
+  fail "junk verdict timestamp expected 'stale', got '$got'"
+fi
+
+# --- Test 23c: calendar-out-of-range verdict timestamp → stale ----------
+# `9999-99-99T99:99:99Z` is positionally well-formed and sorts after every real
+# date — exactly the value that would suppress the at-or-after guards.
+for junk in "zzzz" "9999-99-99T99:99:99Z" "1970-01-01T00:00:00"; do
+  jc=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" --arg at "$junk" \
+    '{comments:[{author:{login:$login}, createdAt:$at, body:$body}]}')
+  got=$(FETCH_OK=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$jc" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+  if [ "$got" = "stale" ]; then
+    ok "verdict timestamp '$junk' → stale (range-bound, not just digit-counted)"
+  else
+    fail "verdict timestamp '$junk' expected 'stale', got '$got'"
+  fi
+done
+
+# --- Test 23d: a malformed LATER comment cannot hide behind the filter --
+# `.author.login` drops an unattributable record, so a drifted comment published
+# after the verdict would leave the verdict looking like the latest word.
+DRIFT_LATER=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" --arg at "$AFTER_PUSH" \
+  '{comments:[{author:{login:$login}, createdAt:$at, body:$body},
+              {author:{}, createdAt:"2026-08-17T18:30:00Z", body:"..."}]}')
+got=$(run_ledger "$DRIFT_LATER" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "drifted later comment → stale (ALL_COMMENTS is shape-validated too)"
+else
+  fail "drifted later comment expected 'stale', got '$got'"
+fi
+
+# --- Test 24: deleted-account shapes still ack --------------------------
+# `user: null` / `author: null` is what GitHub emits for a deleted account, and
+# it is NOT drift. Rejecting it would fail Tier G closed forever on any PR one of
+# them ever touched — a worse bug than the drift the shape checks guard against.
+GHOST_REACTIONS='[{"content":"heart","created_at":"2026-08-17T17:00:00Z","user":null}]'
+GHOST_REVIEWS='[{"submitted_at":"2026-08-17T17:00:00Z","user":null,"state":"COMMENTED"}]'
+GHOST_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"isOutdated":true,"comments":{"nodes":[{"author":null,"createdAt":"2026-08-17T15:00:00Z"}]}}]}}}}}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$GHOST_THREADS" ALL_REVIEWS="$GHOST_REVIEWS" \
+  ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$GHOST_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "deleted-account records (user/author null) → HEAD_SHA (null is a real shape, not drift)"
+else
+  fail "ghost-account records expected '$HEAD_SHA', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

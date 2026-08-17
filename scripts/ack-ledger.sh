@@ -197,6 +197,59 @@ num_or() {
   esac
 }
 
+# json_shape_ok <payload> <jq-predicate> — echo 1 when <payload> slurps to a
+# NON-EMPTY stream whose every record satisfies <jq-predicate>, else 0 (including
+# on any jq error). Existence-testing a source variable is not enough to trust it:
+# `null`, `{}` and `oops` are all non-empty strings, and `jq -rs` turns each into
+# a stream that yields zero records with exit status 0 — so an UNREAD source
+# reports exactly what a genuinely quiet one reports. Callers that draw a
+# conclusion from a count of zero must confirm the shape first.
+#
+# The predicate has to reach the FIELDS the count indexes, not just the outer
+# container: `[{}]` is a perfectly good array whose records match no login and
+# carry no timestamp, so a container-only check would still hand back a vacuous
+# zero — and neither does `.user: {}`, which passes an outer `has("user")` while
+# `.user.login` reads null and the record silently drops out of the count.
+#
+# Require PRESENCE, not a value, on the identity fields, and distinguish the two
+# ways a field can be "missing": `user: null` / `author: null` is what GitHub
+# legitimately emits for a DELETED account, so it must parse (the record simply
+# is not Codex's and drops out of the count on its own merits); `user: {}` or an
+# absent key is drift, and blocks. Demanding a non-null author instead would fail
+# this tier CLOSED forever on any PR a deleted account ever touched — a worse bug
+# than the drift it guards. Presence is the line to draw because every field named
+# here is one GitHub always emits for the shape being queried.
+#
+# Timestamps are the exception that DOES get a type check, because the comparisons
+# they feed are lexicographic: jq sorts every number before every string, so a
+# numeric `created_at` would silently read as older than any ISO-8601 date and the
+# at-or-after guards would count zero. String or null (the `// "9999"` default
+# handles null); anything else is drift.
+# <jq-predicate> is an internal constant, never caller data.
+# `$ts` is bound for predicates that validate a GitHub timestamp: exactly the
+# UTC 'Z' ISO-8601 form every GitHub API emits. Type alone is not enough — the
+# comparisons downstream are lexicographic, and the string "0" is a perfectly
+# good string that sorts before every real date.
+#
+# The calendar fields are RANGE-BOUND, not just digit-counted. `9999-99-99T99:99:99Z`
+# has the right shape and sorts after every real date, which is precisely the value
+# that would suppress an at-or-after guard — so a positional check alone reproduces
+# the bug it is meant to close. (Feb 30th still passes; the goal is to bound the
+# ORDERING, not to implement a calendar.)
+GH_TS_RE='^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$'
+
+json_shape_ok() {
+  printf '%s' "$1" \
+    | jq -rs --arg ts "$GH_TS_RE" \
+        "if (length > 0 and all($2)) then \"1\" else \"0\" end" 2>/dev/null || echo 0
+}
+
+# ts_ok <string> — 1 when <string> is a GitHub timestamp by the same rule.
+ts_ok() {
+  printf '%s' "$1" | jq -Rr --arg ts "$GH_TS_RE" \
+    'if test($ts) then "1" else "0" end' 2>/dev/null || echo 0
+}
+
 # acks_head <candidate_sha> — returns 0 (true) when a bot's ack recorded against
 # <candidate_sha> still covers the current HEAD ($HEAD_SHA), via EITHER:
 #   (1) DIRECT MATCH — <candidate_sha>'s 8-char prefix == $HEAD_SHA. This is the
@@ -534,6 +587,12 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
       # (an old caller shape) cannot ack.
       codex_clean_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
         '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .createdAt // empty' 2>/dev/null || echo "")
+      # It is a REFERENCE POINT, so its form matters as much as its presence: the
+      # comparisons below are lexicographic, and a junk value like "zzzz" sorts
+      # after every real date, which would silently suppress the very activity
+      # those comparisons exist to find. Anything that is not GitHub's UTC 'Z'
+      # ISO-8601 is discarded, and the `-n` guard below then declines the ack.
+      [ "$(ts_ok "$codex_clean_at")" = "1" ] || codex_clean_at=""
       # ANY Codex activity AT OR AFTER the verdict means Codex is not done with
       # this HEAD, so the verdict must not ack. Two shapes count, and both are
       # checked because either alone leaves a hole:
@@ -559,7 +618,43 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
         --arg at "$codex_clean_at" \
         '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)
           | select((.submitted_at // "9999") >= $at)] | length' 2>/dev/null || echo 1)
+      # An UNREAD proof source is not a proof of absence. Every check above
+      # concludes from a count of ZERO — no live thread, no newer 👀, no newer
+      # review — and `jq -rs` reports zero just as readily for a source that is
+      # missing (`""`), null, or shape-drifted as for one that is genuinely
+      # quiet, with exit status 0 the whole way, so neither `|| echo 1` nor
+      # num_or ever fires. Without this, Tier G is the one tier whose guards a
+      # partial or broken caller can silently switch off. Confirm each source
+      # actually parsed into the shape its query indexes; anything else declines
+      # here and falls through to (0)/(5) → stale.
       if [ -n "$codex_clean_sha" ] && [ -n "$codex_clean_at" ] \
+         && [ "$(json_shape_ok "$ALL_COMMENTS" '(.comments | type) == "array"
+                 and (.comments | all(has("author")
+                        and (.author == null
+                             or ((.author | type) == "object" and (.author.login | type) == "string"))
+                        and (.createdAt | type) == "string" and (.createdAt | test($ts))
+                        and (.body | type) == "string"))')" = "1" ] \
+         && [ "$(json_shape_ok "$ALL_THREADS" '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
+                 and (.data.repository.pullRequest.reviewThreads.nodes
+                      | all((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
+                            and ((.comments.nodes | type) == "array")
+                            and ((.comments.nodes | length) > 0)
+                            and (.comments.nodes[0] | has("author"))
+                            and (.comments.nodes[0].author == null
+                                 or ((.comments.nodes[0].author | type) == "object"
+                                     and (.comments.nodes[0].author.login | type) == "string"))))')" = "1" ] \
+         && [ "$(json_shape_ok "$ALL_REVIEWS" 'type == "array"
+                 and all((.submitted_at == null
+                          or ((.submitted_at | type) == "string" and (.submitted_at | test($ts))))
+                         and has("submitted_at") and has("user")
+                         and (.user == null
+                              or ((.user | type) == "object" and (.user.login | type) == "string")))')" = "1" ] \
+         && [ "$(json_shape_ok "$ALL_REACTIONS" 'type == "array"
+                 and all((.created_at == null
+                          or ((.created_at | type) == "string" and (.created_at | test($ts))))
+                         and (.content | type) == "string" and has("created_at") and has("user")
+                         and (.user == null
+                              or ((.user | type) == "object" and (.user.login | type) == "string")))')" = "1" ] \
          && [ "$(num_or "$codex_eyes_after" 1)" -eq 0 ] \
          && [ "$(num_or "$codex_reviews_after" 1)" -eq 0 ] \
          && acks_head "$codex_clean_sha"; then

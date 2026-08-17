@@ -86,12 +86,27 @@ on A.1 having proven there is no live finding, and a proof that silently returns
 snapshot the caller asserted was complete (`FETCH_OK=1`) is the file's stated
 posture; scoping the default to Codex would have left the same hole for the three
 registered bots for no reason. A missing timestamp sorts as `9999`, i.e. newer than
-everything, so an unreadable record blocks rather than acks. `ALL_COMMENTS` is
-validated by **shape**, not just syntax: every query uses `.comments[]?`, whose
-`?` swallows a schema drift as silently as it swallows a null, so a payload like
-`{"nodes":[]}` would parse cleanly and read as "Codex said nothing" (→ `none`,
-non-gating). A non-empty payload that is not an object with a `comments` array
-is a broken snapshot and blocks.
+everything, so an unreadable record blocks rather than acks.
+
+**Every source Tier G reasons about is validated by shape before its count is
+believed.** This is the part that took the most review rounds, and the reason is
+structural: each guard concludes from a count of ZERO — no live thread, no newer
+👀, no newer review — and `jq` reports zero just as readily for a source that is
+missing, null, or drifted as for one that is genuinely quiet, with exit status 0
+throughout. Neither `|| echo 1` nor `num_or` ever fires on that path, so an
+UNREAD source is indistinguishable from a quiet one and Tier G becomes the only
+tier whose guards a broken caller can silently switch off. The predicates
+therefore reach the **fields the counts index**, not just the outer container:
+`[{}]`, `user:{}`, `author:{"login":null}` and `content:{}` all parse cleanly and
+all drop out of a login-filtered count.
+
+Two lines are drawn deliberately. **Presence, not value, on identity** — but
+`user: null` / `author: null` is the shape GitHub emits for a **deleted account**
+and must parse, or the tier fails closed forever on any PR one of them touched;
+`{}` or a non-string login is drift and blocks. **Timestamps get a format check,
+not just a type check** — the comparisons are lexicographic, so the string `"0"`
+is a well-typed value that sorts before every real date; only the UTC `Z`
+ISO-8601 form GitHub emits is accepted.
 
 ## Alternatives considered
 
@@ -140,8 +155,9 @@ is a broken snapshot and blocks.
 
 Replaying PR #688's real GitHub state (7 sources, `HEAD_SHA=bd532d84`) through
 both ledgers: the pre-fix one returns `stale` — the verdict that forced the
-operator override — and this one returns `bd532d84:G`. 27 unit tests cover the
-tier; 20 of them fail against the pre-fix ledger.
+operator override — and this one returns `bd532d84:G`. PR #687, the sibling case
+that filed #690, likewise goes `stale` → `c78c25e0:G`. 50 unit tests cover the
+tier, every body a verbatim capture from those two PRs.
 
 Known workflow gap, not addressed here: a comment-form **finding** now blocks
 correctly, but has no dismissal path — there is no thread to resolve, so the only

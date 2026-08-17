@@ -251,8 +251,14 @@ run_dispatcher_capture() {
 }
 
 # Helper: run script with controlled env; capture last JSON line.
+# `bash "$SCRIPT"`, never a bare `"$SCRIPT"`: since SCRIPT became overridable
+# (DISPATCHER_COMMIT_BLOCK, #683) it routinely points at a doctored copy built
+# by a `> /tmp/broken.sh` redirect, which lands at mode 0644. Executing that
+# directly dies with `Permission denied` in t1 — before test_q, the very test
+# the override exists to exercise, ever runs. Every other call site already
+# used `bash`; this one was the odd one out. Keep them consistent.
 run_dispatcher() {
-    "$SCRIPT" 2>&1 | tail -n 1
+    bash "$SCRIPT" 2>&1 | tail -n 1
 }
 
 # t1: missing required env -> bail with env (not judgment; missing vars are env failures).
@@ -1768,9 +1774,17 @@ test_grind_g_non_numeric_pr_number_rejected() {
 #
 # To prove this test fails when the premise breaks (it must, or it certifies
 # nothing), run it against a doctored copy:
-#   sed '/^printf .%s. "\$COMMIT_MSG" | git commit/i git add -A' \
+#   awk '/^printf .* \| git commit -F -/{print "git add -A"} {print}' \
 #     scripts/dispatcher-commit-block.sh > /tmp/broken.sh
 #   DISPATCHER_COMMIT_BLOCK=/tmp/broken.sh bash tests/test-dispatcher-commit-block.sh
+#
+# awk, not sed: BSD sed (macOS) rejects the one-line `i text` form this used to
+# use, so the documented command failed on the maintainer's own platform — a
+# reproduction that does not run proves nothing. The anchor is deliberately the
+# full `printf ... | git commit -F -` line, not a bare `git commit -F -`, which
+# also matches a COMMENT above it and would inject a second stray `git add -A`.
+# The redirect leaves /tmp/broken.sh at mode 0644; that is fine, because every
+# call site runs it as `bash "$SCRIPT"` (see run_dispatcher).
 test_q_index_only_premise() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json committed committed_blob

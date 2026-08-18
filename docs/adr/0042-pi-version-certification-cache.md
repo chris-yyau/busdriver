@@ -145,25 +145,27 @@ on 2026-08-17 before the constant was committed:
 BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
 OK:   pi dispatched successfully and could not write under --tools read
       (allowlist enforces, not just advises)
-Results: 90 passed, 0 failed, 0 skipped
+Results: 98 passed, 0 failed, 0 skipped
 ```
 
-That run is **on this change set**, re-measured after the final review round —
-it covers both guards: the comment-site ritual check (one real-file assertion +
-two negative fixtures) and the `_pi_setup_fail` message check (one real-file
-assertion + two negative fixtures). Without `BUSDRIVER_PI_LIVE=1` the same tree
-reports `89 passed, 0 failed, 1 skipped`; the skip is the live containment check.
+That run is **on this change set**, re-measured after the #692 follow-up that
+closed gaps 2 and 3 (per-anchor uniqueness in dispatch.sh, and the new
+`docs/adr/0034` marker guard) — it covers all four guards now shipping: the
+comment-site ritual check (one real-file assertion + two negative fixtures),
+the per-anchor uniqueness check (two real-file assertions + two negative
+fixtures), the ADR 0034 marker check (one real-file assertion + three negative
+fixtures), and the `_pi_setup_fail` message check (one real-file assertion +
+two negative fixtures). Without `BUSDRIVER_PI_LIVE=1` the same tree reports
+`97 passed, 0 failed, 1 skipped`; the skip is the live containment check.
 
 The count is quoted as a reproducibility check, so it must come from the tree
-being shipped — and getting that right took four attempts. Drafts quoted `84`
-(the pre-block figure), `85` (real-file check, but *without* the negative
-fixtures this ADR calls the real deliverable), and `87` (both, but predating the
-`_pi_setup_fail` message guard added in the last review round). Each time the
-number was carried forward from an earlier run instead of re-measured, and each
-time review caught it by running the suite rather than reading the claim: 84 =
-before the block, 85 = partial, 87 = comment guard only, **90 = shipped**. Four
-stale counts in one document is itself the argument for quoting only figures
-re-measured on the tree being shipped.
+being shipped, re-measured on every change that touches this suite — getting
+that right the first time around this ADR took four attempts (84 → 85 → 87 →
+90, each number carried forward from an earlier run instead of re-measured,
+each time caught by review running the suite rather than reading the claim).
+That history is why this record is re-measured again here rather than left as
+90: 90 was correct for the tree ADR 0042 originally shipped, and is stale for
+the tree carrying the #692 follow-up — **98 = shipped now**.
 
 ## Known limitations of the ritual guard
 
@@ -174,11 +176,27 @@ Stated plainly rather than discovered later:
   it"* is accepted (`seen=1 bad=0`, reproduced). It catches the drift that
   actually occurs — comments edited into the wrong order — not an author
   deliberately writing a negated instruction.
-- **Count, not per-site anchoring.** The floor is `seen >= 2`, so an added
-  incidental `BUSDRIVER_PI_LIVE` comment could mask the deletion of a real site.
-- **A fourth statement of the ritual is unguarded**, in `docs/adr/0034`. It is
-  currently correct — which is more evidence for this ADR's thesis than against
-  it, since nothing would catch it drifting.
+- **Per-anchor uniqueness, not full attribution (#692 follow-up).**
+  `_ritual_anchor_check` (dispatch.sh) and the new `_adr_check` (docs/adr/0034)
+  now assert each code anchor / prose marker is unique (`found != 1` fails
+  closed) plus presence of a correctly-ordered ritual mention nearby. That
+  closes the pure count-floor gap: a deleted site can no longer be masked by
+  an incidental mention elsewhere in the whole file. It does **not** prove the
+  covering comment is that anchor's *own* comment — an unrelated,
+  correctly-ordered comment within the lookback window still satisfies
+  presence. Two review rounds tried full attribution (context windows,
+  prior-anchor clamps, decoy-word disambiguation) and each found a new
+  misattribution to exploit; it was abandoned for the same "no completion
+  point over free text" reason the negation bypass above is accepted, not
+  chased.
+- **`docs/adr/0034`'s fourth ritual statement is now guarded** by `_adr_check`,
+  anchored on the document's own unique "in this order" marker rather than a
+  Markdown bullet/block-boundary parser (itself an attribution mechanism with
+  the same failure mode — a fenced-code decoy containing the whole
+  instruction, with no real bullet, would otherwise pass). A decoy or
+  duplicate copy of the marker fails closed on the uniqueness assertion. It
+  inherits the negation-bypass limitation above: order-of-concepts is
+  checked, not semantic negation.
 
 None of these makes the guards vacuous. The comment-site check rejects the verbatim
 historical wording and refuses to borrow the bump concept from an adjacent code line;

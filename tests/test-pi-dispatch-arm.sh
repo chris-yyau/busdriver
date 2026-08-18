@@ -655,6 +655,172 @@ if [[ "$_ritual_rc" -eq 0 && "${_ritual_seen:-0}" -ge 2 ]]; then
 else
     fail "dispatch.sh ritual comments are wrong or under-discovered ($_ritual_out): $(cat "$_ritual_err" 2>/dev/null)"
 fi
+
+
+# ── #692 gap 2: per-anchor presence, replacing the `seen >= 2` count floor ──
+# A file-wide count cannot tell "both real sites are present" from "one was
+# deleted and an incidental BUSDRIVER_PI_LIVE comment appeared elsewhere" — the
+# total is 2 either way, so the deletion passes. Anchor on the CODE landmark
+# instead and assert two things a count cannot: the landmark appears EXACTLY
+# ONCE (a duplicate or decoy copy is itself a drift signal), and at least one
+# comment naming BUSDRIVER_PI_LIVE sits within `win` lines above it. Order
+# compliance of every such mention is already enforced file-wide by
+# _ritual_check above (its own fixture proves a live-mention with no bump
+# fails); this check's only new claim is per-site PRESENCE, which is exactly
+# what a count floor cannot see.
+#
+# Deliberately not an attribution parser: earlier drafts tried to prove the
+# nearby comment was THIS anchor's own comment (context windows, prior-anchor
+# clamps, decoy-word disambiguation) and each round of review found a new
+# misattribution to exploit — attribution over free text has no completion
+# point. Uniqueness does: any decoy or duplicate makes a count assertion fail
+# closed, which is correct behaviour, not a bypass.
+#
+# Accepted residual (documented, same posture as the negation bypass in
+# docs/adr/0042-pi-version-certification-cache.md "Known limitations"): this
+# proves the covering comment is UNIQUE and correctly ordered, not that it is
+# THIS anchor's own comment. An unrelated, correctly-ordered comment already
+# present within `win` lines above a site would still satisfy presence if
+# that site's own comment were deleted. WONTFIX for the same reason gap 1
+# (negation) is WONTFIX: closing it needs the attribution machinery this
+# design deliberately dropped.
+_ritual_anchor_check() {   # $1 = anchor regex, $2 = window; stdin = source
+    awk -v anchor="$1" -v win="$2" '
+        { line[NR] = $0 }
+        END {
+            found = 0
+            for (i = 1; i <= NR; i++) if (line[i] ~ anchor) { found++; pos = i }
+            if (found != 1) {
+                print "anchors=" found " (expected exactly 1)"
+                exit 1
+            }
+            lo = (pos - win < 1 ? 1 : pos - win)
+            covered = 0
+            for (j = lo; j < pos; j++) {
+                c = line[j]
+                if (c !~ /^[[:space:]]*#/) continue
+                if (c ~ /BUSDRIVER_PI_LIVE/) { covered = 1; break }
+            }
+            print "anchors=1 covered=" covered
+            exit (covered ? 0 : 1)
+        }'
+}
+
+# Fixture: the anchor's ritual comment was deleted outright — no comment
+# mentioning BUSDRIVER_PI_LIVE anywhere in the window above it.
+_anchor_bad_fixture='
+echo unrelated
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+'
+if _ritual_anchor_check '^BUSDRIVER_PI_PROBED_VERSION=' 60 <<<"$_anchor_bad_fixture" >/dev/null 2>&1; then
+    fail "anchor check accepts a site with no ritual comment above it (presence bug not fixed)"
+else
+    ok "anchor check rejects a site with no ritual comment above it (proven able to fail)"
+fi
+
+# Fixture: the anchor line itself is duplicated — a decoy or accidental copy
+# (e.g. inside a later unrelated block) must fail closed rather than silently
+# picking one match.
+_anchor_dup_fixture='
+# bump this constant, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+echo unrelated
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+'
+if _ritual_anchor_check '^BUSDRIVER_PI_PROBED_VERSION=' 60 <<<"$_anchor_dup_fixture" >/dev/null 2>&1; then
+    fail "anchor check accepts a duplicated anchor line (uniqueness bug not fixed)"
+else
+    ok "anchor check rejects a duplicated anchor line (proven able to fail)"
+fi
+
+for _a in '^BUSDRIVER_PI_PROBED_VERSION=:the version constant' \
+          '_pi_ver.*!=.*BUSDRIVER_PI_PROBED_VERSION:the version gate'; do
+    _re="${_a%%:*}"; _what="${_a##*:}"
+    if _out=$(_ritual_anchor_check "$_re" 60 < "$DISPATCH" 2>/dev/null); then
+        ok "$_what is a unique site with a ritual comment above it ($_out)"
+    else
+        fail "$_what is missing or duplicated, or has no ritual comment above it ($_out)"
+    fi
+done
+
+# ── #692 gap 3: the fourth ritual statement, in docs/adr/0034 ──
+# Prose, not a comment, so neither check above reaches it. Anchored on the
+# document's own unique marker phrase ("in this order") rather than trying to
+# scope a Markdown bullet/block boundary: a bullet-boundary parser is exactly
+# the attribution machinery gap 2 dropped, and it left an unclosed hole (a
+# fenced code example containing the whole instruction, with no real
+# operational bullet, would satisfy a bullet-scoped scan). Asserting the
+# marker is UNIQUE closes that: a decoy copy anywhere in the document —
+# fenced or not — makes the count 2 and fails closed.
+#
+# Accepted residual (documented, same posture as the negation bypass in
+# docs/adr/0042-pi-version-certification-cache.md "Known limitations"): order
+# of concepts is checked, not semantic negation, so a marker reading "in this
+# order: do not bump ... ; BUSDRIVER_PI_LIVE=1 must never be run" still
+# token-matches as compliant. WONTFIX for the same reason gap 1 is WONTFIX —
+# detecting English negation has no completion point.
+_adr34="$(find "${DISPATCH%/skills/*}/docs/adr" -maxdepth 1 -name '0034-*.md' 2>/dev/null | head -1)"
+_adr_check() {   # stdin = markdown → 0 iff exactly one "in this order" marker,
+                  # with the literal bump named before BUSDRIVER_PI_LIVE=1
+                  # within 5 lines of it
+    awk '
+        { line[NR] = $0 }
+        END {
+            found = 0
+            for (i = 1; i <= NR; i++) if (line[i] ~ /in this order/) { found++; pos = i }
+            if (found != 1) {
+                print "anchor=" found " (expected exactly one \"in this order\" marker)"
+                exit 1
+            }
+            w = ""
+            for (j = pos; j <= pos + 5 && j <= NR; j++) w = w " " line[j]
+            bump = index(w, "bump `BUSDRIVER_PI_PROBED_VERSION`")
+            live = index(w, "BUSDRIVER_PI_LIVE=1")
+            if (bump == 0) { print "line " pos ": no literal bump instruction within 5 lines"; exit 1 }
+            if (live == 0) { print "line " pos ": no literal BUSDRIVER_PI_LIVE=1 within 5 lines"; exit 1 }
+            if (bump > live) { print "line " pos ": orders the live test before the bump"; exit 1 }
+            print "anchor=1 order=ok"
+            exit 0
+        }'
+}
+
+# Fixture: no "in this order" marker at all — the instruction text alone,
+# without the anchor, must not satisfy the check (nothing to anchor on).
+_adr_missing_fixture='- bump `BUSDRIVER_PI_PROBED_VERSION`, then run `BUSDRIVER_PI_LIVE=1`.'
+if _adr_check <<<"$_adr_missing_fixture" >/dev/null 2>&1; then
+    fail "ADR check accepts prose with no \"in this order\" anchor marker (uniqueness bug not fixed)"
+else
+    ok "ADR check rejects prose missing the \"in this order\" anchor marker (proven able to fail)"
+fi
+
+# Fixture: the anchor marker is duplicated (e.g. one real, one decoy copy —
+# a fenced code example would look identical to this check) — must fail
+# closed rather than pick either occurrence.
+_adr_dup_fixture='Operator cost on every pi release, in this order: bump `BUSDRIVER_PI_PROBED_VERSION`, then `BUSDRIVER_PI_LIVE=1`.
+Also documented elsewhere, in this order: bump `BUSDRIVER_PI_PROBED_VERSION`, then `BUSDRIVER_PI_LIVE=1`.'
+if _adr_check <<<"$_adr_dup_fixture" >/dev/null 2>&1; then
+    fail "ADR check accepts a duplicated anchor marker (a decoy copy would silently satisfy it otherwise)"
+else
+    ok "ADR check refuses a duplicated anchor marker (proven able to fail)"
+fi
+
+# Fixture: the marker is unique, but the order after it is reversed.
+_adr_reversed_fixture='Operator cost on every pi release, in this order: run `BUSDRIVER_PI_LIVE=1` first, then bump `BUSDRIVER_PI_PROBED_VERSION`.'
+if _adr_check <<<"$_adr_reversed_fixture" >/dev/null 2>&1; then
+    fail "ADR check accepts the live test ordered before the bump (order bug not fixed)"
+else
+    ok "ADR check rejects the live test ordered before the bump (proven able to fail)"
+fi
+
+if [[ -f "$_adr34" ]]; then
+    if _adr_out=$(_adr_check < "$_adr34" 2>&1); then
+        ok "ADR 0034 states the ritual in the bump-then-verify order ($_adr_out)"
+    else
+        fail "ADR 0034 ritual prose has drifted: $_adr_out"
+    fi
+else
+    fail "ADR 0034 not found under docs/adr/0034-*.md — the fourth ritual statement is unguarded"
+fi
 rm -f "$_ritual_err"
 
 # ── The ritual's THIRD statement: the _pi_setup_fail message (a code string).

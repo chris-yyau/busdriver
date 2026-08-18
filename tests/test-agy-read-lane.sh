@@ -166,6 +166,10 @@ fi
 # stub observes the real argv.
 ags_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_stub"; exit 1; }
 ags_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1; }
+# Backstop cleanup: the sections below exit early on assertion failure only via
+# the `fail` path (no early exit), but a fatal dispatch/probe failure would
+# leak the dirs. `${var:-}` keeps this set -u safe when 5c has not run yet.
+trap 'rm -rf "$tmp_home" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}"' EXIT
 cat > "$ags_stub/agy" <<'STUB'
 #!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
@@ -214,8 +218,8 @@ if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
 printf 'ER_ARGV:%s\n' "$*"
 STUB
 chmod +x "$er_stub/agy"
-out="$(cd "$er_cwd" && PATH="$er_stub:$PATH" bash -c '
-  . "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null
+out="$(cd "$er_cwd" && REPO_ROOT="$REPO_ROOT" PATH="$er_stub:$PATH" bash -c '
+  . "$REPO_ROOT/scripts/lib/resolve-cli.sh" 2>/dev/null
   execute_review agy "review" 10 2>&1')"
 if [[ "$out" == *"ER_ARGV:"* && "$out" == *"--add-dir $er_cwd"* ]]; then
   pass "execute_review (reviewer path) scopes agy to the dispatch CWD"

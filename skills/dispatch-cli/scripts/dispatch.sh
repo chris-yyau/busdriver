@@ -539,8 +539,10 @@ fi
 #   --mode plan    → the lane's write boundary (added in the agy arm below;
 #                    --add-dir needs no lane pin — unconditional since #686)
 #
-# Plain `--cli agy` is UNTOUCHED by all of this: it passes no --model, so the
+# Plain `--cli agy` is untouched by the DESUGAR: it passes no --model, so the
 # reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
+# (`--add-dir "$PWD"` reaches plain agy independently — it is unconditional on
+# every agy dispatch since #686, not a desugar pin.)
 # An explicit `--model` still wins — the config is the default, not a clamp.
 if [[ "$CLI" == "agy-read" ]]; then
     # Preserve the REQUESTED lane name for reporting (output filename, console

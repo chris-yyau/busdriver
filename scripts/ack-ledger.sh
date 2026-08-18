@@ -570,8 +570,16 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
   # `{"nodes":[]}` would parse cleanly, yield no comments, and read as "Codex said
   # nothing" (→ `none`, non-gating). The empty string is reserved for the caller
   # that never fetched comments at all, and is guarded above.
-  codex_comments_ok=$(printf '%s' "$ALL_COMMENTS" \
-    | jq -r 'if (type == "object" and ((.comments | type) == "array")) then "1" else "0" end' 2>/dev/null || echo 0)
+  # Validated down to the FIELDS the queries index, and validated HERE rather than
+  # at the ack — the post-anchor veto at (0) filters on .author.login and compares
+  # .createdAt too, so a drifted record like {"author":{},...} would vanish from
+  # its count and let a leftover 👍 ack past an unread comment-form finding.
+  codex_comments_ok=$(json_shape_ok "$ALL_COMMENTS" '(.comments | type) == "array"
+    and (.comments | all(has("author")
+           and (.author == null
+                or ((.author | type) == "object" and (.author.login | type) == "string"))
+           and (.createdAt | type) == "string" and (.createdAt | test($ts))
+           and (.body | type) == "string"))')
   if [ "$codex_comments_ok" != "1" ]; then echo "stale"; exit 0; fi
   codex_last_comment=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
@@ -628,12 +636,6 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
       # actually parsed into the shape its query indexes; anything else declines
       # here and falls through to (0)/(5) → stale.
       if [ -n "$codex_clean_sha" ] && [ -n "$codex_clean_at" ] \
-         && [ "$(json_shape_ok "$ALL_COMMENTS" '(.comments | type) == "array"
-                 and (.comments | all(has("author")
-                        and (.author == null
-                             or ((.author | type) == "object" and (.author.login | type) == "string"))
-                        and (.createdAt | type) == "string" and (.createdAt | test($ts))
-                        and (.body | type) == "string"))')" = "1" ] \
          && [ "$(json_shape_ok "$ALL_THREADS" '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
                  and (.data.repository.pullRequest.reviewThreads.nodes
                       | all((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"

@@ -449,6 +449,21 @@ else
   fail "drifted later comment expected 'stale', got '$got'"
 fi
 
+# --- Test 23e: drifted comment cannot hide from the post-anchor VETO ----
+# The veto at (0) filters on .author.login and compares .createdAt too, so a
+# drifted record must block there as well — not only on the Tier G ack path. Here
+# the last Codex comment is a findings body (Tier G declines outright), a fresh 👍
+# is present, and the drifted record is what the veto would have to see.
+VETO_DRIFT=$(jq -nc --arg login "$CODEX" --arg body "$FINDINGS_688" \
+  '{comments:[{author:{}, createdAt:"2026-08-17T18:30:00Z", body:"finding"},
+              {author:{login:$login}, createdAt:"2026-08-17T17:36:38Z", body:$body}]}')
+got=$(run_ledger "$VETO_DRIFT" "$EMPTY_THREADS" "$FRESH_PLUS1")
+if [ "$got" = "stale" ]; then
+  ok "drifted comment + fresh 👍 → stale (veto path inherits the shape check)"
+else
+  fail "veto-path drift expected 'stale', got '$got'"
+fi
+
 # --- Test 24: deleted-account shapes still ack --------------------------
 # `user: null` / `author: null` is what GitHub emits for a deleted account, and
 # it is NOT drift. Rejecting it would fail Tier G closed forever on any PR one of

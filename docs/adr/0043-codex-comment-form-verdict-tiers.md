@@ -1,4 +1,4 @@
-# ADR 0042 — Read Codex's comment-form verdicts: Tier G ack, comment-as-engagement
+# ADR 0043 — Read Codex's comment-form verdicts: Tier G ack, comment-as-engagement
 
 **Status:** Accepted
 **Date:** 2026-08-18

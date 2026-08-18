@@ -40,12 +40,13 @@ write_default_plugin_root() {
     cat > "$plugin_root/scripts/fetch-pr-state.sh" <<'EOF'
 FETCH_OK=1
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+HEAD_FULL_SHA=$(git rev-parse HEAD)
 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
 ALL_REVIEWS='[]'
 ALL_COMMENTS='{"comments":[]}'
 ALL_CHECK_RUNS='{"check_runs":[]}'
 ALL_STATUSES='[]'
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA HEAD_FULL_SHA
 return 0
 EOF
 
@@ -545,6 +546,68 @@ test_m_wait_round_classifier() {
     fi
 
     fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks (cursor/cubic/coderabbit/greptile) and all-none tiers; got exit=$dispatcher_exit json=$dispatcher_json"
+}
+test_668_reinvoked_fix_round_reports_landed_sha() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json head_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Round 1 (the real fix-round): the commit block commits + pushes the staged
+    # fix (Grind-PR trailer stamped) and emits the real-SHA envelope.
+    run_dispatcher_capture
+    head_sha=$(git -C "$sandbox" rev-parse HEAD)
+    printf '%s\n' "$dispatcher_json" | jq -e \
+        --arg sha "$head_sha" '.status == "success" and .result_commit_sha == $sha' >/dev/null || {
+            echo "test_668 round-1 envelope should carry the fix SHA; output=$dispatcher_output"
+            return 1
+        }
+
+    # Round 1 RE-INVOCATION (the #668 shape): the dispatcher lost the first
+    # envelope, re-routes the same fix-round, and the commit block now finds a
+    # CLEAN index (the fix was consumed) with the Grind-PR commit at HEAD. It
+    # must report the LANDED SHA — not "none", which would mislabel the round
+    # as a wait-round and starve the dispatcher's --max-fix budget.
+    run_dispatcher_capture
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        --arg sha "$head_sha" '.status == "success" and .result_commit_sha == $sha' >/dev/null; then
+        return 0
+    fi
+    got_sha=$(printf '%s' "$dispatcher_json" | jq -r '.result_commit_sha // "?"' 2>/dev/null || echo "?")
+    fail_test "test_668 re-invoked fix-round should report the landed SHA $head_sha, got result_commit_sha=$got_sha json=$dispatcher_json"
+}
+test_668_no_false_positive_without_grind_trailer() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # The inverse of the #668 re-invocation: a clean index with RESULT_FIXES
+    # populated but NO Grind-PR commit at HEAD. History DOES carry a Grind-PR
+    # commit (a previous round's fix), so the predicate must match HEAD only —
+    # a history-wide grep would false-positive on the old round and mislabel
+    # this wait-round as a landed fix.
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    printf 'prev\n' > "$sandbox/prev.txt"
+    git -C "$sandbox" add prev.txt
+    git -C "$sandbox" commit --no-gpg-sign -qm "fix: address PR #1 feedback
+
+previous round's landed fix
+
+Grind-PR: 1"
+    git -C "$sandbox" push -q
+    printf 'current\n' > "$sandbox/file.txt"
+    git -C "$sandbox" add file.txt
+    git -C "$sandbox" commit --no-gpg-sign -qm "plain round commit without trailer"
+    git -C "$sandbox" push -q
+    run_dispatcher_capture needs_more "fix something"
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        '.status == "success" and .result_commit_sha == "none"' >/dev/null; then
+        return 0
+    fi
+    got_sha=$(printf '%s' "$dispatcher_json" | jq -r '.result_commit_sha // "?"' 2>/dev/null || echo "?")
+    fail_test "test_668 clean index without a Grind-PR commit must stay result_commit_sha=none, got $got_sha json=$dispatcher_json"
 }
 test_n_clean_path_acks() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

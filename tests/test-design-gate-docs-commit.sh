@@ -212,8 +212,14 @@ printf '#!/bin/sh\nexit 0\n' >"$hg/globalhooks/pre-commit"; chmod +x "$hg/global
 # exactly what sanitized-gate.sh exports, so pass 1 is BLIND to it. Only the
 # second, unsanitized pass can see the hook — which is the whole point.
 sanitized_scope(){
+    # -u BUSDRIVER_ORIG_HOME: the absence-case fixture below relies on this
+    # var being genuinely unset. `env` without -u only OVERRIDES the vars it
+    # is given and still inherits everything else from the caller, so a host
+    # shell with BUSDRIVER_ORIG_HOME exported (e.g. a nested busdriver
+    # invocation) would silently invalidate that fixture (CodeRabbit, PR #697).
     payload "git commit -m x" "$1" \
-      | env HOME="$1/fakehome" XDG_CONFIG_HOME="$1/fakehome/.config" \
+      | env -u BUSDRIVER_ORIG_HOME \
+            HOME="$1/fakehome" XDG_CONFIG_HOME="$1/fakehome/.config" \
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
             python3 -I "$SCOPE" "$1" "$1" .claude 2>/dev/null || printf 'REFUSE'
 }

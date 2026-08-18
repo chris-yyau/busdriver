@@ -249,8 +249,11 @@ Out of scope; the remediation loop uses Edit.
 
 ## Verification
 
-`tests/test-design-gate-docs-commit.sh` — 105 assertions, both branches of every
-guard.
+`tests/test-design-gate-docs-commit.sh` — **110 assertions**, both branches of
+every guard. That is the count the suite reports when run, which is the number
+that matters to a reader who runs it; counting call sites gives a smaller figure
+(103) because several sites sit inside loops and the generated sweep contributes
+its own assertions.
 
 Step 1 pins the accept and refuse sets, with the conventional-commit message as
 the counterweight: a parser that refused every parenthesis or `#` would refuse

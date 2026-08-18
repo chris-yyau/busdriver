@@ -88,7 +88,11 @@ class _alarm_bound(object):
             raise _ReadTimeout
         try:
             signal.signal(signal.SIGALRM, self._on_alarm)
-            signal.alarm(max(1, int(remaining) + 1))
+            # setitimer (not alarm) so the deadline preserves fractional
+            # seconds instead of rounding up to the next whole second —
+            # alarm(max(1, int(remaining) + 1)) could overrun the shared
+            # budget by up to 1s (CodeRabbit, PR #697).
+            signal.setitimer(signal.ITIMER_REAL, remaining)
             self.armed = True
         except (ValueError, AttributeError):
             pass
@@ -101,7 +105,7 @@ class _alarm_bound(object):
     def __exit__(self, exc_type, exc, tb):
         if self.armed:
             try:
-                signal.alarm(0)
+                signal.setitimer(signal.ITIMER_REAL, 0)
             except (ValueError, AttributeError):
                 pass
         return False

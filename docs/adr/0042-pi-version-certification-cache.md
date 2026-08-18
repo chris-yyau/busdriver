@@ -145,33 +145,85 @@ on 2026-08-17 before the constant was committed:
 BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
 OK:   pi dispatched successfully and could not write under --tools read
       (allowlist enforces, not just advises)
-Results: 98 passed, 0 failed, 0 skipped
+Results: 119 passed, 0 failed, 0 skipped
 ```
 
-That run is **on this change set**, re-measured after the #692 follow-up that
-closed gaps 2 and 3 (per-anchor uniqueness in dispatch.sh, and the new
-`docs/adr/0034` marker guard) — it covers all four guards now shipping: the
-comment-site ritual check (one real-file assertion + two negative fixtures),
-the per-anchor uniqueness check (two real-file assertions + two negative
-fixtures), the ADR 0034 marker check (one real-file assertion + three negative
-fixtures), and the `_pi_setup_fail` message check (one real-file assertion +
-two negative fixtures). Without `BUSDRIVER_PI_LIVE=1` the same tree reports
-`97 passed, 0 failed, 1 skipped`; the skip is the live containment check.
+That run is **on this change set**, re-measured after #696 review rounds 7–10, which
+walked the anchor check off a shell-lexer ladder and then closed what the literal
+match still left open. Round 7 found its comment-exclusion filter could not fire at
+all; round 8 showed the regex anchor alone still counted `if true; then # if [[ … ]]`;
+round 9 showed the whitespace-based comment stripper that replaced it still counted
+`:;#`, where bash opens a comment directly after a control operator. The check no
+longer parses shell in any form: the anchor is a **literal line start**, matched after
+trimming surrounding whitespace. Round 10 then showed that a line which *starts*
+correctly can still neuter the gate by appending code — `…]]; then :; fi; if false;
+then` — so what may FOLLOW the literal is now constrained too: nothing at all for the
+gate, and only a double-quoted literal for the constant, whose value must stay free to
+change on every certified bump and so is pinned by shape rather than by value. Round
+11 then showed that "a quoted value" was too loose a shape: it accepts
+`BUSDRIVER_PI_PROBED_VERSION="$(pi --version)"`, which makes the pin dynamically equal
+whatever is installed and silently defeats the entire gate. The value must now be a
+static version literal — digits, dots and the characters real versions use — which
+rejects command substitution, backticks, parameter expansion, escapes and an empty
+value without knowing any shell grammar, because none of those are version characters.
+Loosen any of these constraints and its fixtures fail, which is what makes them proofs;
+three positive controls pin that real version strings (including pre-release and build
+metadata) still pass, so the shape cannot quietly become one that rejects everything.
+Round 12 closed the last seam in that design: a malformed site was being *skipped*
+rather than counted, so a valid pin could coexist with a later
+`BUSDRIVER_PI_PROBED_VERSION="$(pi --version)"` — uniqueness saw one site while bash
+used the last assignment. Every line that starts with the anchor now counts as a site,
+and shape is asserted separately, so shadowing fails on the count and malformation
+fails on the shape.
+
+Round 8 also corrected an overclaim about the ADR 0034 check: its container fixtures
+prefixed only the FIRST line of the golden block, leaving the substring intact, and so
+"proved" a detection that does not occur. A container that re-prefixes EVERY line is
+not a byte-identical copy and is not counted. That is now asserted in its true
+direction — see Known limitations.
+
+It covers all four guards now shipping: the comment-site ritual check (one real-file
+assertion + two negative fixtures), the per-anchor uniqueness check (two real-file
+assertions + fourteen negative fixtures + three positive controls), the ADR 0034
+golden-block check (one real-file
+assertion + one control + six negative fixtures + two residual-direction assertions,
+and no Markdown parsing of any kind), and the `_pi_setup_fail` message check (one
+real-file assertion + two negative fixtures). Without `BUSDRIVER_PI_LIVE=1` the same
+tree reports `118 passed, 0 failed, 1 skipped`; the skip is the live containment check.
 
 The count is quoted as a reproducibility check, so it must come from the tree
 being shipped, re-measured on every change that touches this suite — getting
 that right the first time around this ADR took four attempts (84 → 85 → 87 →
 90, each number carried forward from an earlier run instead of re-measured,
 each time caught by review running the suite rather than reading the claim).
-That history is why this record is re-measured again here rather than left as
-90: 90 was correct for the tree ADR 0042 originally shipped, and is stale for
-the tree carrying the #692 follow-up — **98 = shipped now**.
+That history is why this record is re-measured on every touch rather than
+copied forward: 90 was correct for the tree ADR 0042 originally shipped, 98 was
+correct for the #692 follow-up's first commit, 102 after the first round of PR
+review fixes, and 107 for the tree that still carried the CommonMark fence
+parser — all stale for the tree shipping now — **119 = shipped now** (live; `118`
+without `BUSDRIVER_PI_LIVE=1`).
+
+**The CommonMark parser is gone.** Three rounds of #696 review walked a hand-written
+fence/container state machine through tilde runs, info strings, indentation, block
+quotes, list markers and lazy continuations, and each round found another construct it
+mishandled — in both directions: a fenced decoy accepted, and real prose hidden. That
+ladder has no last rung, and a parser that looks thorough while missing a construct is
+precisely what made ritual guards v1–v3 vacuous. The check now holds a verbatim
+golden copy of the ritual block and requires that exact block to appear exactly
+once, anywhere in the file. It does not look at the marker phrase on its own — a
+paraphrase that keeps the phrase but changes the instruction is simply absent, and
+fails at zero. A decoy cannot
+hide in a code block, because a fence preserves the block byte-for-byte and so makes
+the count two and FAILS. The cost is that
+the ADR may not quote its own ritual sentence in an example — deliberate, and the
+fail-closed direction.
 
 ## Known limitations of the ritual guard
 
 Stated plainly rather than discovered later:
 
-- **Negation bypass.** Both checks compare order of concepts, so a comment reading
+- **Negation bypass.** Both order-comparing checks (comment-site and
+  `_pi_setup_fail`) compare order of concepts, so a comment reading
   *"do NOT bump this constant yet. First run `BUSDRIVER_PI_LIVE=1 …`, then bump
   it"* is accepted (`seen=1 bad=0`, reproduced). It catches the drift that
   actually occurs — comments edited into the wrong order — not an author
@@ -188,22 +240,63 @@ Stated plainly rather than discovered later:
   prior-anchor clamps, decoy-word disambiguation) and each found a new
   misattribution to exploit; it was abandoned for the same "no completion
   point over free text" reason the negation bypass above is accepted, not
-  chased.
+  chased. Comment exclusion is carried by matching a **literal line start** rather
+  than a regex, with no comment handling at all: the anchor must be the first thing
+  on the line once leading whitespace is stripped. Rounds 6–9 each found another
+  shell spelling that hid the gate text in a comment while still matching a regex —
+  a trailing `# if [[ … ]]`, an `if true; then # …` whose executable prefix itself
+  begins with `if`, and `:;#`, where bash opens a comment straight after a control
+  operator with no whitespace. Recognising comments needs a shell lexer and that
+  ladder has no last rung, which is the same conclusion the ADR 0034 check reached
+  about Markdown; requiring the line to *begin* with the literal ends it, because a
+  commented copy begins with `#` and a smuggled one begins with the code before the
+  `#`. A round-7 skip-commented-lines filter and a round-8 comment stripper were both
+  removed on the way to this. What may FOLLOW the literal is constrained as well
+  (round 10), because a line that starts correctly can still neuter the gate by
+  appending code (`…]]; then :; fi; if false; then`): nothing may follow the gate, and
+  only a static version literal may follow the constant — pinned by shape, not value,
+  so the certified-bump ritual keeps working. Round 11 tightened that shape: "any
+  quoted value" accepted `"$(pi --version)"`, which would have made the pin equal the
+  installed version and defeated the gate entirely. Round 12 then made a malformed
+  site COUNT as a site rather than be skipped, so a valid pin shadowed by a later
+  dynamic assignment fails on uniqueness instead of passing. What remains is that it proves the line's *text* and
+  uniqueness, not that it is executable shell: with the real gate deleted, a heredoc
+  body holding that exact line would still be counted. Proving executability needs
+  that same shell parser — declined for the same reason.
 - **`docs/adr/0034`'s fourth ritual statement is now guarded** by `_adr_check`,
-  anchored on the document's own unique "in this order" marker rather than a
-  Markdown bullet/block-boundary parser (itself an attribution mechanism with
-  the same failure mode — a fenced-code decoy containing the whole
-  instruction, with no real bullet, would otherwise pass). A decoy or
-  duplicate copy of the marker fails closed on the uniqueness assertion. It
-  inherits the negation-bypass limitation above: order-of-concepts is
-  checked, not semantic negation.
+  which holds a **verbatim golden copy** of the ritual block and requires it to
+  appear in the document **exactly once**. There is no Markdown parsing of any
+  kind — no fence, container, indentation or block-boundary logic — because four
+  rounds of review showed every such state machine had another construct it
+  mishandled, in both directions. Counting exact occurrences makes containers
+  unnecessary: a BYTE-IDENTICAL copy anywhere — inside a fence or bare — is simply a
+  second occurrence and fails, and a document whose real block was replaced by a
+  paraphrased example fails at zero. **A container that re-prefixes every line** (a
+  real block quote, or an indented code block) is *not* byte-identical and is
+  therefore not counted — round 8 corrected an earlier claim to the contrary, whose
+  fixtures had prefixed only the first line. That is out of scope rather than a hole:
+  deletion still fails at zero, drift still fails, and a re-prefixed quotation
+  standing beside an intact real block leaves the correct instruction in place. It also rejects the loosenings
+  a pattern match would admit — `BUSDRIVER_PI_LIVE_DISABLED` for
+  `BUSDRIVER_PI_LIVE=1`, or `xBUSDRIVER_PI_PROBED_VERSION_OLD` for the constant.
+  The cost is deliberate: the ADR may not quote its own ritual sentence in an
+  example, and any legitimate rewording must update the golden literal in the
+  same commit — which is the point, since silent rewording is the drift this
+  guard exists to catch. This check **inherits the negation-bypass
+  limitation** above, and #696 review round 5 demonstrated it concretely: the golden
+  block is matched as a substring, so prefixing it with `DO NOT ` still satisfies the
+  check. The golden literal pins the wording of the statement itself; it says nothing
+  about text surrounding it. Closing that would require deciding whether neighbouring
+  prose negates the instruction — the unbounded attribution problem gap 1 is WONTFIX
+  for. Same accepted residual, same reason: the threat model is accidental drift, not
+  an author deliberately negating their own repo's instruction.
 
 None of these makes the guards vacuous. The comment-site check rejects the verbatim
 historical wording and refuses to borrow the bump concept from an adjacent code line;
 the `_pi_setup_fail` message check rejects verify-then-bump ordering and refuses to
 read the message's own interpolated `${BUSDRIVER_PI_PROBED_VERSION}` as an instruction
-to change it. All four negative fixtures ship and run on every invocation. They are the
-boundary of what the guards claim.
+to change it. All four of those two checks' negative fixtures ship and run on
+every invocation. They are the boundary of what the guards claim.
 
 **Calibrate what that proves:** write denial at the dispatch CWD under the
 production invocation, on this version, on this host. It is not semantic proof of

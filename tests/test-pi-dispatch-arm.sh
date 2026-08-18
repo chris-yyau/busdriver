@@ -684,14 +684,55 @@ fi
 # that site's own comment were deleted. WONTFIX for the same reason gap 1
 # (negation) is WONTFIX: closing it needs the attribution machinery this
 # design deliberately dropped.
-_ritual_anchor_check() {   # $1 = anchor regex, $2 = window; stdin = source
-    awk -v anchor="$1" -v win="$2" '
+_ritual_anchor_check() {   # $1 = literal line start, $2 = window, $3 = exact|assign; stdin = source
+    # The anchor is a LITERAL that must begin the line once leading whitespace is
+    # stripped -- not a regex, and with no comment handling at all. Rounds 6-9 each
+    # found another shell spelling that smuggled the gate text into a comment while
+    # still matching a regex: a trailing `# if [[ … ]]`, an `if true; then # …` whose
+    # executable prefix begins with `if`, and `:;#` where bash starts a comment right
+    # after a control operator with no whitespace. Recognising comments needs a shell
+    # lexer, and that ladder has no last rung -- the same conclusion the ADR 0034 check
+    # reached about Markdown. Requiring the line to BEGIN with the literal ends it: a
+    # commented copy begins with `#`, and a smuggled one begins with whatever code
+    # precedes the `#`, so neither can match. If the real line is legitimately
+    # reformatted, update the literal in the same commit.
+    #
+    # ACCEPTED RESIDUAL (ADR 0042 Known limitations — same gap-1 class, WONTFIX): this
+    # proves the line's TEXT and uniqueness, not that it is executable shell. With the
+    # real gate deleted, a heredoc body holding that exact line would still be counted.
+    # Proving executability needs the same shell parser. The threat model is drift, not
+    # a crafted heredoc. Do NOT add one.
+    awk -v anchor="$1" -v win="$2" -v mode="$3" '
         { line[NR] = $0 }
         END {
-            found = 0
-            for (i = 1; i <= NR; i++) if (line[i] ~ anchor) { found++; pos = i }
+            found = 0; bad = 0; badline = 0
+            for (i = 1; i <= NR; i++) {
+                l = line[i]
+                sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l)
+                if (index(l, anchor) != 1) continue
+                # A malformed site still COUNTS as a site. Skipping it instead let a
+                # valid pin coexist with a later `="$(pi --version)"` line: uniqueness
+                # saw one site, while bash used the last assignment (#696 round 12).
+                found++; pos = i
+                rest = substr(l, length(anchor) + 1)
+                # What may FOLLOW the literal, so appended code cannot ride along on a
+                # line that starts correctly (#696 round 10). exact: nothing at all.
+                # assign: a STATIC version literal. A quoted-anything shape is not enough
+                # -- it accepts "$(pi --version)", which makes the pin dynamically equal
+                # whatever is installed and silently defeats the whole gate (#696 round
+                # 11). Restricting the value to version characters rejects command
+                # substitution, backticks, parameter expansion, escapes and an empty
+                # value without knowing any shell grammar: they are simply not version
+                # characters. The value itself stays free, which the bump ritual needs.
+                if (mode == "exact") { if (rest != "") { bad++; badline = i } }
+                else if (rest !~ /^"[0-9][0-9A-Za-z.+-]*"$/) { bad++; badline = i }
+            }
             if (found != 1) {
                 print "anchors=" found " (expected exactly 1)"
+                exit 1
+            }
+            if (bad) {
+                print "line " badline ": anchor site is malformed (mode=" mode ")"
                 exit 1
             }
             lo = (pos - win < 1 ? 1 : pos - win)
@@ -706,13 +747,20 @@ _ritual_anchor_check() {   # $1 = anchor regex, $2 = window; stdin = source
         }'
 }
 
+# The two anchors, as literal line starts. The gate is the FULL line so any
+# reformatting fails the check and a human re-reads it; the constant is only its
+# assignment prefix, because the version after `=` changes on every certified bump
+# and pinning it would make the ADR 0034 ritual fail on its own second step.
+_ANCHOR_CONST='BUSDRIVER_PI_PROBED_VERSION='
+_ANCHOR_GATE='if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then'
+
 # Fixture: the anchor's ritual comment was deleted outright — no comment
 # mentioning BUSDRIVER_PI_LIVE anywhere in the window above it.
 _anchor_bad_fixture='
 echo unrelated
 BUSDRIVER_PI_PROBED_VERSION="0.84.2"
 '
-if _ritual_anchor_check '^BUSDRIVER_PI_PROBED_VERSION=' 60 <<<"$_anchor_bad_fixture" >/dev/null 2>&1; then
+if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_anchor_bad_fixture" >/dev/null 2>&1; then
     fail "anchor check accepts a site with no ritual comment above it (presence bug not fixed)"
 else
     ok "anchor check rejects a site with no ritual comment above it (proven able to fail)"
@@ -727,16 +775,137 @@ BUSDRIVER_PI_PROBED_VERSION="0.84.2"
 echo unrelated
 BUSDRIVER_PI_PROBED_VERSION="0.84.2"
 '
-if _ritual_anchor_check '^BUSDRIVER_PI_PROBED_VERSION=' 60 <<<"$_anchor_dup_fixture" >/dev/null 2>&1; then
+if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_anchor_dup_fixture" >/dev/null 2>&1; then
     fail "anchor check accepts a duplicated anchor line (uniqueness bug not fixed)"
 else
     ok "anchor check rejects a duplicated anchor line (proven able to fail)"
 fi
 
-for _a in '^BUSDRIVER_PI_PROBED_VERSION=:the version constant' \
-          '_pi_ver.*!=.*BUSDRIVER_PI_PROBED_VERSION:the version gate'; do
-    _re="${_a%%:*}"; _what="${_a##*:}"
-    if _out=$(_ritual_anchor_check "$_re" 60 < "$DISPATCH" 2>/dev/null); then
+# #696 review: a TRAILING shell comment carrying the gate text was counted as the live
+# anchor. A round-7 "skip lines starting with #" filter was tried and REMOVED -- it
+# could never fire on either call site and no fixture for it could be made to fail,
+# which is the vacuous-guard shape this suite exists to reject.
+_anchor_trailing_comment_fixture='
+# On a mismatch, bump BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+echo active # if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
+'
+if _ritual_anchor_check "$_ANCHOR_GATE" 60 exact <<<"$_anchor_trailing_comment_fixture" >/dev/null 2>&1; then
+    fail "anchor check counts a TRAILING comment as the live gate (trailing-comment bug not fixed)"
+else
+    ok "anchor check ignores a gate hidden in a trailing comment (proven able to fail)"
+fi
+
+# #696 round 8: the executable prefix itself begins with `if`, so any regex anchored
+# on `if ` matches. Only requiring the line to BEGIN with the full literal rejects it;
+# loosen that to a substring search and this fixture passes.
+_anchor_if_true_fixture='
+# On a mismatch, bump BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+if true; then # if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
+'
+if _ritual_anchor_check "$_ANCHOR_GATE" 60 exact <<<"$_anchor_if_true_fixture" >/dev/null 2>&1; then
+    fail "anchor check counts \`if true; then # if [[ … ]]\` as the live gate"
+else
+    ok "anchor check rejects a gate behind an executable \`if\` prefix (proven able to fail)"
+fi
+
+# #696 round 9: bash starts a comment immediately after a control operator, with no
+# whitespace before `#`. Any whitespace-based comment stripper misses this; requiring
+# the line to BEGIN with the literal rejects it without knowing bash's comment rules.
+_anchor_operator_comment_fixture='
+# On a mismatch, bump BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+if true; then :;# if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
+'
+if _ritual_anchor_check "$_ANCHOR_GATE" 60 exact <<<"$_anchor_operator_comment_fixture" >/dev/null 2>&1; then
+    fail "anchor check counts a gate commented out with \`:;#\` as the live gate"
+else
+    ok "anchor check rejects a gate commented out with \`:;#\` (proven able to fail)"
+fi
+
+# #696 round 10: a line that STARTS with the real gate but appends code -- here closing
+# the conditional immediately and opening a dead one -- is syntactically valid shell that
+# neuters the gate while a prefix match still counts it. Nothing may follow the literal.
+_anchor_suffix_fixture='
+# On a mismatch, bump BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+if [[ -z "$_pi_ver" || "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then :; fi; if false; then
+'
+if _ritual_anchor_check "$_ANCHOR_GATE" 60 exact <<<"$_anchor_suffix_fixture" >/dev/null 2>&1; then
+    fail "anchor check counts a gate with appended code as the live gate (prefix match not closed)"
+else
+    ok "anchor check rejects a gate with code appended after it (proven able to fail)"
+fi
+
+# Same hole on the constant: the version must stay free to change, so its line is
+# pinned by SHAPE -- a quoted literal and nothing else -- rather than by value.
+_anchor_const_suffix_fixture='
+# bump this constant, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"; BUSDRIVER_PI_PROBED_VERSION="0.0.0"
+'
+if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_anchor_const_suffix_fixture" >/dev/null 2>&1; then
+    fail "anchor check counts a constant line with a second assignment appended"
+else
+    ok "anchor check rejects a constant line with code appended after it (proven able to fail)"
+fi
+
+# #696 round 11: the constant's VALUE must be static. Each of these is a shell
+# construct that would make the pin dynamic (or the line malformed); none is a version.
+for _bad in cmdsub backtick paramexp escape empty bareword; do
+    case "$_bad" in
+      cmdsub)   _v='"$(pi --version)"' ;;
+      backtick) _v='"`pi --version`"' ;;
+      paramexp) _v='"${_pi_ver}"' ;;
+      escape)   _v='"0.84.2\"; evil"' ;;
+      empty)    _v='""' ;;
+      *)        _v='"$_pi_ver"' ;;
+    esac
+    _f="
+# bump this constant, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_PROBED_VERSION=$_v
+"
+    if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_f" >/dev/null 2>&1; then
+        fail "anchor check accepts a non-static constant value ($_bad)"
+    else
+        ok "anchor check rejects a non-static constant value ($_bad) (proven able to fail)"
+    fi
+done
+
+# Control: the shape must still accept real version strings, or every fixture above
+# would be vacuous -- a check that rejects everything proves nothing.
+for _good in '"0.84.2"' '"1.2.3-rc.1"' '"2.0.0+build.5"'; do
+    _f="
+# bump this constant, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_PROBED_VERSION=$_good
+"
+    if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_f" >/dev/null 2>&1; then
+        ok "anchor check accepts the real version literal $_good (control: can pass)"
+    else
+        fail "anchor check rejects the valid version literal $_good -- shape too tight"
+    fi
+done
+
+# #696 round 12: a VALID pin followed by a second, dynamic assignment. Bash uses the
+# last one, so counting only well-formed sites would see a single anchor and pass.
+_anchor_shadow_fixture='
+# bump this constant, then re-run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"
+echo unrelated
+BUSDRIVER_PI_PROBED_VERSION="$(pi --version)"
+'
+if _ritual_anchor_check "$_ANCHOR_CONST" 60 assign <<<"$_anchor_shadow_fixture" >/dev/null 2>&1; then
+    fail "anchor check accepts a valid pin shadowed by a later dynamic assignment"
+else
+    ok "anchor check rejects a pin shadowed by a later assignment (proven able to fail)"
+fi
+
+for _what in 'the version constant' 'the version gate'; do
+    case "$_what" in
+      *constant) _lit="$_ANCHOR_CONST"; _mode=assign ;;
+      *)         _lit="$_ANCHOR_GATE";  _mode=exact  ;;
+    esac
+    if _out=$(_ritual_anchor_check "$_lit" 60 "$_mode" < "$DISPATCH" 2>/dev/null); then
         ok "$_what is a unique site with a ritual comment above it ($_out)"
     else
         fail "$_what is missing or duplicated, or has no ritual comment above it ($_out)"
@@ -744,73 +913,131 @@ for _a in '^BUSDRIVER_PI_PROBED_VERSION=:the version constant' \
 done
 
 # ── #692 gap 3: the fourth ritual statement, in docs/adr/0034 ──
-# Prose, not a comment, so neither check above reaches it. Anchored on the
-# document's own unique marker phrase ("in this order") rather than trying to
-# scope a Markdown bullet/block boundary: a bullet-boundary parser is exactly
-# the attribution machinery gap 2 dropped, and it left an unclosed hole (a
-# fenced code example containing the whole instruction, with no real
-# operational bullet, would satisfy a bullet-scoped scan). Asserting the
-# marker is UNIQUE closes that: a decoy copy anywhere in the document —
-# fenced or not — makes the count 2 and fails closed.
+# Prose, not a comment, so neither check above reaches it. The ritual is verified by
+# holding a VERBATIM GOLDEN COPY of the block and requiring it to appear in the
+# document exactly once. There is NO Markdown classification of any kind -- no fence,
+# container or indentation logic -- because four successive designs that tried to
+# decide which occurrences were "live" were each rejected for mishandling some
+# construct. Counting exact occurrences needs no container logic: a BYTE-IDENTICAL copy
+# anywhere -- fenced or bare -- is simply a second occurrence and fails closed. A
+# container that re-prefixes every line is not byte-identical and is out of scope; the
+# fixtures below assert that in the true direction rather than claiming otherwise.
 #
-# Accepted residual (documented, same posture as the negation bypass in
-# docs/adr/0042-pi-version-certification-cache.md "Known limitations"): order
-# of concepts is checked, not semantic negation, so a marker reading "in this
-# order: do not bump ... ; BUSDRIVER_PI_LIVE=1 must never be run" still
-# token-matches as compliant. WONTFIX for the same reason gap 1 is WONTFIX —
-# detecting English negation has no completion point.
+# The accepted residual for this check is recorded at _ADR_RITUAL_GOLDEN below, next
+# to the literal it applies to.
 _adr34="$(find "${DISPATCH%/skills/*}/docs/adr" -maxdepth 1 -name '0034-*.md' 2>/dev/null | head -1)"
-_adr_check() {   # stdin = markdown → 0 iff exactly one "in this order" marker,
-                  # with the literal bump named before BUSDRIVER_PI_LIVE=1
-                  # within 5 lines of it
+# The ritual as ADR 0034 must state it, verbatim. This is a GOLDEN literal, not a
+# pattern: #696 review round 4 showed that every loosening — a prefix match on
+# BUSDRIVER_PI_LIVE (which also accepts BUSDRIVER_PI_LIVE_DISABLED), a wildcard before
+# the constant (which also accepts `bump xBUSDRIVER_PI_PROBED_VERSION_OLD`), or counting
+# a marker phrase (which still passes if the real bullet is DELETED and a fenced example
+# survives) — admits an instruction that is wrong. An exact block admits none of them,
+# needs no Markdown parsing at all, and fails on any drift so a human re-reads it.
+# If this block is legitimately reworded, update this literal in the same commit.
+_ADR_RITUAL_GOLDEN='  trust an unverified one. Operator cost on every pi release, **in this order**:
+  bump `BUSDRIVER_PI_PROBED_VERSION` to the new version FIRST, then run
+  `BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh`, and revert the bump if it
+  fails.'
+# ACCEPTED RESIDUAL (ADR 0042, "Known limitations of the ritual guard" — gap 1 class,
+# WONTFIX). The golden block is matched as a SUBSTRING, so text placed around it is not
+# examined: prefixing `DO NOT ` still satisfies this check, and a lone verbatim copy
+# surviving inside a fence would too. Closing either requires deciding whether
+# neighbouring prose negates the instruction, or which occurrences are "live" — the
+# unbounded attribution problem gap 1 is WONTFIX for. Four successive designs
+# (attribution windows, occurrence counting, a CommonMark container parser, this golden
+# literal) were each rejected on the same ground. This guard targets ACCIDENTAL DRIFT —
+# a statement edited into the wrong order — not an author deliberately negating their
+# own repo's instruction. Do NOT add a parser here; that ladder has no last rung.
+_adr_check() {   # stdin = markdown → 0 iff the golden ritual block appears EXACTLY once
+    export _ADR_RITUAL_GOLDEN
     awk '
-        { line[NR] = $0 }
+        BEGIN { golden = ENVIRON["_ADR_RITUAL_GOLDEN"] }
+        { doc = doc $0 "\n" }
         END {
-            found = 0
-            for (i = 1; i <= NR; i++) if (line[i] ~ /in this order/) { found++; pos = i }
-            if (found != 1) {
-                print "anchor=" found " (expected exactly one \"in this order\" marker)"
-                exit 1
-            }
-            w = ""
-            for (j = pos; j <= pos + 5 && j <= NR; j++) w = w " " line[j]
-            bump = index(w, "bump `BUSDRIVER_PI_PROBED_VERSION`")
-            live = index(w, "BUSDRIVER_PI_LIVE=1")
-            if (bump == 0) { print "line " pos ": no literal bump instruction within 5 lines"; exit 1 }
-            if (live == 0) { print "line " pos ": no literal BUSDRIVER_PI_LIVE=1 within 5 lines"; exit 1 }
-            if (bump > live) { print "line " pos ": orders the live test before the bump"; exit 1 }
-            print "anchor=1 order=ok"
-            exit 0
+            n = 0; start = 1
+            while ((p = index(substr(doc, start), golden)) > 0) { n++; start += p + length(golden) - 1 }
+            if (n == 1) { print "ritual=1 verbatim=ok"; exit 0 }
+            print "ritual=" n " (expected the golden ritual block exactly once)"
+            exit 1
         }'
 }
 
-# Fixture: no "in this order" marker at all — the instruction text alone,
-# without the anchor, must not satisfy the check (nothing to anchor on).
-_adr_missing_fixture='- bump `BUSDRIVER_PI_PROBED_VERSION`, then run `BUSDRIVER_PI_LIVE=1`.'
-if _adr_check <<<"$_adr_missing_fixture" >/dev/null 2>&1; then
-    fail "ADR check accepts prose with no \"in this order\" anchor marker (uniqueness bug not fixed)"
+# Fixtures. Each differs from the golden block in EXACTLY the property under test --
+# a fixture that fails for an unrelated reason (wrong case, missing backticks) proves
+# nothing, which is how this file's previous block-quote fixture was vacuous.
+if _adr_check <<<"$_ADR_RITUAL_GOLDEN" >/dev/null 2>&1; then
+    ok "ADR check accepts the golden ritual block (control: the guard can pass)"
 else
-    ok "ADR check rejects prose missing the \"in this order\" anchor marker (proven able to fail)"
+    fail "ADR check rejects the golden block — every negative fixture below would be vacuous"
 fi
 
-# Fixture: the anchor marker is duplicated (e.g. one real, one decoy copy —
-# a fenced code example would look identical to this check) — must fail
-# closed rather than pick either occurrence.
-_adr_dup_fixture='Operator cost on every pi release, in this order: bump `BUSDRIVER_PI_PROBED_VERSION`, then `BUSDRIVER_PI_LIVE=1`.
-Also documented elsewhere, in this order: bump `BUSDRIVER_PI_PROBED_VERSION`, then `BUSDRIVER_PI_LIVE=1`.'
-if _adr_check <<<"$_adr_dup_fixture" >/dev/null 2>&1; then
-    fail "ADR check accepts a duplicated anchor marker (a decoy copy would silently satisfy it otherwise)"
+if _adr_check <<<"prose with no ritual block at all." >/dev/null 2>&1; then
+    fail "ADR check accepts a document with the ritual deleted"
 else
-    ok "ADR check refuses a duplicated anchor marker (proven able to fail)"
+    ok "ADR check rejects a document with the ritual deleted (proven able to fail)"
 fi
 
-# Fixture: the marker is unique, but the order after it is reversed.
-_adr_reversed_fixture='Operator cost on every pi release, in this order: run `BUSDRIVER_PI_LIVE=1` first, then bump `BUSDRIVER_PI_PROBED_VERSION`.'
-if _adr_check <<<"$_adr_reversed_fixture" >/dev/null 2>&1; then
-    fail "ADR check accepts the live test ordered before the bump (order bug not fixed)"
+if _adr_check <<<"$_ADR_RITUAL_GOLDEN
+$_ADR_RITUAL_GOLDEN" >/dev/null 2>&1; then
+    fail "ADR check accepts a duplicated ritual block"
 else
-    ok "ADR check rejects the live test ordered before the bump (proven able to fail)"
+    ok "ADR check rejects a duplicated ritual block (proven able to fail)"
 fi
+
+# Round-4 loosenings: a prefix/wildcard match would accept both of these.
+_adr_wrong_flag="${_ADR_RITUAL_GOLDEN/BUSDRIVER_PI_LIVE=1/BUSDRIVER_PI_LIVE_DISABLED=1}"
+if _adr_check <<<"$_adr_wrong_flag" >/dev/null 2>&1; then
+    fail "ADR check accepts BUSDRIVER_PI_LIVE_DISABLED — prefix matching not eliminated"
+else
+    ok "ADR check rejects a look-alike flag name (proven able to fail)"
+fi
+_adr_wrong_const="${_ADR_RITUAL_GOLDEN/bump \`BUSDRIVER_PI_PROBED_VERSION\`/bump \`xBUSDRIVER_PI_PROBED_VERSION_OLD\`}"
+if _adr_check <<<"$_adr_wrong_const" >/dev/null 2>&1; then
+    fail "ADR check accepts a look-alike constant name — wildcard matching not eliminated"
+else
+    ok "ADR check rejects a look-alike constant name (proven able to fail)"
+fi
+
+# Substitution case (round 4): real bullet DELETED, only a fenced example left.
+# The golden literal is absent from the surviving text, so this fails on count 0 —
+# no container awareness required.
+if _adr_check <<<'Some prose.
+```text
+(an example that paraphrases the ritual but is not the golden block)
+```' >/dev/null 2>&1; then
+    fail "ADR check accepts a document whose real ritual was replaced by an example"
+else
+    ok "ADR check rejects ritual-replaced-by-example (proven able to fail)"
+fi
+
+# A FENCED duplicate preserves the block byte-for-byte, so it is a second occurrence
+# and fails closed -- this is why no fence parser is needed.
+_adr_fenced_decoy=$'```text\n'"$_ADR_RITUAL_GOLDEN"$'\n```'
+if _adr_check <<<"$_ADR_RITUAL_GOLDEN
+$_adr_fenced_decoy" >/dev/null 2>&1; then
+    fail "ADR check accepts a verbatim duplicate hidden in a fenced block"
+else
+    ok "ADR check rejects a verbatim duplicate in a fenced block (no parsing needed)"
+fi
+
+# ACCEPTED RESIDUAL (#696 review round 8, corrected claim). A container that RE-PREFIXES
+# EVERY line -- a real block quote (`> ` per line) or indented code block (4 spaces per
+# line) -- is no longer a byte-identical copy, so it is NOT counted. The earlier fixtures
+# prefixed only the FIRST line, which left the golden substring intact and so "proved"
+# a detection that does not happen. Asserted in the true direction instead of claimed
+# away. This is not a hole: the guard's scope is the VERBATIM block, deleting the real
+# block still fails at zero, drifting it still fails, and a re-prefixed quotation
+# standing alongside an intact real block leaves the correct instruction in place.
+for _lbl in block-quote indented; do
+    case "$_lbl" in block-quote) _pfx='> ' ;; *) _pfx='    ' ;; esac
+    _decoy=$(printf '%s\n' "$_ADR_RITUAL_GOLDEN" | sed "s|^|$_pfx|")
+    if _adr_check <<<"$_ADR_RITUAL_GOLDEN
+$_decoy" >/dev/null 2>&1; then
+        ok "ADR check tolerates a re-prefixed $_lbl quotation (documented residual: not verbatim)"
+    else
+        fail "ADR check now rejects a re-prefixed $_lbl quotation -- residual changed, update ADR 0042"
+    fi
+done
 
 if [[ -f "$_adr34" ]]; then
     if _adr_out=$(_adr_check < "$_adr34" 2>&1); then

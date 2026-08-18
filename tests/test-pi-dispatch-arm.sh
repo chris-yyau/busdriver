@@ -626,15 +626,23 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
                 idx = index(substr(text, from), tok)
                 if (idx == 0) return 0
                 p = from + idx - 1
+                from = p + length(tok)
+                # Word-boundary check (PR-mode review): plain substring matching
+                # also matches "bump" inside "bumping"/"bumper" -- skip anything
+                # that is not a whole word, without counting it as a candidate.
+                if (substr(text, p - 1, 1) ~ /[a-z0-9_]/ || substr(text, p + length(tok), 1) ~ /[a-z0-9_]/) continue
                 # Clause boundary: nearest "." on each side, capped at 150 chars so an
                 # unterminated sentence cannot pull in an unrelated earlier/later thought.
+                # A "." immediately followed by a letter/digit is a filename extension
+                # or version-number separator ("release.sh", "0.84.2"), not a sentence
+                # boundary (PR-mode review finding).
                 cs = (p - 150 > 1 ? p - 150 : 1)
                 for (k = p - 1; k >= cs; k--) {
-                    if (substr(text, k, 1) == ".") { cs = k + 1; break }
+                    if (substr(text, k, 1) == "." && substr(text, k + 1, 1) !~ /[a-z0-9]/) { cs = k + 1; break }
                 }
                 ce = (p + length(tok) + 150 <= length(text) ? p + length(tok) + 150 : length(text))
                 for (k = p + length(tok); k <= ce; k++) {
-                    if (substr(text, k, 1) == ".") { ce = k - 1; break }
+                    if (substr(text, k, 1) == "." && substr(text, k + 1, 1) !~ /[a-z0-9]/) { ce = k - 1; break }
                 }
                 clause = " " substr(text, cs, ce - cs + 1) " "
                 gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
@@ -649,9 +657,8 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
                 # changes" now reads as negated); that is the safe direction -- a false
                 # reject just needs a comment reworded, a false accept is the #692 outage
                 # class.
-                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
+                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|couldnt|wouldnt|isnt|arent|wasnt|werent|hasnt|hadnt|havent|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
                 if (!neg) return p
-                from = p + length(tok)
             }
         }
         END {
@@ -674,20 +681,20 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
                 live = index(substr(w, li), "BUSDRIVER_PI_LIVE")
                 if (live > 0) live = live + li - 1
                 bump = 0
-                # earliest NON-NEGATED mention of the bump. Deliberately just
-                # "bump" and the name of the constant itself -- an earlier
-                # version also matched bare "this constant"/"the constant" as
-                # synonyms, but those are noun phrases any verb can govern
-                # ("verify this constant" satisfied the concept just as well
-                # as "bump this constant", discovered via manual real-file
-                # drift testing on #692), which defeats the entire point of
-                # this guard. _ritual_prose_check already made this same call
-                # for ADR prose; this matches it.
-                split("bump|BUSDRIVER_PI_PROBED_VERSION", toks, "|")
-                for (t in toks) {
-                    p = first_valid_pos(w, toks[t])
-                    if (p > 0 && (bump == 0 || p < bump)) bump = p
-                }
+                # earliest NON-NEGATED mention of the literal word "bump".
+                # Deliberately just "bump", not a noun-phrase/constant-name
+                # synonym -- an earlier version also matched bare "this
+                # constant"/"the constant" and the constants own name, but
+                # those are nouns any verb can govern ("verify this constant"
+                # / "verify BUSDRIVER_PI_PROBED_VERSION" satisfied the concept
+                # just as well as "bump this constant" would have, defeating
+                # the entire point of this guard -- PR-mode review, #692
+                # follow-up). All three real ritual comments this guard
+                # protects use the literal word "bump", so nothing is lost.
+                # _ritual_prose_check already made this same call for ADR
+                # prose; this matches it.
+                p = first_valid_pos(w, "bump")
+                if (p > 0) bump = p
                 if (bump == 0)      { bad++; good = 0; print "  (line " i ": names the live test but never a non-negated bump)" > "/dev/stderr" }
                 else if (bump > live) { bad++; good = 0; print "  (line " i ": names the live test BEFORE the bump — deadlocks)" > "/dev/stderr" }
                 else { good = 1 }
@@ -947,21 +954,6 @@ else
     fail "ritual guard misses a valid bump instruction because \"Bump\" is capitalized (case-sensitive token search)"
 fi
 
-# Positive fixture (commit-mode review, round 5): first_valid_pos() lowercased
-# TEXT but not TOK -- an uppercase-only synonym like
-# BUSDRIVER_PI_PROBED_VERSION could then never match the already-lowercased
-# text, silently dropping it as a valid instruction even though it names the
-# constant directly.
-_ritual_uppercase_tok_fixture='
-# Set BUSDRIVER_PI_PROBED_VERSION to the new version, then run
-# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
-'
-if _ritual_check <<<"$_ritual_uppercase_tok_fixture" >/dev/null 2>&1; then
-    ok "ritual guard matches an uppercase-only synonym (BUSDRIVER_PI_PROBED_VERSION) against lowercased text"
-else
-    fail "ritual guard misses an uppercase-only bump synonym because only TEXT, not TOK, was lowercased"
-fi
-
 # Regression fixtures (retained from pre-redesign negation-tracking
 # machinery): comma/wide-space/multi-verb conjunction variants, all still
 # correctly rejected -- "not" and "bump" share the same clause regardless.
@@ -1123,6 +1115,58 @@ if _ritual_check <<<"$_ritual_let_alone_fixture" >/dev/null 2>&1; then
     fail "ritual guard is fooled by a \"let alone\" coordination (\"edit, let alone bump\")"
 else
     ok "ritual guard rejects a negated bump coordinated through \"let alone\""
+fi
+
+# Negative fixture (PR-mode review, #692 follow-up): substring matching
+# alone also matches "bump" inside "bumping"/"bumper" -- a comment naming
+# the concept without instructing it must not satisfy the guard.
+_ritual_substring_word_fixture='
+# Bumping is optional here. First run BUSDRIVER_PI_LIVE=1
+# tests/test-pi-dispatch-arm.sh, and a bumper plate is not required.
+'
+if _ritual_check <<<"$_ritual_substring_word_fixture" >/dev/null 2>&1; then
+    fail "ritual guard matches \"bump\" as a substring of \"bumping\"/\"bumper\" instead of requiring a whole word"
+else
+    ok "ritual guard requires a whole-word \"bump\", not a substring match inside a longer word"
+fi
+
+# Negative fixture (PR-mode review, #692 follow-up): a "." immediately
+# followed by a letter or digit is a filename extension or version-number
+# separator, not a clause boundary -- the period in "release.sh" must not
+# hide the "not" on the other side of it from "bump".
+_ritual_filename_dot_fixture='
+# Do not update release.sh or bump this constant yet. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_filename_dot_fixture" >/dev/null 2>&1; then
+    fail "ritual guard treats the period in a filename (release.sh) as a clause boundary and misses the negation on the other side of it"
+else
+    ok "ritual guard does not treat a filename period (release.sh) as a clause boundary"
+fi
+
+# Negative fixture (PR-mode review, #692 follow-up): the negation word list
+# omitted several ordinary contractions (couldnt/wouldnt/isnt/hasnt and
+# siblings, after apostrophe stripping).
+_ritual_contraction_fixture='
+# You couldnt bump this constant now. First run BUSDRIVER_PI_LIVE=1
+# tests/test-pi-dispatch-arm.sh, then bump it for real.
+'
+if _ritual_check <<<"$_ritual_contraction_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by the contraction couldnt -- the negation list omitted it"
+else
+    ok "ritual guard rejects a bump negated by the contraction couldnt"
+fi
+
+# Negative fixture (commit-mode review, #692 follow-up round 2): "havent"
+# was also missing from the same list.
+_ritual_havent_fixture='
+# You havent been authorized to bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it for real.
+'
+if _ritual_check <<<"$_ritual_havent_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by the contraction havent -- the negation list omitted it"
+else
+    ok "ritual guard rejects a bump negated by the contraction havent"
 fi
 
 # Negative fixture found via manual real-file drift testing on #692 (not a
@@ -1330,15 +1374,23 @@ _ritual_prose_check() {   # stdin = prose -> prints "seen=N bad=M"; nonzero if a
                 idx = index(substr(text, from), tok)
                 if (idx == 0) return 0
                 p = from + idx - 1
+                from = p + length(tok)
+                # Word-boundary check (PR-mode review): plain substring matching
+                # also matches "bump" inside "bumping"/"bumper" -- skip anything
+                # that is not a whole word, without counting it as a candidate.
+                if (substr(text, p - 1, 1) ~ /[a-z0-9_]/ || substr(text, p + length(tok), 1) ~ /[a-z0-9_]/) continue
                 # Clause boundary: nearest "." on each side, capped at 150 chars so an
                 # unterminated sentence cannot pull in an unrelated earlier/later thought.
+                # A "." immediately followed by a letter/digit is a filename extension
+                # or version-number separator ("release.sh", "0.84.2"), not a sentence
+                # boundary (PR-mode review finding).
                 cs = (p - 150 > 1 ? p - 150 : 1)
                 for (k = p - 1; k >= cs; k--) {
-                    if (substr(text, k, 1) == ".") { cs = k + 1; break }
+                    if (substr(text, k, 1) == "." && substr(text, k + 1, 1) !~ /[a-z0-9]/) { cs = k + 1; break }
                 }
                 ce = (p + length(tok) + 150 <= length(text) ? p + length(tok) + 150 : length(text))
                 for (k = p + length(tok); k <= ce; k++) {
-                    if (substr(text, k, 1) == ".") { ce = k - 1; break }
+                    if (substr(text, k, 1) == "." && substr(text, k + 1, 1) !~ /[a-z0-9]/) { ce = k - 1; break }
                 }
                 clause = " " substr(text, cs, ce - cs + 1) " "
                 gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
@@ -1353,9 +1405,8 @@ _ritual_prose_check() {   # stdin = prose -> prints "seen=N bad=M"; nonzero if a
                 # changes" now reads as negated); that is the safe direction -- a false
                 # reject just needs a comment reworded, a false accept is the #692 outage
                 # class.
-                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
+                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|couldnt|wouldnt|isnt|arent|wasnt|werent|hasnt|hadnt|havent|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
                 if (!neg) return p
-                from = p + length(tok)
             }
         }
         END {

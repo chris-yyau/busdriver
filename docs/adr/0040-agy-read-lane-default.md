@@ -1,6 +1,7 @@
 # ADR 0040 — `agy-read` becomes the default in-tree read lane
 
-**Status:** Accepted (2026-08-17)
+**Status:** Accepted (2026-08-17); amended 2026-08-18 by #686 — `--add-dir
+"$PWD"` is no longer lane-only (see "Scope note" below).
 **Supersedes:** nothing. **Amends:** ADR 0034 (pi in-tree read lane) — pi is
 retained and unchanged, but is no longer the lane an agent reaches for first.
 
@@ -31,7 +32,7 @@ and `skills/dispatch-cli/SKILL.md`.
 | Pinned | Value | Why |
 |--------|-------|-----|
 | model | `.agy_read.model` (default Gemini 3.7 Flash) | Read lane gets its own cheap/fast model |
-| workspace | `--add-dir "$PWD"` (lane-only) | Selects the CWD as the workspace — does not confine reads, which agy performs on absolute paths regardless; reviewer path split to #686 |
+| workspace | `--add-dir "$PWD"` | Selects the CWD as the workspace — does not confine reads, which agy performs on absolute paths regardless; **unconditional on every agy dispatch since #686** (see scope note below) |
 | writes | `--mode plan` | Measured write-blocked in every probe run — the agent's own mode, not a kernel sandbox |
 | provider | exempt from runtime droid escalation | Keep the operator's provider choice |
 | `$HOME` | password-DB-derived, **exported** | agy loads `~/.gemini` config/auth and writes its plan artifact from `$HOME` on every invocation; an inherited one is repo-injectable |
@@ -41,14 +42,23 @@ and `skills/dispatch-cli/SKILL.md`.
 model. That separation was the operator's explicit requirement and is pinned by
 `tests/test-agy-read-lane.sh`.
 
-**`--add-dir` is lane-only, and the reviewer defect is split out (#686).** The
+**Scope note (amended 2026-08-18, #686): `--add-dir` is now UNCONDITIONAL.** The
 remembered-workspace defect (finding 1 below) is agy's, not the lane's, and the
-reviewer slot shares it: plain `--cli agy` passes no `--add-dir`, so
-`blueprint-review.reviewer_1` can return findings about a different checkout than
-the one under review. This PR briefly applied `--add-dir` to all four agy sites to
-fix that, then scoped it back to the lane: the reviewer path is a gate of record,
-and changing its behaviour deserves its own change and its own regression test
-rather than a drive-by in a read-lane PR. Tracked as #686.
+reviewer slot shared it: plain `--cli agy` passed no `--add-dir`, so an unscoped
+`blueprint-review.reviewer_1` could return findings about a different checkout
+than the one under review — measured: dispatching from
+`/Volumes/Work/Projects/busdriver`, agy answered out of a stale `~/src/busdriver`
+checkout (v1.71.0) with confident, correctly-formatted `file:line` citations for
+the wrong tree, and did not error. This PR briefly applied `--add-dir` to all
+four agy sites, then scoped it back to the lane on the grounds that the reviewer
+path is a gate of record whose behaviour change deserves its own change and its
+own regression test. #686 is that change: the workspace argv
+(`local _agy_lane=(--add-dir "$PWD")`) is built unconditionally in dispatch.sh's
+agy arm, `execute_review`'s agy arm (the blueprint-review/litmus reviewer entry
+point, which builds its own argv) passes the same flag on both transports,
+`--mode plan` remains the lane's write boundary, and
+`tests/test-agy-read-lane.sh` sections 5b/5c assert the reviewer shapes reach
+agy with `--add-dir "$PWD"` and no `--mode plan`.
 
 For the record, because a PR-mode reviewer read the unconditional form as
 "breaks the documented empty-directory containment pattern": that premise is
@@ -58,8 +68,8 @@ quoted it back. agy's reads are unconfined either way, so `--add-dir` grants no
 access — it selects WHICH tree is the workspace. The empty-directory pattern is
 **opencode's**; agy has never had it, because the reviewer slot has always run in
 the working tree in order to read the code it reviews. The boundary that does
-apply is unchanged: gate agy on **who wrote the content**. So the scope-back above
-is a scope decision, not a security fix.
+apply is unchanged: gate agy on **who wrote the content**. So both the original
+scope-back and the #686 widening are scope decisions, not security fixes.
 
 The droid exemption came out of litmus review and is worth naming, because the
 desugar is what creates the hazard: it rewrites `CLI` to plain `agy`, so `$name`

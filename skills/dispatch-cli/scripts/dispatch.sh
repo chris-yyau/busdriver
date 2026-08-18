@@ -238,6 +238,8 @@ if ! type _bd_valid_username &>/dev/null; then
     return 0
   }
 fi
+# PI_RITUAL_SITE: probed-version — anchor for tests/test-pi-dispatch-arm.sh's
+# ritual guard (issue #692). Must appear exactly once; do not paraphrase away.
 # The pi version whose tool-permission behaviour this repo actually probed (see
 # the pi) arm and docs/adr/0034). A mismatch BLOCKS the dispatch: this lane's
 # read-only posture is observed behaviour of one version, and the test proving it
@@ -1444,6 +1446,9 @@ CHILD
                     # opt-in (it needs a live model call), so CI cannot catch an
                     # upgrade that re-enables shell or write tools for in-tree
                     # prompts. Surface the drift instead of assuming it away.
+                    # PI_RITUAL_SITE: version-mismatch — anchor for
+                    # tests/test-pi-dispatch-arm.sh's ritual guard (issue #692).
+                    # Must appear exactly once; do not paraphrase away.
                     # BLOCK, not warn: the read-only posture is observed behaviour
                     # on one probed version, not a proven invariant, and CI cannot
                     # catch a pi upgrade that re-enables shell or write tools for

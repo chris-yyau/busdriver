@@ -586,43 +586,70 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
     # bump it." has "bump" precede BUSDRIVER_PI_LIVE, so the old order test
     # passed even though the actual instruction is reversed. first_valid_pos()
     # walks every occurrence of a token (not just the first) and discards any
-    # whose immediately preceding text (last 20 chars, apostrophes stripped so
-    # "don't"/"doesn't" match the same as "do not") reads as a negation —
-    # taking the earliest occurrence that survives that filter. A bump mention
-    # that is entirely negated is treated the same as no bump mention at all.
+    # whose enclosing clause (bounded by "." on each side, capped at 150
+    # chars) reads as a negation, apostrophes stripped so "don't"/"doesn't"
+    # match the same as "do not" — taking the earliest occurrence that
+    # survives that filter. A bump mention that is entirely negated is
+    # treated the same as no bump mention at all. This is a bounded
+    # heuristic, not a parser: it defends against comment wording drifting
+    # out of sync with the code (the failure mode #692 actually reproduced),
+    # not against deliberately adversarial prose constructed to defeat it.
+    #
+    # Nine commit-mode review rounds (#692 follow-up) tried widening this
+    # into a parser that tracks WHICH verb or clause a negation governs —
+    # semicolon transparency, an intervening-verb cut, coordinated-verb
+    # unwinding, infinitive gaps, colon-terminated lists, stacked adverbial
+    # modifiers. Each fix closed one adversarial construction and the next
+    # review round produced another; the design was unbounded because
+    # English negation is unbounded. first_valid_pos() below is the
+    # reverted, narrow version: a negation word ANYWHERE in the same
+    # period-bounded clause rejects the mention, full stop — no
+    # semicolon/colon boundary, no verb-scoping, no coordination tracking.
+    # This can false-REJECT prose that uses a negation word about something
+    # else in the same sentence; that is the safe direction (a false reject
+    # just needs a comment reworded, a false accept is the #692 outage
+    # class), and every real protected comment in this repo already keeps
+    # its bump instruction in a clause with no other negation word — see
+    # dispatch.sh's two PI_RITUAL_SITE anchors and ADR 0034's "Fail-closed
+    # version pin" bullet.
     awk '
         # comment lines only: an adjacent code line must never satisfy a concept
         /^[[:space:]]*#/ { c = $0; sub(/^[[:space:]]*#[[:space:]]?/, "", c); buf[NR] = c; next }
         { buf[NR] = "" }        # code line → empty, so windows cannot borrow from it
-        # Negation scope is the WHOLE enclosing CLAUSE, both directions, not a
-        # fixed trailing window: "do not bump this constant" needs backward
-        # scope ("not" precedes the token by more than a word), and "a bump is
-        # not required" needs forward scope (the negation trails the token) --
-        # both were false-accepted by an earlier preceding-only 40-char version
-        # (litmus review on #692). cs/ce bound the clause at the nearest "."
-        # on each side, capped at 80 chars per direction so a missing
-        # terminator cannot make the scan unbounded, and an unrelated negation
-        # outside this sentence cannot bleed in and false-flag a legitimate
-        # mention.
         function first_valid_pos(text, tok,    p, idx, from, cs, ce, k, clause, neg) {
+            text = tolower(text)   # case-insensitive token/clause search throughout
+            tok = tolower(tok)     # TOK must be lowercased too, or an uppercase-only synonym
+                                    # like BUSDRIVER_PI_PROBED_VERSION could never match the
+                                    # already-lowercased text
             from = 1
             while (1) {
                 idx = index(substr(text, from), tok)
                 if (idx == 0) return 0
                 p = from + idx - 1
-                cs = (p - 80 < 1 ? 1 : p - 80)
+                # Clause boundary: nearest "." on each side, capped at 150 chars so an
+                # unterminated sentence cannot pull in an unrelated earlier/later thought.
+                cs = (p - 150 > 1 ? p - 150 : 1)
                 for (k = p - 1; k >= cs; k--) {
                     if (substr(text, k, 1) == ".") { cs = k + 1; break }
                 }
-                ce = p + length(tok) + 80
-                if (ce > length(text)) ce = length(text)
+                ce = (p + length(tok) + 150 <= length(text) ? p + length(tok) + 150 : length(text))
                 for (k = p + length(tok); k <= ce; k++) {
                     if (substr(text, k, 1) == ".") { ce = k - 1; break }
                 }
-                clause = " " tolower(substr(text, cs, ce - cs + 1)) " "
+                clause = " " substr(text, cs, ce - cs + 1) " "
                 gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
                 gsub(/[,;:!?]/, " ", clause)      # "not," must still match " not " as a whole word
-                neg = (clause ~ / (not|never|dont|wont|shouldnt|didnt|doesnt|avoid|refrain|without) /)
+                # Any whole-word negation trigger ANYWHERE in the period-bounded clause
+                # rejects the mention -- including bare "no", folded in here rather than
+                # kept as a separate adjacency-only special case (an adjacency-only "no"
+                # check is what let "Under no circumstances bump this constant" slip
+                # through as a false ACCEPT: "no" was never adjacent to "bump"). This can
+                # false-REJECT a bump instruction that shares a clause with an unrelated
+                # "no"/"not" about something else ("bump this constant with no other
+                # changes" now reads as negated); that is the safe direction -- a false
+                # reject just needs a comment reworded, a false accept is the #692 outage
+                # class.
+                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
                 if (!neg) return p
                 from = p + length(tok)
             }
@@ -647,8 +674,16 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
                 live = index(substr(w, li), "BUSDRIVER_PI_LIVE")
                 if (live > 0) live = live + li - 1
                 bump = 0
-                # earliest NON-NEGATED mention of the bump, by any spelling in use
-                split("bump|BUSDRIVER_PI_PROBED_VERSION|this constant|the constant", toks, "|")
+                # earliest NON-NEGATED mention of the bump. Deliberately just
+                # "bump" and the name of the constant itself -- an earlier
+                # version also matched bare "this constant"/"the constant" as
+                # synonyms, but those are noun phrases any verb can govern
+                # ("verify this constant" satisfied the concept just as well
+                # as "bump this constant", discovered via manual real-file
+                # drift testing on #692), which defeats the entire point of
+                # this guard. _ritual_prose_check already made this same call
+                # for ADR prose; this matches it.
+                split("bump|BUSDRIVER_PI_PROBED_VERSION", toks, "|")
                 for (t in toks) {
                     p = first_valid_pos(w, toks[t])
                     if (p > 0 && (bump == 0 || p < bump)) bump = p
@@ -734,6 +769,379 @@ else
     ok "ritual guard rejects a \"without\"-negated bump mention"
 fi
 
+# "no"/"cannot" are also real negation words PR-mode review found the list
+# still omitted: "No bump is required. Run BUSDRIVER_PI_LIVE=1 ..." and
+# "Bumping cannot happen here. Run BUSDRIVER_PI_LIVE=1 ..." both leave an
+# unnegated-by-the-old-list "bump"/"Bumping" mention preceding the live-test
+# mention (note: "Bumping" does not match the bare "bump" token search, so
+# this fixture instead uses the same "bump" wording with "cannot" to isolate
+# the negation-word gap specifically, matching the "no" fixture's shape).
+_ritual_no_cannot_negation_fixture='
+# No bump is required here — this comment merely mentions
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh in passing.
+'
+if _ritual_check <<<"$_ritual_no_cannot_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by \"no\" negation — the word list omitted it"
+else
+    ok "ritual guard rejects a \"no\"-negated bump mention"
+fi
+
+_ritual_cannot_negation_fixture='
+# You cannot bump this constant here. Run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it for real.
+'
+if _ritual_check <<<"$_ritual_cannot_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by \"cannot\" negation — the word list omitted it"
+else
+    ok "ritual guard rejects a \"cannot\"-negated bump mention"
+fi
+
+# Negation ~118 chars from the token in an unterminated sentence (no period
+# appears anywhere before "bump"): a bare fixed cap first tried at 80 chars
+# was too tight for this shape (PR-mode review), and removing the cap
+# entirely was then its own defect -- an unrelated, unterminated EARLIER
+# sentence could bleed into a later valid instruction with no bound at all
+# (commit-mode review, round 2). The cap is restored at 150: measured
+# headroom above this fixture's ~118-char distance, so the legitimate
+# long-distance case still passes while the scan stays bounded.
+_ritual_very_long_negation_fixture='
+# Operators must not, under any circumstances, for any reason, during any
+# release cycle, regardless of urgency or operator preference, bump this
+# constant casually without following the full ritual. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it for real.
+'
+if _ritual_check <<<"$_ritual_very_long_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard misses a negation ~118 chars before the token, still in the same unterminated sentence"
+else
+    ok "ritual guard rejects a long-distance same-sentence negation within the 150-char cap"
+fi
+
+# Negative fixture (redesign, #692 follow-up): the redesigned guard folds
+# bare "no" into the whole-clause negation list rather than keeping a
+# separate adjacency-only special case (see first_valid_pos()) -- an
+# adjacency-only "no" check is what let "Under no circumstances bump this
+# constant" slip through as a false ACCEPT (see the fixture below). The
+# tradeoff is that an incidental "no" elsewhere in the same clause, as here,
+# now false-rejects too. That is the accepted, safe-direction cost: a false
+# reject just needs a comment reworded, a false accept is the #692 outage
+# class.
+_ritual_no_incidental_fixture='
+# bump this constant with no other changes, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_no_incidental_fixture" >/dev/null 2>&1; then
+    fail "ritual guard accepts a clause containing an incidental \"no\" -- the whole-clause \"no\" list should reject it"
+else
+    ok "ritual guard rejects a clause containing an incidental \"no other changes\" phrasing (accepted false-reject tradeoff)"
+fi
+
+# Negative fixture (redesign, #692 follow-up): proves the gap the
+# adjacency-only "no" check actually had -- "no" separated from the token by
+# other words was invisible to it. The whole-clause list closes this.
+_ritual_under_no_circumstances_fixture='
+# Under no circumstances bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_under_no_circumstances_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by \"under no circumstances\" -- \"no\" is not adjacent to the token, and an adjacency-only check misses it"
+else
+    ok "ritual guard rejects a bump instruction negated by \"under no circumstances\" (no adjacent to the token)"
+fi
+
+# Negative fixture (commit-mode review, round 3): an arbitrary run of
+# whitespace between "No" and the token must still count as adjacency -- a
+# fixed 6-char lookback missed "No" once padded with extra spaces.
+_ritual_wide_no_fixture='
+# No          bump is scheduled. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_wide_no_fixture" >/dev/null 2>&1; then
+    fail "ritual guard misses a \"No\" negation separated from the token by extra whitespace"
+else
+    ok "ritual guard rejects a \"No\"-negated bump mention across a wide whitespace run"
+fi
+
+# Positive fixture (commit-mode review, round 3): "no" must only match as a
+# whole word immediately before the token, never mid-word -- "casino bump"
+# is not a negation.
+_ritual_no_midword_fixture='
+# Run the casino bump migration, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_no_midword_fixture" >/dev/null 2>&1; then
+    ok "ritual guard does not treat a mid-word \"no\" (\"casino\") as negating the token"
+else
+    fail "ritual guard false-rejects \"casino bump\" by matching \"no\" mid-word"
+fi
+
+# Negative fixture (redesign, #692 follow-up): the redesigned guard rejects
+# ANY negation word in the same period-bounded clause, without trying to
+# work out which verb it governs -- "Do not edit the provider list" and
+# "bump this constant" share a clause (comment lines concatenate with no
+# sentence boundary between them, and there is no period here), so this now
+# correctly reports as a false reject rather than the accept it used to be.
+# Accepted safe-direction cost, same as the incidental-"no" fixture above.
+_ritual_unrelated_negation_fixture='
+# Do not edit the provider list
+# bump this constant, then run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_unrelated_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard accepts a bump instruction sharing an unpunctuated clause with an unrelated negated verb -- the whole-clause negation check should reject it"
+else
+    ok "ritual guard rejects a bump instruction sharing an unpunctuated clause with an unrelated negated verb (accepted false-reject tradeoff)"
+fi
+
+# Negative fixture (redesign, #692 follow-up): the redesigned guard treats
+# only "." as a clause boundary, not ":" -- "cannot" and "bump this
+# constant" now share a clause across the colon, so this correctly rejects
+# rather than requiring machinery to prove the colon separates two topics.
+# Accepted false-reject tradeoff, same reasoning as the two fixtures above.
+_ritual_colon_boundary_fixture='
+# This cannot wait: bump this constant, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_colon_boundary_fixture" >/dev/null 2>&1; then
+    fail "ritual guard accepts a bump instruction sharing a colon-joined clause with an unrelated negation -- \".\" is the only clause boundary now"
+else
+    ok "ritual guard rejects a bump instruction sharing a colon-joined clause with an unrelated negation (accepted false-reject tradeoff)"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected under the whole-clause check -- "."
+# is the only clause boundary, so "not" reaches "bump" through the colon.
+_ritual_list_colon_fixture='
+# Do not follow this sequence: bump this constant, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_list_colon_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a list-introducing colon — \"do not follow this sequence:\" still negates the bump it introduces"
+else
+    ok "ritual guard rejects a negated bump introduced by a colon-delimited list"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected -- "not" and "bump" share the same
+# period-bounded clause regardless of the coordinating conjunction.
+_ritual_coordinated_verb_fixture='
+# Do not edit or bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_coordinated_verb_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a coordinated verb (\"edit or bump\") — accepts the earlier, still-negated bump"
+else
+    ok "ritual guard rejects a negated bump reached through a coordinating conjunction"
+fi
+
+# Positive fixture (commit-mode review, round 4): the token search was
+# case-sensitive, so a grammatically ordinary sentence-initial "Bump this
+# constant..." was silently missed once the earlier "this constant"/"the
+# constant" fallback (narrowed away as a vacuity, see the wrong-verb fixture
+# below) stopped incidentally covering it.
+_ritual_capitalized_bump_fixture='
+# Bump this constant, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_capitalized_bump_fixture" >/dev/null 2>&1; then
+    ok "ritual guard recognises a sentence-initial capitalized \"Bump\" as the token"
+else
+    fail "ritual guard misses a valid bump instruction because \"Bump\" is capitalized (case-sensitive token search)"
+fi
+
+# Positive fixture (commit-mode review, round 5): first_valid_pos() lowercased
+# TEXT but not TOK -- an uppercase-only synonym like
+# BUSDRIVER_PI_PROBED_VERSION could then never match the already-lowercased
+# text, silently dropping it as a valid instruction even though it names the
+# constant directly.
+_ritual_uppercase_tok_fixture='
+# Set BUSDRIVER_PI_PROBED_VERSION to the new version, then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_uppercase_tok_fixture" >/dev/null 2>&1; then
+    ok "ritual guard matches an uppercase-only synonym (BUSDRIVER_PI_PROBED_VERSION) against lowercased text"
+else
+    fail "ritual guard misses an uppercase-only bump synonym because only TEXT, not TOK, was lowercased"
+fi
+
+# Regression fixtures (retained from pre-redesign negation-tracking
+# machinery): comma/wide-space/multi-verb conjunction variants, all still
+# correctly rejected -- "not" and "bump" share the same clause regardless.
+_ritual_coordinated_comma_fixture='
+# Do not edit, or bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_coordinated_comma_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a comma-separated coordinated verb (\"edit, or bump\")"
+else
+    ok "ritual guard rejects a negated bump reached through a comma-separated coordinating conjunction"
+fi
+
+_ritual_coordinated_wide_space_fixture='
+# Do not edit  or bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_coordinated_wide_space_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a wide-whitespace coordinated verb (\"edit  or bump\")"
+else
+    ok "ritual guard rejects a negated bump reached through a wide-whitespace coordinating conjunction"
+fi
+
+_ritual_coordinated_chain_fixture='
+# Do not edit or verify and bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_coordinated_chain_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a multi-verb coordinated chain (\"edit or verify and bump\")"
+else
+    ok "ritual guard rejects a negated bump reached through a multi-verb coordinating chain"
+fi
+
+# Negative fixture (redesign, #692 follow-up): "." is the only clause
+# boundary now, not ";" -- "cannot" reaches back across the semicolon to
+# negate the bump the same way it would across a comma. Accepted
+# false-reject tradeoff, same reasoning as the fixtures above.
+_ritual_semicolon_scope_fixture='
+# Bump this constant; the old binary cannot be trusted, so then run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_semicolon_scope_fixture" >/dev/null 2>&1; then
+    fail "ritual guard accepts a bump instruction sharing a semicolon-joined clause with an unrelated negation -- \".\" is the only clause boundary now"
+else
+    ok "ritual guard rejects a bump instruction sharing a semicolon-joined clause with an unrelated negation (accepted false-reject tradeoff)"
+fi
+
+# Negative fixture (commit-mode review, round 6): a semicolon can directly
+# qualify the preceding clause with a negation, the opposite of the fixture
+# above -- treating every forward semicolon as a hard boundary (round 5) let
+# an explicit live-first negation become invisible, a real negation bypass.
+# "not" is the first word after the semicolon here, so the guard must keep
+# scanning across it rather than stopping there.
+_ritual_semicolon_negation_fixture='
+# Bump this constant; not before running
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_semicolon_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a semicolon hiding a negation that directly qualifies the preceding clause (\"; not before running\")"
+else
+    ok "ritual guard rejects a bump instruction directly negated across a semicolon"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected -- "not" and the constant name share
+# the same clause.
+_ritual_verb_governs_token_fixture='
+# Do not set BUSDRIVER_PI_PROBED_VERSION. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_verb_governs_token_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a verb whose direct object is the token itself (\"do not set BUSDRIVER_PI_PROBED_VERSION\")"
+else
+    ok "ritual guard rejects a negated constant-name mention where the verb directly governs the token"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): tab-separated conjunction variant, still correctly rejected.
+_ritual_coordinated_tab_fixture=$(printf '%s\n' \
+    $'# Do not edit\tor bump this constant. First run' \
+    '# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.')
+if _ritual_check <<<"$_ritual_coordinated_tab_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a tab-separated coordinated verb (\"edit\\tor bump\")"
+else
+    ok "ritual guard rejects a negated bump reached through a tab-separated coordinating conjunction"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected -- "." is the only clause boundary,
+# so "not" reaches the constant name through the verb and colon.
+_ritual_verb_list_colon_fixture='
+# Do not update the following: BUSDRIVER_PI_PROBED_VERSION. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_verb_list_colon_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a listed verb introducing a colon-delimited list (\"do not update the following: BUSDRIVER_PI_PROBED_VERSION\")"
+else
+    ok "ritual guard rejects a negated constant-name mention introduced by a listed verb's colon-delimited list"
+fi
+
+# Negative fixture (commit-mode review, round 8): a coordinating conjunction
+# does not have to sit immediately after the cut verb -- an intervening noun
+# phrase can separate them, and the coordination still reaches the bump.
+_ritual_coordinated_noun_phrase_fixture='
+# Do not edit the provider list or bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_coordinated_noun_phrase_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a coordinating conjunction separated from the cut verb by a noun phrase (\"edit the provider list or bump\")"
+else
+    ok "ritual guard rejects a negated bump coordinated through a conjunction separated by an intervening noun phrase"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected -- "not" and "bump" share the clause.
+_ritual_infinitive_gap_fixture='
+# Do not start to bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_infinitive_gap_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a bare infinitive marker between a listed verb and the token (\"start to bump\")"
+else
+    ok "ritual guard rejects a negated bump instruction separated from its governing verb by only a bare infinitive marker"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): still correctly rejected -- "." is the only clause boundary,
+# so "not" reaches "bump" across the semicolon.
+_ritual_semicolon_modifier_fixture='
+# Bump this constant; absolutely not before running
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_semicolon_modifier_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by an adverbial modifier hiding a negation right after a semicolon (\"; absolutely not before running\")"
+else
+    ok "ritual guard rejects a bump instruction negated across a semicolon by a modifier-qualified negation word"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): stacked-modifier variant, still correctly rejected.
+_ritual_semicolon_stacked_modifier_fixture='
+# Bump this constant; please absolutely not before running
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.
+'
+if _ritual_check <<<"$_ritual_semicolon_stacked_modifier_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by stacked adverbial modifiers hiding a negation right after a semicolon (\"; please absolutely not before running\")"
+else
+    ok "ritual guard rejects a bump instruction negated across a semicolon by stacked modifiers before the negation word"
+fi
+
+# Regression fixture (retained from pre-redesign negation-tracking
+# machinery): "let alone" coordination, still correctly rejected -- "not"
+# and "bump" share the same clause regardless of the conjunction wording.
+_ritual_let_alone_fixture='
+# Do not edit, let alone bump this constant. First run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump it.
+'
+if _ritual_check <<<"$_ritual_let_alone_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a \"let alone\" coordination (\"edit, let alone bump\")"
+else
+    ok "ritual guard rejects a negated bump coordinated through \"let alone\""
+fi
+
+# Negative fixture found via manual real-file drift testing on #692 (not a
+# litmus finding): the earlier token list also matched bare "this
+# constant"/"the constant" as bump synonyms, but those are noun phrases any
+# verb can govern -- "verify this constant" satisfied the concept exactly
+# like "bump this constant" would have, silently defeating the guard for a
+# verify-then-bump corruption that keeps the noun phrase intact.
+_ritual_wrong_verb_fixture='
+# Clearing it, IN THIS ORDER: verify this constant to the new version, run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, and revert the bump if
+# it fails.
+'
+if _ritual_check <<<"$_ritual_wrong_verb_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a bare noun-phrase mention (\"verify this constant\") standing in for an actual bump instruction"
+else
+    ok "ritual guard requires the actual word \"bump\" (or the constant's name), not just a bare noun-phrase mention"
+fi
+
 # A code line carrying the constant must NOT satisfy the bump concept for a
 # comment that omits it — the exact vacuity found in review.
 _ritual_code_fixture='
@@ -747,144 +1155,158 @@ else
     ok "ritual guard ignores code lines when looking for the bump (no borrowing)"
 fi
 
-# #692 gap 2: a bare `seen >= 2` COUNT is unsound — an incidental new
+# #692 gap 2: a bare `seen >= 2` COUNT is unsound -- an incidental new
 # BUSDRIVER_PI_LIVE mention added anywhere else in the file keeps the count at
 # 2+ even if a REAL ritual site's comment was deleted, and conversely a
 # legitimate new unrelated mention could false-fail a count-based ceiling.
-# _ritual_site_check anchors each expected site on a stable nearby symbol (the
-# constant's own declaration; the version-mismatch refusal call) and verifies
-# ONLY that site's local window, independently of what else is in the file.
-_ritual_site_check() {   # $1=file $2=anchor(grep -F pattern) $3=lines-before-anchor
-    local _rsc_file="$1" _rsc_anchor="$2" _rsc_window="${3:-15}"
-    local _rsc_line
-    _rsc_line="$(grep -nF -- "$_rsc_anchor" "$_rsc_file" | head -1 | cut -d: -f1)" || true
-    if [[ -z "$_rsc_line" ]]; then
-        echo "  (anchor not found: $_rsc_anchor)" >&2
+# An earlier version of this check anchored on a nearby stable symbol with a
+# fixed backward WINDOW and picked the mention CLOSEST to that anchor -- but
+# review found even "closest" isn't sound: if the real ritual comment is
+# deleted and exactly one unrelated, coincidentally order-valid mention still
+# sits somewhere else in the window, it becomes "the closest" by elimination
+# and the check still passes.
+#
+# _ritual_site_check replaces the window entirely with an explicit
+# `# PI_RITUAL_SITE: <name>` marker comment placed by hand at the START of
+# each ritual block (see dispatch.sh). The scanned text is bounded by the
+# marker on one end and the site's own anchor symbol on the other -- nothing
+# before the marker and nothing after the anchor is ever in scope, so an
+# unrelated mention elsewhere in the file (or even elsewhere in the same
+# function) cannot be mistaken for this site's ritual comment. The marker
+# must appear exactly once; deleting or duplicating it fails the check
+# outright, same as deleting the ritual text itself.
+_ritual_site_check() {   # $1=file $2=marker(grep -F pattern, exactly once) $3=anchor(grep -F pattern, searched from the marker forward)
+    local _rsc_file="$1" _rsc_marker="$2" _rsc_anchor="$3"
+    local _rsc_marker_count
+    _rsc_marker_count="$(grep -cF -- "$_rsc_marker" "$_rsc_file")" || true
+    if [[ "${_rsc_marker_count:-0}" -ne 1 ]]; then
+        echo "  (site marker '$_rsc_marker' must appear exactly once, found ${_rsc_marker_count:-0})" >&2
         return 1
     fi
-    local _rsc_lo=$(( _rsc_line - _rsc_window ))
-    (( _rsc_lo < 1 )) && _rsc_lo=1
+    local _rsc_marker_line
+    _rsc_marker_line="$(grep -nF -- "$_rsc_marker" "$_rsc_file" | head -1 | cut -d: -f1)" || true
+    if [[ -z "$_rsc_marker_line" ]]; then
+        echo "  (site marker '$_rsc_marker' not found)" >&2
+        return 1
+    fi
+    local _rsc_anchor_rel
+    _rsc_anchor_rel="$(tail -n "+$_rsc_marker_line" "$_rsc_file" | grep -nF -- "$_rsc_anchor" | head -1 | cut -d: -f1)" || true
+    if [[ -z "$_rsc_anchor_rel" ]]; then
+        echo "  (anchor '$_rsc_anchor' not found at or after site marker '$_rsc_marker')" >&2
+        return 1
+    fi
+    local _rsc_anchor_line=$(( _rsc_marker_line + _rsc_anchor_rel - 1 ))
     local _rsc_err="$FAKE_HOME/ritual-site.err"
-    sed -n "${_rsc_lo},${_rsc_line}p" "$_rsc_file" | _ritual_check >/dev/null 2>"$_rsc_err" || true
-    # Closest-to-anchor mention: the MENTION line with the LARGEST line
-    # number (the window ends AT the anchor, so "largest" is "nearest").
-    local _rsc_closest
-    _rsc_closest="$(grep '^MENTION ' "$_rsc_err" | sort -k2 -n | tail -1)" || true
-    rm -f "$_rsc_err"
-    if [[ -z "$_rsc_closest" ]]; then
-        echo "  (anchor '$_rsc_anchor' at line $_rsc_line: no BUSDRIVER_PI_LIVE mention at all in the preceding $_rsc_window lines)" >&2
-        return 1
-    fi
-    if [[ "$_rsc_closest" == *" good" ]]; then
+    local _rsc_out
+    _rsc_out="$(sed -n "${_rsc_marker_line},${_rsc_anchor_line}p" "$_rsc_file" | _ritual_check 2>"$_rsc_err")"
+    local _rsc_rc=$?
+    local _rsc_seen="${_rsc_out#seen=}"; _rsc_seen="${_rsc_seen%% bad=*}"
+    if [[ "$_rsc_rc" -eq 0 && "${_rsc_seen:-0}" -ge 1 ]]; then
+        rm -f "$_rsc_err"
         return 0
     fi
-    echo "  (anchor '$_rsc_anchor' at line $_rsc_line: the mention closest to it is not order-valid — $_rsc_closest)" >&2
+    echo "  (site '$_rsc_marker' -> '$_rsc_anchor', $_rsc_out: $(cat "$_rsc_err" 2>/dev/null))" >&2
+    rm -f "$_rsc_err"
     return 1
 }
 
-# Negative fixture: an anchor line with NO ritual comment in its window at all
-# (the exact "real site deleted" case a bare count cannot see once some OTHER
-# BUSDRIVER_PI_LIVE mention keeps the file-wide count at 2+).
+# Negative fixture: marker present, but the block between marker and anchor
+# carries no ritual comment at all (the "real site deleted" case).
 _ritual_site_missing_fixture="$FAKE_HOME/ritual-site-missing.txt"
 printf '%s\n' \
+    '# PI_RITUAL_SITE: test-missing' \
     '# this comment has nothing to do with the ritual' \
     'BUSDRIVER_PI_PROBED_VERSION="9.9.9"' \
     > "$_ritual_site_missing_fixture"
-if _ritual_site_check "$_ritual_site_missing_fixture" 'BUSDRIVER_PI_PROBED_VERSION="' 15 2>/dev/null; then
-    fail "site check passes an anchor with no ritual comment in its window (a deleted real site would go undetected)"
+if _ritual_site_check "$_ritual_site_missing_fixture" 'PI_RITUAL_SITE: test-missing' 'BUSDRIVER_PI_PROBED_VERSION="' 2>/dev/null; then
+    fail "site check passes a marker with no ritual comment in its block (a deleted real site would go undetected)"
 else
-    ok "site check fails an anchor whose ritual comment was deleted (proven able to fail)"
+    ok "site check fails a marker whose ritual comment was deleted (proven able to fail)"
 fi
 rm -f "$_ritual_site_missing_fixture"
 
-# Positive fixture: same anchor, comment present and order-valid in its window.
+# Negative fixture: the marker appears TWICE -- ambiguous, must fail closed
+# rather than silently pick one.
+_ritual_site_duplicate_fixture="$FAKE_HOME/ritual-site-duplicate.txt"
+printf '%s\n' \
+    '# PI_RITUAL_SITE: test-dup' \
+    '# bump this constant, then run' \
+    '# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh' \
+    '# PI_RITUAL_SITE: test-dup' \
+    'BUSDRIVER_PI_PROBED_VERSION="9.9.9"' \
+    > "$_ritual_site_duplicate_fixture"
+if _ritual_site_check "$_ritual_site_duplicate_fixture" 'PI_RITUAL_SITE: test-dup' 'BUSDRIVER_PI_PROBED_VERSION="' 2>/dev/null; then
+    fail "site check passes a DUPLICATED marker instead of failing closed on ambiguity"
+else
+    ok "site check fails closed when its marker is duplicated"
+fi
+rm -f "$_ritual_site_duplicate_fixture"
+
+# Positive fixture: marker present, comment present and order-valid.
 _ritual_site_present_fixture="$FAKE_HOME/ritual-site-present.txt"
 printf '%s\n' \
+    '# PI_RITUAL_SITE: test-present' \
     '# bump this constant, then run' \
     '# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh' \
     'BUSDRIVER_PI_PROBED_VERSION="9.9.9"' \
     > "$_ritual_site_present_fixture"
-if _ritual_site_check "$_ritual_site_present_fixture" 'BUSDRIVER_PI_PROBED_VERSION="' 15 2>/dev/null; then
-    ok "site check passes an anchor whose ritual comment is present and order-valid"
+if _ritual_site_check "$_ritual_site_present_fixture" 'PI_RITUAL_SITE: test-present' 'BUSDRIVER_PI_PROBED_VERSION="' 2>/dev/null; then
+    ok "site check passes a marker whose ritual comment is present and order-valid"
 else
     fail "site check rejects a correctly-ordered ritual comment (false fail)"
 fi
 rm -f "$_ritual_site_present_fixture"
 
-# Regression for the "any valid mention in the window" defect (litmus review
-# on #692): an early, order-VALID, but UNRELATED mention must not mask a
-# later mention -- the one actually adjacent to the anchor -- that is
-# order-INVALID. Requiring the CLOSEST mention (not just "some" mention) to
-# be valid is what makes this fail; the old "any" semantics would have
-# accepted it (seen=2 bad=1, which still has bad<seen so an "any-good"
-# reading would pass, and even a bare bad==0 floor was never tested against
-# TWO mentions where only the far one is good).
-_ritual_site_far_good_fixture="$FAKE_HOME/ritual-site-far-good.txt"
-# The two mentions must be far enough apart that _ritual_check's own -8/+3
-# line window cannot see across them (8 filler comment lines, not 2) --
-# otherwise the "bump" from mention 1 is still in mention 2's own window and
-# BOTH correctly read as valid, which is not the masking scenario this
-# fixture exists to reproduce.
+# Positive fixture: content BEFORE the marker (a different, unrelated ritual
+# mention) must be entirely EXCLUDED from the scan -- this is what the marker
+# redesign buys over the old "closest mention wins" window, which could still
+# be fooled by unrelated content inside its fixed-size lookback.
+_ritual_site_excludes_before_fixture="$FAKE_HOME/ritual-site-excludes-before.txt"
 printf '%s\n' \
+    '# unrelated: do not bump this constant here, run BUSDRIVER_PI_LIVE=1 elsewhere' \
+    '# PI_RITUAL_SITE: test-excl' \
     '# bump this constant, then run' \
     '# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh' \
-    '# unrelated filler line 1' \
-    '# unrelated filler line 2' \
-    '# unrelated filler line 3' \
-    '# unrelated filler line 4' \
-    '# unrelated filler line 5' \
-    '# unrelated filler line 6' \
-    '# unrelated filler line 7' \
-    '# unrelated filler line 8' \
-    '# run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh with no bump nearby' \
     'BUSDRIVER_PI_PROBED_VERSION="9.9.9"' \
-    > "$_ritual_site_far_good_fixture"
-if _ritual_site_check "$_ritual_site_far_good_fixture" 'BUSDRIVER_PI_PROBED_VERSION="' 15 2>/dev/null; then
-    fail "site check is fooled by a distant valid mention while the anchor-adjacent one is invalid"
+    > "$_ritual_site_excludes_before_fixture"
+if _ritual_site_check "$_ritual_site_excludes_before_fixture" 'PI_RITUAL_SITE: test-excl' 'BUSDRIVER_PI_PROBED_VERSION="' 2>/dev/null; then
+    ok "site check ignores unrelated ritual mentions BEFORE its own marker"
 else
-    ok "site check requires the CLOSEST mention to the anchor to be valid, not just any mention in the window"
+    fail "site check let content before the marker leak into the scan"
 fi
-rm -f "$_ritual_site_far_good_fixture"
+rm -f "$_ritual_site_excludes_before_fixture"
 
 # Regression for a `set -euo pipefail` trap (litmus review on #692): with no
-# `|| true` on the anchor lookup, a genuinely ABSENT anchor makes the
-# assignment itself exit non-zero (pipefail reports the rightmost non-zero
-# exit in the pipe, which is grep's, even though head/cut both succeed on
-# empty input) and kills the whole script before the "anchor not found"
-# branch below it can ever run. This must complete and return 1, not abort.
-_ritual_site_no_anchor_fixture="$FAKE_HOME/ritual-site-no-anchor.txt"
-printf '%s\n' '# nothing relevant here' > "$_ritual_site_no_anchor_fixture"
-if _ritual_site_check "$_ritual_site_no_anchor_fixture" 'THIS_ANCHOR_DOES_NOT_EXIST' 15 2>/dev/null; then
-    fail "site check somehow passed with a wholly absent anchor"
+# `|| true` on a lookup, a genuinely ABSENT marker/anchor makes the assignment
+# itself exit non-zero (pipefail reports the rightmost non-zero exit in the
+# pipe) and kills the whole script before the "not found" branch can run.
+# This must complete and return 1, not abort.
+_ritual_site_no_marker_fixture="$FAKE_HOME/ritual-site-no-marker.txt"
+printf '%s\n' '# nothing relevant here' > "$_ritual_site_no_marker_fixture"
+if _ritual_site_check "$_ritual_site_no_marker_fixture" 'PI_RITUAL_SITE: does-not-exist' 'BUSDRIVER_PI_PROBED_VERSION="' 2>/dev/null; then
+    fail "site check somehow passed with a wholly absent marker"
 else
-    ok "site check completes (does not abort the script) and fails cleanly when the anchor itself is absent"
+    ok "site check completes (does not abort the script) and fails cleanly when the marker itself is absent"
 fi
-rm -f "$_ritual_site_no_anchor_fixture"
+rm -f "$_ritual_site_no_marker_fixture"
 
-# Now the two real anchors in dispatch.sh, each verified independently. This
-# REPLACES the old file-wide seen>=2 count: the third statement — the
-# _pi_setup_fail message — is a code string, deliberately out of scope here
-# (comment-only is what stops an adjacent code line satisfying a concept); it
-# gets its own guard below and is not covered by the five-setup-failure
-# assertion above (that one counts _pi_setup_fail calls and never inspects
-# ordering).
-if _ritual_site_check "$DISPATCH" 'BUSDRIVER_PI_PROBED_VERSION="' 15; then
+# Now the two real sites in dispatch.sh, each verified independently against
+# its own hand-placed marker. This REPLACES the old file-wide seen>=2 count
+# AND the old window-based "closest mention" heuristic. The third statement --
+# the _pi_setup_fail message -- is a code string, deliberately out of scope
+# here (comment-only is what stops an adjacent code line satisfying a
+# concept); it is covered by the version-mismatch site below via the comment
+# that precedes it, and separately by the five-setup-failure assertion above
+# (that one counts _pi_setup_fail calls and never inspects ordering).
+if _ritual_site_check "$DISPATCH" 'PI_RITUAL_SITE: probed-version' 'BUSDRIVER_PI_PROBED_VERSION="'; then
     ok "the BUSDRIVER_PI_PROBED_VERSION declaration site names the bump before the live test"
 else
-    fail "the BUSDRIVER_PI_PROBED_VERSION declaration site is missing its ritual comment (deleted or drifted)"
+    fail "the BUSDRIVER_PI_PROBED_VERSION declaration site is missing its ritual comment (deleted, drifted, or its marker was removed/duplicated)"
 fi
-# UNCLOSED RESIDUAL (litmus review on #692): closest-mention semantics
-# disambiguate MULTIPLE candidate mentions in a window, but a window
-# containing exactly ONE mention, coincidentally valid, cannot be
-# distinguished from a genuinely intact site by a line-window heuristic --
-# there is nothing else in scope to compare it against. The window below is
-# sized to the measured real distance between this anchor and its comment
-# (39 lines) plus a small buffer, not a round number, to keep the exposed
-# span as tight as the actual code layout allows.
-if _ritual_site_check "$DISPATCH" '_pi_setup_fail "pi version' 45; then
+if _ritual_site_check "$DISPATCH" 'PI_RITUAL_SITE: version-mismatch' '_pi_setup_fail "pi version'; then
     ok "the version-mismatch refusal site names the bump before the live test"
 else
-    fail "the version-mismatch refusal site is missing its ritual comment (deleted or drifted)"
+    fail "the version-mismatch refusal site is missing its ritual comment (deleted, drifted, or its marker was removed/duplicated)"
 fi
 
 # ── #692 gap 3: a FOURTH ritual statement lives outside the guard's scope ──
@@ -899,24 +1321,39 @@ _ritual_prose_check() {   # stdin = prose -> prints "seen=N bad=M"; nonzero if a
     awk '
         { buf[NR] = $0 }
         function first_valid_pos(text, tok,    p, idx, from, cs, ce, k, clause, neg) {
+            text = tolower(text)   # case-insensitive token/clause search throughout
+            tok = tolower(tok)     # TOK must be lowercased too, or an uppercase-only synonym
+                                    # like BUSDRIVER_PI_PROBED_VERSION could never match the
+                                    # already-lowercased text
             from = 1
             while (1) {
                 idx = index(substr(text, from), tok)
                 if (idx == 0) return 0
                 p = from + idx - 1
-                cs = (p - 80 < 1 ? 1 : p - 80)
+                # Clause boundary: nearest "." on each side, capped at 150 chars so an
+                # unterminated sentence cannot pull in an unrelated earlier/later thought.
+                cs = (p - 150 > 1 ? p - 150 : 1)
                 for (k = p - 1; k >= cs; k--) {
                     if (substr(text, k, 1) == ".") { cs = k + 1; break }
                 }
-                ce = p + length(tok) + 80
-                if (ce > length(text)) ce = length(text)
+                ce = (p + length(tok) + 150 <= length(text) ? p + length(tok) + 150 : length(text))
                 for (k = p + length(tok); k <= ce; k++) {
                     if (substr(text, k, 1) == ".") { ce = k - 1; break }
                 }
-                clause = " " tolower(substr(text, cs, ce - cs + 1)) " "
-                gsub(/[\x27\x60]/, "", clause)
+                clause = " " substr(text, cs, ce - cs + 1) " "
+                gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
                 gsub(/[,;:!?]/, " ", clause)      # "not," must still match " not " as a whole word
-                neg = (clause ~ / (not|never|dont|wont|shouldnt|didnt|doesnt|avoid|refrain|without) /)
+                # Any whole-word negation trigger ANYWHERE in the period-bounded clause
+                # rejects the mention -- including bare "no", folded in here rather than
+                # kept as a separate adjacency-only special case (an adjacency-only "no"
+                # check is what let "Under no circumstances bump this constant" slip
+                # through as a false ACCEPT: "no" was never adjacent to "bump"). This can
+                # false-REJECT a bump instruction that shares a clause with an unrelated
+                # "no"/"not" about something else ("bump this constant with no other
+                # changes" now reads as negated); that is the safe direction -- a false
+                # reject just needs a comment reworded, a false accept is the #692 outage
+                # class.
+                neg = (clause ~ / (no|not|never|cannot|cant|wont|dont|shouldnt|didnt|doesnt|mustnt|neednt|avoid|refrain|without) /)
                 if (!neg) return p
                 from = p + length(tok)
             }

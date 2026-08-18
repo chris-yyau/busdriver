@@ -21,34 +21,110 @@ sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import json
 import os
 import shlex
+import signal
 import stat
 import subprocess
 import time
 
-# Whole-helper wall-clock budget for subprocesses. The pre-commit gate is
-# registered with a 10-SECOND PreToolUse timeout and a timed-out hook emits NO
-# decision, which the harness reads as ALLOW — so anything that can HANG in here
-# is a bypass, not a stall. Repo-influenced git config can hang git outright
+# Whole-helper wall-clock budget, shared by every subprocess AND every
+# settings-file read below. The pre-commit gate is registered with a
+# 10-SECOND PreToolUse timeout and a timed-out hook emits NO decision, which
+# the harness reads as ALLOW — so anything that can HANG in here is a bypass,
+# not a stall. Repo-influenced git config can hang git outright
 # (`[include] path = /dev/zero` makes `git config` read forever), so every
-# subprocess draws from ONE SHARED deadline rather than each getting its own:
-# a dozen individually-bounded calls can still overrun the hook budget together.
-# Exhaustion refuses, like every other failure in this module.
+# subprocess AND file read draws from ONE SHARED deadline rather than each
+# getting its own: a dozen individually-bounded calls can still overrun the
+# hook budget together. Exhaustion refuses, like every other failure in this
+# module.
 _BUDGET_SECONDS = 4.0
 _DEADLINE = None
 
 
-def _run(cmd, env=None):
-    """Run a subprocess against the shared deadline. None = refuse."""
+def _remaining_budget():
+    """Seconds left on the shared whole-helper deadline; lazily starts it."""
     global _DEADLINE
     if _DEADLINE is None:
         _DEADLINE = time.monotonic() + _BUDGET_SECONDS
-    remaining = _DEADLINE - time.monotonic()
+    return _DEADLINE - time.monotonic()
+
+
+def _run(cmd, env=None):
+    """Run a subprocess against the shared deadline. None = refuse."""
+    remaining = _remaining_budget()
     if remaining <= 0:
         return None
     try:
         return subprocess.run(cmd, capture_output=True, env=env, timeout=remaining)
     except Exception:
         return None
+
+
+class _ReadTimeout(Exception):
+    pass
+
+
+class _alarm_bound(object):
+    """Bound a WHOLE block by the shared deadline, raising _ReadTimeout on expiry.
+
+    It has to wrap the open() and fstat() too, not just the read: O_NONBLOCK is
+    defined to affect FIFOs/sockets/devices, NOT regular files (Linux open(2)),
+    so a regular file on a stalled network mount — or a symlink chain resolving
+    onto one — can block inside os.open()/os.fstat() before any read is
+    attempted. An earlier revision armed the alarm only around the read and left
+    exactly that window unbounded; a hang there is a bypass, because the 10s
+    PreToolUse timeout emits NO decision and the harness reads that as allow.
+
+    Signals are Unix-only and main-thread-only. Where SIGALRM cannot be armed
+    this degrades to unbounded, and the surrounding hook timeout is the only
+    backstop — accepted because Claude Code hooks run on Unix, and the
+    alternative (thread-based bounding) is more machinery than the residual
+    warrants.
+    """
+
+    def __enter__(self):
+        self.armed = False
+        remaining = _remaining_budget()
+        if remaining <= 0:
+            raise _ReadTimeout
+        try:
+            signal.signal(signal.SIGALRM, self._on_alarm)
+            signal.alarm(max(1, int(remaining) + 1))
+            self.armed = True
+        except (ValueError, AttributeError):
+            pass
+        return self
+
+    @staticmethod
+    def _on_alarm(signum, frame):
+        raise _ReadTimeout
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.armed:
+            try:
+                signal.alarm(0)
+            except (ValueError, AttributeError):
+                pass
+        return False
+
+
+def _read_bounded(fh, max_bytes):
+    """Read at most max_bytes+1 from fh. None = refuse.
+
+    SIZE bound only — the WALL-TIME bound is supplied by the `_alarm_bound`
+    context the caller already holds, which also covers the open and fstat that
+    preceded this call. Capping the size matters independently: a huge file
+    could burn the remaining budget on decode work even when the read is fast.
+    """
+    try:
+        data = fh.read(max_bytes + 1)
+    except _ReadTimeout:
+        raise
+    except Exception:
+        return None
+    if len(data) > max_bytes:
+        return None
+    return data
+
 
 # Substitution survives quoting (`"$(git add src/x)"` runs before the commit),
 # so it is refused anywhere. Glob/brace act only UNQUOTED — `-m {msg,-a}` reads
@@ -66,6 +142,12 @@ _REGULAR_MODES = frozenset(("000000", "100644", "100755"))
 
 # See the bound in main(): the caller's per-path work must fit a 10s hook timeout.
 _MAX_PATHS = 20
+
+# Settings-file read cap (_read_bounded / _settings_inert). A real
+# settings.json/settings.local.json is a few KB at most; 256 KiB is
+# generous headroom while still refusing a file large enough to make
+# json.loads itself slow inside the shared hook budget.
+_MAX_SETTINGS_BYTES = 256 * 1024
 
 
 def _scan_step(cmd, i, quote):
@@ -374,16 +456,23 @@ def _settings_inert(repo, state_dir):
             # below then refuses anything that isn't a plain regular file
             # BEFORE any read is attempted.
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return False
-            try:
-                with os.fdopen(fd, "rb") as fh:
-                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                with _alarm_bound():
+                    try:
+                        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
                         return False
-                    data = json.loads(fh.read().decode("utf-8", "surrogateescape"))
+                    with os.fdopen(fd, "rb") as fh:
+                        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                            return False
+                        # The fstat only rules out FIFOs/devices; a large or
+                        # slow REGULAR file still needs the size cap, and the
+                        # enclosing _alarm_bound supplies the wall-time one.
+                        raw = _read_bounded(fh, _MAX_SETTINGS_BYTES)
+                        if raw is None:
+                            return False
+                        data = json.loads(raw.decode("utf-8", "surrogateescape"))
             except Exception:
                 return False
             if not isinstance(data, dict):

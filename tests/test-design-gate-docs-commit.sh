@@ -379,6 +379,28 @@ eq "settings.json adding a marketplace → refuse" "$(scope "git commit -m x" "$
 rm -f "$se/.claude/settings.json"
 eq "settings files removed → accepted again" "$(scope "git commit -m x" "$se")" "docs/plans/p.md"
 
+# A settings.json past _MAX_SETTINGS_BYTES must refuse rather than let
+# json.loads (or a slow read on a network-mounted regular file) run
+# unbounded inside the 10s hook timeout — the read is O_NONBLOCK-opened but
+# O_NONBLOCK has no effect on read() for a REGULAR file per POSIX, so a large
+# file is still a genuine hang/slow-decode risk, not just a stall the open()
+# guard already covers (Codex #697 P1).
+python3 -c "
+import json
+print(json.dumps({'permissions': {'x': 'a' * (300 * 1024)}}))
+" >"$se/.claude/settings.json"
+eq "oversized settings.json → refuse" "$(scope "git commit -m x" "$se")" "REFUSE"
+rm -f "$se/.claude/settings.json"
+# A file comfortably under the cap with no injection keys still accepts —
+# proves the cap refuses on SIZE, not on every settings.json unconditionally.
+python3 -c "
+import json
+print(json.dumps({'permissions': {'x': 'a' * 1024}}))
+" >"$se/.claude/settings.json"
+eq "settings.json under the size cap, no injection keys → accepted" \
+   "$(scope "git commit -m x" "$se")" "docs/plans/p.md"
+rm -f "$se/.claude/settings.json"
+
 # A FIFO at settings.json passes os.path.exists() and, opened blocking, hangs
 # the gate until a writer connects — under this gate's 10s PreToolUse timeout
 # that hang reads as ALLOW (see commit_scope.py's _MAX_PATHS comment), so a
@@ -466,6 +488,25 @@ eq "hostile .claude/settings.json refused even under an unrelated state_dir" \
             python3 -I "$SCOPE" "$se" "$se" other-state 2>/dev/null || printf 'REFUSE')" \
    "REFUSE"
 rm -f "$se/.claude/settings.json"
+
+# Size-cap boundary. One under / one over is not enough for a validator whose
+# whole job is a threshold: the exact-limit case is where an off-by-one lives.
+fresh; sz="$NEWREPO"; git -C "$sz" add docs/plans/p.md
+mkdir -p "$sz/.claude"
+# A JSON object with no injection keys, padded to EXACTLY the cap.
+_pad_settings(){                    # <target-bytes>
+    local target="$1" head='{"x":"' tail='"}' padlen
+    padlen=$(( target - ${#head} - ${#tail} ))
+    { printf '%s' "$head"; head -c "$padlen" < /dev/zero | tr '\0' 'a'; printf '%s' "$tail"; }
+}
+_pad_settings 262144 >"$sz/.claude/settings.json"
+eq "settings.json exactly at the 262144-byte cap → accepted" \
+   "$(scope "git commit -m x" "$sz")" "docs/plans/p.md"
+eq "  (fixture really is at the cap)" "$(wc -c <"$sz/.claude/settings.json" | tr -d ' ')" "262144"
+_pad_settings 262145 >"$sz/.claude/settings.json"
+eq "settings.json one byte over the cap → refuse" \
+   "$(scope "git commit -m x" "$sz")" "REFUSE"
+rm -f "$sz/.claude/settings.json"
 
 # The caller runs the design-doc predicate once per path, each forking python3 and
 # git, inside a hook registered with a 10-SECOND timeout — and a timed-out

@@ -411,8 +411,18 @@ def _staged_paths(repo):
     `--no-renames`: with detection on, a staged src/impl.py -> docs/plans/x.md
     reports only the destination and reads as a lone document.
     """
+    # --ignore-submodules=none is load-bearing, and it is the ONLY place repo
+    # config can make this diff report LESS than the commit carries: with
+    # `diff.ignoreSubmodules=all` (or `submodule.<name>.ignore=all`) a staged
+    # gitlink change is omitted entirely, so a compound "doc + submodule bump"
+    # commit presented as docs-only — the mode check below never sees the 160000
+    # entry because the entry is not emitted at all. Verified by reproduction.
+    # The sibling git calls here (`config --get`, `rev-parse --git-path`) have no
+    # comparable suppression knob; if another reporting command is ever added,
+    # check it for one.
     r = _run(["git", "--no-pager", "-C", repo, "diff", "--cached",
-              "--raw", "--no-renames", "--no-ext-diff", "-z"])
+              "--raw", "--no-renames", "--no-ext-diff",
+              "--ignore-submodules=none", "-z"])
     if r is None:
         return None
     if r.returncode != 0:

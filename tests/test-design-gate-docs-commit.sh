@@ -495,6 +495,71 @@ eq "hostile .claude/settings.json refused even under an unrelated state_dir" \
    "REFUSE"
 rm -f "$se/.claude/settings.json"
 
+# `diff.ignoreSubmodules=all` makes `git diff --cached --raw` OMIT a staged
+# gitlink entirely, so a compound "doc + submodule bump" commit would present as
+# docs-only and the 160000 mode check would never see the entry — it is not
+# emitted at all. --ignore-submodules=none restores it. This is the only knob
+# found that makes the diff report less than the commit carries.
+fresh; sm="$NEWREPO"
+# The dependency repo goes through mkrepo, not a hand-rolled `git init` at a
+# predictable path: mkrepo mktemp's it (so no other local process can pre-create
+# or symlink the target), registers it for cleanup, and pins core.hooksPath /
+# core.fsmonitor / commit.gpgSign / core.pager so its commits cannot run the
+# operator's global hooks or block on signing.
+mkrepo; smdep="$NEWREPO"
+printf 'a\n' >"$smdep/f"; git -C "$smdep" add f; git -C "$smdep" commit -qm dep1
+# GIT_CONFIG_GLOBAL/SYSTEM=/dev/null for the add itself: `submodule add` clones
+# and checks out a THIRD repository that mkrepo never sees, so without this it
+# could inherit the operator's global core.hooksPath or init.templateDir and run
+# a post-checkout hook — breaking the isolation the rest of this fixture promises.
+if GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+   git -C "$sm" -c protocol.file.allow=always submodule add -q "$smdep" sub 2>/dev/null; then
+    # Every setup step is checked. This script runs without `set -e`, so an
+    # unchecked failure here is not a crash — it is a FALSE GREEN: if the baseline
+    # commit fails, `.gitmodules` stays staged, the gate refuses because of THAT
+    # non-doc file, and both assertions below pass while the gitlink condition
+    # they exist to test was never created.
+    sm_ok=1
+    git -C "$sm" commit -qm "add sub" >/dev/null 2>&1 || sm_ok=0
+    printf 'b\n' >>"$smdep/f" || sm_ok=0
+    git -C "$smdep" commit -qam dep2 >/dev/null 2>&1 || sm_ok=0
+    bumped=$(git -C "$smdep" rev-parse HEAD) || sm_ok=0
+    # Stage the gitlink bump by writing the index directly. An earlier version
+    # used `cd "$sm/sub" && git fetch … || git pull`, where a FAILED cd left the
+    # `git pull` running in whatever directory the script was in — the real
+    # repository. No cd, no network, no fallback.
+    git -C "$sm" update-index --add --cacheinfo "160000,$bumped,sub" || sm_ok=0
+    git -C "$sm" add docs/plans/p.md || sm_ok=0
+    git -C "$sm" config diff.ignoreSubmodules all || sm_ok=0
+
+    # Positive precondition: the staged set must be EXACTLY the doc plus the
+    # gitlink. Checking the commands succeeded is not the same as checking the
+    # fixture is in the state the assertions assume.
+    sm_staged=$(git -C "$sm" diff --cached --raw --no-renames --ignore-submodules=none -z 2>/dev/null \
+                | tr '\0' '\n' | grep -c '^:160000' || true)
+    sm_extra=$(git -C "$sm" diff --cached --name-only --ignore-submodules=none 2>/dev/null \
+               | grep -cvE '^(docs/plans/p\.md|sub)$' || true)
+    if [[ "$sm_ok" -eq 1 && "$sm_staged" -eq 1 && "$sm_extra" -eq 0 ]]; then
+        eq "staged submodule bump hidden by diff.ignoreSubmodules → still refused" \
+           "$(scope "git commit -m x" "$sm")" "REFUSE"
+        # Verify the unset TOOK, and not merely that the command was issued: if
+        # it silently failed, the "config absent" assertion below would re-run
+        # the configured case and pass for the wrong reason.
+        git -C "$sm" config --unset diff.ignoreSubmodules 2>/dev/null || true
+        if [[ -z "$(git -C "$sm" config --get diff.ignoreSubmodules 2>/dev/null)" ]]; then
+            eq "  (and refused with the config absent too)" \
+               "$(scope "git commit -m x" "$sm")" "REFUSE"
+        else
+            no "config-absent variant could not run" "diff.ignoreSubmodules is still set; refusing to re-assert the configured case as though it were the absent one"
+        fi
+    else
+        no "submodule fixture is not in the asserted state" \
+           "setup_ok=$sm_ok gitlink_entries=$sm_staged unexpected_staged=$sm_extra — refusing to assert against a fixture that was never built"
+    fi
+else
+    no "submodule-suppression regression test could not run" "submodule add failed; refusing to report a pass this host never exercised"
+fi
+
 # Size-cap boundary. One under / one over is not enough for a validator whose
 # whole job is a threshold: the exact-limit case is where an off-by-one lives.
 fresh; sz="$NEWREPO"; git -C "$sz" add docs/plans/p.md

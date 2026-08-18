@@ -78,11 +78,17 @@ documents. Three conditions, all fail-CLOSED, all of which must hold:
    `docs/plans/x.md -> ../src/impl.py` is not a design doc here either.
 
 The file set is read from git (`diff --cached --raw --no-renames --no-ext-diff
--z`), never derived from the command. `--raw` carries both modes per entry, so
+--ignore-submodules=none -z`), never derived from the command. `--raw` carries both modes per entry, so
 one call answers "what is staged" and "is every side of it a regular blob" — a
 `ls-files --stage` version saw only the NEW mode, so a staged DELETION, which has
 no index entry at all, skipped the check and a deleted symlink named
-`docs/plans/component.md` passed as a document. `--no-renames` is load-bearing:
+`docs/plans/component.md` passed as a document. `--ignore-submodules=none` is equally load-bearing and closes the only knob found
+that makes this diff report LESS than the commit carries: under
+`diff.ignoreSubmodules=all` a staged gitlink is omitted from the output
+altogether, so a compound "doc + submodule bump" commit presents as docs-only and
+the `160000` mode check never fires — because the entry is never emitted. Found by
+Codex on this PR and confirmed by reproduction before fixing. `--no-renames` is
+load-bearing for the adjacent reason:
 with rename detection on, a staged `src/impl.py` → `docs/plans/impl.md` reports
 only the destination and presents as a lone design document while deleting
 implementation code.
@@ -257,7 +263,7 @@ Out of scope; the remediation loop uses Edit.
 
 ## Verification
 
-`tests/test-design-gate-docs-commit.sh` — **110 assertions**, both branches of
+`tests/test-design-gate-docs-commit.sh` — **112 assertions**, both branches of
 every guard. That is the count the suite reports when run, which is the number
 that matters to a reader who runs it; counting call sites gives a smaller figure
 (103) because several sites sit inside loops and the generated sweep contributes

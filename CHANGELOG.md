@@ -1,3 +1,10 @@
+## [1.109.3](https://github.com/chris-yyau/busdriver/compare/v1.109.2...v1.109.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch:** scope every agy dispatch to the CWD via --add-dir ([#695](https://github.com/chris-yyau/busdriver/issues/695)) ([fb4c816](https://github.com/chris-yyau/busdriver/commit/fb4c816477d4472a2fbf4d1bf28fb9acbb8c5eb9)), closes [#686](https://github.com/chris-yyau/busdriver/issues/686)
+
 ## [1.109.2](https://github.com/chris-yyau/busdriver/compare/v1.109.1...v1.109.2) (2026-08-18)
 
 

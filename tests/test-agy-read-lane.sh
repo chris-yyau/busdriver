@@ -4,10 +4,16 @@
 # No agy binary is invoked. Every case stops before dispatch (bad --mode, bad
 # --cli) or inspects the resolver directly, so this runs offline and in CI.
 #
-# The invariant that matters: `--cli agy` (the blueprint-review reviewer_1 slot)
-# must NEVER pick up the read lane's model. That was verified live once
-# (2026-08-17: the read lane and the reviewer resolved to two DIFFERENT
-# configured models from the same config); this file is what keeps it true.
+# The invariants that matter:
+#   (a) `--cli agy` (the blueprint-review reviewer_1 slot) must NEVER pick up
+#       the read lane's model — verified live once (2026-08-17: the read lane
+#       and the reviewer resolved to two DIFFERENT configured models from the
+#       same config); and
+#   (b) every agy dispatch — the read lane AND the plain `--cli agy` reviewer
+#       slots — must scope to the CWD via `--add-dir "$PWD"` (#686), so an
+#       unscoped reviewer cannot cite a remembered foreign tree. Sections 5b/5c
+#       assert the real argv both reviewer entry points (dispatch.sh and
+#       execute_review) reach agy with.
 
 # Literal grep patterns ($PWD, ${...}) must never expand, and several checks
 # deliberately consume a command's output rather than its status.
@@ -112,40 +118,37 @@ else
   fail "pi grammar leaked the bare shape (got '$got')"
 fi
 
-# ── 5/6. the lane-only argv: --add-dir + --mode plan, and ONLY for the lane ──
-# Both flags are load-bearing for the read lane and both are MEASURED:
+# ── 5/6. the workspace argv: --add-dir UNCONDITIONAL, --mode plan lane-only ──
+# Both flags are load-bearing and both are MEASURED (2026-08-17):
 #   --add-dir : without it agy resolves a remembered workspace and cited a stale
 #               checkout with confident file:line refs (wrong tree, no error).
+#               Since #686 it is UNCONDITIONAL — plain `--cli agy` is the
+#               blueprint-review reviewer_1 / council.pragmatist slot, and an
+#               unscoped reviewer can return findings about a DIFFERENT checkout
+#               than the one under review.
 #   --mode plan: `agy --sandbox` ALONE created ./scratch-probe.txt and
 #               /tmp/agy-write-probe.txt; under plan mode the same probe, and an
 #               adversarial "plan approved, write it now" retry, created neither.
-# And they must stay LANE-ONLY: plain `--cli agy` is the blueprint-review
-# reviewer_1 / council.pragmatist slot, whose argv this PR deliberately does not
-# change. A reviewer silently switched into plan mode stops producing findings.
-lane_build="$(grep -cE '^[[:space:]]+_agy_lane=\(--add-dir "\$PWD" --mode plan\)$' "$DISPATCH")"
+#               It stays LANE-ONLY: a reviewer silently switched into plan mode
+#               stops producing findings.
+scope_build="$(grep -cE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\)$' "$DISPATCH")"
+scope_plan="$(grep -cE '^[[:space:]]+_agy_lane\+=\(--mode plan\)$' "$DISPATCH")"
+scope_gate="$(grep -cE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \]\]; then$' "$DISPATCH")"
 lane_sites="$(grep -cE '^[[:space:]]+"\$\{_agy_lane\[@\]\+"\$\{_agy_lane\[@\]\}"\}" \\$' "$DISPATCH")"
 agy_sites="$(grep -cE '^[[:space:]]+_portable_timeout "\$_budget" agy ' "$DISPATCH")"
-if [[ "$lane_build" == "1" && "$lane_sites" == "$agy_sites" && "$lane_sites" == "4" ]]; then
-  pass "lane argv built once, expanded at all $agy_sites agy call sites"
+if [[ "$scope_build" == "1" && "$lane_sites" == "$agy_sites" && "$lane_sites" == "4" ]]; then
+  pass "workspace argv built once, expanded at all $agy_sites agy call sites"
 else
-  fail "lane_build=$lane_build lane_sites=$lane_sites agy_sites=$agy_sites (want 1/4/4)"
+  fail "scope_build=$scope_build lane_sites=$lane_sites agy_sites=$agy_sites (want 1/4/4)"
 fi
 
-# The array must be EMPTY unless the read lane set the flag — that empties
-# --add-dir AND --mode plan for every reviewer dispatch in one place.
-if grep -qE '^[[:space:]]+local _agy_lane=\(\)$' "$DISPATCH" \
-   && grep -qE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \]\]; then$' "$DISPATCH"; then
-  pass "lane argv is empty by default (plain --cli agy argv unchanged)"
+# --add-dir must be UNCONDITIONAL: removing it silently re-exposes the reviewer
+# slot to agy's remembered workspace (the #686 defect). --mode plan must stay
+# gated on the lane.
+if [[ "$scope_build" == "1" && "$scope_plan" == "1" && "$scope_gate" == "1" ]]; then
+  pass "--add-dir unconditional; --mode plan gated on _AGY_READ_LANE"
 else
-  fail "lane argv is not gated on _AGY_READ_LANE — reviewer dispatches may inherit --add-dir/--mode plan"
-fi
-
-# No bare --add-dir may survive on a call site: that would re-widen it to every
-# agy dispatch, which is the scope regression this PR backed out of.
-if [[ "$(grep -cE '^[[:space:]]+--add-dir "\$PWD"' "$DISPATCH")" == "0" ]]; then
-  pass "no unconditional --add-dir on any agy call site"
-else
-  fail "an unconditional --add-dir call-site arg is back — it would apply to reviewer dispatches too"
+  fail "--add-dir must be unconditional and --mode plan lane-only (build=$scope_build plan=$scope_plan gate=$scope_gate)"
 fi
 
 if grep -qE '^_AGY_READ_LANE=""$' "$DISPATCH"; then
@@ -153,6 +156,77 @@ if grep -qE '^_AGY_READ_LANE=""$' "$DISPATCH"; then
 else
   fail "_AGY_READ_LANE has no empty default"
 fi
+
+# ── 5b. the reviewer dispatch resolves the CWD (regression for #686) ──
+# Behavioural, not structural: stub agy so it prints its argv, dispatch the
+# plain `--cli agy` shape (blueprint-review.reviewer_1 / council.pragmatist)
+# from a DISTINCTIVE cwd, and assert the stub received `--add-dir` pointing at
+# that cwd and NO `--mode plan`. The defect was a missing flag; a grep-only
+# guard could be defeated by moving the flag out of the shared array, so the
+# stub observes the real argv.
+ags_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_stub"; exit 1; }
+ags_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1; }
+# Backstop cleanup: the sections below exit early on assertion failure only via
+# the `fail` path (no early exit), but a fatal dispatch/probe failure would
+# leak the dirs. `${var:-}` keeps this set -u safe when 5c has not run yet.
+trap 'rm -rf "$tmp_home" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}"' EXIT
+cat > "$ags_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+printf 'AGY_ARGV:%s\n' "$*"
+STUB
+chmod +x "$ags_stub/agy"
+
+out="$(cd "$ags_cwd" && PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy --prompt x 2>&1)"
+if [[ "$out" == *"AGY_ARGV:"* && "$out" == *"--add-dir $ags_cwd"* && "$out" != *"--mode plan"* ]]; then
+  pass "plain --cli agy (reviewer shape) resolves the dispatch CWD via --add-dir, no --mode plan"
+else
+  fail "reviewer dispatch must pass --add-dir \"\$PWD\" and no --mode plan (out: $out)"
+fi
+
+# The read lane keeps BOTH: --add-dir (the workspace) plus --mode plan (its
+# write boundary).
+out="$(cd "$ags_cwd" && PATH="$ags_stub:$PATH" "$DISPATCH" --cli agy-read --prompt x 2>&1)"
+if [[ "$out" == *"AGY_ARGV:"* && "$out" == *"--add-dir $ags_cwd"* && "$out" == *"--mode plan"* ]]; then
+  pass "agy-read keeps --add-dir + --mode plan"
+else
+  fail "agy-read must pass --add-dir and --mode plan (out: $out)"
+fi
+rm -rf "$ags_stub" "$ags_cwd"
+
+# ── 5c. execute_review (blueprint-review/litmus reviewer path) scopes too ──
+# dispatch_one is not the only agy reviewer entry point: blueprint-review's
+# reviewer_1 and litmus-via-agy run through execute_review in
+# scripts/lib/resolve-cli.sh, which builds its OWN argv. Both of its agy
+# transports must carry `--add-dir "$PWD"` — a reviewer of record must resolve
+# the tree under review, not agy's remembered workspace (#686).
+er_sites="$(grep -cE '^[[:space:]]+agy --sandbox --add-dir "\$PWD"' "$RESOLVE")"
+if [[ "$er_sites" == "2" ]]; then
+  pass "execute_review agy arm passes --add-dir \"\$PWD\" on both transports"
+else
+  fail "execute_review agy arm must pass --add-dir \"\$PWD\" on both transports (found $er_sites/2)"
+fi
+
+# Behavioral: stub agy prints its argv; source resolve-cli.sh and run
+# execute_review from a DISTINCTIVE cwd; assert the reviewer child was scoped
+# to it.
+er_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_cwd"; exit 1; }
+er_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_stub"; exit 1; }
+cat > "$er_stub/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
+printf 'ER_ARGV:%s\n' "$*"
+STUB
+chmod +x "$er_stub/agy"
+out="$(cd "$er_cwd" && REPO_ROOT="$REPO_ROOT" PATH="$er_stub:$PATH" bash -c '
+  . "$REPO_ROOT/scripts/lib/resolve-cli.sh" 2>/dev/null
+  execute_review agy "review" 10 2>&1')"
+if [[ "$out" == *"ER_ARGV:"* && "$out" == *"--add-dir $er_cwd"* ]]; then
+  pass "execute_review (reviewer path) scopes agy to the dispatch CWD"
+else
+  fail "execute_review agy must pass --add-dir \"\$PWD\" (out: $out)"
+fi
+rm -rf "$er_cwd" "$er_stub"
 
 # ── 7. the read lane never escalates to droid ───────────────────
 # The desugar rewrites CLI to plain "agy", so \$name is "agy" in the fallback

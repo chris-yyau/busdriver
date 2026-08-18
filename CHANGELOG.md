@@ -1,3 +1,10 @@
+## [1.109.5](https://github.com/chris-yyau/busdriver/compare/v1.109.4...v1.109.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* **gate:** name the silent skip-lease refusals in the block message ([#681](https://github.com/chris-yyau/busdriver/issues/681)) ([#699](https://github.com/chris-yyau/busdriver/issues/699)) ([3ea037f](https://github.com/chris-yyau/busdriver/commit/3ea037f54214d57d97716089e64202fdb345960a))
+
 ## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
 
 

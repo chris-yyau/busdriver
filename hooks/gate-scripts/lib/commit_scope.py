@@ -364,8 +364,16 @@ def _hooks_absent(repo):
     for k in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
         unsanitized.pop(k, None)
     orig_home = os.environ.get("BUSDRIVER_ORIG_HOME", "")
-    if orig_home and os.path.isdir(orig_home):
-        unsanitized["HOME"] = orig_home
+    if orig_home:
+        # isdir() stats a path this process did not choose; bound it for the same
+        # reason as every other filesystem touch here.
+        try:
+            with _alarm_bound():
+                is_dir = os.path.isdir(orig_home)
+        except (OSError, _ReadTimeout):
+            return False
+        if is_dir:
+            unsanitized["HOME"] = orig_home
     if unsanitized != envs[0]:
         envs.append(unsanitized)
     for env in envs:
@@ -374,11 +382,18 @@ def _hooks_absent(repo):
         hooks_dir = _hooks_dir(repo, env)
         if hooks_dir is None:
             return False
+        # Bound by the shared deadline: a huge or stalled `core.hooksPath`
+        # directory (a tracked `.githooks` tree, or a stalled mount) can make
+        # os.listdir() hang or run long outside every other call's bound in
+        # this module. Unbounded here is a bypass, not a stall: the 10s
+        # PreToolUse timeout emits NO decision on expiry, which the harness
+        # reads as ALLOW (Codex, PR #697).
         try:
-            entries = os.listdir(hooks_dir)
+            with _alarm_bound():
+                entries = os.listdir(hooks_dir)
         except FileNotFoundError:
             continue
-        except OSError:
+        except (_ReadTimeout, OSError):
             return False
         if any(not e.endswith(".sample") for e in entries):
             return False
@@ -499,10 +514,14 @@ def main(argv):
         return 1
     # Nothing here is cwd-relative, so this is not load-bearing; it is kept
     # because it is free and a commit from elsewhere is not the docs-loop shape.
+    # Bounded like every other filesystem touch in this module: realpath walks
+    # the path on disk, so a stalled mount hangs it, and a hang here is a bypass
+    # (the 10s hook timeout emits no decision, which the harness reads as allow).
     try:
-        if not hook_cwd or os.path.realpath(hook_cwd) != os.path.realpath(repo):
-            return 1
-    except OSError:
+        with _alarm_bound():
+            if not hook_cwd or os.path.realpath(hook_cwd) != os.path.realpath(repo):
+                return 1
+    except (OSError, _ReadTimeout):
         return 1
 
     try:

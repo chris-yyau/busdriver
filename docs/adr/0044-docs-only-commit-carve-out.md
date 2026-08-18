@@ -97,8 +97,16 @@ Deliberately **not** `gate_design_pass_honored` (the predicate the spec-only Gat
 2 bypass 30 lines below uses). The document is unreviewed *by construction* —
 that is what armed the token. Requiring a PASS would restore the deadlock exactly.
 
-**Anything that can HANG is a bypass, not a stall** — the same fact the 20-path
-bound rests on, and the reason for two further guards found during review. Every
+**Anything that can HANG is a bypass, not a stall** — and the inventory is
+closed, not patched. Review found these one at a time across four rounds (a FIFO
+at the settings path; a git config whose `include` blocks forever; an unbounded
+`fh.read()`; `os.open`/`os.fstat` before the alarm armed, since `O_NONBLOCK` is a
+no-op for regular files; an unbounded hooks-dir `os.listdir`), so
+`commit_scope.py` now routes EVERY blocking call through one of two bounds
+drawing on a single shared deadline — `_run` for subprocesses, `_alarm_bound` for
+filesystem touches — and names the full list beside the budget constant. Anything
+later added to that module that touches the filesystem or spawns a process
+belongs inside one of the two. The 20-path bound rests on the same fact. Every
 subprocess in `commit_scope.py` draws from ONE shared 4-second deadline
 (individually-bounded calls can still overrun the hook budget together), because
 repo-influenced git config can hang git outright: `[include] path = /dev/zero`

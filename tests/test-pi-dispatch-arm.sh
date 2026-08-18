@@ -647,6 +647,9 @@ _ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if
                 clause = " " substr(text, cs, ce - cs + 1) " "
                 gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
                 gsub(/[,;:!?]/, " ", clause)      # "not," must still match " not " as a whole word
+                gsub(/[[:space:]]+/, " ", clause) # a tab (or other run of whitespace) around a
+                                                   # trigger word must match the same as a single
+                                                   # space (PR-mode review, #692 follow-up)
                 # Any whole-word negation trigger ANYWHERE in the period-bounded clause
                 # rejects the mention -- including bare "no", folded in here rather than
                 # kept as a separate adjacency-only special case (an adjacency-only "no"
@@ -1169,6 +1172,17 @@ else
     ok "ritual guard rejects a bump negated by the contraction havent"
 fi
 
+# Negative fixture (PR-mode review, #692 follow-up round 2): a tab between
+# a negation trigger word and the token bypassed the literal-space match.
+_ritual_tab_negation_fixture=$(printf '%s\n' \
+    $'# Do not\tbump this constant, then run' \
+    '# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh.')
+if _ritual_check <<<"$_ritual_tab_negation_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is fooled by a tab between a negation trigger word and the token"
+else
+    ok "ritual guard rejects a bump negated across a tab-separated negation trigger word"
+fi
+
 # Negative fixture found via manual real-file drift testing on #692 (not a
 # litmus finding): the earlier token list also matched bare "this
 # constant"/"the constant" as bump synonyms, but those are noun phrases any
@@ -1395,6 +1409,9 @@ _ritual_prose_check() {   # stdin = prose -> prints "seen=N bad=M"; nonzero if a
                 clause = " " substr(text, cs, ce - cs + 1) " "
                 gsub(/[\x27\x60]/, "", clause)   # apostrophe/backtick contractions fold to dont, wont, etc.
                 gsub(/[,;:!?]/, " ", clause)      # "not," must still match " not " as a whole word
+                gsub(/[[:space:]]+/, " ", clause) # a tab (or other run of whitespace) around a
+                                                   # trigger word must match the same as a single
+                                                   # space (PR-mode review, #692 follow-up)
                 # Any whole-word negation trigger ANYWHERE in the period-bounded clause
                 # rejects the mention -- including bare "no", folded in here rather than
                 # kept as a separate adjacency-only special case (an adjacency-only "no"

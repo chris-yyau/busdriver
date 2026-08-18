@@ -1,3 +1,10 @@
+## [1.109.1](https://github.com/chris-yyau/busdriver/compare/v1.109.0...v1.109.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** certify pi 0.84.2 and pin the certification ritual with tests ([#694](https://github.com/chris-yyau/busdriver/issues/694)) ([3338ea5](https://github.com/chris-yyau/busdriver/commit/3338ea514b5f9803c276eb3c74de3c46dba21537))
+
 # [1.109.0](https://github.com/chris-yyau/busdriver/compare/v1.108.0...v1.109.0) (2026-08-17)
 
 

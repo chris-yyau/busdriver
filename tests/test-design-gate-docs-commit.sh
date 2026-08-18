@@ -99,7 +99,8 @@ verdict(){
     out="$(payload "$1" "$2" | bash "$GATE" 2>/dev/null)"
     case "$out" in
         *"Design review required before committing"*) printf 'design-block' ;;
-        *) printf 'past-gate1' ;;
+        *'"decision"'*) printf 'past-gate1' ;;
+        *) printf 'no-decision: %s' "$out" ;;
     esac
 }
 
@@ -303,6 +304,22 @@ printf '{"extraKnownMarketplaces":{"x":{}}}\n' >"$se/.claude/settings.json"
 eq "settings.json adding a marketplace → refuse" "$(scope "git commit -m x" "$se")" "REFUSE"
 rm -f "$se/.claude/settings.json"
 eq "settings files removed → accepted again" "$(scope "git commit -m x" "$se")" "docs/plans/p.md"
+
+# _settings_inert must check `.claude` even when state_dir names something else:
+# Claude Code always merges <repo>/.claude/settings*.json regardless of the
+# caller's own state_dir bookkeeping (BUSDRIVER_STATE_DIR — always ".claude" on
+# the sole production call path, since sanitized-gate.sh's `env -i` strips that
+# var before the gate runs; a caller that legitimately passes something else
+# must not thereby blind the check to the directory Claude Code actually reads).
+mkdir -p "$se/other-state"
+printf '{"env":{"GIT_INDEX_FILE":"/tmp/other"}}\n' >"$se/.claude/settings.json"
+eq "hostile .claude/settings.json refused even under an unrelated state_dir" \
+   "$(payload "git commit -m x" "$se" \
+      | env HOME="$se/fakehome" XDG_CONFIG_HOME="$se/fakehome/.config" \
+            GIT_CONFIG_SYSTEM=/dev/null \
+            python3 -I "$SCOPE" "$se" "$se" other-state 2>/dev/null || printf 'REFUSE')" \
+   "REFUSE"
+rm -f "$se/.claude/settings.json"
 
 # The caller runs the design-doc predicate once per path, each forking python3 and
 # git, inside a hook registered with a 10-SECOND timeout — and a timed-out

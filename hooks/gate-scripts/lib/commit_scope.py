@@ -41,6 +41,24 @@ _REGULAR_MODES = frozenset(("000000", "100644", "100755"))
 _MAX_PATHS = 20
 
 
+def _scan_step(cmd, i, quote):
+    """One character of the scan. Returns (next_i, quote), or None to refuse."""
+    ch = cmd[i]
+    if quote == "'":
+        return i + 1, ("" if ch == "'" else quote)
+    if quote == '"':
+        if ch == "\\" and i + 1 < len(cmd):
+            return i + 2, quote
+        return i + 1, ("" if ch == '"' else quote)
+    if ch == "\\":
+        return None if i + 1 >= len(cmd) else (i + 2, quote)
+    if ch in "'\"":
+        return i + 1, ch
+    if ch in _EXPANSION_CHARS or ch in _PUNCT:
+        return None
+    return i + 1, quote
+
+
 def _scan_ok(cmd):
     """One quote-balanced segment, no live expansion, substitution or operator."""
     if "\n" in cmd or "\r" in cmd:
@@ -50,24 +68,10 @@ def _scan_ok(cmd):
     quote = ""
     i, n = 0, len(cmd)
     while i < n:
-        ch = cmd[i]
-        if quote == "'":
-            if ch == "'":
-                quote = ""
-        elif quote == '"':
-            if ch == "\\" and i + 1 < n:
-                i += 1
-            elif ch == '"':
-                quote = ""
-        elif ch == "\\":
-            if i + 1 >= n:
-                return False
-            i += 1
-        elif ch in "'\"":
-            quote = ch
-        elif ch in _EXPANSION_CHARS or ch in _PUNCT:
+        step = _scan_step(cmd, i, quote)
+        if step is None:
             return False
-        i += 1
+        i, quote = step
     return not quote
 
 
@@ -279,24 +283,34 @@ def _settings_inert(repo, state_dir):
     `enabledPlugins`/`extraKnownMarketplaces`, which reach the same capability by
     activating a plugin whose manifest registers the hook. Any `env` at all — an
     allowlist would have to track every variable git and sh read.
+
+    Checked in BOTH `state_dir` and `.claude`, deduplicated when they resolve to
+    the same directory: `state_dir` is the caller's own bookkeeping location
+    (`BUSDRIVER_STATE_DIR`, always `.claude` on the sole production call path —
+    sanitized-gate.sh's `env -i` strips that var before this ever runs), but
+    Claude Code itself always merges `<repo>/.claude/settings*.json` into the
+    session regardless of that override. Checking only `state_dir` would miss
+    `.claude` on any caller that legitimately overrides it.
     """
-    for name in ("settings.json", "settings.local.json"):
-        path = os.path.join(repo, state_dir, name)
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path, "rb") as fh:
-                data = json.loads(fh.read().decode("utf-8", "surrogateescape"))
-        except Exception:
-            return False
-        if not isinstance(data, dict):
-            return False
-        # `hooks` registers a PreToolUse hook directly; `enabledPlugins` and
-        # `extraKnownMarketplaces` do it indirectly, by activating a plugin whose
-        # manifest carries one. All three reach the same capability.
-        for key in ("env", "hooks", "enabledPlugins", "extraKnownMarketplaces"):
-            if data.get(key):
+    dirs = {os.path.join(repo, state_dir), os.path.join(repo, ".claude")}
+    for d in dirs:
+        for name in ("settings.json", "settings.local.json"):
+            path = os.path.join(d, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "rb") as fh:
+                    data = json.loads(fh.read().decode("utf-8", "surrogateescape"))
+            except Exception:
                 return False
+            if not isinstance(data, dict):
+                return False
+            # `hooks` registers a PreToolUse hook directly; `enabledPlugins` and
+            # `extraKnownMarketplaces` do it indirectly, by activating a plugin
+            # whose manifest carries one. All three reach the same capability.
+            for key in ("env", "hooks", "enabledPlugins", "extraKnownMarketplaces"):
+                if data.get(key):
+                    return False
     return True
 
 

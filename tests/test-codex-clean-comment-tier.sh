@@ -523,6 +523,45 @@ else
   fail "out-of-order findings-newest expected 'stale', got '$got'"
 fi
 
+# --- Test 23h: a Codex INFRA NOTICE is not engagement --------------------
+# Verbatim from PR #693 itself, where this fix dogfooded its own bug: Codex has
+# no environment for the repo, so it posts a notice instead of reviewing. The
+# nudge cannot clear it — Codex genuinely cannot review until an operator acts —
+# so counting it as engagement blocks the gate forever. `ack-ledger.sh` already
+# downgrades un-clearable infra markers for review OBJECTS (Case 1 / 1b); the
+# comment branches return long before that block, so they filter it themselves.
+CODEX_NOTICE="To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments)."
+got=$(run_ledger "$(mk_comments "$CODEX" "$BEFORE_PUSH" "$CODEX_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "none" ]; then
+  ok "Codex infra notice alone → none (non-gating; the nudge cannot clear it)"
+else
+  fail "Codex infra notice expected 'none', got '$got'"
+fi
+
+# ...including when it lands AFTER the push, where the veto would otherwise fire.
+got=$(run_ledger "$(mk_comments "$CODEX" "$LATE" "$CODEX_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "none" ]; then
+  ok "post-anchor Codex infra notice → none (veto path filters it too)"
+else
+  fail "post-anchor infra notice expected 'none', got '$got'"
+fi
+
+# ...and it must not mask a real verdict by becoming the newest comment.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688" "$LATE" "$CODEX_NOTICE")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "clean verdict + later infra notice → HEAD_SHA (notice does not mask the verdict)"
+else
+  fail "verdict-then-notice expected '$HEAD_SHA', got '$got'"
+fi
+
+# ...but a REAL finding is still engagement, notice or no notice.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$CODEX_NOTICE" "$LATE" "$FINDINGS_688")" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "infra notice + later real finding → stale (filter is notice-only, not blanket)"
+else
+  fail "notice-then-finding expected 'stale', got '$got'"
+fi
+
 # --- Test 24: deleted-account shapes still ack --------------------------
 # `user: null` / `author: null` is what GitHub emits for a deleted account, and
 # it is NOT drift. Rejecting it would fail Tier G closed forever on any PR one of

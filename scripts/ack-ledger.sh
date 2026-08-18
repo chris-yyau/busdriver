@@ -238,6 +238,27 @@ num_or() {
 # ORDERING, not to implement a calendar.)
 GH_TS_RE='^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$'
 
+
+# A Codex comment that is an un-clearable INFRA NOTICE, not a review. Codex posts
+# `To use Codex here, [create an environment for this repo](…)` on a repo it has
+# no environment for; it is not a verdict, not a finding, and — critically — the
+# nudge cannot clear it, because Codex genuinely cannot review the PR until an
+# operator configures the environment. Every Codex-comment query below filters
+# these out, so a repo in that state falls through to the `none` early-return
+# (non-gating) instead of blocking on a review that will never arrive.
+#
+# This is the same call `ack-ledger.sh` already makes for review objects at
+# Case 1 / Case 1b (`infra_error_re`, `_fresh_rate_limit_notice`) — an infra
+# marker the bot cannot self-clear downgrades rather than staling forever. Those
+# cases live in the downgrade block far below, which the Codex comment branches
+# (added for #690) return long before reaching, so the exemption has to be
+# applied here or the precedent silently does not cover comment-form Codex.
+#
+# START-ANCHORED and notice-specific, exactly as Case 1b is: this filter REMOVES
+# evidence from a merge gate, so it must never match findings prose that merely
+# discusses environments. Same reasoning as Tier G's own template anchor.
+CODEX_NOTICE_RE='^To use Codex here,'
+
 json_shape_ok() {
   printf '%s' "$1" \
     | jq -rs --arg ts "$GH_TS_RE" \
@@ -598,15 +619,19 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
   # `codex_max_at` is the maximum timestamp (well-defined regardless of order),
   # and the verdict is read only when exactly ONE Codex comment carries it.
   codex_max_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot) | .createdAt]
+    --arg notice "$CODEX_NOTICE_RE" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(((.body // "") | test($notice)) | not) | .createdAt]
      | if length == 0 then empty else max end' 2>/dev/null || echo "")
   codex_max_tie=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg at "$codex_max_at" \
+    --arg at "$codex_max_at" --arg notice "$CODEX_NOTICE_RE" \
     '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(((.body // "") | test($notice)) | not)
       | select(.createdAt == $at)] | length' 2>/dev/null || echo 1)
   codex_last_comment=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg at "$codex_max_at" \
+    --arg at "$codex_max_at" --arg notice "$CODEX_NOTICE_RE" \
     '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(((.body // "") | test($notice)) | not)
       | select(.createdAt == $at)] | last | .body // empty' 2>/dev/null || echo "")
   if [ -n "$codex_max_at" ] && [ "$(num_or "$codex_max_tie" 2)" -ne 1 ]; then
     # Two Codex comments in the same second: which one is "latest" is not knowable
@@ -762,8 +787,9 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     about, on a merge gate.
   if [ -n "$ALL_COMMENTS" ]; then
     codex_comments_after=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-      --arg anchor "$anchor_date" \
+      --arg anchor "$anchor_date" --arg notice "$CODEX_NOTICE_RE" \
       '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+        | select(((.body // "") | test($notice)) | not)
         | select((.createdAt // "9999") >= $anchor)] | length' 2>/dev/null || echo 1)
     if [ "$(num_or "$codex_comments_after" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
   fi
@@ -910,7 +936,9 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     clean. That is the correct direction to be wrong in on a merge gate, and
   #     --max-wait remains the operator-visible backstop.
   codex_commented=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | length' 2>/dev/null || echo 1)
+    --arg notice "$CODEX_NOTICE_RE" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(((.body // "") | test($notice)) | not)] | length' 2>/dev/null || echo 1)
   if [ -n "$ALL_COMMENTS" ] && [ "$(num_or "$codex_commented" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
 else
   disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \

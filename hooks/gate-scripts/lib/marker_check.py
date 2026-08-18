@@ -1939,6 +1939,148 @@ def _piped_shell_producers(pairs):
     return out
 
 
+def _herestring_shell_payloads(pairs):
+    # A here-string feeding a shell runs its operand, so that operand is a PROGRAM.
+    # `sh <<< '<helper>'` executed while returning OK, and the equivalent pipe spelling
+    # `echo '<helper>' | sh` blocked -- the same invocation, one transport apart (#643).
+    # _piped_shell_producers only yields text for a PIPELINE stage; a here-string has no
+    # producer segment at all, because the payload is the operand of `<<<` on the shell's
+    # own command line, so nothing was yielded and the payload was never scanned. The
+    # guard is UNCONDITIONAL, so that was a straight bypass, not a degraded-mode gap.
+    #
+    # The asymmetry ran one way only: cmdword already closed `<<<` in its stdin-fed
+    # shell-source branch; this copy -- the one the helper guard consults -- had not.
+    # KEEP IN STEP WITH cmdword._piped_shell_producers and that branch.
+    #
+    # Predicate is _is_shell_name, the WIDE set the pipe transport already uses, NOT
+    # cmdword's narrower _SHELLS. A here-string is the same stdin transport as a pipe, so
+    # the two must not diverge: `xargs` is in that set deliberately (see the _SHELL_NAMES
+    # note and tests/test-impl-gate-scope-519.sh, which pin the same fail-CLOSED direction
+    # for the pipe), and narrowing here would let one transport allow what the other blocks.
+    #
+    # No option-arity table, so `sh -c 'prog' <<< '<helper>'` OVER-blocks: with -c the
+    # here-string is only stdin data. Deciding that needs to know whether a shell reads
+    # stdin from its FLAGS, which is the question this file refuses to answer -- it failed
+    # open four ways when tried (`bash --norc` read as "-c present", `bash --rcfile -c`
+    # read the VALUE of --rcfile as the option). The over-block is the chosen direction.
+    out = []
+    for _op, seg in pairs:
+        # CHARGE NOTHING when there is no here-string. Tokenizing every segment to look
+        # for one cost 4.37s on the 60000-token payload in tests/test-impl-gate-scope-519.sh
+        # against its 3.5s budget -- and that budget exists because the hook's 5s timeout
+        # reads as ALLOW, so a slow scanner is itself a fail-open. The operator cannot be
+        # spelled any other way (no expansion produces `<<<`, and shlex would have to run
+        # to find one), so a raw substring test is exact here, not a heuristic.
+        if "<<<" not in seg:
+            continue
+        # NON-POSIX lexing, and the WHOLE walk runs on it. A QUOTED `<<<` is an ARGUMENT,
+        # not an operator, and posix shlex strips the quotes that say so. Two failures came
+        # from that, in opposite directions:
+        #   `echo '<<<' '<helper>' sh`        -- no here-string at all, read as one, BLOCKED
+        #   `bash -s '<<<' <<< '<helper>'`    -- the quoted argument was taken for the
+        #                                        operator and CONSUMED the real one as its
+        #                                        target, so the payload scanned was `<<<`
+        #                                        and the helper went unseen
+        # Testing only whether SOME bare operator exists fixes the first and not the second,
+        # because the walk still could not tell the two apart. Keeping quotes on the tokens
+        # settles both: a genuine operator lexes to a bare `<<<`, a quoted one keeps its
+        # quotes and matches no redirection. Operand and command words are dequoted for the
+        # name tests below; the payload text is handed to a probe that squeezes quoting
+        # anyway, so the outer-quote strip is enough.
+        try:
+            lex = shlex.shlex(seg, posix=False, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""
+            toks = list(lex)
+        except ValueError:
+            continue          # unparseable: the `not ok` path already probes the whole command
+        if "<<<" not in toks:
+            continue          # every `<<<` here is quoted: an argument, not a redirection
+        # Redirections are stepped over while locating the command word, because bash
+        # accepts them BEFORE it: `<<<'<helper>' sh` is a real spelling, and cmdword
+        # records `<<<x sh -c ...` among previously leaked shapes. Reading words[0] here
+        # would resolve that command word to the operator.
+        # THE OPERAND IS NEVER RECONSTRUCTED. Taking it to be "the token after `<<<`" put
+        # this walk on a ladder of bash word-splitting rules, each rung a measured
+        # fail-open: adjacent quoted fragments concatenate into one word
+        # (`<<< 'lease_'"slot.py"`), escaped whitespace joins words (`<<< a\ b`), and an
+        # escaped punctuation argument (`\<`) lexes as separate tokens whose `<` was taken
+        # for a redirection that then consumed the real `<<<`. Reproducing bash's lexer to
+        # settle those is the unbounded problem this module refuses elsewhere.
+        #
+        # So the operand is not extracted at all. Existence of a genuine bare `<<<` plus a
+        # receiver that executes its stdin is enough: the payload is SOMEWHERE in this
+        # segment, so the whole segment goes to the probe. Every spelling above collapses,
+        # because none of them can hide the helper NAME from a scan of the text that
+        # contains it. Widening to the segment also subsumes the unresolved-operand case
+        # (`sh <<< "$VAR"`), which the caller previously widened by hand.
+        #
+        # This does not widen who is affected: a segment whose receiver does not execute
+        # stdin is never probed at all, so `cat <<< 'prose naming the helper'` still reads
+        # as data.
+        cw_words, skip_next = [], False
+        for t in toks:
+            if skip_next:
+                skip_next = False
+                continue
+            m = _REDIR_PREFIX_RE.match(t)
+            if m:
+                skip_next = m.group(0) == t
+                continue
+            # Quoting AND ESCAPES squeezed, not just outer-stripped: `b'a's'h'` and
+            # `b\\a\\s\\h` are both valid command-word spellings of bash, and an
+            # outer-strip left each matching no name. Same squeeze the helper probe
+            # applies to its own text.
+            cw_words.append(t.replace("'", "").replace('"', "").replace("\\", ""))
+        # EVERY operand in the segment, not just the last: modelling "last redirect wins"
+        # buys nothing here, and any-hit-blocks is the fail-closed reading.
+        # The receiver test is the SAME WIDE TEST the pipe transport uses, not a peel to a
+        # single command word. Peeling was narrower three ways, each measured as an
+        # executing here-string that classified as a read:
+        #   `env -u X sh <<< ...`      -- the peel skips `env` and `-u`, then takes the
+        #                                 option VALUE `X` for the command word. That is
+        #                                 the option-arity question this file refuses to
+        #                                 answer, and answering it wrong fails OPEN.
+        #   `/bin/ba{s..s}h <<< ...`   -- brace expansion resolves to a shell the text
+        #                                 never spells, so an exact-name test reads a
+        #                                 command word no set contains.
+        #   `script -q /dev/null <<< ...` -- an implicit launcher execs the user's shell
+        #                                 with no shell NAME anywhere in the segment.
+        # So: a shell name ANYWHERE in the non-redirection words counts, an UNRESOLVED
+        # command word counts (fail closed -- it may expand onto a shell), and a launcher
+        # counts. Same three disjuncts, same helpers, same order as the producer walk
+        # above. Keeping the two transports on one test is the point: any narrowing here
+        # lets a here-string through that the identical pipe spelling blocks.
+        # This also subsumes the `xargs` case -- it is in the stdin-shell set, and the
+        # any-word test never consumed it as a wrapper the way the peel did.
+        # _stage_words, not the raw tokens: an option can carry its value ATTACHED and
+        # BSD/macOS `env -S` plus a quoted program lexes to ONE token whose first word
+        # matches no shell, so `env -Sbash <<< '<helper>'` executed while reading as a
+        # non-shell. This is the same expansion the producer walk applies to a piped stage.
+        _sw = list(_stage_words(cw_words))
+        # Command position for `.` and `source`. Both are deliberately ABSENT from
+        # _SHELL_NAMES -- an any-word match there cost a real over-block on the bare word
+        # `source` appearing as a grep PATTERN -- so they are tested HERE, in command
+        # position only, exactly as the pipe path tests them. `. /dev/stdin <<< '<helper>'`
+        # sources what the here-string feeds.
+        _cw0 = _peel_wrappers(cw_words) or (cw_words[0] if cw_words else None)
+        # The ATTACHED OPTION BUNDLE, copied from the producer disjunct rather than
+        # approximated: peeling one option letter off `-iSbash` leaves `Sbash`, and
+        # peeling a fixed number never terminates because the caller chooses the bundle
+        # length, so the test is an endswith over the names. `env -iSbash <<< ...` ran
+        # bash while the pipe spelling of the same thing already blocked.
+        if (any(_is_shell_name(_bn(w)) for w in _sw)
+                or any(w.startswith("-")
+                       and (any(w.endswith(n) for n in _SHELL_NAMES)
+                            or _ATTACHED_INTERP_RE.search(w))
+                       for w in _sw)
+                or any(_UNRESOLVED_CW_RE.search(w) for w in _sw)
+                or (_cw0 is not None and _bn(_cw0) in (".", "source"))
+                or _launcher_in_any_simple_command(" ".join(cw_words))):
+            out.append(seg)
+    return out
+
+
 def _names_helper(text):
     # Which mutating helper does this text NAME, quotes resolved? A raw substring test
     # is defeated by quote concatenation -- the shell runs `lease_"slot.py"`, but the
@@ -2112,6 +2254,18 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             # sibling call sites already used the probe; this one did not, and a glob in a
             # PIPED payload walked through.
             _hit = _abandoned_scan_probe(_prod)
+            if _hit:
+                return _hit
+        # Same reason as the producer loop above, different transport: a here-string
+        # operand feeding a shell IS the program (#643).
+        for _hs in _herestring_shell_payloads(_pairs):
+            # `_hs` is the whole SEGMENT, not a reconstructed operand -- see the
+            # generator. An unresolvable operand (`sh <<< "$VAR"`) needs no special case
+            # for the same reason: the scan already covers the text it sits in. What that
+            # cannot reach is what the VARIABLE holds, which is the `-` / /dev/fd/N
+            # branch's own documented residual -- what stdin carries is not statically
+            # visible -- so a bare `sh <<< "$VAR"` naming the helper nowhere still allows.
+            _hit = _abandoned_scan_probe(_hs)
             if _hit:
                 return _hit
     if not ok:

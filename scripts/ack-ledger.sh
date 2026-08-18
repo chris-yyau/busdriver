@@ -779,6 +779,15 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   # verdict. sort_by created_at — reactions API ordering is not guaranteed.
   codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  # Same lexicographic-comparison hazard as $codex_clean_at above (Cursor Bugbot,
+  # PR #693): $codex_plus1 feeds two `>` string comparisons below (the veto
+  # threshold and the Tier F ack condition), so a malformed value that happens to
+  # sort after every real date would silently defeat both. In practice this is
+  # GitHub's own `.created_at` on a reactions-API object, not free text — but
+  # validate it by the same rule as every other externally-sourced timestamp in
+  # this file rather than assume the shape, consistent with $codex_clean_at's
+  # own ts_ok guard just above.
+  [ "$(ts_ok "$codex_plus1")" = "1" ] || codex_plus1=""
   # (0) A POST-ANCHOR COMMENT THAT TIER G DECLINED BLOCKS EVERYTHING BELOW (#690).
   #     Since the mechanism switch, a Codex finding routinely arrives as an issue
   #     COMMENT with no thread and no review — PR #688's P2 at 17:36:38Z did. If

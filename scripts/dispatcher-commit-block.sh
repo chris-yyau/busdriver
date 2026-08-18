@@ -13,12 +13,15 @@
 #   NO_WORKTREE             - "1" no-worktree mode (worker shares parent repo index)
 #   PRE_DISPATCH_BASELINE   - JSON array of paths staged before worker dispatch
 #   BUSDRIVER_ALLOW_NO_COMMITLINT - "1" allows missing local commitlint
-#   PRIOR_COMMIT_SHA        - the last round's reported commit SHA (dispatcher
-#                             state). Used by the wait-round landed-fix check
-#                             (#668) to bind the reported SHA to THIS round: a
-#                             clean-index invocation whose pinned HEAD equals
-#                             PRIOR_COMMIT_SHA is sitting on the PREVIOUS
-#                             round's fix and must report "none", not
+#   PRIOR_COMMIT_SHA        - the LAST FIX-ROUND's reported commit SHA
+#                             (dispatcher state, default "none"; RETAINED
+#                             across wait-rounds, which report "none" — see
+#                             pr-grind SKILL.md "Update state"). Used by the
+#                             wait-round landed-fix check (#668) to bind the
+#                             reported SHA to THIS round: a clean-index
+#                             invocation whose pinned HEAD equals
+#                             PRIOR_COMMIT_SHA is sitting on a fix that was
+#                             already counted and must report "none", not
 #                             double-count it.
 #   RESULT_REVIEWER_ACKS    - worker-computed ack ledger; passed through on
 #                             clean-path (no recompute); required for the

@@ -315,6 +315,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         → BAIL judgment with reason `unrecognized RESULT_STATUS=<value>`.
   │
   │     Fix-round delegation:
+  │       # PRIOR_COMMIT_SHA (#668): the dispatcher's remembered LAST FIX-ROUND
+  │       # SHA — conversation state, so template-substitute the literal (shell
+  │       # vars do not survive Bash tool calls; "${PRIOR_COMMIT_SHA:-none}"
+  │       # would always expand to none and defeat the double-count guard).
+  │       # RETAINED across wait-rounds (a wait-round's RESULT_COMMIT_SHA=none
+  │       # must not reset it — see "Update state" below) and "none" only until
+  │       # the first fix-round reports a SHA.
   │       WORKTREE_DIR="$WORKTREE_DIR" \
   │       CLAUDE_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT" \
   │       PR_NUMBER="$PR_NUMBER" \
@@ -325,12 +332,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
   │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
-  │       # PRIOR_COMMIT_SHA is the dispatcher's REMEMBERED last-round commit
-  │       # SHA (conversation state — shell vars do not survive Bash tool calls,
-  │       # so "${PRIOR_COMMIT_SHA:-none}" would always expand to none and the
-  │       # #668 double-count guard would never fire). Template-substitute the
-  │       # literal value from the dispatcher loop's state, "none" when unset:
-  │       PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — remembered last-round SHA, literal; "none" when unset> \
+  │       PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — last fix-round SHA, literal, retained across wait-rounds; "none" until first fix-round> \
   │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
   │     Parse the last stdout line as exactly one JSON envelope:
@@ -648,7 +650,12 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
   │
   └── Update state:
-        PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
+        # PRIOR_COMMIT_SHA is the last FIX-ROUND's reported SHA and is RETAINED
+        # on wait-rounds: RESULT_COMMIT_SHA is "none" there, and overwriting
+        # would reset the #668 double-count guard — a later clean round sitting
+        # on the same Grind-PR commit would pass PRIOR_COMMIT_SHA=none and
+        # count the already-counted fix again.
+        PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA if RESULT_COMMIT_SHA != "none"; retained otherwise
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
         PRIOR_CODEX_ACK     = RESULT_CODEX_ACK   # on fix/wait-rounds: overwrite with result_codex_ack from commit-block envelope (post-push); on clean path: use worker-emitted value. Backward-compat: if result_codex_ack absent from envelope (legacy commit-block), retain worker RESULT_CODEX_ACK unchanged — do NOT default to "none" (that would lose a stale signal from the worker).
         PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<RESULT_COMMIT_SHA>; fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
@@ -1232,7 +1239,7 @@ Inputs (env vars, optional; default 0/empty):
 - `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for no-worktree mode (worker runs in the repo root and shares the parent index).
 - `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
-- `PRIOR_COMMIT_SHA` - the last round's reported commit SHA (dispatcher state, default `none`). The wait-round landed-fix check (#668) uses it to bind the reported SHA to THIS round: a clean-index invocation whose pinned HEAD equals `PRIOR_COMMIT_SHA` is sitting on the previous round's fix and must report `none`, never double-count it.
+- `PRIOR_COMMIT_SHA` - the last FIX-round's reported commit SHA (dispatcher state, default `none`; retained across wait-rounds, which report `none`). The wait-round landed-fix check (#668) uses it to bind the reported SHA to THIS round: a clean-index invocation whose pinned HEAD equals `PRIOR_COMMIT_SHA` is sitting on an already-counted fix and must report `none`, never double-count it.
 
 Outputs (stdout, exactly one JSON object on the last line):
 Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):

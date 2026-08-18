@@ -234,15 +234,15 @@ run_dispatcher_capture() {
         "BUSDRIVER_ALLOW_NO_COMMITLINT=$allow_commitlint"
     )
 
-    if [ -n "${litmus_mode+x}" ]; then env_args+=("LITMUS_MODE=$litmus_mode"); fi
-    if [ -n "${no_worktree+x}" ]; then env_args+=("NO_WORKTREE=$no_worktree"); fi
-    if [ -n "${pre_dispatch_baseline+x}" ]; then env_args+=("PRE_DISPATCH_BASELINE=$pre_dispatch_baseline"); fi
-    if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
-    if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
-    if [ -n "${init_event_log+x}" ]; then env_args+=("INIT_EVENT_LOG=$init_event_log"); fi
-    if [ -n "${init_always_fails+x}" ]; then env_args+=("INIT_ALWAYS_FAILS=$init_always_fails"); fi
-    if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
-    if [ -n "${result_ack_tiers+x}" ]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
+    if [[ -n "${litmus_mode+x}" ]]; then env_args+=("LITMUS_MODE=$litmus_mode"); fi
+    if [[ -n "${no_worktree+x}" ]]; then env_args+=("NO_WORKTREE=$no_worktree"); fi
+    if [[ -n "${pre_dispatch_baseline+x}" ]]; then env_args+=("PRE_DISPATCH_BASELINE=$pre_dispatch_baseline"); fi
+    if [[ -n "${gh_event_log+x}" ]]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
+    if [[ -n "${dispatcher_event_log+x}" ]]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
+    if [[ -n "${init_event_log+x}" ]]; then env_args+=("INIT_EVENT_LOG=$init_event_log"); fi
+    if [[ -n "${init_always_fails+x}" ]]; then env_args+=("INIT_ALWAYS_FAILS=$init_always_fails"); fi
+    if [[ -n "${result_reviewer_acks+x}" ]]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
+    if [[ -n "${result_ack_tiers+x}" ]]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
     if [[ -n "${prior_commit_sha+x}" ]]; then env_args+=("PRIOR_COMMIT_SHA=$prior_commit_sha"); fi
 
     set +e

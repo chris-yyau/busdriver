@@ -1,3 +1,17 @@
+## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** report the real commit SHA when a re-invoked fix-round has landed ([#698](https://github.com/chris-yyau/busdriver/issues/698)) ([15c7d31](https://github.com/chris-yyau/busdriver/commit/15c7d31b44372f5f82376dd4cac47fed749739fd)), closes [#668](https://github.com/chris-yyau/busdriver/issues/668)
+
+## [1.109.3](https://github.com/chris-yyau/busdriver/compare/v1.109.2...v1.109.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch:** scope every agy dispatch to the CWD via --add-dir ([#695](https://github.com/chris-yyau/busdriver/issues/695)) ([fb4c816](https://github.com/chris-yyau/busdriver/commit/fb4c816477d4472a2fbf4d1bf28fb9acbb8c5eb9)), closes [#686](https://github.com/chris-yyau/busdriver/issues/686)
+
 ## [1.109.2](https://github.com/chris-yyau/busdriver/compare/v1.109.1...v1.109.2) (2026-08-18)
 
 

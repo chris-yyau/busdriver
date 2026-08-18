@@ -214,7 +214,19 @@ Out of scope; the remediation loop uses Edit.
   process never sourced) — hooks.json can only re-import what Claude Code's
   own process environment already carries at hook-interpolation time, which is
   the same "operator's own ambient environment" limit the rest of this bullet
-  already accepts.
+  already accepts. A second slice was narrowed the same way: `sanitized-gate.sh`
+  substitutes a passwd-derived HOME for its own subprocess calls (defense
+  against a poisoned launching-session HOME), but the authorized `git commit`
+  that runs right after this gate approves is a *different* process — it
+  inherits the launching session's ORIGINAL HOME, never the substitution. A
+  `~/.gitconfig` at that real HOME could carry a live `core.hooksPath` the
+  second pass, reading under the passwd HOME, never saw (reported by Codex on
+  this PR, reproduced). Fixed the same way as XDG_CONFIG_HOME: hooks.json
+  re-imports the pre-substitution value as `BUSDRIVER_ORIG_HOME` (a name
+  `sanitized-gate.sh`'s own HOME override never touches, so it survives), and
+  `_hooks_absent`'s second pass resolves config under it instead. Same limit
+  as XDG_CONFIG_HOME above — only what Claude Code's own process environment
+  already carries at hook-interpolation time.
 - **Accepted residual — TOCTOU.** A PreToolUse hook samples the index before bash
   runs, so between the decision and git constructing the commit a concurrent
   writer could stage an implementation file. This is structural to every gate in
@@ -237,7 +249,7 @@ Out of scope; the remediation loop uses Edit.
 
 ## Verification
 
-`tests/test-design-gate-docs-commit.sh` — 95 assertions, both branches of every
+`tests/test-design-gate-docs-commit.sh` — 105 assertions, both branches of every
 guard.
 
 Step 1 pins the accept and refuse sets, with the conventional-commit message as

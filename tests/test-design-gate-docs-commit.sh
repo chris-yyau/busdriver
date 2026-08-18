@@ -246,6 +246,57 @@ rm -f "$hx/xdghooks/pre-commit"
 eq "same XDG config, no hook in it → accepted" \
    "$(xdg_sanitized_scope "$hx")" "docs/plans/p.md"
 
+# sanitized-gate.sh substitutes a passwd-derived HOME for its OWN subprocess
+# calls, defending against a poisoned launching-session HOME — but the
+# authorized `git commit` inherits the launching session's ORIGINAL HOME, not
+# the substitution. hooks.json re-imports that original value as
+# BUSDRIVER_ORIG_HOME (the process env var is untouched by any local `env
+# HOME=...` override on the command line, exactly like the fixture's real
+# invocation), so the second pass can resolve config under the SAME HOME the
+# real commit will use. Point BUSDRIVER_ORIG_HOME at a THIRD, distinct home so
+# this fixture cannot pass by accident via either case above.
+fresh; ho="$NEWREPO"; git -C "$ho" add docs/plans/p.md
+git -C "$ho" config --unset core.hooksPath
+mkdir -p "$ho/realhome" "$ho/realhooks"
+printf '[core]\n\thooksPath = %s/realhooks\n' "$ho" >"$ho/realhome/.gitconfig"
+printf '#!/bin/sh\nexit 0\n' >"$ho/realhooks/pre-commit"; chmod +x "$ho/realhooks/pre-commit"
+orighome_sanitized_scope(){
+    payload "git commit -m x" "$1" \
+      | env HOME="$1/fakehome" XDG_CONFIG_HOME="$1/fakehome/.config" \
+            BUSDRIVER_ORIG_HOME="$1/realhome" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            python3 -I "$SCOPE" "$1" "$1" .claude 2>/dev/null || printf 'REFUSE'
+}
+eq "hook reachable ONLY via BUSDRIVER_ORIG_HOME/.gitconfig → refuse" \
+   "$(orighome_sanitized_scope "$ho")" "REFUSE"
+rm -f "$ho/realhooks/pre-commit"
+eq "same original-HOME config, no hook in it → accepted" \
+   "$(orighome_sanitized_scope "$ho")" "docs/plans/p.md"
+# Absent BUSDRIVER_ORIG_HOME (older hooks.json, or a manual invocation), the
+# real-home hook must still be invisible — this pin is additive, never load-
+# bearing for the existing checks.
+printf '#!/bin/sh\nexit 0\n' >"$ho/realhooks/pre-commit"; chmod +x "$ho/realhooks/pre-commit"
+eq "BUSDRIVER_ORIG_HOME absent → real-home hook stays unseen (additive only)" \
+   "$(sanitized_scope "$ho")" "docs/plans/p.md"
+rm -f "$ho/realhooks/pre-commit"
+# A repo cannot use this to WIDEN acceptance — BUSDRIVER_ORIG_HOME only adds a
+# refusal surface. Point it at a THIRD, hook-free home in the SAME ($hx)
+# fixture and confirm the pre-existing XDG check still refuses on its own.
+mkdir -p "$hx/orighome" "$hx/xdghooks"
+printf '#!/bin/sh\nexit 0\n' >"$hx/xdghooks/pre-commit"; chmod +x "$hx/xdghooks/pre-commit"
+xdg_plus_orighome_scope(){
+    payload "git commit -m x" "$1" \
+      | env HOME="$1/fakehome" XDG_CONFIG_HOME="$1/xdghome" \
+            BUSDRIVER_ORIG_HOME="$1/orighome" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            python3 -I "$SCOPE" "$1" "$1" .claude 2>/dev/null || printf 'REFUSE'
+}
+eq "BUSDRIVER_ORIG_HOME (hook-free) present alongside a live XDG hook → still refuse" \
+   "$(xdg_plus_orighome_scope "$hx")" "REFUSE"
+rm -f "$hx/xdghooks/pre-commit"
+eq "same fixture, both hooks gone → accepted" \
+   "$(xdg_plus_orighome_scope "$hx")" "docs/plans/p.md"
+
 # core.fsmonitor names a program git runs during diff/ls-files and again at commit.
 fresh; fm="$NEWREPO"; git -C "$fm" add docs/plans/p.md
 eq "no fsmonitor → accepted" "$(scope "git commit -m x" "$fm")" "docs/plans/p.md"

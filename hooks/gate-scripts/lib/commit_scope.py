@@ -225,8 +225,7 @@ def _hooks_absent(repo):
     (ADR 0016) while the authorized commit runs with the operator's real config,
     so a global core.hooksPath is invisible here and live there. The second pass
     drops those two vars; `rev-parse --git-path` under --no-pager runs no helper,
-    alias or pager, and HOME is already passwd-derived, so the file read is the
-    real operator's. Declining to look is the fail-OPEN direction.
+    alias or pager. Declining to look is the fail-OPEN direction.
 
     Git's default global file is `$XDG_CONFIG_HOME/git/config` (falling back to
     `$HOME/.config/git/config`), read alongside `~/.gitconfig`. `env -i`
@@ -240,23 +239,47 @@ def _hooks_absent(repo):
     not close the gap for a Claude session launched outside the shell where
     XDG_CONFIG_HOME is set (ADR 0044) — see that ADR's environment-residual note.
 
+    The second pass's HOME has the SAME gap, one layer up: sanitized-gate.sh
+    deliberately substitutes a passwd-derived HOME for its own subprocess calls
+    (defense against a poisoned HOME feeding an evil ~/.gitconfig to THIS
+    process), but the authorized `git commit` that runs right after this gate
+    approves is a *different* process — it inherits the launching session's
+    ORIGINAL HOME, never the substitution. When the two diverge, `~/.gitconfig`
+    at the real HOME could carry a live core.hooksPath this pass, reading under
+    the passwd HOME, never sees. hooks.json re-imports the pre-substitution
+    value as BUSDRIVER_ORIG_HOME (mirroring the XDG_CONFIG_HOME import; that
+    name is untouched by sanitized-gate.sh's own HOME override, so it survives),
+    and this pass overrides HOME with it before resolving config — checking the
+    SAME effective global config the real commit will read, not the wrapper's
+    defensive stand-in. A repo cannot steer this value: `_settings_inert` above
+    already refuses any settings.json `env` block before this ever runs, so the
+    only source left is the operator's own ambient session — exactly what the
+    real commit inherits too, so resolving under it is checking ground truth,
+    not trusting an attacker-supplied one. Reported by Codex on PR #697,
+    reproduced.
+
     Re-importing ANY variable into a `env -i` gate deserves the obvious
-    objection, so state the answer: XDG_CONFIG_HOME is repo-injectable (a
-    committed settings.json `env` block is exactly ADR 0016's threat). It is
-    safe on THIS path for two reasons, both checked rather than assumed.
-    (1) The tool whose config XDG would otherwise steer is `gh` — the spoofed
-    `~/.config/gh` that sanitized-gate.sh names as its bounded residual — and
-    `pre-commit-gate.sh` invokes `gh` nowhere on this path (the only matches in
-    it and its sourced libs are comments). (2) For git, every knob a hostile XDG
-    config could set that this helper reads — core.hooksPath, core.pager,
-    core.fsmonitor, hook.<name>.command, gpg.*.program — makes it REFUSE. A
-    repo can therefore use this to deny itself the carve-out, which is the
-    pre-#685 behaviour, and cannot use it to obtain one.
+    objection, so state the answer: XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are
+    repo-injectable (a committed settings.json `env` block is exactly ADR
+    0016's threat). Both are safe on THIS path for two reasons, both checked
+    rather than assumed. (1) The tool whose config XDG would otherwise steer is
+    `gh` — the spoofed `~/.config/gh` that sanitized-gate.sh names as its
+    bounded residual — and `pre-commit-gate.sh` invokes `gh` nowhere on this
+    path (the only matches in it and its sourced libs are comments); a poisoned
+    BUSDRIVER_ORIG_HOME reaches the same tools a poisoned HOME already does,
+    closed the same way. (2) For git, every knob a hostile config could set
+    that this helper reads — core.hooksPath, core.pager, core.fsmonitor,
+    hook.<name>.command, gpg.*.program — makes it REFUSE. A repo can therefore
+    use either variable to deny itself the carve-out, which is the pre-#685
+    behaviour, and cannot use either to obtain one.
     """
     envs = [dict(os.environ)]
     unsanitized = dict(os.environ)
     for k in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
         unsanitized.pop(k, None)
+    orig_home = os.environ.get("BUSDRIVER_ORIG_HOME", "")
+    if orig_home and os.path.isdir(orig_home):
+        unsanitized["HOME"] = orig_home
     if unsanitized != envs[0]:
         envs.append(unsanitized)
     for env in envs:

@@ -786,10 +786,12 @@ not land durably. A use that cannot be recorded cannot be bounded, so none is
 granted. (The helper exits 1 for every internal error without reporting which, so
 the gate cannot narrow this further — see #681.)
 
-Re-creating the skip file will NOT clear this. Check that both of these are
-writable, regular, non-symlink paths:
-    $_LEASE_DIR
-    $STATE_DIR/bypass-log.jsonl
+Re-creating the skip file will NOT clear this. Check that both paths below are
+writable and not a symlink — but they need DIFFERENT shapes: $_LEASE_DIR must be a
+directory (lease_slot.py opens it with O_DIRECTORY; a plain file there is refused),
+while the audit log must be a regular file:
+    $_LEASE_DIR                      (directory)
+    $STATE_DIR/bypass-log.jsonl      (regular file)
 Running /blueprint-review does not repair the lease, but it does clear the pending
 review below, which unblocks this write."
             fi

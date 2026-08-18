@@ -21,6 +21,7 @@ sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import json
 import os
 import shlex
+import stat
 import subprocess
 
 # Substitution survives quoting (`"$(git add src/x)"` runs before the commit),
@@ -296,10 +297,25 @@ def _settings_inert(repo, state_dir):
     for d in dirs:
         for name in ("settings.json", "settings.local.json"):
             path = os.path.join(d, name)
-            if not os.path.exists(path):
-                continue
+            # O_NONBLOCK: a FIFO planted at this path passes os.path.exists()
+            # and a plain blocking open(path, "rb") hangs until a writer
+            # connects — and this gate runs under a 10s PreToolUse timeout
+            # whose expiry emits NO decision, which the harness reads as
+            # allow (see main()'s comment on the path-count bound). A hang
+            # here is therefore a bypass, not just a stall. O_NONBLOCK makes
+            # the open return immediately regardless of file type; the fstat
+            # below then refuses anything that isn't a plain regular file
+            # BEFORE any read is attempted.
             try:
-                with open(path, "rb") as fh:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return False
+            try:
+                with os.fdopen(fd, "rb") as fh:
+                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        return False
                     data = json.loads(fh.read().decode("utf-8", "surrogateescape"))
             except Exception:
                 return False

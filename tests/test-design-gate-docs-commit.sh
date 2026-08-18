@@ -305,6 +305,50 @@ eq "settings.json adding a marketplace → refuse" "$(scope "git commit -m x" "$
 rm -f "$se/.claude/settings.json"
 eq "settings files removed → accepted again" "$(scope "git commit -m x" "$se")" "docs/plans/p.md"
 
+# A FIFO at settings.json passes os.path.exists() and, opened blocking, hangs
+# the gate until a writer connects — under this gate's 10s PreToolUse timeout
+# that hang reads as ALLOW (see commit_scope.py's _MAX_PATHS comment), so a
+# planted FIFO would be a bypass, not just a stall. `timeout` here distinguishes
+# a genuine hang (would print TIMEOUT, exit 124) from prompt refusal, so the
+# O_NONBLOCK + fstat guard firing before any read is actually proven rather
+# than a masked-by-`|| REFUSE` timeout looking identical to a real refusal.
+# `timeout` is GNU-only and absent from stock macOS/BSD, so requiring it outright
+# made this suite unrunnable there. The repo already solves this: source
+# _portable_timeout (timeout → gtimeout → a perl alarm fallback, which exists
+# everywhere) rather than hard-requiring one binary.
+#
+# Exit-code classification is exhaustive on purpose. An earlier `else → REFUSE`
+# catch-all called every non-{0,124} code a successful refusal — including 125/126
+# (timeout itself failed, or could not exec) and 128+N signal deaths — so the test
+# could report a pass without commit_scope.py ever having refused anything.
+# commit_scope.py's documented no-carve-out code is exactly 1; nothing else is a
+# refusal.
+# shellcheck source=scripts/lib/resolve-cli.sh disable=SC1091
+source "$ROOT/scripts/lib/resolve-cli.sh" 2>/dev/null || true
+if command -v mkfifo >/dev/null 2>&1 && declare -F _portable_timeout >/dev/null 2>&1; then
+    mkfifo "$se/.claude/settings.json"
+    # Assignment PREFIXES, not `env`: _portable_timeout is a shell function and
+    # `env` execs a binary, so the `env` form returns 127. The whole thing runs
+    # in a command substitution, so the assignments cannot leak.
+    fifo_out=$(HOME="$se/fakehome" XDG_CONFIG_HOME="$se/fakehome/.config" \
+               GIT_CONFIG_SYSTEM=/dev/null \
+               _portable_timeout 5 python3 -I "$SCOPE" "$se" "$se" .claude \
+               < <(payload "git commit -m x" "$se") 2>/dev/null)
+    # Capture the rc into a variable FIRST: `$?` inside the elif chain below
+    # would be the status of the preceding `[[` test, not of the timed run.
+    fifo_rc=$?
+    case "$fifo_rc" in
+        0)   fifo_verdict="accepted:$fifo_out" ;;   # the gate read a FIFO and vouched for it
+        1)   fifo_verdict="REFUSE" ;;               # the documented no-carve-out code
+        124) fifo_verdict="TIMEOUT" ;;              # the hang this guard exists to prevent
+        *)   fifo_verdict="UNEXPECTED-rc$fifo_rc" ;;
+    esac
+    eq "FIFO at settings.json path → refused promptly, not a hang" "$fifo_verdict" "REFUSE"
+    rm -f "$se/.claude/settings.json"
+else
+    no "FIFO regression test could not run" "needs mkfifo and _portable_timeout; refusing to report a pass this host never exercised"
+fi
+
 # _settings_inert must check `.claude` even when state_dir names something else:
 # Claude Code always merges <repo>/.claude/settings*.json regardless of the
 # caller's own state_dir bookkeeping (BUSDRIVER_STATE_DIR — always ".claude" on

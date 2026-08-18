@@ -23,6 +23,32 @@ import os
 import shlex
 import stat
 import subprocess
+import time
+
+# Whole-helper wall-clock budget for subprocesses. The pre-commit gate is
+# registered with a 10-SECOND PreToolUse timeout and a timed-out hook emits NO
+# decision, which the harness reads as ALLOW — so anything that can HANG in here
+# is a bypass, not a stall. Repo-influenced git config can hang git outright
+# (`[include] path = /dev/zero` makes `git config` read forever), so every
+# subprocess draws from ONE SHARED deadline rather than each getting its own:
+# a dozen individually-bounded calls can still overrun the hook budget together.
+# Exhaustion refuses, like every other failure in this module.
+_BUDGET_SECONDS = 4.0
+_DEADLINE = None
+
+
+def _run(cmd, env=None):
+    """Run a subprocess against the shared deadline. None = refuse."""
+    global _DEADLINE
+    if _DEADLINE is None:
+        _DEADLINE = time.monotonic() + _BUDGET_SECONDS
+    remaining = _DEADLINE - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        return subprocess.run(cmd, capture_output=True, env=env, timeout=remaining)
+    except Exception:
+        return None
 
 # Substitution survives quoting (`"$(git add src/x)"` runs before the commit),
 # so it is refused anywhere. Glob/brace act only UNQUOTED — `-m {msg,-a}` reads
@@ -110,9 +136,8 @@ def _config_get(repo, env, key, as_bool=False):
     if as_bool:
         cmd.append("--type=bool")
     cmd += ["--get", key]
-    try:
-        r = subprocess.run(cmd, capture_output=True, env=env)
-    except Exception:
+    r = _run(cmd, env=env)
+    if r is None:
         return None
     if r.returncode == 1:
         return (False, "")
@@ -146,13 +171,11 @@ def _no_configured_programs(repo, env):
     # `gpg.format=ssh` and `commit.gpgSign=true` — while closing nothing: signing
     # runs `gpg`/`ssh-keygen` from PATH, which is the accepted ambient residual,
     # not a repo-configurable program.
-    try:
-        rx = subprocess.run(["git", "--no-pager", "-C", repo, "config",
-                             "--name-only", "--get-regexp",
-                             r"^(hook\..*\.command|gpg\.program"
-                             r"|gpg\..*\.program|gpg\.ssh\.defaultkeycommand)$"],
-                            capture_output=True, env=env)
-    except Exception:
+    rx = _run(["git", "--no-pager", "-C", repo, "config",
+               "--name-only", "--get-regexp",
+               r"^(hook\..*\.command|gpg\.program"
+               r"|gpg\..*\.program|gpg\.ssh\.defaultkeycommand)$"], env=env)
+    if rx is None:
         return False
     if rx.returncode not in (0, 1):
         return False
@@ -177,11 +200,9 @@ def _no_configured_programs(repo, env):
 
 
 def _hooks_dir(repo, env):
-    try:
-        hp = subprocess.run(["git", "--no-pager", "-C", repo,
-                             "rev-parse", "--git-path", "hooks"],
-                            capture_output=True, env=env)
-    except Exception:
+    hp = _run(["git", "--no-pager", "-C", repo,
+               "rev-parse", "--git-path", "hooks"], env=env)
+    if hp is None:
         return None
     if hp.returncode != 0:
         return None
@@ -206,6 +227,31 @@ def _hooks_absent(repo):
     drops those two vars; `rev-parse --git-path` under --no-pager runs no helper,
     alias or pager, and HOME is already passwd-derived, so the file read is the
     real operator's. Declining to look is the fail-OPEN direction.
+
+    Git's default global file is `$XDG_CONFIG_HOME/git/config` (falling back to
+    `$HOME/.config/git/config`), read alongside `~/.gitconfig`. `env -i`
+    (ADR 0016) strips XDG_CONFIG_HOME before this process starts, so an operator
+    whose XDG_CONFIG_HOME diverges from `$HOME/.config` would have a real
+    core.hooksPath the second pass could never see — hooks.json now re-imports
+    it (empty when absent, which git treats identically to unset) specifically
+    for this gate, so os.environ already carries the real value here; both
+    passes inherit it, and GIT_CONFIG_GLOBAL=/dev/null still makes the FIRST
+    pass (and every other gate's git calls) blind to it regardless. This does
+    not close the gap for a Claude session launched outside the shell where
+    XDG_CONFIG_HOME is set (ADR 0044) — see that ADR's environment-residual note.
+
+    Re-importing ANY variable into a `env -i` gate deserves the obvious
+    objection, so state the answer: XDG_CONFIG_HOME is repo-injectable (a
+    committed settings.json `env` block is exactly ADR 0016's threat). It is
+    safe on THIS path for two reasons, both checked rather than assumed.
+    (1) The tool whose config XDG would otherwise steer is `gh` — the spoofed
+    `~/.config/gh` that sanitized-gate.sh names as its bounded residual — and
+    `pre-commit-gate.sh` invokes `gh` nowhere on this path (the only matches in
+    it and its sourced libs are comments). (2) For git, every knob a hostile XDG
+    config could set that this helper reads — core.hooksPath, core.pager,
+    core.fsmonitor, hook.<name>.command, gpg.*.program — makes it REFUSE. A
+    repo can therefore use this to deny itself the carve-out, which is the
+    pre-#685 behaviour, and cannot use it to obtain one.
     """
     envs = [dict(os.environ)]
     unsanitized = dict(os.environ)
@@ -241,11 +287,9 @@ def _staged_paths(repo):
     `--no-renames`: with detection on, a staged src/impl.py -> docs/plans/x.md
     reports only the destination and reads as a lone document.
     """
-    try:
-        r = subprocess.run(["git", "--no-pager", "-C", repo, "diff", "--cached",
-                            "--raw", "--no-renames", "--no-ext-diff", "-z"],
-                           capture_output=True)
-    except Exception:
+    r = _run(["git", "--no-pager", "-C", repo, "diff", "--cached",
+              "--raw", "--no-renames", "--no-ext-diff", "-z"])
+    if r is None:
         return None
     if r.returncode != 0:
         return None
@@ -364,9 +408,15 @@ def main(argv):
         return 1
     if not _commit_form_ok(words):
         return 1
-    if not _hooks_absent(repo):
-        return 1
+    # ORDER IS LOAD-BEARING. _settings_inert refuses the repo whose settings file
+    # can inject env into this very session (XDG_CONFIG_HOME among them), so it
+    # must run BEFORE _hooks_absent, which reads git config under that injected
+    # environment. Reversed, a hostile XDG config gets to hang git — and hanging
+    # is a bypass here, not a stall — before the check that would have refused
+    # the repo ever ran.
     if not _settings_inert(repo, state_dir):
+        return 1
+    if not _hooks_absent(repo):
         return 1
 
     paths = _staged_paths(repo)

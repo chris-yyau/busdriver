@@ -97,6 +97,16 @@ Deliberately **not** `gate_design_pass_honored` (the predicate the spec-only Gat
 2 bypass 30 lines below uses). The document is unreviewed *by construction* —
 that is what armed the token. Requiring a PASS would restore the deadlock exactly.
 
+**Anything that can HANG is a bypass, not a stall** — the same fact the 20-path
+bound rests on, and the reason for two further guards found during review. Every
+subprocess in `commit_scope.py` draws from ONE shared 4-second deadline
+(individually-bounded calls can still overrun the hook budget together), because
+repo-influenced git config can hang git outright: `[include] path = /dev/zero`
+makes `git config` read forever. And `_settings_inert` runs BEFORE `_hooks_absent`
+— reversed, a hostile `XDG_CONFIG_HOME` injected by the very settings file
+`_settings_inert` exists to refuse would get to hang git before the check that
+would have refused the repo ever ran.
+
 The 20-path bound is not cosmetic. The gate runs the design-doc predicate once
 per staged path, each forking `python3` and `git`, inside a PreToolUse hook
 registered with a **10-second timeout** — and a timed-out PreToolUse hook emits no
@@ -190,6 +200,21 @@ Out of scope; the remediation loop uses Edit.
   `updatedInput` or restage after the index sample. What remains is an operator's
   own ambient environment, and a session whose settings file was read and then
   deleted mid-run — neither of which any gate here has ever been able to see.
+  One slice of this was narrowed, not merely accepted: `_hooks_absent`'s
+  second (unsanitized) pass exists specifically to see a global
+  `core.hooksPath` the sanitized pass can't, but XDG_CONFIG_HOME was stripped
+  by `env -i` before that pass could read it either — an operator whose
+  XDG_CONFIG_HOME diverges from `$HOME/.config` had a live global hook the
+  helper could never detect (reported by Codex on this PR, reproduced). Fixed
+  by re-importing XDG_CONFIG_HOME through hooks.json for this one gate;
+  GIT_CONFIG_GLOBAL=/dev/null still makes every OTHER git call (including this
+  gate's own first pass) blind to it, so nothing else widens. This still does
+  not close the gap for a Claude session launched outside the shell where
+  XDG_CONFIG_HOME was exported (e.g. set only in a profile the launching
+  process never sourced) — hooks.json can only re-import what Claude Code's
+  own process environment already carries at hook-interpolation time, which is
+  the same "operator's own ambient environment" limit the rest of this bullet
+  already accepts.
 - **Accepted residual — TOCTOU.** A PreToolUse hook samples the index before bash
   runs, so between the decision and git constructing the commit a concurrent
   writer could stage an implementation file. This is structural to every gate in

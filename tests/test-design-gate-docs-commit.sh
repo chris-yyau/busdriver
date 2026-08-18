@@ -223,6 +223,29 @@ rm -f "$hg/globalhooks/pre-commit"
 eq "same config, no hook in it → accepted" \
    "$(sanitized_scope "$hg")" "docs/plans/p.md"
 
+# Git's default global file is $XDG_CONFIG_HOME/git/config (falling back to
+# $HOME/.config/git/config), read ALONGSIDE ~/.gitconfig above. hooks.json now
+# re-imports XDG_CONFIG_HOME for this gate specifically so an operator whose
+# XDG_CONFIG_HOME diverges from $HOME/.config still has that file seen by the
+# second (unsanitized) pass — point it somewhere OTHER than "$HOME/.config" so
+# this fixture cannot pass by accident via the ~/.gitconfig case above.
+fresh; hx="$NEWREPO"; git -C "$hx" add docs/plans/p.md
+git -C "$hx" config --unset core.hooksPath
+mkdir -p "$hx/xdghome/git" "$hx/xdghooks"
+printf '[core]\n\thooksPath = %s/xdghooks\n' "$hx" >"$hx/xdghome/git/config"
+printf '#!/bin/sh\nexit 0\n' >"$hx/xdghooks/pre-commit"; chmod +x "$hx/xdghooks/pre-commit"
+xdg_sanitized_scope(){
+    payload "git commit -m x" "$1" \
+      | env HOME="$1/fakehome" XDG_CONFIG_HOME="$1/xdghome" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            python3 -I "$SCOPE" "$1" "$1" .claude 2>/dev/null || printf 'REFUSE'
+}
+eq "hook reachable ONLY via XDG_CONFIG_HOME/git/config → refuse" \
+   "$(xdg_sanitized_scope "$hx")" "REFUSE"
+rm -f "$hx/xdghooks/pre-commit"
+eq "same XDG config, no hook in it → accepted" \
+   "$(xdg_sanitized_scope "$hx")" "docs/plans/p.md"
+
 # core.fsmonitor names a program git runs during diff/ls-files and again at commit.
 fresh; fm="$NEWREPO"; git -C "$fm" add docs/plans/p.md
 eq "no fsmonitor → accepted" "$(scope "git commit -m x" "$fm")" "docs/plans/p.md"
@@ -347,6 +370,34 @@ if command -v mkfifo >/dev/null 2>&1 && declare -F _portable_timeout >/dev/null 
     rm -f "$se/.claude/settings.json"
 else
     no "FIFO regression test could not run" "needs mkfifo and _portable_timeout; refusing to report a pass this host never exercised"
+fi
+
+# A hostile git config can HANG git, and a hang is a bypass here: the gate runs
+# under a 10s PreToolUse timeout whose expiry emits no decision, i.e. ALLOW.
+# `[include] path = <fifo>` blocks `git config` until a writer connects. The
+# shared subprocess deadline must turn that into a prompt refusal.
+if command -v mkfifo >/dev/null 2>&1 && declare -F _portable_timeout >/dev/null 2>&1; then
+    fresh; hang="$NEWREPO"; git -C "$hang" add docs/plans/p.md
+    git -C "$hang" config --unset core.hooksPath
+    mkdir -p "$hang/fakehome/.config/git"
+    mkfifo "$hang/hangtrap"
+    printf '[include]\n\tpath = %s/hangtrap\n' "$hang" >"$hang/fakehome/.config/git/config"
+    hang_out=$(HOME="$hang/fakehome" XDG_CONFIG_HOME="$hang/fakehome/.config" \
+               GIT_CONFIG_SYSTEM=/dev/null \
+               _portable_timeout 9 python3 -I "$SCOPE" "$hang" "$hang" .claude \
+               < <(payload "git commit -m x" "$hang") 2>/dev/null)
+    hang_rc=$?
+    case "$hang_rc" in
+        0)   hang_verdict="accepted:$hang_out" ;;
+        1)   hang_verdict="REFUSE" ;;
+        124) hang_verdict="TIMEOUT" ;;
+        *)   hang_verdict="UNEXPECTED-rc$hang_rc" ;;
+    esac
+    eq "git config that hangs on an include → refused within the budget, not a hang" \
+       "$hang_verdict" "REFUSE"
+    rm -f "$hang/hangtrap"
+else
+    no "hang-budget regression test could not run" "needs mkfifo and _portable_timeout; refusing to report a pass this host never exercised"
 fi
 
 # _settings_inert must check `.claude` even when state_dir names something else:

@@ -243,6 +243,7 @@ run_dispatcher_capture() {
     if [ -n "${init_always_fails+x}" ]; then env_args+=("INIT_ALWAYS_FAILS=$init_always_fails"); fi
     if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
     if [ -n "${result_ack_tiers+x}" ]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
+    if [[ -n "${prior_commit_sha+x}" ]]; then env_args+=("PRIOR_COMMIT_SHA=$prior_commit_sha"); fi
 
     set +e
     dispatcher_output=$(env "${env_args[@]}" bash "$SCRIPT" 2>&1)
@@ -575,6 +576,29 @@ test_668_reinvoked_fix_round_reports_landed_sha() {
     fi
     got_sha=$(printf '%s' "$dispatcher_json" | jq -r '.result_commit_sha // "?"' 2>/dev/null || echo "?")
     fail_test "test_668 re-invoked fix-round should report the landed SHA $head_sha, got result_commit_sha=$got_sha json=$dispatcher_json"
+}
+test_668_prior_sha_not_double_counted() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json head_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Round 1: the real fix-round lands (commit with Grind-PR trailer).
+    run_dispatcher_capture
+    head_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    # Round 2, clean no-op shape: the dispatcher ALREADY recorded head_sha as
+    # last round's commit (PRIOR_COMMIT_SHA) and re-routes a needs_more round
+    # with RESULT_FIXES populated while HEAD is STILL the round-1 fix. The
+    # wait branch must report "none" — reporting head_sha again would
+    # double-count fix_round and exhaust --max-fix prematurely.
+    prior_commit_sha="$head_sha" run_dispatcher_capture
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        '.status == "success" and .result_commit_sha == "none"' >/dev/null; then
+        return 0
+    fi
+    got_sha=$(printf '%s' "$dispatcher_json" | jq -r '.result_commit_sha // "?"' 2>/dev/null || echo "?")
+    fail_test "test_668 PRIOR_COMMIT_SHA == HEAD must stay result_commit_sha=none (no double count), got $got_sha json=$dispatcher_json"
 }
 test_668_no_false_positive_without_grind_trailer() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""

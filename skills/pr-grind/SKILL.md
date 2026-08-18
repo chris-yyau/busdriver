@@ -325,6 +325,12 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
   │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
+  │       # PRIOR_COMMIT_SHA is the dispatcher's REMEMBERED last-round commit
+  │       # SHA (conversation state — shell vars do not survive Bash tool calls,
+  │       # so "${PRIOR_COMMIT_SHA:-none}" would always expand to none and the
+  │       # #668 double-count guard would never fire). Template-substitute the
+  │       # literal value from the dispatcher loop's state, "none" when unset:
+  │       PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — remembered last-round SHA, literal; "none" when unset> \
   │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
   │     Parse the last stdout line as exactly one JSON envelope:
@@ -1226,6 +1232,7 @@ Inputs (env vars, optional; default 0/empty):
 - `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for no-worktree mode (worker runs in the repo root and shares the parent index).
 - `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
+- `PRIOR_COMMIT_SHA` - the last round's reported commit SHA (dispatcher state, default `none`). The wait-round landed-fix check (#668) uses it to bind the reported SHA to THIS round: a clean-index invocation whose pinned HEAD equals `PRIOR_COMMIT_SHA` is sitting on the previous round's fix and must report `none`, never double-count it.
 
 Outputs (stdout, exactly one JSON object on the last line):
 Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):

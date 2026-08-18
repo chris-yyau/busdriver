@@ -141,7 +141,7 @@ guard a boundary that works correctly today.
 This change set carries the 0.84.1 → 0.84.2 bump, certified by the ritual above
 on 2026-08-17 before the constant was committed:
 
-```
+```text
 BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
 OK:   pi dispatched successfully and could not write under --tools read
       (allowlist enforces, not just advises)

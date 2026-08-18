@@ -1,3 +1,10 @@
+## [1.109.2](https://github.com/chris-yyau/busdriver/compare/v1.109.1...v1.109.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** read Codex's comment-form verdicts ([#690](https://github.com/chris-yyau/busdriver/issues/690)) ([#693](https://github.com/chris-yyau/busdriver/issues/693)) ([b6e3585](https://github.com/chris-yyau/busdriver/commit/b6e3585bc0ea960d6973cd3a526917f2dca2c1fb)), closes [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#694](https://github.com/chris-yyau/busdriver/issues/694) [#691](https://github.com/chris-yyau/busdriver/issues/691)
+
 ## [1.109.1](https://github.com/chris-yyau/busdriver/compare/v1.109.0...v1.109.1) (2026-08-18)
 
 

@@ -242,9 +242,13 @@ fi
 # the pi) arm and docs/adr/0034). A mismatch BLOCKS the dispatch: this lane's
 # read-only posture is observed behaviour of one version, and the test proving it
 # semantically is opt-in, so an unprobed pi running in-tree is exactly the case
-# where a stuck lane beats a skipped check. Clearing it: re-run
-# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump this constant.
-BUSDRIVER_PI_PROBED_VERSION="0.84.1"
+# where a stuck lane beats a skipped check. Clearing it, IN THIS ORDER: bump this
+# constant to the new version, run BUSDRIVER_PI_LIVE=1
+# tests/test-pi-dispatch-arm.sh, and revert the bump if it fails. Verify-then-bump
+# is the intuitive order and it DEADLOCKS — the live test dispatches through this
+# same file, so the gate below refuses the new pi before the test can reach it.
+# See the _pi_setup_fail message in the pi arm, and ADR 0042.
+BUSDRIVER_PI_PROBED_VERSION="0.84.2"
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
 # 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
@@ -1445,8 +1449,12 @@ CHILD
                     # catch a pi upgrade that re-enables shell or write tools for
                     # in-tree prompts — so an unprobed version runs unverified
                     # inside the working tree. "A stuck session beats a skipped
-                    # check" applies here. On a mismatch, re-run:
+                    # check" applies here. On a mismatch, bump
+                    # BUSDRIVER_PI_PROBED_VERSION FIRST, then re-run:
                     # BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+                    # (reverting the bump if it fails). The test dispatches
+                    # through this same file, so verify-then-bump deadlocks —
+                    # see the _pi_setup_fail message below.
                     # The probe runs under `env -i`, NOT the inherited environment.
                     # pi is a `#!/usr/bin/env node` script, so an injected
                     # NODE_OPTIONS=--require=<repo-file> would execute repo code as

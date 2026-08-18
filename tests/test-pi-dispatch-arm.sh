@@ -561,6 +561,152 @@ grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
   && ok "_pi_setup_fail mirrors the error into \$outfile (breaks the retry loop's empty-output test)" \
   || fail "_pi_setup_fail does not write to \$outfile — deterministic setup errors would still retry"
 
+# ── 2b-ii. every statement of the certification ritual says BUMP FIRST ──
+# ADR 0042. The ritual is stated in several comments and they DRIFTED: one said
+# "re-run the live test, then bump this constant", another named only the test.
+# Both describe verify-then-bump, which DEADLOCKS — the live check dispatches
+# through this same file, so the version gate refuses the new pi before the
+# write-denial check can reach it. A reader following either is stuck, which is
+# what happened on the 0.84.1 → 0.84.2 upgrade.
+#
+# Pinned as a check, not as more prose, on this repo's own rule: enforce
+# invariants with a test, never a comment.
+#
+# THE FIXTURES BELOW ARE THE PROOF, AND THEY SHIP. Three earlier versions of
+# this guard were each declared "verified in both directions" and each was
+# defective — one keyed on a literal the drifted text never contains, one lost
+# the outage site to a line-wrap, one let an adjacent CODE line satisfy the
+# "bump" concept. Every one passed a hand-run negative control that existed only
+# in a transcript. So the negative control runs here, on every invocation,
+# against the exact historical wording. If this guard ever stops being able to
+# fail, these fixtures fail first.
+_ritual_check() {   # stdin = shell source → prints "seen=N bad=M"; nonzero if any bad
+    awk '
+        # comment lines only: an adjacent code line must never satisfy a concept
+        /^[[:space:]]*#/ { c = $0; sub(/^[[:space:]]*#[[:space:]]?/, "", c); buf[NR] = c; next }
+        { buf[NR] = "" }        # code line → empty, so windows cannot borrow from it
+        END {
+            seen = 0; bad = 0
+            for (i = 1; i <= NR; i++) {
+                if (buf[i] !~ /BUSDRIVER_PI_LIVE/) continue
+                seen++
+                w = ""
+                lo = (i - 8 < 1 ? 1 : i - 8); hi = i + 3
+                for (j = lo; j <= hi; j++) w = w " " buf[j]
+                live = index(w, "BUSDRIVER_PI_LIVE")
+                bump = 0
+                # earliest mention of the bump, by any spelling in use
+                split("bump|BUSDRIVER_PI_PROBED_VERSION|this constant|the constant", toks, "|")
+                for (t in toks) {
+                    p = index(w, toks[t])
+                    if (p > 0 && (bump == 0 || p < bump)) bump = p
+                }
+                if (bump == 0)      { bad++; print "  (line " i ": names the live test but never the bump)" > "/dev/stderr" }
+                else if (bump > live) { bad++; print "  (line " i ": names the live test BEFORE the bump — deadlocks)" > "/dev/stderr" }
+            }
+            print "seen=" seen " bad=" bad
+            exit (bad > 0 ? 1 : 0)
+        }'
+}
+
+# Negative fixture: the VERBATIM pre-ADR-0042 wording of both drifted sites.
+# Copied from git history, not paraphrased — paraphrasing in this file's own
+# vocabulary is precisely how the earlier versions fooled themselves.
+_ritual_bad_fixture='
+# where a stuck lane beats a skipped check. Clearing it: re-run
+# BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then bump this constant.
+BUSDRIVER_PI_PROBED_VERSION="0.84.1"
+                    # check" applies here. On a mismatch, re-run:
+                    # BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+'
+if _ritual_check <<<"$_ritual_bad_fixture" >/dev/null 2>&1; then
+    fail "ritual guard is VACUOUS — it accepts the verbatim pre-0042 wording that caused the outage"
+else
+    ok "ritual guard rejects the verbatim pre-0042 wording (guard proven able to fail)"
+fi
+
+# A code line carrying the constant must NOT satisfy the bump concept for a
+# comment that omits it — the exact vacuity found in review.
+_ritual_code_fixture='
+                    # check" applies here. On a mismatch, re-run:
+                    # BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh
+                    if [[ "$_pi_ver" != "$BUSDRIVER_PI_PROBED_VERSION" ]]; then
+'
+if _ritual_check <<<"$_ritual_code_fixture" >/dev/null 2>&1; then
+    fail "ritual guard borrows the bump concept from an adjacent CODE line (vacuous at the _pi_setup_fail site)"
+else
+    ok "ritual guard ignores code lines when looking for the bump (no borrowing)"
+fi
+
+# Now the real file. Discovery keys on BUSDRIVER_PI_LIVE alone, so a comment
+# that wraps the command across lines is still seen.
+_ritual_err="$FAKE_HOME/ritual.err"   # proven-ours dir; mktemp is a shadowable command word
+_ritual_out="$(_ritual_check < "$DISPATCH" 2>"$_ritual_err")" && _ritual_rc=0 || _ritual_rc=1
+_ritual_seen="${_ritual_out#seen=}"; _ritual_seen="${_ritual_seen%% *}"
+# Expect both ritual COMMENTS. The third statement — the _pi_setup_fail message —
+# is a code string and is deliberately out of scope HERE (comment-only is what
+# stops an adjacent code line satisfying a concept); it gets its own guard below.
+# It is NOT covered by the five-setup-failure assertion above: that assertion
+# counts _pi_setup_fail calls and mirrors output, and never inspects ordering.
+# A drop below 2 means a ritual comment was deleted rather than corrected, which
+# is also drift.
+if [[ "$_ritual_rc" -eq 0 && "${_ritual_seen:-0}" -ge 2 ]]; then
+    ok "all $_ritual_seen certification-ritual mentions in dispatch.sh name the bump before the live test"
+else
+    fail "dispatch.sh ritual comments are wrong or under-discovered ($_ritual_out): $(cat "$_ritual_err" 2>/dev/null)"
+fi
+rm -f "$_ritual_err"
+
+# ── The ritual's THIRD statement: the _pi_setup_fail message (a code string).
+# Same invariant, different carrier, so it needs its own check — comment-only
+# discovery cannot see it. Anchored on the INSTRUCTION ("set <const>" / "bump"),
+# never the bare constant: the message already interpolates the constant as prose
+# before the live-test mention, so a bare-name search would pass vacuously — the
+# exact borrowing defect that made an earlier guard useless.
+_ritual_msg_check() {   # stdin = shell source → prints "seen=N bad=M"
+    awk '
+        !/_pi_setup_fail/ { next }
+        !/BUSDRIVER_PI_LIVE/ { next }
+        {
+            seen++
+            live = index($0, "BUSDRIVER_PI_LIVE")
+            bump = 0
+            split("set BUSDRIVER_PI_PROBED_VERSION|bump", toks, "|")
+            for (t in toks) {
+                p = index($0, toks[t])
+                if (p > 0 && (bump == 0 || p < bump)) bump = p
+            }
+            if (bump == 0)        { bad++; print "  (setup-fail message names the live test but never instructs the bump)" > "/dev/stderr" }
+            else if (bump > live) { bad++; print "  (setup-fail message orders the live test BEFORE the bump — deadlocks)" > "/dev/stderr" }
+        }
+        END { print "seen=" (seen+0) " bad=" (bad+0); exit (bad > 0 ? 1 : 0) }'
+}
+
+# Negative fixture A: reversed order — verify-then-bump, the deadlock.
+if _ritual_msg_check <<<'_pi_setup_fail "run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh, then set BUSDRIVER_PI_PROBED_VERSION."' >/dev/null 2>&1; then
+    fail "setup-fail guard accepts verify-then-bump ordering (vacuous)"
+else
+    ok "setup-fail guard rejects verify-then-bump ordering (proven able to fail)"
+fi
+
+# Negative fixture B: the constant appears only as interpolated prose, with no
+# instruction to change it. Must NOT be mistaken for the bump.
+if _ritual_msg_check <<<'_pi_setup_fail "pi is not the probed ${BUSDRIVER_PI_PROBED_VERSION}. Run BUSDRIVER_PI_LIVE=1 tests/test-pi-dispatch-arm.sh."' >/dev/null 2>&1; then
+    fail "setup-fail guard borrows the bump concept from interpolated prose (vacuous)"
+else
+    ok "setup-fail guard ignores the interpolated constant when no bump is instructed"
+fi
+
+_ritual_msg_err="$FAKE_HOME/ritual-msg.err"   # same: no shadowable command word in the path
+_ritual_msg_out="$(_ritual_msg_check < "$DISPATCH" 2>"$_ritual_msg_err")" && _ritual_msg_rc=0 || _ritual_msg_rc=1
+_ritual_msg_seen="${_ritual_msg_out#seen=}"; _ritual_msg_seen="${_ritual_msg_seen%% *}"
+if [[ "$_ritual_msg_rc" -eq 0 && "${_ritual_msg_seen:-0}" -ge 1 ]]; then
+    ok "the _pi_setup_fail ritual message names the bump before the live test"
+else
+    fail "the _pi_setup_fail ritual message is wrong or missing ($_ritual_msg_out): $(cat "$_ritual_msg_err" 2>/dev/null)"
+fi
+rm -f "$_ritual_msg_err"
+
 # ── 2c. EXECUTED: the projection child actually projects one entry ──
 # Runs the real heredoc from the arm, not a copy — a copy would drift and then
 # certify code that is no longer shipped. Needs python3 and a pi auth store; no

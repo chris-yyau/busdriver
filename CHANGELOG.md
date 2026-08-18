@@ -1,3 +1,10 @@
+## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** report the real commit SHA when a re-invoked fix-round has landed ([#698](https://github.com/chris-yyau/busdriver/issues/698)) ([15c7d31](https://github.com/chris-yyau/busdriver/commit/15c7d31b44372f5f82376dd4cac47fed749739fd)), closes [#668](https://github.com/chris-yyau/busdriver/issues/668)
+
 ## [1.109.3](https://github.com/chris-yyau/busdriver/compare/v1.109.2...v1.109.3) (2026-08-18)
 
 

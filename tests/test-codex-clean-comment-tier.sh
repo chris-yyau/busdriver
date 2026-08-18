@@ -81,6 +81,11 @@ LATE="2026-08-17T18:30:00Z"          # anything published after the verdict
 EYES_BEFORE_VERDICT='[{"content":"eyes","created_at":"2026-08-17T17:39:45Z","user":{"login":"chatgpt-codex-connector[bot]"}}]'
 EYES_AFTER_VERDICT='[{"content":"eyes","created_at":"2026-08-17T18:20:00Z","user":{"login":"chatgpt-codex-connector[bot]"}}]'
 FRESH_PLUS1='[{"content":"+1","created_at":"2026-08-17T17:50:00Z","user":{"login":"chatgpt-codex-connector[bot]"}}]'
+# A +1 published AFTER a post-push finding comment — the exact re-review-then-
+# clean sequence Codex flagged on PR #693 round 4: a finding at AFTER_PUSH
+# followed by a LATER clean reaction with no new comment.
+LATER_PLUS1=$(jq -nc --arg at "$LATE" \
+  '[{content:"+1", created_at:$at, user:{login:"chatgpt-codex-connector[bot]"}}]')
 
 # A Codex thread in a given (isResolved, isOutdated) state.
 mk_codex_thread() {
@@ -269,6 +274,24 @@ if [ "$got" = "$HEAD_SHA" ]; then
 else
   fail "pre-push-finding + 👍 expected '$HEAD_SHA', got '$got'"
 fi
+
+# --- Test 14b: POST-push finding SUPERSEDED by a LATER 👍 → HEAD_SHA -------
+# Codex's own P2 on PR #693 round 4: the mirror of Test 13/14 for a finding
+# comment that postdates the PUSH (not just an earlier finding). A finding at
+# AFTER_PUSH followed by a still-later clean reaction (no new comment) means
+# Codex re-reviewed the unchanged HEAD and superseded its own finding; the
+# veto at (0) must compare against that fresher +1, not just $anchor_date, or
+# nudging Codex into a clean reaction could never clear the gate.
+got=$(run_ledger "$(mk_comments "$CODEX" "$AFTER_PUSH" "$FINDINGS_688")" "$EMPTY_THREADS" "$LATER_PLUS1")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "post-push finding + LATER 👍 → HEAD_SHA (fresher reaction supersedes the finding, #693 Codex P2)"
+else
+  fail "post-push-finding + later 👍 expected '$HEAD_SHA', got '$got'"
+fi
+
+# Test 13 above (fresh 👍 THEN a later finding → stale) is the other half of
+# this pair and already proves the veto threshold does not simply disable
+# itself once any +1 exists — it still blocks a finding NEWER than the +1.
 
 # --- Test 15: clean verdict + a 👀 created AFTER it → stale ---------------
 # Codex started ANOTHER review of this same HEAD after publishing the verdict;

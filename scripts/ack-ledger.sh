@@ -769,6 +769,16 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   # Consolidated Codex resolution; precedence order is load-bearing. Tier A.1
   # above (unresolved+non-outdated → stale) already ran login-agnostically, so a
   # LIVE finding has blocked.
+  # Fresh 👍 lookup, HOISTED above (0): a finding comment can be superseded by a
+  # LATER clean re-review that Codex expresses only as a reaction (no new
+  # comment) — Codex's own P2 on this PR (#693 round 4). Without a veto
+  # threshold newer than $anchor_date, block (0) below would see the earlier
+  # finding comment postdating the push and block forever, even though a
+  # genuinely fresher +1 supersedes it; nudging Codex into a clean reaction
+  # could then never clear the gate without ANOTHER push or comment-form
+  # verdict. sort_by created_at — reactions API ordering is not guaranteed.
+  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
   # (0) A POST-ANCHOR COMMENT THAT TIER G DECLINED BLOCKS EVERYTHING BELOW (#690).
   #     Since the mechanism switch, a Codex finding routinely arrives as an issue
   #     COMMENT with no thread and no review — PR #688's P2 at 17:36:38Z did. If
@@ -777,31 +787,39 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     finding: reaction and comment are separate objects, so publishing a finding
   #     does not retract a prior +1. Reaching here means Tier G already looked at
   #     the last comment and refused it — so whatever Codex has said about the
-  #     current head is NOT a clean verdict on it, and nothing below may ack.
-  #     Scoped to comments that POSTDATE $anchor_date so the block cannot deadlock:
+  #     current head is NOT a clean verdict on it, and nothing below may ack —
+  #     UNLESS a strictly newer +1 has already superseded that finding (below).
+  #     Scoped to comments that POSTDATE $veto_anchor so the block cannot deadlock:
   #     a findings comment from BEFORE the last push is about superseded code (the
   #     comment-form twin of the outdated-thread case at (2)) and must not veto the
-  #     fresh 👍 that answered it. Fail-CLOSED in three ways — an empty anchor makes
-  #     every comment post-anchor, a comment with no createdAt sorts as "9999", and
-  #     a jq error counts 1 — because each of those is a snapshot we cannot reason
-  #     about, on a merge gate.
+  #     fresh 👍 that answered it. $veto_anchor is $anchor_date, EXCEPT when a +1
+  #     exists that postdates $anchor_date — then it is that +1's own timestamp, so
+  #     a finding comment strictly OLDER than the fresh +1 (superseded by it) no
+  #     longer vetoes, while a finding comment newer than the +1 (a re-review that
+  #     found something after all) still does. Fail-CLOSED in three ways — an empty
+  #     anchor makes every comment post-anchor, a comment with no createdAt sorts as
+  #     "9999", and a jq error counts 1 — because each of those is a snapshot we
+  #     cannot reason about, on a merge gate.
+  veto_anchor="$anchor_date"
+  if [[ -n "$codex_plus1" && -n "$anchor_date" && "$codex_plus1" > "$anchor_date" ]]; then
+    veto_anchor="$codex_plus1"
+  fi
   if [ -n "$ALL_COMMENTS" ]; then
     codex_comments_after=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-      --arg anchor "$anchor_date" --arg notice "$CODEX_NOTICE_RE" \
+      --arg anchor "$veto_anchor" --arg notice "$CODEX_NOTICE_RE" \
       '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
         | select(((.body // "") | test($notice)) | not)
         | select((.createdAt // "9999") >= $anchor)] | length' 2>/dev/null || echo 1)
     if [ "$(num_or "$codex_comments_after" 1)" -gt 0 ]; then echo "stale"; exit 0; fi
   fi
-  # (1) FRESH 👍 FIRST — a +1 newer than HEAD means Codex re-reviewed the CURRENT
+  # (1) FRESH 👍 — a +1 newer than HEAD means Codex re-reviewed the CURRENT
   #     HEAD and is satisfied → ack. Checked before the OUTDATED short-circuit
   #     because GitHub retains outdated threads FOREVER once code changes: a
   #     single past Codex finding would otherwise keep the PR `stale` until
   #     --max-wait even after a clean re-review (permanent deadlock — flagged by
-  #     Codex + cubic on PR #185). sort_by created_at — reactions API ordering
-  #     is not guaranteed.
-  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  #     Codex + cubic on PR #185). $codex_plus1 was computed above, ahead of (0),
+  #     so it can double as that block's veto-threshold input; the ack condition
+  #     itself is unchanged.
   # Freshness anchor: $anchor_date (HEAD_PUSH_DATE, or HEAD_CHECKS_DATE fallback for a
   # brand-new branch, #269) — NEVER the git committer date. The committer date is
   # client-stamped and backdatable: force-push an old commit whose committer date predates

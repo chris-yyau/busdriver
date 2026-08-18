@@ -72,6 +72,18 @@ Tier F reaction acks HEAD while a comment-form finding sits unaddressed. Scoped
 to post-anchor comments so a superseded finding — the comment-form twin of an
 outdated thread — cannot veto the 👍 that answered it.
 
+**2a. The block's own threshold tracks a LATER 👍, not just the push (#693 round
+4, Codex P2).** A finding comment can itself be superseded by a still-later
+clean reaction that carries no new comment — Codex re-reviewing the unchanged
+HEAD and expressing satisfaction only via 👍. If the block compared every
+post-push comment against `anchor_date` alone, that later reaction could never
+clear the gate (another push or comment-form verdict would be required even
+though Codex had already said, via the reaction, that it was done). The veto
+threshold is `anchor_date`, EXCEPT when a fresher 👍 exists — then it is that
+👍's own timestamp, so a finding strictly OLDER than the reaction is treated as
+superseded (no veto) while a finding NEWER than the reaction (a re-review that
+found something after all) still blocks.
+
 **3. A pre-anchor Codex comment is engagement, not absence:** it yields `stale`
 rather than falling through to `none`.
 

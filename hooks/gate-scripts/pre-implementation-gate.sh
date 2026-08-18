@@ -611,6 +611,27 @@ fi
 LEASE_MAX_USES=20
 LEASE_MAX_AGE=3600
 _SKIP_FILE="$STATE_DIR/skip-design-review.local"
+# #681 — WHY a lease was refused, for the generic block to lead with. The three
+# structural refusals below all `return 1` (correctly: they fall through to the
+# normal block), but that made them indistinguishable from "no skip file at all",
+# so the operator was told to run /blueprint-review — which cannot clear any of
+# them — and re-touched a lease that was never spent. Behaviour is unchanged;
+# only the reporting is. Empty means "no skip file was involved".
+# Initialized here, not inside the function: the script runs under `set -u` and an
+# ERR trap, so an unset expansion at the block site would emit the trap's own
+# generic message — the exact failure this fixes.
+_LEASE_REFUSAL=""
+# Disambiguates the two causes that share `*)`. lease_slot.py exits 1 for every
+# internal error AND the shell sets _CLAIM_RC=1 when the helper cannot be opened,
+# so the exit code alone cannot tell "helper missing" from "could not record".
+# It rides on the EXISTING discriminator (the `-f` test and the post-exit
+# openability probe), inheriting that probe's known race: a helper deleted after a
+# genuinely-exhausted run reads as unavailable, and one restored before the probe
+# reads as exhausted. Both were already mis-classified before this flag existed —
+# it only labels the outcome the gate had already chosen. Narrowing the race means
+# having lease_slot.py report its own reason, which is a contract change to the
+# helper, not a patch here (see #681).
+_LEASE_HELPER_UNAVAILABLE=0
 # DISARMING IS NOT DONE HERE. lease_slot.py removes a refused skip file itself, through
 # the O_NOFOLLOW component walk, at the dir fd it has already validated. A shell `rm -f`
 # resolves the path afresh and follows a symlinked INTERMEDIATE component of the
@@ -638,7 +659,24 @@ _skip_lease_consume() {
     # FAIL-CLOSED: outside a git repo the helper reports repo-controlled → refuse.
     # `if`, not `&& return`: under `set -e` a naked `cmd && return 1` whose cmd fails
     # makes the whole list non-zero and trips the ERR trap before the next line runs.
-    if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then return 1; fi
+    if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then
+        _LEASE_REFUSAL="[skip lease: REFUSED — the skip file is repo-controlled, not operator consent (#325)]
+
+$_SKIP_FILE is tracked by git (in the index or in HEAD), sits behind a tracked
+symlink or gitlink, or the git state of this repository could not be read. A
+committed skip file can be injected by the repository itself, so it is not accepted
+as operator consent.
+
+Re-creating the file will NOT clear this. The remedy depends on which of those
+is true, and only the first is a plain untrack:
+    tracked in the index               -> git rm --cached $_SKIP_FILE
+    committed in HEAD                  -> remove it and commit the removal
+    tracked parent symlink or gitlink  -> that parent path is what must change
+    unreadable git state               -> repair the repository
+Running /blueprint-review does not repair the lease, but it does clear the
+pending review below, which unblocks this write."
+        return 1
+    fi
 
     # ── Age checks AND the claim, from ONE stat ─────────────────────────────
     # Both live in lease_slot.py. The shell used to stat the file for the 30s floor and
@@ -663,7 +701,7 @@ _skip_lease_consume() {
     # naming a use that was never granted and a file that was never removed. Route
     # that case to the generic fail-closed refusal (`*)`) instead, before invoking
     # python3, so exit code 2 stays exclusively the helper's own spent-lease signal.
-    [ -f "$_GATE_LIBDIR/lease_slot.py" ] || _CLAIM_RC=1
+    [ -f "$_GATE_LIBDIR/lease_slot.py" ] || { _CLAIM_RC=1; _LEASE_HELPER_UNAVAILABLE=1; }
     if [ "$_CLAIM_RC" -eq 0 ]; then
         claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
     fi
@@ -679,6 +717,7 @@ _skip_lease_consume() {
        && ! python3 -I -c 'import sys; open(sys.argv[1], "rb").close()' \
                     "$_GATE_LIBDIR/lease_slot.py" 2>/dev/null; then
         _CLAIM_RC=1
+        _LEASE_HELPER_UNAVAILABLE=1
     fi
     case "$_CLAIM_RC" in
         0) : ;;
@@ -720,9 +759,56 @@ pending token with a recorded audit event instead, run scripts/design-clear.sh w
 arguments to list what is pending. If the user wants another lease, they can re-create
 $STATE_DIR/skip-design-review.local in their terminal."
             return 2 ;;
-        *) return 1 ;;   # FAIL-CLOSED: could not record a use → grant none
+        *)
+            # FAIL-CLOSED: could not record a use → grant none. Two distinct causes
+            # land here and the operator needs to know which — see
+            # _LEASE_HELPER_UNAVAILABLE above for why the exit code cannot say.
+            if [ "$_LEASE_HELPER_UNAVAILABLE" -eq 1 ]; then
+                _LEASE_REFUSAL="[skip lease: REFUSED — the lease helper could not be opened]
+
+$_GATE_LIBDIR/lease_slot.py was not openable when the gate checked, so a lease use
+can be neither recorded nor bounded — and an unbounded bypass is the fail-open this
+gate exists to avoid.
+
+That check runs after the helper has exited, so it reports what the gate OBSERVED,
+not a proven cause: if the helper was removed after a genuinely spent lease, the
+lease may in fact be exhausted. Both refuse, and the first thing to check is the
+same either way.
+
+Re-creating the skip file will NOT clear this — reinstall or repair the busdriver
+plugin. Running /blueprint-review does not repair the lease, but it does clear the
+pending review below, which unblocks this write."
+            else
+                _LEASE_REFUSAL="[skip lease: REFUSED — the lease use could not be recorded]
+
+lease_slot.py refused because the slot directory or its bypass-telemetry event did
+not land durably. A use that cannot be recorded cannot be bounded, so none is
+granted. (The helper exits 1 for every internal error without reporting which, so
+the gate cannot narrow this further — see #681.)
+
+Re-creating the skip file will NOT clear this. Check that both of these are
+writable, regular, non-symlink paths:
+    $_LEASE_DIR
+    $STATE_DIR/bypass-log.jsonl
+Running /blueprint-review does not repair the lease, but it does clear the pending
+review below, which unblocks this write."
+            fi
+            return 1 ;;
     esac
-    case "$claimed" in ''|*[!0-9]*) return 1 ;; esac
+    # A claimed slot that is not a number means the helper exited 0 without printing a
+    # usable slot id — the ledger cannot be trusted to bound anything, so refuse. Beyond
+    # the three paths #681 enumerates, but the same silent-refusal class.
+    case "$claimed" in ''|*[!0-9]*)
+        _LEASE_REFUSAL="[skip lease: REFUSED — the lease helper returned an unusable slot id]
+
+lease_slot.py exited 0 but did not print a slot number, so there is no proof a use
+was recorded and no way to bound the next one.
+
+Re-creating the skip file will NOT clear this — reinstall or repair the busdriver
+plugin. Running /blueprint-review does not repair the lease, but it does clear the
+pending review below, which unblocks this write."
+        return 1 ;;
+    esac
 
     # Exit 0 means the slot is durable on disk AND the bypass-telemetry event for it is
     # durably logged — lease_slot.py mints that event inside the same call that created
@@ -1139,16 +1225,43 @@ echo "$BLOCK_COUNT" > "$BLOCK_COUNTER" 2>/dev/null || true
 
 ESCAPE_HINT=""
 if [ "$BLOCK_COUNT" -ge 10 ]; then
-    ESCAPE_HINT="
+    # #681 — the stock hint ("create the skip file") is wrong advice when a skip file
+    # already exists and was structurally refused: a second one is refused identically.
+    # Following it costs another 35s wait plus a fresh 30s self-bypass window, which is
+    # the loop this issue exists to break, so the hint has to know about the refusal too.
+    if [ -n "$_LEASE_REFUSAL" ]; then
+        ESCAPE_HINT="
+
+WARNING: This gate has blocked $BLOCK_COUNT consecutive implementation attempts this session.
+A skip file IS already present — it was refused for the structural reason given above, and
+creating another one will be refused the same way. Clear that refusal, or run /blueprint-review."
+    else
+        ESCAPE_HINT="
 
 WARNING: This gate has blocked $BLOCK_COUNT consecutive implementation attempts this session.
 If you believe the gate is stuck, the user can create $STATE_DIR/skip-design-review.local in their terminal to bypass."
+    fi
 fi
 
 # ── Block: unreviewed design docs exist ────────────────────────────────
+# #681 — when a skip lease was armed but structurally refused, say so FIRST. The
+# standard text below tells the operator to run /blueprint-review and not to create
+# the skip file; for a refused lease both sentences are wrong, and following them
+# costs another 35s wait plus a fresh 30s self-bypass window. Leading with the
+# refusal is what stops that loop. Empty for every other block, so the ordinary
+# "you have a pending review" message is byte-identical to before.
+_LEASE_NOTE=""
+if [ -n "$_LEASE_REFUSAL" ]; then
+    _LEASE_NOTE="$_LEASE_REFUSAL
+
+The pending design review below is still real and still blocks this write; the note
+above only explains why your skip file did not authorize it.
+
+"
+fi
 if [ "$TOOL_TYPE" = "BASH_MOD" ]; then
-    REASON=$(printf "Design review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "%sDesign review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$_LEASE_NOTE" "$UNREVIEWED" "$ESCAPE_HINT")
 else
-    REASON=$(printf "Design review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "%sDesign review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$_LEASE_NOTE" "$UNREVIEWED" "$ESCAPE_HINT")
 fi
 block_emit "$REASON"

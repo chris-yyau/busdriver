@@ -96,15 +96,26 @@ UNRESOLVED_THREAD=$(mk_codex_thread false false)  # LIVE finding on this HEAD
 # `gh pr view --json comments` payload shape, oldest first.
 mk_comments() {
   local login="$1"; shift
+  # `_nwise` is an undocumented private jq builtin, present in jq 1.7 but
+  # REMOVED in jq 1.8 (replaced by the documented `nwise`). Use a
+  # range-based pairing instead so this fixture builder works on every jq
+  # this repo's CI may run (CodeRabbit finding on PR #693).
   jq -nc --arg login "$login" \
-    '{comments: [$ARGS.positional | _nwise(2) | {author: {login: $login}, createdAt: .[0], body: .[1]}]}' \
+    '($ARGS.positional) as $a
+     | {comments: [range(0; ($a | length); 2)
+        | {author: {login: $login}, createdAt: $a[.], body: $a[. + 1]}]}' \
     --args "$@"
 }
 
 run_ledger() {
   # $1 = ALL_COMMENTS, $2 = ALL_THREADS, $3 = ALL_REACTIONS,
   # $4 = login (default codex), $5 = ACK_EMIT_TIER (default 0)
-  FETCH_OK=1 ACK_EMIT_TIER="${5:-0}" \
+  # ACK_CONTENT_IDENTITY=0: OTHER_SHA ("2ff0484bb9") is a real former head of
+  # PR #688 and may exist as a git object in the clone running this suite,
+  # which would let acks_head's content-identity path (tree+parent comparison)
+  # decide Test 4 instead of the SHA-equality rule it asserts. Pin it off so
+  # these fixtures exercise SHA equality only, independent of ambient repo state.
+  FETCH_OK=1 ACK_EMIT_TIER="${5:-0}" ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$2" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$1" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$3" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
@@ -319,7 +330,7 @@ done
 # thread — so Tier A.1 would not have caught it and the verdict must decline.
 LATER_REVIEW=$(jq -nc --arg login "${CODEX}[bot]" --arg at "$LATE" \
   '[{user:{login:$login}, submitted_at:$at, state:"COMMENTED", commit_id:"bd532d8462fdb27e388940076aa9dc0e4e07c3d1"}]')
-got=$(FETCH_OK=1 \
+got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" \
   ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
@@ -388,7 +399,7 @@ for missing in THREADS REVIEWS REACTIONS THREADS=null REVIEWS=null 'REACTIONS={}
     REVIEWS)   r="$drift" ;;
     REACTIONS) x="$drift" ;;
   esac
-  got=$(FETCH_OK=1 \
+  got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
     ALL_THREADS="$t" ALL_REVIEWS="$r" \
     ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
     ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
@@ -407,7 +418,7 @@ done
 # suppressing the activity those guards exist to find.
 JUNK_TS_COMMENTS=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" \
   '{comments:[{author:{login:$login}, createdAt:"zzzz", body:$body}]}')
-got=$(FETCH_OK=1 \
+got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$JUNK_TS_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
@@ -424,7 +435,7 @@ fi
 for junk in "zzzz" "9999-99-99T99:99:99Z" "1970-01-01T00:00:00"; do
   jc=$(jq -nc --arg login "$CODEX" --arg body "$CLEAN_688" --arg at "$junk" \
     '{comments:[{author:{login:$login}, createdAt:$at, body:$body}]}')
-  got=$(FETCH_OK=1 \
+  got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
     ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$LATER_REVIEW" ALL_COMMENTS="$jc" \
     ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
     ALL_REACTIONS="$NO_REACTIONS" HEAD_SHA="$HEAD_SHA" HEAD_PUSH_DATE="$PUSH_AT" \
@@ -464,6 +475,54 @@ else
   fail "veto-path drift expected 'stale', got '$got'"
 fi
 
+# --- Test 23f: two Codex comments in the SAME SECOND → stale ------------
+# jq's sort is stable, so a tie falls back to document order — the very thing
+# timestamp-sorting exists to stop trusting. GitHub stamps to the second, so a
+# finding and a clean verdict can genuinely tie; which is "latest" is then not
+# knowable from the payload. Both orderings must decline.
+for order in clean-first findings-first; do
+  if [ "$order" = "clean-first" ]; then
+    tie=$(jq -nc --arg login "$CODEX" --arg c "$CLEAN_688" --arg f "$FINDINGS_688" --arg at "$AFTER_PUSH" \
+      '{comments:[{author:{login:$login},createdAt:$at,body:$c},
+                  {author:{login:$login},createdAt:$at,body:$f}]}')
+  else
+    tie=$(jq -nc --arg login "$CODEX" --arg c "$CLEAN_688" --arg f "$FINDINGS_688" --arg at "$AFTER_PUSH" \
+      '{comments:[{author:{login:$login},createdAt:$at,body:$f},
+                  {author:{login:$login},createdAt:$at,body:$c}]}')
+  fi
+  got=$(run_ledger "$tie" "$EMPTY_THREADS" "$NO_REACTIONS")
+  if [ "$got" = "stale" ]; then
+    ok "same-second clean+findings ($order) → stale (tie is unresolvable, so decline)"
+  else
+    fail "same-second tie ($order) expected 'stale', got '$got'"
+  fi
+done
+
+# --- Test 23g: document order must not decide the verdict ---------------
+# The clean verdict is NEWER but listed FIRST; a bare `last` would read the
+# older findings comment, and the reverse payload would ack when it must not.
+OUT_OF_ORDER=$(jq -nc --arg login "$CODEX" --arg c "$CLEAN_688" --arg f "$FINDINGS_688" \
+  --arg new "$AFTER_PUSH" --arg old "$BEFORE_PUSH" \
+  '{comments:[{author:{login:$login},createdAt:$new,body:$c},
+              {author:{login:$login},createdAt:$old,body:$f}]}')
+got=$(run_ledger "$OUT_OF_ORDER" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "newest verdict listed first → HEAD_SHA (selection is by timestamp, not order)"
+else
+  fail "out-of-order newest-first expected '$HEAD_SHA', got '$got'"
+fi
+
+REVERSED=$(jq -nc --arg login "$CODEX" --arg c "$CLEAN_688" --arg f "$FINDINGS_688" \
+  --arg new "$LATE" --arg old "$AFTER_PUSH" \
+  '{comments:[{author:{login:$login},createdAt:$new,body:$f},
+              {author:{login:$login},createdAt:$old,body:$c}]}')
+got=$(run_ledger "$REVERSED" "$EMPTY_THREADS" "$NO_REACTIONS")
+if [ "$got" = "stale" ]; then
+  ok "newer findings listed first → stale (older clean verdict cannot supersede it)"
+else
+  fail "out-of-order findings-newest expected 'stale', got '$got'"
+fi
+
 # --- Test 24: deleted-account shapes still ack --------------------------
 # `user: null` / `author: null` is what GitHub emits for a deleted account, and
 # it is NOT drift. Rejecting it would fail Tier G closed forever on any PR one of
@@ -471,7 +530,7 @@ fi
 GHOST_REACTIONS='[{"content":"heart","created_at":"2026-08-17T17:00:00Z","user":null}]'
 GHOST_REVIEWS='[{"submitted_at":"2026-08-17T17:00:00Z","user":null,"state":"COMMENTED"}]'
 GHOST_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"isOutdated":true,"comments":{"nodes":[{"author":null,"createdAt":"2026-08-17T15:00:00Z"}]}}]}}}}}'
-got=$(FETCH_OK=1 \
+got=$(FETCH_OK=1 ACK_CONTENT_IDENTITY=0 \
   ALL_THREADS="$GHOST_THREADS" ALL_REVIEWS="$GHOST_REVIEWS" \
   ALL_COMMENTS="$(mk_comments "$CODEX" "$AFTER_PUSH" "$CLEAN_688")" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \

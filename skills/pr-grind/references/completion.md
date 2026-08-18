@@ -8,7 +8,7 @@
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (Cursor, CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tiers F and G: its 👍 reaction or its clean-verdict comment naming HEAD (#690) — clean — or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
+3. All automated reviewers completed (Cursor, CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh`: it acks the current HEAD via a fresh 👍 reaction (Tier F), a clean-verdict issue comment naming HEAD (Tier G, #690), or a resolved-and-current-head inline thread (Tier A). Unresolved or outdated Codex threads, and COMMENTED `/reviews` findings, are NOT acks — they are blockers that must be triaged (Step 2.6 enumeration) and either fixed or resolved on the current head before Codex can ack. Whichever tier decides, the result is surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan; a `stale` Codex blocks completion just like a stale registered bot.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope

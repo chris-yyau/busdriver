@@ -574,6 +574,8 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
   # at the ack — the post-anchor veto at (0) filters on .author.login and compares
   # .createdAt too, so a drifted record like {"author":{},...} would vanish from
   # its count and let a leftover 👍 ack past an unread comment-form finding.
+  # shellcheck disable=SC2016  # single-quoted jq program: the $ts below is a jq
+  # variable (bound via --arg in json_shape_ok), not a shell expansion.
   codex_comments_ok=$(json_shape_ok "$ALL_COMMENTS" '(.comments | type) == "array"
     and (.comments | all(has("author")
            and (.author == null
@@ -581,20 +583,50 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
            and (.createdAt | type) == "string" and (.createdAt | test($ts))
            and (.body | type) == "string"))')
   if [ "$codex_comments_ok" != "1" ]; then echo "stale"; exit 0; fi
+  # "The last Codex comment" must be decided by TIMESTAMP, never by document
+  # order: `gh pr view --json comments` guarantees no ordering, so a bare `last`
+  # would let an older clean verdict supersede a newer, still-live finding
+  # (Greptile P2 / CodeRabbit, PR #693).
+  #
+  # `sort_by(.createdAt) | last` alone does not finish the job, though. jq's sort
+  # is STABLE, so comments sharing a timestamp keep their input order — and
+  # GitHub timestamps are second-resolution, so a finding and a clean verdict
+  # posted in the same second are genuinely tied and `last` silently reverts to
+  # the array order this query exists to stop trusting. There is no tiebreaker
+  # available worth trusting either: gh exposes the GraphQL node id, which is not
+  # monotonic. So a tie is UNRESOLVABLE, and unresolvable means decline —
+  # `codex_max_at` is the maximum timestamp (well-defined regardless of order),
+  # and the verdict is read only when exactly ONE Codex comment carries it.
+  codex_max_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot) | .createdAt]
+     | if length == 0 then empty else max end' 2>/dev/null || echo "")
+  codex_max_tie=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    --arg at "$codex_max_at" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(.createdAt == $at)] | length' 2>/dev/null || echo 1)
   codex_last_comment=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+    --arg at "$codex_max_at" \
+    '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)
+      | select(.createdAt == $at)] | last | .body // empty' 2>/dev/null || echo "")
+  if [ -n "$codex_max_at" ] && [ "$(num_or "$codex_max_tie" 2)" -ne 1 ]; then
+    # Two Codex comments in the same second: which one is "latest" is not knowable
+    # from the payload. Decline rather than pick, then fall through to the veto at
+    # (0), which is a COUNT and so is immune to the ambiguity.
+    codex_last_comment=""
+  fi
   case "$codex_last_comment" in
     "Codex Review: Didn't find any major issues."*)
       # Line-anchored extraction; tail -1 keeps the last such line if a future
       # template ever repeats it. No match (renamed label, SHA unbackticked,
       # findings body) → empty → no ack → fall through to stale.
+      # shellcheck disable=SC2016  # single-quoted sed program: the backreference
+      # \1 is sed syntax, not a shell expansion.
       codex_clean_sha=$(printf '%s' "$codex_last_comment" \
         | sed -n 's/^\*\*Reviewed commit:\*\*[[:space:]]*`\([0-9a-fA-F]\{7,64\}\)`.*/\1/p' | tail -1)
       # When the verdict was published. Required, not best-effort: it is the
       # reference point for the re-review check below, so a payload without it
       # (an old caller shape) cannot ack.
-      codex_clean_at=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-        '[.comments[]? | select(.author.login == $login or .author.login == $login_bot)] | last | .createdAt // empty' 2>/dev/null || echo "")
+      codex_clean_at="$codex_max_at"
       # It is a REFERENCE POINT, so its form matters as much as its presence: the
       # comparisons below are lexicographic, and a junk value like "zzzz" sorts
       # after every real date, which would silently suppress the very activity
@@ -635,6 +667,9 @@ if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_COMMENTS" ]; then
       # partial or broken caller can silently switch off. Confirm each source
       # actually parsed into the shape its query indexes; anything else declines
       # here and falls through to (0)/(5) → stale.
+      # shellcheck disable=SC2016  # every json_shape_ok call below is a single-quoted
+      # jq program (jq's own `$ts`, bound via --arg inside json_shape_ok); none of
+      # these are shell expansions. Directive covers the whole continued `if`.
       if [ -n "$codex_clean_sha" ] && [ -n "$codex_clean_at" ] \
          && [ "$(json_shape_ok "$ALL_THREADS" '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
                  and (.data.repository.pullRequest.reviewThreads.nodes

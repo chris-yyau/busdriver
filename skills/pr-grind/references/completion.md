@@ -8,11 +8,11 @@
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tiers F and G: its 👍 reaction or its clean-verdict comment naming HEAD (#690) — clean — or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
+3. All automated reviewers completed (Cursor, CodeRabbit, Cubic, Greptile, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tiers F and G: its 👍 reaction or its clean-verdict comment naming HEAD (#690) — clean — or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Cubic, CodeRabbit, Greptile) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
+7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit, Greptile) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction, or the Tier G clean-verdict comment — #690), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -115,12 +115,12 @@ PR_NUMBER="$PR"; AUGMENT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/augment-equiv-ack
 [ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-# Codex (chatgpt-codex-connector) is appended as a fourth gated reviewer here:
+# Codex (chatgpt-codex-connector) is appended as a fifth gated reviewer here:
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value
 # (still reviewing, or hasn't re-acked HEAD after the last push) must block the
 # merge exactly like a stale registered bot. It is NOT in RESULT_REVIEWER_ACKS
-# (the three SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
-FRESH_ACKS="cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
+# (the four SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
+FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-
 # pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing
@@ -394,7 +394,7 @@ if [ "$CODEX_DONE" = "none" ]; then
   export ALL_CHECK_RUNS FETCH_OK
   # Recompute the ENTIRE ledger on the post-wait sources — not just Codex.
   # The loop refreshes all six payloads, but the old code re-folded ONLY the Codex
-  # entry, leaving the three registered bots at their pre-wait values. Over the old
+  # entry, leaving the four registered bots at their pre-wait values. Over the old
   # 20s sleep that gap was narrow; at a 480s deadline it is wide enough for a bot to
   # post CHANGES_REQUESTED (or a finding with no inline thread) during the window
   # while FRESH_ACKS still carries its stale-but-passing SHA — authorizing the merge
@@ -420,7 +420,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     none | stale | "$HEAD_SHA") : ;;
     *) CODEX_REGRACE=stale ;;
   esac
-  FRESH_ACKS="cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
+  FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
   # HEAD-MOVED GUARD (fail-CLOSED). Everything above classifies acks against
   # HEAD_SHA captured BEFORE the wait, but the later `gh pr merge` targets whatever
   # the PR points at NOW. A push landing during the window would therefore carry
@@ -442,7 +442,7 @@ if [ "$CODEX_DONE" = "none" ]; then
     _CODEX_HEAD_DISPLAY="${CODEX_HEAD_NOW:0:8}"
     [ -z "$CODEX_HEAD_NOW" ] && _CODEX_HEAD_DISPLAY="<lookup failed>"
     echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${_CODEX_HEAD_DISPLAY}) — invalidating acks; the loop must re-converge on the new HEAD."
-    FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
+    FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
   fi
   fi
   # Missing-Codex warning (#320 secondary ask): Codex is HISTORICALLY active here but
@@ -646,11 +646,12 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # cursor (Bugbot) and devin-ai-integration were DROPPED from
-                    # the ack registry (ADR 0035) — both were review-once-at-create
-                    # bots whose stranded clean reviews previously needed the
-                    # Case-4 devin whitelist (ADR 0027, now removed); they no
-                    # longer gate the ledger. For any registered bot lacking a
+                    # devin-ai-integration stays DROPPED from the ack registry
+                    # (ADR 0035) — a review-once-at-create bot whose stranded clean
+                    # reviews needed the Case-4 whitelist (ADR 0027, now removed).
+                    # cursor (Bugbot) is registered again (ADR 0041): on the Ultra
+                    # plan it re-reviews every push, so it no longer strands.
+                    # For any registered bot lacking a
                     # Case-3 downgrade that strands stale, the ADR 0012 opt-in
                     # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
                     # ack ELIGIBLE for a stale→none downgrade at --max-wait
@@ -710,11 +711,12 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # cursor (Bugbot) and devin-ai-integration were DROPPED from
-                    # the ack registry (ADR 0035) — both were review-once-at-create
-                    # bots whose stranded clean reviews previously needed the
-                    # Case-4 devin whitelist (ADR 0027, now removed); they no
-                    # longer gate the ledger. For any registered bot lacking a
+                    # devin-ai-integration stays DROPPED from the ack registry
+                    # (ADR 0035) — a review-once-at-create bot whose stranded clean
+                    # reviews needed the Case-4 whitelist (ADR 0027, now removed).
+                    # cursor (Bugbot) is registered again (ADR 0041): on the Ultra
+                    # plan it re-reviews every push, so it no longer strands.
+                    # For any registered bot lacking a
                     # Case-3 downgrade that strands stale, the ADR 0012 opt-in
                     # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
                     # ack ELIGIBLE for a stale→none downgrade at --max-wait

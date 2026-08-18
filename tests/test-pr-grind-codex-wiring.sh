@@ -113,7 +113,7 @@ fi
 # (3) ordering: guard must precede the COMPLETION FRESH_ACKS re-query.
 HOIST_ORDER=$(awk '
   /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { if (!hoist) hoist=NR }
-  /^FRESH_ACKS="cubic-dev-ai=/                            { if (!fresh) fresh=NR }
+  /^FRESH_ACKS="cursor=/                            { if (!fresh) fresh=NR }
   END { print (hoist && fresh && hoist < fresh) ? "OK" : "BAD" }' "$SKILL")
 if [[ "$HOIST_ORDER" == OK ]]; then
   ok "clean-path hoist ordered before COMPLETION FRESH_ACKS (#467)"
@@ -268,13 +268,13 @@ else
   ok "force-on marker does not diverge via BUSDRIVER_STATE_DIR"
 fi
 # After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
-# Re-folding Codex alone leaves 3 bots at pre-wait values across a 480s window, so a
+# Re-folding Codex alone leaves 4 bots at pre-wait values across a 480s window, so a
 # bot that posts CHANGES_REQUESTED during it would still read as passing.
 # #606: the discriminator is `${CODEX_REGRACE}` — the pre-wait line ends
 # `chatgpt-codex-connector=$(bash "$ACK_SCRIPT" ...)` and can never satisfy a pattern
 # that requires that token. Requiring EVERY non-Codex bot to show
 # `$(bash "$ACK_SCRIPT" ...)` on the SAME line also blocks partial re-folds (e.g.
-# cubic-dev-ai-only): the three registered bots must be re-derived from ack-ledger,
+# cubic-dev-ai-only): the four registered bots must be re-derived from ack-ledger,
 # not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
 # Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
 # whitespace after every bot login is the shell argument terminator, so shadowed
@@ -287,10 +287,10 @@ fi
 # line cannot match — and the closing `"$` anchors the complete assignment to the
 # end of the line (CodeRabbit + litmus + cubic, PR #609).
 # shellcheck disable=SC2016  # POSTWAIT_LEDGER is a single-quoted grep -E regex; the literal backslashes are the point
-POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai 2>/dev/null \|\| echo stale\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai 2>/dev/null \|\| echo stale\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
+POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cursor=\$\(bash "\$ACK_SCRIPT" cursor 2>/dev/null \|\| echo stale\),cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai 2>/dev/null \|\| echo stale\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai 2>/dev/null \|\| echo stale\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
 # shellcheck disable=SC2310  # hasre returns status by design; the harness counts failures instead of exiting
 if hasre "$POSTWAIT_LEDGER"; then
-  ok "full 4-bot ledger recomputed after the wait (post-wait line)"
+  ok "full 5-bot ledger recomputed after the wait (post-wait line)"
 else
   fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
 fi
@@ -334,7 +334,7 @@ POSTWAIT_CONSUMER_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:
 POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_HEAD_IF_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*if \[ -z "\$CODEX_HEAD_NOW" \] \|\| \[ "\$CODEX_HEAD_NOW" != "\$HEAD_FULL_SHA" \]; then$/ { print NR; exit }' "$SKILL" || true)
-POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
+POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
 # The HEAD-divergence conditional's MATCHING `fi` (depth-aware: the first `fi`
 # that returns the block to depth 0, not the first lexical `fi`), plus the
 # nesting depth of the invalidation inside that block (must be 1 — directly in
@@ -542,7 +542,7 @@ else
 fi
 rm -f "$PREFIX_FIELD"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
-  fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
+  fail "Codex-only sed re-fold still present — the other 4 bots stay stale"
 else
   ok "Codex-only sed re-fold removed"
 fi

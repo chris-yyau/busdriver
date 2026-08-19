@@ -23,12 +23,12 @@
 #                                           API state of THIS checkout's PR
 #                                           (github-api-state-merged; a merge
 #                                           steered at another repo is not
-#                                           queried at all), cross-repo-merge-
-#                                           unverifiable-token-spent for such a
-#                                           merge, auto-merge-accepted-token-
-#                                           spent for an accepted --auto queue,
-#                                           or empty for the offline CLI-pattern
-#                                           path.
+#                                           queried at all), cli-pattern-merged
+#                                           when gh's own output confirmed it,
+#                                           cross-repo-merge-unverifiable-token-
+#                                           spent for an unconfirmable cross-repo
+#                                           merge, or auto-merge-accepted-token-
+#                                           spent for an accepted --auto queue.
 #   skip-pr-grind-released                — gh pr merge failed; skip preserved
 #   skip-pr-grind-released-auto-queued    — RETIRED in #664, no longer emitted.
 #                                           An accepted --auto queue now spends
@@ -408,7 +408,14 @@ _SUCCESS_SOURCE=""
 # were accepted; if the queue later fails its checks the operator re-touches.
 # Promoted before the query so it still passes every tamper/age/PR validation.
 case "$PARSE_STATUS" in
-    success) ;;
+    success)
+        # The CLI patterns already confirmed it (a TTY ran the merge, or gh
+        # printed on stderr). Name that evidence rather than logging an empty
+        # reason — including for a cross-repo merge, where the pattern is the
+        # only thing that can speak to another repo's PR and the query below
+        # would never run.
+        _SUCCESS_SOURCE="cli-pattern-merged"
+        ;;
     auto_queued)
         PARSE_STATUS="success"
         _SUCCESS_SOURCE="auto-merge-accepted-token-spent"

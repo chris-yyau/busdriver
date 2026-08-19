@@ -2096,10 +2096,12 @@ CHILD
             # 0016), so a PATH-shadowed `env` or `grok` would run before grok's
             # sandbox exists. Absolute `/usr/bin/env` fixes the first; env
             # resolving `grok` against the PATH given ON ITS OWN COMMAND LINE
-            # fixes the second. The pinned list covers the install locations
-            # `_has_cli grok` would have accepted on the ambient PATH —
-            # otherwise availability and execution disagree and a Homebrew grok
-            # passes the check then fails as command-not-found.
+            # fixes the second. `$_GROK_PINNED_PATH` is built by the preflight
+            # from the same trusted home it validated, and the preflight also
+            # refuses when no grok resolves on it — otherwise availability
+            # (ambient PATH) and execution (pinned PATH) could disagree and a
+            # grok under nvm or a custom prefix would fail as command-not-found
+            # after passing selection.
             #
             # RESIDUAL, and it is pre-existing: `_portable_timeout` still
             # resolves `timeout`/`gtimeout`/`perl` through the inherited PATH
@@ -2121,12 +2123,14 @@ CHILD
             # inside grok, but with no USER definition a repo-local
             # .grok/sandbox.toml would supply one — the reviewed branch writing
             # its own containment. See grok_sandbox_preflight in resolve-cli.sh.
-            if ! grok_sandbox_preflight; then
-                echo "$_GROK_PREFLIGHT_HINT" >&2
-                exit 1
-            fi
+            # The dispatch lives in the POSITIVE branch. Written the other way
+            # round — bail inside the failure branch, invoke after the `fi` — an
+            # exported BASH_FUNC_exit%% turns the bail into a fall-through and
+            # grok runs with no verified profile. There is nothing to fall
+            # through into here.
+            if grok_sandbox_preflight; then
             _portable_timeout "$_budget" /usr/bin/env \
-                PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+                PATH="$_GROK_PINNED_PATH" \
                 HOME="$_GROK_TRUSTED_HOME" \
                 GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                 GROK_CLAUDE_HOOKS_ENABLED=0 \
@@ -2138,7 +2142,16 @@ CHILD
                 --deny 'Bash(*)' \
                 --deny 'Edit' \
                 --deny 'MCPTool(*)' \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
+                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+            else
+                # The hint goes to BOTH stderr (for the operator) and $outfile,
+                # because the retry loop classifies on the output file: an empty
+                # one reads as "CLI died, retry", which would spin before the
+                # droid rescue instead of stopping on a configuration error.
+                echo "$_GROK_PREFLIGHT_HINT" >&2
+                echo "$_GROK_PREFLIGHT_HINT" > "$outfile"
+                exit_code=1
+            fi ;;
     esac
 
     # Timeout → don't retry; the droid fallback below handles it.

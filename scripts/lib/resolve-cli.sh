@@ -2091,156 +2091,230 @@ _agy_prompt_oversize() {
 #
 # $1 overrides the file path and exists ONLY for tests; production callers pass
 # nothing and get the derived path.
+# The PATH grok is executed under, and the one the preflight checks it against.
+# Repo-injectable PATH entries are excluded by construction: only the operator's
+# own home and the system prefixes are listed.
+# ── grok sandbox preflight ────────────────────────────────────────────────
+# Runs every check inside a FUNCTION-CLEAN CHILD: `/usr/bin/env -i /bin/bash -p`.
+# That is the point, not a detail. This function is sourced by blueprint-review,
+# whose shell has no `bash -p` boundary (dispatch.sh re-execs under one — see its
+# header), so an exported BASH_FUNC_* can shadow any name the checks use. Trying
+# to clean up from inside that shell is a regress with no bottom: `unset` can be
+# shadowed, and so can the `builtin` that would un-shadow `unset`. `env -i` drops
+# the exported functions along with the rest of the environment, `-p` stops bash
+# re-importing them, and an ABSOLUTE path cannot be shadowed at all — a function
+# name may not contain `/`.
+#
+# The child body avoids `case` on purpose: bash 3.2 (macOS /bin/bash) mis-parses
+# a quoted heredoc inside `$( )` when the body contains case patterns, which is
+# the #595 silent fail-open this repo has already been bitten by once.
+#
+# WHAT IT DEFENDS. The grok lane runs under the CUSTOM profile
+# `busdriver-review` because built-in profiles FAIL OPEN — grok warns and runs
+# unconfined when the kernel policy cannot be applied — while an explicitly
+# requested custom profile refuses to start ("Refusing to start with its
+# protections missing", verified 2026-08-19). Custom profiles resolve from the
+# operator's ~/.grok/sandbox.toml OR a project `.grok/sandbox.toml`; the user
+# file wins when both define the name, but with NO user file the REPO's
+# definition applies — the reviewed branch writing its own containment. So the
+# case being defended against is a MISSING or MISCONFIGURED operator profile.
+#
+# WHAT IT DOES NOT. A maliciously crafted profile in the operator's own home is
+# not in the threat model: an attacker who can write there has already won. The
+# body checks below are conservative configuration checks — anything unusual
+# (escapes, multiline strings, single-quoted deny entries) is refused rather
+# than interpreted. If a legitimate profile ever needs one of those spellings,
+# parse TOML properly rather than adding another regex here.
+#
+# The CALLERS matter as much as this function: both sites put the dispatch in
+# the POSITIVE branch of an `if`, never after a `return`/`exit` in a failure
+# branch. A shadowed `return` would fall through such a branch straight into the
+# dispatch it was meant to stop; there is nothing to fall through into when the
+# only path to the invocation is the branch where the check passed.
+#
+# $1 overrides the file path and exists ONLY for tests; production callers pass
+# nothing and get the derived path.
 grok_sandbox_preflight() {
-  local _gsp_file="${1:-}"
-  if [[ -z "$_gsp_file" ]]; then
-    local _gsp_user _gsp_home
-    _gsp_user="$(/usr/bin/id -un 2>/dev/null)" || return 1
-    case "$_gsp_user" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
-    # `~+`, `~-`, `~+1`, `~-1` are Bash DIRECTORY-STACK forms, not accounts:
-    # they expand to PWD/OLDPWD/a stack entry, which for an account named `+`
-    # would make the REVIEWED TREE the trusted home. Same rejection as
-    # _bd_valid_username in dispatch.sh.
-    [[ "$_gsp_user" =~ ^[-+]?[0-9]*$ ]] && return 1
-    # NOT `eval echo "~$user"`. eval runs in the CALLER's shell, and this
-    # function is sourced by blueprint-review's ordinary bash — no `bash -p`
-    # boundary — so an inherited `BASH_FUNC_eval%%` would execute repo-supplied
-    # code before grok's sandbox exists. These read the password database
-    # directly, by absolute path, with no shell expansion and no interpreter
-    # version floor: dscl on macOS, getent on Linux. Neither present ⇒ refuse.
-    if [[ -x /usr/bin/dscl ]]; then
-      _gsp_home="$(/usr/bin/dscl . -read "/Users/$_gsp_user" NFSHomeDirectory 2>/dev/null \
-                   | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || return 1
-    elif [[ -x /usr/bin/getent ]]; then
-      _gsp_home="$(/usr/bin/getent passwd "$_gsp_user" 2>/dev/null | /usr/bin/cut -d: -f6)" || return 1
-    else
-      return 1
-    fi
-    [[ -n "$_gsp_home" && "$_gsp_home" == /* && -d "$_gsp_home" ]] || return 1
-    # The config DIRECTORY must not be a symlink either. Refusing only a
-    # symlinked sandbox.toml leaves the obvious variant open: point ~/.grok at
-    # a directory in the reviewed tree and every file inside it — the profile
-    # AND the `bin/grok` the PATH pin trusts — becomes repo-controlled while
-    # each individual file is a regular file.
-    [[ -L "$_gsp_home/.grok" ]] && return 1
-    [[ -d "$_gsp_home/.grok" ]] || return 1
-    _gsp_file="$_gsp_home/.grok/sandbox.toml"
-    _GROK_TRUSTED_HOME="$_gsp_home"
-  fi
-  # A symlink is refused outright: it can point back into the reviewed tree,
-  # which would hand the repo the definition again by another route.
-  [[ -f "$_gsp_file" && ! -L "$_gsp_file" ]] || return 1
+  # NO shadowable command word runs in the parent — not even `local` or
+  # `return`. Everything here is either a KEYWORD (`[[`, `&&`, `||`, `{`), which
+  # bash resolves before functions and which cannot be defined as a function
+  # name, a plain ASSIGNMENT, which is not a command lookup at all, or an
+  # ABSOLUTE path, which no function name can spell. The function's exit status
+  # is the status of its last command, so the `[[ ... ]] && { ... }` at the
+  # bottom IS the return value: empty output from the child ⇒ non-zero ⇒ refuse.
+  # That is why the variables below are unprefixed globals rather than `local`s.
+  _GSP_OUT="$(/usr/bin/env -i /bin/bash -p -s -- "${1:-}" <<'PREFLIGHT_CHILD'
+set -u
+PATH=/usr/bin:/bin
+file="${1:-}"
 
-  # SCOPE — read this before adding another pattern here. This file is the
-  # OPERATOR's, outside every repo, and the user copy wins over any project
-  # `.grok/sandbox.toml`. So the thing being defended against is a MISSING or
-  # MISCONFIGURED operator profile — the case where grok would silently take
-  # the reviewed branch's definition instead. A maliciously crafted profile in
-  # the operator's own home is not in the threat model: an attacker who can
-  # write there has already won, and no amount of validation here changes that.
-  # The checks below are therefore configuration checks, not a parser hardened
-  # against adversarial TOML, and they are deliberately conservative: anything
-  # unusual (escapes, multiline strings, single-quoted deny entries) is refused
-  # rather than interpreted. If a legitimate profile ever needs one of those
-  # spellings, the fix is to parse TOML properly, not to add another regex.
-  #
-  # The BODY is checked, not just the header. A header-only profile passes a
-  # header grep while behaving nothing like the documented one: grok defaults an
-  # omitted `extends` to `workspace`, which reads the whole filesystem, and a
-  # profile can drop the deny list or widen itself with `read_write`. The lane's
-  # runtime warning promises confinement, so the promise is verified here.
-  local _gsp_block
-  _gsp_block="$(/usr/bin/awk '
-    /^[[:space:]]*\[profiles\.busdriver-review\][[:space:]]*$/ { inblk = 1; next }
-    /^[[:space:]]*\[/                                            { inblk = 0 }
-    inblk
-  ' "$_gsp_file")" || return 1
-  [[ -n "$_gsp_block" ]] || return 1
-
-  # Every helper below is called by ABSOLUTE path. This function runs before
-  # grok's sandbox exists and a reviewed repo is treated as able to set PATH
-  # (#325 / ADR 0016), so a shadowed `grep`/`awk`/`python3` would execute
-  # repo-supplied code inside the check that is supposed to authorise the run.
-  #
-  # Comments are stripped before anything is matched. Without this, the required
-  # globs could sit in a `#` comment while `deny = []` is what grok parses —
-  # the check would read documentation as configuration, the same trap the
-  # argv test in tests/test-grok-sandbox-arm.sh had to fix.
-  # Only strips a `#` that starts outside a double-quoted string, so a deny
-  # entry of "#" no longer truncates the rest of the array. A backslash inside
-  # a string escapes the next character, so `"\""` does not end the string and
-  # cannot leave the scanner stuck in-quote across the rest of the line.
-  _gsp_block="$(/usr/bin/awk '{
-    out = ""; inq = 0
-    for (i = 1; i <= length($0); i++) {
-      c = substr($0, i, 1)
-      if (inq && c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
-      if (c == "\"") inq = !inq
-      else if (c == "#" && !inq) break
-      out = out c
-    }
-    print out
-  }' <<<"$_gsp_block")"
-
-  # Keys are matched bare, double-quoted AND single-quoted: TOML accepts all
-  # three (`read_write`, `"read_write"`, `'read_write'`), so a bare-key-only
-  # regex is a one-character bypass. The block above also ends at ANY table
-  # header, not just the next `[profiles.*]` — otherwise a `[decoy]` table
-  # between them would have its fields read as part of this profile.
-  /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" <<<"$_gsp_block" || return 1
-  # Both widening fields are rejected. `read_write` grants writable paths;
-  # `read_only` grants additional READABLE ones, so `read_only = ["/"]` would
-  # defeat the CWD-only confinement while looking harmless.
-  /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" <<<"$_gsp_block" && return 1
-  # TOML basic strings accept \uXXXX and \UXXXXXXXX escapes IN KEYS (both
-  # cases), so `"read\u005fwrite"` and `"read\U0000005fwrite"`
-  # is the same key spelled around any textual matcher. Rather than decode
-  # escapes, refuse a profile that uses them at all — the shipped one does not,
-  # and a legitimate sandbox profile has no reason to.
-  /usr/bin/grep -qi '\\u' <<<"$_gsp_block" && return 1
-  # Multiline strings are refused for the same reason: one triple-quoted value
-  # can carry every required glob as TEXT while the deny array denies none of
-  # them, satisfying substring checks that never parse TOML. The shipped
-  # profile uses single-line strings only.
-  /usr/bin/grep -qE '"""|'"'''"'' <<<"$_gsp_block" && return 1
-
-  # restrict_network must be ON. It is a no-op on macOS (child-network blocking
-  # is Linux-only), but the shipped profile and the lane's documentation both
-  # claim it, and a profile that quietly drops it should not pass a check whose
-  # job is to make the claim true.
-  /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" <<<"$_gsp_block" || return 1
-
-  # The required entries must live INSIDE the deny array, not merely somewhere
-  # in the block: `restrict_network = "**/.grok"` would otherwise satisfy a
-  # whole-block grep.
-  local _gsp_deny
-  _gsp_deny="$(/usr/bin/awk '
-    /^[[:space:]]*["\x27]?deny["\x27]?[[:space:]]*=/ { indeny = 1 }
-    indeny { print }
-    indeny && /\]/ { exit }
-  ' <<<"$_gsp_block")" || return 1
-  [[ -n "$_gsp_deny" ]] || return 1
-
-  # The deny array must use double-quoted entries only. TOML literal strings
-  # can carry the quote characters INSIDE the value — `deny = ['"**/.grok"']`
-  # denies a path whose name literally contains quotes, while satisfying a
-  # substring search for `"**/.grok"`. Refusing single quotes in the array
-  # removes that spelling entirely; the shipped profile has none.
-  /usr/bin/grep -q "'" <<<"$_gsp_deny" && return 1
-
-  # Two groups, both promised by the lane's runtime warning:
-  #   * the three vendor config directories, each in BOTH glob forms — a bare
-  #     `**/.claude` matches only the directory path and leaves its CONTENTS
-  #     readable (measured: grok read `.claude/settings.local.json` through it)
-  #   * the in-tree secret globs, since the warning says secrets are
-  #     kernel-denied and grok's web tools stay open by design
-  local _gsp_req
-  for _gsp_req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
-                  '"**/.cursor"' '"**/.cursor/**"' \
-                  '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
-    /usr/bin/grep -qF "$_gsp_req" <<<"$_gsp_deny" || return 1
+# follow a symlink chain without readlink -f (GNU-only); bounded so a loop
+# cannot hang
+resolve_link() {
+  p="$1"; n=0
+  while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+    t="$(/usr/bin/readlink "$p")" || return 1
+    if [ "${t#/}" != "$t" ]; then p="$t"; else p="$(/usr/bin/dirname -- "$p")/$t"; fi
+    n=$((n + 1))
   done
-  return 0
+  # Still a symlink at the bound means the chain was NOT resolved. Returning the
+  # partial answer would hand back a path that looks safe while exec follows the
+  # remaining hops to somewhere else entirely.
+  [ -L "$p" ] && return 1
+  printf '%s\n' "$p"
+}
+
+home=""
+pinned=""
+
+if [ -z "$file" ]; then
+  user="$(/usr/bin/id -un 2>/dev/null)" || exit 1
+  [ -n "$user" ] || exit 1
+  # no shell metacharacters, and none of bash's `~+` / `~-` / `~+1` directory-
+  # stack forms, which expand to PWD/OLDPWD instead of an account home
+  [[ "$user" == *[!A-Za-z0-9._-]* ]] && exit 1
+  [[ "$user" =~ ^[-+]?[0-9]*$ ]] && exit 1
+
+  # password database directly — no `eval echo ~user`, no interpreter version
+  # floor: dscl on macOS, getent on Linux, refuse if neither is present
+  if [ -x /usr/bin/dscl ]; then
+    home="$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || exit 1
+  elif [ -x /usr/bin/getent ]; then
+    home="$(/usr/bin/getent passwd "$user" 2>/dev/null | /usr/bin/cut -d: -f6)" || exit 1
+  else
+    exit 1
+  fi
+  [ -n "$home" ] || exit 1
+  [ "${home#/}" != "$home" ] || exit 1
+  [ -d "$home" ] || exit 1
+
+  # the config DIRECTORY must not be a symlink: pointing ~/.grok into the
+  # reviewed tree makes the profile AND the bin/grok the PATH pin trusts
+  # repo-controlled while every individual file stays a regular file
+  [ -L "$home/.grok" ] && exit 1
+  [ -d "$home/.grok" ] || exit 1
+  file="$home/.grok/sandbox.toml"
+  pinned="$home/.grok/bin:$home/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+  # the checkout ROOT, found by walking up for a `.git` — NOT `git rev-parse`,
+  # which honours the injectable GIT_DIR / GIT_WORK_TREE. Run from a
+  # subdirectory of a checkout rooted at $HOME, $PWD alone would clear ~/.grok
+  # while the branch still owns it.
+  # The child's OWN working directory, not a value passed in: $PWD is an
+  # ordinary shell variable and can be reassigned without changing directory,
+  # so a forged one would have the containment checks compare ~/.grok against
+  # the wrong root. The child inherits the real cwd from the process.
+  root="$(pwd -P)" || exit 1
+  [ -n "$root" ] || exit 1
+  walk="$root"
+  while [ -n "$walk" ] && [ "$walk" != "/" ]; do
+    if [ -e "$walk/.git" ]; then root="$walk"; break; fi
+    walk="${walk%/*}"
+  done
+
+  # every home-derived PATH entry must sit outside that tree, not just the
+  # config dir: a checkout rooted at ~/.local would supply .local/bin/grok
+  for d in "$home/.grok" "$home/.local/bin"; do
+    [ -e "$d" ] || continue
+    real="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || exit 1
+    [ -n "$real" ] || exit 1
+    [[ "${real%/}/" == "${root%/}/"* ]] && exit 1
+  done
+
+  # a grok EXECUTABLE must exist on the pinned PATH, and must not resolve back
+  # into the reviewed tree. Tested as a file, not via `command -v`: that
+  # consults shell functions, while /usr/bin/env searches PATH only.
+  #
+  # Only the FIRST match is considered, and it must be safe. Skipping an unsafe
+  # candidate to find a safe one later would validate a binary that never runs:
+  # env execs the first grok on the same PATH, so a repo-controlled ~/.grok/bin
+  # entry would execute while the check blessed /usr/bin.
+  found=""
+  rest="$pinned:"
+  while [ -n "$rest" ]; do
+    p="${rest%%:*}"; rest="${rest#*:}"
+    [ -n "$p" ] || continue
+    [ -x "$p/grok" ] || continue
+    [ -d "$p/grok" ] && continue
+    target="$(resolve_link "$p/grok")" || exit 1
+    real="$(cd -P -- "$(/usr/bin/dirname -- "$target")" 2>/dev/null && pwd -P)" || exit 1
+    [ -n "$real" ] || exit 1
+    [[ "${real%/}/" == "${root%/}/"* ]] && exit 1
+    found=1; break
+  done
+  [ -n "$found" ] || exit 1
+fi
+
+# a symlinked profile can point back into the reviewed tree
+[ -f "$file" ] || exit 1
+[ -L "$file" ] && exit 1
+
+block="$(/usr/bin/awk '
+  /^[[:space:]]*\[profiles\.busdriver-review\][[:space:]]*$/ { inblk = 1; next }
+  /^[[:space:]]*\[/                                          { inblk = 0 }
+  inblk
+' "$file")" || exit 1
+[ -n "$block" ] || exit 1
+
+# strip comments, but only a `#` that starts outside a double-quoted string —
+# otherwise a deny entry of "#" truncates the array and the checks below read
+# the leftovers. A backslash escapes the next character inside a string.
+block="$(printf '%s\n' "$block" | /usr/bin/awk '{
+  out = ""; inq = 0
+  for (i = 1; i <= length($0); i++) {
+    c = substr($0, i, 1)
+    if (inq && c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
+    if (c == "\"") inq = !inq
+    else if (c == "#" && !inq) break
+    out = out c
+  }
+  print out
+}')" || exit 1
+
+# keys matched bare, double-quoted and single-quoted: TOML accepts all three
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" || exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" || exit 1
+# read_write grants writable paths; read_only grants extra readable ones —
+# `read_only = ["/"]` would defeat the CWD-only confinement
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" && exit 1
+# \uXXXX / \UXXXXXXXX escapes spell a key around any textual matcher, and a
+# multiline string can carry the required globs as text while deny = []
+printf '%s\n' "$block" | /usr/bin/grep -qi '\\u' && exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qF '"""' && exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qF "'''" && exit 1
+
+deny="$(printf '%s\n' "$block" | /usr/bin/awk '
+  /^[[:space:]]*["\x27]?deny["\x27]?[[:space:]]*=/ { indeny = 1 }
+  indeny { print }
+  indeny && /\]/ { exit }
+')" || exit 1
+[ -n "$deny" ] || exit 1
+# double-quoted entries only: a TOML literal string can carry the quote
+# characters INSIDE the value, so `deny = ['"**/.grok"']` denies a path whose
+# name contains quotes while satisfying a search for `"**/.grok"`
+printf '%s\n' "$deny" | /usr/bin/grep -q "'" && exit 1
+
+for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
+           '"**/.cursor"' '"**/.cursor/**"' \
+           '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
+  printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || exit 1
+done
+
+printf 'HOME=%s\n' "$home"
+printf 'PATH=%s\n' "$pinned"
+exit 0
+PREFLIGHT_CHILD
+)" || _GSP_OUT=""
+
+  # Publish what the child derived. Both are consumed on the `env` line of the
+  # grok invocation, so the file that was checked and the file that is loaded
+  # are the same one. A refusal prints nothing, so an empty capture is the
+  # failure signal — and this compound command is the function's exit status.
+  [[ -n "$_GSP_OUT" ]] && {
+    _GROK_TRUSTED_HOME="${_GSP_OUT#HOME=}"
+    _GROK_TRUSTED_HOME="${_GROK_TRUSTED_HOME%%$'\n'*}"
+    _GROK_PINNED_PATH="${_GSP_OUT#*$'\n'PATH=}"
+  }
 }
 
 _GROK_PREFLIGHT_HINT="Error: grok dispatch refused - the operator sandbox profile is missing. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and a custom profile must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
@@ -2391,16 +2465,20 @@ execute_review() {
     # is destructive — whole output discarded — so err generous, not tight).
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
-    grok)    if ! grok_sandbox_preflight; then
-               echo "$_GROK_PREFLIGHT_HINT" >&2
-               return 1
-             fi
+    grok)    if grok_sandbox_preflight; then
              echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              _run_review_with_retries grok "$prompt" "$duration" pipe \
-               /usr/bin/env PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+               /usr/bin/env PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
-               grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)' ;;
+               grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
+             else
+               echo "$_GROK_PREFLIGHT_HINT" >&2
+               # `[[ -n "" ]]` and not `false` or `return 1`: a keyword cannot be
+               # shadowed by an exported function, and this arm's status is what
+               # the caller reads.
+               [[ -n "" ]]
+             fi ;;
     # opencode — added 2026-07-20 as the "Auditor" / Mechanism Witness voice. The
     # MODEL is not part of this arm's contract: it comes from `.auditor.model`
     # (resolve_auditor_model above), so provider and model can change without

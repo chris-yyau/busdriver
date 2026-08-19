@@ -53,12 +53,12 @@ fail() { printf 'FAIL — %s\n' "$1"; FAILED=1; }
 # would satisfy a `--sandbox strict` assertion on an arm whose actual command
 # had lost the flag. So: start at the command word, stop at the end of the
 # invocation, and assert only on that.
-dispatch_arm="$(awk '/if ! grok_sandbox_preflight; then/,/PROMPT_FILE/' "$DISPATCH")"
-resolve_arm="$(awk '/^    grok\)    if ! grok_sandbox_preflight/,/;;$/' "$RESOLVE")"
+dispatch_arm="$(awk '/if grok_sandbox_preflight; then/,/^            fi ;;$/' "$DISPATCH")"
+resolve_arm="$(awk '/^    grok\)    if grok_sandbox_preflight; then/,/^             fi ;;$/' "$RESOLVE")"
 # The invocation alone — starting AFTER the operator-facing warning, which
 # quotes every flag name back and would satisfy any argv assertion on its own.
 dispatch_cmd="$(awk '/_portable_timeout "\$_budget" \/usr\/bin\/env \\$/,/PROMPT_FILE/' "$DISPATCH")"
-resolve_cmd="$(awk '/\/usr\/bin\/env PATH="\$_GROK_TRUSTED_HOME/,/;;$/' "$RESOLVE")"
+resolve_cmd="$(awk '/\/usr\/bin\/env PATH="\$_GROK_PINNED_PATH"/,/;;$/' "$RESOLVE")"
 
 # An empty slice would pass every "flag is absent" assertion below, so a stale
 # slice pattern must fail loudly rather than certify nothing.
@@ -96,14 +96,19 @@ for site in dispatch resolve; do
   # supplies the definition. Assert the REFUSAL, not the call: the slice starts
   # at the call, so checking for it would be tautological — and a preflight
   # whose failure branch fell through would still dispatch.
-  case "$site" in
-    dispatch) bail='exit 1' ;;
-    resolve)  bail='return 1' ;;
-  esac
-  if [[ "$whole" == *"if ! grok_sandbox_preflight; then"* && "$whole" == *"$bail"* ]]; then
-    pass "$where: a failed preflight stops the dispatch ($bail)"
+  # The POSITIVE form specifically. `if ! preflight; then bail; fi; dispatch`
+  # puts the invocation AFTER the branch, so a shadowed `return`/`exit` in the
+  # bail falls through into it. `if preflight; then dispatch; else …; fi` has
+  # nowhere to fall through to.
+  if [[ "$whole" == *"if grok_sandbox_preflight; then"* ]]; then
+    pass "$where: the dispatch sits in the preflight's positive branch"
   else
-    fail "$where: the preflight result is not acted on — execution would continue past a failed check"
+    fail "$where: the dispatch is not gated by 'if grok_sandbox_preflight; then' — a shadowed return/exit in a bail branch would fall through into it"
+  fi
+  if [[ "$whole" == *"if ! grok_sandbox_preflight"* ]]; then
+    fail "$where: still uses the bail-then-fall-through shape"
+  else
+    pass "$where: no bail-then-fall-through shape"
   fi
 
   if [[ "$arm" == *"--deny 'Bash(*)'"* ]]; then
@@ -155,10 +160,10 @@ for site in dispatch resolve; do
 
   # env resolves the command against the PATH on its own command line, so this
   # is what stops a PATH-shadowed `grok` from running before the sandbox exists.
-  if [[ "$arm" == *'PATH="$_GROK_TRUSTED_HOME/.grok/bin'* && "$arm" == *'/opt/homebrew/bin'* ]]; then
+  if [[ "$arm" == *'PATH="$_GROK_PINNED_PATH"'* ]]; then
     pass "$where: grok is resolved against a PATH pinned to the verified home"
   else
-    fail "$where: grok arm does not re-set PATH — an injected PATH could shadow the grok binary itself"
+    fail "$where: grok arm does not re-set PATH to \$_GROK_PINNED_PATH — an injected PATH could shadow the grok binary itself"
   fi
 
   # --always-approve would defeat the deny rules' whole point.
@@ -282,7 +287,105 @@ deny = []' > "$tmp/commented.toml"
   # The DIRECTORY check has no path override, so it is asserted on the source:
   # a symlinked ~/.grok makes every file inside it repo-controlled while each
   # one is still a regular file.
-  if /usr/bin/grep -q '\[\[ -L "\$_gsp_home/.grok" \]\] && return 1' "$RESOLVE"; then
+  # The only airtight answer to BASH_FUNC_* shadowing is a function-clean
+  # child: `unset` can be shadowed, and so can the `builtin` that would
+  # un-shadow it. `env -i` drops exported functions, `-p` stops bash
+  # re-importing them, and an absolute path cannot be shadowed at all.
+  if /usr/bin/grep -q '/usr/bin/env -i /bin/bash -p' "$RESOLVE"; then
+    pass "the preflight runs in a function-clean child"
+  else
+    fail "the preflight no longer runs under env -i /bin/bash -p — an inherited BASH_FUNC_* could run inside the check that authorises the dispatch"
+  fi
+
+  # The PARENT side must be shadow-proof too, or an exported BASH_FUNC_return%%
+  # turns a refusal into a pass before the clean child's verdict is ever read.
+  # Keywords (`[[`, `&&`, `if`) cannot be function names and assignments are not
+  # command lookups, so the parent may use only those plus absolute paths.
+  # Everything between the function header and the heredoc, and everything after
+  # the heredoc terminator, is parent-side; the child body legitimately uses
+  # `return` and runs where nothing can shadow it.
+  _parent="$(/usr/bin/awk '
+    /^grok_sandbox_preflight\(\) \{/ { inp = 1 }
+    /^PREFLIGHT_CHILD$/                  { inh = 0; next }
+    inp && !inh                          { print }
+    inp && /<<.PREFLIGHT_CHILD./         { inh = 1 }
+    inp && !inh && /^\}/                  { exit }
+  ' "$RESOLVE" | /usr/bin/grep -v '^[[:space:]]*#')"
+  if [[ -z "$_parent" ]]; then
+    fail "could not slice the parent side of grok_sandbox_preflight — the pattern needs updating"
+  else
+    _bad=""
+    for _w in local return true false eval command builtin unset; do
+      /usr/bin/grep -qE "^[[:space:]]*$_w([[:space:]]|\$)" <<<"$_parent" && _bad="$_bad $_w"
+    done
+    if [[ -z "$_bad" ]]; then
+      pass "the preflight's parent side runs no shadowable command word"
+    else
+      fail "the preflight's parent side runs shadowable builtins:$_bad — an exported BASH_FUNC_* could turn a refusal into a pass"
+    fi
+  fi
+
+  if /usr/bin/grep -q '"\$home/.grok" "\$home/.local/bin"' "$RESOLVE"; then
+    pass "every home-derived PATH entry is checked against the reviewed tree"
+  else
+    fail "only ~/.grok is checked against the reviewed tree — a checkout rooted at ~/.local could supply .local/bin/grok"
+  fi
+
+  # the INVOCATION form, not the mention — the comment above the walk explains
+  # why git is not asked, and would otherwise match
+  if /usr/bin/grep -q '/usr/bin/git rev-parse' "$RESOLVE"; then
+    fail "preflight asks git for the checkout root — GIT_DIR/GIT_WORK_TREE are injectable, so the reviewed tree could nominate its own root"
+  elif /usr/bin/grep -q '\-e "\$walk/.git"' "$RESOLVE"; then
+    pass "containment walks up for the checkout root instead of trusting git env"
+  else
+    fail "containment does not find the checkout root — run from a subdirectory of a checkout rooted at \$HOME, ~/.grok would pass while the branch owns it"
+  fi
+
+  if /usr/bin/grep -q 'resolve_link "\$p/grok"' "$RESOLVE"; then
+    pass "the grok binary is resolved through symlinks before it is trusted"
+  else
+    fail "the grok binary is trusted by path — a trusted-looking entry could be a symlink into the reviewed checkout"
+  fi
+
+  # env execs the FIRST grok on the pinned PATH, so an unsafe first candidate
+  # must fail the check, not be skipped in favour of a safe later one.
+  if /usr/bin/grep -q 'target="\$(resolve_link "\$p/grok")" || exit 1' "$RESOLVE"; then
+    pass "an unsafe first grok candidate fails the preflight instead of being skipped"
+  else
+    fail "the PATH scan continues past an unsafe candidate — it would bless a binary that never runs"
+  fi
+
+  if /usr/bin/grep -q '\[ -L "\$p" \] && return 1' "$RESOLVE"; then
+    pass "an unresolved symlink chain is a failure, not a partial answer"
+  else
+    fail "resolve_link returns a still-symlinked path at its bound — exec would follow the remaining hops elsewhere"
+  fi
+
+  if /usr/bin/grep -q 'command -v grok' "$RESOLVE"; then
+    fail "preflight uses 'command -v grok' — it consults shell functions, so an inherited grok function passes a check that /usr/bin/env then fails with 127"
+  else
+    pass "preflight tests for the grok executable, not a resolvable name"
+  fi
+
+  if /usr/bin/grep -q 'root="\$(pwd -P)"' "$RESOLVE"; then
+    pass "the child takes the reviewed-tree root from its own cwd, not a passed \$PWD"
+  else
+    fail "the child derives the root from a passed value — \$PWD is reassignable, so it could be forged"
+  fi
+
+  if /usr/bin/grep -q 'pwd -P' "$RESOLVE"; then
+    pass "preflight refuses a ~/.grok that sits inside the reviewed tree"
+  else
+    fail "preflight does not compare RESOLVED paths — a checkout reached through a symlink could still contain ~/.grok"
+  fi
+
+  if /usr/bin/grep -q '\-x "\$p/grok"' "$RESOLVE"; then
+    pass "preflight refuses when no grok EXECUTABLE sits on the pinned PATH"
+  else
+    fail "preflight does not check grok against the pinned PATH — selection and execution could disagree"
+  fi
+
+  if /usr/bin/grep -q '\-L "\$home/.grok" \] && exit 1' "$RESOLVE"; then
     pass "preflight refuses a symlinked ~/.grok directory, not just a symlinked file"
   else
     fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"

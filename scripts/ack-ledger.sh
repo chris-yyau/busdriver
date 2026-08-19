@@ -407,6 +407,45 @@ _body_is_rate_limit_notice() {
     && printf '%s' "$1" | grep -qiE "$_NOTICE_QUOTA_RE"
 }
 
+# _STATUS_NONREVIEW_RE / _status_desc_is_non_review <description> — the STATUS
+# channel twin of _body_is_rate_limit_notice above.
+#
+# #353 identified the Tier-E success fail-open and guarded it, but scoped detection
+# to the bot's issue-COMMENT body. A bot can announce the same outcome in the commit
+# status DESCRIPTION instead, posting no comment at all — observed live on
+# chris-yyau/busdriver PR #709, HEAD f11de70b: context=CodeRabbit, state=success,
+# description="Review rate limited", target_url=null, no check-run, and a single
+# walkthrough comment that matches no notice regex. Both comment-scoped predicates
+# returned false and Tier E HEAD-acked a review that never ran, so the merge gate
+# recorded the bot as having reviewed the final head when it had not.
+#
+# `success` on this channel means "the run terminated", NOT "the code was reviewed".
+# Only descriptions that AFFIRMATIVELY report non-performance are demoted here.
+#
+# RESIDUAL, deliberate: an EMPTY description still acks. Absence of a message is not
+# evidence the review did not happen, and blocking on it would invent an over-block
+# class no observation supports. This patch closes the demonstrated fail-open and
+# nothing wider.
+# Every alternative is a PHRASE that affirmatively reports non-performance. Bare
+# topic words (`quota`, `capacity`, `skipped`) are deliberately NOT alternatives:
+# they also occur in descriptions of reviews that DID run — "Review completed
+# within quota", "Capacity analysis completed", "Review completed; generated files
+# skipped" — and matching those would demote a genuine ack, turning a fail-open
+# into an equally wrong over-block. Each is pinned as a positive case in
+# tests/test-ack-ledger-status-description.sh.
+_STATUS_NONREVIEW_RE='rate.?limited|rate.?limit (exceeded|reached|hit)|review limit reached|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|couldn.t start|could not start|cannot start|unable to (start|review)|review not started|review skipped|skipping review'
+
+_status_desc_is_non_review() {
+  local rc
+  [[ -n "$1" ]] || return 1
+  printf '%s' "$1" | grep -qiE "$_STATUS_NONREVIEW_RE"; rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  [[ "$rc" -eq 1 ]] && return 1
+  # grep itself failed (rc>=2). We cannot prove the status is a real verdict, and
+  # this sits on a merge gate — fail CLOSED, matching the file's invariant.
+  return 0
+}
+
 # _rate_limit_anchor — the freshness anchor, or empty when neither signal exists.
 _rate_limit_anchor() {
   local anchor
@@ -1084,8 +1123,18 @@ case "$login" in
   coderabbitai) status_context="CodeRabbit" ;;
 esac
 if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
-  status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
-    '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last | .state // empty' 2>/dev/null || echo "")
+  # State AND description are read from ONE jq pass so they are guaranteed to
+  # describe the SAME status object. Two passes would each re-select `last`
+  # independently; deterministic today, but a desynced pair here would pair a
+  # success state with some other object's description, which is precisely the
+  # confusion this guard exists to remove. Description newlines are collapsed to
+  # spaces so the value survives as a single shell line (the regex below is
+  # phrase-based, so the collapse cannot mask a match).
+  _status_pair=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
+    '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last
+     | "\(.state // "")\n\((.description // "") | gsub("[\r\n]+"; " "))"' 2>/dev/null || printf '\n')
+  status_state=$(printf '%s\n' "$_status_pair" | sed -n '1p')
+  status_desc=$(printf '%s\n' "$_status_pair" | sed -n '2p')
   # Rate-limit exemption is checked BEFORE either terminal, so it covers every
   # state the bot can report (#294 = non-success, #353 = success).
   #
@@ -1143,7 +1192,22 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
     elif [[ "$status_state" == "success" ]]; then
       # Anchorless notice: freshness unprovable, so a review is unprovable too (#353).
       if _unprovable_rate_limit_notice; then echo "stale"; exit 0; fi
-      emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
+      # Same exemption, STATUS-DESCRIPTION channel (PR #709 post-mortem). The
+      # terminal MIRRORS the comment-notice arm above and must not be inverted:
+      #   ever_approved==0 -> `none` (the bot contributed nothing; `stale` would
+      #     dead-end the PR on a review that cannot arrive until quota resets, the
+      #     #294 failure), otherwise -> `stale` (a bot that reviewed an earlier
+      #     commit and was then capacity-stopped on HEAD has NOT reviewed HEAD, so
+      #     its earlier findings must keep blocking).
+      if _status_desc_is_non_review "$status_desc"; then
+        if [[ "$ever_approved" -eq 0 ]]; then
+          : # fall through -> Case 1b downgrade block emits `none`
+        else
+          echo "stale"; exit 0
+        fi
+      else
+        emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
+      fi
     else
       echo "stale"; exit 0
     fi

@@ -301,7 +301,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" post-merge-confirm-bypass.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ],
         "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge"

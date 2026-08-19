@@ -1445,21 +1445,15 @@ EOF
     exit 1
   fi
 
-  # Freshness check on Claude output (Critic #2)
-  # Decision 7 (ADR 0003): the verdict must come from the CURRENT run, with a
-  # matching spec_hash. The pre-v3.3 branch accepted a different-run verdict on
-  # spec_hash match alone — but reviewer artifacts re-roll every full run, so
-  # that let a verdict pass judgment on reviews it never saw. --claude-only
-  # recovers RUN_ID from the reviewer artifacts on disk, so the legitimate
-  # pre-written-verdict flow still matches; anything else is stale (fail-closed,
-  # including missing metadata — the old -n guard let run_id-less verdicts pass).
-  if ! FRESHNESS_REASON=$(validate_claude_verdict_freshness "$CLAUDE_OUTPUT_FILE" "$RUN_ID" "$SPEC_HASH" 2>&1); then
-    log_error "STALE CLAUDE OUTPUT: $FRESHNESS_REASON"
-    log_error "Re-dispatch the arbiter against the current validation prompt, then re-run with --claude-only."
-    mark_review_complete "stale_claude_output"
-    exit 1
-  fi
-
+  # MOVED AHEAD OF THE FRESHNESS/JSON GATES (#656, Codex review on bceb00e7). Every
+  # exit between here and the verdict classification is fail-CLOSED and takes the
+  # script down: the freshness check below (`stale_claude_output`), validate_json_file
+  # (`invalid_claude_output`), and the countability guard (`uncountable_claude_output`).
+  # While this block sat AFTER them, a truncated or run_id-less claude.json exited at
+  # the freshness check and left the prior PASS standing in the document — the exact
+  # fail-open this block exists to close, reachable through the guards added to close it.
+  # The trigger is "a verdict FILE is present" (checked just above), not "the verdict
+  # parsed": a round that has a verdict to judge has already superseded the last one.
   # HOISTED AGAIN (#656): these are now needed by the intake refusal a few lines
   # below (an uncountable verdict must be able to downgrade a stale PASS before it
   # exits), not only by Phase 5. Pure move — they depend only on DESIGN_FILE.
@@ -1548,6 +1542,21 @@ EOF
       log_error "  honored whatever this run concludes. Fix the write error, then re-run."
       exit 1
     fi
+  fi
+
+  # Freshness check on Claude output (Critic #2)
+  # Decision 7 (ADR 0003): the verdict must come from the CURRENT run, with a
+  # matching spec_hash. The pre-v3.3 branch accepted a different-run verdict on
+  # spec_hash match alone — but reviewer artifacts re-roll every full run, so
+  # that let a verdict pass judgment on reviews it never saw. --claude-only
+  # recovers RUN_ID from the reviewer artifacts on disk, so the legitimate
+  # pre-written-verdict flow still matches; anything else is stale (fail-closed,
+  # including missing metadata — the old -n guard let run_id-less verdicts pass).
+  if ! FRESHNESS_REASON=$(validate_claude_verdict_freshness "$CLAUDE_OUTPUT_FILE" "$RUN_ID" "$SPEC_HASH" 2>&1); then
+    log_error "STALE CLAUDE OUTPUT: $FRESHNESS_REASON"
+    log_error "Re-dispatch the arbiter against the current validation prompt, then re-run with --claude-only."
+    mark_review_complete "stale_claude_output"
+    exit 1
   fi
 
   # Validate Claude JSON before parsing (fail-closed)

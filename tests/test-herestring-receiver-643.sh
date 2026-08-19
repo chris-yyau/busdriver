@@ -141,6 +141,158 @@ assert_block "b\\a\\s\\h <<< '$HELPER'"        "escaped command word still resol
 #     length — so the producer tests an endswith over the names, and this mirrors it.
 #     The pipe spelling of this already blocked; the transports must not diverge.
 assert_block "env -iSbash <<< '$HELPER'"       "attached option bundle resolves to a shell"
+# (10) COMPOUND COMMAND. A redirection can attach to a whole compound, so the shell that
+#      consumes stdin sits in an EARLIER segment and the segment holding `<<<` has only
+#      `fi`. When nothing but reserved syntax is left, this segment cannot answer the
+#      question, so the scan widens to every segment rather than guessing.
+assert_block "if true; then sh; fi <<< '$HELPER'" "here-string on a compound command"
+assert_block "while :; do bash -s; done <<< '$HELPER'" "compound loop with a shell inside"
+# ...and the compound widening is GATED by the same receiver test, not unconditional: an
+# unconditional widen blocked a compound whose enclosed command only reads the payload.
+# The gate uses the redirection-aware walk over every segment, because a raw split would
+# include the here-string PAYLOAD and a payload naming an interpreter made this look like
+# it had a shell receiver.
+assert_ok "if true; then cat; fi <<< '$HELPER'" "compound whose enclosed command is data-only"
+# ...and that gate is the SAME predicate the per-segment walk uses, not a second copy of
+# it. It was a second copy, and the copies had diverged: the compound one tested only
+# staged shell names and launchers, so every receiver shape recognised ONLY by one of the
+# other disjuncts executed the payload from inside a compound while classifying as a read.
+# All four allowed before the predicate was unified; each is pinned here because a future
+# narrowing of either call site reopens exactly one of them and nothing else would notice.
+assert_block "if true; then 'b''a''s''h'; fi <<< '$HELPER'" \
+    "compound + fragmented shell name (was OK: compound copy had no fragment test)"
+assert_block "if true; then env -iSbash; fi <<< '$HELPER'" \
+    "compound + attached option bundle (was OK: compound copy had no bundle test)"
+assert_block "if true; then \$SHELL; fi <<< '$HELPER'" \
+    "compound + unresolved command word (was OK: compound copy had no unresolved test)"
+# Command position is per-SEGMENT, and the compound caller supplies its own. Deriving it
+# from the flattened word list cannot work: _peel_wrappers returns the first EXECUTING
+# word of the whole compound, which here is `true`, so the `.` that sources the payload
+# was never in command position and this allowed.
+assert_block "if true; then . /dev/stdin; fi <<< '$HELPER'" \
+    "compound + command-position dot (was OK: flattened peel resolved to \`true\`)"
+assert_block "while :; do source /dev/stdin; done <<< '$HELPER'" \
+    "compound loop + command-position source"
+# ...and command position is still POSITION, in the compound path too: the bare word
+# `source` as a grep PATTERN is not a receiver. An any-word test for `.`/`source` would
+# be the simpler unification and is why they are absent from _SHELL_NAMES to begin with.
+assert_ok "if true; then grep source f; fi <<< '$HELPER'" \
+    "compound whose data-only command merely names \`source\`"
+# RESIDUAL, and an over-block: the widening scans EVERY segment, including commands that
+# precede the compound the here-string is attached to, so a shell named in front refuses a
+# data-only read. Limiting the scan to the owning compound's span is more precise and was
+# BUILT AND MEASURED before being reverted — it paid for that precision in both of the
+# failure classes this module refuses, which is why the over-block is the shipped choice:
+#   FAIL-OPEN. Deciding structure from words needs COMMAND POSITION, which this walk has
+#     none of. In `if sh; then echo if; fi <<< '<HELPER>'` the ARGUMENT `if` pushed a false
+#     opener, `fi` popped it, and the span closed short of the `sh` that runs the payload.
+#   QUADRATIC. Nested compounds make spans grow with depth: 150 nested took 1.05s and 300
+#     took 3.36s, heading through the 5s hook timeout — which writes no decision and so
+#     reads as ALLOW, making slowness itself the fail-open.
+# Both shapes are pinned below, so a future span attempt fails these instead of shipping.
+assert_block "echo sh; if true; then cat; fi <<< '$HELPER'" \
+    "residual over-block: a shell named before the compound is still in scope"
+assert_block "if sh; then echo if; fi <<< '$HELPER'" \
+    "a keyword used as an ARGUMENT does not shrink the scan (span attempt failed open here)"
+assert_block "if true; then a; sh; fi <<< '$HELPER'" \
+    "a reserved-free segment inside a compound is in scope"
+assert_block "case x in x) sh;; esac <<< '$HELPER'" \
+    "a case pattern terminator does not hide the receiver"
+# PARENTHESISED RECEIVER. Parens arrive in the OPERATOR, not the segment text, so the
+# segment holding `<<<` has NO words at all. Requiring a nonempty word list before widening
+# was exactly that bypass — the subshell spelling executed the payload and returned OK.
+assert_block "(sh) <<< '$HELPER'"              "parenthesised receiver widens like a compound"
+assert_ok "(cat) <<< '$HELPER'"                "...and a parenthesised data-only command still reads"
+# LEADING FILE DESCRIPTOR. `_REDIR_PREFIX_RE` accepts `0<<<` whole, but shlex splits the
+# digits off, so the `0` stayed behind as a command word: the segment stopped being
+# reserved-only, the compound never widened, and the payload reached the shell as OK.
+assert_block "if true; then sh; fi 0<<< '$HELPER'" \
+    "a file descriptor prefix does not leave a stray command word"
+# ...and a DETACHED `0` is an ordinary argument, not part of a redirection.
+assert_ok "cat 0 <<< '$HELPER'"                "a detached digit is an argument, not a descriptor"
+# `time` IS PEELED IN COMMAND POSITION. It is a shell keyword, so it is in neither the
+# wrapper set nor the reserved set, and the peel returned `time` itself as the command
+# word — `.` and `source` are recognised in command position ONLY, so both spellings
+# sourced the payload and classified as a read.
+assert_block "time . /dev/stdin <<< '$HELPER'" "\`time\` does not hide a dot in command position"
+assert_block "if true; then time source /dev/stdin; fi <<< '$HELPER'" \
+    "...including inside a compound"
+# ...and the peel is `_strip_time_prefix`, the one the stdin-producer callers already use
+# (#562), not a `!= "time"` filter. That filter threw away a distinction the peel makes:
+# `/usr/bin/time` is an external program that cannot source anything, so removing it would
+# promote the `.` behind it to command position and refuse an ordinary read.
+assert_ok "/usr/bin/time . /dev/stdin <<< '$HELPER'" \
+    "external /usr/bin/time is not the keyword, and does not promote the dot"
+# (11) ADJACENT FRAGMENTS IN THE COMMAND WORD. bash concatenates `'b''a''s''h'` into
+#      `bash` while shlex emits four tokens, so per-token squeezing matched nothing.
+#      The words are also tested JOINED. Distinct from the `b'a's'h'` case above, which
+#      shlex happens to keep as ONE token — that one passed while this one did not.
+assert_block "'b''a''s''h' <<< '$HELPER'"      "separately quoted letters concatenate into a shell name"
+# The joined-word test compares for EQUALITY, not substring. A substring test was tried
+# and broke the data contract outright: _SHELL_NAMES holds two-letter names (`nu`, `ed`,
+# `ex`, `sh`), so the `nu` inside `null` made an ordinary read block.
+assert_ok "cat /dev/null <<< '$HELPER'"        "a short shell name inside another word is not a receiver"
+# ...and the join must be over CONTIGUOUS RUNS, not the whole word list: joining
+# everything only recognises a fragmented shell with no arguments (`'b''a''s''h' -s`
+# joins to `bash-s` and matched nothing), and a fragmented name need not be first.
+assert_block "'b''a''s''h' -s <<< '$HELPER'"   "fragmented shell name with an argument"
+assert_block "env 'b''a''s''h' <<< '$HELPER'"  "fragmented shell name after a wrapper"
+# ...and adjacency comes from the RAW TEXT, not from a run of shlex tokens. Two attempts to
+# infer it from the token list alone failed in OPPOSITE directions, and both are pinned
+# here because either one is reintroduced by "simplifying" the walk back onto tokens.
+#   A CAPPED RUN WAS THE BYPASS. Empty quoted fragments are free padding and the caller
+#   chooses how many, so any fixed window is a spelling instruction: at a 10-token cap,
+#   twelve `''` between `'s'` and `'h'` pushed the `h` out of every window and the
+#   here-string ran a shell while the classifier returned OK. Raising the cap only moves
+#   it, which is why the cap is gone rather than larger — 40 is here to say so.
+# Built with a loop rather than `printf ... $(seq ...)`: the nested substitution masks
+# seq's return value (SC2312), and this file is shellcheck-clean by policy.
+_pad12=""; _pad40=""
+for _n in $(seq 1 40); do
+    _pad40="$_pad40''"
+    if [[ $_n -le 12 ]]; then _pad12="$_pad12''"; fi
+done
+assert_block "'s'${_pad12}'h' <<< '$HELPER'" \
+    "empty fragments do not push a shell name out of reach (was OK at a 10-token cap)"
+assert_block "'s'${_pad40}'h' <<< '$HELPER'" \
+    "...and no larger cap is hiding behind it either"
+#   AN UNCAPPED RUN OVER-BLOCKS. Joining every neighbouring token invents words bash never
+#   forms, because whitespace is exactly what the token list discarded.
+assert_ok "cat ba s h <<< '$HELPER'" \
+    "separate arguments are not fragments of one command word"
+
+# PERFORMANCE IS A CORRECTNESS PROPERTY HERE: the hook's timeout writes no decision, which
+# reads as ALLOW, so a slow scanner is itself a fail-open. Widening on a compound command
+# once appended the whole command PER reserved-only segment — quadratic, measured at 8.88s
+# for 1,000 compounds against a 5s timeout. It now widens once and stops.
+_big=""
+# `cat`, NOT `sh`: the positive path stops at the first receiver it finds, so a
+# benchmark built on `sh` exercises one scan and misses the slow path entirely.
+# The NEGATIVE path is the quadratic one — it was ~23s before the answer was
+# memoized. An earlier version of this fixture used `sh` and was inadequate.
+for _i in $(seq 1 1000); do _big="$_big; if true; then cat; fi <<< 'x'"; done
+_t0=$(date +%s)
+verdict "${_big#; }" >/dev/null 2>&1
+_t1=$(date +%s)
+if [[ $((_t1 - _t0)) -lt 5 ]]; then
+    ok "1000 data-only compound here-strings classify in under 5s ($((_t1 - _t0))s; timeout reads as ALLOW)"
+else
+    no "1000 data-only compound here-strings classify in under 5s" "took $((_t1 - _t0))s — past the hook timeout, which allows"
+fi
+# NESTED compounds, not just disjoint ones. The disjoint benchmark above is answered once
+# and stops; nesting is the shape that grew with depth when each closer rebuilt its own
+# span (300 nested took 3.36s). Whole-command widening is answered once for any nesting.
+_nest=""
+for _i in $(seq 1 300); do _nest="$_nest; if true; then cat; fi <<< 'x'"; done
+for _i in $(seq 1 300); do _nest="if true; then cat; ${_nest#; }; fi <<< 'x'"; done
+_t0=$(date +%s)
+verdict "$_nest" >/dev/null 2>&1
+_t1=$(date +%s)
+if [[ $((_t1 - _t0)) -lt 5 ]]; then
+    ok "300 NESTED data-only compounds classify in under 5s ($((_t1 - _t0))s)"
+else
+    no "300 NESTED data-only compounds classify in under 5s" "took $((_t1 - _t0))s — past the hook timeout, which allows"
+fi
 # (9) LINE CONTINUATION. bash removes an unquoted backslash-newline BEFORE it recognises
 #     operators, so both the operator and the receiver name can be split across lines and
 #     lexed as unrelated fragments. Raised by the deep PR-mode pass.

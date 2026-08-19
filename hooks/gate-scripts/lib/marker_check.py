@@ -2086,8 +2086,8 @@ def _walk_words(text):
     # unified receiver predicate exists to stop.
     pieces = _shell_pieces(text)
     if pieces is None:
-        return [], [], False
-    words, dwords, skip_next = [], [], False
+        return [], [], [], False
+    words, dwords, raws, skip_next = [], [], [], False
     for is_op, t, _i in pieces:
         # Redirections are stepped over while locating command words, because bash accepts
         # them BEFORE the command: `<<<'<helper>' sh` is a real spelling, and reading
@@ -2132,7 +2132,8 @@ def _walk_words(text):
             # -- and stripping the decoded `\` collapsed it to `bash` and refused a read.
             dec = _decode_escapes(t).replace("'", "").replace('"', "")
         dwords.append(dec)
-    return words, dwords, True
+        raws.append(t)
+    return words, dwords, raws, True
 
 
 def _herestring_words(text):
@@ -2144,14 +2145,14 @@ def _herestring_words(text):
     # quoted operator is inside a word piece and never becomes an operator piece.
     pieces = _shell_pieces(text)
     if pieces is None:
-        return False, [], [], False
+        return False, [], [], [], False
     if not any(op and "<<<" in txt for op, txt, _ in pieces):
-        return False, [], [], True
-    words, extras, ok = _walk_words(text)
-    return True, words, extras, ok
+        return False, [], [], [], True
+    words, dwords, raws, ok = _walk_words(text)
+    return True, words, dwords, raws, ok
 
 
-def _cmd_position(words):
+def _cmd_position(words, raws=None):
     # The word in COMMAND position: wrappers and reserved syntax peeled, falling back to
     # the raw first word when nothing survives the peel. One copy, because the compound
     # caller needs the same derivation per segment and a second copy of a one-line rule
@@ -2173,16 +2174,33 @@ def _cmd_position(words):
     # it: a compound arrives as `then time source /dev/stdin`, which the helper's own
     # not-index-0 rule exists for. Whether the word is the KEYWORD or a path such as
     # `/usr/bin/time` stays the helper's call.
+    # ...and only when the word is BARE. Bash recognises a reserved word before quote
+    # removal, so `'time'` and `t\ime` are the external program, not the keyword -- the dot
+    # behind them is an argument and sources nothing. The walk has already squeezed quotes
+    # and backslashes out of `words`, so the raw piece is what says which it was.
+    def _bare(k):
+        # Quote removal happens AFTER bash decides grammar, and the walk has already
+        # squeezed quotes and backslashes out of `words`, so the raw piece is the only
+        # thing left that says whether a word was written bare.
+        return raws is None or not any(c in raws[k] for c in ("'", '"', "\\"))
+
+    # The reserved-word skip needs the same test as the `time` peel below it. `'then'` is
+    # an ordinary external command, not shell syntax, so skipping it walked past a real
+    # command word, stripped the `time` behind it, and promoted a `.` that sources nothing.
+    # EXACT words, not basenames: reserved words are syntax the shell recognises literally,
+    # so `./then` is a path to an executable named `then` and `./time` is a program, not
+    # the keyword. Matching on the basename treated both as grammar, walked past a real
+    # command word, and promoted a `.` that sources nothing.
     _j = 0
-    while _j < len(words) and _bn(words[_j]) in _RESERVED_SH:
+    while _j < len(words) and words[_j] in _RESERVED_SH and _bare(_j):
         _j += 1
     _w = words
-    if _j < len(words) and _bn(words[_j]) == "time":
+    if _j < len(words) and words[_j] == "time" and _bare(_j):
         _w = words[:_j] + _strip_time_prefix(words[_j:])
     return _peel_wrappers(_w) or (_w[0] if _w else None)
 
 
-def _cmd_candidates(words, dwords):
+def _cmd_candidates(words, dwords, raws=None):
     # The command-position word, in both spellings. POSITION is decided on the RAW words
     # and only the NAME is compared decoded, because bash resolves shell grammar BEFORE it
     # expands: `$'\x74ime'` is not the `time` keyword, it is a command whose name happens
@@ -2191,7 +2209,7 @@ def _cmd_candidates(words, dwords):
     # a data-only read. The index is recovered by lookup rather than threaded through --
     # `_cmd_position` always returns an element of `words`, and equal words decode equally,
     # so a duplicate resolving to an earlier index yields the same candidate.
-    w0 = _cmd_position(words)
+    w0 = _cmd_position(words, raws)
     if w0 is None:
         return []
     try:
@@ -2341,7 +2359,7 @@ def _herestring_shell_payloads(pairs):
         # segment ahead of the cheap prefilter below.
         if "<<<" not in seg:
             continue
-        _has_hs, cw_words, _dwords, _ok = _herestring_words(seg)
+        _has_hs, cw_words, _dwords, _raws, _ok = _herestring_words(seg)
         _extras = [d for w, d in zip(cw_words, _dwords) if d != w]
         if not _ok:
             # FAIL CLOSED, and accept the over-block. Provenance is unknown here, and
@@ -2416,12 +2434,12 @@ def _herestring_shell_payloads(pairs):
                     # `_walk_words` regardless of whether THIS segment holds the operator:
                     # the receiver is in a different segment, which is the whole reason
                     # the scan widened.
-                    _segw, _segd, _ok2 = _walk_words(_s2)
+                    _segw, _segd, _segr, _ok2 = _walk_words(_s2)
                     if not _ok2:
                         _allw, _allcw = ["sh"], []   # unlexable inside: fail closed
                         break
                     _allw.extend(_segw + [d for w, d in zip(_segw, _segd) if d != w])
-                    _allcw.extend(_cmd_candidates(_segw, _segd))
+                    _allcw.extend(_cmd_candidates(_segw, _segd, _segr))
                 _compound_receiver = _herestring_receiver(_allw, _alltext, _allcw)
             if not _compound_receiver:
                 continue
@@ -2433,7 +2451,7 @@ def _herestring_shell_payloads(pairs):
             out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
             break
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
-                                _cmd_candidates(cw_words, _dwords)):
+                                _cmd_candidates(cw_words, _dwords, _raws)):
             out.append(seg)
     return out
 

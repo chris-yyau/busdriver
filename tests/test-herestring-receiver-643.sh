@@ -209,11 +209,50 @@ assert_ok "grep source f <<< '$HELPER'"        "the bare word source as a patter
 # shell grammar before it expands, so `$'\x74ime'` is NOT the `time` keyword — it is a
 # command whose name happens to expand to `time`. Deriving command position by running the
 # peel over the decoded list gave decoded words grammar semantics and would strip it.
-# This spelling over-blocks for an OLDER reason, and is pinned as such rather than as
-# coverage of the peel: it measures BLOCK at 46f58a65 as well, which predates any decoding
-# in this walk, so the ANSI-C machinery elsewhere in the module is what reaches it.
-assert_block "\$'\\x74ime' . /dev/stdin <<< '$HELPER'" \
-    "pre-existing over-block: an encoded time reaches the module's older ANSI-C handling"
+# The peel is also gated on the word being BARE, which is the same rule from the other
+# side: bash recognises a reserved word BEFORE quote removal, so a quoted or escaped
+# spelling is the external program and the dot behind it is just its argument.
+assert_ok "\$'\\x74ime' . /dev/stdin <<< '$HELPER'" "an ANSI-C spelling of time is not the keyword"
+assert_ok "'time' . /dev/stdin <<< '$HELPER'"  "...nor a quoted one"
+assert_ok "t\\ime . /dev/stdin <<< '$HELPER'"   "...nor an escaped one"
+assert_block "time . /dev/stdin <<< '$HELPER'" "...but the bare keyword still peels"
+# ...and a LINE CONTINUATION inside the keyword is not "a backslash in the raw word":
+# `_norm_for_scan` removes backslash-newline before this walk ever sees it, so the word
+# arrives bare and peels. Pinned because the bare-word rule reads like it would reject it.
+assert_block "ti\\
+me . /dev/stdin <<< '$HELPER'"                 "a line continuation inside the keyword still peels"
+# PROPERTY over the lexical distinctions command position depends on. Bash decides shell
+# grammar BEFORE quote removal and BEFORE expansion, so only a BARE spelling in
+# pipeline-prefix position is the keyword — every other spelling is an ordinary command
+# whose argument happens to be a dot.
+_t_n=0
+for _pre in "" "{ " "if true; then "; do
+    _suf=""
+    [[ "$_pre" == "{ " ]] && _suf="; }"
+    [[ "$_pre" == "if true; then " ]] && _suf="; fi"
+    _t_n=$((_t_n + 1))
+    _got=$(verdict "${_pre}time . /dev/stdin${_suf} <<< '$HELPER'")
+    if [[ "$_got" != BLOCK_* ]]; then
+        no "property: a bare time in keyword position always peels" "${_pre}time — got=${_got:-<empty>}"
+        _t_n=-1; break
+    fi
+done
+if [[ $_t_n -gt 0 ]]; then
+    ok "property: a bare time in keyword position always peels ($_t_n)"
+fi
+_nt_n=0
+for _spell in "'time'" "t\\ime" "\$'\\x74ime'" "/usr/bin/time" "env time" "command time" \
+              "'then' time" "./then time" "./time"; do
+    _nt_n=$((_nt_n + 1))
+    _got=$(verdict "$_spell . /dev/stdin <<< '$HELPER'")
+    if [[ "$_got" != "OK|" ]]; then
+        no "property: every non-keyword spelling of time leaves the dot alone" "$_spell — got=${_got:-<empty>}"
+        _nt_n=-1; break
+    fi
+done
+if [[ $_nt_n -gt 0 ]]; then
+    ok "property: every non-keyword spelling of time leaves the dot alone ($_nt_n)"
+fi
 # The peel itself is unaffected either way — an unrelated name in the same position does
 # not promote the dot behind it.
 assert_ok "notatime . /dev/stdin <<< '$HELPER'" "an ordinary name does not promote the dot behind it"

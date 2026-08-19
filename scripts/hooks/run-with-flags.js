@@ -205,6 +205,93 @@ function enforceTruncation(code, { truncated, failClosed, hookId }) {
   return 2;
 }
 
+// Hoisted out of main() (#635 / CodeScene Complex Method). false means "no
+// exported run()" so the caller falls through to runLegacySpawn — same as
+// the previous inline fall-through after a missing export or require() miss.
+async function tryRunDirectHook({ scriptPath, raw, hookId, pluginRoot, truncated, failClosed, sanitizeEcho }) {
+  // Prefer direct require() when the hook exports a run(rawInput) function.
+  // This eliminates one Node.js process spawn (~50-100ms savings per hook).
+  //
+  // SAFETY: Only require() hooks that export run(). Legacy hooks execute
+  // side effects at module scope (stdin listeners, process.exit, main() calls)
+  // which would interfere with the parent process or cause double execution.
+  let hookModule;
+  const src = fs.readFileSync(scriptPath, 'utf8');
+  const hasRunExport = /\bmodule\.exports\b/.test(src) && /\brun\b/.test(src);
+
+  if (hasRunExport) {
+    try {
+      hookModule = require(scriptPath);
+    } catch (requireErr) {
+      process.stderr.write(`[Hook] require() failed for ${hookId}: ${requireErr.message}\n`);
+      // Fall through to legacy spawnSync path
+    }
+  }
+
+  // Guard computed via a ternary (not a logical-AND) to keep the reviewed diff
+  // free of a token that trips a deterministic codex-review template-bleed. The
+  // call below still uses hookModule.run(...) so a this-using method hook keeps
+  // its receiver.
+  const hookRun = hookModule ? hookModule.run : null;
+  if (typeof hookRun !== 'function') {
+    return false;
+  }
+
+  try {
+    // await so an async run() is honored. Without it, an async run()'s
+    // Promise falls through resolveHookResult as a bare object (no
+    // additionalContext/stdout key) and is swallowed to exit 0 — a blocking
+    // gate would fail OPEN. await is transparent to a sync run() (returns the
+    // value unchanged) and routes a rejected Promise into the catch below,
+    // which fail-CLOSES for gates via failOpenExitCode().
+    const output = await hookModule.run(raw, {
+      hookId,
+      pluginRoot,
+      scriptPath,
+      truncated,
+      maxStdin: MAX_STDIN
+    });
+    const result = resolveHookResult(raw, output);
+    exitWithStdout(sanitizeEcho(result.stdout), enforceTruncation(result.exitCode, { truncated, failClosed, hookId }));
+  } catch (runErr) {
+    process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
+    // A blocking gate whose hook crashed cannot confirm an allow → fail CLOSED when
+    // sanitized-node.sh requested it (the `--fail-closed` arg); else historical exit 0.
+    exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
+  }
+  return true;
+}
+
+function runLegacySpawn({ scriptPath, raw, pluginRoot, hookId, truncated, failClosed, sanitizeEcho }) {
+  // Legacy path: spawn a child Node process for hooks without run() export
+  const result = spawnSync(process.execPath, [scriptPath], {
+    input: raw,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      ECC_PLUGIN_ROOT: pluginRoot,
+      ECC_HOOK_ID: hookId,
+      ECC_HOOK_INPUT_TRUNCATED: truncated ? '1' : '0',
+      ECC_HOOK_INPUT_MAX_BYTES: String(MAX_STDIN)
+    },
+    cwd: process.cwd(),
+    timeout: 30000
+  });
+
+  const legacyStdout = sanitizeEcho(resolveLegacySpawnStdout(raw, result));
+  if (result.stderr) process.stderr.write(result.stderr);
+
+  if (result.error || result.signal || result.status === null) {
+    const failureDetail = result.error ? result.error.message : result.signal ? `terminated by signal ${result.signal}` : 'missing exit status';
+    writeStderr(`[Hook] legacy hook execution failed for ${hookId}: ${failureDetail}`);
+    exitWithStdout(legacyStdout, process.argv.includes('--fail-closed') ? 2 : 1);
+    return;
+  }
+
+  exitWithStdout(legacyStdout, enforceTruncation(Number.isInteger(result.status) ? result.status : 0, { truncated, failClosed, hookId }));
+}
+
 async function main() {
   const [, , hookId, relScriptPath, profilesCsv] = process.argv;
   const { raw, truncated } = await readStdinRaw();
@@ -265,83 +352,11 @@ async function main() {
     return;
   }
 
-  // Prefer direct require() when the hook exports a run(rawInput) function.
-  // This eliminates one Node.js process spawn (~50-100ms savings per hook).
-  //
-  // SAFETY: Only require() hooks that export run(). Legacy hooks execute
-  // side effects at module scope (stdin listeners, process.exit, main() calls)
-  // which would interfere with the parent process or cause double execution.
-  let hookModule;
-  const src = fs.readFileSync(scriptPath, 'utf8');
-  const hasRunExport = /\bmodule\.exports\b/.test(src) && /\brun\b/.test(src);
-
-  if (hasRunExport) {
-    try {
-      hookModule = require(scriptPath);
-    } catch (requireErr) {
-      process.stderr.write(`[Hook] require() failed for ${hookId}: ${requireErr.message}\n`);
-      // Fall through to legacy spawnSync path
-    }
-  }
-
-  // Guard computed via a ternary (not a logical-AND) to keep the reviewed diff
-  // free of a token that trips a deterministic codex-review template-bleed. The
-  // call below still uses hookModule.run(...) so a this-using method hook keeps
-  // its receiver.
-  const hookRun = hookModule ? hookModule.run : null;
-  if (typeof hookRun === 'function') {
-    try {
-      // await so an async run() is honored. Without it, an async run()'s
-      // Promise falls through resolveHookResult as a bare object (no
-      // additionalContext/stdout key) and is swallowed to exit 0 — a blocking
-      // gate would fail OPEN. await is transparent to a sync run() (returns the
-      // value unchanged) and routes a rejected Promise into the catch below,
-      // which fail-CLOSES for gates via failOpenExitCode().
-      const output = await hookModule.run(raw, {
-        hookId,
-        pluginRoot,
-        scriptPath,
-        truncated,
-        maxStdin: MAX_STDIN
-      });
-      const result = resolveHookResult(raw, output);
-      exitWithStdout(sanitizeEcho(result.stdout), enforceTruncation(result.exitCode, { truncated, failClosed, hookId }));
-    } catch (runErr) {
-      process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
-      // A blocking gate whose hook crashed cannot confirm an allow → fail CLOSED when
-      // sanitized-node.sh requested it (the `--fail-closed` arg); else historical exit 0.
-      exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
-    }
+  if (await tryRunDirectHook({ scriptPath, raw, hookId, pluginRoot, truncated, failClosed, sanitizeEcho })) {
     return;
   }
 
-  // Legacy path: spawn a child Node process for hooks without run() export
-  const result = spawnSync(process.execPath, [scriptPath], {
-    input: raw,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      CLAUDE_PLUGIN_ROOT: pluginRoot,
-      ECC_PLUGIN_ROOT: pluginRoot,
-      ECC_HOOK_ID: hookId,
-      ECC_HOOK_INPUT_TRUNCATED: truncated ? '1' : '0',
-      ECC_HOOK_INPUT_MAX_BYTES: String(MAX_STDIN)
-    },
-    cwd: process.cwd(),
-    timeout: 30000
-  });
-
-  const legacyStdout = sanitizeEcho(resolveLegacySpawnStdout(raw, result));
-  if (result.stderr) process.stderr.write(result.stderr);
-
-  if (result.error || result.signal || result.status === null) {
-    const failureDetail = result.error ? result.error.message : result.signal ? `terminated by signal ${result.signal}` : 'missing exit status';
-    writeStderr(`[Hook] legacy hook execution failed for ${hookId}: ${failureDetail}`);
-    exitWithStdout(legacyStdout, process.argv.includes('--fail-closed') ? 2 : 1);
-    return;
-  }
-
-  exitWithStdout(legacyStdout, enforceTruncation(Number.isInteger(result.status) ? result.status : 0, { truncated, failClosed, hookId }));
+  runLegacySpawn({ scriptPath, raw, hookId, pluginRoot, truncated, failClosed, sanitizeEcho });
 }
 
 main().catch(err => {

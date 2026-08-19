@@ -2152,7 +2152,7 @@ CHILD
             # exported BASH_FUNC_exit%% turns the bail into a fall-through and
             # grok runs with no verified profile. There is nothing to fall
             # through into here.
-            if grok_sandbox_preflight; then
+            if grok_sandbox_preflight ""; then   # "" = no fixture override
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \

@@ -2353,7 +2353,12 @@ execute_review() {
     # is destructive — whole output discarded — so err generous, not tight).
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
-    grok)    if grok_sandbox_preflight; then
+    grok)    # The explicit "" is the no-override argument. The parameter exists
+             # only so tests can point the check at a fixture; passing it
+             # explicitly here says so at the call site, and keeps shellcheck
+             # from reading a parameter no caller ever supplies (SC2119/SC2120)
+             # as a sign the argument was forgotten.
+             if grok_sandbox_preflight ""; then
              echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              # The loader blanks are an assignment PREFIX on the helper call,
              # not argv words: the helper execs "$@", where `LD_PRELOAD=` would

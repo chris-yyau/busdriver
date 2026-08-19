@@ -56,8 +56,8 @@ fail() { printf 'FAIL — %s\n' "$1"; FAILED=1; }
 # would satisfy a `--sandbox strict` assertion on an arm whose actual command
 # had lost the flag. So: start at the command word, stop at the end of the
 # invocation, and assert only on that.
-dispatch_arm="$(awk '/if grok_sandbox_preflight; then/,/^            fi ;;$/' "$DISPATCH")"
-resolve_arm="$(awk '/^    grok\)    if grok_sandbox_preflight; then/,/^             fi ;;$/' "$RESOLVE")"
+dispatch_arm="$(awk '/if grok_sandbox_preflight ""; then/,/^            fi ;;$/' "$DISPATCH")"
+resolve_arm="$(awk '/^    grok\)    # The explicit "" is the no-override/,/^             fi ;;$/' "$RESOLVE")"
 # The invocation alone — starting AFTER the operator-facing warning, which
 # quotes every flag name back and would satisfy any argv assertion on its own.
 dispatch_cmd="$(awk '/^            LD_PRELOAD='"''"' LD_AUDIT=/,/PROMPT_FILE/' "$DISPATCH")"
@@ -103,10 +103,10 @@ for site in dispatch resolve; do
   # puts the invocation AFTER the branch, so a shadowed `return`/`exit` in the
   # bail falls through into it. `if preflight; then dispatch; else …; fi` has
   # nowhere to fall through to.
-  if [[ "$whole" == *"if grok_sandbox_preflight; then"* ]]; then
+  if [[ "$whole" == *"if grok_sandbox_preflight \"\"; then"* ]]; then
     pass "$where: the dispatch sits in the preflight's positive branch"
   else
-    fail "$where: the dispatch is not gated by 'if grok_sandbox_preflight; then' — a shadowed return/exit in a bail branch would fall through into it"
+    fail "$where: the dispatch is not gated by 'if grok_sandbox_preflight \"\"; then' — a shadowed return/exit in a bail branch would fall through into it"
   fi
   if [[ "$whole" == *"if ! grok_sandbox_preflight"* ]]; then
     fail "$where: still uses the bail-then-fall-through shape"

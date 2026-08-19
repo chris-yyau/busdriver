@@ -330,6 +330,60 @@ assert_block "while :; do source /dev/stdin; done <<< '$HELPER'" \
 # be the simpler unification and is why they are absent from _SHELL_NAMES to begin with.
 assert_ok "if true; then grep source f; fi <<< '$HELPER'" \
     "compound whose data-only command merely names \`source\`"
+# A LAUNCHER INSIDE A COMPOUND. The launcher disjunct re-splits the widened text with
+# `_split_simple_commands` and then tests COMMAND POSITION — but the operator run that
+# separated the segments is not carried on the segment text, so joining them with a space
+# erased every boundary. The segments merged into one simple command, its first word won
+# command position, and the launcher behind it was never seen: `if true; then unshare; fi`
+# peeled `if`, stopped at `true`, and returned OK while unshare exec'd a shell on the
+# payload. No other disjunct catches these — launchers are deliberately absent from
+# _SHELL_NAMES, which is exactly why the launcher test exists.
+assert_block "if true; then unshare; fi <<< '$HELPER'" \
+    "a launcher inside a compound is still a receiver"
+assert_block "while :; do unshare; done <<< '$HELPER'" "...in a loop"
+assert_block "(cat; unshare) <<< '$HELPER'"    "...and in a subshell beside a data-only command"
+assert_block "if true; then script -q /dev/null; fi <<< '$HELPER'" \
+    "...an implicit launcher with no shell name anywhere"
+assert_block "if true; then sudo -s; fi <<< '$HELPER'" \
+    "...and sudo shell mode, which is reachable only through the launcher test"
+# The segments are rejoined with `;` because that is the boundary the launcher test needs.
+# It is grammar-BLIND, which is the widening's premise — "ask the same question of the whole
+# command" — and it costs an over-block on a `case` PATTERN, which is a word the shell never
+# executes. Both sides are pinned because they are the same edit: with a space join the
+# pattern read as data (OK) and so did the real launcher one line away (OK, a fail-open).
+# Separating them means knowing a pattern from a command, which is the parser this module
+# refuses; an over-block on a read is the direction it accepts instead.
+assert_block "case x in x) unshare;; esac <<< '$HELPER'" \
+    "a launcher in a case BODY is a receiver (was OK)"
+assert_block "case x in x) cat;; unshare) cat;; esac <<< '$HELPER'" \
+    "...and a launcher-shaped case PATTERN over-blocks with it (accepted; the alternative was the fail-open above)"
+# PROPERTY: launcher detection survives every grammar context the widening rejoins, and a
+# data-only command in the same shape is still a read. Both directions, same shapes.
+_lp_n=0
+for _shape in "if true; then @; fi" "while :; do @; done" "until false; do @; done" \
+              "( @ )" "case x in x) @;; esac" "if true; then a; @; fi"; do
+    _lp_n=$((_lp_n + 1))
+    _got=$(verdict "${_shape//@/unshare} <<< '$HELPER'")
+    if [[ "$_got" != BLOCK_* ]]; then
+        no "property: a launcher is a receiver in every compound shape" "${_shape//@/unshare} — got=${_got:-<empty>}"
+        _lp_n=-1; break
+    fi
+    _got=$(verdict "${_shape//@/cat} <<< '$HELPER'")
+    if [[ "$_got" != "OK|" ]]; then
+        no "property: a data-only command in the same shape is still a read" "${_shape//@/cat} — got=${_got:-<empty>}"
+        _lp_n=-1; break
+    fi
+done
+if [[ $_lp_n -gt 0 ]]; then
+    ok "property: launcher blocks and data-only reads, across compound shapes ($_lp_n)"
+fi
+# The BRACE GROUP is absent from the data-only half of that property, and pinned here
+# instead: `{ cat; }` blocks, and it did so before any of this work too. A brace is a
+# brace-EXPANSION character, so a word carrying one is an unresolved command word — which
+# is deliberately fail-closed, because `/bin/ba{s..s}h` expands onto a shell the text never
+# spells. The launcher half of the property still covers the shape.
+assert_block "{ cat; } <<< '$HELPER'"          "pre-existing over-block: a brace group reads as an unresolved command word"
+assert_block "{ unshare; } <<< '$HELPER'"      "...and a real launcher in one blocks regardless"
 # RESIDUAL, and an over-block: the widening scans EVERY segment, including commands that
 # precede the compound the here-string is attached to, so a shell named in front refuses a
 # data-only read. Limiting the scan to the owning compound's span is more precise and was

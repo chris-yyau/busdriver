@@ -2081,7 +2081,9 @@ def _shell_pieces(text):
 
 def _walk_words(text):
     # The command WORDS of a segment, redirections and their operands stepped over.
-    # Returns (words, ok). Shared by the per-segment path and the compound widening --
+    # Returns (words, decoded words, raw pieces, ok) -- the three lists are PARALLEL, so a
+    # caller can ask for a word's decoded name or its as-written spelling by index.
+    # Shared by the per-segment path and the compound widening --
     # they each had their own copy of this walk, and a copy that drifts is what the
     # unified receiver predicate exists to stop.
     pieces = _shell_pieces(text)
@@ -2318,11 +2320,6 @@ def _herestring_shell_payloads(pairs):
     # open four ways when tried (`bash --norc` read as "-c present", `bash --rcfile -c`
     # read the VALUE of --rcfile as the option). The over-block is the chosen direction.
     out = []
-    # The compound answer is a property of `pairs`, not of a segment, so it is computed
-    # AT MOST ONCE. Recomputing it per reserved-only segment re-lexed the whole command
-    # each time: 1,000 data-only compounds took ~23s, past the 5s timeout that reads as
-    # ALLOW. The positive path already stopped early; only the NEGATIVE one was slow,
-    # which is why a benchmark built on `sh` missed it entirely.
     # The compound answer is a property of the WHOLE command, not of a segment, so it is
     # computed AT MOST ONCE and the widening happens once. Recomputing it per reserved-only
     # segment re-lexed everything each time: 1,000 data-only compounds took ~23s, past the
@@ -2399,19 +2396,6 @@ def _herestring_shell_payloads(pairs):
         # COMPOUND COMMANDS. A redirection can attach to a whole compound, so in
         # `if true; then sh; fi <<< '<helper>'` the shell that consumes stdin is in an
         # EARLIER segment and the segment holding `<<<` has only `fi`. When the words left
-        # here are nothing but reserved syntax, the receiver is elsewhere and this segment
-        # cannot answer the question -- so widen to every segment rather than guess.
-        # COMPOUND COMMANDS. A redirection can attach to a whole compound, so in
-        # `if true; then sh; fi <<< '<helper>'` the shell that consumes stdin is in an
-        # EARLIER segment and the segment holding `<<<` has only `fi`. When the words left
-        # here are nothing but reserved syntax -- or NONE at all, which is how a
-        # parenthesised receiver arrives, because `(sh) <<< '<helper>'` puts the parens in
-        # the operator and leaves this segment wordless -- the receiver is elsewhere and
-        # this segment cannot answer the question. Requiring a NONEMPTY word list was
-        # exactly that bypass: the subshell spelling returned OK.
-        # COMPOUND COMMANDS. A redirection can attach to a whole compound, so in
-        # `if true; then sh; fi <<< '<helper>'` the shell that consumes stdin is in an
-        # EARLIER segment and the segment holding `<<<` has only `fi`. When the words left
         # here are nothing but reserved syntax -- or NONE at all, which is how a
         # parenthesised receiver arrives, because `(sh) <<< '<helper>'` puts the parens in
         # the operator and leaves this segment wordless -- the receiver is elsewhere and
@@ -2429,7 +2413,17 @@ def _herestring_shell_payloads(pairs):
                 continue
             if _compound_receiver is None:
                 _allw, _allcw = [], []
-                _alltext = " ".join(_s2 for _o2, _s2 in pairs)
+                # SEPARATED, not space-joined. The operator run `_o2` is not carried on
+                # the segment text, so joining with a space erased every command boundary
+                # -- and the launcher disjunct re-splits this text with
+                # `_split_simple_commands` before testing COMMAND POSITION. With the
+                # boundaries gone the segments merged into one simple command, the first
+                # word won command position, and a launcher behind it was never seen:
+                # `if true; then unshare; fi <<< P` peeled `if`, stopped at `true`, and
+                # returned OK while unshare exec'd a shell on the payload. Launchers are
+                # deliberately absent from _SHELL_NAMES, so no other disjunct catches them.
+                # The payload emitted below already used `" ; "`; these two now agree.
+                _alltext = " ; ".join(_s2 for _o2, _s2 in pairs)
                 for _o2, _s2 in pairs:
                     # `_walk_words` regardless of whether THIS segment holds the operator:
                     # the receiver is in a different segment, which is the whole reason

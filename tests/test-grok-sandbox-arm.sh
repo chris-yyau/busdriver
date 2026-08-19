@@ -187,7 +187,9 @@ for site in dispatch resolve; do
   fi
 
   # env resolves the command against the PATH on its own command line, so this
-  # is what stops a PATH-shadowed `grok` from running before the sandbox exists.
+  # is what stops a PATH-shadowed `grok` from running before the sandbox exists,
+  # and it is also where a pinned-only install is found — which is why
+  # availability is not separately gated on the ambient PATH.
   if [[ "$arm" == *'PATH="$_GROK_PINNED_PATH"'* ]]; then
     pass "$where: grok is resolved against a PATH pinned to the verified home"
   else
@@ -389,10 +391,37 @@ deny = []' > "$tmp/commented.toml"
   # hang the gate instead of refusing.
   # Not "does not start with #!": an executable text file with no shebang is
   # handed to /bin/sh by execvp, so the test has to be what the file IS.
-  if /usr/bin/grep -q 'application/x-mach-binary|application/x-executable' "$CHILD"; then
-    pass "grok must match the native-image allowlist, not merely application/*"
+  # The FAT magic is shared with Java .class files, so accepting it on the magic
+  # alone re-opens the wrapper path: an executable .class named grok would pass
+  # and then be handed to /bin/sh on ENOEXEC.
+  if /usr/bin/grep -q '01000007|0100000c) : ;;' "$CHILD"; then
+    pass "the universal-binary magic is qualified by cputype, not accepted bare"
   else
-    fail "the preflight does not allowlist native image types — the file(1) classifier labels unidentifiable data application/octet-stream, and execvp hands a shebang-less script to /bin/sh"
+    fail "the FAT magic (cafebabe) is accepted without checking the arch cputype — a Java .class shares that magic"
+  fi
+
+  # The magic alone is not proof: `\x7fELF\n` + shell text carries the right
+  # first word, gets ENOEXEC, and is handed to /bin/sh. The header fields are
+  # what a text payload cannot satisfy by accident.
+  if /usr/bin/grep -q 'case "\$etype" in 0002|0003)' "$CHILD"; then
+    pass "ELF images are validated by e_type (EXEC/DYN), not just the magic"
+  else
+    fail "the preflight accepts the ELF magic without checking e_type — a shell payload prefixed with the magic would pass, then be handed to /bin/sh on ENOEXEC"
+  fi
+  if /usr/bin/grep -q '00000002) : ;;' "$CHILD" && /usr/bin/grep -q '02000000) : ;;' "$CHILD"; then
+    pass "thin Mach-O images are validated by filetype (MH_EXECUTE), both endiannesses"
+  else
+    fail "the preflight accepts a thin Mach-O magic without checking filetype"
+  fi
+  if /usr/bin/grep -q '7f454c46)' "$CHILD"; then
+    pass "grok is classified from the header, with no optional-package dependency"
+  else
+    fail "the preflight does not read the header — either it accepts non-binaries, or it depends on file(1), which is absent from a stock Ubuntu image and would refuse every valid install"
+  fi
+  if /usr/bin/grep -q '/usr/bin/file' "$CHILD"; then
+    fail "the preflight still calls file(1) — an optional package; on a host without it every grok install is refused as WHY=binary"
+  else
+    pass "the preflight does not depend on file(1)"
   fi
 
   # Behavioural, not textual: run the same classifier the preflight runs and
@@ -410,22 +439,88 @@ deny = []' > "$tmp/commented.toml"
   printf '#!/bin/sh\necho hi\n' > "$_bin_probe/shebang"; chmod +x "$_bin_probe/shebang"
   printf 'echo hi\n' > "$_bin_probe/plain";              chmod +x "$_bin_probe/plain"
   printf 'echo hi\n\001\n' > "$_bin_probe/binaryish";   chmod +x "$_bin_probe/binaryish"
-  # Mirrors the production predicate, universal-binary handling included: a
-  # multi-architecture image reports one line per slice, each prefixed with
-  # `(for architecture …):`.
+  # The exact shape Codex reported: right magic, shell body. The kernel refuses
+  # it (ENOEXEC) and execvp hands it to /bin/sh — so the classifier must not
+  # bless it on the strength of those four bytes.
+  printf '\177ELF\necho hi\n' > "$_bin_probe/elfish";     chmod +x "$_bin_probe/elfish"
+  # ACCEPT fixtures. This host is macOS, so there is no real ELF binary to
+  # point at and the accept path of the ELF arm would otherwise never run -
+  # which is how it shipped refusing every genuine ELF image. Synthetic headers
+  # are enough: the classifier reads nothing past byte 19.
+  #   ELF64 LE EXEC:  class=02 data=01 ver=01, 9 pad, e_type=02 00, e_machine
+  #   ELF64 LE DYN:   same, e_type=03 00       (a PIE - how most CLIs ship)
+  #   ELF32 BE EXEC:  class=01 data=02 ver=01, e_type=00 02 (byte order flips)
+  printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\076\000' > "$_bin_probe/elf64le-exec"
+  printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\003\000\076\000' > "$_bin_probe/elf64le-dyn"
+  printf '\177ELF\001\002\001\000\000\000\000\000\000\000\000\000\000\002\000\024' > "$_bin_probe/elf32be-exec"
+  # ...and one that must still be refused, so the e_type check is doing work
+  # rather than the arm having been widened to accept anything ELF-shaped:
+  # e_type=01 is ET_REL, an object file the kernel will not load.
+  printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\001\000\076\000' > "$_bin_probe/elf64le-rel"
+  # FAT (universal) headers: magic, then nfat_arch, then the first arch's
+  # cputype at bytes 8..11. `cafebabf` is FAT_MAGIC_64; the `*feca` spellings
+  # are the byte-swapped forms, in which the cputype is reversed too.
+  printf '\312\376\272\276\000\000\000\002\001\000\000\007\000\000\000\003\000\000\000\000' > "$_bin_probe/fat-be"
+  printf '\312\376\272\277\000\000\000\002\001\000\000\014\000\000\000\003\000\000\000\000' > "$_bin_probe/fat64-be"
+  printf '\276\272\376\312\002\000\000\000\007\000\000\001\003\000\000\000\000\000\000\000' > "$_bin_probe/fat-swapped"
+  printf '\277\272\376\312\002\000\000\000\014\000\000\001\003\000\000\000\000\000\000\000' > "$_bin_probe/fat64-swapped"
+  # A Java .class shares the cafebabe magic; its bytes 8..11 are a constant-pool
+  # count and tag, which cannot spell either cputype. It must still be refused.
+  printf '\312\376\272\276\000\000\000\064\000\035\012\000\002\000\003\007\000\004\014\000' > "$_bin_probe/javaclass"
+  # …and the swapped cputypes must NOT be honoured on a big-endian header (or
+  # the two arms have been collapsed into one that accepts either spelling).
+  printf '\312\376\272\276\000\000\000\002\007\000\000\001\000\000\000\003\000\000\000\000' > "$_bin_probe/fat-be-wrongorder"
+  # Shorter than the 20 bytes the classifier reads: a truncated or empty
+  # candidate must be refused, not indexed past its end.
+  printf '\177ELF\002\001\001' > "$_bin_probe/truncated"
+  : > "$_bin_probe/empty"
+  chmod +x "$_bin_probe"/elf64le-exec "$_bin_probe"/elf64le-dyn \
+           "$_bin_probe"/elf32be-exec "$_bin_probe"/elf64le-rel \
+           "$_bin_probe"/fat-be "$_bin_probe"/fat64-be \
+           "$_bin_probe"/fat-swapped "$_bin_probe"/fat64-swapped \
+           "$_bin_probe"/javaclass "$_bin_probe"/fat-be-wrongorder \
+           "$_bin_probe"/truncated "$_bin_probe"/empty
+  # Mirrors the production predicate: header fields, not just the magic. Keep
+  # the offsets in step with grok-preflight.sh - a mirror that repeats the
+  # production bug agrees with it and proves nothing, which is exactly how the
+  # e_type offsets shipped wrong: every assertion here was a grep for the text,
+  # and the only behavioural fixtures were ones expected to be REJECTED.
   _allow() {
-    local _k
-    _k="$(/usr/bin/file -b --mime-type -- "$1" 2>/dev/null | /usr/bin/sed 's/^.*:[[:space:]]*//')"
-    [[ -n "$_k" ]] || return 1
-    /usr/bin/grep -qvE '^(application/x-mach-binary|application/x-executable|application/x-pie-executable|application/x-sharedlib)$' <<<"$_k" && return 1
-    return 0
+    local _h _et
+    _h="$(/usr/bin/od -An -tx1 -N20 -- "$1" 2>/dev/null | /usr/bin/tr -d ' \n')"
+    [[ ${#_h} -eq 40 ]] || return 1
+    case "${_h:0:8}" in
+      7f454c46)
+        case "${_h:8:2}"  in 01|02) ;; *) return 1 ;; esac
+        case "${_h:12:2}" in 01)    ;; *) return 1 ;; esac
+        case "${_h:10:2}" in
+          01) _et="${_h:34:2}${_h:32:2}" ;;
+          02) _et="${_h:32:2}${_h:34:2}" ;;
+          *) return 1 ;;
+        esac
+        case "$_et" in 0002|0003) return 0 ;; *) return 1 ;; esac ;;
+      feedface|feedfacf) case "${_h:24:8}" in 00000002) return 0 ;; *) return 1 ;; esac ;;
+      cefaedfe|cffaedfe) case "${_h:24:8}" in 02000000) return 0 ;; *) return 1 ;; esac ;;
+      cafebabe|cafebabf) case "${_h:16:8}" in 01000007|0100000c) return 0 ;; *) return 1 ;; esac ;;
+      bebafeca|bfbafeca) case "${_h:16:8}" in 07000001|0c000001) return 0 ;; *) return 1 ;; esac ;;
+      *) return 1 ;;
+    esac
   }
   if _allow /usr/bin/head; then
     pass "the native-image rule accepts a real binary (/usr/bin/head)"
   else
     fail "the native-image rule rejects a real binary — it would refuse every grok install"
   fi
-  for _probe in shebang plain binaryish; do
+  for _img in elf64le-exec elf64le-dyn elf32be-exec \
+              fat-be fat64-be fat-swapped fat64-swapped; do
+    if _allow "$_bin_probe/$_img"; then
+      pass "the native-image rule accepts a genuine $_img header"
+    else
+      fail "the native-image rule REJECTS a genuine $_img header - grok would refuse to dispatch on every host of that architecture"
+    fi
+  done
+  for _probe in shebang plain binaryish elfish elf64le-rel javaclass \
+                fat-be-wrongorder truncated empty; do
     if _allow "$_bin_probe/$_probe"; then
       fail "the native-image rule accepts the '$_probe' wrapper — it would run before grok's sandbox"
     else
@@ -752,6 +847,48 @@ if /usr/bin/grep -q '\[\[ "\${_grok_refused:-0}" == "1" \]\] && status="skipped"
   pass "a refused voice is skipped in a batch, not counted as a failure"
 else
   fail "a refused grok is not marked skipped — one unconfigured host would fail a whole --cli all batch"
+fi
+
+# Availability and execution must agree on WHERE grok lives. `_has_cli` searches
+# the ambient PATH; execution uses the pinned one. Gating on both, against two
+# different path sets, rejected a pinned-only install as "grok not found" while
+# telling the operator that installing it in a pinned location was enough.
+if /usr/bin/grep -qE '^\s+\[\[ "\$CLI" == "grok" \]\] && ! _has_cli grok' "$DISPATCH"; then
+  fail "grok availability is still gated on the ambient PATH — an install only in ~/.grok/bin would be rejected as 'not found' though the dispatch would have run it"
+else
+  pass "grok availability is left to the preflight, which looks where the dispatch will run"
+fi
+
+# Same for the batch path: --cli all discovery must not drop a pinned-only
+# install before it can reach its own preflight.
+# The array name is load-bearing and was wrong once: appending to `CLIS` while
+# the loop builds `ALL_CLIS` left --cli all omitting grok exactly as before,
+# and the first version of THIS test grepped for the typo, so it passed.
+# Joining the batch means receiving the batch's flags. grok rejects --model,
+# and as a bare `exit 1` that failed the whole batch for every other voice the
+# moment a model was pinned — #594's failure mode, reintroduced by the very fix
+# that put grok in the batch. It must be a REFUSAL (skipped), like opencode's
+# missing .auditor.model.
+if /usr/bin/grep -q 'Skipped: %s\\n. "--model is not supported by grok-build' "$DISPATCH"; then
+  pass "a --model batch marks grok skipped rather than failing every other voice"
+else
+  fail "grok's --model rejection does not write a Skipped: marker — a --cli all --model batch fails on grok and takes every other voice down with it"
+fi
+if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then
+  pass "an already-refused grok skips the preflight instead of overwriting its reason"
+else
+  fail "the preflight still runs after a --model refusal — it overwrites \$outfile with a profile hint that is not why the voice was skipped"
+fi
+
+if /usr/bin/grep -q 'if \[\[ "\$c" == "grok" \]\]; then ALL_CLIS+=("\$c"); continue; fi' "$DISPATCH"; then
+  pass "batch discovery appends grok to ALL_CLIS without an ambient-PATH probe"
+else
+  fail "batch discovery does not add grok to ALL_CLIS — a pinned-only install is silently omitted from --cli all and never reaches its preflight"
+fi
+if /usr/bin/grep -q 'CLIS+=("\$c"); continue; fi' "$DISPATCH" && ! /usr/bin/grep -q 'ALL_CLIS+=("\$c"); continue; fi' "$DISPATCH"; then
+  fail "batch discovery appends to the wrong array (CLIS, not ALL_CLIS) — the append is a no-op for --cli all"
+else
+  pass "the batch-discovery append targets the array the loop actually uses"
 fi
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-grok-sandbox-arm"; else echo "FAIL: test-grok-sandbox-arm"; fi

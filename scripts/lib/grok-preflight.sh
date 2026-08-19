@@ -148,24 +148,99 @@ if [[ -z "$file" ]]; then
     # interpreter is resolved at exec time — `#!/usr/bin/env node` picks
     # whatever `node` that same PATH finds first — and an executable text file
     # with NO shebang is handed to /bin/sh by execvp, so "does not start with
-    # #!" is not the test. Ask what the file actually IS: application/* is a
-    # binary image, text/* is a wrapper. grok ships as a real executable, so
-    # requiring one costs nothing and bounds the check at a single file.
+    # #!" is not the test. The test is what the file IS.
+    #
+    # Read the MAGIC BYTES rather than asking file(1). `file` is an optional
+    # package: it is absent from a stock Ubuntu 24.04 image, and depending on it
+    # made every valid grok install refuse as `WHY=binary` on such a host —
+    # a fail-closed refusal for a reason that has nothing to do with the lane's
+    # containment. Reported by Codex on PR #704. `od` is coreutils, present
+    # wherever this dispatcher already runs, and the four-byte read is exactly
+    # as decisive: ELF and every Mach-O flavour (32/64, LE/BE, and the FAT
+    # universal header a multi-arch binary starts with) have fixed magics, and
+    # nothing else that execvp would hand to /bin/sh shares one.
+    #
     # `-f` first: an executable FIFO named grok passes -x and is not a
     # directory, and reading it would block the gate forever.
     [[ -f "$target" ]] || why binary
-    # An ALLOWLIST of native image types, not the `application/` prefix:
-    # `file` calls anything it cannot identify application/octet-stream,
-    # including a shebang-less shell program with one control byte in it — and
-    # execvp hands exactly that to /bin/sh on ENOEXEC. Mach-O covers macOS; the
-    # three ELF spellings cover Linux across `file` versions.
+    # Must be a real BINARY, not merely an executable file, and the magic
+    # ALONE does not establish that: a shell payload prefixed with `\x7fELF\n`
+    # carries the right first four bytes, gets ENOEXEC from the kernel, and is
+    # then handed to /bin/sh by execvp — the wrapper path this check exists to
+    # close (Codex, PR #704). So validate the HEADER, not just its first word.
     #
-    # A universal binary reports ONE LINE PER ARCHITECTURE, each prefixed with
-    # `(for architecture …):`, so the prefixes are stripped and EVERY line must
-    # be allowlisted — a single non-native slice is a refusal.
-    kinds="$(/usr/bin/file -b --mime-type -- "$target" 2>/dev/null | /usr/bin/sed 's/^.*:[[:space:]]*//')" || why binary
-    [[ -n "$kinds" ]] || why binary
-    printf '%s\n' "$kinds" | /usr/bin/grep -qvE '^(application/x-mach-binary|application/x-executable|application/x-pie-executable|application/x-sharedlib)$' && why binary
+    # Read the bytes rather than asking file(1): `file` is an optional package,
+    # absent from a stock Ubuntu 24.04, and depending on it made every valid
+    # grok install refuse as `WHY=binary` on such a host. `od` is coreutils.
+    #
+    # `-f` first: an executable FIFO named grok passes -x and is not a
+    # directory, and reading it would block the gate forever.
+    [[ -f "$target" ]] || why binary
+    # Read then squeeze, rather than piping into `tr`: in a pipeline the
+    # substitution reports TR's status, so a failed `od` would arrive as
+    # success with an empty string. The length check below would still catch
+    # it, but a status that cannot be trusted is not worth keeping around.
+    hdr="$(/usr/bin/od -An -tx1 -N20 -- "$target" 2>/dev/null)" || why binary
+    hdr="${hdr//[[:space:]]/}"
+    [[ ${#hdr} -eq 40 ]] || why binary
+    case "${hdr:0:8}" in
+      7f454c46)
+        # ELF: EI_CLASS in {32,64}, EI_DATA in {LE,BE}, EI_VERSION = 1, and
+        # e_type (bytes 16..17, byte order per EI_DATA) is EXEC or DYN. A text
+        # payload cannot satisfy all four by accident - every one of those
+        # offsets would have to hold a byte that is not printable ASCII.
+        #
+        # Mind which byte is which; the first version of this got it wrong in
+        # two ways at once and refused EVERY real ELF binary. `hdr` is the hex
+        # of the first 20 bytes with the spaces stripped, so byte N sits at hex
+        # offset 2N: EI_CLASS is byte 4 (:8), EI_DATA byte 5 (:10), EI_VERSION
+        # byte 6 (:12), and e_type is bytes 16..17 (:32 and :34). Selecting the
+        # byte order from :12 reads EI_VERSION - always 01 - so every image took
+        # the little-endian arm; and swapping a two-byte field means exchanging
+        # the BYTES (:34 then :32), not the nibbles inside them.
+        case "${hdr:8:2}"  in 01|02) : ;; *) why binary ;; esac
+        case "${hdr:12:2}" in 01)    : ;; *) why binary ;; esac
+        case "${hdr:10:2}" in
+          01) etype="${hdr:34:2}${hdr:32:2}" ;;
+          02) etype="${hdr:32:2}${hdr:34:2}" ;;
+          *)  why binary ;;
+        esac
+        case "$etype" in 0002|0003) : ;; *) why binary ;; esac ;;
+      feedface|feedfacf)
+        # Mach-O thin, big-endian on disk: filetype at bytes 12..15 must be
+        # MH_EXECUTE (2).
+        case "${hdr:24:8}" in 00000002) : ;; *) why binary ;; esac ;;
+      cefaedfe|cffaedfe)
+        # Mach-O thin, little-endian: same field, byte-swapped.
+        case "${hdr:24:8}" in 02000000) : ;; *) why binary ;; esac ;;
+      cafebabe|cafebabf)
+        # Universal (FAT) header, stored big-endian - `cafebabf` is the 64-bit
+        # variant (FAT_MAGIC_64), which differs only in the fat_arch table and
+        # not in the two fields read here. The magic is SHARED with Java
+        # `.class`, so discriminate on what follows: bytes 8..11 are the first
+        # arch's cputype, and the only ones this lane can execute are x86_64
+        # (0x01000007) and arm64 (0x0100000c). In a .class those bytes are the
+        # constant-pool count and its first tag, which cannot take either value:
+        # a count of 0x0100 with tag 0x07/0x0c would mean 256 entries whose
+        # first is a CONSTANT_Class/Double, and the byte BEFORE it (the major
+        # version's low byte) would have to be 0x00 - no released class-file
+        # version is 0.
+        case "${hdr:16:8}" in 01000007|0100000c) : ;; *) why binary ;; esac ;;
+      bebafeca|bfbafeca)
+        # The same two headers byte-swapped (FAT_CIGAM / FAT_CIGAM_64). The swap
+        # is not confined to the magic - every u32 in the header is stored in
+        # the opposite order, cputype included, so the values to match are the
+        # reversed ones. Applying the big-endian encodings here (the first
+        # version of this arm did) refuses every valid byte-swapped image.
+        case "${hdr:16:8}" in 07000001|0c000001) : ;; *) why binary ;; esac ;;
+      *) why binary ;;
+    esac
+    # RESIDUAL, stated rather than implied: only the kernel decides what loads,
+    # so no userspace header check is proof. What this rules out is every
+    # ACCIDENT and every casual wrapper; a file crafted to satisfy the header
+    # and still be shell-interpretable is out of scope, because placing one on
+    # the operator's own pinned PATH already requires write access to their
+    # home — the same boundary the sandbox profile itself rests on.
     found=1; break
   done
   [[ -n "$found" ]] || why binary

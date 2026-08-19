@@ -678,7 +678,15 @@ else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
     [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
-    [[ "$CLI" == "grok" ]] && ! _has_cli grok && { echo "Error: grok not found." >&2; exit 1; }
+    # grok is deliberately NOT gated on `_has_cli` (ambient PATH). Execution
+    # runs it from a PINNED path, so an install that exists only in, say,
+    # ~/.grok/bin — not on the caller's PATH — would be rejected here as "not
+    # found" while the pinned lookup would have found it, contradicting the
+    # preflight's own remediation hint. Reported by Codex on PR #704.
+    # grok_sandbox_preflight owns this: it looks in exactly the directories the
+    # dispatch will use, and refuses with a reason that says which one failed.
+    # Checking availability twice, against two different path sets, is what
+    # produced the contradiction.
 fi
 
 # Handle --cli all: discover all available supported CLIs (cap raised from
@@ -700,6 +708,14 @@ if [[ "$CLI" == "all" ]]; then
     # leaving it at 5 would have made a full house silently drop pi.
     for c in codex agy droid grok opencode pi; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
+        # grok is included WITHOUT an ambient-PATH probe, for the same reason the
+        # direct `--cli grok` gate no longer has one: it runs from a pinned path,
+        # so a pinned-only install (~/.grok/bin not on PATH) would be silently
+        # dropped from the batch and never reach its own preflight. Including it
+        # costs nothing when it is unusable — the preflight refuses with a named
+        # reason and the voice is marked `skipped`, which is exactly how a batch
+        # is meant to treat a voice that cannot run. Reported by Codex on PR #704.
+        if [[ "$c" == "grok" ]]; then ALL_CLIS+=("$c"); continue; fi
         [[ "$c" == "opencode" && "$MODE" == "auto" ]] && continue
         [[ "$c" == "pi" && "$MODE" == "auto" ]] && continue
         if [[ "$c" == "pi" ]]; then
@@ -2012,9 +2028,32 @@ CHILD
             # NOTE: grok-build (the only available model) rejects --reasoning-effort
             # and --effort with a 400 from the responses API, so neither MODEL nor
             # effort tiers are forwarded here.
+            #
+            # A REFUSAL, not a failure — same reasoning as opencode's missing
+            # `.auditor.model` bail above, and it became load-bearing the moment
+            # grok joined `--cli all` discovery: every batch voice receives the
+            # batch's `--model`, so a bare `exit 1` here failed the WHOLE batch
+            # for every other voice whenever a model was pinned. That is #594's
+            # failure mode exactly. Routing it through `_grok_refused` also stops
+            # the prompt falling through to the droid rescue, which would ship
+            # the quoted repo content to a different CLI after the operator was
+            # told grok would not run.
+            #
+            # An EXPLICIT `--cli grok --model X` still exits non-zero: a batch of
+            # one in which the only voice was skipped reports "every CLI in the
+            # batch was skipped", because there the voice that cannot run IS the
+            # request. The reason is written to "$outfile" as well as stderr —
+            # the banner prints the file, so stderr alone would show "(no
+            # output)" and lose it — and the flag is set only if that write
+            # succeeded, so an unwritable outfile stays `error`.
             if [[ -n "$MODEL" ]]; then
                 echo "Error: --model is not supported by grok-build (single model; rejects --model flag). Remove --model or use --cli codex to pin a specific model." >&2
-                exit 1
+                if printf 'Skipped: %s\n' "--model is not supported by grok-build (single model) — grok not dispatched" >> "$outfile" 2>/dev/null; then
+                    _grok_refused=1
+                else
+                    echo "busdriver: could not write the skip marker to \$outfile — classifying as error, not skipped" >&2
+                fi
+                exit_code=1
             fi
             # SAFETY MODEL (end-to-end, re-measured 2026-08-19 on macOS):
             #
@@ -2188,7 +2227,12 @@ CHILD
             # exported BASH_FUNC_exit%% turns the bail into a fall-through and
             # grok runs with no verified profile. There is nothing to fall
             # through into here.
-            if grok_sandbox_preflight ""; then   # "" = no fixture override
+            if [[ "${_grok_refused:-0}" == "1" ]]; then
+                # Already refused above (--model). The reason is in "$outfile"
+                # already; running the preflight now would only overwrite it
+                # with a profile hint that is not why this voice was skipped.
+                :
+            elif grok_sandbox_preflight ""; then   # "" = no fixture override
             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
                 DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \

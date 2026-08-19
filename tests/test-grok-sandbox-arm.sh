@@ -874,6 +874,27 @@ if /usr/bin/grep -q 'Skipped: %s\\n. "--model is not supported by grok-build' "$
 else
   fail "grok's --model rejection does not write a Skipped: marker — a --cli all --model batch fails on grok and takes every other voice down with it"
 fi
+# Availability probe vs. execution path: `is_cli_available grok` decides whether
+# to ROUTE to grok, and grok-preflight.sh decides where to RUN it. If those two
+# consult different directories, a pinned-only install either reads as missing
+# (silent droid fallback -- Codex, PR #704) or reads as present somewhere the
+# dispatch will never look. The lists are duplicated across two files by
+# necessity (one runs under `env -i`, the other is sourced), so pin them.
+_pinned_from() { /usr/bin/sed -n 's/.*"\$home\/\.grok\/bin[:"].*/HIT/p' "$1" | /usr/bin/head -1; }
+_probe_dirs="$(/usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE" \
+  | /usr/bin/sed -n 's/.*for dir in \(.*\); do/\1/p' | /usr/bin/tr -d '"')"
+_exec_dirs="$(/usr/bin/sed -n 's/^  pinned="\(.*\)"$/\1/p' "$CHILD" | /usr/bin/tr ':' ' ')"
+if [[ -n "$_probe_dirs" && -n "$_exec_dirs" && "$_probe_dirs" == "$_exec_dirs" ]]; then
+  pass "the availability probe searches exactly the directories the dispatch will run from"
+else
+  fail "the grok availability probe and the preflight's pinned PATH have drifted -- probe=[$_probe_dirs] exec=[$_exec_dirs]; a pinned-only install would be routed or rejected against the wrong directory set"
+fi
+if /usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE" | /usr/bin/grep -q '! -d "\$dir/grok"'; then
+  pass "the availability probe excludes a directory named grok, as the preflight does"
+else
+  fail "the availability probe accepts a DIRECTORY named grok (-x is true for directories) -- it would route to grok and have the preflight refuse, turning a clean fallback into a skipped voice"
+fi
+
 if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then
   pass "an already-refused grok skips the preflight instead of overwriting its reason"
 else

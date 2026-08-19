@@ -51,7 +51,42 @@ fi
 
 is_cli_available() {
   local cli_name="$1"
+  if [[ "$cli_name" == "grok" ]]; then
+    _grok_available
+    return
+  fi
   command -v "$cli_name" &>/dev/null
+}
+
+# grok runs from a PINNED path at dispatch time (see grok_sandbox_preflight /
+# grok-preflight.sh), not the ambient PATH — so availability must be checked
+# against the same candidate directories, or a grok installed only in
+# ~/.grok/bin reads as "missing" here (env override, route entries,
+# blueprint-review.reviewer_3/council.researcher defaults) while the actual
+# dispatch would have found it and run it. Reported by Codex on PR #704.
+#
+# This is a lightweight existence probe only — no identity verification,
+# symlink checks, or in-tree containment checks. Those stay in
+# grok_sandbox_preflight, which is the actual security boundary and runs
+# again at execution time; refusing to run has security weight there. Here
+# we are only deciding whether to route TO grok or fall back to another CLI,
+# so a plain `$HOME` (rather than the dscl/getent-verified identity) is fine.
+# The candidate list MUST stay identical to grok-preflight.sh's `pinned`
+# (tests/test-grok-sandbox-arm.sh pins the two together): a probe that looks
+# somewhere the dispatch will not is exactly the discovery/execution mismatch
+# this exists to close, just pointing the other way.
+#
+# `! -d` matches the preflight, which skips a directory candidate explicitly.
+# A DIRECTORY named grok satisfies -x, so without it this would report grok
+# available, route to it, and have the preflight refuse — turning a clean
+# fall-back-to-another-CLI into a spurious skipped voice.
+_grok_available() {
+  local home="${HOME:-}"
+  local dir
+  for dir in "$home/.grok/bin" "$home/.local/bin" /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
+    [[ -x "$dir/grok" && ! -d "$dir/grok" ]] && return 0
+  done
+  return 1
 }
 
 get_cli_version() {

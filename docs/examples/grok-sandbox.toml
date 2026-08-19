@@ -21,7 +21,12 @@
 # thing standing between a weakened profile and a dispatch that trusts it.
 # BEFORE USING THIS FILE: replace every `/Users/YOU/...` path below with your
 # own home directory, and delete any of THOSE absolute home entries that does
-# not exist on this machine. Both matter. A literal `/Users/YOU/.ssh` protects
+# not exist on this machine. The preflight now ENFORCES this: for each of
+# `~/.ssh`, `~/.aws` and `~/.netrc` that exists on the machine, the matching
+# absolute entry (plus its `/**` companion for the directories) must be present
+# and must name your REAL home, derived from your verified identity rather than
+# $HOME. Leaving the literal `/Users/YOU/...` placeholder now REFUSES the
+# dispatch instead of silently protecting nothing. Both matter. A literal `/Users/YOU/.ssh` protects
 # nothing, and on Linux a deny path that cannot be bound makes grok refuse to
 # start with the profile — correct fail-closed behaviour, but it will look like
 # the lane is broken.

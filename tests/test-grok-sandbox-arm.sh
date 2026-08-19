@@ -45,6 +45,37 @@ RESOLVE="$REPO_ROOT/scripts/lib/resolve-cli.sh"
 # heredoc): child-side rules are asserted there, parent-side ones in RESOLVE.
 CHILD="$REPO_ROOT/scripts/lib/grok-preflight.sh"
 
+# The account home, derived the way grok-preflight.sh derives it — id(1) plus
+# the password database — NOT from $HOME. The preflight deliberately does not
+# trust $HOME, so fixtures built from $HOME would target a different directory
+# whenever HOME is unset or redirected: the tests would then fail for a reason
+# unrelated to the rule under test, and would never exercise the identity
+# contract that is the actual production behaviour. Reported by litmus on the
+# home-secret change (PR #704).
+_acct_home() {
+  local _u _h=""
+  _u="$(/usr/bin/id -un 2>/dev/null)" || return 1
+  [[ -n "$_u" ]] || return 1
+  if [[ -x /usr/bin/dscl ]]; then
+    _h="$(/usr/bin/dscl . -read "/Users/$_u" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')"
+  elif [[ -x /usr/bin/getent ]]; then
+    _h="$(/usr/bin/getent passwd "$_u" 2>/dev/null | /usr/bin/cut -d: -f6)"
+  fi
+  [[ -n "$_h" && "${_h#/}" != "$_h" && -d "$_h" ]] || return 1
+  printf '%s' "$_h"
+}
+ACCT_HOME="$(_acct_home || true)"
+
+# Which home secrets actually exist decides whether the requirement applies at
+# all — on an account with none of them the preflight requires nothing, so the
+# cases that assert refusal would be asserting a bug rather than a rule.
+HOME_SECRET_PRESENT=0
+if [[ -n "$ACCT_HOME" ]]; then
+  for _hs in .ssh .aws .netrc; do
+    [[ -e "$ACCT_HOME/$_hs" ]] && HOME_SECRET_PRESENT=1
+  done
+fi
+
 FAILED=0
 pass() { printf 'ok   — %s\n' "$1"; }
 fail() { printf 'FAIL — %s\n' "$1"; FAILED=1; }
@@ -234,13 +265,29 @@ else
   # Every negative fixture below differs from the accepted one in EXACTLY ONE
   # way. A fixture that broke two rules at once could pass for the wrong
   # reason, and would keep passing after the rule it is named for was deleted.
+  # The preflight requires the ABSOLUTE home-secret entries for the paths that
+  # exist, alongside the ten relative globs (Codex + Greptile P1, PR #704).
+  # Build them here the same way it does, so `good.toml` stays a VALID profile.
+  # If it silently became a negative case, the "preflight accepts the shipped
+  # profile shape" assertion would fail and every negative below would pass for
+  # the wrong reason -- the exact trap this fixture matrix is built to avoid.
+  _REL_DENY='"**/.grok", "**/.grok/**", "**/.claude", "**/.claude/**", "**/.cursor", "**/.cursor/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key"'
+  # $ACCT_HOME, not $HOME — see the derivation near the top of this file.
+  _HOME_DENY=""
+  if [[ -n "$ACCT_HOME" ]]; then
+    for _s in .ssh .aws; do
+      [[ -e "$ACCT_HOME/$_s" ]] && _HOME_DENY="$_HOME_DENY, \"$ACCT_HOME/$_s\", \"$ACCT_HOME/$_s/**\""
+    done
+    [[ -e "$ACCT_HOME/.netrc" ]] && _HOME_DENY="$_HOME_DENY, \"$ACCT_HOME/.netrc\""
+  fi
+
   _profile() {  # $1 = which line to replace, $2 = its replacement ('' drops it)
     local drop="${1:-}" repl="${2:-}"
     local -a lines=(
       '[profiles.busdriver-review]'
       'extends = "strict"'
       'restrict_network = true'
-      'deny = ["**/.grok", "**/.grok/**", "**/.claude", "**/.claude/**", "**/.cursor", "**/.cursor/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key"]'
+      "deny = [${_REL_DENY}${_HOME_DENY}]"
     )
     local l
     for l in "${lines[@]}"; do
@@ -304,6 +351,13 @@ deny = []' > "$tmp/commented.toml"
   printf '%s\n' '[profiles.busdriver-review]' '[decoy]' > "$tmp/decoy-head.toml"
   _profile | tail -n +2 >> "$tmp/decoy-head.toml"
   printf '%s\n' '[profiles.busdriver-review]' > "$tmp/header-only.toml"
+  # A profile carrying ONLY the relative globs -- i.e. exactly what this fixture
+  # set looked like before the P1 fix, and what an operator gets by deleting the
+  # home lines. Denies nothing for real credentials.
+  _profile 'deny' "deny = [${_REL_DENY}]" > "$tmp/no-home-secrets.toml"
+  # ...and the shipped placeholder left un-edited, which is the likelier mistake:
+  # it LOOKS like the entries are there.
+  _profile 'deny' "deny = [${_REL_DENY}, \"/Users/YOU/.ssh\", \"/Users/YOU/.ssh/**\", \"/Users/YOU/.aws\", \"/Users/YOU/.aws/**\", \"/Users/YOU/.netrc\"]" > "$tmp/placeholder-home.toml"
 
   if grok_sandbox_preflight "$tmp/good.toml"; then
     pass "preflight accepts the shipped profile shape"
@@ -317,7 +371,8 @@ deny = []' > "$tmp/commented.toml"
   # that the symlink case really is a symlink.
   for _f in good wrong header-only no-extends no-restrict half-deny commented \
             literal-quotes escaped-quotes widened quoted-widen squoted-widen read-only-widen \
-            unicode-key unicode-key-upper multiline decoy-head; do
+            unicode-key unicode-key-upper multiline decoy-head \
+            no-home-secrets placeholder-home; do
     [[ -s "$tmp/$_f.toml" ]] || fail "fixture $_f.toml was not created — its case would pass for the wrong reason"
   done
   [[ -L "$tmp/link.toml" ]] || fail "link.toml is not a symlink — the symlink-refusal case would pass for the wrong reason"
@@ -633,6 +688,17 @@ deny = []' > "$tmp/commented.toml"
     "link.toml|a symlink can point back into the reviewed tree"
     "missing.toml|the file does not exist"
   )
+  # Guarded: with none of ~/.ssh, ~/.aws, ~/.netrc present there is nothing to
+  # require, so these two fixtures are legitimately VALID and asserting refusal
+  # would be asserting a bug. Skip loudly rather than pass for free.
+  if [[ "$HOME_SECRET_PRESENT" -eq 1 && -n "$_HOME_DENY" ]]; then
+    _cases+=(
+      "no-home-secrets.toml|the absolute home-secret denies are absent, so real credentials are undenied"
+      "placeholder-home.toml|the shipped /Users/YOU placeholder was never replaced, so it denies a path that does not exist"
+    )
+  else
+    echo "  SKIP  home-secret deny cases: none of ~/.ssh ~/.aws ~/.netrc exist on this host, so nothing is required"
+  fi
   for _case in "${_cases[@]}"; do
     _f="${_case%%|*}"; _why="${_case#*|}"
     if grok_sandbox_preflight "$tmp/$_f"; then
@@ -718,10 +784,39 @@ fi
 # The strongest statement available: run the real preflight against the file the
 # error message tells operators to install. Header/glob greps alone would still
 # pass an example that the preflight rejects on install.
-if declare -F grok_sandbox_preflight >/dev/null && grok_sandbox_preflight "$EXAMPLE"; then
-  pass "docs/examples/grok-sandbox.toml passes grok_sandbox_preflight as shipped"
+#
+# It is validated AS THE DOCS INSTRUCT IT TO BE USED — with `/Users/YOU`
+# replaced by the real home — because since the home-secret requirement
+# (Codex + Greptile P1, PR #704) the un-edited file MUST be refused: its
+# placeholder paths deny nothing. Both halves are asserted, and the second is
+# the one that matters: an example that passed while still saying `/Users/YOU`
+# would be an example that protects no one.
+if ! declare -F grok_sandbox_preflight >/dev/null; then
+  fail "grok_sandbox_preflight is not defined — the example profile cannot be validated"
 else
-  fail "docs/examples/grok-sandbox.toml does not pass the preflight — the setup instructions would not work"
+  _ex_edited="$(mktemp)"
+  # $ACCT_HOME, not $HOME: the preflight resolves the account home itself, so
+  # substituting $HOME here would produce entries it does not require.
+  /usr/bin/sed "s|/Users/YOU|${ACCT_HOME:-/nonexistent}|g" "$EXAMPLE" > "$_ex_edited"
+  if grok_sandbox_preflight "$_ex_edited"; then
+    pass "docs/examples/grok-sandbox.toml passes the preflight once /Users/YOU is replaced, as its instructions say"
+  else
+    fail "docs/examples/grok-sandbox.toml does not pass the preflight even after substituting the real home — the setup instructions would not work"
+  fi
+  # Only meaningful when this account HAS a home secret to protect. With none of
+  # ~/.ssh, ~/.aws or ~/.netrc present the requirement does not apply, the
+  # unedited example is legitimately valid, and asserting refusal would assert a
+  # bug. Skip loudly rather than fail on a clean account.
+  if [[ "$HOME_SECRET_PRESENT" -eq 1 ]]; then
+    if grok_sandbox_preflight "$EXAMPLE"; then
+      fail "docs/examples/grok-sandbox.toml passes UNEDITED — the /Users/YOU placeholder denies nothing, so an operator who copied it without editing would be told their secrets are kernel-denied when they are not"
+    else
+      pass "the unedited example is refused, so the /Users/YOU placeholder cannot be mistaken for protection"
+    fi
+  else
+    echo "  SKIP  unedited-example refusal: this account has none of ~/.ssh ~/.aws ~/.netrc, so no absolute entry is required"
+  fi
+  rm -f "$_ex_edited"
 fi
 
 # Every in-tree hook SOURCE must be denied, not just the vendor settings files:

@@ -54,27 +54,33 @@ resolve_link() {
 home=""
 pinned=""
 
+# Identity and home are derived UNCONDITIONALLY, fixture override included.
+# They used to sit inside the `-z "$file"` branch below, so under a fixture
+# `$home` stayed empty — which was invisible until the profile-BODY rules grew
+# a dependency on it: the home-secret deny requirement then tested `/.ssh`,
+# found nothing, and skipped itself in exactly the harness that exists to prove
+# it fires. A body rule must be checkable by the body harness.
+user="$(/usr/bin/id -un 2>/dev/null)" || why identity
+[[ -n "$user" ]] || why identity
+# no shell metacharacters, and none of bash's `~+` / `~-` / `~+1` directory-
+# stack forms, which expand to PWD/OLDPWD instead of an account home
+[[ "$user" == *[!A-Za-z0-9._-]* ]] && why identity
+[[ "$user" =~ ^[-+]?[0-9]*$ ]] && why identity
+
+# password database directly — no `eval echo ~user`, no interpreter version
+# floor: dscl on macOS, getent on Linux, refuse if neither is present
+if [[ -x /usr/bin/dscl ]]; then
+  home="$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || why identity
+elif [[ -x /usr/bin/getent ]]; then
+  home="$(/usr/bin/getent passwd "$user" 2>/dev/null | /usr/bin/cut -d: -f6)" || why identity
+else
+  why identity
+fi
+[[ -n "$home" ]] || why identity
+[[ "${home#/}" != "$home" ]] || why identity
+[[ -d "$home" ]] || why identity
+
 if [[ -z "$file" ]]; then
-  user="$(/usr/bin/id -un 2>/dev/null)" || why identity
-  [[ -n "$user" ]] || why identity
-  # no shell metacharacters, and none of bash's `~+` / `~-` / `~+1` directory-
-  # stack forms, which expand to PWD/OLDPWD instead of an account home
-  [[ "$user" == *[!A-Za-z0-9._-]* ]] && why identity
-  [[ "$user" =~ ^[-+]?[0-9]*$ ]] && why identity
-
-  # password database directly — no `eval echo ~user`, no interpreter version
-  # floor: dscl on macOS, getent on Linux, refuse if neither is present
-  if [[ -x /usr/bin/dscl ]]; then
-    home="$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || why identity
-  elif [[ -x /usr/bin/getent ]]; then
-    home="$(/usr/bin/getent passwd "$user" 2>/dev/null | /usr/bin/cut -d: -f6)" || why identity
-  else
-    why identity
-  fi
-  [[ -n "$home" ]] || why identity
-  [[ "${home#/}" != "$home" ]] || why identity
-  [[ -d "$home" ]] || why identity
-
   # the config DIRECTORY must not be a symlink: pointing ~/.grok into the
   # reviewed tree makes the profile AND the bin/grok the PATH pin trusts
   # repo-controlled while every individual file stays a regular file
@@ -286,6 +292,41 @@ for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
            '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
   printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || why profile
 done
+
+# Those ten are WORKSPACE-anchored. The home-secret entries are not, and until
+# now NOTHING validated them: a profile that kept the shipped `/Users/YOU/.ssh`
+# placeholder, or dropped those lines while editing, passed this gate having
+# denied nothing for the operator's real credentials -- while the profile's own
+# header and this repo's docs claimed home secrets were kernel-denied. And the
+# relative globs do not cover the gap: `id_rsa` and `credentials` match neither
+# `**/*.pem` nor `**/*.key`. Reported independently by Codex and Greptile
+# (both P1) on PR #704.
+#
+# Two details make this correct rather than merely stricter:
+#
+#   * `$home` is the IDENTITY-VERIFIED home derived above, NOT $HOME, so the
+#     required entry cannot be relocated by exporting HOME -- the same reason
+#     the rest of this script never trusts $HOME.
+#
+#   * a path is required only when it EXISTS. The shipped example instructs
+#     operators to delete absolute entries for paths they do not have, because
+#     on Linux a deny path that cannot be bound makes grok refuse to start;
+#     demanding an entry for an absent directory would fail closed for no
+#     protective gain. EXTRA entries are always allowed -- only the applicable
+#     ones are required.
+#
+# The `/**` companion is required for the directories for the same measured
+# reason as `**/.claude`: a bare directory glob denies only the directory path
+# itself, not its contents.
+for secret in .ssh .aws; do
+  if [[ -e "$home/$secret" ]]; then
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret\"" || why profile
+    printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/$secret/**\"" || why profile
+  fi
+done
+if [[ -e "$home/.netrc" ]]; then
+  printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/.netrc\"" || why profile
+fi
 
 printf 'HOME=%s\n' "$home"
 printf 'PATH=%s\n' "$pinned"

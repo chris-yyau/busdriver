@@ -519,10 +519,13 @@ if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
-    # grok is intentionally excluded from --cli auto. Its safety model
-    # (--sandbox readonly + user-config "always approve" disabled) is documented
-    # but not enforceable from code, so silently selecting grok via auto would
-    # extend its exposure to contexts whose threat model wasn't reviewed.
+    # grok is intentionally excluded from --cli auto. Since 2026-08-19 its
+    # containment IS enforceable from code (--sandbox strict + the Bash/Edit/
+    # MCPTool denies + the vendor-hook switches), so the old "documented but unenforceable" rationale no longer
+    # applies — the exclusion now stands on scope alone: grok still transmits
+    # externally and still has open web tools, so silently selecting it via
+    # auto would extend its exposure to contexts whose threat model wasn't
+    # reviewed.
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
@@ -1962,12 +1965,13 @@ CHILD
             #     assistant exchanges. Real Researcher prompts consume 50-100
             #     messages; 150 is the safety margin. `max_turns_exceeded` is
             #     DESTRUCTIVE (whole output discarded), so err generous.
-            #   --sandbox readonly: see SAFETY MODEL block below.
+            #   --sandbox strict, --deny 'Bash(*)', --deny 'Edit',
+            #     --deny 'MCPTool(*)', and the two GROK_*_HOOKS_ENABLED=0 env
+            #     assignments: see the SAFETY MODEL block below.
             #
-            # Flags deliberately NOT passed (--always-approve, --disallowed-tools,
-            # --deny): documented in the SAFETY MODEL block below — empirically
-            # they are no-ops in headless mode, so passing them would either
-            # mislead or provide false-sense-of-security.
+            # Flags deliberately NOT passed: --always-approve (the point of this
+            # arm is the opposite) and --disallowed-tools (superseded by --deny,
+            # which is the documented rule surface and empirically enforcing).
             #
             # NOTE: grok-build (the only available model) rejects --reasoning-effort
             # and --effort with a 400 from the responses API, so neither MODEL nor
@@ -1976,38 +1980,100 @@ CHILD
                 echo "Error: --model is not supported by grok-build (single model; rejects --model flag). Remove --model or use --cli codex to pin a specific model." >&2
                 exit 1
             fi
-            # SAFETY MODEL (end-to-end, empirically verified 2026-05-26):
+            # SAFETY MODEL (end-to-end, re-measured 2026-08-19 on macOS):
             #
-            # Safety relies on BOTH the dispatcher code AND the user's grok
-            # configuration — neither alone is sufficient.
+            # Every control is DISPATCHER-SIDE and kernel- or policy-enforced.
+            # The user's grok config is NOT part of the boundary. That was the
+            # 2026-05-26 model and it is RETIRED: the same probe set ran under
+            # `permission_mode = "auto"` and under `default` (the old "always
+            # approve DISABLED" requirement) with identical results — shell
+            # exec, `ls ~/.ssh`, `curl`, and a /tmp write ALL succeeded in both.
+            # What had actually been blocking project-root writes was the
+            # sandbox profile, not the permission mode. Do not reintroduce a
+            # user-config clause here; it never held.
             #
-            # 1. DISPATCHER CONTROLS (committed in this script):
-            #   * --sandbox readonly: blocks file writes inside the project
-            #     root (emits `IO Error: Operation not permitted` for `write`
-            #     tool calls). Does NOT by itself block shell exec, writes
-            #     outside the project root, or network access.
+            #   * --sandbox busdriver-review: a CUSTOM profile, and that word
+            #     is the load-bearing part. Built-in profiles FAIL OPEN — grok
+            #     warns and runs unconfined if the kernel policy cannot be
+            #     applied — while an explicitly requested custom profile
+            #     REFUSES TO START ("Refusing to start with its protections
+            #     missing", verified 2026-08-19 by naming a profile that did
+            #     not exist). The profile lives in the operator's
+            #     ~/.grok/sandbox.toml, is checked for by the preflight below,
+            #     and ships as docs/examples/grok-sandbox.toml. It extends
+            #     `strict`, so reads are kernel-confined to CWD + system paths
+            #     (`~/.ssh/known_hosts` -> `Permission denied`, where the old
+            #     `readonly` profile returned the full key listing), and it
+            #     kernel-denies two path groups: the in-tree HOOK SOURCES
+            #     (`.claude/settings*.json`, `.cursor/hooks.json`,
+            #     `.grok/hooks`) and secrets. The hook denies are what close
+            #     the one path no --deny rule reaches: hooks run outside the
+            #     tool permission system and `strict` permits CWD writes, so a
+            #     branch-planted hook would be a clean bypass — but grok cannot
+            #     load a hook file it cannot READ (verified: both settings
+            #     files came back `Permission denied` / `does not exist`).
+            #   * --deny 'Bash(*)': shell exec returns `Denied by permission
+            #     policy: deny rule on bash`; file reads keep working.
+            #   * --deny 'Edit': blocks the write/edit tool class, in the
+            #     project root AND outside it (`Denied by permission policy:
+            #     deny rule on edit`). Needed because strict re-permits CWD
+            #     writes and because a Bash deny alone does not gate the write
+            #     tool — measured: under deny-Bash the write tool still created
+            #     /tmp/grok-writetool-probe.txt.
+            #   * --deny 'MCPTool(*)': MCP is a SEPARATE permission class, so
+            #     Bash and Edit denies do not reach it. An MCP server loaded
+            #     from user or project config can write and exec, which under a
+            #     CWD-writable strict profile is a straight bypass of the two
+            #     rules above. Verified firing against the operator's `exa`
+            #     server: `Denied by permission policy: deny rule on mcp`. No
+            #     reviewer role needs MCP; grok's OWN websearch/webfetch tool
+            #     classes are a different class and stay available, so the
+            #     council Researcher keeps its web access.
+            #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0:
+            #     a second, cheaper layer over the same hook vector the profile
+            #     denies — the scanners never look, and the files are
+            #     unreadable anyway. Kept because they cost nothing and cover
+            #     a vendor path the deny globs might miss after an upgrade.
+            #     MEASURED 2026-08-19 with GROK_HOOK_DEBUG=1 + GROK_HOOKS_LOG:
+            #     grok reports `project_sources=0` in this repo either way, and
+            #     the switches drop global_sources 4 -> 1 without affecting the
+            #     review.
+            #     WHEN RE-PROBING: a marker file appearing is NOT evidence a
+            #     grok hook ran. The first pass here "observed" a repo hook
+            #     firing; it was Claude Code's OWN PreToolUse hook, injected
+            #     into the same settings.local.json, firing on the prober's
+            #     Bash calls. Read grok's hook-discovery log, not the
+            #     filesystem.
             #   * --mode auto rejected at dispatcher level (see gate below)
             #     to restrict grok to read-shaped workloads only.
-            #   * --always-approve / --disallowed-tools / --deny deliberately
-            #     NOT passed — empirically they're no-ops in headless mode
-            #     (grok's flag-level permission system is advisory, not
-            #     enforcing). False-sense-of-security flags.
             #
-            # 2. USER-CONFIG REQUIREMENT (not committed; per-machine setting):
-            #   * grok must have "always approve" DISABLED in its user config
-            #     (via `grok` interactive `/permissions` setting or
-            #     ~/.grok/config). When disabled, grok defaults to denying
-            #     tool use in non-interactive mode (no user to confirm =
-            #     fail-safe). Verified 2026-05-26: with this config, writes
-            #     to /tmp and shell exec BOTH BLOCKED while web search and
-            #     file reads continue working.
-            #   * If a user reinstates "always approve" in their grok config,
-            #     the dispatcher silently degrades to the permissive headless
-            #     behavior. The runtime warning below points at this
-            #     assumption so degradation is visible.
+            # `--deny` was previously documented here as a headless no-op. That
+            # is FALSE as of 2026-08-19 — both deny rules above were verified
+            # firing. `deny` beats `ask` and `allow` from every source, so a
+            # committed `.claude/settings.json` or `.grok/config.toml` in a
+            # reviewed tree can narrow this arm further but cannot widen it.
             #
-            # ENFORCEMENT GATE: even with the user-config requirement met, we
-            # reject --mode auto for grok. A write-capable role could still
+            # RESIDUALS (accepted, not closed — each is a degradation to the
+            # PREVIOUS posture at worst, never below it):
+            #   * CWD WRITES BY SPAWNED PROCESSES. `strict` permits them
+            #     where `readonly` did not, so anything grok spawns outside the
+            #     tool permission system could write the reviewed tree. In-tree
+            #     hook sources are kernel-denied (above), so what remains is
+            #     the operator's own GLOBAL ~/.grok/hooks — measured firing on
+            #     every headless run and able to write the CWD. Those are
+            #     operator-authored, not repo-controlled, so they are outside
+            #     this boundary; treat adding one as the same class of decision
+            #     as adding a git hook.
+            #   * /tmp and /var/tmp stay writable under every profile, so the
+            #     Edit deny — not the sandbox — is what keeps grok from writing
+            #     there.
+            #   * Network egress is NOT blocked on macOS: strict's child-network
+            #     block is Linux-only (seccomp), and grok's own webfetch /
+            #     websearch tool classes stay open because the council
+            #     Researcher needs them. So "read what strict allows, then
+            #     exfiltrate" remains reachable — narrowed to CWD contents.
+            # ENFORCEMENT GATE: independently of all of the above, we reject
+            # --mode auto for grok. A write-capable role could still
             # request reads that look harmless; defense-in-depth means
             # write-capable workloads route to codex/agy/droid where the
             # write-permission model is better understood.
@@ -2015,20 +2081,60 @@ CHILD
                 echo "Error: grok adapter does not support --mode auto (sandbox is partial; shell exec and writes outside project root are not blocked). Use --mode readonly or pick another CLI." >&2
                 exit 1
             fi
-            # Runtime visibility: print a per-dispatch warning that documents
-            # the end-to-end safety dependency (dispatcher + user-config). The
-            # dispatcher's primary in-codebase caller (council Researcher)
+            # Runtime visibility: print a per-dispatch warning naming the
+            # RESIDUAL, not a config dependency the operator has to satisfy.
+            # The dispatcher's primary in-codebase caller (council Researcher)
             # does not consume stderr, so the warning surfaces to the user
-            # and not into the council report. Suppressible once the user
-            # has confirmed their grok config disables "always approve":
+            # and not into the council report. Suppress with
             # export BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1.
             if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]]; then
-                echo "Warning: grok safety = --sandbox readonly (dispatcher) + 'always approve' DISABLED in grok user-config (verify via grok /permissions). If always-approve is enabled in your grok config, shell exec and writes outside project root are NOT blocked. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress once verified." >&2
+                echo "Warning: grok containment = --sandbox busdriver-review (custom kernel profile, refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (policy) — reads confined to CWD, in-tree hook sources and secrets kernel-denied, shell/writes/MCP denied. RESIDUAL: network egress is NOT blocked on macOS and grok's own web tools stay open, so anything readable under CWD can still leave. Gate this lane on WHO WROTE the content. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress." >&2
             fi
-            _portable_timeout "$_budget" grok \
+            # `/usr/bin/env` by absolute path, and it re-sets PATH for the
+            # child it execs. PATH is inherited, and this repo already treats a
+            # committed settings.json env block as repo-injectable (#325 / ADR
+            # 0016), so a PATH-shadowed `env` or `grok` would run before grok's
+            # sandbox exists. Absolute `/usr/bin/env` fixes the first; env
+            # resolving `grok` against the PATH given ON ITS OWN COMMAND LINE
+            # fixes the second.
+            #
+            # RESIDUAL, and it is pre-existing: `_portable_timeout` still
+            # resolves `timeout`/`gtimeout`/`perl` through the inherited PATH
+            # before any of this runs, exactly as it does for every other CLI
+            # arm in this dispatcher. Hardening that is a change to the shared
+            # helper and belongs in its own commit, not smuggled into the grok
+            # lane.
+            #
+            # `env VAR=...` and not a caller-side export: an explicit
+            # assignment on the command line beats anything inherited, so a
+            # repo-committed `.claude/settings.json` env block (#325 / ADR
+            # 0016) cannot flip the vendor-hook scanners back on — or, via
+            # GROK_HOME, point grok at a config directory holding a weaker
+            # `sandbox.toml` than the one the preflight just verified. HOME and
+            # GROK_HOME are pinned to the password-database home the preflight
+            # derived, so the file checked and the file loaded are the same.
+            # Refuse if the operator's own ~/.grok/sandbox.toml does not define
+            # the profile. Naming a missing custom profile already fails closed
+            # inside grok, but with no USER definition a repo-local
+            # .grok/sandbox.toml would supply one — the reviewed branch writing
+            # its own containment. See grok_sandbox_preflight in resolve-cli.sh.
+            if ! grok_sandbox_preflight; then
+                echo "$_GROK_PREFLIGHT_HINT" >&2
+                exit 1
+            fi
+            _portable_timeout "$_budget" /usr/bin/env \
+                PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/usr/bin:/bin" \
+                HOME="$_GROK_TRUSTED_HOME" \
+                GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
+                GROK_CLAUDE_HOOKS_ENABLED=0 \
+                GROK_CURSOR_HOOKS_ENABLED=0 \
+                grok \
                 --prompt-file /dev/stdin \
                 --max-turns 150 \
-                --sandbox readonly \
+                --sandbox busdriver-review \
+                --deny 'Bash(*)' \
+                --deny 'Edit' \
+                --deny 'MCPTool(*)' \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 

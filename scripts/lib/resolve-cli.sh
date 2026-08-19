@@ -934,11 +934,13 @@ _resolve_from_route_array() {
       echo "busdriver: config route '$role_key' references 'opencode', which is only valid for the Auditor role (it always runs the fixed read-only Auditor harness) — skipping" >&2
       last_rejected="opencode"
     elif [[ "$cli" == "auto" ]]; then
-      # grok is INTENTIONALLY excluded from the auto-detect cascade: its
-      # safety model (--sandbox readonly + user-config "always approve"
-      # disabled) is documented but not enforceable from code, so silently
-      # picking grok via auto would extend its exposure surface to contexts
-      # whose threat model wasn't reviewed. Grok must be explicitly named
+      # grok is INTENTIONALLY excluded from the auto-detect cascade. Since
+      # 2026-08-19 its containment is enforceable from code (--sandbox strict
+      # + --deny Bash/Edit/MCPTool + the vendor-hook switches), so the
+      # exclusion rests on scope, not on an unenforceable model: grok still
+      # transmits externally and keeps its web tools, so silently picking it
+      # via auto would extend its exposure surface to contexts whose threat
+      # model wasn't reviewed. Grok must be explicitly named
       # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
       #
       # opencode is excluded because its read-only posture is not a property of
@@ -1223,12 +1225,14 @@ _resolve_role_cli_impl() {
                                 echo "none" && return ;;
   esac
 
-  # Step 5: Auto-detect — grok intentionally excluded. Its safety model
-  # (--sandbox readonly + user-config "always approve" disabled) is
-  # documented but not enforceable from code, so it must be explicitly
-  # named via BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to
-  # opt in. Auto-picking grok would extend its exposure surface to contexts
-  # whose threat model wasn't reviewed.
+  # Step 5: Auto-detect — grok intentionally excluded. Not because its
+  # containment is unenforceable (since 2026-08-19 it is: --sandbox strict
+  # + --deny Bash/Edit/MCPTool + the vendor-hook switches), but because grok
+  # still transmits externally
+  # and keeps its web tools, so it must be explicitly named via
+  # BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to opt in.
+  # Auto-picking grok would extend its exposure surface to contexts whose
+  # threat model wasn't reviewed.
   for cli in codex agy droid; do
     is_cli_available "$cli" && echo "$cli" && return
   done
@@ -2058,6 +2062,182 @@ _agy_prompt_oversize() {
     [[ "$size" -gt "$limit" ]]
 }
 
+# -- grok sandbox preflight -------------------------------------------------
+# The grok lane runs under the CUSTOM sandbox profile `busdriver-review`, not a
+# built-in one, because built-in profiles FAIL OPEN (grok warns and runs
+# unconfined when the kernel policy cannot be applied) while an explicitly
+# requested custom profile refuses to start. Verified 2026-08-19: naming a
+# profile that does not exist prints "Refusing to start with its protections
+# missing" and exits non-zero.
+#
+# That guarantee has one hole, and this check closes it. Custom profiles resolve
+# from the operator's ~/.grok/sandbox.toml OR a project `.grok/sandbox.toml`;
+# the user file wins when both define the name, but with NO user file the REPO's
+# definition is what applies — a reviewed branch writing its own containment.
+# So: refuse unless the operator's own file defines the profile.
+#
+# $HOME is not trusted for the lookup. An inherited HOME is repo-injectable via
+# a committed settings.json env block (#325 / ADR 0016), which would let the
+# reviewed tree aim this check at a sandbox.toml it controls. The home comes
+# from the password database instead — the same derivation the agy-read and
+# opencode lanes use.
+#
+# Checking the right file is only half the job: grok reads its config directory
+# from $GROK_HOME (default ~/.grok), so verifying the password-database copy
+# while the child inherits a repo-set GROK_HOME would check one file and load
+# another. On success this publishes the derived home in _GROK_TRUSTED_HOME, and
+# BOTH call sites pin HOME and GROK_HOME to it on the `env` line — check and
+# child then read the same directory by construction.
+#
+# $1 overrides the file path and exists ONLY for tests; production callers pass
+# nothing and get the derived path.
+grok_sandbox_preflight() {
+  local _gsp_file="${1:-}"
+  if [[ -z "$_gsp_file" ]]; then
+    local _gsp_user _gsp_home
+    _gsp_user="$(/usr/bin/id -un 2>/dev/null)" || return 1
+    case "$_gsp_user" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+    # `~+`, `~-`, `~+1`, `~-1` are Bash DIRECTORY-STACK forms, not accounts:
+    # they expand to PWD/OLDPWD/a stack entry, which for an account named `+`
+    # would make the REVIEWED TREE the trusted home. Same rejection as
+    # _bd_valid_username in dispatch.sh.
+    [[ "$_gsp_user" =~ ^[-+]?[0-9]*$ ]] && return 1
+    # NOT `eval echo "~$user"`. eval runs in the CALLER's shell, and this
+    # function is sourced by blueprint-review's ordinary bash — no `bash -p`
+    # boundary — so an inherited `BASH_FUNC_eval%%` would execute repo-supplied
+    # code before grok's sandbox exists. These read the password database
+    # directly, by absolute path, with no shell expansion and no interpreter
+    # version floor: dscl on macOS, getent on Linux. Neither present ⇒ refuse.
+    if [[ -x /usr/bin/dscl ]]; then
+      _gsp_home="$(/usr/bin/dscl . -read "/Users/$_gsp_user" NFSHomeDirectory 2>/dev/null \
+                   | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || return 1
+    elif [[ -x /usr/bin/getent ]]; then
+      _gsp_home="$(/usr/bin/getent passwd "$_gsp_user" 2>/dev/null | /usr/bin/cut -d: -f6)" || return 1
+    else
+      return 1
+    fi
+    [[ -n "$_gsp_home" && "$_gsp_home" == /* && -d "$_gsp_home" ]] || return 1
+    _gsp_file="$_gsp_home/.grok/sandbox.toml"
+    _GROK_TRUSTED_HOME="$_gsp_home"
+  fi
+  # A symlink is refused outright: it can point back into the reviewed tree,
+  # which would hand the repo the definition again by another route.
+  [[ -f "$_gsp_file" && ! -L "$_gsp_file" ]] || return 1
+
+  # SCOPE — read this before adding another pattern here. This file is the
+  # OPERATOR's, outside every repo, and the user copy wins over any project
+  # `.grok/sandbox.toml`. So the thing being defended against is a MISSING or
+  # MISCONFIGURED operator profile — the case where grok would silently take
+  # the reviewed branch's definition instead. A maliciously crafted profile in
+  # the operator's own home is not in the threat model: an attacker who can
+  # write there has already won, and no amount of validation here changes that.
+  # The checks below are therefore configuration checks, not a parser hardened
+  # against adversarial TOML, and they are deliberately conservative: anything
+  # unusual (escapes, multiline strings, single-quoted deny entries) is refused
+  # rather than interpreted. If a legitimate profile ever needs one of those
+  # spellings, the fix is to parse TOML properly, not to add another regex.
+  #
+  # The BODY is checked, not just the header. A header-only profile passes a
+  # header grep while behaving nothing like the documented one: grok defaults an
+  # omitted `extends` to `workspace`, which reads the whole filesystem, and a
+  # profile can drop the deny list or widen itself with `read_write`. The lane's
+  # runtime warning promises confinement, so the promise is verified here.
+  local _gsp_block
+  _gsp_block="$(/usr/bin/awk '
+    /^[[:space:]]*\[profiles\.busdriver-review\][[:space:]]*$/ { inblk = 1; next }
+    /^[[:space:]]*\[/                                            { inblk = 0 }
+    inblk
+  ' "$_gsp_file")" || return 1
+  [[ -n "$_gsp_block" ]] || return 1
+
+  # Every helper below is called by ABSOLUTE path. This function runs before
+  # grok's sandbox exists and a reviewed repo is treated as able to set PATH
+  # (#325 / ADR 0016), so a shadowed `grep`/`awk`/`python3` would execute
+  # repo-supplied code inside the check that is supposed to authorise the run.
+  #
+  # Comments are stripped before anything is matched. Without this, the required
+  # globs could sit in a `#` comment while `deny = []` is what grok parses —
+  # the check would read documentation as configuration, the same trap the
+  # argv test in tests/test-grok-sandbox-arm.sh had to fix.
+  # Only strips a `#` that starts outside a double-quoted string, so a deny
+  # entry of "#" no longer truncates the rest of the array. A backslash inside
+  # a string escapes the next character, so `"\""` does not end the string and
+  # cannot leave the scanner stuck in-quote across the rest of the line.
+  _gsp_block="$(/usr/bin/awk '{
+    out = ""; inq = 0
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (inq && c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
+      if (c == "\"") inq = !inq
+      else if (c == "#" && !inq) break
+      out = out c
+    }
+    print out
+  }' <<<"$_gsp_block")"
+
+  # Keys are matched bare, double-quoted AND single-quoted: TOML accepts all
+  # three (`read_write`, `"read_write"`, `'read_write'`), so a bare-key-only
+  # regex is a one-character bypass. The block above also ends at ANY table
+  # header, not just the next `[profiles.*]` — otherwise a `[decoy]` table
+  # between them would have its fields read as part of this profile.
+  /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" <<<"$_gsp_block" || return 1
+  # Both widening fields are rejected. `read_write` grants writable paths;
+  # `read_only` grants additional READABLE ones, so `read_only = ["/"]` would
+  # defeat the CWD-only confinement while looking harmless.
+  /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" <<<"$_gsp_block" && return 1
+  # TOML basic strings accept \uXXXX and \UXXXXXXXX escapes IN KEYS (both
+  # cases), so `"read\u005fwrite"` and `"read\U0000005fwrite"`
+  # is the same key spelled around any textual matcher. Rather than decode
+  # escapes, refuse a profile that uses them at all — the shipped one does not,
+  # and a legitimate sandbox profile has no reason to.
+  /usr/bin/grep -qi '\\u' <<<"$_gsp_block" && return 1
+  # Multiline strings are refused for the same reason: one triple-quoted value
+  # can carry every required glob as TEXT while the deny array denies none of
+  # them, satisfying substring checks that never parse TOML. The shipped
+  # profile uses single-line strings only.
+  /usr/bin/grep -qE '"""|'"'''"'' <<<"$_gsp_block" && return 1
+
+  # restrict_network must be ON. It is a no-op on macOS (child-network blocking
+  # is Linux-only), but the shipped profile and the lane's documentation both
+  # claim it, and a profile that quietly drops it should not pass a check whose
+  # job is to make the claim true.
+  /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" <<<"$_gsp_block" || return 1
+
+  # The required entries must live INSIDE the deny array, not merely somewhere
+  # in the block: `restrict_network = "**/.grok"` would otherwise satisfy a
+  # whole-block grep.
+  local _gsp_deny
+  _gsp_deny="$(/usr/bin/awk '
+    /^[[:space:]]*["\x27]?deny["\x27]?[[:space:]]*=/ { indeny = 1 }
+    indeny { print }
+    indeny && /\]/ { exit }
+  ' <<<"$_gsp_block")" || return 1
+  [[ -n "$_gsp_deny" ]] || return 1
+
+  # The deny array must use double-quoted entries only. TOML literal strings
+  # can carry the quote characters INSIDE the value — `deny = ['"**/.grok"']`
+  # denies a path whose name literally contains quotes, while satisfying a
+  # substring search for `"**/.grok"`. Refusing single quotes in the array
+  # removes that spelling entirely; the shipped profile has none.
+  /usr/bin/grep -q "'" <<<"$_gsp_deny" && return 1
+
+  # Two groups, both promised by the lane's runtime warning:
+  #   * the three vendor config directories, each in BOTH glob forms — a bare
+  #     `**/.claude` matches only the directory path and leaves its CONTENTS
+  #     readable (measured: grok read `.claude/settings.local.json` through it)
+  #   * the in-tree secret globs, since the warning says secrets are
+  #     kernel-denied and grok's web tools stay open by design
+  local _gsp_req
+  for _gsp_req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
+                  '"**/.cursor"' '"**/.cursor/**"' \
+                  '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
+    /usr/bin/grep -qF "$_gsp_req" <<<"$_gsp_deny" || return 1
+  done
+  return 0
+}
+
+_GROK_PREFLIGHT_HINT="Error: grok dispatch refused - the operator sandbox profile is missing. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and a custom profile must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+
 execute_review() {
   local cli="$1"
   local prompt="$2"
@@ -2156,20 +2336,43 @@ execute_review() {
     # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
     #
     # SAFETY MODEL (must match dispatch.sh's grok case — single source of truth
-    # for the threat model lives there; this is the mirrored summary):
-    #   * --sandbox readonly blocks project-root writes (verified empirically).
-    #     Does NOT block shell exec, /tmp writes, or network.
-    #   * End-to-end safety requires "always approve" DISABLED in the grok
-    #     user-config (per-machine setting via `grok` `/permissions`).
-    #     With that, writes/shell denied in headless; without it, grok auto-
-    #     approves arbitrary tool use including the bash tool.
+    # for the threat model lives there; this is the mirrored summary. The two
+    # argv lists are pinned together by tests/test-grok-sandbox-arm.sh so they
+    # cannot drift):
+    #   * --sandbox strict: kernel-enforced (Seatbelt/Landlock). Reads confined
+    #     to CWD + system paths. Does NOT block CWD writes — its write set is
+    #     CWD + ~/.grok/ + temp dirs.
+    #   * --deny 'Bash(*)': shell exec denied by policy.
+    #   * --deny 'Edit': write/edit tool class denied, inside the project root
+    #     and outside it. Required because strict permits CWD writes and a Bash
+    #     deny alone does not gate the write tool.
+    #   * --deny 'MCPTool(*)': MCP is a separate permission class the Bash and
+    #     Edit denies do not reach, and a write/exec-capable MCP server would
+    #     bypass both under a CWD-writable strict profile. grok's own
+    #     websearch/webfetch classes are unaffected.
+    #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
+    #     outside the permission system, so no deny rule reaches them, and
+    #     under strict anything grok spawns can write the CWD. Measured
+    #     2026-08-19 (GROK_HOOK_DEBUG + GROK_HOOKS_LOG), grok loads NO project
+    #     hook source here (`project_sources=0`), so this is defense-in-depth
+    #     against a future version that does, not a live hole being plugged —
+    #     see the dispatch.sh block for the full measurement and for why a
+    #     marker file is not evidence. Set via `env` so an inherited value
+    #     cannot re-enable them.
+    #   * The grok USER-CONFIG is not part of the boundary. The pre-2026-08-19
+    #     model claimed safety required "always approve" DISABLED; re-measured,
+    #     shell exec and out-of-tree writes succeeded under that setting too.
+    #   * Residuals, in full in the dispatch.sh block: a kernel fail-open
+    #     degrades this to policy-only containment (the denies still hold, so
+    #     it lands on the old `readonly` posture, not below it); strict permits
+    #     CWD writes by SPAWNED processes, which matters only for hooks, and no
+    #     project hook source loads here; /tmp stays writable; network egress
+    #     is not blocked on macOS.
     #   * Threat surface here: blueprint-review feeds design-document content
-    #     into this path. A prompt-injected design doc on a host where grok
-    #     user-config is permissive could get shell/write actions auto-
-    #     approved. This is the same residual risk class as dispatch.sh's
-    #     grok path and is documented in skills/dispatch-cli/scripts/dispatch.sh.
-    #   * No --always-approve / --disallowed-tools / --deny flags passed:
-    #     empirically they are no-ops in headless mode (false safety).
+    #     into this path, so a prompt-injected design doc is in scope. With the
+    #     flags above it can no longer obtain shell or write actions; the
+    #     residual is exfiltration of CWD-readable content via grok's own web
+    #     tools (network egress is not blocked on macOS).
     #
     # The stderr warning below is captured by run-design-review-loop.sh into
     # the per-reviewer raw file (e.g. grok-raw.txt). It will not surface to
@@ -2181,9 +2384,16 @@ execute_review() {
     # is destructive — whole output discarded — so err generous, not tight).
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
-    grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+    grok)    if ! grok_sandbox_preflight; then
+               echo "$_GROK_PREFLIGHT_HINT" >&2
+               return 1
+             fi
+             echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              _run_review_with_retries grok "$prompt" "$duration" pipe \
-               grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
+               /usr/bin/env PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/usr/bin:/bin" \
+               HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
+               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
+               grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)' ;;
     # opencode — added 2026-07-20 as the "Auditor" / Mechanism Witness voice. The
     # MODEL is not part of this arm's contract: it comes from `.auditor.model`
     # (resolve_auditor_model above), so provider and model can change without

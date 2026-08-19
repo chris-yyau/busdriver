@@ -1,0 +1,60 @@
+# Managed by busdriver — the grok review lane dispatches with
+# `--sandbox busdriver-review` (see skills/dispatch-cli/scripts/dispatch.sh).
+#
+# Why a CUSTOM profile and not the built-in `strict`: built-in profiles FAIL
+# OPEN — grok warns and runs unconfined if the kernel policy cannot be applied.
+# An explicitly-requested custom profile refuses to start instead ("Refusing to
+# start with its protections missing"). This file also lives OUTSIDE any repo:
+# a project `.grok/sandbox.toml` defining the same profile name loses to this
+# one, so a reviewed branch cannot widen its own containment.
+#
+# busdriver's preflight validates the BODY, not just the header, and refuses to
+# dispatch unless it finds `extends = "strict"`, all three deny entries below,
+# and no `read_write` key. Keep those intact if you edit this file.
+# BEFORE USING THIS FILE: replace every `/Users/YOU/...` path below with your
+# own home directory, and DELETE any entry whose path does not exist on this
+# machine. Both matter. A literal `/Users/YOU/.ssh` protects nothing, and on
+# Linux a deny path that cannot be bound makes grok refuse to start with the
+# profile — which is the correct fail-closed behaviour, but it will look like
+# the lane is broken.
+
+[profiles.busdriver-review]
+extends = "strict"          # reads confined to CWD + system paths
+restrict_network = true     # child-process network (Linux-enforced; no-op on macOS)
+
+# Kernel-denied (read AND write/rename). Two groups:
+#
+#   1. The three vendor CONFIG DIRECTORIES inside the reviewed tree. Everything
+#      in them runs outside grok's tool permission system, so no --deny rule
+#      reaches it, and `strict` permits CWD writes — a branch-planted hook,
+#      plugin, LSP command or plugin-path redirect would be a clean bypass.
+#      BOTH forms are required per directory: a bare `**/.claude` glob matches
+#      only the directory path itself — MEASURED 2026-08-19, grok read
+#      `.claude/settings.local.json` straight through it — so the `/**`
+#      companion is what denies the contents.
+#      Denying the whole directory rather than named files is deliberate: the
+#      per-file list has already grown twice (hooks -> plugins -> config/lsp),
+#      and a directory deny does not need updating when the next source lands.
+#      grok cannot load what it cannot read.
+#
+#   2. Secrets. Relative globs anchor at the workspace; absolute ones at their
+#      literal prefix, so the home-directory entries must be absolute — and,
+#      like the vendor directories above, each needs its `/**` companion or
+#      only the directory path itself is denied.
+deny = [
+  "**/.grok",
+  "**/.grok/**",
+  "**/.claude",
+  "**/.claude/**",
+  "**/.cursor",
+  "**/.cursor/**",
+  "/Users/YOU/.ssh",
+  "/Users/YOU/.ssh/**",
+  "/Users/YOU/.aws",
+  "/Users/YOU/.aws/**",
+  "/Users/YOU/.netrc",
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/*.key",
+]

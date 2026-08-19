@@ -58,40 +58,48 @@ is_cli_available() {
   command -v "$cli_name" &>/dev/null
 }
 
-# grok runs from a PINNED path at dispatch time (see grok_sandbox_preflight /
-# grok-preflight.sh), not the ambient PATH — so availability must be checked
-# against the same candidate directories, or a grok installed only in
-# ~/.grok/bin reads as "missing" here (env override, route entries,
-# blueprint-review.reviewer_3/council.researcher defaults) while the actual
-# dispatch would have found it and run it. Reported by Codex on PR #704.
+# grok availability IS preflight readiness — one question, one answer.
 #
-# This is a lightweight existence probe only — no identity verification,
-# symlink checks, or in-tree containment checks. Those stay in
-# grok_sandbox_preflight, which is the actual security boundary and runs
-# again at execution time; refusing to run has security weight there. Here
-# we are only deciding whether to route TO grok or fall back to another CLI,
-# so a plain `$HOME` (rather than the dscl/getent-verified identity) is fine.
-# The candidate list MUST stay identical to grok-preflight.sh's `pinned`
-# (tests/test-grok-sandbox-arm.sh pins the two together): a probe that looks
-# somewhere the dispatch will not is exactly the discovery/execution mismatch
-# this exists to close, just pointing the other way.
+# A binary-only probe reported grok available on a host that has the binary but
+# not the now-mandatory ~/.grok/sandbox.toml. A route like
+# `council.researcher: ["grok", "droid"]` then STOPPED at grok, the dispatch
+# preflight refused, and the voice was skipped — an upgraded host silently lost
+# its documented droid fallback. Reported by Codex on PR #704.
 #
-# `! -d` matches the preflight, which skips a directory candidate explicitly.
-# A DIRECTORY named grok satisfies -x, so without it this would report grok
-# available, route to it, and have the preflight refuse — turning a clean
-# fall-back-to-another-CLI into a spurious skipped voice.
+# Delegating wholesale (rather than bolting a profile check onto a copied
+# directory list) is what removes the failure class instead of this instance of
+# it: the preflight already checks the pinned candidate directories, the binary
+# identity, in-tree containment AND the profile contract, so there is now ONE
+# definition of "can grok run here" and nothing left to drift out of step.
+#
+# Note WHICH fallback this is. Falling back at ROUTING time is safe because no
+# prompt has been committed to grok yet. Falling back after a DISPATCH-time
+# refusal is not, and is deliberately not done: `_grok_refused` exists precisely
+# to stop a refused grok's prompt — and the repo content quoted in it — from
+# being handed to another CLI after the operator was told the lane refuses.
+# Same word, opposite safety, different moment.
+#
+# Fail direction is safe: anything that prevents the preflight from answering
+# (including a shell with no BASH_SOURCE, which resolves the child to /dev/null)
+# refuses, so grok reads as unavailable and the route continues to droid.
 _grok_available() {
-  local home="${HOME:-}"
-  local dir
-  for dir in "$home/.grok/bin" "$home/.local/bin" /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
-    [[ -x "$dir/grok" && ! -d "$dir/grok" ]] && return 0
-  done
-  return 1
+  grok_sandbox_preflight ""
 }
 
 get_cli_version() {
   local cli_name="$1"
   if is_cli_available "$cli_name"; then
+    # grok may not be on the ambient PATH at all — that mismatch is this PR's
+    # whole subject. The availability check above ran the preflight, which
+    # published the pinned PATH, so ask the binary that would actually run
+    # rather than reporting `unknown` for a perfectly good pinned-only install.
+    # Guarded on the value being present: if the side effect ever stops being
+    # set, this degrades to the ambient lookup rather than running with an
+    # empty PATH.
+    if [[ "$cli_name" == "grok" && -n "${_GROK_PINNED_PATH:-}" ]]; then
+      PATH="$_GROK_PINNED_PATH" command grok --version 2>/dev/null || echo "unknown"
+      return
+    fi
     "$cli_name" --version 2>/dev/null || echo "unknown"
   else
     echo "not-installed"

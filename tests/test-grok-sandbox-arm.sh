@@ -886,25 +886,30 @@ if /usr/bin/grep -q 'Skipped: %s\\n. "--model is not supported by grok-build' "$
 else
   fail "grok's --model rejection does not write a Skipped: marker — a --cli all --model batch fails on grok and takes every other voice down with it"
 fi
-# Availability probe vs. execution path: `is_cli_available grok` decides whether
-# to ROUTE to grok, and grok-preflight.sh decides where to RUN it. If those two
-# consult different directories, a pinned-only install either reads as missing
-# (silent droid fallback -- Codex, PR #704) or reads as present somewhere the
-# dispatch will never look. The lists are duplicated across two files by
-# necessity (one runs under `env -i`, the other is sourced), so pin them.
-_pinned_from() { /usr/bin/sed -n 's/.*"\$home\/\.grok\/bin[:"].*/HIT/p' "$1" | /usr/bin/head -1; }
-_probe_dirs="$(/usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE" \
-  | /usr/bin/sed -n 's/.*for dir in \(.*\); do/\1/p' | /usr/bin/tr -d '"')"
-_exec_dirs="$(/usr/bin/sed -n 's/^  pinned="\(.*\)"$/\1/p' "$CHILD" | /usr/bin/tr ':' ' ')"
-if [[ -n "$_probe_dirs" && -n "$_exec_dirs" && "$_probe_dirs" == "$_exec_dirs" ]]; then
-  pass "the availability probe searches exactly the directories the dispatch will run from"
+# Availability and execution must answer the SAME question. A binary-only probe
+# said "grok is available" on a host with the binary but no sandbox profile, so
+# a ["grok","droid"] route stopped at grok, the dispatch preflight refused, and
+# the voice was skipped instead of falling through to droid (Codex, PR #704).
+# The fix is delegation, so what this pins is the delegation itself: there is no
+# second candidate list left to drift, which is the point.
+_avail_body="$(/usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE")"
+if /usr/bin/printf '%s' "$_avail_body" | /usr/bin/grep -q 'grok_sandbox_preflight'; then
+  pass "grok availability delegates to the preflight, so routing and execution agree"
 else
-  fail "the grok availability probe and the preflight's pinned PATH have drifted -- probe=[$_probe_dirs] exec=[$_exec_dirs]; a pinned-only install would be routed or rejected against the wrong directory set"
+  fail "grok availability does not consult grok_sandbox_preflight -- a host with the binary but no sandbox profile would route to grok, be refused at dispatch, and lose its configured droid fallback"
 fi
-if /usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE" | /usr/bin/grep -q '! -d "\$dir/grok"'; then
-  pass "the availability probe excludes a directory named grok, as the preflight does"
+# ...and it must not have grown a private copy of the candidate list again.
+if /usr/bin/printf '%s' "$_avail_body" | /usr/bin/grep -q '\.grok/bin'; then
+  fail "the availability probe has re-acquired its own candidate directory list -- that duplication is exactly what drifted out of step with the preflight"
 else
-  fail "the availability probe accepts a DIRECTORY named grok (-x is true for directories) -- it would route to grok and have the preflight refuse, turning a clean fallback into a skipped voice"
+  pass "the availability probe keeps no candidate list of its own"
+fi
+# The refusal must still be VISIBLE on a route that names only grok: silently
+# degrading everywhere would trade one invisible failure for another.
+if /usr/bin/grep -q 'missing:' "$RESOLVE"; then
+  pass "a sole-grok route still reports missing:<cli> rather than resolving to nothing"
+else
+  fail "resolve_role_cli no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
 fi
 
 if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then

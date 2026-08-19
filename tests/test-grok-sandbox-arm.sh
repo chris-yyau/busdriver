@@ -760,6 +760,18 @@ for _cr in '/w/re[1]' '/w/re*x' '/w/re?y'; do
   fi
 done
 
+# ...and the production expression must keep the root QUOTED. The loop above
+# proves bash matches a quoted portion literally; it does not read
+# grok-preflight.sh. An unquoted `${root%/}/*` would turn the root into a
+# pattern and fail OPEN on a metacharacter path, with the loop above still
+# green.
+_unquoted=$(/usr/bin/grep -c '== \${root%/}/\*' "$CHILD" || true)
+if [[ "${_unquoted:-0}" -eq 0 ]]; then
+  pass "the containment comparisons keep the checkout root quoted"
+else
+  fail "a containment comparison uses an UNQUOTED root (\${root%/}/*) — a checkout path containing [ ] * or ? would stop matching as a prefix and the gate would fail OPEN"
+fi
+
 # ── bash 3.2 parse ──────────────────────────────────────────────────────
 # macOS ships /bin/bash 3.2 and this repo's scripts run under it. A construct
 # it mis-parses is not a style nit: 3.2 reported this very file's earlier

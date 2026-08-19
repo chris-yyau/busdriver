@@ -144,25 +144,6 @@ if [[ -z "$file" ]]; then
     real="$(cd -P -- "$(/usr/bin/dirname -- "$target")" 2>/dev/null && pwd -P)" || why binary
     [[ -n "$real" ]] || why binary
     [[ "${real%/}/" == "${root%/}/"* ]] && why binary
-    # Must be a real BINARY, not merely an executable file. A script's
-    # interpreter is resolved at exec time — `#!/usr/bin/env node` picks
-    # whatever `node` that same PATH finds first — and an executable text file
-    # with NO shebang is handed to /bin/sh by execvp, so "does not start with
-    # #!" is not the test. The test is what the file IS.
-    #
-    # Read the MAGIC BYTES rather than asking file(1). `file` is an optional
-    # package: it is absent from a stock Ubuntu 24.04 image, and depending on it
-    # made every valid grok install refuse as `WHY=binary` on such a host —
-    # a fail-closed refusal for a reason that has nothing to do with the lane's
-    # containment. Reported by Codex on PR #704. `od` is coreutils, present
-    # wherever this dispatcher already runs, and the four-byte read is exactly
-    # as decisive: ELF and every Mach-O flavour (32/64, LE/BE, and the FAT
-    # universal header a multi-arch binary starts with) have fixed magics, and
-    # nothing else that execvp would hand to /bin/sh shares one.
-    #
-    # `-f` first: an executable FIFO named grok passes -x and is not a
-    # directory, and reading it would block the gate forever.
-    [[ -f "$target" ]] || why binary
     # Must be a real BINARY, not merely an executable file, and the magic
     # ALONE does not establish that: a shell payload prefixed with `\x7fELF\n`
     # carries the right first four bytes, gets ENOEXEC from the kernel, and is

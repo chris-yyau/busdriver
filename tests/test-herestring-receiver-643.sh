@@ -746,6 +746,18 @@ assert_block "<<< <(printf x) . /dev/stdin <<< '$HELPER'" \
 assert_block "<<< >(cat) . /dev/stdin <<< '$HELPER'" "...the output form too"
 assert_ok "cat <(echo hi) <<< 'plain'"         "...and it does not make an ordinary read block"
 assert_ok "cat < /dev/null <<< 'plain'"        "a plain < is still a redirection"
+# ...and NOT inside double quotes, unlike `$(` and backticks: bash performs no process
+# substitution there, so `"x<(y"` is literal text. Opening a level for it pushed a `)` the
+# string never closes, and a later quoted `)` anywhere in the command closed it instead —
+# swallowing the command in between, which is how the dot below went missing.
+assert_block "A=\"x<(y\" . /dev/stdin <<< '$HELPER' \")\"" \
+    "a quoted <( is literal text, not a process substitution"
+assert_block "<<< \$(cat <(echo a) b > y) . /dev/stdin <<< '$HELPER'" \
+    "...but an unquoted one nested in a substitution still groups"
+# `time` after a wrapper is an external command, at every depth — the peel is gated on
+# pipeline-prefix position, so a second `time` behind `env` is never treated as a keyword.
+assert_ok "time env time . /dev/stdin <<< '$HELPER'" \
+    "a second time behind a wrapper is not peeled as a keyword"
 # PROPERTY over the class those three cases sample. The operand walk and the operator test
 # now disagree about a token in three different ways — whitespace, adjacency, and escaping
 # — and each disagreement hides the COMMAND behind the operand rather than the operand

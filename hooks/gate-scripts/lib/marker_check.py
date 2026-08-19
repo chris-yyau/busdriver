@@ -2023,11 +2023,17 @@ def _shell_pieces(text):
             # backtick closes.
             stack.append((_BT, quoted))
             return 1
-        if c in "<>" and at + 1 < n and text[at + 1] == "(":
+        if c in "<>" and at + 1 < n and text[at + 1] == "(" and not quoted:
             # PROCESS SUBSTITUTION. `<(cmd)` is one word to bash, and the `<` is not a
             # redirection -- reading it as one took `(cmd` for the target and let the rest
             # of the operand tokenize as outer text. Tested BEFORE the redirection regex
             # below, which would otherwise match the `<`.
+            #
+            # NOT INSIDE DOUBLE QUOTES, unlike `$(` and backticks: bash does not perform
+            # process substitution there, so `"x<(y"` is literal text. Opening a level for
+            # it pushed a `)` the string never closes, and a later quoted `)` anywhere in
+            # the command closed it instead -- swallowing the command in between.
+            # `A="x<(y" . /dev/stdin <<< P ")"` sources the payload and returned OK.
             stack.append((")", quoted))
             return 2
         if c == "$" and at + 1 < n and text[at + 1] in "{(":

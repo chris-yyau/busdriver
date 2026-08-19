@@ -40,31 +40,42 @@ should_escalate_to_droid grok 124 "$NE" && bad "droid absent → NO"            
 # ── Part B: dispatch.sh per-voice fallback (PATH-stubbed) ───────────
 echo ""
 echo "── dispatch.sh droid fallback ──────────────────────────────"
+# The stubbed vehicle is CODEX, not grok. grok used to play this role, but its
+# arm now runs a sandbox preflight first, and on any host without an operator
+# `~/.grok/sandbox.toml` that preflight REFUSES — so grok never reaches the
+# runtime failure this part is about, and three of these cases started failing
+# in CI while two others passed vacuously (a refusal has no rescue marker
+# either). A test must not depend on whether the machine running it has the
+# operator profile installed, and it must not write one into a developer's real
+# home to get it. codex's arm is a plain `codex exec` with no preflight, which
+# is what makes it the right vehicle for testing the SHARED escalation path.
+# grok's own refusal behaviour — which must NOT escalate — is pinned in
+# tests/test-grok-sandbox-arm.sh.
 STUB="$TMP/bin"; mkdir -p "$STUB"
-printf '#!/usr/bin/env bash\nexit 124\n' > "$STUB/grok"            # simulate web_search timeout
+printf '#!/usr/bin/env bash\nexit 124\n' > "$STUB/codex"           # simulate a timeout
 printf '#!/usr/bin/env bash\necho DROID_RESCUE\n' > "$STUB/droid"
-chmod +x "$STUB/grok" "$STUB/droid"
+chmod +x "$STUB/codex" "$STUB/droid"
 
 O="$TMP/d.out"; E="$TMP/d.err"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >"$O" 2>"$E" || true
-grep -q DROID_RESCUE "$O"   && ok "grok failure falls back to droid"   || bad "grok failure falls back to droid"
-grep -q "from droid" "$O"   && ok "fallback output carries marker"     || bad "fallback output carries marker"
-grep -q droid-fallback "$E" && ok "status reports droid-fallback"      || bad "status reports droid-fallback"
+PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 \
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli codex --timeout 5 --prompt p >"$O" 2>"$E" || true
+grep -q DROID_RESCUE "$O"   && ok "primary failure falls back to droid"   || bad "primary failure falls back to droid"
+grep -q "from droid" "$O"   && ok "fallback output carries marker"        || bad "fallback output carries marker"
+grep -q droid-fallback "$E" && ok "status reports droid-fallback"         || bad "status reports droid-fallback"
 
 # When droid also fails, the voice drops (no rescue marker, non-zero status).
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB/droid"; chmod +x "$STUB/droid"
 O2="$TMP/d2.out"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >"$O2" 2>/dev/null || true
+PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 \
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli codex --timeout 5 --prompt p >"$O2" 2>/dev/null || true
 grep -q DROID_RESCUE "$O2" && bad "droid-also-fails → voice drops" || ok "droid-also-fails → voice drops"
 
 # Primary exits 0 but EMPTY output + droid rescue fails → must NOT report success.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/grok"   # exit 0, no output
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/codex"   # exit 0, no output
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB/droid"
-chmod +x "$STUB/grok" "$STUB/droid"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
-  bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >/dev/null 2>/dev/null
+chmod +x "$STUB/codex" "$STUB/droid"
+PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 \
+  bash skills/dispatch-cli/scripts/dispatch.sh --cli codex --timeout 5 --prompt p >/dev/null 2>/dev/null
 RC=$?
 [[ "$RC" -ne 0 ]] && ok "exit0+empty+droid-fail → non-zero exit (not false success)" \
                   || bad "exit0+empty+droid-fail → non-zero exit (not false success)"

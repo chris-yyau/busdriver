@@ -253,6 +253,13 @@ assert_block "if true; then time source /dev/stdin; fi <<< '$HELPER'" \
 # promote the `.` behind it to command position and refuse an ordinary read.
 assert_ok "/usr/bin/time . /dev/stdin <<< '$HELPER'" \
     "external /usr/bin/time is not the keyword, and does not promote the dot"
+# ...and neither is a bare `time` that follows a WRAPPER: the keyword only prefixes a
+# PIPELINE, so after `env` or `command` it is an external program and nothing sources the
+# payload. Peeling it there promoted the `.` and refused a data-only read.
+assert_ok "env time . /dev/stdin <<< '$HELPER'" "a bare time after a wrapper is a command, not the keyword"
+assert_ok "command time . /dev/stdin <<< '$HELPER'" "...same for command"
+# Reserved syntax may still precede the keyword — that is the compound spelling above.
+assert_block "{ time . /dev/stdin; } <<< '$HELPER'" "...but reserved syntax before it still peels"
 # (11) ADJACENT FRAGMENTS IN THE COMMAND WORD. bash concatenates `'b''a''s''h'` into
 #      `bash` while shlex emits four tokens, so per-token squeezing matched nothing.
 #      The words are also tested JOINED. Distinct from the `b'a's'h'` case above, which

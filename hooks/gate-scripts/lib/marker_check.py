@@ -2138,7 +2138,20 @@ def _cmd_position(words):
     # distinctions it already makes and a `!= "time"` filter threw away -- the bare
     # keyword is peeled, `/usr/bin/time` (which cannot source anything) is not, and a
     # compound introducer such as `then` or `{` does not hide the `time` behind it.
-    _w = _strip_time_prefix(words)
+    # ...but only in PIPELINE-PREFIX position. `_strip_time_prefix` walks the same leading
+    # tokens `_peel_wrappers` does, which includes wrapper COMMANDS -- and after one of
+    # those, `time` is an external program, not the keyword. `env time . /dev/stdin <<< P`
+    # runs `env`, so nothing sources the payload, but peeling the `time` promoted the `.`
+    # to command position and refused a data-only read. Reserved syntax may still precede
+    # it: a compound arrives as `then time source /dev/stdin`, which the helper's own
+    # not-index-0 rule exists for. Whether the word is the KEYWORD or a path such as
+    # `/usr/bin/time` stays the helper's call.
+    _j = 0
+    while _j < len(words) and _bn(words[_j]) in _RESERVED_SH:
+        _j += 1
+    _w = words
+    if _j < len(words) and _bn(words[_j]) == "time":
+        _w = words[:_j] + _strip_time_prefix(words[_j:])
     return _peel_wrappers(_w) or (_w[0] if _w else None)
 
 

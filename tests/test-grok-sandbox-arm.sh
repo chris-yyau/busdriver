@@ -259,7 +259,10 @@ else
   _GLOBS=('"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"'
           '"**/.cursor"' '"**/.cursor/**"' '"**/.env"' '"**/.env.*"'
           '"**/*.pem"' '"**/*.key"')
-  _slug() { printf '%s' "$1" | tr -d '"*/.' ; }
+  # Index-suffixed: "**/.grok" and "**/.grok/**" both strip to `grok`, so a
+  # name built from the glob alone had the paired fixtures overwriting each
+  # other and one companion going untested.
+  _slug() { printf '%s-%s' "$2" "$(printf '%s' "$1" | tr -d '"*/.')" ; }
   # one fixture per required glob, each dropping exactly that one and keeping
   # the other nine. Built by array join, not by editing a string: the globs are
   # full of regex and shell metacharacters.
@@ -270,7 +273,7 @@ else
       [[ -n "$_rest" ]] && _rest="$_rest, "
       _rest="$_rest${_GLOBS[$_j]}"
     done
-    _profile 'deny' "deny = [$_rest]" > "$tmp/missing-$(_slug "${_GLOBS[$_i]}").toml"
+    _profile 'deny' "deny = [$_rest]" > "$tmp/missing-$(_slug "${_GLOBS[$_i]}" "$_i").toml"
   done
 
   # required globs present only as a COMMENT, with an empty deny array
@@ -378,7 +381,7 @@ deny = []' > "$tmp/commented.toml"
 
   # env execs the FIRST grok on the pinned PATH, so an unsafe first candidate
   # must fail the check, not be skipped in favour of a safe later one.
-  if /usr/bin/grep -q 'target="\$(resolve_link "\$p/grok")" || exit 1' "$RESOLVE"; then
+  if /usr/bin/grep -q 'target="\$(resolve_link "\$p/grok")" || why binary' "$RESOLVE"; then
     pass "an unsafe first grok candidate fails the preflight instead of being skipped"
   else
     fail "the PATH scan continues past an unsafe candidate — it would bless a binary that never runs"
@@ -414,7 +417,7 @@ deny = []' > "$tmp/commented.toml"
     fail "preflight does not check grok against the pinned PATH — selection and execution could disagree"
   fi
 
-  if /usr/bin/grep -q '\-L "\$home/.grok" \] && exit 1' "$RESOLVE"; then
+  if /usr/bin/grep -q '\-L "\$home/.grok" \] && why configdir' "$RESOLVE"; then
     pass "preflight refuses a symlinked ~/.grok directory, not just a symlinked file"
   else
     fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"
@@ -450,8 +453,9 @@ deny = []' > "$tmp/commented.toml"
     fi
   done
 
-  for _g in "${_GLOBS[@]}"; do
-    _f="$tmp/missing-$(_slug "$_g").toml"
+  for _i in "${!_GLOBS[@]}"; do
+    _g="${_GLOBS[$_i]}"
+    _f="$tmp/missing-$(_slug "$_g" "$_i").toml"
     # the fixture must still carry the other nine, or it would be refused for a
     # reason that has nothing to do with the glob it is named for
     if [[ ! -s "$_f" ]] || [[ "$(/usr/bin/grep -o '\*\*' "$_f" | wc -l)" -lt 9 ]]; then
@@ -472,6 +476,56 @@ fi
 # The shipped example must actually define what the preflight looks for, or the
 # error message sends the operator to a file that will not satisfy it.
 EXAMPLE="$REPO_ROOT/docs/examples/grok-sandbox.toml"
+# Each refusal reason must produce its OWN remediation. One generic "install the
+# profile" message is wrong advice for four of the five ways this refuses, and
+# wrong advice on a security gate is worse than none — the operator edits a file
+# that was never the problem and concludes the gate is broken.
+# The reason helper must TERMINATE. It was briefly self-recursive here (a bulk
+# edit rewrote its own `exit 1` into a `why` call), which printed WHY= forever
+# instead of refusing — a hang where a refusal belongs.
+if /usr/bin/grep -qA2 '^why() {' "$RESOLVE" | /usr/bin/grep -q 'why '; then
+  fail "why() calls itself — a refusal would loop instead of exiting"
+else
+  pass "why() exits rather than recursing"
+fi
+
+if declare -F grok_preflight_hint >/dev/null; then
+  _GROK_PREFLIGHT_WHY=containment
+  _h_containment="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=binary
+  _h_binary="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=configdir
+  _h_configdir="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=identity
+  _h_identity="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=profile
+  _h_profile="$(grok_preflight_hint)"
+  unset _GROK_PREFLIGHT_WHY
+
+  if [[ "$_h_containment" == *"INSIDE the checkout"* ]]; then
+    pass "the containment refusal explains the checkout overlap, not the profile"
+  else
+    fail "the containment refusal reuses the generic profile message"
+  fi
+  if [[ "$_h_binary" == *"no grok executable"* ]]; then
+    pass "the binary refusal explains the PATH problem"
+  else
+    fail "the binary refusal reuses the generic profile message"
+  fi
+  if [[ "$_h_configdir" == *"symlink"* && "$_h_identity" == *"password database"* ]]; then
+    pass "the config-dir and identity refusals each explain themselves"
+  else
+    fail "the config-dir or identity refusal reuses the generic profile message"
+  fi
+  if [[ "$_h_profile" == *"docs/examples/grok-sandbox.toml"* ]]; then
+    pass "the profile refusal names the file to install"
+  else
+    fail "the profile refusal no longer names docs/examples/grok-sandbox.toml"
+  fi
+else
+  fail "grok_preflight_hint is not defined — the refusal messages have no source"
+fi
+
 # The strongest statement available: run the real preflight against the file the
 # error message tells operators to install. Header/glob greps alone would still
 # pass an example that the preflight rejects on install.

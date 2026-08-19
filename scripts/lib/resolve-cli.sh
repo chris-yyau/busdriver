@@ -2143,10 +2143,25 @@ grok_sandbox_preflight() {
   # is the status of its last command, so the `[[ ... ]] && { ... }` at the
   # bottom IS the return value: empty output from the child ⇒ non-zero ⇒ refuse.
   # That is why the variables below are unprefixed globals rather than `local`s.
+  # The trailing `|| _GSP_OUT="${_GSP_OUT}"` is a deliberate no-op, not a
+  # mistake: `VAR="$(cmd)"` keeps cmd's stdout even when cmd exits non-zero, so
+  # the self-assignment preserves the child's WHY= line while neutralising
+  # `set -e`. `|| _GSP_OUT=""` would throw the refusal reason away and every
+  # failure would report the generic one.
+  # shellcheck disable=SC2269
   _GSP_OUT="$(/usr/bin/env -i /bin/bash -p -s -- "${1:-}" <<'PREFLIGHT_CHILD'
 set -u
 PATH=/usr/bin:/bin
 file="${1:-}"
+
+# Every refusal names its CAUSE. One generic "profile is missing" for all of
+# them sent operators to copy an example file that cannot fix a symlinked
+# ~/.grok, a checkout that contains it, or a grok binary resolving into the
+# reviewed tree.
+why() {
+  printf 'WHY=%s\n' "$1"
+  exit 1
+}
 
 # follow a symlink chain without readlink -f (GNU-only); bounded so a loop
 # cannot hang
@@ -2168,31 +2183,31 @@ home=""
 pinned=""
 
 if [ -z "$file" ]; then
-  user="$(/usr/bin/id -un 2>/dev/null)" || exit 1
-  [ -n "$user" ] || exit 1
+  user="$(/usr/bin/id -un 2>/dev/null)" || why identity
+  [ -n "$user" ] || why identity
   # no shell metacharacters, and none of bash's `~+` / `~-` / `~+1` directory-
   # stack forms, which expand to PWD/OLDPWD instead of an account home
-  [[ "$user" == *[!A-Za-z0-9._-]* ]] && exit 1
-  [[ "$user" =~ ^[-+]?[0-9]*$ ]] && exit 1
+  [[ "$user" == *[!A-Za-z0-9._-]* ]] && why identity
+  [[ "$user" =~ ^[-+]?[0-9]*$ ]] && why identity
 
   # password database directly — no `eval echo ~user`, no interpreter version
   # floor: dscl on macOS, getent on Linux, refuse if neither is present
   if [ -x /usr/bin/dscl ]; then
-    home="$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || exit 1
+    home="$(/usr/bin/dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')" || why identity
   elif [ -x /usr/bin/getent ]; then
-    home="$(/usr/bin/getent passwd "$user" 2>/dev/null | /usr/bin/cut -d: -f6)" || exit 1
+    home="$(/usr/bin/getent passwd "$user" 2>/dev/null | /usr/bin/cut -d: -f6)" || why identity
   else
-    exit 1
+    why identity
   fi
-  [ -n "$home" ] || exit 1
-  [ "${home#/}" != "$home" ] || exit 1
-  [ -d "$home" ] || exit 1
+  [ -n "$home" ] || why identity
+  [ "${home#/}" != "$home" ] || why identity
+  [ -d "$home" ] || why identity
 
   # the config DIRECTORY must not be a symlink: pointing ~/.grok into the
   # reviewed tree makes the profile AND the bin/grok the PATH pin trusts
   # repo-controlled while every individual file stays a regular file
-  [ -L "$home/.grok" ] && exit 1
-  [ -d "$home/.grok" ] || exit 1
+  [ -L "$home/.grok" ] && why configdir
+  [ -d "$home/.grok" ] || why configdir
   file="$home/.grok/sandbox.toml"
   pinned="$home/.grok/bin:$home/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -2204,8 +2219,8 @@ if [ -z "$file" ]; then
   # ordinary shell variable and can be reassigned without changing directory,
   # so a forged one would have the containment checks compare ~/.grok against
   # the wrong root. The child inherits the real cwd from the process.
-  root="$(pwd -P)" || exit 1
-  [ -n "$root" ] || exit 1
+  root="$(pwd -P)" || why containment
+  [ -n "$root" ] || why containment
   walk="$root"
   while [ -n "$walk" ] && [ "$walk" != "/" ]; do
     if [ -e "$walk/.git" ]; then root="$walk"; break; fi
@@ -2216,9 +2231,9 @@ if [ -z "$file" ]; then
   # config dir: a checkout rooted at ~/.local would supply .local/bin/grok
   for d in "$home/.grok" "$home/.local/bin"; do
     [ -e "$d" ] || continue
-    real="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || exit 1
-    [ -n "$real" ] || exit 1
-    [[ "${real%/}/" == "${root%/}/"* ]] && exit 1
+    real="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || why containment
+    [ -n "$real" ] || why containment
+    [[ "${real%/}/" == "${root%/}/"* ]] && why containment
   done
 
   # a grok EXECUTABLE must exist on the pinned PATH, and must not resolve back
@@ -2236,25 +2251,25 @@ if [ -z "$file" ]; then
     [ -n "$p" ] || continue
     [ -x "$p/grok" ] || continue
     [ -d "$p/grok" ] && continue
-    target="$(resolve_link "$p/grok")" || exit 1
-    real="$(cd -P -- "$(/usr/bin/dirname -- "$target")" 2>/dev/null && pwd -P)" || exit 1
-    [ -n "$real" ] || exit 1
-    [[ "${real%/}/" == "${root%/}/"* ]] && exit 1
+    target="$(resolve_link "$p/grok")" || why binary
+    real="$(cd -P -- "$(/usr/bin/dirname -- "$target")" 2>/dev/null && pwd -P)" || why binary
+    [ -n "$real" ] || why binary
+    [[ "${real%/}/" == "${root%/}/"* ]] && why binary
     found=1; break
   done
-  [ -n "$found" ] || exit 1
+  [ -n "$found" ] || why binary
 fi
 
 # a symlinked profile can point back into the reviewed tree
-[ -f "$file" ] || exit 1
-[ -L "$file" ] && exit 1
+[ -f "$file" ] || why profile
+[ -L "$file" ] && why profile
 
 block="$(/usr/bin/awk '
   /^[[:space:]]*\[profiles\.busdriver-review\][[:space:]]*$/ { inblk = 1; next }
   /^[[:space:]]*\[/                                          { inblk = 0 }
   inblk
-' "$file")" || exit 1
-[ -n "$block" ] || exit 1
+' "$file")" || why profile
+[ -n "$block" ] || why profile
 
 # strip comments, but only a `#` that starts outside a double-quoted string —
 # otherwise a deny entry of "#" truncates the array and the checks below read
@@ -2269,60 +2284,70 @@ block="$(printf '%s\n' "$block" | /usr/bin/awk '{
     out = out c
   }
   print out
-}')" || exit 1
+}')" || why profile
 
 # keys matched bare, double-quoted and single-quoted: TOML accepts all three
-printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" || exit 1
-printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" || exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" || why profile
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" || why profile
 # read_write grants writable paths; read_only grants extra readable ones —
 # `read_only = ["/"]` would defeat the CWD-only confinement
-printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" && exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" && why profile
 # \uXXXX / \UXXXXXXXX escapes spell a key around any textual matcher, and a
 # multiline string can carry the required globs as text while deny = []
-printf '%s\n' "$block" | /usr/bin/grep -qi '\\u' && exit 1
-printf '%s\n' "$block" | /usr/bin/grep -qF '"""' && exit 1
-printf '%s\n' "$block" | /usr/bin/grep -qF "'''" && exit 1
+printf '%s\n' "$block" | /usr/bin/grep -qi '\\u' && why profile
+printf '%s\n' "$block" | /usr/bin/grep -qF '"""' && why profile
+printf '%s\n' "$block" | /usr/bin/grep -qF "'''" && why profile
 
 deny="$(printf '%s\n' "$block" | /usr/bin/awk '
   /^[[:space:]]*["\x27]?deny["\x27]?[[:space:]]*=/ { indeny = 1 }
   indeny { print }
   indeny && /\]/ { exit }
-')" || exit 1
-[ -n "$deny" ] || exit 1
+')" || why profile
+[ -n "$deny" ] || why profile
 # double-quoted entries only: a TOML literal string can carry the quote
 # characters INSIDE the value, so `deny = ['"**/.grok"']` denies a path whose
 # name contains quotes while satisfying a search for `"**/.grok"`
-printf '%s\n' "$deny" | /usr/bin/grep -q "'" && exit 1
+printf '%s\n' "$deny" | /usr/bin/grep -q "'" && why profile
 # and no backslash: TOML basic strings decode escapes, so `"\"**/.grok\""`
 # is a glob whose value CONTAINS quote characters — it denies nothing while its
 # source still reads like the required entry. Refusing the escape character
 # outright kills that whole encoding class; the shipped profile has none.
-printf '%s\n' "$deny" | /usr/bin/grep -q '\\' && exit 1
+printf '%s\n' "$deny" | /usr/bin/grep -q '\\' && why profile
 
 for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
            '"**/.cursor"' '"**/.cursor/**"' \
            '"**/.env"' '"**/.env.*"' '"**/*.pem"' '"**/*.key"'; do
-  printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || exit 1
+  printf '%s\n' "$deny" | /usr/bin/grep -qF "$req" || why profile
 done
 
 printf 'HOME=%s\n' "$home"
 printf 'PATH=%s\n' "$pinned"
 exit 0
 PREFLIGHT_CHILD
-)" || _GSP_OUT=""
+)" || _GSP_OUT="${_GSP_OUT}"
 
   # Publish what the child derived. Both are consumed on the `env` line of the
   # grok invocation, so the file that was checked and the file that is loaded
   # are the same one. A refusal prints nothing, so an empty capture is the
   # failure signal — and this compound command is the function's exit status.
-  [[ -n "$_GSP_OUT" ]] && {
+  _GROK_PREFLIGHT_WHY="${_GSP_OUT#WHY=}"
+  [[ "$_GROK_PREFLIGHT_WHY" == "$_GSP_OUT" ]] && _GROK_PREFLIGHT_WHY="profile"
+  [[ "$_GSP_OUT" == HOME=* ]] && {
     _GROK_TRUSTED_HOME="${_GSP_OUT#HOME=}"
     _GROK_TRUSTED_HOME="${_GROK_TRUSTED_HOME%%$'\n'*}"
     _GROK_PINNED_PATH="${_GSP_OUT#*$'\n'PATH=}"
   }
 }
 
-_GROK_PREFLIGHT_HINT="Error: grok dispatch refused - the operator sandbox profile is missing. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and a custom profile must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+# The hint is chosen by the child's reason code, because "install the example
+# profile" is wrong advice for four of the five ways this refuses.
+grok_preflight_hint() {
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == configdir ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok is missing, or is a symlink. A symlinked config directory can be pointed into the reviewed tree, which would hand the branch both the sandbox profile and the grok binary. Replace it with a real directory." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0
+  printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+}
 
 execute_review() {
   local cli="$1"
@@ -2484,7 +2509,7 @@ execute_review() {
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
              else
-               echo "$_GROK_PREFLIGHT_HINT" >&2
+               grok_preflight_hint >&2
                # `[[ -n "" ]]` and not `false` or `return 1`: a keyword cannot be
                # shadowed by an exported function, and this arm's status is what
                # the caller reads.

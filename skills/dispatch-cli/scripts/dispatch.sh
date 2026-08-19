@@ -2173,8 +2173,8 @@ CHILD
                 # because the retry loop classifies on the output file: an empty
                 # one reads as "CLI died, retry", which would spin before the
                 # droid rescue instead of stopping on a configuration error.
-                echo "$_GROK_PREFLIGHT_HINT" >&2
-                echo "$_GROK_PREFLIGHT_HINT" > "$outfile"
+                grok_preflight_hint >&2
+                grok_preflight_hint > "$outfile"
                 exit_code=1
             fi ;;
     esac

@@ -602,6 +602,150 @@ assert_block "<<< '$HELPER'\"; \" . /dev/stdin" \
 # redirection TARGET to command position, and hid the dot that sources the payload.
 assert_block "<<<x< /dev/null . /dev/stdin <<< '$HELPER'" \
     "a flush second redirection is an operator, not more operand"
+# INSIDE AN EXPANSION nothing is a word break and nothing is an operator. `${x:-a b > y}`
+# is ONE operand to bash, but scanned flat the word ended at the space, `b` took command
+# position, the `>` read as a real redirection and `y}` as its target — so the `.` that
+# sources the payload was never in command position and the here-string ran unscanned.
+assert_block "<<< \${x:-a b > y} . /dev/stdin <<< '$HELPER'" \
+    "a parameter expansion is one operand, spaces and operators included"
+assert_block "<<< \$(echo a b) . /dev/stdin <<< '$HELPER'" "...a command substitution too"
+assert_block "<<< \$((1 + 2)) . /dev/stdin <<< '$HELPER'"  "...and arithmetic, which opens twice"
+# An UNTERMINATED expansion is unresolvable and blocks, like unterminated quoting.
+assert_block "<<< \${x:-a . /dev/stdin <<< '$HELPER'" "an unterminated expansion blocks"
+# ...and the closer is only recognised where the shell would recognise it. The escape and
+# quote states are handled BEFORE the expansion state, so an escaped or quoted delimiter is
+# consumed as ordinary text and never pops the nesting — otherwise the scan would resume
+# outer-shell tokenizing mid-expansion and hide the receiver behind it.
+assert_block "<<< \$(printf \\) a b > y) . /dev/stdin <<< '$HELPER'" \
+    "an escaped delimiter does not close a command substitution"
+assert_block "<<< \$(printf ')' a b > y) . /dev/stdin <<< '$HELPER'" \
+    "...nor a quoted one"
+assert_block "<<< \$(case x in x) cat;; esac) . /dev/stdin <<< '$HELPER'" \
+    "...and a case pattern inside one still leaves the receiver visible"
+# The ORDER of the scan's states is what guarantees that, and it is asserted here because
+# it reads as an implementation detail: the escape and quote branches sit ABOVE the
+# expansion branch, so an escaped or quoted delimiter is consumed as text and never reaches
+# the pop. A brace form is included because `}` and `)` take different paths in.
+assert_block "<<< \${x:-\\} a b > y} . /dev/stdin <<< '$HELPER'" \
+    "an escaped brace does not close a parameter expansion"
+assert_block "<<< \${x:-'}' a b > y} . /dev/stdin <<< '$HELPER'" \
+    "...nor a quoted one"
+# A literal brace inside an expansion pushes a level that never closes. That is not a
+# bypass: an unterminated stack is unresolvable, and unresolvable blocks.
+# Only `$(` and `${` open a level. Treating every bare `(`/`{` as nesting was wrong twice:
+# bash permits a LITERAL brace inside an expansion, so `$(printf {)` pushed a level the real
+# `)` could not close — and a later `}` elsewhere in the command could DRAIN that level,
+# resuming outer tokenizing at the wrong place rather than failing closed.
+assert_block "<<< \$(printf {) . /dev/stdin <<< '$HELPER'" \
+    "a literal brace inside an expansion is not a nesting level"
+assert_block "<<< \$(printf {) . /dev/stdin <<< '$HELPER'; case x in x}x) true;; esac" \
+    "...and a later delimiter cannot drain one to hide the receiver"
+assert_block "<<< \$(echo \$(echo a) b) . /dev/stdin <<< '$HELPER'" \
+    "a genuinely nested substitution still closes at the right paren"
+assert_block "( { <<< \$(printf {) . /dev/stdin <<< '$HELPER'; } )" \
+    "...and the same inside grouping"
+# A COMMAND SUBSTITUTION IN OPERAND POSITION IS NOT A RECEIVER, and this is measured
+# against bash rather than reasoned about: expansion happens BEFORE the command's
+# redirections are applied, so the substitution inherits the SHELL's stdin, never the
+# here-string. Verified directly —
+#   bash -c 'printf "[%s]" "$(cat)" <<< hello' </dev/null   -> []
+#   printf fromstdin | bash -c 'printf "[%s]" "$(cat)" <<< hello' -> [fromstdin]
+# — so a shell named inside an operand substitution cannot execute the payload.
+assert_ok "true <<< \"$HELPER\" <<< \$(bash)" \
+    "a substitution in operand position does not receive the here-string"
+# ...and anywhere OTHER than operand position it is an unresolved command word, which is
+# fail-closed for exactly the reason this file gives: an expansion may resolve onto a shell.
+assert_block "cat <<< '$HELPER' \$(bash)"       "...but a substitution as a WORD is unresolved, and blocks"
+# A `case` pattern's `)` does close the scanner's expansion level early — bash would not —
+# but that is not what decides these. The SAME over-block happens with no `case` anywhere:
+# a substitution sitting in a word is an unresolved command word, which is fail-closed
+# because an expansion may resolve onto a shell. Both are pinned so the pair stays visible.
+assert_block "true <<< \$(case x in x) bash;; esac) <<< '$HELPER'" \
+    "a shell inside a substitution over-blocks (accepted)"
+assert_block "true <<< \$(echo bash) <<< '$HELPER'" \
+    "...and identically with no case pattern, so the early close is not the cause"
+# Expansions stay active INSIDE DOUBLE QUOTES, and a substitution carries its own quoting
+# context: `"$(printf "a b")"` is one word, and ending the outer quote at the INNER one
+# resumed outer tokenizing mid-expansion.
+assert_block "<<< \"\$(printf \"a b > y\")\" . /dev/stdin <<< '$HELPER'" \
+    "a substitution inside double quotes keeps its own quoting context"
+assert_block "<<< \"\${x:-a b}\" . /dev/stdin <<< '$HELPER'" "...and a quoted parameter expansion"
+# The opener routine is SHARED by all three states — ordinary, inside double quotes, and
+# inside another expansion. They had separate copies and the copies disagreed: only the
+# outer one knew `$((` opens TWICE, so an arithmetic expansion nested in a command
+# substitution pushed one level and its `))` popped the substitution too. Backticks were
+# not tracked at all, so their spaces and operators reached the outer tokenizer.
+#
+# PROPERTY — the invariant behind every case above: tokenization never exposes a word or an
+# operator from INSIDE an expansion. Each operand below is ONE word to bash however much
+# whitespace, punctuation or quoting it contains, so the `.` after it is always the command
+# and the final here-string is always sourced. If any spelling leaks, the `.` stops being
+# in command position and this returns OK.
+_xp_n=0
+for _x in "\${x:-a b > y}" "\$(printf \"a b > y\")" "\$((1 + 2))" "\$(echo \$(echo a) b)" \
+          "\"\$(printf \"a b\")\"" "\${x:-'}'}" "\$(printf {)" "\${x:-a;b|c&d}" \
+          "\$(echo a | grep b)" "\"\${x:-a b}\"" \
+          "\$(echo \$((1 + 2)) a b > y)" "\`echo a b > y\`" "\"\`echo a b\`\"" \
+          "\`echo \$(echo a) b\`"; do
+    _xp_n=$((_xp_n + 1))
+    _got=$(verdict "<<< $_x . /dev/stdin <<< '$HELPER'")
+    if [[ "$_got" != BLOCK_* ]]; then
+        no "property: no word or operator escapes an expansion" "<<< $_x — got=${_got:-<empty>}"
+        _xp_n=-1; break
+    fi
+done
+if [[ $_xp_n -gt 0 ]]; then
+    ok "property: no word or operator escapes an expansion ($_xp_n)"
+fi
+# ...and the same expansions in a DATA payload are still read as data.
+_xd_n=0
+for _x in "\$(echo hi)" "\${x:-a b}" "\$((1 + 2))" "\`echo hi\`"; do
+    _xd_n=$((_xd_n + 1))
+    _got=$(verdict "cat <<< \"$_x\"")
+    if [[ "$_got" != "OK|" ]]; then
+        no "property: an expansion in a data payload is still a read" "cat <<< $_x — got=${_got:-<empty>}"
+        _xd_n=-1; break
+    fi
+done
+if [[ $_xd_n -gt 0 ]]; then
+    ok "property: an expansion in a data payload is still a read ($_xd_n)"
+fi
+# THE TERMINATOR behind that property, asserted directly. Every leak in this walk had one
+# shape — the scan mis-decides where an expansion ends, a word or operator escapes it, and
+# the command that would have been in receiver position is hidden. Review found one per
+# round (`${}`, `$()`, `$(())` nested in `$()`, backticks, `$[`, a `(` group inside `$()`),
+# and each fix exposed the next construct. So the scan's ALLOW side is no longer trusted on
+# its own: if the command opens a structured expansion ANYWHERE and the receiver test came
+# back empty, the whole command is probed instead. No future expansion syntax can turn that
+# into a fail-open, because the answer stops depending on parsing the expansion correctly.
+# The check is whole-COMMAND because `_split_with_ops` tears an expansion containing `;`,
+# `|` or `&` across segments, leaving the here-string segment with no opener in it.
+_term_n=0
+for _cmd in "<<< \$[1 + 2 > 0] . /dev/stdin <<< '$HELPER'" \
+            "< \${BASH:-a;b|c&d} . /dev/stdin <<< '$HELPER'" \
+            "<<< \"\$( (echo); printf \"a b > y\" )\" . /dev/stdin <<< '$HELPER'" \
+            "cat <<< \"\$(date) $HELPER\""; do
+    _term_n=$((_term_n + 1))
+    _got=$(verdict "$_cmd")
+    if [[ "$_got" != BLOCK_* ]]; then
+        no "property: an expansion downgrades \"no receiver\" to \"unknown\"" "$_cmd — got=${_got:-<empty>}"
+        _term_n=-1; break
+    fi
+done
+if [[ $_term_n -gt 0 ]]; then
+    ok "property: an expansion downgrades \"no receiver\" to \"unknown\" ($_term_n)"
+fi
+# ...and the over-block it costs needs BOTH halves. Either one alone still reads as data.
+assert_ok "cat <<< \"\$(echo hi)\""             "an expansion with no helper named is still a read"
+assert_ok "cat <<< '$HELPER'"                  "a helper named with no expansion is still a read"
+# PROCESS SUBSTITUTION is an expansion too: `<(cmd)` is one word and its `<` is NOT a
+# redirection. Read as one, `(cmd` became the target and the rest of the operand tokenized
+# as outer text. It is tested before the redirection regex, and a plain `<` still redirects.
+assert_block "<<< <(printf x) . /dev/stdin <<< '$HELPER'" \
+    "a process substitution is one word, not a redirection"
+assert_block "<<< >(cat) . /dev/stdin <<< '$HELPER'" "...the output form too"
+assert_ok "cat <(echo hi) <<< 'plain'"         "...and it does not make an ordinary read block"
+assert_ok "cat < /dev/null <<< 'plain'"        "a plain < is still a redirection"
 # PROPERTY over the class those three cases sample. The operand walk and the operator test
 # now disagree about a token in three different ways — whitespace, adjacency, and escaping
 # — and each disagreement hides the COMMAND behind the operand rather than the operand

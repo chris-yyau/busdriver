@@ -408,6 +408,11 @@ _REDIR_AT_RE = re.compile(r"(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 # its program. Leaving the `&` in the name reconstructed the receiver as `sh&`, which
 # matches no shell, and the payload executed while the classifier returned OK.
 _REDIR_BARE_RE = re.compile(r"(?:&>>|&>|<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+_BT = chr(96)                       # backtick, spelled out to survive markdown quoting
+# Does this text OPEN a structured expansion? Cheap substring test, used to decide when a
+# "no receiver here" answer is not good enough -- see the fallback in
+# _herestring_shell_payloads. `$[` is bash's legacy arithmetic form.
+_EXPANSION_OPENERS = ("${", "$(", "$[", "<(", ">(", _BT)
 # Bash's word separators, spelled out. `str.isspace()` is UNICODE-aware and bash is not:
 # it treats U+00A0 and friends as ordinary characters, so a no-break space inside a
 # here-string operand split the word, promoted its tail to command position, and hid the
@@ -1998,9 +2003,40 @@ def _shell_pieces(text):
     Returns [(is_operator, text, start), ...], or None when quoting is unterminated -- the
     caller treats that as unresolvable and blocks.
     """
-    pieces, buf, start = [], [], -1
+    pieces, buf, start, stack = [], [], -1, []
     in_s = in_d = esc = False
     i, n = 0, len(text)
+
+    def _open(at, quoted):
+        # Does an expansion START here? Returns the characters consumed, 0 if not, and
+        # pushes the level it opens. ONE routine, called from the ordinary state, from
+        # inside double quotes, and from inside another expansion -- the three had separate
+        # copies and the copies disagreed: only the outer one knew that `$((` opens TWICE,
+        # so an arithmetic expansion NESTED in a command substitution pushed one level and
+        # its `))` popped the substitution as well, leaking the rest of the operand.
+        # `quoted` is the double-quote state to restore when this level closes.
+        c = text[at]
+        if c == _BT:
+            # BACKTICKS are a command substitution too, and they were not tracked at all --
+            # their spaces and operators reached the outer tokenizer, which is the same
+            # leak this scan exists to stop. They do not nest, so the next unquoted
+            # backtick closes.
+            stack.append((_BT, quoted))
+            return 1
+        if c in "<>" and at + 1 < n and text[at + 1] == "(":
+            # PROCESS SUBSTITUTION. `<(cmd)` is one word to bash, and the `<` is not a
+            # redirection -- reading it as one took `(cmd` for the target and let the rest
+            # of the operand tokenize as outer text. Tested BEFORE the redirection regex
+            # below, which would otherwise match the `<`.
+            stack.append((")", quoted))
+            return 2
+        if c == "$" and at + 1 < n and text[at + 1] in "{(":
+            stack.append(("}" if text[at + 1] == "{" else ")", quoted))
+            if text[at + 1] == "(" and at + 2 < n and text[at + 2] == "(":
+                stack.append((")", False))
+                return 3
+            return 2
+        return 0
 
     def _flush():
         if buf:
@@ -2031,7 +2067,16 @@ def _shell_pieces(text):
                 in_s = False
         elif in_d:
             buf.append(ch)
-            if ch == "\\":
+            # EXPANSIONS ARE STILL ACTIVE INSIDE DOUBLE QUOTES, and the substitution has
+            # its own quoting context: `"$(printf "a b")"` is one word, but ending the
+            # outer quote at the INNER one resumed outer tokenizing mid-expansion. The
+            # entry records the quote state to restore when the level closes.
+            _k = _open(i, True)
+            if _k:
+                buf.extend(text[i + 1:i + _k])
+                in_d = False
+                i += _k - 1
+            elif ch == "\\":
                 esc = True
             elif ch == _DQ:
                 in_d = False
@@ -2040,6 +2085,33 @@ def _shell_pieces(text):
                 start = i
             buf.append(ch)
             esc, in_s, in_d = ch == "\\", ch == _SQ, ch == _DQ
+        elif stack:
+            # INSIDE AN EXPANSION nothing is a word break and nothing is an operator.
+            # `${x:-a b > y}` is ONE redirection operand to bash, but scanning it flat
+            # ended the word at the space, promoted `b` to command position, read the `>`
+            # as a real redirection and skipped `y}` as its target -- so the `.` that
+            # sources the payload was never in command position and the here-string ran
+            # unscanned. Nesting is counted rather than parsed: `${`/`$(` open, the
+            # matching brace or paren closes, and `$((` simply opens twice. Getting the
+            # depth wrong can only join MORE text into one word, which keeps a following
+            # command in its own position.
+            #
+            # ONLY `$(` and `${` open a level. Treating every bare `(`/`{` as nesting was
+            # wrong twice over: bash permits a LITERAL brace inside an expansion, so
+            # `$(printf {)` pushed a level the real `)` then could not close -- and a later
+            # `}` elsewhere in the command could drain it, resuming outer tokenizing at the
+            # wrong place rather than failing closed. "Over-grouping only blocks" was an
+            # overclaim; the fix is to count what the shell counts.
+            buf.append(ch)
+            # CLOSE BEFORE OPEN, because a backtick is its own closer.
+            if ch == stack[-1][0]:
+                in_d = stack.pop()[1]
+            else:
+                _k = _open(i, in_d)
+                if _k:
+                    buf.extend(text[i + 1:i + _k])
+                    in_d = False
+                    i += _k - 1
         elif ch == "#" and not buf:
             # A COMMENT runs from an unquoted `#` in WORD POSITION to the end of the line,
             # and bash lexes nothing inside it. `_defuse_comments` upstream blanks only the
@@ -2063,6 +2135,13 @@ def _shell_pieces(text):
             # bash reads `source2<<< P` as the command `source2` redirected by `<<<`, but
             # `2<<<` matched as an fd redirection and left `source` in command position,
             # refusing an ordinary read as a `source`. Same for `bash2`, `/tmp/bash2`.
+            _k = _open(i, False)
+            if _k:
+                if not buf:
+                    start = i
+                buf.extend(text[i:i + _k])
+                i += _k
+                continue
             m = (_REDIR_AT_RE if not buf else _REDIR_BARE_RE).match(text, i)
             if m:
                 _flush()
@@ -2073,8 +2152,8 @@ def _shell_pieces(text):
                 start = i
             buf.append(ch)
         i += 1
-    if in_s or in_d or esc:
-        return None                    # unterminated quoting: unresolvable, block
+    if in_s or in_d or esc or stack:
+        return None            # unterminated quoting or expansion: unresolvable, block
     _flush()
     return pieces
 
@@ -2342,6 +2421,13 @@ def _herestring_shell_payloads(pairs):
     # `echo sh; if true; then cat; fi <<< '<helper>'` refuses a data-only read because of
     # the unrelated `sh` in front. That is the direction this module accepts throughout.
     _compound_receiver = None
+    # Computed ONCE, over the WHOLE command rather than per segment: `_split_with_ops` does
+    # not track expansions, so a `;`, `|` or `&` written inside one is taken for a command
+    # separator and the expansion is torn across segments -- after which the piece carrying
+    # the here-string holds no opener at all. `< ${BASH:-a;b|c&d} . /dev/stdin <<< P` is
+    # exactly that shape, and a per-segment test missed it.
+    _cmdtext = " ; ".join(_s2 for _o2, _s2 in pairs)
+    _exp = any(k in _cmdtext for k in _EXPANSION_OPENERS)
     for _op, seg in pairs:
         # CHARGE NOTHING when there is no here-string. Tokenizing every segment to look
         # for one cost 4.37s on the 60000-token payload in tests/test-impl-gate-scope-519.sh
@@ -2370,10 +2456,40 @@ def _herestring_shell_payloads(pairs):
             # The population is narrow: input the OUTER split accepted but shlex rejected.
             # A genuinely unparseable command never arrives here -- _split_with_ops returns
             # ok=False and _helper_invoked probes the whole command instead.
-            out.append(seg)
-            continue
+            #
+            # THE WHOLE COMMAND, not this segment. Unresolvable here usually means the OUTER
+            # split already cut in the wrong place: `_split_with_ops` does not track
+            # expansions, so a `;`, `|` or `&` written INSIDE one is taken for a command
+            # separator and the operand is torn across segments. The piece holding the
+            # opener is the one that arrives unterminated, and probing only that piece
+            # scanned a fragment with no helper name in it while the receiver sat in a later
+            # segment: `<<< ${x:-a;b|c&d} . /dev/stdin <<< P` sourced the payload and
+            # returned OK. Widening to the command is the same fail-closed answer the
+            # compound path gives.
+            out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
+            break
         if not _has_hs:
             continue          # every `<<<` here is quoted: an argument, not a redirection
+        # AN EXPANSION MAKES "NO RECEIVER" MEAN "UNKNOWN", NOT "SAFE". This TERMINATES a
+        # ladder rather than climbing it. Every leak in this walk has the same shape: the
+        # scan mis-decides where an expansion ends, a word or operator escapes it, and the
+        # command that would have been in receiver position is hidden. Review found one per
+        # round -- `${}`, `$()`, `$(())` nested inside `$()`, backticks, `$[`, a `(` group
+        # inside `$()` -- and each fix exposed the next construct, which is exactly the
+        # unbounded problem this file refuses elsewhere.
+        #
+        # So the scan's precision is kept for the BLOCK side, where it earns its keep (it
+        # is what stops `cat ba s h` and `cat<<<` from over-blocking), and its ALLOW side is
+        # no longer trusted alone: if the segment opens a structured expansion at all and
+        # the receiver test came back empty, the whole command is probed instead. No future
+        # expansion syntax can turn that into a fail-open, because the answer no longer
+        # depends on parsing the expansion correctly.
+        #
+        # The over-block it costs is narrow and needs BOTH halves: a command that opens an
+        # expansion AND names a mutating helper somewhere in its text, e.g.
+        # `cat <<< "$(date) <helper>"`. A payload with an expansion and no helper name is
+        # unaffected, and so is a helper-naming payload with no expansion.
+
         # THE OPERAND IS NEVER RECONSTRUCTED. Taking it to be "the token after `<<<`" put
         # this walk on a ladder of bash word-splitting rules, each rung a measured
         # fail-open: adjacent quoted fragments concatenate into one word, escaped
@@ -2436,7 +2552,10 @@ def _herestring_shell_payloads(pairs):
                     _allcw.extend(_cmd_candidates(_segw, _segd, _segr))
                 _compound_receiver = _herestring_receiver(_allw, _alltext, _allcw)
             if not _compound_receiver:
-                continue
+                if not _exp:
+                    continue
+                out.append(_cmdtext)
+                break
             # ONCE, then stop. Appending the whole command per reserved-only segment is
             # quadratic: 1,000 small compounds took 8.88s, past the 5s hook timeout -- and
             # a timed-out hook writes no decision, which reads as ALLOW. Widening once
@@ -2447,6 +2566,9 @@ def _herestring_shell_payloads(pairs):
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
                                 _cmd_candidates(cw_words, _dwords, _raws)):
             out.append(seg)
+        elif _exp:
+            out.append(_cmdtext)
+            break
     return out
 
 

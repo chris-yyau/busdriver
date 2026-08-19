@@ -394,6 +394,27 @@ def _first_word(words):
 # like an ATTACHED redirect whose own text was `<`, its operand was never skipped, and
 # `data` became the command word -- the same regime failure this regex exists to stop.
 _REDIR_PREFIX_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+# Same alternation, UNANCHORED, for finding an operator part-way through a shlex token.
+# `_REDIR_PREFIX_RE` is `^`-anchored, and `pattern.match(s, pos)` does not move a `^`.
+#
+# TWO forms, because the file-descriptor prefix is only a prefix at the START of a word.
+# One regex carrying the optional `[0-9]+|&` everywhere ate the last character of a
+# command NAME: bash reads `source2<<< P` as the command `source2` redirected by `<<<`,
+# while `2<<<` matched as an fd redirection and left `source` in command position, so an
+# ordinary read was refused as a `source`. Same for `bash2`, `xargs2`, `/tmp/bash2`.
+_REDIR_AT_RE = re.compile(r"(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+# `&>` and `&>>` are single operators and, unlike a numeric descriptor, they apply MID-WORD
+# too: bash ends the word at the `&`, so `sh&>out <<< P` runs `sh` with the here-string as
+# its program. Leaving the `&` in the name reconstructed the receiver as `sh&`, which
+# matches no shell, and the payload executed while the classifier returned OK.
+_REDIR_BARE_RE = re.compile(r"(?:&>>|&>|<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+# Bash's word separators, spelled out. `str.isspace()` is UNICODE-aware and bash is not:
+# it treats U+00A0 and friends as ordinary characters, so a no-break space inside a
+# here-string operand split the word, promoted its tail to command position, and hid the
+# `.` that sourced the payload. Carriage return, form feed and vertical tab are ordinary
+# to bash too, and leaving them inside a word keeps the operand grouped -- the direction
+# that blocks.
+_SH_BLANK = " \t\n"
 
 
 def _strip_redirs(toks):
@@ -1939,79 +1960,143 @@ def _piped_shell_producers(pairs):
     return out
 
 
-def _herestring_words(text):
-    # ONE lex + redirection-aware walk, returning (tokens, command words, ok). Both the
-    # per-segment path and the compound widening call it; they each had their own copy,
-    # and a copy that drifts is what this whole predicate was unified to stop.
-    #
-    # NON-POSIX lexing, because operator PROVENANCE is what the caller needs most: a
-    # QUOTED `<<<` is an ARGUMENT, and posix shlex strips the quotes that say so. That
-    # broke in both directions -- `echo '<<<' '<helper>' sh` carries no here-string and
-    # over-blocked, while `bash -s '<<<' <<< '<helper>'` had the quoted operand taken for
-    # the operator, consuming the real one so the payload was never scanned.
-    #
-    # ADJACENT FRAGMENTS ARE ONE WORD, and adjacency is recovered from the RAW TEXT rather
-    # than guessed. bash concatenates `'b''a''s''h'` into a single word `bash`; non-posix
-    # shlex emits four tokens and throws the adjacency away. Reconstructing it by joining
-    # RUNS OF TOKENS failed in both directions at once, because a token list cannot say
-    # which neighbours touched:
-    #   capped run  -- the cap was the bypass. A command word spelled as `a`, then twelve
-    #                  empty quoted fragments, then `w` and `k`, lexes to 17 tokens, so
-    #                  `awk` never assembled inside a 10-token window: that spelling ran
-    #                  awk from the here-string while the classifier returned OK. Raising
-    #                  the cap only moves it -- the caller chooses how much padding.
-    #   uncapped    -- joining across WHITESPACE invents words bash never forms:
-    #                  `cat ba s h <<< '<helper>'` assembled `bash` and refused a read.
-    # Each token is located in the source instead, and only tokens that are literally
-    # contiguous are joined. That is bash's own rule, so both directions close together
-    # and the run cap disappears rather than being retuned.
-    try:
-        lex = shlex.shlex(text, posix=False, punctuation_chars=True)
-        lex.whitespace_split = True
-        lex.commenters = ""
-        toks = list(lex)
-    except ValueError:
-        return [], [], False
-    words, skip_next, cursor, emit_end = [], False, 0, -1
-    for t in toks:
-        i = text.find(t, cursor)
-        if i < 0:
-            # Non-posix tokens appear verbatim, so this should not happen -- and if it
-            # does, adjacency is unknowable and the caller must fail closed rather than
-            # continue on a word list it cannot trust.
-            return toks, [], False
-        cursor = i + len(t)
+def _shell_pieces(text):
+    """Split one segment into bash WORDS and redirection OPERATORS, or None.
+
+    shlex is not used here. It was, in four configurations, and each one broke on a
+    different spelling -- every failure measured, either as an executing here-string that
+    classified as a read or as an ordinary read refused:
+
+      punctuation_chars=True   splits operators from flush text but BREAKS QUOTE STATE:
+                               `x'<'` lexed to `x'`, `<`, `' . /dev/stdin <<< '`, so the
+                               command behind the operand vanished into a token.
+      punctuation_chars=False  keeps that quote intact but leaves the operator attached, so
+                               `cat<<< '<helper>'` emitted `cat<<<` as a command word and
+                               refused an ordinary read.
+      both, blocking on either fail-closed, but inherits every over-block of the looser
+                               one -- the `cat<<<` refusal above.
+      either one, plus a quote-aware operator split afterwards
+                               still loses a quote that OPENS MID-WORD and spans a space:
+                               `x'a b'` lexes to `x'a` and `b'`, so only half the operand
+                               was skipped and `b` took command position, hiding the `.`
+                               that sources the payload.
+
+    That last one is not a configuration problem: non-posix shlex simply does not carry
+    quote state across whitespace, so no amount of post-processing recovers the word. The
+    scan below does the whole job in one pass -- quotes, escapes, word breaks and operators
+    -- which is the same three-state walk `_split_with_ops` and `_norm_for_scan` already
+    run in this file, at a finer granularity. Bash's own rules, so the failures above close
+    together rather than in sequence.
+
+    Adjacency needs no reconstruction as a result: a bash word is whatever the scan
+    accumulates between unquoted word breaks, so `'b''a''s''h'` is ONE piece and `ba s h`
+    is three, with no run-joining heuristic to tune. An earlier version had to rebuild that
+    from a token list and could not: a capped join was bypassable with free padding (`a`,
+    twelve empty quoted fragments, then `w` and `k` never assembled `awk` inside the
+    window), and an uncapped one joined across whitespace and refused `cat ba s h`.
+
+    Returns [(is_operator, text, start), ...], or None when quoting is unterminated -- the
+    caller treats that as unresolvable and blocks.
+    """
+    pieces, buf, start = [], [], -1
+    in_s = in_d = esc = False
+    i, n = 0, len(text)
+
+    def _flush():
+        if buf:
+            pieces.append((False, "".join(buf), start))
+            del buf[:]
+
+    while i < n:
+        ch = text[i]
+        if esc:
+            buf.append(ch)
+            esc = False
+        elif in_s:
+            buf.append(ch)
+            if ch == _SQ:
+                in_s = False
+        elif in_d:
+            buf.append(ch)
+            if ch == "\\":
+                esc = True
+            elif ch == _DQ:
+                in_d = False
+        elif ch in ("\\", _SQ, _DQ):
+            if not buf:
+                start = i
+            buf.append(ch)
+            esc, in_s, in_d = ch == "\\", ch == _SQ, ch == _DQ
+        elif ch in _SH_BLANK:
+            # An ESCAPED space never reaches here -- it is consumed by the branch above --
+            # so `'x'\ y` stays one word, exactly as bash reads it. Reconstructing that
+            # from a token list needed a backslash-parity rule; the scan gets it free.
+            _flush()
+        else:
+            # The fd-prefixed operator form only where a word can START. Carrying the
+            # optional `[0-9]+|&` everywhere ate the last character of a command NAME:
+            # bash reads `source2<<< P` as the command `source2` redirected by `<<<`, but
+            # `2<<<` matched as an fd redirection and left `source` in command position,
+            # refusing an ordinary read as a `source`. Same for `bash2`, `/tmp/bash2`.
+            m = (_REDIR_AT_RE if not buf else _REDIR_BARE_RE).match(text, i)
+            if m:
+                _flush()
+                pieces.append((True, m.group(0), i))
+                i = m.end()
+                continue
+            if not buf:
+                start = i
+            buf.append(ch)
+        i += 1
+    if in_s or in_d or esc:
+        return None                    # unterminated quoting: unresolvable, block
+    _flush()
+    return pieces
+
+
+def _walk_words(text):
+    # The command WORDS of a segment, redirections and their operands stepped over.
+    # Returns (words, ok). Shared by the per-segment path and the compound widening --
+    # they each had their own copy of this walk, and a copy that drifts is what the
+    # unified receiver predicate exists to stop.
+    pieces = _shell_pieces(text)
+    if pieces is None:
+        return [], False
+    words, skip_next = [], False
+    for is_op, t, _i in pieces:
         # Redirections are stepped over while locating command words, because bash accepts
         # them BEFORE the command: `<<<'<helper>' sh` is a real spelling, and reading
-        # words[0] would resolve the command word to the operator. A stepped-over token
-        # also breaks the adjacency chain -- otherwise a word touching a skipped operand
-        # would be glued onto a command word it never touched.
+        # words[0] would resolve the command word to the operator.
+        if is_op:
+            skip_next = True
+            continue
         if skip_next:
-            skip_next, emit_end = False, -1
+            # The operand is ONE piece, because the scan already grouped the whole word --
+            # `<<< 'lease_'"slot.py" . /dev/stdin` no longer arrives in fragments whose
+            # tail would take command position and hide the `.` that sources the payload.
+            skip_next = False
             continue
-        m = _REDIR_PREFIX_RE.match(t)
-        if m:
-            # A LEADING FILE DESCRIPTOR belongs to the redirection, not to the command.
-            # _REDIR_PREFIX_RE accepts `0<<<` as one token, but shlex with
-            # punctuation_chars splits the digits off, so `fi 0<<< '<helper>'` left `0`
-            # behind as a command word: the segment stopped being reserved-only, the
-            # compound never widened, and the payload reached the shell while the
-            # classifier returned OK. Adjacency is what makes this safe to drop -- a
-            # detached `0` is an ordinary argument and is kept.
-            if words and i == emit_end and words[-1].isdigit():
-                words.pop()
-            skip_next, emit_end = m.group(0) == t, -1
-            continue
-        # Quoting AND ESCAPES squeezed, not just outer-stripped: `b'a's'h'` and
-        # `b\a\s\h` are both valid command-word spellings of bash, and an outer-strip
-        # left each matching no name. Same squeeze the helper probe applies to its text.
-        sq = t.replace("'", "").replace('"', "").replace("\\", "")
-        if i == emit_end and words:
-            words[-1] += sq
-        else:
-            words.append(sq)
-        emit_end = cursor
-    return toks, words, True
+        # Quoting AND ESCAPES squeezed, not just outer-stripped: `b'a's'h'` and `b\a\s\h`
+        # are both valid command-word spellings of bash, and an outer-strip left each
+        # matching no name. Same squeeze the helper probe applies to its own text.
+        words.append(t.replace("'", "").replace('"', "").replace("\\", ""))
+    return words, True
+
+
+def _herestring_words(text):
+    # (here-string present?, command words, ok). The operator must be a REAL one: a quoted
+    # `<<<` is an ARGUMENT, and reading it as an operator broke both directions --
+    # `echo '<<<' '<helper>' sh` carries no here-string and over-blocked, while
+    # `bash -s '<<<' <<< '<helper>'` had the quoted operand taken for the operator,
+    # consuming the real one so the payload was never scanned. The scan settles it: a
+    # quoted operator is inside a word piece and never becomes an operator piece.
+    pieces = _shell_pieces(text)
+    if pieces is None:
+        return False, [], False
+    if not any(op and "<<<" in txt for op, txt, _ in pieces):
+        return False, [], True
+    words, ok = _walk_words(text)
+    return True, words, ok
 
 
 def _cmd_position(words):
@@ -2172,7 +2257,7 @@ def _herestring_shell_payloads(pairs):
         # segment ahead of the cheap prefilter below.
         if "<<<" not in seg:
             continue
-        toks, cw_words, _ok = _herestring_words(seg)
+        _has_hs, cw_words, _ok = _herestring_words(seg)
         if not _ok:
             # FAIL CLOSED, and accept the over-block. Provenance is unknown here, and
             # deciding it without a lexer means writing one: a quote-state scan was tried
@@ -2187,7 +2272,7 @@ def _herestring_shell_payloads(pairs):
             # ok=False and _helper_invoked probes the whole command instead.
             out.append(seg)
             continue
-        if "<<<" not in toks:
+        if not _has_hs:
             continue          # every `<<<` here is quoted: an argument, not a redirection
         # THE OPERAND IS NEVER RECONSTRUCTED. Taking it to be "the token after `<<<`" put
         # this walk on a ladder of bash word-splitting rules, each rung a measured
@@ -2243,9 +2328,12 @@ def _herestring_shell_payloads(pairs):
                 _allw, _allcw = [], []
                 _alltext = " ".join(_s2 for _o2, _s2 in pairs)
                 for _o2, _s2 in pairs:
-                    _t2, _segw, _ok2 = _herestring_words(_s2)
+                    # `_walk_words` regardless of whether THIS segment holds the operator:
+                    # the receiver is in a different segment, which is the whole reason
+                    # the scan widened.
+                    _segw, _ok2 = _walk_words(_s2)
                     if not _ok2:
-                        _allw, _allcw = ["sh"], []  # unlexable inside: fail closed
+                        _allw, _allcw = ["sh"], []   # unlexable inside: fail closed
                         break
                     _allw.extend(_segw)
                     _allcw.append(_cmd_position(_segw))

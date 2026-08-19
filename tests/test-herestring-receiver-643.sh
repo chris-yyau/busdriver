@@ -43,6 +43,25 @@ verdict() { # <command> -> the verdict line, or ERROR
     python3 -I "$CLASSIFIER" <<<"$payload" 2>/dev/null || printf 'ERROR'
 }
 
+# BSD `date` has no %N, so the millisecond clock comes from python3 — which this harness
+# already requires. `monotonic`, not `time`: a wall clock can step backwards during an NTP
+# correction, and a negative elapsed time satisfies a `< 2000` bound no matter how slow
+# the run actually was. Whole seconds are too coarse for the performance bounds below: their
+# healthy path runs in ~70ms and the regressions they guard are ~3.4s, a gap a 1-second
+# tick cannot state.
+_now_ms() { python3 -c 'import time;print(int(time.monotonic()*1000))'; }
+
+# A benchmark must be a command bash would actually run. The nested case was built by
+# concatenation and came out as `cat; ; fi` — a syntax error, so its timing and its
+# asserted verdict described a parse failure rather than a nested compound.
+assert_parses() { # <command> <label>
+    if bash -n -c "$1" 2>/dev/null; then
+        ok "$2"
+    else
+        no "$2" "not valid shell — the benchmark below measures a parse error"
+    fi
+}
+
 # Deliberately if/then/else rather than `cond && ok || no` (shellcheck SC2015).
 assert_ok() { # <command> <label>
     local got
@@ -133,6 +152,17 @@ assert_block "sh <<< '$STEM'\"$TAIL\""         "adjacent quoted fragments concat
 assert_block "sh <<< python3\\ hooks/gate-scripts/lib/lease_$TAIL" \
                                                "escaped whitespace joins words"
 assert_block "bash -s \\< <<< '$HELPER'"       "an escaped punctuation argument is not a redirection"
+# ...and that whole CLASS is now unresolvable-by-policy rather than parsed. shlex does not
+# model bash escaping, so each repair aimed at one spelling exposed the next: `x\<` split
+# into `x\` and `<`, the `<` was read as a redirection and ate the command behind it;
+# suppressing the operator on odd backslash parity then mis-read `x\<<`, where bash escapes
+# only the FIRST `<` and the second is real. Resolving that needs an operator starting
+# mid-token — the bash lexer this module refuses to write. A segment holding both a
+# here-string and an escaped METACHARACTER therefore blocks outright.
+assert_block "<<< x\\<< /dev/null . /dev/stdin <<< '$HELPER'" \
+    "an escaped metacharacter makes the token stream unresolvable (blocks, does not guess)"
+# Escaped LETTERS are untouched by that rule — they are an ordinary command-word spelling
+# and still resolve through the walk, which the `b\a\s\h` case below already pins.
 # (7) ESCAPED command word. Squeezing quotes alone left `b\a\s\h` matching no name; the
 #     receiver normalization squeezes escapes too.
 assert_block "b\\a\\s\\h <<< '$HELPER'"        "escaped command word still resolves to a shell"
@@ -232,6 +262,39 @@ assert_block "'b''a''s''h' <<< '$HELPER'"      "separately quoted letters concat
 # and broke the data contract outright: _SHELL_NAMES holds two-letter names (`nu`, `ed`,
 # `ex`, `sh`), so the `nu` inside `null` made an ordinary read block.
 assert_ok "cat /dev/null <<< '$HELPER'"        "a short shell name inside another word is not a receiver"
+# ...and an operator FLUSH against the receiver is still an operator, not part of its name.
+# While operator splitting was the lexer's job this arrived as the single word `cat<<<`,
+# which read as an unresolved command word and refused two ordinary data reads.
+assert_ok "cat<<< '$HELPER'"                   "an operator flush against the receiver is not part of its name"
+assert_ok "grep -f -<<< '$HELPER'"             "...including after an option that ends in punctuation"
+# ...and a DIGIT ending a command name is part of the name, not a file descriptor. The fd
+# prefix is only a prefix where a word starts: carrying it everywhere read `source2<<<` as
+# `source` plus an fd redirection and refused the read as a command-position `source`.
+assert_ok "source2<<< '$HELPER'"               "a trailing digit belongs to the command name, not the redirection"
+assert_ok "/tmp/bash2<<< '$HELPER'"            "...including on a path"
+# The genuine fd spelling still is one, at a word start.
+assert_block "if true; then sh; fi 2<<< '$HELPER'" \
+    "a descriptor at a word start is still a redirection"
+# `&>` and `&>>` are single operators that apply MID-WORD — bash ends the word at the `&`.
+# Leaving it attached reconstructed the receiver as `sh&`, which matches no shell name.
+assert_block "sh&>out <<< '$HELPER'"           "a combined &> does not stay attached to the receiver name"
+assert_block "bash&>>out <<< '$HELPER'"        "...and neither does &>>"
+# A QUOTE THAT OPENS MID-WORD AND SPANS A SPACE. This is why the walk stopped using shlex
+# for grouping as well as for operators: non-posix shlex does not carry quote state across
+# whitespace, so `x'a b'` came back as `x'a` and `b'`. Only half the operand was skipped,
+# `b` took command position, and the `.` that sources the payload was never tested.
+assert_block "<<< x'a b' . /dev/stdin <<< '$HELPER'" \
+    "a quote opening mid-word groups the whole operand (single)"
+assert_block "<<< x\"a b\" . /dev/stdin <<< '$HELPER'" \
+    "...and the double-quoted form"
+# ...and the same grouping must not swallow a data payload's spaces into a receiver.
+assert_ok "cat <<< 'a b $HELPER'"              "a quoted payload with spaces is still data"
+# WORD SEPARATORS ARE BASH'S, NOT PYTHON'S. `str.isspace()` is Unicode-aware and bash is
+# not: a no-break space is an ordinary character to the shell, so this is one operand —
+# but it split the word, promoted the tail to command position, and hid the `.`.
+_nbsp=$(printf '\u00a0')
+assert_block "<<< x${_nbsp}y . /dev/stdin <<< '$HELPER'" \
+    "a no-break space does not split a here-string operand"
 # ...and the join must be over CONTIGUOUS RUNS, not the whole word list: joining
 # everything only recognises a fragmented shell with no arguments (`'b''a''s''h' -s`
 # joins to `bash-s` and matched nothing), and a fragmented name need not be first.
@@ -262,36 +325,55 @@ assert_ok "cat ba s h <<< '$HELPER'" \
     "separate arguments are not fragments of one command word"
 
 # PERFORMANCE IS A CORRECTNESS PROPERTY HERE: the hook's timeout writes no decision, which
-# reads as ALLOW, so a slow scanner is itself a fail-open. Widening on a compound command
-# once appended the whole command PER reserved-only segment — quadratic, measured at 8.88s
-# for 1,000 compounds against a 5s timeout. It now widens once and stops.
+# reads as ALLOW, so a slow scanner is itself a fail-open.
+#
+# THE BOUND IS 2s, NOT THE 5s HOOK TIMEOUT, and it is measured in MILLISECONDS. The 5s
+# expiry is why speed matters here, but it is useless as a threshold: every regression
+# these two cases exist to catch lands under it — the span-limited widening took 3.36s on
+# the nested input below and would have passed a 5s assertion unchanged. The bound sits
+# below the measured regressions and far above the healthy path, which classifies both
+# inputs in 0.07s. Whole-second `date` was also too coarse to state that gap: the healthy
+# disjoint case straddled a second boundary and reported 1s.
+#
+# BOTH BOUNDS ASSERT THE VERDICT, not just the clock. They did not, and both were VACUOUS
+# because of it: sized at 1000 compounds they blew the classifier's own 4000-token budget,
+# returned BLOCK_UNSCANNABLE in 0.0s without ever reaching the widening path, and passed a
+# time-only assertion while measuring nothing. A benchmark that certifies a bail-out is
+# worse than no benchmark. Both are now sized UNDER that budget so the path actually runs,
+# and both require OK — the verdict these inputs must produce.
+#
+# (a) DISJOINT compounds. Widening once appended the whole command PER reserved-only
+#     segment, which is quadratic: measured at 8.88s before the answer was widened once
+#     and memoized.
 _big=""
-# `cat`, NOT `sh`: the positive path stops at the first receiver it finds, so a
-# benchmark built on `sh` exercises one scan and misses the slow path entirely.
-# The NEGATIVE path is the quadratic one — it was ~23s before the answer was
-# memoized. An earlier version of this fixture used `sh` and was inadequate.
-for _i in $(seq 1 1000); do _big="$_big; if true; then cat; fi <<< 'x'"; done
-_t0=$(date +%s)
-verdict "${_big#; }" >/dev/null 2>&1
-_t1=$(date +%s)
-if [[ $((_t1 - _t0)) -lt 5 ]]; then
-    ok "1000 data-only compound here-strings classify in under 5s ($((_t1 - _t0))s; timeout reads as ALLOW)"
+for _i in $(seq 1 400); do _big="$_big; if true; then cat; fi <<< 'x'"; done
+# `cat`, NOT `sh`: the positive path stops at the first receiver it finds, so a benchmark
+# built on `sh` exercises one scan and misses the slow path entirely. The NEGATIVE path is
+# the quadratic one — it was ~23s before the compound answer was memoized.
+assert_parses "${_big#; }" "the disjoint benchmark is valid shell"
+_t0=$(_now_ms)
+_got=$(verdict "${_big#; }")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "400 disjoint data-only compounds classify OK in under 2s ($((_t1 - _t0))ms)"
 else
-    no "1000 data-only compound here-strings classify in under 5s" "took $((_t1 - _t0))s — past the hook timeout, which allows"
+    no "400 disjoint data-only compounds classify OK in under 2s" "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
-# NESTED compounds, not just disjoint ones. The disjoint benchmark above is answered once
-# and stops; nesting is the shape that grew with depth when each closer rebuilt its own
-# span (300 nested took 3.36s). Whole-command widening is answered once for any nesting.
-_nest=""
-for _i in $(seq 1 300); do _nest="$_nest; if true; then cat; fi <<< 'x'"; done
-for _i in $(seq 1 300); do _nest="if true; then cat; ${_nest#; }; fi <<< 'x'"; done
-_t0=$(date +%s)
-verdict "$_nest" >/dev/null 2>&1
-_t1=$(date +%s)
-if [[ $((_t1 - _t0)) -lt 5 ]]; then
-    ok "300 NESTED data-only compounds classify in under 5s ($((_t1 - _t0))s)"
+# (b) NESTED compounds — a different shape, and the one that killed the span-limited
+#     widening. Scanning only the owning compound's span is more precise, but each closer
+#     then rebuilds its own span and spans grow with nesting depth: THIS input took 3.36s
+#     under it, against 0.07s for the whole-command answer that shipped. The bound is a
+#     regression guard on that revert, not a restatement of the disjoint case above.
+_nest="cat"
+for _i in $(seq 1 300); do _nest="if true; then $_nest; fi <<< 'x'"; done
+assert_parses "$_nest" "the nested benchmark is valid shell"
+_t0=$(_now_ms)
+_got=$(verdict "$_nest")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "300 nested data-only compounds classify OK in under 2s ($((_t1 - _t0))ms; 3360ms under span-limited widening)"
 else
-    no "300 NESTED data-only compounds classify in under 5s" "took $((_t1 - _t0))s — past the hook timeout, which allows"
+    no "300 nested data-only compounds classify OK in under 2s" "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
 # (9) LINE CONTINUATION. bash removes an unquoted backslash-newline BEFORE it recognises
 #     operators, so both the operator and the receiver name can be split across lines and
@@ -301,15 +383,67 @@ assert_block "sh <<\\
 assert_block "ba\\
 sh <<< '$HELPER'"                              "receiver name split by a line continuation"
 
-# ADJACENT FRAGMENTS: an ACCEPTED OVER-BLOCK, and the reason is worth keeping.
-# bash concatenates `'x'"bash"` into ONE operand while shlex emits two tokens, so the
-# stray `"bash"` stays among the command words and `cat` reads as a shell. An earlier
-# revision absorbed any quoted token following an operand to avoid that -- but shlex
-# discards whitespace boundaries, so it could not tell the adjacent FRAGMENT `'x'"bash"`
-# from the separate WORD `'x' 'bash'`, and it swallowed the real receiver in
-# `sh <<< '<helper>' 'bash'`. That traded an over-block for a FAIL-OPEN, which is the one
-# trade this module never makes. Absorption was removed; this over-blocks instead.
-assert_block "cat <<< '$HELPER; '\"bash\""     "adjacent fragment over-blocks (accepted; the alternative was a fail-open)"
+# ADJACENT FRAGMENTS IN THE OPERAND. bash concatenates `'x'\"bash\"` into ONE redirection
+# target while shlex emits two tokens, so skipping a single token left the stray `\"bash\"`
+# among the command words and `cat` read as a shell. This was an ACCEPTED OVER-BLOCK for a
+# while, because the obvious repair — absorb any quoted token following an operand — could
+# not tell the adjacent FRAGMENT `'x'\"bash\"` from the separate WORD `'x' 'bash'`, so it
+# swallowed the real receiver and traded the over-block for a FAIL-OPEN.
+# Measuring adjacency in the RAW TEXT tells them apart, so the whole operand run is skipped
+# and BOTH sides are now correct. Both are pinned, because a repair that fixes only the
+# first one is the fail-open this note is about.
+assert_ok "cat <<< '$HELPER; '\"bash\""        "an adjacent fragment of the operand is not a command word"
+assert_block "<<< '$HELPER' sh"                "...and a SEPARATE word after the operand still is"
+assert_block "<<< '$HELPER'\"; \" . /dev/stdin" \
+    "...and a fragmented operand does not hide the dot behind it"
+# ...and the operand run stops at an OPERATOR, not only at whitespace. A metacharacter
+# delimits without needing whitespace, so a second redirection can sit flush against the
+# first one's operand; extending the run over it swallowed the operator, promoted the
+# redirection TARGET to command position, and hid the dot that sources the payload.
+assert_block "<<<x< /dev/null . /dev/stdin <<< '$HELPER'" \
+    "a flush second redirection is an operator, not more operand"
+# PROPERTY over the class those three cases sample. The operand walk and the operator test
+# now disagree about a token in three different ways — whitespace, adjacency, and escaping
+# — and each disagreement hides the COMMAND behind the operand rather than the operand
+# itself. So: whatever the operand is spelled like, a `.`/`source` that follows it is still
+# in command position and still sources the here-string payload. Every combination blocks.
+_prop_n=0
+for _operand in "'x'" "'x'\"y\"" "x" "x\\<" "'x'\\ y" "x'<'"; do
+    for _cmd in ". /dev/stdin" "source /dev/stdin"; do
+        _prop_n=$((_prop_n + 1))
+        _got=$(verdict "<<< $_operand $_cmd <<< '$HELPER'")
+        if [[ "$_got" != BLOCK_* ]]; then
+            no "property: operand spelling never hides the command behind it" \
+                "<<< $_operand $_cmd — got=${_got:-<empty>}"
+            _prop_n=-1
+            break 2
+        fi
+    done
+done
+if [[ $_prop_n -gt 0 ]]; then
+    ok "property: operand spelling never hides the command behind it ($_prop_n)"
+fi
+# THE SAME PROPERTY FROM THE ALLOW SIDE, over quoting and escape spellings of the payload.
+# This is the direction that actually broke: the escaped-metacharacter terminator above was
+# first written quote-BLIND, so a backslash inside single quotes — where bash treats it as
+# literal data — was read as an active escape and `cat` stopped being a data receiver. A
+# block-side matrix cannot catch that; only asserting the allow contract can.
+_prop_ok=0
+for _payload in "'$HELPER'" "\"$HELPER\"" "'$HELPER \\;'" "'$HELPER'\"; x\"" "'$HELPER \\< \\| \\&'" "'$HELPER'\\ x"; do
+    for _recv in "cat" "cat /dev/null" "grep -f -"; do
+        _prop_ok=$((_prop_ok + 1))
+        _got=$(verdict "$_recv <<< $_payload")
+        if [[ "$_got" != "OK|" ]]; then
+            no "property: a non-executing receiver reads any payload spelling as data" \
+                "$_recv <<< $_payload — got=${_got:-<empty>}"
+            _prop_ok=-1
+            break 2
+        fi
+    done
+done
+if [[ $_prop_ok -gt 0 ]]; then
+    ok "property: a non-executing receiver reads any payload spelling as data ($_prop_ok)"
+fi
 # The fail-open that absorption caused, pinned so it cannot return.
 assert_block "sh <<< '$HELPER' 'bash'"         "a separately quoted receiver after the operand is not part of it"
 assert_block "env <<< '$HELPER' 'bash'"        "same through a wrapper"
@@ -321,15 +455,14 @@ assert_block "env <<< '$HELPER' 'bash'"        "same through a wrapper"
 # command never reaches that branch. It is kept as a real assertion about the outer path.
 assert_block "sh <<< '$HELPER"                 "an unparseable command is probed whole (outer path)"
 
-# INNER LEXER FAILURE: fails CLOSED, and the over-block is accepted deliberately.
-# posix=False shlex rejects VALID adjacent quoting like a'<<<'. Provenance is then unknown,
-# and deciding it without a lexer means writing one — a quote-state scan was tried and
-# review immediately walked it onto escaped quotes inside double quotes, then comments,
-# each rung a new fail-open. So both blanket answers were measured and the survivable one
-# chosen: skipping let `bash -s <<< '<helper>' a'<<<'` execute UNSCANNED (a fail-open),
-# while appending blocks a command carrying no here-string (an over-block). Both spellings
-# are pinned because a future "fix" of the over-block reintroduces the fail-open.
-assert_block "echo a'<<<' $HELPER"             "unlexable segment over-blocks (accepted; skipping was a fail-open)"
+# INNER LEXER FAILURE still fails CLOSED — but this pair no longer reaches it. Adjacent
+# quoting like a'<<<' is VALID and only `punctuation_chars=True` choked on it; once
+# operator splitting moved out of the lexer and into the quote-aware `_redir_pieces`, the
+# lexer keeps the one job it does correctly and this parses. Both spellings stay pinned,
+# because they are the pair a future change trades against each other: skipping an
+# unlexable segment let the first execute UNSCANNED, and appending it blocked the second,
+# which carries no here-string at all. Getting the quoting right is what makes both right.
+assert_ok "echo a'<<<' $HELPER"                "a quoted <<< beside adjacent quoting is no here-string"
 assert_block "bash -s <<< '$HELPER' a'<<<'"    "a real here-string beside a quoted decoy still blocks"
 
 # UNRESOLVABLE OPERAND. The scanner cannot see what \$VAR holds, so the operand cannot be

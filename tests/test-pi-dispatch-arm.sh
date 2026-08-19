@@ -925,7 +925,9 @@ done
 #
 # The accepted residual for this check is recorded at _ADR_RITUAL_GOLDEN below, next
 # to the literal it applies to.
-_adr34="$(find "${DISPATCH%/skills/*}/docs/adr" -maxdepth 1 -name '0034-*.md' 2>/dev/null | head -1)"
+_adr34_matches="$(find "${DISPATCH%/skills/*}/docs/adr" -maxdepth 1 -name '0034-*.md' 2>/dev/null)"
+_adr34_count=$(printf '%s\n' "$_adr34_matches" | grep -c . || true)
+_adr34="$(printf '%s\n' "$_adr34_matches" | head -1)"
 # The ritual as ADR 0034 must state it, verbatim. This is a GOLDEN literal, not a
 # pattern: #696 review round 4 showed that every loosening — a prefix match on
 # BUSDRIVER_PI_LIVE (which also accepts BUSDRIVER_PI_LIVE_DISABLED), a wildcard before
@@ -1039,7 +1041,9 @@ $_decoy" >/dev/null 2>&1; then
     fi
 done
 
-if [[ -f "$_adr34" ]]; then
+if [[ "$_adr34_count" -gt 1 ]]; then
+    fail "multiple docs/adr/0034-*.md files matched ($_adr34_count) — a rename/copy leaves this check verifying only whichever one 'find' returned first"
+elif [[ -f "$_adr34" ]]; then
     if _adr_out=$(_adr_check < "$_adr34" 2>&1); then
         ok "ADR 0034 states the ritual in the bump-then-verify order ($_adr_out)"
     else

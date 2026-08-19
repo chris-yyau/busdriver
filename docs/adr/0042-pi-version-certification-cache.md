@@ -148,7 +148,7 @@ OK:   pi dispatched successfully and could not write under --tools read
 Results: 119 passed, 0 failed, 0 skipped
 ```
 
-That run is **on this change set**, re-measured after #696 review rounds 7–10, which
+That run is **on this change set**, re-measured after #696 review rounds 7–12, which
 walked the anchor check off a shell-lexer ladder and then closed what the literal
 match still left open. Round 7 found its comment-exclusion filter could not fire at
 all; round 8 showed the regex anchor alone still counted `if true; then # if [[ … ]]`;
@@ -284,7 +284,7 @@ Stated plainly rather than discovered later:
   same commit — which is the point, since silent rewording is the drift this
   guard exists to catch. This check **inherits the negation-bypass
   limitation** above, and #696 review round 5 demonstrated it concretely: the golden
-  block is matched as a substring, so prefixing it with `DO NOT ` still satisfies the
+  block is matched as a substring, so prefixing it with `DO NOT` still satisfies the
   check. The golden literal pins the wording of the statement itself; it says nothing
   about text surrounding it. Closing that would require deciding whether neighbouring
   prose negates the instruction — the unbounded attribution problem gap 1 is WONTFIX

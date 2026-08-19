@@ -659,5 +659,38 @@ else
   pass "no bash 3.2 on this host — skipping the 3.2 parse check"
 fi
 
+# ── a refused preflight is a REFUSAL, not a failed attempt ──────────────
+# The consequence that matters: droid must not rescue it. A rescue would ship
+# the prompt, and the repo content quoted in it, to a different CLI than the
+# one the operator asked for — after being told the lane refuses. It must also
+# not be retried, and must not fail a whole batch for the other voices.
+_refuse_arm="$(/usr/bin/awk '/^            else$/,/^            fi ;;$/' "$DISPATCH" | /usr/bin/grep -v '^ *#')"
+if [[ "$_refuse_arm" != *"_grok_refused=1"* ]]; then
+  fail "the preflight refusal does not set _grok_refused — the shared loop would read it as a failed CLI and escalate to droid"
+else
+  pass "the preflight refusal marks itself a refusal, not a failed attempt"
+fi
+
+_esc="$(/usr/bin/awk '/&& type should_escalate_to_droid/{found=1} found' "$DISPATCH" | /usr/bin/head -1)"
+_esc_guard="$(/usr/bin/awk '/^    if \[\[ "\$CLI" != "all"/,/should_escalate_to_droid "\$name"/' "$DISPATCH")"
+if [[ "$_esc_guard" == *'_grok_refused'* ]]; then
+  pass "the droid-escalation guard excludes a refused grok preflight"
+else
+  fail "the droid-escalation guard does not exclude _grok_refused — a refusal would still be rescued, dispatching the prompt to droid"
+fi
+
+_retry_guard="$(/usr/bin/awk '/_pi_setup_failed:-0/,/continue/' "$DISPATCH" | /usr/bin/head -8)"
+if [[ "$_retry_guard" == *'_grok_refused'* ]]; then
+  pass "the retry loop does not retry a refused preflight"
+else
+  fail "the retry loop does not check _grok_refused — a deterministic refusal would be retried"
+fi
+
+if /usr/bin/grep -q '\[\[ "\${_grok_refused:-0}" == "1" \]\] && status="skipped"' "$DISPATCH"; then
+  pass "a refused voice is skipped in a batch, not counted as a failure"
+else
+  fail "a refused grok is not marked skipped — one unconfigured host would fail a whole --cli all batch"
+fi
+
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-grok-sandbox-arm"; else echo "FAIL: test-grok-sandbox-arm"; fi
 exit "$FAILED"

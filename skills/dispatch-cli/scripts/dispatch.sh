@@ -821,6 +821,11 @@ dispatch_one() {
     # failed attempt. MUST be `local` — a leak across dispatch_one calls would
     # mark a later voice skipped for an earlier one's missing config.
     local _oc_no_model=0
+    # Same shape again, for grok's sandbox preflight. A refusal there is a
+    # deterministic precondition failure — the operator's profile is missing or
+    # does not meet the contract — so it must not be retried, must not be
+    # rescued by droid, and must not fail a whole batch for the other voices.
+    local _grok_refused=0
     # Set ONLY where a teardown ran and could not confirm the jail was removed,
     # i.e. a projected credential may still be on disk. It is deliberately NOT
     # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
@@ -2181,10 +2186,19 @@ CHILD
             else
                 # The hint goes to BOTH stderr (for the operator) and $outfile,
                 # because the retry loop classifies on the output file: an empty
-                # one reads as "CLI died, retry", which would spin before the
-                # droid rescue instead of stopping on a configuration error.
+                # one reads as "CLI died, retry".
+                #
+                # `_grok_refused` is what makes this a REFUSAL rather than a
+                # failed attempt. Without it the shared loop reads exit 1 as "the
+                # CLI failed" and hands the prompt — and the repo content quoted
+                # in it — to the droid rescue, so an operator who asked for grok
+                # and was told the lane refuses would still have their content
+                # dispatched, to a different CLI. Reported by Cursor Bugbot on
+                # PR #704, against the repo's own rule that dispatch errors must
+                # not fall through to droid escalation.
                 grok_preflight_hint >&2
                 grok_preflight_hint > "$outfile"
+                _grok_refused=1
                 exit_code=1
             fi ;;
     esac
@@ -2208,6 +2222,7 @@ CHILD
     # agree, because those messages quote operator-supplied values (`--model
     # ECONNRESET` made a deterministic provider error read as transient).
     if [[ "${_pi_setup_failed:-0}" != "1" ]] \
+       && [[ "${_grok_refused:-0}" != "1" ]] \
        && { [[ ! -s "$outfile" ]] || _is_transient_cli_error < "$outfile"; }; then
         _attempt=$((_attempt + 1))
         continue
@@ -2259,6 +2274,7 @@ CHILD
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
        && [[ "$name" != "opencode" ]] \
        && [[ "$name" != "pi" ]] \
+       && [[ "${_grok_refused:-0}" != "1" ]] \
        && [[ -z "$_AGY_READ_LANE" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
@@ -2362,6 +2378,11 @@ CHILD
     # No credential ever enters the picture on this path — the bail happens before
     # any sandbox staging — so it carries no leaked-key caveat of its own.
     [[ "${_oc_no_model:-0}" == "1" ]] && status="skipped"
+    # A grok preflight refusal is the third arm wired to this status: the voice
+    # was refused before it began, so one unconfigured host must not fail a
+    # whole `--cli all` batch for every other voice. An explicit `--cli grok`
+    # still exits non-zero, because there the refused voice IS the request.
+    [[ "${_grok_refused:-0}" == "1" ]] && status="skipped"
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }

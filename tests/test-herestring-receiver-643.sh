@@ -141,6 +141,44 @@ assert_block "b\\a\\s\\h <<< '$HELPER'"        "escaped command word still resol
 #     length — so the producer tests an endswith over the names, and this mirrors it.
 #     The pipe spelling of this already blocked; the transports must not diverge.
 assert_block "env -iSbash <<< '$HELPER'"       "attached option bundle resolves to a shell"
+# (9) LINE CONTINUATION. bash removes an unquoted backslash-newline BEFORE it recognises
+#     operators, so both the operator and the receiver name can be split across lines and
+#     lexed as unrelated fragments. Raised by the deep PR-mode pass.
+assert_block "sh <<\\
+< '$HELPER'"                                   "operator split by a line continuation"
+assert_block "ba\\
+sh <<< '$HELPER'"                              "receiver name split by a line continuation"
+
+# ADJACENT FRAGMENTS: an ACCEPTED OVER-BLOCK, and the reason is worth keeping.
+# bash concatenates `'x'"bash"` into ONE operand while shlex emits two tokens, so the
+# stray `"bash"` stays among the command words and `cat` reads as a shell. An earlier
+# revision absorbed any quoted token following an operand to avoid that -- but shlex
+# discards whitespace boundaries, so it could not tell the adjacent FRAGMENT `'x'"bash"`
+# from the separate WORD `'x' 'bash'`, and it swallowed the real receiver in
+# `sh <<< '<helper>' 'bash'`. That traded an over-block for a FAIL-OPEN, which is the one
+# trade this module never makes. Absorption was removed; this over-blocks instead.
+assert_block "cat <<< '$HELPER; '\"bash\""     "adjacent fragment over-blocks (accepted; the alternative was a fail-open)"
+# The fail-open that absorption caused, pinned so it cannot return.
+assert_block "sh <<< '$HELPER' 'bash'"         "a separately quoted receiver after the operand is not part of it"
+assert_block "env <<< '$HELPER' 'bash'"        "same through a wrapper"
+
+# UNPARSEABLE COMMAND. An unterminated quote is handled OUTSIDE this walk: _split_with_ops
+# returns ok=False and _helper_invoked probes the WHOLE command instead. Verified directly
+# rather than assumed — an earlier version of this file asserted the same command as
+# evidence that the walk's own ValueError branch fails closed, which was VACUOUS: the
+# command never reaches that branch. It is kept as a real assertion about the outer path.
+assert_block "sh <<< '$HELPER"                 "an unparseable command is probed whole (outer path)"
+
+# INNER LEXER FAILURE: fails CLOSED, and the over-block is accepted deliberately.
+# posix=False shlex rejects VALID adjacent quoting like a'<<<'. Provenance is then unknown,
+# and deciding it without a lexer means writing one — a quote-state scan was tried and
+# review immediately walked it onto escaped quotes inside double quotes, then comments,
+# each rung a new fail-open. So both blanket answers were measured and the survivable one
+# chosen: skipping let `bash -s <<< '<helper>' a'<<<'` execute UNSCANNED (a fail-open),
+# while appending blocks a command carrying no here-string (an over-block). Both spellings
+# are pinned because a future "fix" of the over-block reintroduces the fail-open.
+assert_block "echo a'<<<' $HELPER"             "unlexable segment over-blocks (accepted; skipping was a fail-open)"
+assert_block "bash -s <<< '$HELPER' a'<<<'"    "a real here-string beside a quoted decoy still blocks"
 
 # UNRESOLVABLE OPERAND. The scanner cannot see what \$VAR holds, so the operand cannot be
 # scanned on its own. Treated exactly as the existing `-` / /dev/fd/N branch treats a

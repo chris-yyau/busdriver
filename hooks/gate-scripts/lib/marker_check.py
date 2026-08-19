@@ -1971,6 +1971,11 @@ def _herestring_shell_payloads(pairs):
         # reads as ALLOW, so a slow scanner is itself a fail-open. The operator cannot be
         # spelled any other way (no expansion produces `<<<`, and shlex would have to run
         # to find one), so a raw substring test is exact here, not a heuristic.
+        # Line continuations need no handling here: the only caller builds `pairs` from
+        # _split_with_ops(_norm_for_scan(cmd)), and _norm_for_scan has already removed
+        # every backslash-newline -- measured, `sh <<\` + newline + `< 'x'` arrives as
+        # `sh <<< 'x'`. An explicit strip here was redundant and cost a scan of every
+        # segment ahead of the cheap prefilter below.
         if "<<<" not in seg:
             continue
         # NON-POSIX lexing, and the WHOLE walk runs on it. A QUOTED `<<<` is an ARGUMENT,
@@ -1987,13 +1992,37 @@ def _herestring_shell_payloads(pairs):
         # quotes and matches no redirection. Operand and command words are dequoted for the
         # name tests below; the payload text is handed to a probe that squeezes quoting
         # anyway, so the outer-quote strip is enough.
+        # ONE non-posix lex. Quotes are kept because operator PROVENANCE is what this
+        # walk needs most: a quoted `<<<` is an ARGUMENT, and stripping the quotes that
+        # say so broke it in both directions -- `echo '<<<' ... sh` carries no
+        # here-string and over-blocked, while `env -u '<<<' bash <<< ...` had the quoted
+        # -u operand taken for the operator, consuming the only receiver word.
+        # (An earlier revision lexed twice, posix and not, and claimed the two had
+        # distinct jobs. Once the walk moved back to non-posix they were configured
+        # identically, so the second lex was duplicated work and the comment was false.)
         try:
             lex = shlex.shlex(seg, posix=False, punctuation_chars=True)
             lex.whitespace_split = True
             lex.commenters = ""
             toks = list(lex)
         except ValueError:
-            continue          # unparseable: the `not ok` path already probes the whole command
+            # FAIL CLOSED, and accept the over-block. The lexer failed, so operator
+            # provenance is unknown here. Deciding it without a lexer means writing
+            # one: a quote-state scan was tried and review walked it straight onto the
+            # ladder this module refuses -- escaped quotes inside double quotes, then
+            # comments, each rung a new fail-open. Both blanket answers were measured
+            # instead, and only one of them is survivable:
+            #   skip   -> `bash -s <<< '<helper>' a'<<<'` executes the payload
+            #             UNSCANNED. A fail-open, which this module never accepts.
+            #   append -> `echo a'<<<' <path>` blocks although it carries no
+            #             here-string. An over-block, which this module accepts
+            #             throughout (see the `-c` case above).
+            # The population is narrow: input the OUTER split accepted but posix=False
+            # shlex rejected. A genuinely unparseable command never arrives here --
+            # _split_with_ops returns ok=False and _helper_invoked probes the whole
+            # command instead (verified with an unterminated quote).
+            out.append(seg)
+            continue
         if "<<<" not in toks:
             continue          # every `<<<` here is quoted: an argument, not a redirection
         # Redirections are stepped over while locating the command word, because bash

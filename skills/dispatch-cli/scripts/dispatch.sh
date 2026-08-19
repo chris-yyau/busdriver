@@ -2098,7 +2098,7 @@ CHILD
             # resolving `grok` against the PATH given ON ITS OWN COMMAND LINE
             # fixes the second. The four loader variables are blanked BEFORE
             # `env` is exec'd, not by its `-i`: the dynamic loader acts on
-            # LD_PRELOAD / LD_AUDIT (and the DYLD_* pair) while loading
+            # LD_PRELOAD / LD_AUDIT / LD_LIBRARY_PATH (and the DYLD_ pair) while loading
             # `/usr/bin/env` ITSELF, so anything injected there runs inside
             # env's own process before -i has cleared a single variable. An
             # assignment prefix is applied at exec time, which is early enough.
@@ -2153,7 +2153,8 @@ CHILD
             # grok runs with no verified profile. There is nothing to fall
             # through into here.
             if grok_sandbox_preflight; then
-            LD_PRELOAD='' LD_AUDIT='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
+            LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+                DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
             _portable_timeout "$_budget" /usr/bin/env -i \
                 PATH="$_GROK_PINNED_PATH" \
                 HOME="$_GROK_TRUSTED_HOME" \

@@ -2227,9 +2227,15 @@ if [ -z "$file" ]; then
     walk="${walk%/*}"
   done
 
-  # every home-derived PATH entry must sit outside that tree, not just the
-  # config dir: a checkout rooted at ~/.local would supply .local/bin/grok
-  for d in "$home/.grok" "$home/.local/bin"; do
+  # EVERY directory on the pinned PATH must sit outside that tree — not just the
+  # two home-derived ones. A checkout rooted at ~/.local would supply
+  # .local/bin/grok, and one rooted at /opt/homebrew or /usr/local would supply
+  # any interpreter a `#!/usr/bin/env node` grok wrapper resolves through the
+  # same PATH. A directory that does not exist is fine; nothing runs from it.
+  pathrest="$pinned:"
+  while [ -n "$pathrest" ]; do
+    d="${pathrest%%:*}"; pathrest="${pathrest#*:}"
+    [ -n "$d" ] || continue
     [ -e "$d" ] || continue
     real="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || why containment
     [ -n "$real" ] || why containment
@@ -2502,7 +2508,8 @@ execute_review() {
              # be taken as the command name. They must be in the environment
              # before /usr/bin/env is exec'd, because the dynamic loader acts on
              # them while loading env itself — too early for env's own `-i`.
-             LD_PRELOAD='' LD_AUDIT='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
+             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+             DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$prompt" "$duration" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \

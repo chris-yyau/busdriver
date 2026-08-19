@@ -164,7 +164,7 @@ for site in dispatch resolve; do
   # `-i` is too late for the loader: LD_PRELOAD / LD_AUDIT act while
   # /usr/bin/env itself is being loaded, so they must be blanked on the exec
   # that starts env, not by env.
-  if [[ "$arm" == *"LD_PRELOAD='' LD_AUDIT=''"* && "$arm" == *"DYLD_INSERT_LIBRARIES=''"* ]]; then
+  if [[ "$arm" == *"LD_PRELOAD='' LD_AUDIT=''"* && "$arm" == *"LD_LIBRARY_PATH=''"* && "$arm" == *"DYLD_INSERT_LIBRARIES=''"* ]]; then
     pass "$where: loader variables are blanked before env is exec'd"
   else
     fail "$where: grok arm does not blank LD_PRELOAD/LD_AUDIT/DYLD_* before exec — the loader runs injected code inside env itself, before -i clears anything"
@@ -357,10 +357,10 @@ deny = []' > "$tmp/commented.toml"
     fi
   fi
 
-  if /usr/bin/grep -q '"\$home/.grok" "\$home/.local/bin"' "$RESOLVE"; then
-    pass "every home-derived PATH entry is checked against the reviewed tree"
+  if /usr/bin/grep -q 'pathrest="\$pinned:"' "$RESOLVE"; then
+    pass "every pinned PATH entry is checked against the reviewed tree"
   else
-    fail "only ~/.grok is checked against the reviewed tree — a checkout rooted at ~/.local could supply .local/bin/grok"
+    fail "the containment check does not walk the whole pinned PATH — a checkout rooted at ~/.local, /opt/homebrew or /usr/local could supply grok or an interpreter it resolves"
   fi
 
   # the INVOCATION form, not the mention — the comment above the walk explains

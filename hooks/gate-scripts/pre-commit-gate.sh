@@ -334,6 +334,70 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)
 
+# ── #685 · Docs-only carve-out for Gate 1 ────────────────────────────────
+# Gate 1 exists to stop IMPLEMENTATION racing ahead of an unreviewed plan. A
+# commit that carries nothing but the design documents themselves is not that
+# race — and on a documentation PR it is the ONLY possible remediation of the
+# very review the token demands: every fix a reviewer asks for is an edit to the
+# doc, that edit re-arms a token, and the token then blocked the commit that
+# would land the fix. The loop had no exit that did not route through an
+# operator `touch` or an audited self-bypass (#685; measured at 9 touches and
+# ~20 tokens on one PR).
+#
+# Two independent conditions, both fail-CLOSED:
+#   1. commit_scope.py must certify the command is a BARE, SINGLE-SEGMENT
+#      `git commit -m …` and hand back the staged set, read from git — never
+#      derived from the command. It refuses anything chained (so nothing can
+#      stage between the check and the commit), `-a`, a pathspec, `--amend`,
+#      `--no-verify`, a bare `git commit` (it opens core.editor), `git -C`,
+#      an aliasable `git commit-x`, substitution, unquoted expansion, and a
+#      repository carrying any git hook. Staging is a SEPARATE tool call —
+#      `git add` is not a commit and never reaches this gate. Refusal → no
+#      carve-out → today's block.
+#   2. EVERY path in that set must satisfy gate_design_doc_exempt — the SAME
+#      canonical predicate the pre-implementation gate uses to decide a write is
+#      a design doc, applied to both the lexical and the realpath-resolved
+#      repo-relative form, so a symlinked `docs/plans/x.md -> ../src/impl.sh`
+#      is not a design doc here either. Deliberately NOT gate_design_pass_honored:
+#      the doc is unreviewed BY CONSTRUCTION — that is what armed the token — so
+#      requiring a PASS would restore the deadlock exactly.
+#
+# ACCEPTED RESIDUAL — TOCTOU, structural to PreToolUse. This hook samples the
+# index before bash runs, so between the decision and git constructing the commit
+# another process could stage an implementation file. That is a property of every
+# gate in this directory (the design token, the litmus marker, and the pr-grind
+# clean marker are all sampled at dispatch time — it is why the marker write and
+# `gh pr merge` are required to be separate tool calls), not something this
+# carve-out introduces. It is narrowed as far as a PreToolUse hook can narrow it:
+# the command must be ONE segment, so nothing in it stages; and the repository
+# must carry no git hook, so nothing during the commit stages. What remains is a
+# concurrent writer in the same repo, which this architecture has never been able
+# to see. The one mechanism that COULD close it is a git pre-commit hook — the
+# very thing condition 1 refuses, because an existing one could stage anything.
+#
+# One implementation file in the set and the block returns in full. The carve-out
+# does NOT exit: it falls through to Gate 2, so litmus still reviews the commit
+# (it short-circuits cheaply on prose). It also does not touch the token
+# lifecycle — the repo-wide impl-write block persists until blueprint-review PASS
+# or design-clear.sh. That is #644, not this.
+# SC2310: this function IS invoked in an `if` condition, deliberately. Its every
+# failure path means "no carve-out", which is the gate's behaviour without it — so
+# `set -e` being disabled here cannot turn a failure into an allow.
+# shellcheck disable=SC2310
+_gate1_commit_is_docs_only() {
+    local scope f seen=0
+    scope="$(printf '%s' "$HOOK_DATA" \
+        | python3 -I "$_GATE_LIB/commit_scope.py" "$REPO_DIR" "$HOOK_CWD" "$STATE_DIR" 2>/dev/null)" || return 1
+    [[ -n "$scope" ]] || return 1
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        seen=1
+        # rc 0 = design doc; 1 = not; 2 = helper error. Only 0 keeps the carve-out.
+        gate_design_doc_exempt "$REPO_DIR/$f" "$STATE_DIR" || return 1
+    done <<< "$scope"
+    [[ "$seen" = 1 ]]
+}
+
 # ── Gate 1: Design review (ADR-A/C — existence-keyed tokens) ──────────────
 # Anchor on the cwd-resolved target repo; all linked worktrees share one marker
 # dir. Pure-shell fast reject first, then the authoritative classifier only for
@@ -348,9 +412,23 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
         # risk). Take the decision without records.
         gate_marker_pending "$REPO_DIR" >/dev/null 2>&1 || _MK_CODE=$?
     fi
-    if [ "$_MK_CODE" != "0" ]; then
+    # SC2310: `set -e` off inside this condition is intentional — every failure
+    # path of the helper means "no carve-out", i.e. the pre-#685 behaviour.
+    # shellcheck disable=SC2310
+    # `= 1` (pending), NEVER `!= 0`: gate_marker_pending returns 2 when it could
+    # not enumerate, and that is the fail-CLOSED case the whole gate exists for.
+    # Letting a docs-only command convert an enumeration FAILURE into success
+    # would widen the carve-out into the one state where nothing is known.
+    if [[ "$_MK_CODE" = "1" ]] && _gate1_commit_is_docs_only; then
+        # #685 — docs-only commit: the pending review does not block landing the
+        # documents it is a review OF. Announced, never silent: a gate that widens
+        # without saying so is unauditable.
+        printf 'NOTE: design review is pending, but this commit carries only design documents — Gate 1 skipped (#685). Implementation writes stay blocked until the review completes.\n' >&2
+        _MK_CODE=0
+    fi
+    if [[ "$_MK_CODE" != "0" ]]; then
         UNREVIEWED=""
-        if [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ]; then
+        if [[ "$_MK_CODE" = "2" ]] || [[ -z "$_MK_RECS" ]]; then
             UNREVIEWED="  - (design review pending — run /blueprint-review to see the specific documents)\n"
         else
             # Shared renderer (resolve-repo-dir.sh) — annotates each doc with the
@@ -361,7 +439,7 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
         rm -f "$_MK_RECS"
         # §6: a COMMIT is bypassed with skip-litmus.local (pre-commit consumes only
         # that, above, before this gate — NOT skip-design-review.local).
-        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf the user wants to bypass the commit: touch %s/%s/skip-litmus.local (pre-commit consumes skip-litmus.local, not skip-design-review.local). Do NOT create it yourself." "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR")
+        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf this commit carries ONLY design documents, it does not need the review to finish (#685) — but the gate has to be able to see the whole file set, so stage and commit in SEPARATE calls:\n  1. git add <the docs>\n  2. git commit -m \"...\"       (on its own: no chained add, no -a, no pathspec)\nA docs-only staged commit then passes Gate 1 through to the normal litmus review.\n\nIf the user wants to bypass the commit: touch %s/%s/skip-litmus.local (pre-commit consumes skip-litmus.local, not skip-design-review.local). Do NOT create it yourself." "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR")
         block_emit "$REASON"
         exit 0
     fi

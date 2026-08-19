@@ -1,3 +1,45 @@
+## [1.109.7](https://github.com/chris-yyau/busdriver/compare/v1.109.6...v1.109.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pi-cert:** close [#692](https://github.com/chris-yyau/busdriver/issues/692) gaps 2/3 with per-anchor uniqueness checks ([#696](https://github.com/chris-yyau/busdriver/issues/696)) ([a3fbb99](https://github.com/chris-yyau/busdriver/commit/a3fbb995ada684e6de2b8c66a7129538e2ec17ae))
+
+## [1.109.6](https://github.com/chris-yyau/busdriver/compare/v1.109.5...v1.109.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **design-gate:** let a docs-only commit past the design review ([#685](https://github.com/chris-yyau/busdriver/issues/685)) ([#697](https://github.com/chris-yyau/busdriver/issues/697)) ([1e1069f](https://github.com/chris-yyau/busdriver/commit/1e1069f222f52fcf96f4c24b3537c760cad540dd))
+
+## [1.109.5](https://github.com/chris-yyau/busdriver/compare/v1.109.4...v1.109.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* **gate:** name the silent skip-lease refusals in the block message ([#681](https://github.com/chris-yyau/busdriver/issues/681)) ([#699](https://github.com/chris-yyau/busdriver/issues/699)) ([3ea037f](https://github.com/chris-yyau/busdriver/commit/3ea037f54214d57d97716089e64202fdb345960a))
+
+## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** report the real commit SHA when a re-invoked fix-round has landed ([#698](https://github.com/chris-yyau/busdriver/issues/698)) ([15c7d31](https://github.com/chris-yyau/busdriver/commit/15c7d31b44372f5f82376dd4cac47fed749739fd)), closes [#668](https://github.com/chris-yyau/busdriver/issues/668)
+
+## [1.109.3](https://github.com/chris-yyau/busdriver/compare/v1.109.2...v1.109.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch:** scope every agy dispatch to the CWD via --add-dir ([#695](https://github.com/chris-yyau/busdriver/issues/695)) ([fb4c816](https://github.com/chris-yyau/busdriver/commit/fb4c816477d4472a2fbf4d1bf28fb9acbb8c5eb9)), closes [#686](https://github.com/chris-yyau/busdriver/issues/686)
+
+## [1.109.2](https://github.com/chris-yyau/busdriver/compare/v1.109.1...v1.109.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** read Codex's comment-form verdicts ([#690](https://github.com/chris-yyau/busdriver/issues/690)) ([#693](https://github.com/chris-yyau/busdriver/issues/693)) ([b6e3585](https://github.com/chris-yyau/busdriver/commit/b6e3585bc0ea960d6973cd3a526917f2dca2c1fb)), closes [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#694](https://github.com/chris-yyau/busdriver/issues/694) [#691](https://github.com/chris-yyau/busdriver/issues/691)
+
 ## [1.109.1](https://github.com/chris-yyau/busdriver/compare/v1.109.0...v1.109.1) (2026-08-18)
 
 

@@ -1759,6 +1759,100 @@ check "a symlinked audit log refuses the bypass (fail-closed)" block "$(write_de
 rm -f "$WORK/.claude/bypass-log.jsonl"
 mv "$WORK/.claude/bypass-log.bak" "$WORK/.claude/bypass-log.jsonl" 2>/dev/null || true
 
+echo "── #681: every skip-lease refusal names itself ─────────────────────"
+
+# All six refusal outcomes BLOCK, and always did. What #681 fixes is that three of
+# them returned 1 silently and fell through to the generic "run /blueprint-review"
+# message — a remedy that cannot clear any of them. The operator was then told to do
+# the one thing that does not work, with no way to tell which branch fired. So these
+# assert on the MESSAGE, not the decision: a block carrying the wrong remedy is the
+# defect, and a decision-only check cannot see it.
+
+says() {   # <name> <needle> <gate-output>   — the block reason must contain <needle>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) no "$1" "reason did not mention: $2" ;;
+    esac
+}
+lacks() {  # <name> <needle> <gate-output>   — the block reason must NOT contain <needle>
+    case "$3" in
+        *"$2"*) no "$1" "reason unexpectedly mentioned: $2" ;;
+        *) ok "$1" ;;
+    esac
+}
+
+# NEGATIVE CONTROL FIRST. The ordinary "you have a pending review and no skip file"
+# block must stay exactly as it was — if the lease note leaked into it, every
+# positive assertion below would still pass while the message regressed for the
+# common case. A guard that cannot fail on the happy path is not a guard.
+rm -f "$WORK/.claude/skip-design-review.local"
+rm -rf "$WORK/.claude/.skip-design-review-lease.d"
+NO_SKIP_OUT="$(write_decision)"
+check "no skip file at all still blocks" block "$NO_SKIP_OUT"
+lacks "no skip file → the block carries NO lease note" "[skip lease:" "$NO_SKIP_OUT"
+says "no skip file → the block still names the normal remedy" "blueprint-review" "$NO_SKIP_OUT"
+
+# ── 1. repo-controlled (#325) ───────────────────────────────────────────────
+# A git-tracked skip file is repo-injectable, so it is refused as consent. The
+# remedy is `git rm --cached` — nothing about /blueprint-review or re-touching can
+# clear it, which is precisely why the generic message was wrong here.
+arm_skip 120
+git -C "$WORK" add -f .claude/skip-design-review.local >/dev/null 2>&1
+REPO_CTRL_OUT="$(write_decision)"
+check "a git-tracked skip file blocks" block "$REPO_CTRL_OUT"
+says "repo-controlled refusal names itself" "repo-controlled" "$REPO_CTRL_OUT"
+says "repo-controlled refusal gives the untrack remedy" "git rm --cached" "$REPO_CTRL_OUT"
+says "repo-controlled refusal says re-creating will not clear it" "will NOT clear this" "$REPO_CTRL_OUT"
+git -C "$WORK" rm --cached -q .claude/skip-design-review.local >/dev/null 2>&1
+
+# ── 2. the use could not be recorded ────────────────────────────────────────
+# Reuses the fail-closed vector already proven above (a plain FILE where the lease
+# directory belongs, so the helper cannot create a slot). Previously indistinguishable
+# from having no skip file; now it points at the two paths that must be writable.
+arm_skip 120
+rm -rf "$WORK/.claude/.skip-design-review-lease.d"
+: >"$WORK/.claude/.skip-design-review-lease.d"
+UNREC_OUT="$(write_decision)"
+check "an unrecordable lease still blocks" block "$UNREC_OUT"
+says "unrecordable refusal names itself" "could not be recorded" "$UNREC_OUT"
+says "unrecordable refusal points at the lease dir" ".skip-design-review-lease.d" "$UNREC_OUT"
+says "unrecordable refusal points at the audit log" "bypass-log.jsonl" "$UNREC_OUT"
+rm -f "$WORK/.claude/.skip-design-review-lease.d"
+
+# ── 3. the helper is unavailable ────────────────────────────────────────────
+# Run a COPY of the gate tree with lease_slot.py removed — the real lib is left
+# untouched, so this cannot perturb the rest of the suite or the working repo.
+GS_COPY="$WORK/gs-no-helper"
+mkdir -p "$GS_COPY"
+cp -R "$REPO_ROOT/hooks/gate-scripts/." "$GS_COPY/"
+rm -f "$GS_COPY/lib/lease_slot.py"
+copy_decision() {   # <gate-copy-dir> -> gate stdout for a gated implementation Write
+    printf '{"tool_name":"Write","cwd":"%s","tool_input":{"file_path":"%s/src/impl.py"}}' "$WORK" "$WORK" \
+    | (cd "$WORK" && bash "$1/pre-implementation-gate.sh") 2>/dev/null
+}
+arm_skip 120
+NOHELPER_OUT="$(copy_decision "$GS_COPY")"
+check "a missing lease helper still blocks" block "$NOHELPER_OUT"
+says "missing-helper refusal names itself" "lease helper could not be opened" "$NOHELPER_OUT"
+says "missing-helper refusal gives the repair remedy" "reinstall or repair the busdriver" "$NOHELPER_OUT"
+# The old bug in miniature: a missing helper must NOT be reported as a spent lease.
+lacks "missing helper is not misreported as EXHAUSTED" "EXHAUSTED" "$NOHELPER_OUT"
+
+# ── 4. the helper returned an unusable slot id ──────────────────────────────
+# Beyond the three outcomes #681 enumerates, but the same silent-refusal class: a
+# helper that exits 0 without printing a slot number proves nothing was recorded.
+GS_STUB="$WORK/gs-stub-helper"
+mkdir -p "$GS_STUB"
+cp -R "$REPO_ROOT/hooks/gate-scripts/." "$GS_STUB/"
+printf '#!/usr/bin/env python3\nprint("not-a-number")\n' >"$GS_STUB/lib/lease_slot.py"
+arm_skip 120
+STUB_OUT="$(copy_decision "$GS_STUB")"
+check "a non-numeric slot id still blocks" block "$STUB_OUT"
+says "unusable-slot refusal names itself" "unusable slot id" "$STUB_OUT"
+
+# Leave the fixture as the rest of the suite expects it.
+arm_skip 120
+
 # Expiry: an old file is refused however few uses it has left.
 arm_skip 7200
 check "an over-age skip file blocks (lease expired)" block "$(write_decision)"

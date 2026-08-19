@@ -2270,6 +2270,11 @@ execute_review() {
     #   if it can't read headless — exactly today's behavior, no widened surface.
     # Align --print-timeout with our outer duration so agy's internal 5m default
     # doesn't abort before _portable_timeout does.
+    # `--add-dir "$PWD"` (#686): the reviewer must be scoped to the CWD — the
+    # tree under review — because unscoped agy resolves its own remembered
+    # workspace and can cite a DIFFERENT checkout with confident file:line
+    # refs and no error. Same flag dispatch.sh's agy arm passes; execute_review
+    # builds its own argv, so it must pass it itself.
     agy)     local _agy_perm=()
              if [[ "${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-0}" == "1" ]]; then
                _agy_perm=(--dangerously-skip-permissions)
@@ -2285,12 +2290,12 @@ execute_review() {
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
                _run_review_with_retries agy "$prompt" "$duration" none \
-                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
+                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
                _run_review_with_retries agy "$prompt" "$duration" pipe \
-                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
+                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this

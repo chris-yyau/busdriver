@@ -35,6 +35,13 @@
 #   - HOME is re-imported for tools that need it (e.g. gh auth under ~/.config).
 #     The concrete git-helper vector a poisoned HOME enabled is closed below; a
 #     spoofed ~/.config/gh remains a bounded residual (read-only PR-state queries).
+#     pre-commit-gate.sh's docs-only carve-out (#685/ADR 0044) additionally
+#     re-imports the SAME pre-substitution value as BUSDRIVER_ORIG_HOME (this
+#     wrapper never touches that name, so it survives the HOME override below
+#     untouched) — commit_scope.py's unsanitized config pass reads it to check
+#     the effective global git config under the HOME the authorized `git commit`
+#     will actually run with, not this wrapper's defensively-substituted one.
+#     Reported by Codex on PR #697, reproduced.
 #   - Outer-shell BASH_ENV is VERIFIED not a live vector: Claude Code runs hook commands
 #     via `sh -c` (documented, code.claude.com/docs/en/hooks.md), and a non-interactive
 #     POSIX `sh` sources NO startup files, so BASH_ENV is not read before this command

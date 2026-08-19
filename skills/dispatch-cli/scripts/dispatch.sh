@@ -350,10 +350,9 @@ REPORT_CLI_NAME=""
 # the runtime droid escalation. Deliberately ONE flag for both, not two: they are
 # the same fact ("this dispatch is the read lane"), and a second variable would
 # let a future change to one silently stop protecting the other.
-# Empty for every other caller, so plain `--cli agy` argv IS byte-identical to
-# what it was before this lane existed — `--model`, `--add-dir` and `--mode plan`
-# are all lane-only. See the agy branch for why the reviewer path was left alone
-# even though it shares one of agy's defects.
+# Empty for every other caller, so plain `--cli agy` argv differs from the
+# lane's ONLY by `--mode plan` (and any explicit --model): `--add-dir "$PWD"` is
+# unconditional on every agy dispatch since #686 — see the agy branch.
 _AGY_READ_LANE=""
 
 # ── Parse args ─────────────────────────────────
@@ -376,8 +375,10 @@ FLAGS:
   --prompt  "task description"      (or pipe via stdin)
 
 NOTE: `agy-read` is the repo-READING lane. Like `pi` it runs IN the working tree
-(`--add-dir "$PWD"`, which is load-bearing — without it agy answers from a
-remembered workspace, citing the wrong checkout). `--mode auto` is refused. Its model comes from ~/.claude/busdriver.json
+(`--add-dir "$PWD"` selects the CWD as agy's workspace — without it agy answers
+from a remembered workspace, citing the wrong checkout; since #686 the flag is
+unconditional on every agy dispatch, so the reviewer slot is scoped the same
+way). `--mode auto` is refused. Its model comes from ~/.claude/busdriver.json
 `{"agy_read": {"model": "<id>"}}`; `agy models` enumerates ids. Plain `--cli agy` is unaffected and keeps agy's own configured model, so
 the blueprint-review reviewer slot is never downgraded to the read model.
 Writes: blocked in every probe run via agy's `--mode plan` (`--sandbox` alone
@@ -538,10 +539,13 @@ fi
 # implementation to maintain rather than two that drift:
 #   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
 #   $MODEL         → `.agy_read.model` from ~/.claude/busdriver.json
-#   --add-dir "$PWD" is supplied by the lane-only argv in the agy arm
+#   --mode plan    → the lane's write boundary (added in the agy arm below;
+#                    --add-dir needs no lane pin — unconditional since #686)
 #
-# Plain `--cli agy` is UNTOUCHED by all of this: it passes no --model, so the
+# Plain `--cli agy` is untouched by the DESUGAR: it passes no --model, so the
 # reviewer_1 slot keeps agy's own configured model. Only this lane opts in.
+# (`--add-dir "$PWD"` reaches plain agy independently — it is unconditional on
+# every agy dispatch since #686, not a desugar pin.)
 # An explicit `--model` still wins — the config is the default, not a clamp.
 if [[ "$CLI" == "agy-read" ]]; then
     # Preserve the REQUESTED lane name for reporting (output filename, console
@@ -897,14 +901,13 @@ dispatch_one() {
             # configured model", so every existing caller is unaffected.
             # `agy models` enumerates ids.
             #
-            # SCOPE NOTE — `--add-dir` is LANE-ONLY, and that is a scope decision,
-            # not a security one. agy resolves a remembered workspace when unscoped
-            # (see below), which affects the reviewer slot too: an unscoped
-            # `blueprint-review.reviewer_1` can return findings about a DIFFERENT
-            # checkout than the one under review. That defect is real and tracked
-            # separately — it is agy's, it predates this lane, and fixing the
-            # reviewer path is a behaviour change to a gate of record that deserves
-            # its own change and its own test, not a drive-by in a read-lane PR.
+            # SCOPE NOTE — `--add-dir "$PWD"` is UNCONDITIONAL (#686), and that
+            # is a scope decision, not a security one. agy resolves a remembered
+            # workspace when unscoped (see below), and the reviewer slot shared
+            # the defect: an unscoped `blueprint-review.reviewer_1` could return
+            # findings about a DIFFERENT checkout than the one under review.
+            # Every agy dispatch now selects the CWD as the workspace, so a
+            # reviewer of record cannot cite a remembered foreign tree.
             #
             # What it is NOT is a containment boundary, and that is MEASURED
             # (2026-08-17): plain `agy --sandbox` with NO `--add-dir` was asked to
@@ -921,20 +924,26 @@ dispatch_one() {
             # the established shape of EVERY arm in this dispatcher; the retry loop
             # below consumes exit_code deliberately. Not introduced here.
             #
-            # Lane-only argv, built as an ARRAY so a $PWD containing spaces cannot
-            # word-split. Empty for plain `--cli agy`; the `+` expansion form below
-            # keeps an empty array safe under `set -u` on bash 3.2.
-            local _agy_lane=()
+            # Workspace argv, built as an ARRAY so a $PWD containing spaces cannot
+            # word-split; the `+` expansion form below keeps it safe under
+            # `set -u` on bash 3.2.
+            #
+            # `--add-dir "$PWD"` selects the CWD as agy's workspace on EVERY agy
+            # dispatch — the read lane and the plain `--cli agy` reviewer slots
+            # alike (#686). `--mode plan` is the read lane's write boundary ONLY:
+            # it must never reach a reviewer, which stops producing findings
+            # under plan mode.
+            local _agy_lane=(--add-dir "$PWD")
             if [[ -n "$_AGY_READ_LANE" ]]; then
-                _agy_lane=(--add-dir "$PWD" --mode plan)
+                _agy_lane+=(--mode plan)
             fi
-            # `--add-dir "$PWD"` IS LOAD-BEARING for the read lane. Without it
-            # agy does not scope reads to the CWD: it resolves its own remembered
-            # workspace/project. Measured 2026-08-17 dispatching from
+            # `--add-dir "$PWD"` IS LOAD-BEARING. Without it agy does not scope
+            # reads to the CWD: it resolves its own remembered workspace/project.
+            # Measured 2026-08-17 dispatching from
             # /Volumes/Work/Projects/busdriver — agy silently answered from a stale
             # ~/src/busdriver checkout (v1.71.0), returning confident,
             # correctly-formatted file:line citations for the WRONG tree. That is
-            # the worst failure shape available to a read lane: it does not error,
+            # the worst failure shape available to a dispatch: it does not error,
             # it lies with citations. With --add-dir the same probe returned the
             # right absolute path and the right verbatim line.
             # Fail loudly before the kernel E2BIGs a prompt into another silent

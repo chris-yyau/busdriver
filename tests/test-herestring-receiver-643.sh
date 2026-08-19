@@ -166,6 +166,59 @@ assert_block "<<< x\\<< /dev/null . /dev/stdin <<< '$HELPER'" \
 # (7) ESCAPED command word. Squeezing quotes alone left `b\a\s\h` matching no name; the
 #     receiver normalization squeezes escapes too.
 assert_block "b\\a\\s\\h <<< '$HELPER'"        "escaped command word still resolves to a shell"
+# ...and an ANSI-C ESCAPE is DECODED, not just stripped. Squeezing backslashes resolves the
+# case above, where each escapes a letter that is already itself — but bash DECODES `\x62`
+# to `b`, and stripping left `x62ash`, which matches no shell, so the here-string executed
+# bash while the classifier called it a read. Both forms are kept: decoding alone breaks
+# the case above, since `\a` is a real escape (BEL) and `b\a\s\h` stops resolving.
+assert_block "\$'\\x62ash' <<< '$HELPER'"        "an ANSI-C hex escape resolves to a shell"
+assert_block "\$'\\x73h' <<< '$HELPER'"          "...and the short name too"
+# Quotes are squeezed out of the decoded form, BACKSLASHES ARE NOT: after decoding, a
+# surviving backslash is DATA rather than an escape, so the decoded variant of
+# `$'\x62a\x5csh'` is `ba\sh` and matches no shell.
+#
+# That spelling still over-blocks, and it is pinned here as one because the reason is
+# OLDER than any of this: the raw word is squeezed of backslashes before it is compared,
+# which is what makes the ordinary spelling `b\a\s\h` resolve to a shell — correctly,
+# since those backslashes escape letters that are already themselves. `'ba\sh'`, a genuine
+# literal backslash, measures BLOCK for the same reason and always has. Distinguishing them
+# needs to know whether the backslash was data or an escape, and `_norm_for_scan` has
+# already dropped the `$` that says so.
+assert_block "'ba\\sh' <<< '$HELPER'"           "a literal backslash in a command word over-blocks (pre-existing squeeze)"
+assert_block "\$'\\x62a\\x5csh' <<< '$HELPER'"   "...and its ANSI-C spelling inherits that, not the decode"
+# The decoded variants join the ANY-WORD receiver test, which is deliberately wide: a shell
+# name ANYWHERE in the non-redirection words counts, because peeling to a single command
+# word failed open three ways (see the receiver-test note above). So a shell name written as
+# an ARGUMENT over-blocks — and it already did in every plain spelling, long before any
+# decoding existed. Pinned as a pair so the decoded form is not mistaken for a new class.
+assert_block "printf bash <<< '$HELPER'"       "a shell name as an argument over-blocks (the wide any-word test)"
+assert_block "printf \$'\\x62ash' <<< '$HELPER'" "...and its ANSI-C spelling reaches the same rule, not a new one"
+# PROPERTY over the encodings bash decodes, in both directions. A name that RESOLVES to a
+# shell blocks however it is spelled; one that does not stays a data read.
+_enc_n=0
+for _spell in "\$'\\x62ash'" "\$'\\142ash'" "\$'\\x62\\x61sh'" "bash" "'bash'" "ba'sh'"; do
+    _enc_n=$((_enc_n + 1))
+    _got=$(verdict "$_spell <<< '$HELPER'")
+    if [[ "$_got" != BLOCK_* ]]; then
+        no "property: every spelling that resolves to a shell blocks" "$_spell — got=${_got:-<empty>}"
+        _enc_n=-1; break
+    fi
+done
+if [[ $_enc_n -gt 0 ]]; then
+    ok "property: every spelling that resolves to a shell blocks ($_enc_n)"
+fi
+_dat_n=0
+for _spell in "\$'\\x64ata'" "\$'\\x6eull'" "\$'\\x67rep' -f -" "cat"; do
+    _dat_n=$((_dat_n + 1))
+    _got=$(verdict "$_spell <<< '$HELPER'")
+    if [[ "$_got" != "OK|" ]]; then
+        no "property: a spelling that resolves to a non-shell is still data" "$_spell — got=${_got:-<empty>}"
+        _dat_n=-1; break
+    fi
+done
+if [[ $_dat_n -gt 0 ]]; then
+    ok "property: a spelling that resolves to a non-shell is still data ($_dat_n)"
+fi
 # (8) ATTACHED OPTION BUNDLE. Peeling one option letter off `-iSbash` leaves `Sbash`, and
 #     peeling a fixed number never terminates because the caller chooses the bundle
 #     length — so the producer tests an endswith over the names, and this mirrors it.

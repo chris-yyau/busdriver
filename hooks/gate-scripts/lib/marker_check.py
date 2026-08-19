@@ -2086,8 +2086,8 @@ def _walk_words(text):
     # unified receiver predicate exists to stop.
     pieces = _shell_pieces(text)
     if pieces is None:
-        return [], False
-    words, skip_next = [], False
+        return [], [], False
+    words, extras, skip_next = [], [], False
     for is_op, t, _i in pieces:
         # Redirections are stepped over while locating command words, because bash accepts
         # them BEFORE the command: `<<<'<helper>' sh` is a real spelling, and reading
@@ -2104,8 +2104,28 @@ def _walk_words(text):
         # Quoting AND ESCAPES squeezed, not just outer-stripped: `b'a's'h'` and `b\a\s\h`
         # are both valid command-word spellings of bash, and an outer-strip left each
         # matching no name. Same squeeze the helper probe applies to its own text.
-        words.append(t.replace("'", "").replace('"', "").replace("\\", ""))
-    return words, True
+        sq = t.replace("'", "").replace('"', "").replace("\\", "")
+        words.append(sq)
+        # ANSI-C ESCAPES ARE DECODED TOO, as an ADDITIONAL word. Squeezing backslashes
+        # away resolves `b\a\s\h`, where each one escapes a letter that is already
+        # itself -- but not `$'\x62ash'`, where bash DECODES `\x62` to `b`. Stripping
+        # there left `x62ash`, which matches no shell, and the here-string executed bash
+        # while the classifier called it a read. (`_norm_for_scan` has already dropped the
+        # `$`, so nothing downstream can tell the two spellings apart by shape.)
+        # BOTH forms are kept rather than one replaced: decoding alone breaks the first
+        # case, since `\a` is a real escape (BEL) and `b\a\s\h` stops resolving to bash.
+        # Additive, the same rule `_shell_variants` states -- over-decoding can only make
+        # more text match, so it adds blocks and never removes one. Extras are returned
+        # SEPARATELY because they must not shift command position or make a reserved-only
+        # segment look like it carries a command.
+        if "\\" in t:
+            # Quotes squeezed, BACKSLASHES NOT: after decoding, a surviving backslash is
+            # DATA, not an escape. `$'\x62a\x5csh'` is `ba\sh` to bash -- no shell at all
+            # -- and stripping the decoded `\` collapsed it to `bash` and refused a read.
+            dec = _decode_escapes(t).replace("'", "").replace('"', "")
+            if dec != sq:
+                extras.append(dec)
+    return words, extras, True
 
 
 def _herestring_words(text):
@@ -2117,11 +2137,11 @@ def _herestring_words(text):
     # quoted operator is inside a word piece and never becomes an operator piece.
     pieces = _shell_pieces(text)
     if pieces is None:
-        return False, [], False
+        return False, [], [], False
     if not any(op and "<<<" in txt for op, txt, _ in pieces):
-        return False, [], True
-    words, ok = _walk_words(text)
-    return True, words, ok
+        return False, [], [], True
+    words, extras, ok = _walk_words(text)
+    return True, words, extras, ok
 
 
 def _cmd_position(words):
@@ -2295,7 +2315,7 @@ def _herestring_shell_payloads(pairs):
         # segment ahead of the cheap prefilter below.
         if "<<<" not in seg:
             continue
-        _has_hs, cw_words, _ok = _herestring_words(seg)
+        _has_hs, cw_words, _extras, _ok = _herestring_words(seg)
         if not _ok:
             # FAIL CLOSED, and accept the over-block. Provenance is unknown here, and
             # deciding it without a lexer means writing one: a quote-state scan was tried
@@ -2369,11 +2389,11 @@ def _herestring_shell_payloads(pairs):
                     # `_walk_words` regardless of whether THIS segment holds the operator:
                     # the receiver is in a different segment, which is the whole reason
                     # the scan widened.
-                    _segw, _ok2 = _walk_words(_s2)
+                    _segw, _segx, _ok2 = _walk_words(_s2)
                     if not _ok2:
                         _allw, _allcw = ["sh"], []   # unlexable inside: fail closed
                         break
-                    _allw.extend(_segw)
+                    _allw.extend(_segw + _segx)
                     _allcw.append(_cmd_position(_segw))
                 _compound_receiver = _herestring_receiver(_allw, _alltext, _allcw)
             if not _compound_receiver:
@@ -2385,7 +2405,8 @@ def _herestring_shell_payloads(pairs):
             # find and the loop can end here.
             out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
             break
-        if _herestring_receiver(cw_words, " ".join(cw_words)):
+        if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
+                                [_cmd_position(cw_words)]):
             out.append(seg)
     return out
 

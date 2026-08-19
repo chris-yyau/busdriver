@@ -365,17 +365,34 @@ try:
     # reason (see gh_pr_repo_override's docstring): defense-in-depth against the
     # literal forms, never a boundary.
     print('yes' if gh_pr_repo_override(cmd, 'merge') else 'no')
+    # Line 4: explicit completion marker. Printed only once every prior print
+    # succeeded — an exception anywhere above (including inside
+    # gh_pr_repo_override itself) truncates the output before this line ever
+    # runs. Without it, a truncated line 3 was indistinguishable from a real
+    # 'yes': both look non-'no' to the bash side below.
+    print('parse-complete')
 except Exception:
     pass
 " 2>/dev/null || true)
 
 PARSE_STATUS=$(echo "$PARSE" | sed -n '1p')
 PARSE_PR=$(echo "$PARSE" | sed -n '2p')
-# Anything but an explicit "no" declines the query below, which can only ever
-# PRESERVE the skip file — so a parse anomaly costs a confirmation, never a
-# token.
 PARSE_REPO_OVERRIDE=$(echo "$PARSE" | sed -n '3p')
-case "$PARSE_REPO_OVERRIDE" in no) ;; *) PARSE_REPO_OVERRIDE=yes ;; esac
+PARSE_COMPLETE=$(echo "$PARSE" | sed -n '4p')
+# Trust an explicit "yes" ONLY when the parse fully completed (line 4 present
+# — proves no exception truncated the output before or during line 3). A
+# truncated/garbled/missing line 3 must default to "no", not "yes": "yes"
+# immediately forces PARSE_STATUS to "success" and spends the token below
+# (cross-repo-merge-unverifiable-token-spent) even when PARSE_STATUS was
+# genuinely 'failure' — burning the token on a same-repo failure the parser
+# never actually confirmed was cross-repo. "no" instead falls through to the
+# normal query/preserve path, which can only ever preserve the skip file on
+# an anomaly, never force-spend it.
+if [ "$PARSE_COMPLETE" = "parse-complete" ] && [ "$PARSE_REPO_OVERRIDE" = "yes" ]; then
+    PARSE_REPO_OVERRIDE=yes
+else
+    PARSE_REPO_OVERRIDE=no
+fi
 _SUCCESS_SOURCE=""
 
 # ── Authoritative merge-state confirmation (issue #664) ────────────────
@@ -425,13 +442,10 @@ esac
 case "$PARSE_STATUS" in
     success) ;;
     *)
-        # Two preconditions, both fail-closed:
-        #   - a concretely-known PR on BOTH sides — the query needs an
-        #     unambiguous target, and promoting on some other PR's state is
-        #     exactly the cross-PR token reuse the success path refuses below;
-        # Otherwise the query needs a concretely-known PR on BOTH sides: an
-        # unambiguous target, and judging by some other PR's state is the
-        # cross-PR token reuse the success path refuses below.
+        # Fail-closed precondition for the query: a concretely-known PR on
+        # BOTH sides. The query needs an unambiguous target, and judging by
+        # some other PR's state is the cross-PR token reuse the success path
+        # refuses below.
         if [ "$PARSE_REPO_OVERRIDE" = "yes" ]; then
             # A merge steered at another repo/host. No query here can speak to
             # it — this checkout's PR #N is a different pull request — so the

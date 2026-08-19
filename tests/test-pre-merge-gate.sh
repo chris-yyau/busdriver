@@ -1151,7 +1151,7 @@ LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
 # path fired. Pending-claim placement varies with cd-prefix repo resolution,
 # which tests/test-pre-merge-gate.sh covers separately.
 if [ -f "$SKIP_FILE" ] \
-    && ! printf '%s' "$LAST_LOG" | grep -q 'unverifiable-repo-override'; then
+    && ! printf '%s' "$LAST_LOG" | grep -q 'cross-repo-merge-unverifiable-token-spent'; then
     printf "  PASS  #664 ordinary shape keeps the retry reprieve: %s\n" "$_cmd"
     PASS=$((PASS + 1))
 else

@@ -1,3 +1,10 @@
+## [1.109.10](https://github.com/chris-yyau/busdriver/compare/v1.109.9...v1.109.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pre-merge:** confirm merges against the GitHub API, not CLI chatter ([#664](https://github.com/chris-yyau/busdriver/issues/664)) ([#709](https://github.com/chris-yyau/busdriver/issues/709)) ([9b58f6b](https://github.com/chris-yyau/busdriver/commit/9b58f6b106b60a2cd0cef33c77edd163961217f5)), closes [#98](https://github.com/chris-yyau/busdriver/issues/98)
+
 ## [1.109.9](https://github.com/chris-yyau/busdriver/compare/v1.109.8...v1.109.9) (2026-08-19)
 
 

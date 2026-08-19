@@ -193,6 +193,36 @@ assert_block "\$'\\x62a\\x5csh' <<< '$HELPER'"   "...and its ANSI-C spelling inh
 # decoding existed. Pinned as a pair so the decoded form is not mistaken for a new class.
 assert_block "printf bash <<< '$HELPER'"       "a shell name as an argument over-blocks (the wide any-word test)"
 assert_block "printf \$'\\x62ash' <<< '$HELPER'" "...and its ANSI-C spelling reaches the same rule, not a new one"
+# COMMAND POSITION IS ASKED IN BOTH SPELLINGS. `.` and `source` are recognised only in
+# command position — they are deliberately absent from _SHELL_NAMES, because an any-word
+# match over-blocked the bare word `source` used as a grep pattern — so decoded forms
+# appended to the end of one word list could never reach that test, and the encoded
+# spellings sourced the payload while classifying as a read. The lists are kept parallel
+# and command position is derived from each.
+assert_block "\$'\\x2e' /dev/stdin <<< '$HELPER'"  "an ANSI-C encoded dot is still command position"
+assert_block "\$'\\x73ource' /dev/stdin <<< '$HELPER'" "...and an encoded source"
+assert_block "if true; then \$'\\x2e' /dev/stdin; fi <<< '$HELPER'" \
+    "...including inside a compound, where the widening asks per segment"
+# ...and the reason `.`/`source` are position-only still holds after decoding.
+assert_ok "grep source f <<< '$HELPER'"        "the bare word source as a pattern is not a receiver"
+# POSITION IS DECIDED PRE-EXPANSION, and only the NAME is compared decoded. Bash resolves
+# shell grammar before it expands, so `$'\x74ime'` is NOT the `time` keyword — it is a
+# command whose name happens to expand to `time`. Deriving command position by running the
+# peel over the decoded list gave decoded words grammar semantics and would strip it.
+# This spelling over-blocks for an OLDER reason, and is pinned as such rather than as
+# coverage of the peel: it measures BLOCK at 46f58a65 as well, which predates any decoding
+# in this walk, so the ANSI-C machinery elsewhere in the module is what reaches it.
+assert_block "\$'\\x74ime' . /dev/stdin <<< '$HELPER'" \
+    "pre-existing over-block: an encoded time reaches the module's older ANSI-C handling"
+# The peel itself is unaffected either way — an unrelated name in the same position does
+# not promote the dot behind it.
+assert_ok "notatime . /dev/stdin <<< '$HELPER'" "an ordinary name does not promote the dot behind it"
+# ...and the decoded candidate does NOT inherit a wrapper peel of `time`: the keyword only
+# prefixes a pipeline, so after `env` or `command` it is an external program and the peel
+# is not applied — with or without the dot behind it being ANSI-C encoded.
+assert_ok "env time \$'\\x2e' /dev/stdin <<< '$HELPER'" \
+    "a wrapped external time does not promote an encoded dot"
+assert_ok "command time \$'\\x2e' /dev/stdin <<< '$HELPER'" "...same for command"
 # PROPERTY over the encodings bash decodes, in both directions. A name that RESOLVES to a
 # shell blocks however it is spelled; one that does not stays a data read.
 _enc_n=0

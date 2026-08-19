@@ -2087,7 +2087,7 @@ def _walk_words(text):
     pieces = _shell_pieces(text)
     if pieces is None:
         return [], [], False
-    words, extras, skip_next = [], [], False
+    words, dwords, skip_next = [], [], False
     for is_op, t, _i in pieces:
         # Redirections are stepped over while locating command words, because bash accepts
         # them BEFORE the command: `<<<'<helper>' sh` is a real spelling, and reading
@@ -2118,14 +2118,21 @@ def _walk_words(text):
         # more text match, so it adds blocks and never removes one. Extras are returned
         # SEPARATELY because they must not shift command position or make a reserved-only
         # segment look like it carries a command.
+        # PARALLEL, one decoded entry per word, not a bag of extras. Command position is a
+        # POSITION, and `.`/`source` are recognised only there -- they are deliberately
+        # absent from _SHELL_NAMES, because an any-word match over-blocked the bare word
+        # `source` used as a grep pattern. Appending decoded forms to the end of one list
+        # therefore could not reach that test at all, and `$'\x2e' /dev/stdin <<< P`
+        # sourced the payload while classifying as a read. Keeping the lists aligned lets
+        # the caller ask for command position in BOTH spellings.
+        dec = sq
         if "\\" in t:
             # Quotes squeezed, BACKSLASHES NOT: after decoding, a surviving backslash is
             # DATA, not an escape. `$'\x62a\x5csh'` is `ba\sh` to bash -- no shell at all
             # -- and stripping the decoded `\` collapsed it to `bash` and refused a read.
             dec = _decode_escapes(t).replace("'", "").replace('"', "")
-            if dec != sq:
-                extras.append(dec)
-    return words, extras, True
+        dwords.append(dec)
+    return words, dwords, True
 
 
 def _herestring_words(text):
@@ -2173,6 +2180,25 @@ def _cmd_position(words):
     if _j < len(words) and _bn(words[_j]) == "time":
         _w = words[:_j] + _strip_time_prefix(words[_j:])
     return _peel_wrappers(_w) or (_w[0] if _w else None)
+
+
+def _cmd_candidates(words, dwords):
+    # The command-position word, in both spellings. POSITION is decided on the RAW words
+    # and only the NAME is compared decoded, because bash resolves shell grammar BEFORE it
+    # expands: `$'\x74ime'` is not the `time` keyword, it is a command whose name happens
+    # to expand to `time`. Running the peel over the decoded list gave decoded words
+    # grammar semantics and stripped that `time`, promoting the `.` behind it and refusing
+    # a data-only read. The index is recovered by lookup rather than threaded through --
+    # `_cmd_position` always returns an element of `words`, and equal words decode equally,
+    # so a duplicate resolving to an earlier index yields the same candidate.
+    w0 = _cmd_position(words)
+    if w0 is None:
+        return []
+    try:
+        k = words.index(w0)
+    except ValueError:
+        return [w0]
+    return [w0] if dwords[k] == w0 else [w0, dwords[k]]
 
 
 def _herestring_receiver(cw_words, text, cmd_words=None):
@@ -2315,7 +2341,8 @@ def _herestring_shell_payloads(pairs):
         # segment ahead of the cheap prefilter below.
         if "<<<" not in seg:
             continue
-        _has_hs, cw_words, _extras, _ok = _herestring_words(seg)
+        _has_hs, cw_words, _dwords, _ok = _herestring_words(seg)
+        _extras = [d for w, d in zip(cw_words, _dwords) if d != w]
         if not _ok:
             # FAIL CLOSED, and accept the over-block. Provenance is unknown here, and
             # deciding it without a lexer means writing one: a quote-state scan was tried
@@ -2389,12 +2416,12 @@ def _herestring_shell_payloads(pairs):
                     # `_walk_words` regardless of whether THIS segment holds the operator:
                     # the receiver is in a different segment, which is the whole reason
                     # the scan widened.
-                    _segw, _segx, _ok2 = _walk_words(_s2)
+                    _segw, _segd, _ok2 = _walk_words(_s2)
                     if not _ok2:
                         _allw, _allcw = ["sh"], []   # unlexable inside: fail closed
                         break
-                    _allw.extend(_segw + _segx)
-                    _allcw.append(_cmd_position(_segw))
+                    _allw.extend(_segw + [d for w, d in zip(_segw, _segd) if d != w])
+                    _allcw.extend(_cmd_candidates(_segw, _segd))
                 _compound_receiver = _herestring_receiver(_allw, _alltext, _allcw)
             if not _compound_receiver:
                 continue
@@ -2406,7 +2433,7 @@ def _herestring_shell_payloads(pairs):
             out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
             break
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
-                                [_cmd_position(cw_words)]):
+                                _cmd_candidates(cw_words, _dwords)):
             out.append(seg)
     return out
 

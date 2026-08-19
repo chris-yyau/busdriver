@@ -41,6 +41,9 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"
 RESOLVE="$REPO_ROOT/scripts/lib/resolve-cli.sh"
+# The preflight child is a separate file (see its header for why it is not a
+# heredoc): child-side rules are asserted there, parent-side ones in RESOLVE.
+CHILD="$REPO_ROOT/scripts/lib/grok-preflight.sh"
 
 FAILED=0
 pass() { printf 'ok   — %s\n' "$1"; }
@@ -164,7 +167,8 @@ for site in dispatch resolve; do
   # `-i` is too late for the loader: LD_PRELOAD / LD_AUDIT act while
   # /usr/bin/env itself is being loaded, so they must be blanked on the exec
   # that starts env, not by env.
-  if [[ "$arm" == *"LD_PRELOAD='' LD_AUDIT=''"* && "$arm" == *"LD_LIBRARY_PATH=''"* && "$arm" == *"DYLD_INSERT_LIBRARIES=''"* ]]; then
+  if [[ "$arm" == *"LD_PRELOAD='' LD_AUDIT=''"* && "$arm" == *"LD_LIBRARY_PATH=''"* \
+     && "$arm" == *"DYLD_INSERT_LIBRARIES=''"* && "$arm" == *"DYLD_LIBRARY_PATH=''"* ]]; then
     pass "$where: loader variables are blanked before env is exec'd"
   else
     fail "$where: grok arm does not blank LD_PRELOAD/LD_AUDIT/DYLD_* before exec — the loader runs injected code inside env itself, before -i clears anything"
@@ -357,7 +361,79 @@ deny = []' > "$tmp/commented.toml"
     fi
   fi
 
-  if /usr/bin/grep -q 'pathrest="\$pinned:"' "$RESOLVE"; then
+  # The preflight's OWN exec needs the loader scrub as much as grok's: code
+  # injected there could forge the success output the whole gate rests on.
+  _pf_scrub=0
+  for _v in LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH; do
+    /usr/bin/grep -qE "^  $_v=''$" "$RESOLVE" || _pf_scrub=1
+  done
+  if [[ "$_pf_scrub" -eq 0 ]]; then
+    pass "the preflight's own child exec is loader-scrubbed"
+  else
+    fail "the preflight launches env -i without blanking every loader variable — injected code could forge its verdict"
+  fi
+
+  # A wrapper script's interpreter is resolved at exec time, so a safe wrapper
+  # path proves nothing about what actually runs.
+  # Assert the REFUSAL and the regular-file guard, not just the identifier: a
+  # grep for `head2` still passes if the comparison that rejects a script is
+  # deleted, and reading two bytes from an executable FIFO named grok would
+  # hang the gate instead of refusing.
+  # Not "does not start with #!": an executable text file with no shebang is
+  # handed to /bin/sh by execvp, so the test has to be what the file IS.
+  if /usr/bin/grep -q 'application/x-mach-binary|application/x-executable' "$CHILD"; then
+    pass "grok must match the native-image allowlist, not merely application/*"
+  else
+    fail "the preflight does not allowlist native image types — `file` labels unidentifiable data application/octet-stream, and execvp hands a shebang-less script to /bin/sh"
+  fi
+
+  # Behavioural, not textual: run the same classifier the preflight runs and
+  # confirm it separates a real binary from the two wrapper shapes on THIS host.
+  # A grep alone would have stayed green through the octet-stream bypass.
+  # `set -e` is off here, so an unchecked mktemp would leave $_bin_probe empty,
+  # write the fixtures to /shebang, /plain and /binaryish, and then report the
+  # MISSING files as correctly rejected — false-green on the one check that is
+  # behavioural rather than textual.
+  if ! _bin_probe="$(mktemp -d)" || [[ -z "$_bin_probe" || ! -d "$_bin_probe" ]]; then
+    fail "could not create a temp dir for the binary-classifier fixtures"
+    _bin_probe=""
+  fi
+  if [[ -n "$_bin_probe" ]]; then
+  printf '#!/bin/sh\necho hi\n' > "$_bin_probe/shebang"; chmod +x "$_bin_probe/shebang"
+  printf 'echo hi\n' > "$_bin_probe/plain";              chmod +x "$_bin_probe/plain"
+  printf 'echo hi\n\001\n' > "$_bin_probe/binaryish";   chmod +x "$_bin_probe/binaryish"
+  # Mirrors the production predicate, universal-binary handling included: a
+  # multi-architecture image reports one line per slice, each prefixed with
+  # `(for architecture …):`.
+  _allow() {
+    local _k
+    _k="$(/usr/bin/file -b --mime-type -- "$1" 2>/dev/null | /usr/bin/sed 's/^.*:[[:space:]]*//')"
+    [[ -n "$_k" ]] || return 1
+    /usr/bin/grep -qvE '^(application/x-mach-binary|application/x-executable|application/x-pie-executable|application/x-sharedlib)$' <<<"$_k" && return 1
+    return 0
+  }
+  if _allow /usr/bin/head; then
+    pass "the native-image rule accepts a real binary (/usr/bin/head)"
+  else
+    fail "the native-image rule rejects a real binary — it would refuse every grok install"
+  fi
+  for _probe in shebang plain binaryish; do
+    if _allow "$_bin_probe/$_probe"; then
+      fail "the native-image rule accepts the '$_probe' wrapper — it would run before grok's sandbox"
+    else
+      pass "the native-image rule rejects the '$_probe' wrapper"
+    fi
+  done
+  unset -f _allow
+  rm -rf "$_bin_probe"
+  fi
+  if /usr/bin/grep -q '\[\[ -f "\$target" \]\] || why binary' "$CHILD"; then
+    pass "the grok candidate must be a regular file before it is read"
+  else
+    fail "the preflight reads the candidate without requiring a regular file — an executable FIFO named grok would block it forever"
+  fi
+
+  if /usr/bin/grep -q 'pathrest="\$pinned:"' "$CHILD"; then
     pass "every pinned PATH entry is checked against the reviewed tree"
   else
     fail "the containment check does not walk the whole pinned PATH — a checkout rooted at ~/.local, /opt/homebrew or /usr/local could supply grok or an interpreter it resolves"
@@ -365,15 +441,15 @@ deny = []' > "$tmp/commented.toml"
 
   # the INVOCATION form, not the mention — the comment above the walk explains
   # why git is not asked, and would otherwise match
-  if /usr/bin/grep -q '/usr/bin/git rev-parse' "$RESOLVE"; then
+  if /usr/bin/grep -q '/usr/bin/git rev-parse' "$CHILD"; then
     fail "preflight asks git for the checkout root — GIT_DIR/GIT_WORK_TREE are injectable, so the reviewed tree could nominate its own root"
-  elif /usr/bin/grep -q '\-e "\$walk/.git"' "$RESOLVE"; then
+  elif /usr/bin/grep -q '\-e "\$walk/.git"' "$CHILD"; then
     pass "containment walks up for the checkout root instead of trusting git env"
   else
     fail "containment does not find the checkout root — run from a subdirectory of a checkout rooted at \$HOME, ~/.grok would pass while the branch owns it"
   fi
 
-  if /usr/bin/grep -q 'resolve_link "\$p/grok"' "$RESOLVE"; then
+  if /usr/bin/grep -q 'resolve_link "\$p/grok"' "$CHILD"; then
     pass "the grok binary is resolved through symlinks before it is trusted"
   else
     fail "the grok binary is trusted by path — a trusted-looking entry could be a symlink into the reviewed checkout"
@@ -381,43 +457,43 @@ deny = []' > "$tmp/commented.toml"
 
   # env execs the FIRST grok on the pinned PATH, so an unsafe first candidate
   # must fail the check, not be skipped in favour of a safe later one.
-  if /usr/bin/grep -q 'target="\$(resolve_link "\$p/grok")" || why binary' "$RESOLVE"; then
+  if /usr/bin/grep -q 'target="\$(resolve_link "\$p/grok")" || why binary' "$CHILD"; then
     pass "an unsafe first grok candidate fails the preflight instead of being skipped"
   else
     fail "the PATH scan continues past an unsafe candidate — it would bless a binary that never runs"
   fi
 
-  if /usr/bin/grep -q '\[ -L "\$p" \] && return 1' "$RESOLVE"; then
+  if /usr/bin/grep -q '\[\[ -L "\$p" \]\] && return 1' "$CHILD"; then
     pass "an unresolved symlink chain is a failure, not a partial answer"
   else
     fail "resolve_link returns a still-symlinked path at its bound — exec would follow the remaining hops elsewhere"
   fi
 
-  if /usr/bin/grep -q 'command -v grok' "$RESOLVE"; then
+  if /usr/bin/grep -q 'command -v grok' "$CHILD"; then
     fail "preflight uses 'command -v grok' — it consults shell functions, so an inherited grok function passes a check that /usr/bin/env then fails with 127"
   else
     pass "preflight tests for the grok executable, not a resolvable name"
   fi
 
-  if /usr/bin/grep -q 'root="\$(pwd -P)"' "$RESOLVE"; then
+  if /usr/bin/grep -q 'root="\$(pwd -P)"' "$CHILD"; then
     pass "the child takes the reviewed-tree root from its own cwd, not a passed \$PWD"
   else
     fail "the child derives the root from a passed value — \$PWD is reassignable, so it could be forged"
   fi
 
-  if /usr/bin/grep -q 'pwd -P' "$RESOLVE"; then
+  if /usr/bin/grep -q 'pwd -P' "$CHILD"; then
     pass "preflight refuses a ~/.grok that sits inside the reviewed tree"
   else
     fail "preflight does not compare RESOLVED paths — a checkout reached through a symlink could still contain ~/.grok"
   fi
 
-  if /usr/bin/grep -q '\-x "\$p/grok"' "$RESOLVE"; then
+  if /usr/bin/grep -q '\-x "\$p/grok"' "$CHILD"; then
     pass "preflight refuses when no grok EXECUTABLE sits on the pinned PATH"
   else
     fail "preflight does not check grok against the pinned PATH — selection and execution could disagree"
   fi
 
-  if /usr/bin/grep -q '\-L "\$home/.grok" \] && why configdir' "$RESOLVE"; then
+  if /usr/bin/grep -q '\-L "\$home/.grok" \]\] && why configdir' "$CHILD"; then
     pass "preflight refuses a symlinked ~/.grok directory, not just a symlinked file"
   else
     fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"
@@ -483,7 +559,7 @@ EXAMPLE="$REPO_ROOT/docs/examples/grok-sandbox.toml"
 # The reason helper must TERMINATE. It was briefly self-recursive here (a bulk
 # edit rewrote its own `exit 1` into a `why` call), which printed WHY= forever
 # instead of refusing — a hang where a refusal belongs.
-if /usr/bin/grep -qA2 '^why() {' "$RESOLVE" | /usr/bin/grep -q 'why '; then
+if /usr/bin/grep -qA2 '^why() {' "$CHILD" | /usr/bin/grep -q 'why '; then
   fail "why() calls itself — a refusal would loop instead of exiting"
 else
   pass "why() exits rather than recursing"
@@ -553,6 +629,24 @@ if grep -qE '^[[:space:]]*extends[[:space:]]*=[[:space:]]*"strict"' "$EXAMPLE" 2
   pass "example profile extends strict (reads confined to CWD)"
 else
   fail "example profile does not extend strict — reads would not be confined"
+fi
+
+# ── bash 3.2 parse ──────────────────────────────────────────────────────
+# macOS ships /bin/bash 3.2 and this repo's scripts run under it. A construct
+# it mis-parses is not a style nit: 3.2 reported this very file's earlier
+# heredoc-inside-$() as a syntax error hundreds of lines away, at an unrelated
+# `case` arm, and `bash -n` under a Homebrew bash 5 said nothing. That is the
+# #595 silent-fail-open shape, so both files are parsed with the real 3.2.
+if [[ -x /bin/bash ]] && /bin/bash --version 2>/dev/null | /usr/bin/grep -q 'version 3\.2'; then
+  for _f in "$RESOLVE" "$DISPATCH" "$CHILD"; do
+    if /bin/bash -n "$_f" 2>/dev/null; then
+      pass "$(basename "$_f") parses under macOS /bin/bash 3.2"
+    else
+      fail "$(basename "$_f") does NOT parse under /bin/bash 3.2 — sourcing it on macOS fails, and the error points at an unrelated line"
+    fi
+  done
+else
+  pass "no bash 3.2 on this host — skipping the 3.2 parse check"
 fi
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-grok-sandbox-arm"; else echo "FAIL: test-grok-sandbox-arm"; fi

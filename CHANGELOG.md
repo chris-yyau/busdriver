@@ -1,3 +1,10 @@
+## [1.109.9](https://github.com/chris-yyau/busdriver/compare/v1.109.8...v1.109.9) (2026-08-19)
+
+
+### Bug Fixes
+
+* **gate:** ask the glob probe the shell variants and the operator splits ([#640](https://github.com/chris-yyau/busdriver/issues/640)) ([#707](https://github.com/chris-yyau/busdriver/issues/707)) ([2a5fa3c](https://github.com/chris-yyau/busdriver/commit/2a5fa3c4dbd05d474bb918a1b6f7ac5a8e3cfad4))
+
 ## [1.109.8](https://github.com/chris-yyau/busdriver/compare/v1.109.7...v1.109.8) (2026-08-19)
 
 

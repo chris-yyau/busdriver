@@ -1570,6 +1570,12 @@ EOF
        "$CLAUDE_OUTPUT_FILE" >/dev/null 2>&1; then
     log_error "Claude output is not a countable verdict — fail-closed."
     log_error "  Needs a \"status\" of PASS|FAIL and an \"issues\" ARRAY: $CLAUDE_OUTPUT_FILE"
+    # Persist the same parked posture the Phase 5 write-site guard uses for this
+    # exact reason (arbiter_verdict_uncountable), so a reader of state.md sees a
+    # consistent terminal-state contract regardless of which guard caught the
+    # uncountable verdict. mark_review_complete only writes status/active.
+    update_state_field "progress_status" "\"parked_no_progress\""
+    update_state_field "early_stopped" "\"arbiter_verdict_uncountable\""
     mark_review_complete "uncountable_claude_output"
     exit 1
   fi

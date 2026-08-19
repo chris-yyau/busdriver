@@ -27,7 +27,10 @@ LOOP="${1:-$REPO/skills/blueprint-review/scripts/run-design-review-loop.sh}"
 INIT="$REPO/skills/blueprint-review/scripts/init-design-review.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not installed"; exit 0; }
 [[ -f "$LOOP" ]] || { echo "missing $LOOP"; exit 1; }
+[[ -f "$REPO/hooks/gate-scripts/lib/marker_ops.py" ]] \
+  || { echo "missing marker_ops.py"; exit 1; }
 
 PASS=0; FAIL=0
 ok(){ printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }

@@ -2096,7 +2096,10 @@ CHILD
             # 0016), so a PATH-shadowed `env` or `grok` would run before grok's
             # sandbox exists. Absolute `/usr/bin/env` fixes the first; env
             # resolving `grok` against the PATH given ON ITS OWN COMMAND LINE
-            # fixes the second.
+            # fixes the second. The pinned list covers the install locations
+            # `_has_cli grok` would have accepted on the ambient PATH —
+            # otherwise availability and execution disagree and a Homebrew grok
+            # passes the check then fails as command-not-found.
             #
             # RESIDUAL, and it is pre-existing: `_portable_timeout` still
             # resolves `timeout`/`gtimeout`/`perl` through the inherited PATH
@@ -2123,7 +2126,7 @@ CHILD
                 exit 1
             fi
             _portable_timeout "$_budget" /usr/bin/env \
-                PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/usr/bin:/bin" \
+                PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                 HOME="$_GROK_TRUSTED_HOME" \
                 GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                 GROK_CLAUDE_HOOKS_ENABLED=0 \

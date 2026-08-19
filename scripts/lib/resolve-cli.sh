@@ -2117,6 +2117,13 @@ grok_sandbox_preflight() {
       return 1
     fi
     [[ -n "$_gsp_home" && "$_gsp_home" == /* && -d "$_gsp_home" ]] || return 1
+    # The config DIRECTORY must not be a symlink either. Refusing only a
+    # symlinked sandbox.toml leaves the obvious variant open: point ~/.grok at
+    # a directory in the reviewed tree and every file inside it — the profile
+    # AND the `bin/grok` the PATH pin trusts — becomes repo-controlled while
+    # each individual file is a regular file.
+    [[ -L "$_gsp_home/.grok" ]] && return 1
+    [[ -d "$_gsp_home/.grok" ]] || return 1
     _gsp_file="$_gsp_home/.grok/sandbox.toml"
     _GROK_TRUSTED_HOME="$_gsp_home"
   fi
@@ -2390,7 +2397,7 @@ execute_review() {
              fi
              echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              _run_review_with_retries grok "$prompt" "$duration" pipe \
-               /usr/bin/env PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/usr/bin:/bin" \
+               /usr/bin/env PATH="$_GROK_TRUSTED_HOME/.grok/bin:$_GROK_TRUSTED_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)' ;;

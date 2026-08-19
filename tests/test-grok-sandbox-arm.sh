@@ -155,7 +155,7 @@ for site in dispatch resolve; do
 
   # env resolves the command against the PATH on its own command line, so this
   # is what stops a PATH-shadowed `grok` from running before the sandbox exists.
-  if [[ "$arm" == *'PATH="$_GROK_TRUSTED_HOME/.grok/bin'* ]]; then
+  if [[ "$arm" == *'PATH="$_GROK_TRUSTED_HOME/.grok/bin'* && "$arm" == *'/opt/homebrew/bin'* ]]; then
     pass "$where: grok is resolved against a PATH pinned to the verified home"
   else
     fail "$where: grok arm does not re-set PATH — an injected PATH could shadow the grok binary itself"
@@ -278,6 +278,15 @@ deny = []' > "$tmp/commented.toml"
     [[ -s "$tmp/$_f.toml" ]] || fail "fixture $_f.toml was not created — its case would pass for the wrong reason"
   done
   [[ -L "$tmp/link.toml" ]] || fail "link.toml is not a symlink — the symlink-refusal case would pass for the wrong reason"
+
+  # The DIRECTORY check has no path override, so it is asserted on the source:
+  # a symlinked ~/.grok makes every file inside it repo-controlled while each
+  # one is still a regular file.
+  if /usr/bin/grep -q '\[\[ -L "\$_gsp_home/.grok" \]\] && return 1' "$RESOLVE"; then
+    pass "preflight refuses a symlinked ~/.grok directory, not just a symlinked file"
+  else
+    fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"
+  fi
   [[ -e "$tmp/missing.toml" ]] && fail "missing.toml exists — the missing-file case is not testing what it claims"
 
   _cases=(

@@ -560,7 +560,7 @@ $DESIGN_CONTENT
   # Suppressible via BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1.
   if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]] && \
      [[ "$REVIEWER_1_CLI" == "grok" || "$REVIEWER_2_CLI" == "grok" || "$REVIEWER_3_CLI" == "grok" ]]; then
-    log_warning "  grok dispatch in blueprint-review: containment is --sandbox strict (reads confined to CWD) + --deny Bash/Edit/MCPTool (shell, writes and MCP denied) — all dispatcher-side; the grok user-config is NOT part of the boundary. RESIDUAL: network egress is not blocked on macOS and grok's web tools stay open, so CWD-readable content can still leave. Design-document content flows through this path — review the dispatch.sh grok-case comment for the full threat model. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress."
+    log_warning "  grok dispatch in blueprint-review: containment is --sandbox busdriver-review, a custom kernel profile that refuses to start if it cannot be enforced (reads confined to CWD) + --deny Bash/Edit/MCPTool (shell, writes and MCP denied) — all dispatcher-side; the grok user-config is NOT part of the boundary. RESIDUAL: network egress is not blocked on macOS and grok's web tools stay open, so CWD-readable content can still leave. Design-document content flows through this path — review the dispatch.sh grok-case comment for the full threat model. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress."
   fi
 
   # ── Phase 1: Launch Agy + Codex + Grok in PARALLEL ────────────

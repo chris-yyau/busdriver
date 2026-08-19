@@ -347,6 +347,14 @@ deny = []' > "$tmp/commented.toml"
     inp && /<<.PREFLIGHT_CHILD./         { inh = 1 }
     inp && !inh && /^\}/                  { exit }
   ' "$RESOLVE" | /usr/bin/grep -v '^[[:space:]]*#')"
+  # The outputs must be cleared at entry: they are globals, so an inherited or
+  # left-over value would be trusted if any path returned success without
+  # setting them.
+  for _v in _GROK_TRUSTED_HOME _GROK_PINNED_PATH _GROK_PREFLIGHT_WHY; do
+    /usr/bin/grep -qE "^  $_v=''$" "$RESOLVE" || fail "grok_sandbox_preflight does not clear $_v at entry — an inherited value could be used as verified containment"
+  done
+  pass "the preflight clears its output globals at entry"
+
   if [[ -z "$_parent" ]]; then
     fail "could not slice the parent side of grok_sandbox_preflight — the pattern needs updating"
   else
@@ -569,7 +577,7 @@ EXAMPLE="$REPO_ROOT/docs/examples/grok-sandbox.toml"
 # The reason helper must TERMINATE. It was briefly self-recursive here (a bulk
 # edit rewrote its own `exit 1` into a `why` call), which printed WHY= forever
 # instead of refusing — a hang where a refusal belongs.
-if /usr/bin/grep -qA2 '^why() {' "$CHILD" | /usr/bin/grep -q 'why '; then
+if /usr/bin/grep -A2 '^why() {' "$CHILD" | /usr/bin/grep -q '^[[:space:]]*why '; then
   fail "why() calls itself — a refusal would loop instead of exiting"
 else
   pass "why() exits rather than recursing"
@@ -641,6 +649,22 @@ else
   fail "example profile does not extend strict — reads would not be confined"
 fi
 
+# ── containment matching is literal, not glob ───────────────────────────
+# The containment tests are `[[ "$subject" == "$root"* ]]`. Only the trailing
+# `*` may be a wildcard: if the QUOTED variable were treated as a pattern, a
+# checkout at a path containing `[`, `]`, `*` or `?` would silently stop being
+# matched as a prefix and the gate would fail OPEN on exactly the case it
+# exists for. Bash matches a quoted portion literally, and this pins that —
+# raised by CodeRabbit on PR #704, which read the expression as globbing.
+for _cr in '/w/re[1]' '/w/re*x' '/w/re?y'; do
+  _sub="$_cr/.grok"
+  if [[ "${_sub%/}/" == "${_cr%/}/"* ]]; then
+    pass "containment still matches under a path containing glob metacharacters ($_cr)"
+  else
+    fail "containment failed OPEN for a checkout path containing glob metacharacters ($_cr) — the quoted root is being treated as a pattern"
+  fi
+done
+
 # ── bash 3.2 parse ──────────────────────────────────────────────────────
 # macOS ships /bin/bash 3.2 and this repo's scripts run under it. A construct
 # it mis-parses is not a style nit: 3.2 reported this very file's earlier
@@ -665,6 +689,44 @@ fi
 # one the operator asked for — after being told the lane refuses. It must also
 # not be retried, and must not fail a whole batch for the other voices.
 _refuse_arm="$(/usr/bin/awk '/^            else$/,/^            fi ;;$/' "$DISPATCH" | /usr/bin/grep -v '^ *#')"
+# And the refusal must be self-contained: dispatch.sh tolerates resolve-cli.sh
+# being absent, in which case both preflight helpers are undefined — the `if`
+# fails with 127 and takes this same branch. Without shims the hint calls also
+# fail, $outfile is truncated empty, and the voice reports `skipped` with no
+# reason at all.
+# Each shim must be guarded on ITS OWN name. Bundling them behind another
+# symbol's guard means a resolve-cli.sh that defines that symbol but not these
+# — a different plugin version — skips the shims entirely, which is the case
+# they exist for.
+# `declare -F`, never `type`: type also succeeds for an alias, a builtin, or a
+# same-named EXECUTABLE on PATH, so a stray file would skip the fail-closed
+# shim and then be run as the verifier.
+if /usr/bin/grep -q 'if ! declare -F grok_sandbox_preflight >/dev/null; then' "$DISPATCH"; then
+  pass "the preflight shim is guarded on its own name, with declare -F"
+else
+  fail "the preflight shim guard is missing or uses 'type' — a same-named executable on PATH would satisfy it and be run as the verifier"
+fi
+if /usr/bin/grep -q 'if ! declare -F grok_preflight_hint >/dev/null; then' "$DISPATCH"; then
+  pass "the hint shim is guarded on its own name, with declare -F"
+else
+  fail "the hint shim guard is missing or uses 'type'"
+fi
+if /usr/bin/grep -q "type grok_sandbox_preflight\|type grok_preflight_hint" "$DISPATCH"; then
+  fail "a shim guard still uses 'type' — it succeeds for executables and aliases too"
+else
+  pass "no shim guard uses 'type'"
+fi
+if /usr/bin/grep -q 'grok_sandbox_preflight() { return 1; }' "$DISPATCH"; then
+  pass "the preflight shim fails closed"
+else
+  fail "no fail-closed shim for grok_sandbox_preflight"
+fi
+if /usr/bin/grep -q 'grok_preflight_hint() {' "$DISPATCH"; then
+  pass "a missing resolve-cli.sh leaves a hint shim, so a refusal still states its reason"
+else
+  fail "no shim for grok_preflight_hint — a refusal would write an empty \$outfile and report 'skipped' with no reason"
+fi
+
 if [[ "$_refuse_arm" != *"_grok_refused=1"* ]]; then
   fail "the preflight refusal does not set _grok_refused — the shared loop would read it as a failed CLI and escalate to droid"
 else

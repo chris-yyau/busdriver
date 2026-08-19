@@ -935,8 +935,9 @@ _resolve_from_route_array() {
       last_rejected="opencode"
     elif [[ "$cli" == "auto" ]]; then
       # grok is INTENTIONALLY excluded from the auto-detect cascade. Since
-      # 2026-08-19 its containment is enforceable from code (--sandbox strict
-      # + --deny Bash/Edit/MCPTool + the vendor-hook switches), so the
+      # 2026-08-19 its containment is enforceable from code (--sandbox
+      # busdriver-review + --deny Bash/Edit/MCPTool + the vendor-hook
+      # switches), so the
       # exclusion rests on scope, not on an unenforceable model: grok still
       # transmits externally and keeps its web tools, so silently picking it
       # via auto would extend its exposure surface to contexts whose threat
@@ -1226,8 +1227,9 @@ _resolve_role_cli_impl() {
   esac
 
   # Step 5: Auto-detect — grok intentionally excluded. Not because its
-  # containment is unenforceable (since 2026-08-19 it is: --sandbox strict
-  # + --deny Bash/Edit/MCPTool + the vendor-hook switches), but because grok
+  # containment is unenforceable (since 2026-08-19 it is: --sandbox
+  # busdriver-review + --deny Bash/Edit/MCPTool + the vendor-hook switches),
+  # but because grok
   # still transmits externally
   # and keeps its web tools, so it must be explicitly named via
   # BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to opt in.
@@ -2162,6 +2164,15 @@ grok_sandbox_preflight() {
   # shell variable.
   # shellcheck disable=SC2034  # not unused: these are inherited EXPORTED vars,
   # and assigning to one keeps it exported with the new (empty) value
+  # Clear the outputs FIRST. They are globals (the parent side may not use
+  # `local` — see above), so a value inherited from the environment, or left
+  # by an earlier dispatch, would otherwise still be sitting there if any
+  # path returned success without setting them.
+  _GROK_TRUSTED_HOME=''
+  _GROK_PINNED_PATH=''
+  _GROK_PREFLIGHT_WHY=''
+  # shellcheck disable=SC2034  # not unused: inherited EXPORTED vars, and
+  # assigning to one keeps it exported with the new (empty) value
   LD_PRELOAD=''
   # shellcheck disable=SC2034
   LD_AUDIT=''

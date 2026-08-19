@@ -225,6 +225,28 @@ if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   _BD_AGY_READ_MODEL=""
   resolve_agy_read_model() { _BD_AGY_READ_MODEL=""; }
 fi
+# The grok preflight lives in resolve-cli.sh, and this file deliberately
+# tolerates that library being absent. Each helper is shimmed on ITS OWN name,
+# not bundled behind another symbol's guard: a resolve-cli.sh from a different
+# plugin version can define some of these and not others, and a shim that only
+# installs when a DIFFERENT function is missing would be skipped in exactly
+# that case. Then the grok arm calls an undefined function (status 127), takes
+# the refusal branch anyway, and truncates $outfile to nothing — a voice
+# reported `skipped` with no reason at all. Both shims fail CLOSED: no verified
+# operator profile, no grok dispatch. Reported by CodeRabbit on PR #704.
+# `declare -F`, not `type`: type also succeeds for an ALIAS, a BUILTIN, or any
+# same-named EXECUTABLE on PATH, so a stray file called grok_sandbox_preflight
+# would satisfy the guard, skip the fail-closed shim, and then be run as the
+# verifier. This file already learned that once — see the agy transport
+# helpers' guard and its comment.
+if ! declare -F grok_sandbox_preflight >/dev/null; then
+  grok_sandbox_preflight() { return 1; }
+fi
+if ! declare -F grok_preflight_hint >/dev/null; then
+  grok_preflight_hint() {
+    printf '%s\n' "Error: grok dispatch refused — the sandbox preflight is unavailable because scripts/lib/resolve-cli.sh could not be sourced, or is a version that does not provide it. This lane will not dispatch grok without verifying the operator's sandbox profile. Fix BUSDRIVER_PLUGIN_ROOT, or use --cli codex/agy."
+  }
+fi
 # Ditto for the username allowlist (resolve-cli.sh owns the canonical copy —
 # keep the pattern identical): a missing library must not make the prompt-home
 # derivation below die with `command not found` under set -e.
@@ -521,8 +543,8 @@ if [[ "$CLI" == "auto" ]]; then
     elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
     # grok is intentionally excluded from --cli auto. Since 2026-08-19 its
-    # containment IS enforceable from code (--sandbox strict + the Bash/Edit/
-    # MCPTool denies + the vendor-hook switches), so the old "documented but unenforceable" rationale no longer
+    # containment IS enforceable from code (--sandbox busdriver-review + the
+    # Bash/Edit/MCPTool denies + the vendor-hook switches), so the old "documented but unenforceable" rationale no longer
     # applies — the exclusion now stands on scope alone: grok still transmits
     # externally and still has open web tools, so silently selecting it via
     # auto would extend its exposure to contexts whose threat model wasn't
@@ -2092,7 +2114,7 @@ CHILD
             # write-capable workloads route to codex/agy/droid where the
             # write-permission model is better understood.
             if [[ "$MODE" == "auto" ]]; then
-                echo "Error: grok adapter does not support --mode auto (sandbox is partial; shell exec and writes outside project root are not blocked). Use --mode readonly or pick another CLI." >&2
+                echo "Error: grok adapter does not support --mode auto. The readonly lane's containment (custom sandbox profile + Bash/Edit/MCPTool denies) is verified for read-shaped work only; a write-capable role would need its own threat model and its own probes. Use --mode readonly or pick another CLI." >&2
                 exit 1
             fi
             # Runtime visibility: print a per-dispatch warning naming the

@@ -8,15 +8,26 @@
 # a project `.grok/sandbox.toml` defining the same profile name loses to this
 # one, so a reviewed branch cannot widen its own containment.
 #
-# busdriver's preflight validates the BODY, not just the header, and refuses to
-# dispatch unless it finds `extends = "strict"`, all three deny entries below,
-# and no `read_write` key. Keep those intact if you edit this file.
+# busdriver's preflight validates the BODY, not just the header. It refuses to
+# dispatch unless this profile has ALL of:
+#   * extends = "strict"
+#   * restrict_network = true
+#   * every one of the ten deny entries below, each spelled exactly as written
+#   * no read_write and no read_only key (both widen what this profile grants)
+#   * no backslash escape, no multiline string, no single-quoted deny entry —
+#     each of those can make a source line read like a required glob while
+#     decoding to a value that denies something else
+# Keep all of that intact if you edit this file: the preflight is the only
+# thing standing between a weakened profile and a dispatch that trusts it.
 # BEFORE USING THIS FILE: replace every `/Users/YOU/...` path below with your
-# own home directory, and DELETE any entry whose path does not exist on this
-# machine. Both matter. A literal `/Users/YOU/.ssh` protects nothing, and on
-# Linux a deny path that cannot be bound makes grok refuse to start with the
-# profile — which is the correct fail-closed behaviour, but it will look like
+# own home directory, and delete any of THOSE absolute home entries that does
+# not exist on this machine. Both matter. A literal `/Users/YOU/.ssh` protects
+# nothing, and on Linux a deny path that cannot be bound makes grok refuse to
+# start with the profile — correct fail-closed behaviour, but it will look like
 # the lane is broken.
+#
+# Do NOT delete the relative `**/...` entries: they are workspace-anchored, need
+# not exist anywhere, and the preflight requires every one of them.
 
 [profiles.busdriver-review]
 extends = "strict"          # reads confined to CWD + system paths

@@ -169,7 +169,7 @@ That extra step buys the only fail-CLOSED posture grok offers. Measured 2026-08-
 | Property | Built-in profile | `busdriver-review` (custom) |
 |---|---|---|
 | Kernel policy cannot be applied | **warns and runs unconfined** | **refuses to start** |
-| Definition can come from the reviewed repo | n/a | no — a user-file profile wins, and the preflight requires one |
+| Definition can come from the reviewed repo | n/a | no — grok's sandbox docs give the user file precedence over a project `.grok/sandbox.toml` of the same name, and busdriver's preflight independently requires the user file to exist and meet the contract, so the repo copy is never what is trusted |
 | `~/.ssh` readable | yes under `readonly` (returned a full key listing) | no — `Permission denied` |
 | In-tree hook sources readable | yes | no — kernel-denied, so a branch-planted hook cannot load |
 | Shell / writes / MCP | policy-dependent | denied by the three `--deny` rules |

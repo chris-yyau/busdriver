@@ -56,7 +56,7 @@ set -euo pipefail
 # (git, gh, jq, python3, date, stat, shellcheck). NOT all root-owned: /usr/local/bin and
 # /opt/homebrew/bin are operator-writable on a default Homebrew install — trusted against
 # REPO injection, not against local code already running as the operator (#660), which is
-# why the passwd lookup below runs on a root-only PATH instead.
+# why the passwd lookup below runs in a sterile `env -i` child instead.
 _p=""
 for _d in /usr/local/bin /opt/homebrew/bin /opt/homebrew/sbin /usr/bin /bin /usr/sbin /sbin; do
     if [[ -d "$_d" ]]; then

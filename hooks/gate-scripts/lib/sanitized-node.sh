@@ -37,7 +37,8 @@ set -euo pipefail
 # NOT all root-owned: /usr/local/bin and /opt/homebrew/bin are operator-writable on a
 # default Homebrew install, so this PATH is trusted against REPO injection (a PR cannot
 # write them), not against local code already running as the operator (#660) — which is
-# why the passwd lookup below runs on a root-only PATH instead. Unlike the shell gates' tools (git/gh/jq/python3, always in a system
+# why the passwd lookup below runs in a sterile `env -i` child instead.
+# Unlike the shell gates' tools (git/gh/jq/python3, always in a system
 # prefix), node frequently lives in the OPERATOR's own bin dir (Homebrew symlink,
 # ~/.local/bin, a version manager). The operator-owned dirs are appended AFTER HOME
 # is re-derived from passwd below (a PR cannot write to the real operator's $HOME),

@@ -1,3 +1,10 @@
+## [1.109.6](https://github.com/chris-yyau/busdriver/compare/v1.109.5...v1.109.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **design-gate:** let a docs-only commit past the design review ([#685](https://github.com/chris-yyau/busdriver/issues/685)) ([#697](https://github.com/chris-yyau/busdriver/issues/697)) ([1e1069f](https://github.com/chris-yyau/busdriver/commit/1e1069f222f52fcf96f4c24b3537c760cad540dd))
+
 ## [1.109.5](https://github.com/chris-yyau/busdriver/compare/v1.109.4...v1.109.5) (2026-08-18)
 
 

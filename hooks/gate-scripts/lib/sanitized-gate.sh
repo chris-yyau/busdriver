@@ -51,9 +51,12 @@
 set -euo pipefail
 
 # ── Trusted PATH ───────────────────────────────────────────────────────────
-# Rebuilt from known-good absolute dirs that EXIST on this host, never inherited,
-# so a committed settings.json cannot prepend a shim ahead of the real tools the
-# gates call (git, gh, jq, python3, date, stat, shellcheck).
+# Rebuilt from fixed absolute dirs that EXIST on this host, never inherited, so a
+# committed settings.json cannot prepend a shim ahead of the real tools the gates call
+# (git, gh, jq, python3, date, stat, shellcheck). NOT all root-owned: /usr/local/bin and
+# /opt/homebrew/bin are operator-writable on a default Homebrew install — trusted against
+# REPO injection, not against local code already running as the operator (#660), which is
+# why the passwd lookup below runs on a root-only PATH instead.
 _p=""
 for _d in /usr/local/bin /opt/homebrew/bin /opt/homebrew/sbin /usr/bin /bin /usr/sbin /sbin; do
     if [[ -d "$_d" ]]; then
@@ -80,6 +83,14 @@ export GIT_CONFIG_SYSTEM=/dev/null
 # PYTHONNOUSERSITE also disables Python user-site outright (belt-and-suspenders; the
 # gates use only stdlib).
 export PYTHONNOUSERSITE=1
+# ── HOME from passwd, derived on a ROOT-ONLY PATH ──────────────────────────
+# #660: the allowlist above contains /opt/homebrew/bin, which is OPERATOR-WRITABLE on a
+# default Apple Silicon install — and macOS ships no `getent` at all, so planting one
+# there shadows nothing and its stdout would become HOME for every contained gate. Derive
+# HOME against root-owned dirs only (this also covers `cut`/`awk`/`command -v`), then
+# restore the wide PATH, which only the tool resolution below needs.
+_wide_path="$PATH"
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 _u=$(id -un 2>/dev/null || true)
 _home=""
 if [[ -n "$_u" ]]; then
@@ -101,6 +112,7 @@ else
     # real home; a gh-using gate without HOME fails closed (blocks), never bypasses.
     unset HOME
 fi
+export PATH="$_wide_path"
 
 # ── Resolve the gate to run ────────────────────────────────────────────────
 # A bare basename supplied by hooks.json (trusted), but reject path/traversal

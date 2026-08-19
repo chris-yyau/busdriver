@@ -33,8 +33,11 @@
 set -euo pipefail
 
 # ── Trusted PATH ───────────────────────────────────────────────────────────
-# Same SYSTEM allowlist as sanitized-gate.sh:51 — known-good absolute dirs, never
-# inherited. Unlike the shell gates' tools (git/gh/jq/python3, always in a system
+# Same SYSTEM allowlist as sanitized-gate.sh — fixed absolute dirs, never inherited.
+# NOT all root-owned: /usr/local/bin and /opt/homebrew/bin are operator-writable on a
+# default Homebrew install, so this PATH is trusted against REPO injection (a PR cannot
+# write them), not against local code already running as the operator (#660) — which is
+# why the passwd lookup below runs on a root-only PATH instead. Unlike the shell gates' tools (git/gh/jq/python3, always in a system
 # prefix), node frequently lives in the OPERATOR's own bin dir (Homebrew symlink,
 # ~/.local/bin, a version manager). The operator-owned dirs are appended AFTER HOME
 # is re-derived from passwd below (a PR cannot write to the real operator's $HOME),
@@ -53,6 +56,14 @@ export TMPDIR="${TMPDIR:-/tmp}"
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 export PYTHONNOUSERSITE=1
+# ── HOME from passwd, derived on a ROOT-ONLY PATH ──────────────────────────
+# #660: the allowlist above contains /opt/homebrew/bin, which is OPERATOR-WRITABLE on a
+# default Apple Silicon install — and macOS ships no `getent` at all, so planting one
+# there shadows nothing and its stdout would become HOME for every contained gate. Derive
+# HOME against root-owned dirs only (this also covers `cut`/`awk`/`command -v`), then
+# restore the wide PATH, which only the tool resolution below needs.
+_wide_path="$PATH"
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 _u=$(id -un 2>/dev/null || true)
 _home=""
 if [[ -n "$_u" ]]; then
@@ -68,6 +79,7 @@ if [[ -n "$_home" && -d "$_home" ]]; then
 else
     unset HOME
 fi
+export PATH="$_wide_path"
 
 # NOTE on node location: node is resolved from the trusted system allowlist FIRST, then
 # from the operator's own passwd-HOME direct-binary dirs (~/.local/bin and nvm's per-version

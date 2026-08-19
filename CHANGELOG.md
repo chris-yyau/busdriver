@@ -1,3 +1,11 @@
+## [1.109.8](https://github.com/chris-yyau/busdriver/compare/v1.109.7...v1.109.8) (2026-08-19)
+
+
+### Bug Fixes
+
+* **blueprint-review:** re-derive PASS from the arbiter verdict, never inherit it ([#656](https://github.com/chris-yyau/busdriver/issues/656)) ([#702](https://github.com/chris-yyau/busdriver/issues/702)) ([3fe9b56](https://github.com/chris-yyau/busdriver/commit/3fe9b56a1834c3824a79de2c451b50bdfaaba320)), closes [#449](https://github.com/chris-yyau/busdriver/issues/449)
+* **containment:** derive passwd HOME in a sterile child ([#660](https://github.com/chris-yyau/busdriver/issues/660)) ([#703](https://github.com/chris-yyau/busdriver/issues/703)) ([bca956c](https://github.com/chris-yyau/busdriver/commit/bca956cb9fa0fb59421ec8a2ffec0f3e76a554a3))
+
 ## [1.109.7](https://github.com/chris-yyau/busdriver/compare/v1.109.6...v1.109.7) (2026-08-19)
 
 

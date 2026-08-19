@@ -42,6 +42,7 @@ sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 
 import os
 import re
+import stat
 import hashlib
 
 # Cap records emitted on the hot path (ADR-C: K = 20). The block decision needs
@@ -833,6 +834,23 @@ def cmd_downgrade_pass(argv):
     if len(argv) != 1:
         return 2
     path = argv[0]
+    # Refuse anything that is not a REGULAR FILE at `path` itself (#656, Codex review).
+    # os.replace() below installs the new inode AT `path`, so on a symlink it replaces
+    # the LINK — the open() above having followed it to read the TARGET. Two failures at
+    # once: the target keeps its PASS (the downgrade silently accomplishes nothing for the
+    # content the reader resolved), and the link is destroyed. It is also an
+    # out-of-repository write primitive, which realpath containment cannot see from here —
+    # the same hazard _atomic_write_preserving_metadata already refuses to take for hard
+    # links, and it resolves the same way: never write through an alias.
+    # lstat, not stat: the point is to inspect the link, not what it points at.
+    # Fail-CLOSED (exit 1): the loop refuses to judge a document it cannot normalize, and
+    # the PostToolUse hook's post-check surfaces the warning.
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 1
+    if not stat.S_ISREG(st.st_mode):
+        return 1
     try:
         with open(path, "r", newline="", errors="surrogateescape") as fh:
             content = fh.read()

@@ -1710,7 +1710,14 @@ else no "an exempt design-doc write does not spend a lease use" "$before -> $aft
 # Exhaustion: burn the budget, then confirm the next write blocks AND the file is gone.
 arm_skip 120
 i=0; while [ "$i" -lt 20 ]; do write_decision >/dev/null; i=$((i + 1)); done
-check "write 21 blocks (lease exhausted)" block "$(write_decision)"
+EXH_OUT="$(write_decision)"
+check "write 21 blocks (lease exhausted)" block "$EXH_OUT"
+# The spent-lease message is the other half of the exit-2 discriminator (#552):
+# a missing/raced helper also exits 2, and must NOT reuse this wording.
+case "$EXH_OUT" in
+    *EXHAUSTED*) ok "true exhaustion names EXHAUSTED" ;;
+    *) no "true exhaustion names EXHAUSTED" "reason did not mention: EXHAUSTED" ;;
+esac
 if [ -f "$WORK/.claude/skip-design-review.local" ]; then no "exhausted lease removes the skip file" "file still present"
 else ok "exhausted lease removes the skip file"; fi
 # ...but the SLOTS must survive. Deleting them here is a TOCTOU: a concurrent gate that
@@ -1837,6 +1844,25 @@ says "missing-helper refusal names itself" "lease helper could not be opened" "$
 says "missing-helper refusal gives the repair remedy" "reinstall or repair the busdriver" "$NOHELPER_OUT"
 # The old bug in miniature: a missing helper must NOT be reported as a spent lease.
 lacks "missing helper is not misreported as EXHAUSTED" "EXHAUSTED" "$NOHELPER_OUT"
+
+# ── 3b. helper removed between the -f check and the interpreter open (#552) ─
+# `[ -f lease_slot.py ]` is a cheap early exit, not the discriminator: it cannot
+# see a helper that vanishes after the test. CPython then exits 2 ("can't open
+# file"), the same code the helper uses for a spent lease. A stub that unlinks
+# itself and exits 2 is that race without a second process: -f is true, the
+# invocation returns 2, and the probe must remap it to fail-closed.
+GS_RACE="$WORK/gs-helper-raced"
+mkdir -p "$GS_RACE"
+cp -R "$REPO_ROOT/hooks/gate-scripts/." "$GS_RACE/"
+printf '%s\n' \
+    'import os, sys' \
+    'os.unlink(__file__)' \
+    'sys.exit(2)' >"$GS_RACE/lib/lease_slot.py"
+arm_skip 120
+RACE_OUT="$(copy_decision "$GS_RACE")"
+check "a concurrently-removed lease helper still blocks" block "$RACE_OUT"
+says "raced-helper refusal names itself" "lease helper could not be opened" "$RACE_OUT"
+lacks "raced helper is not misreported as EXHAUSTED" "EXHAUSTED" "$RACE_OUT"
 
 # ── 4. the helper returned an unusable slot id ──────────────────────────────
 # Beyond the three outcomes #681 enumerates, but the same silent-refusal class: a

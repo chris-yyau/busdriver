@@ -263,6 +263,24 @@ assert_block "echo \"printf '%s' 'lease_slot.py'\" | sh" \
 assert_block "echo \"printf '%s' 'lease_slo?.py'\" | sh" \
     "#640 trade: quoted glob as data, now matching the literal -> BLOCK"
 
+# FD-PREFIXED REDIRECTS. Raised as Medium by Cursor Bugbot on #707: the claim was that a
+# globbed helper immediately before `2>` stays one token, so fnmatch never sees the
+# pattern the shell globs. Measured, the opposite is true and the probe is already right:
+# the FD digit binds to the WORD, not to the redirect, so the shell globs `lease_slo?.py2`
+# and matches nothing -- verified by EXECUTION (a stub helper in a temp dir never ran)
+# across bash, sh, zsh, dash and ksh, all five agreeing. The probe cutting on `>` and
+# leaving the digit attached is therefore the SAME tokenization the shell performs, not a
+# divergence from it.
+#
+# What is pinned here is the form that DOES execute -- the space-separated redirect, where
+# the digit is its own token and the glob really does reach the helper. That is the
+# security-relevant half and it was untested; the glued form needs no assertion because
+# the shell does not run it either.
+for redir in '2>&1' '2>/dev/null' '1>&2' '&>/dev/null' '3>/dev/null'; do
+    assert_block "eval \"python3 $LIB/lease_slo?.py $redir\"" \
+        "#707: executing FD redirect: $redir -> BLOCK"
+done
+
 # The release rule still holds through a quote: widening to the shell variants must not
 # hand `**` a new way to block, which is #573 reaching the same code path.
 assert_ok "echo 'it isn'\\''t ** anything **' | sh" "#573 holds: quoted ** in a piped payload -> allowed"

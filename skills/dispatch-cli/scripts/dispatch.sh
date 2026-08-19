@@ -2096,7 +2096,31 @@ CHILD
             # 0016), so a PATH-shadowed `env` or `grok` would run before grok's
             # sandbox exists. Absolute `/usr/bin/env` fixes the first; env
             # resolving `grok` against the PATH given ON ITS OWN COMMAND LINE
-            # fixes the second. `$_GROK_PINNED_PATH` is built by the preflight
+            # fixes the second. The four loader variables are blanked BEFORE
+            # `env` is exec'd, not by its `-i`: the dynamic loader acts on
+            # LD_PRELOAD / LD_AUDIT (and the DYLD_* pair) while loading
+            # `/usr/bin/env` ITSELF, so anything injected there runs inside
+            # env's own process before -i has cleared a single variable. An
+            # assignment prefix is applied at exec time, which is early enough.
+            # It sits on `_portable_timeout`, not inside its argv: the helper
+            # execs "$@", so an `LD_PRELOAD=` word there would be read as the
+            # command name.
+            # The four loader variables are blanked BEFORE `env` is exec'd,
+            # not by its `-i`: the dynamic loader acts on LD_PRELOAD / LD_AUDIT
+            # (and the DYLD_* pair) while loading `/usr/bin/env` ITSELF, so
+            # anything injected there runs inside env's own process, before -i
+            # has cleared a single variable. An assignment prefix is applied to
+            # the command's environment at exec time, which is early enough.
+            #
+            # `-i` clears the REST of the environment rather
+            # than overriding four names in it: everything not listed here is
+            # repo-injectable through a committed settings.json env block, and
+            # loader variables (BASH_ENV, NODE_OPTIONS, DYLD_*, LD_PRELOAD)
+            # execute code in whatever grok spawns before its sandbox exists.
+            # Verified 2026-08-19 that grok runs normally with only the four
+            # below: auth lives in ~/.grok, which HOME and GROK_HOME point at.
+            #
+            # `$_GROK_PINNED_PATH` is built by the preflight
             # from the same trusted home it validated, and the preflight also
             # refuses when no grok resolves on it — otherwise availability
             # (ambient PATH) and execution (pinned PATH) could disagree and a
@@ -2129,7 +2153,8 @@ CHILD
             # grok runs with no verified profile. There is nothing to fall
             # through into here.
             if grok_sandbox_preflight; then
-            _portable_timeout "$_budget" /usr/bin/env \
+            LD_PRELOAD='' LD_AUDIT='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
+            _portable_timeout "$_budget" /usr/bin/env -i \
                 PATH="$_GROK_PINNED_PATH" \
                 HOME="$_GROK_TRUSTED_HOME" \
                 GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \

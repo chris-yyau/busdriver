@@ -2293,6 +2293,11 @@ deny="$(printf '%s\n' "$block" | /usr/bin/awk '
 # characters INSIDE the value, so `deny = ['"**/.grok"']` denies a path whose
 # name contains quotes while satisfying a search for `"**/.grok"`
 printf '%s\n' "$deny" | /usr/bin/grep -q "'" && exit 1
+# and no backslash: TOML basic strings decode escapes, so `"\"**/.grok\""`
+# is a glob whose value CONTAINS quote characters — it denies nothing while its
+# source still reads like the required entry. Refusing the escape character
+# outright kills that whole encoding class; the shipped profile has none.
+printf '%s\n' "$deny" | /usr/bin/grep -q '\\' && exit 1
 
 for req in '"**/.grok"' '"**/.grok/**"' '"**/.claude"' '"**/.claude/**"' \
            '"**/.cursor"' '"**/.cursor/**"' \
@@ -2467,8 +2472,14 @@ execute_review() {
     # --print pattern).
     grok)    if grok_sandbox_preflight; then
              echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+             # The loader blanks are an assignment PREFIX on the helper call,
+             # not argv words: the helper execs "$@", where `LD_PRELOAD=` would
+             # be taken as the command name. They must be in the environment
+             # before /usr/bin/env is exec'd, because the dynamic loader acts on
+             # them while loading env itself — too early for env's own `-i`.
+             LD_PRELOAD='' LD_AUDIT='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$prompt" "$duration" pipe \
-               /usr/bin/env PATH="$_GROK_PINNED_PATH" \
+               /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'

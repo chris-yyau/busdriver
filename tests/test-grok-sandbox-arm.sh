@@ -57,8 +57,8 @@ dispatch_arm="$(awk '/if grok_sandbox_preflight; then/,/^            fi ;;$/' "$
 resolve_arm="$(awk '/^    grok\)    if grok_sandbox_preflight; then/,/^             fi ;;$/' "$RESOLVE")"
 # The invocation alone — starting AFTER the operator-facing warning, which
 # quotes every flag name back and would satisfy any argv assertion on its own.
-dispatch_cmd="$(awk '/_portable_timeout "\$_budget" \/usr\/bin\/env \\$/,/PROMPT_FILE/' "$DISPATCH")"
-resolve_cmd="$(awk '/\/usr\/bin\/env PATH="\$_GROK_PINNED_PATH"/,/;;$/' "$RESOLVE")"
+dispatch_cmd="$(awk '/^            LD_PRELOAD='"''"' LD_AUDIT=/,/PROMPT_FILE/' "$DISPATCH")"
+resolve_cmd="$(awk '/^             LD_PRELOAD='"''"' LD_AUDIT=/,/;;$/' "$RESOLVE")"
 
 # An empty slice would pass every "flag is absent" assertion below, so a stale
 # slice pattern must fail loudly rather than certify nothing.
@@ -152,10 +152,34 @@ for site in dispatch resolve; do
 
   # Passed via `env`, not an export, so an inherited value cannot re-enable the
   # scanners (#325 / ADR 0016: a committed settings.json can set env vars).
-  if [[ "$arm" == *"/usr/bin/env"* ]]; then
-    pass "$where: env is invoked by absolute path, and the switches ride on it"
+  # `-i` matters as much as the absolute path: without it every unlisted
+  # ambient variable survives into grok, and loader variables (BASH_ENV,
+  # NODE_OPTIONS, DYLD_*, LD_PRELOAD) run code before the sandbox exists.
+  if [[ "$arm" == *"/usr/bin/env -i"* ]]; then
+    pass "$where: env is absolute AND clears the environment (-i)"
   else
-    fail "$where: grok arm does not use /usr/bin/env — a PATH-shadowed 'env' would run before grok's sandbox exists"
+    fail "$where: grok arm does not use '/usr/bin/env -i' — an injected ambient variable would reach grok"
+  fi
+
+  # `-i` is too late for the loader: LD_PRELOAD / LD_AUDIT act while
+  # /usr/bin/env itself is being loaded, so they must be blanked on the exec
+  # that starts env, not by env.
+  if [[ "$arm" == *"LD_PRELOAD='' LD_AUDIT=''"* && "$arm" == *"DYLD_INSERT_LIBRARIES=''"* ]]; then
+    pass "$where: loader variables are blanked before env is exec'd"
+  else
+    fail "$where: grok arm does not blank LD_PRELOAD/LD_AUDIT/DYLD_* before exec — the loader runs injected code inside env itself, before -i clears anything"
+  fi
+
+  # As an assignment PREFIX on the shell command, never as argv words: both
+  # call sites hand their argv to a helper that execs "$@", where a bare
+  # LD_PRELOAD= would become the command name and the dispatch would die.
+  # The prefix must therefore come BEFORE the helper name on its line.
+  _prefix_line="$(printf '%s\n' "$arm" | /usr/bin/grep -n 'LD_PRELOAD' | /usr/bin/head -1 | /usr/bin/cut -d: -f1)"
+  _helper_line="$(printf '%s\n' "$arm" | /usr/bin/grep -nE '_portable_timeout|_run_review_with_retries' | /usr/bin/head -1 | /usr/bin/cut -d: -f1)"
+  if [[ -n "$_prefix_line" && -n "$_helper_line" && "$_prefix_line" -le "$_helper_line" ]]; then
+    pass "$where: the loader blanks precede the helper, so they are a shell assignment prefix"
+  else
+    fail "$where: the loader blanks sit inside the helper argv — the helper execs \"\$@\", so they would be run as the command name"
   fi
 
   # env resolves the command against the PATH on its own command line, so this
@@ -254,6 +278,11 @@ else
 deny = []' > "$tmp/commented.toml"
   # single-quoted entries whose VALUES contain the quote characters: the denied
   # paths are not the ones a substring search sees
+  # Differs from the accepted profile in ONE way: a backslash. Every required
+  # glob is still present and correctly spelled, so only the escape rule can
+  # reject it — TOML decodes escapes, which is how a source that reads like the
+  # required entry becomes a value that denies something else.
+  _profile 'deny' 'deny = ["**/.grok", "**/.grok/**", "**/.claude", "**/.claude/**", "**/.cursor", "**/.cursor/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "a\\tb"]' > "$tmp/escaped-quotes.toml"
   _profile 'deny' "deny = ['\"**/.grok\"', '\"**/.grok/**\"', '\"**/.claude\"', '\"**/.claude/**\"', '\"**/.cursor\"', '\"**/.cursor/**\"', '\"**/.env\"', '\"**/.env.*\"', '\"**/*.pem\"', '\"**/*.key\"']" > "$tmp/literal-quotes.toml"
 
   { _profile; echo 'read_write = ["/"]'; }            > "$tmp/widened.toml"
@@ -278,7 +307,7 @@ deny = []' > "$tmp/commented.toml"
   # would pass without testing anything. Verify each one exists first — and
   # that the symlink case really is a symlink.
   for _f in good wrong header-only no-extends no-restrict half-deny commented \
-            literal-quotes widened quoted-widen squoted-widen read-only-widen \
+            literal-quotes escaped-quotes widened quoted-widen squoted-widen read-only-widen \
             unicode-key unicode-key-upper multiline decoy-head; do
     [[ -s "$tmp/$_f.toml" ]] || fail "fixture $_f.toml was not created — its case would pass for the wrong reason"
   done
@@ -400,6 +429,7 @@ deny = []' > "$tmp/commented.toml"
     "half-deny.toml|a directory deny lost its /** companion, leaving the contents readable"
     "commented.toml|the required globs are only in a comment; deny is empty"
     "literal-quotes.toml|single-quoted entries whose values contain the quote characters"
+    "escaped-quotes.toml|a backslash escape, which decodes to something other than what the source reads as"
     "widened.toml|read_write makes paths writable again"
     "quoted-widen.toml|a double-quoted read_write key"
     "squoted-widen.toml|a single-quoted read_write key"

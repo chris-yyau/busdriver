@@ -1,3 +1,10 @@
+## [1.109.7](https://github.com/chris-yyau/busdriver/compare/v1.109.6...v1.109.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pi-cert:** close [#692](https://github.com/chris-yyau/busdriver/issues/692) gaps 2/3 with per-anchor uniqueness checks ([#696](https://github.com/chris-yyau/busdriver/issues/696)) ([a3fbb99](https://github.com/chris-yyau/busdriver/commit/a3fbb995ada684e6de2b8c66a7129538e2ec17ae))
+
 ## [1.109.6](https://github.com/chris-yyau/busdriver/compare/v1.109.5...v1.109.6) (2026-08-19)
 
 

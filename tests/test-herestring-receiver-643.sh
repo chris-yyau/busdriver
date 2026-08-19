@@ -292,6 +292,23 @@ assert_ok "cat <<< 'a b $HELPER'"              "a quoted payload with spaces is 
 # WORD SEPARATORS ARE BASH'S, NOT PYTHON'S. `str.isspace()` is Unicode-aware and bash is
 # not: a no-break space is an ordinary character to the shell, so this is one operand —
 # but it split the word, promoted the tail to command position, and hid the `.`.
+# ANSI-C QUOTING is unresolvable here and therefore blocks. Inside `$'...'` a backslash
+# escapes and an escaped quote does NOT end the string; inside plain `'...'` it does. The
+# `$` that tells them apart is dropped by `_norm_for_scan` upstream — deliberately, for the
+# shlex-based callers — so this scan sees identical bytes. Guessing was measured: reading it
+# as a plain quote ended the string early, left the rest of the command inside apparent
+# quotes, made the REAL `<<<` look quoted, and the segment was skipped with the payload
+# unscanned. The over-block this costs is a payload ending in a backslash.
+assert_block "bash -s \$'x\\'y' <<< '$HELPER' \\'" \
+    "an ambiguous ANSI-C quote blocks rather than ending the string early"
+# COMMENTS. `_defuse_comments` upstream blanks only the SEPARATOR characters inside a
+# comment and deliberately leaves every other byte, so a `<<<` written in one arrives here
+# intact. Read as an operator it turned a command that runs no here-string into a shell
+# receiving one. A `#` mid-word is NOT a comment, and a comment after a real here-string
+# does not undo it.
+assert_ok "bash -c true # <<< '$HELPER'"       "a here-string inside a comment is not a here-string"
+assert_block "sh a#b <<< '$HELPER'"            "a mid-word # is an ordinary character"
+assert_block "sh <<< '$HELPER' # comment"      "a trailing comment does not undo a real here-string"
 _nbsp=$(printf '\u00a0')
 assert_block "<<< x${_nbsp}y . /dev/stdin <<< '$HELPER'" \
     "a no-break space does not split a here-string operand"

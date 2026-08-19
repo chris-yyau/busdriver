@@ -2014,6 +2014,19 @@ def _shell_pieces(text):
             esc = False
         elif in_s:
             buf.append(ch)
+            # ANSI-C QUOTING is UNRESOLVABLE here, so it blocks. Inside `$'...'` a backslash
+            # escapes and an escaped quote does NOT end the string; inside plain `'...'` it
+            # does. The difference is the `$`, and `_norm_for_scan` has already dropped it
+            # upstream -- deliberately, because the shlex-based callers cannot model it. So
+            # by the time this scan runs, `$'x\'y'` and `'x\'` `y'` are the same bytes.
+            # Guessing was measured: reading it as a plain quote ended the string early,
+            # left the rest of the command inside apparent quotes, and made a REAL `<<<`
+            # after it look quoted -- the segment was skipped and
+            # `bash -s $'x\'y' <<< '<helper>' \'` ran the payload while returning OK.
+            # A backslash immediately before a closing quote is therefore treated as
+            # unresolvable. The over-block it costs is a payload ending in a backslash.
+            if ch == "\\" and i + 1 < n and text[i + 1] == _SQ:
+                return None
             if ch == _SQ:
                 in_s = False
         elif in_d:
@@ -2027,6 +2040,18 @@ def _shell_pieces(text):
                 start = i
             buf.append(ch)
             esc, in_s, in_d = ch == "\\", ch == _SQ, ch == _DQ
+        elif ch == "#" and not buf:
+            # A COMMENT runs from an unquoted `#` in WORD POSITION to the end of the line,
+            # and bash lexes nothing inside it. `_defuse_comments` upstream blanks only the
+            # SEPARATOR characters there and deliberately leaves every other byte in place,
+            # so a `<<<` inside a comment still arrives here intact -- and read as an
+            # operator it turned `bash -c true # <<< '<helper>'`, which runs no here-string
+            # at all, into a shell receiving one. An empty `buf` is word position: it is
+            # also what holds after a separator and after an operator, which is exactly
+            # where bash starts a word.
+            _nl = text.find("\n", i)
+            i = n if _nl < 0 else _nl
+            continue
         elif ch in _SH_BLANK:
             # An ESCAPED space never reaches here -- it is consumed by the branch above --
             # so `'x'\ y` stays one word, exactly as bash reads it. Reconstructing that

@@ -51,9 +51,12 @@
 set -euo pipefail
 
 # ── Trusted PATH ───────────────────────────────────────────────────────────
-# Rebuilt from known-good absolute dirs that EXIST on this host, never inherited,
-# so a committed settings.json cannot prepend a shim ahead of the real tools the
-# gates call (git, gh, jq, python3, date, stat, shellcheck).
+# Rebuilt from fixed absolute dirs that EXIST on this host, never inherited, so a
+# committed settings.json cannot prepend a shim ahead of the real tools the gates call
+# (git, gh, jq, python3, date, stat, shellcheck). NOT all root-owned: /usr/local/bin and
+# /opt/homebrew/bin are operator-writable on a default Homebrew install — trusted against
+# REPO injection, not against local code already running as the operator (#660), which is
+# why the passwd lookup below runs in a sterile `env -i` child instead.
 _p=""
 for _d in /usr/local/bin /opt/homebrew/bin /opt/homebrew/sbin /usr/bin /bin /usr/sbin /sbin; do
     if [[ -d "$_d" ]]; then
@@ -80,19 +83,40 @@ export GIT_CONFIG_SYSTEM=/dev/null
 # PYTHONNOUSERSITE also disables Python user-site outright (belt-and-suspenders; the
 # gates use only stdlib).
 export PYTHONNOUSERSITE=1
-_u=$(id -un 2>/dev/null || true)
-_home=""
-if [[ -n "$_u" ]]; then
-    # Try getent (Linux); fall THROUGH to dscl (macOS) if it is absent or yields
-    # nothing usable — an `elif` would trust a present-but-empty getent and skip the
-    # override, leaving the poisoned HOME in place.
-    if command -v getent >/dev/null 2>&1; then
-        _home=$(getent passwd "$_u" 2>/dev/null | cut -d: -f6 || true)
+# ── HOME from passwd, derived in a STERILE child ───────────────────────────
+# #660: the allowlist above contains /opt/homebrew/bin and /usr/local/bin, BOTH
+# operator-writable on a default Homebrew install — and macOS ships no `getent` at
+# all, so a planted one shadows nothing and its stdout became HOME for every
+# contained gate. An imported shell FUNCTION outranks PATH the same way, and a purge
+# is not the answer (a function named `unset` or `compgen` defeats the purge itself).
+# So derive in a child under `/usr/bin/env -i` — invoked by absolute path, which no
+# function name can match, and `-i` strips BASH_FUNC_*. The child therefore has no
+# imported function at all, calls id/getent/dscl by absolute path, and parses with
+# parameter expansion, so neither PATH nor any command NAME is consulted.
+# SCOPE of that guarantee: it closes the #660 vector (PATH/command-name lookup) even
+# for a hand invocation. It does NOT make the wrapper safe against a parent that has
+# already imported hostile FUNCTIONS — one named `export`, `cd` or `exec` intercepts
+# this script wherever it runs, and no in-script purge helps (a function named `unset`
+# or `compgen` defeats the purge). That class is closed one level up: every hooks.json
+# registration launches this wrapper under `/usr/bin/env -i`, which strips BASH_FUNC_*
+# before bash starts. That launch invariant is enforced by a test, not by prose —
+# tests/test-passwd-home-trusted-path.sh (gates) and tests/test-node-hook-containment.sh
+# (node hooks) fail if any registration drops `env -i`.
+# shellcheck disable=SC2016  # the child script is deliberately literal
+_home=$(/usr/bin/env -i /bin/bash -c '
+    u=$(/usr/bin/id -un 2>/dev/null) || exit 0
+    [[ -n "$u" ]] || exit 0
+    h=""
+    if [[ -x /usr/bin/getent ]]; then
+        line=$(/usr/bin/getent passwd "$u" 2>/dev/null) || line=""
+        if [[ "$line" == *:*:*:*:*:*:* ]]; then rest=${line#*:*:*:*:*:}; h=${rest%%:*}; fi
     fi
-    if [[ -z "$_home" || ! -d "$_home" ]] && command -v dscl >/dev/null 2>&1; then
-        _home=$(dscl . -read "/Users/$_u" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+    if [[ ( -z "$h" || ! -d "$h" ) && -x /usr/bin/dscl ]]; then
+        out=$(/usr/bin/dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null) || out=""
+        [[ "$out" == *" "* ]] && h=${out##* }
     fi
-fi
+    [[ -n "$h" && -d "$h" ]] && printf %s "$h"
+' 2>/dev/null || true)
 if [[ -n "$_home" && -d "$_home" ]]; then
     export HOME="$_home"
 else

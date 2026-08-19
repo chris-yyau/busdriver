@@ -384,7 +384,7 @@ deny = []' > "$tmp/commented.toml"
   if /usr/bin/grep -q 'application/x-mach-binary|application/x-executable' "$CHILD"; then
     pass "grok must match the native-image allowlist, not merely application/*"
   else
-    fail "the preflight does not allowlist native image types — `file` labels unidentifiable data application/octet-stream, and execvp hands a shebang-less script to /bin/sh"
+    fail "the preflight does not allowlist native image types — the file(1) classifier labels unidentifiable data application/octet-stream, and execvp hands a shebang-less script to /bin/sh"
   fi
 
   # Behavioural, not textual: run the same classifier the preflight runs and
@@ -431,6 +431,16 @@ deny = []' > "$tmp/commented.toml"
     pass "the grok candidate must be a regular file before it is read"
   else
     fail "the preflight reads the candidate without requiring a regular file — an executable FIFO named grok would block it forever"
+  fi
+
+  # The config directory is checked on its own, not as a by-product of the PATH
+  # walk: its pinned entry is $home/.grok/BIN, which need not exist, and a
+  # non-existent entry is skipped — which would leave the directory that holds
+  # the profile uncompared.
+  if /usr/bin/grep -q 'cfgreal=' "$CHILD"; then
+    pass "the config directory itself is checked against the reviewed tree"
+  else
+    fail "the config dir is only checked via the PATH walk — with no bin/ under it, a checkout containing the operator home could supply its own sandbox.toml"
   fi
 
   if /usr/bin/grep -q 'pathrest="\$pinned:"' "$CHILD"; then

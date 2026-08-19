@@ -104,6 +104,17 @@ if [[ -z "$file" ]]; then
   # .local/bin/grok, and one rooted at /opt/homebrew or /usr/local would supply
   # any interpreter a `#!/usr/bin/env node` grok wrapper resolves through the
   # same PATH. A directory that does not exist is fine; nothing runs from it.
+  # The CONFIG DIRECTORY itself, first and unconditionally. The loop below walks
+  # the pinned PATH, whose home entries are `$home/.grok/bin` and
+  # `$home/.local/bin` — neither of which need exist, and a non-existent one is
+  # skipped. That would leave `$home/.grok`, the directory holding the profile
+  # this whole check is about, never compared against the checkout: a tree
+  # containing the operator home could then supply its own sandbox.toml while a
+  # system-installed grok launched happily.
+  cfgreal="$(cd -P -- "$home/.grok" 2>/dev/null && pwd -P)" || why containment
+  [[ -n "$cfgreal" ]] || why containment
+  [[ "${cfgreal%/}/" == "${root%/}/"* ]] && why containment
+
   pathrest="$pinned:"
   while [[ -n "$pathrest" ]]; do
     d="${pathrest%%:*}"; pathrest="${pathrest#*:}"

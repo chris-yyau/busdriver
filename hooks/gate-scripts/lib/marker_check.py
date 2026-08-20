@@ -418,10 +418,6 @@ _REDIR_AT_RE = re.compile(r"(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 # matches no shell, and the payload executed while the classifier returned OK.
 _REDIR_BARE_RE = re.compile(r"(?:&>>|&>|<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 _BT = chr(96)                       # backtick, spelled out to survive markdown quoting
-# Does this text OPEN a structured expansion? Cheap substring test, used to decide when a
-# "no receiver here" answer is not good enough -- see the fallback in
-# _herestring_shell_payloads. `$[` is bash's legacy arithmetic form.
-_EXPANSION_OPENERS = ("${", "$(", "$[", "<(", ">(", _BT)
 # Bash's word separators, spelled out. `str.isspace()` is UNICODE-aware and bash is not:
 # it treats U+00A0 and friends as ordinary characters, so a no-break space inside a
 # here-string operand split the word, promoted its tail to command position, and hid the
@@ -1343,6 +1339,9 @@ def _ansi_c(text):
     return _decode_escapes(text).replace("$" + chr(39), chr(39))
 
 
+_WS_RUN_RE = re.compile(r"\s{2,}")
+
+
 def _shell_variants(text):
     # The text as written, and as the shell will have rewritten it before running it.
     # Quoting, escaping, the ANSI-C `$` prefix and a backslash-newline continuation are
@@ -1353,6 +1352,28 @@ def _shell_variants(text):
         sq = base.replace(chr(92) + chr(10), "")
         for _ch in (chr(39), chr(34), chr(92), "$"):
             sq = sq.replace(_ch, "")
+        # ...and COLLAPSE the whitespace runs that removal just created, which is a
+        # PERFORMANCE requirement, not tidying. Stripping the quote characters out of
+        # `echo <20000 empty quoted arguments>` leaves a 20001-character run of spaces,
+        # and _INDIRECTION_RE's `\s*` backtracks across it from every start position:
+        # measured 980ms for ONE search of ONE variant, against 6ms for the same search
+        # of the raw text. The gate asks for these variants eleven times, so a valid
+        # 60KB command cost 4.05s of which 3.97s was those searches -- through the hook's
+        # 5s timeout, which writes no decision and therefore reads as ALLOW. A slow
+        # scanner is a fail-open, exactly as the token budget's own comment says.
+        # PRE-EXISTING and not specific to here-strings: measured identically at the
+        # merge-base and on origin/main.
+        # cmdword's copy of this function is deliberately NOT changed with it: measured on
+        # the same input, its `_has_indirection` takes 27ms, because its own _INDIRECTION_RE
+        # leads with a `\b(?:eval|alias)\b` alternation rather than a separator followed by
+        # `\s*`. There is nothing to keep in step until that pattern grows one.
+        # A run KEEPS A NEWLINE if it had one. Collapsing to a bare space would be a
+        # fail-OPEN: _INDIRECTION_RE reads `\n` as a command separator in
+        # `[\n;&|{()]`, so `  \n  eval` losing its newline loses the match. Nothing
+        # else here distinguishes one separator from many -- `\s*` matches either, a
+        # substring test never spans a run, and both splits treat a run as one break --
+        # which is also what bash does once quote removal is over and IFS splitting runs.
+        sq = _WS_RUN_RE.sub(lambda m: chr(10) if chr(10) in m.group(0) else " ", sq)
         out.append(sq)
     return out
 
@@ -2009,10 +2030,14 @@ def _shell_pieces(text):
     twelve empty quoted fragments, then `w` and `k` never assembled `awk` inside the
     window), and an uncapped one joined across whitespace and refused `cat ba s h`.
 
-    Returns [(is_operator, text, start), ...], or None when quoting is unterminated -- the
-    caller treats that as unresolvable and blocks.
+    Returns ((pieces, opened_an_expansion), or None when quoting or an expansion is
+    unterminated -- the caller treats that as unresolvable and blocks. The flag is reported
+    from HERE, quote-aware, rather than re-derived by the caller: a substring test for
+    `${`/`$(`/`<(` cannot tell an active expansion from the same characters written inside
+    single quotes, and it over-blocked ordinary data reads such as
+    `cat <<< '<helper> literal $('`.
     """
-    pieces, buf, start, stack = [], [], -1, []
+    pieces, buf, start, stack, saw_exp = [], [], -1, [], [False]
     in_s = in_d = esc = False
     i, n = 0, len(text)
 
@@ -2031,6 +2056,7 @@ def _shell_pieces(text):
             # leak this scan exists to stop. They do not nest, so the next unquoted
             # backtick closes.
             stack.append((_BT, quoted))
+            saw_exp[0] = True
             return 1
         if c in "<>" and at + 1 < n and text[at + 1] == "(" and not quoted:
             # PROCESS SUBSTITUTION. `<(cmd)` is one word to bash, and the `<` is not a
@@ -2044,9 +2070,18 @@ def _shell_pieces(text):
             # the command closed it instead -- swallowing the command in between.
             # `A="x<(y" . /dev/stdin <<< P ")"` sources the payload and returned OK.
             stack.append((")", quoted))
+            saw_exp[0] = True
+            return 2
+        if c == "$" and at + 1 < n and text[at + 1] == "[":
+            # `$[...]` is bash's LEGACY arithmetic form. It was only ever named in the
+            # substring list the terminator used to consult; once that flag came from the
+            # scan itself, the scan had to know the form too.
+            stack.append(("]", quoted))
+            saw_exp[0] = True
             return 2
         if c == "$" and at + 1 < n and text[at + 1] in "{(":
             stack.append(("}" if text[at + 1] == "{" else ")", quoted))
+            saw_exp[0] = True
             if text[at + 1] == "(" and at + 2 < n and text[at + 2] == "(":
                 stack.append((")", False))
                 return 3
@@ -2170,7 +2205,7 @@ def _shell_pieces(text):
     if in_s or in_d or esc or stack:
         return None            # unterminated quoting or expansion: unresolvable, block
     _flush()
-    return pieces
+    return pieces, saw_exp[0]
 
 
 def _walk_words(text):
@@ -2180,9 +2215,10 @@ def _walk_words(text):
     # Shared by the per-segment path and the compound widening --
     # they each had their own copy of this walk, and a copy that drifts is what the
     # unified receiver predicate exists to stop.
-    pieces = _shell_pieces(text)
-    if pieces is None:
+    _r = _shell_pieces(text)
+    if _r is None:
         return [], [], [], False
+    pieces = _r[0]
     words, dwords, raws, skip_next = [], [], [], False
     for is_op, t, _i in pieces:
         # Redirections are stepped over while locating command words, because bash accepts
@@ -2239,9 +2275,10 @@ def _herestring_words(text):
     # `bash -s '<<<' <<< '<helper>'` had the quoted operand taken for the operator,
     # consuming the real one so the payload was never scanned. The scan settles it: a
     # quoted operator is inside a word piece and never becomes an operator piece.
-    pieces = _shell_pieces(text)
-    if pieces is None:
+    _r = _shell_pieces(text)
+    if _r is None:
         return False, [], [], [], False
+    pieces = _r[0]
     if not any(op and "<<<" in txt for op, txt, _ in pieces):
         return False, [], [], [], True
     words, dwords, raws, ok = _walk_words(text)
@@ -2441,8 +2478,38 @@ def _herestring_shell_payloads(pairs):
     # separator and the expansion is torn across segments -- after which the piece carrying
     # the here-string holds no opener at all. `< ${BASH:-a;b|c&d} . /dev/stdin <<< P` is
     # exactly that shape, and a per-segment test missed it.
-    _cmdtext = " ; ".join(_s2 for _o2, _s2 in pairs)
-    _exp = any(k in _cmdtext for k in _EXPANSION_OPENERS)
+    # LAZY, both of them. A command with no here-string must charge NOTHING: the prefilter
+    # below exists because tokenizing every segment cost 4.37s on a 60000-token payload
+    # against a 3.5s budget -- and that budget exists because the hook's 5s timeout writes
+    # no decision, which reads as ALLOW, so a slow scanner is itself a fail-open. Joining
+    # the command and scanning it eagerly put that cost back for every command in the repo.
+    _lazy = {}
+
+    def _cmd_expansion():
+        # (whole-command text, does it OPEN an expansion?), computed at most once.
+        #
+        # QUOTE-AWARE, from the scan itself rather than a substring search: a substring test
+        # cannot tell an active expansion from the same characters inside single quotes, and
+        # it over-blocked `cat <<< '<helper> literal $('`, a plain data read where bash
+        # expands nothing. Unresolvable text counts as an expansion -- that is the
+        # fail-closed answer anyway.
+        if not _lazy:
+            # Rejoined on a NEWLINE, not on " ; ". Both are separators to bash, but only
+            # the newline ENDS A COMMENT, and `_norm_for_scan` has already turned the
+            # command's own newlines into " ; " before this walk ever sees it. Joining on
+            # " ; " therefore hands `_shell_pieces` a single line whose first `#` runs to
+            # the end of everything -- and `_shell_pieces` tracks comments, so it lexed
+            # nothing after it and reported no expansion. Measured:
+            # `# p<newline>< ${BASH:-a;b|c&d} . /dev/stdin <<< '<helper>'` returned OK|
+            # with the " ; " join and BLOCK_MARKER_SCRIPT without the comment -- a
+            # one-line preface disarming the terminator. Raised by codex on this change.
+            # `_defuse_comments` does not cover this: it deliberately blanks only the
+            # SEPARATOR characters inside a comment and leaves the `#` itself in place.
+            _t = chr(10).join(_s2 for _o2, _s2 in pairs)
+            _r0 = _shell_pieces(_t)
+            _lazy["t"] = _t
+            _lazy["e"] = True if _r0 is None else _r0[1]
+        return _lazy["t"], _lazy["e"]
     for _op, seg in pairs:
         # CHARGE NOTHING when there is no here-string. Tokenizing every segment to look
         # for one cost 4.37s on the 60000-token payload in tests/test-impl-gate-scope-519.sh
@@ -2481,7 +2548,7 @@ def _herestring_shell_payloads(pairs):
             # segment: `<<< ${x:-a;b|c&d} . /dev/stdin <<< P` sourced the payload and
             # returned OK. Widening to the command is the same fail-closed answer the
             # compound path gives.
-            out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
+            out.append(_cmd_expansion()[0])
             break
         if not _has_hs:
             continue          # every `<<<` here is quoted: an argument, not a redirection
@@ -2567,9 +2634,10 @@ def _herestring_shell_payloads(pairs):
                     _allcw.extend(_cmd_candidates(_segw, _segd, _segr))
                 _compound_receiver = _herestring_receiver(_allw, _alltext, _allcw)
             if not _compound_receiver:
-                if not _exp:
+                _t, _e = _cmd_expansion()
+                if not _e:
                     continue
-                out.append(_cmdtext)
+                out.append(_t)
                 break
             # ONCE, then stop. Appending the whole command per reserved-only segment is
             # quadratic: 1,000 small compounds took 8.88s, past the 5s hook timeout -- and
@@ -2581,9 +2649,11 @@ def _herestring_shell_payloads(pairs):
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
                                 _cmd_candidates(cw_words, _dwords, _raws)):
             out.append(seg)
-        elif _exp:
-            out.append(_cmdtext)
-            break
+        else:
+            _t, _e = _cmd_expansion()
+            if _e:
+                out.append(_t)
+                break
     return out
 
 

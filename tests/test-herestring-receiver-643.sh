@@ -738,6 +738,94 @@ fi
 # ...and the over-block it costs needs BOTH halves. Either one alone still reads as data.
 assert_ok "cat <<< \"\$(echo hi)\""             "an expansion with no helper named is still a read"
 assert_ok "cat <<< '$HELPER'"                  "a helper named with no expansion is still a read"
+# ...and the "is there an expansion" test is QUOTE-AWARE, taken from the scan rather than
+# from a substring search. A substring test cannot tell an active expansion from the same
+# characters written inside single quotes, and it widened a plain data read where bash
+# expands nothing at all.
+assert_ok "cat <<< '$HELPER literal \$('"       "a literal \$( inside single quotes is not an expansion"
+assert_ok "cat <<< '$HELPER literal \`'"        "...nor a literal backtick"
+# ...and a COMMENT LINE in front of the command does not disarm the terminator. The
+# terminator asks its question of the whole command, which it rebuilds by rejoining the
+# segments -- and `_norm_for_scan` has already turned the command's own newlines into
+# " ; " by then, so rejoining on " ; " too produced ONE LINE. `_shell_pieces` tracks
+# comments, so the first `#` then ran to the end of everything and the scan reported no
+# expansion at all: a one-line preface turned a BLOCK into an OK. Rejoining on a newline
+# restores the line boundary the comment needs. Raised by codex on this change.
+assert_block "# preface
+< \${BASH:-a;b|c&d} . /dev/stdin <<< '$HELPER'" \
+    "a comment line does not swallow the rest of the expansion scan"
+# ...and it does not go the other way either: the comment must not manufacture an
+# expansion where the command has none, or every prefaced data read would over-block.
+assert_ok "# preface
+cat <<< '$HELPER literal \$('" \
+    "...and a comment line does not over-block a prefaced data read"
+# `x<(y` as a separate WORD still blocks, and did before any of this: a `(` makes a command
+# word unresolved, which is fail-closed because an expansion may resolve onto a shell.
+assert_block "cat <<< '$HELPER' 'x<(y'"        "pre-existing: a paren in a word is an unresolved command word"
+# ...and the cost of reaching that scan is BOUNDED, which is a CORRECTNESS property here
+# for the reason the benchmarks above already state: the hook's 5s timeout writes no
+# decision, which reads as ALLOW, so a slow classifier is itself a fail-open.
+#
+# The shape that broke it, raised by codex on this change: `echo <20000 empty quoted
+# arguments>` -- a valid 60KB command. _shell_variants strips the quote characters to model
+# what bash resolves, which turns those arguments into a 20001-character run of spaces, and
+# _INDIRECTION_RE's `\s*` backtracks across that run from every start position. ONE search
+# of ONE such variant measured 980ms against 6ms for the same search of the raw text, and
+# the guard asks for the variants eleven times: 4.05s total, 3.97s of it inside those
+# searches, straight through the timeout. The verdict at the end was BLOCK_UNSCANNABLE --
+# fail-closed -- but a verdict that arrives after the hook has given up is not a verdict.
+#
+# PRE-EXISTING, and measured as such rather than assumed: the same input took 4.11s at the
+# merge-base and 4.97s on origin/main, both without any of this ticket's changes. Collapsing
+# each whitespace run in the stripped variant (keeping a newline if the run had one, since
+# _INDIRECTION_RE reads `\n` as a separator) removes the backtracking without changing a
+# single verdict -- 4.58s to 0.16s here, and every case below classifies as it did before.
+#
+# BOTH SIDES ASSERT THE VERDICT, not just the clock, for the reason given at those
+# benchmarks: a time-only assertion passes just as happily on a bail-out that measured
+# nothing. And the sizes sit either side of the classifier's 4000-token budget WITH MARGIN
+# -- 1000 filler words still classify, 2000 are already refused -- so neither case is one
+# tuning change away from silently swapping which path it measures.
+#
+# What this does NOT claim: that the whole-command expansion scan is lazy. Laziness is real
+# (the answer is computed at most once, and only when a segment reaches the fallback) but it
+# is not observable on a clock, because no command under the token budget is slow enough to
+# separate the two. Asserting it here would be a vacuous bound.
+_filler() { python3 -c 'import sys;print(" ".join("a%d" % i for i in range(int(sys.argv[1]))))' "$1"; }
+_scan_cmd="cat <<< 'x' ; echo \$(a) $(_filler 700)"
+assert_parses "$_scan_cmd" "the bounded-scan benchmark is valid shell"
+_t0=$(_now_ms)
+_got=$(verdict "$_scan_cmd")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "a 700-word command reaching the expansion scan classifies OK in under 2s ($((_t1 - _t0))ms)"
+else
+    no "a 700-word command reaching the expansion scan classifies OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
+_over_cmd="cat <<< 'x' ; echo \$(a) $(_filler 5000)"
+_t0=$(_now_ms)
+_got=$(verdict "$_over_cmd")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "BLOCK_UNSCANNABLE|" ]]; then
+    ok "...and one past the token budget is refused fail-closed, still fast ($((_t1 - _t0))ms)"
+else
+    no "...and one past the token budget is refused fail-closed, still fast" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
+# The quote-run case itself. 20000 rather than the 15000 codex measured: the bound has to
+# sit clear of BOTH sides, and 15000 took 2.3s before the fix against a 2s bound -- too
+# close to call a regression. 20000 took 4.58s before and 0.16s after.
+_quote_cmd="echo $(python3 -c 'print("'"''"' " * 20000)')"
+assert_parses "$_quote_cmd" "the quote-run benchmark is valid shell"
+_t0=$(_now_ms)
+_got=$(verdict "$_quote_cmd")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "BLOCK_UNSCANNABLE|" ]]; then
+    ok "20000 empty quoted arguments classify in under 2s ($((_t1 - _t0))ms; 4580ms before the run collapse)"
+else
+    no "20000 empty quoted arguments classify in under 2s" "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
 # PROCESS SUBSTITUTION is an expansion too: `<(cmd)` is one word and its `<` is NOT a
 # redirection. Read as one, `(cmd` became the target and the rest of the operand tokenized
 # as outer text. It is tested before the redirection regex, and a plain `<` still redirects.

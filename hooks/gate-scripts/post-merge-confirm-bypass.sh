@@ -51,8 +51,16 @@
 #                                           github-api-says-not-merged,
 #                                           github-api-unreachable-merge-state-
 #                                           unknown, github-api-answer-
-#                                           unrecognized, or github-api-not-
-#                                           queried-pr-not-explicitly-known.
+#                                           unrecognized, github-api-not-queried-
+#                                           pr-not-explicitly-known (neither side
+#                                           names a concrete PR), or
+#                                           github-api-not-queried-pr-mismatch-
+#                                           claimed-<N>-parsed-<M> (both sides
+#                                           name a concrete PR but they differ —
+#                                           distinct from the "not explicitly
+#                                           known" case so the audit trail never
+#                                           tells the operator no PR was known
+#                                           when two conflicting ones were).
 #                                           The pre-#672 blanket reason
 #                                           tool-output-matched-no-known-pattern
 #                                           is retired; historical log entries
@@ -517,6 +525,12 @@ case "$PARSE_STATUS" in
                 _AMBIGUOUS_REASON="github-api-answer-unrecognized"
                 ;;
         esac
+        elif [ -n "$PARSE_PR" ] && [ -n "$CLAIMED_MERGE_PR" ] \
+            && [ "$CLAIMED_MERGE_PR" != "unknown" ]; then
+            # Both sides name a concrete PR but they differ — a cross-PR
+            # mismatch, not a missing PR. Distinct reason so the operator is
+            # never told "no PR was known" when two conflicting ones were.
+            _AMBIGUOUS_REASON="github-api-not-queried-pr-mismatch-claimed-${CLAIMED_MERGE_PR}-parsed-${PARSE_PR}"
         else
             _AMBIGUOUS_REASON="github-api-not-queried-pr-not-explicitly-known"
         fi

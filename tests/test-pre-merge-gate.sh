@@ -1244,13 +1244,39 @@ printf '%s' "$NO_PR_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 unset GH_STUB_PR_STATE
 TOTAL=$((TOTAL + 1))
 LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
-if [ -f "$SKIP_FILE" ] \
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
     && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-not-explicitly-known'; then
     printf "  PASS  #672 unqueryable claim names the missing precondition\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  #672 unqueryable claim: skip exists=%s log=%s\n" \
-        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" "$LAST_LOG"
+    printf "  FAIL  #672 unqueryable claim: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B29. Both sides name a concrete PR but they DIFFER, with no evidence path
+#      reached (no explicit -R/--repo override, PR mismatch caught before the
+#      query runs) → must be distinguished from B28's "neither side known"
+#      case, not folded into the same reason string (#672 follow-up, Codex +
+#      Cursor Bugbot review on PR #717).
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+MISMATCH_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash --delete-branch"},"tool_output":{"output":"random unmatched text","exit_code":0}}'
+printf '%s' "$MISMATCH_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-mismatch-claimed-42-parsed-99'; then
+    printf "  PASS  #672 claimed-vs-parsed PR mismatch names both PRs, not a missing-PR reason\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 mismatch reason: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"

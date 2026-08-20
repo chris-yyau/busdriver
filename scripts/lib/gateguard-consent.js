@@ -155,8 +155,19 @@ function ensureDirNoFollow(dir, mode) {
   // at all, so every state write would fail and each gated call of an enrolled operator would
   // land on allowWithStateWarning(). The home is this design's trust ANCHOR, not a boundary it
   // defends; what must never be followed is a symlink at or below <root>.
+  // path.resolve() on BOTH sides, because the comparison is between a dirname()-normalized
+  // string and a raw passwd field. A passwd home recorded with a trailing separator
+  // ("/home/u/") never equals dirname()'s "/home/u", so the exemption would miss and
+  // assertDirNoFollow() would reject the very symlinked home the exemption exists to allow --
+  // enrolment fails and every state write of an enrolled operator lands on
+  // allowWithStateWarning(). resolve() normalizes separators WITHOUT resolving symlinks
+  // (that is realpath), so it cannot launder a symlink into passing the check below.
   const parent = path.dirname(dir);
-  if (parent !== dir && parent !== homeDir()) {
+  // Neither operand is user input: `parent` is dirname() of a path this module built, and
+  // homeDir() is the passwd field. resolve() is used ONLY to normalize separators for the
+  // string comparison below -- its result is never opened, joined onto, or returned.
+  // nosemgrep
+  if (parent !== dir && path.resolve(parent) !== path.resolve(homeDir())) {
     assertDirNoFollow(parent);
   }
 
@@ -219,7 +230,17 @@ function anyMarkerPresent() {
 /** Classify an execFileSync failure into 'absent' (not applicable) or 'error' (a fault). */
 function classifyGitError(err) {
   const stderr = err && err.stderr ? String(err.stderr) : '';
-  if (err && err.status === 128 && /not a git repository/i.test(stderr)) return 'absent';
+  // FIRST LINE ONLY, and anchored. An unanchored search of the whole stderr is forgeable HERE
+  // specifically, because this design deliberately supports repository paths containing
+  // newlines (it is why the resolver uses `--porcelain -z`): a directory whose name embeds
+  // "\nfatal: not a git repository" would appear inside some OTHER status-128 message that
+  // echoes the path -- dubious ownership, say -- and be misread as 'absent', which silently
+  // switches the gate off instead of reporting the fault. git always writes its own "fatal: "
+  // prefix at the start of the first line, so nothing an attacker controls can reach it.
+  // Anything unrecognized falls through to 'error', which is the safe direction: 'error'
+  // surfaces a diagnostic, 'absent' is silent.
+  const firstLine = stderr.split('\n', 1)[0].trim();
+  if (err && err.status === 128 && /^fatal: not a git repository\b/i.test(firstLine)) return 'absent';
   return 'error';
 }
 

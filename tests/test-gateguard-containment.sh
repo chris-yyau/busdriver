@@ -48,7 +48,16 @@ assert_true() {
     if "${cond[@]}"; then assert 0 "$msg"; else assert 1 "$msg"; fi
 }
 
-TMP="$(mktemp -d)"
+# Checked, because this script runs `set -uo pipefail` WITHOUT `-e`: an unchecked failure here
+# leaves TMP empty, makes FIXTURE_REPO `/gateguard-containment-fixture-…`, and a privileged run
+# would `git init` at the filesystem root — after which the EXIT trap's `rm -rf ""` is a no-op
+# and the repository is left behind. Fail loudly instead.
+TMP="$(mktemp -d)" || TMP=""
+if [[ -z "$TMP" || ! -d "$TMP" ]]; then
+    printf '  FAIL could not create a temporary directory — refusing to run with an unset TMP\n' >&2
+    printf 'RESULT: 0 passed, 1 failed\n'
+    exit 1
+fi
 RUN_TOKEN="$$-$(date +%s)"
 # Enrollment targets a per-run THROWAWAY repo, never $REPO_ROOT. Enrolling the operator's
 # real checkout would mean a SIGKILL mid-run leaves a live enrollment behind — a durable

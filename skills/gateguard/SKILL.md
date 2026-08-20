@@ -155,8 +155,10 @@ cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent
 cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js");console.log(JSON.stringify(g.isEnabled(process.argv[2])))' "<PLUGIN_ROOT>" "/path/to/repo"
 ```
 
-**Revoking.** Delete the marker file whose full path the LIST command above prints for that
-repository.
+**Revoking.** LIST prints the enabled directory on its **first line**, then one line per
+enrolment: the 64-character marker name followed by the repository path it records. The file to
+delete is that directory joined with the marker name on the row whose recorded repository is the
+one you want to disable — LIST does not print the joined path itself.
 
 Before deleting, confirm that **the directory LIST printed on its first line** and its parent
 are real directories rather than symlinks — `rm` does not follow a symlink at the final

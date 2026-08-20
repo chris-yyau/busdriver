@@ -148,6 +148,78 @@ into spurious blocks (a DoS) — exactly the silent channel this ADR closes. An 
 settable only via `hooks.json` (review-visible code), never that env channel. The bare
 non-gate registrations do not pass the arg, so their historical fail-open is unchanged.
 
+### Amendment (#616, 2026-08-20): the wrapper has TWO dispositions
+
+The unconditional fail-closed contract described above is now **conditional on the caller**,
+and the paragraphs above should be read as describing the DEFAULT disposition.
+
+`sanitized-node.sh` accepts a leading `--fail-open` flag (`argv[1]` only, consumed by a
+`shift`). Under it, a launch/infrastructure failure resolves to **allow**: the
+disposition-aware `_block` writes its stderr line and exits 0 with **no stdout decision at
+all**. Nothing may reach stdout in that disposition — the harness consumes a stdout decision
+regardless of exit status, so printing block JSON and exiting 0 would still block. The
+`--fail-closed` arg is appended to the runner invocation **only** in the closed disposition;
+`--fail-open` is never forwarded, because the runner's fail-open behaviour is exactly the
+absence of `--fail-closed` (`failOpenExitCode()`).
+
+**The rule, and it is narrow: only a NON-BOUNDARY gate may pass `--fail-open`.** GateGuard is
+the sole consumer and qualifies because it guards nothing — it is a quality prompt, off by
+default, opt-in per repository. Adopting the closed disposition for it would hard-block every
+`Edit`/`Write`/`Bash` of operators who never opted in, on a missing node or one oversized
+payload. The four other contained scripts keep the closed disposition and are unaffected. Do
+not add a second `--fail-open` consumer without making the same argument explicitly.
+
+A **malformed argument list** is never fail-open: arity, emptiness and stray-flag validation
+force `_disposition="closed"` before `_block` is reached, so a malformed registration prints
+block JSON and exits 2 whatever it asked for. A malformed registration is a bug in code that
+ships with the plugin, not an operator-environment condition, and must be loud.
+
+**Registration shape** (both GateGuard entries):
+
+```
+/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" \
+  CLAUDE_HOOK_EVENT_NAME="$CLAUDE_HOOK_EVENT_NAME" \
+  bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh" --fail-open \
+  "<hookId>" "scripts/hooks/gateguard-fact-force.js" "minimal,standard,strict" || exit 0
+```
+
+Note `|| exit 0`, not `|| exit 2`: GateGuard denies with exit 0 plus a `permissionDecision`
+on stdout, so this cannot suppress a deny — it neutralises infra non-zeros only. One
+consequence is worth stating plainly: because the outer tail is `|| exit 0`, the
+forced-CLOSED path exits 0 at the shell while its `{"decision":"block"}` still reaches
+stdout. The harness blocks on the stdout decision, not on the status; the block takes
+effect, the exit code does not carry it. `HOME` is deliberately not forwarded — the wrapper
+re-derives it from passwd anyway, and forwarding would imply a trust that is not there.
+
+**Residual, accepted:** for a fail-open consumer, EVERY wrapper launch failure resolves to
+allow. That is the intended trade — the alternative hard-blocks operators who never
+enrolled — but it means GateGuard is silently absent on a host where node cannot be
+resolved. The stderr line is a best-effort diagnostic for someone already debugging, not a
+guarantee that a disabled gate announces itself.
+
+**Also amended:** the `|| exit 2` requirement stated above is now "the registration's outer
+tail must match its disposition" — `|| exit 2` for a fail-closed consumer, `|| exit 0` for a
+fail-open one. #629's registration-derived containment detection keys on that anchored tuple
+(leading `/usr/bin/env -i`, the exact wrapper reference, the disposition, the matching outer
+tail), NOT on a `--fail-closed` token — after #616 that token appears in no registration at
+all, since the wrapper appends it internally.
+
+The `CLAUDE_PLUGIN_ROOT` residual recorded elsewhere in this ADR is **not** amended: its
+acceptance argument rests on non-injectability, not on failing closed, and #616 does not
+disturb it.
+
+**Out of scope, and named so it is not mistaken for closed:** two classes act on the shell that
+*invokes* a registration, before `env -i` is reached, and neither is closed by #616. (a) Exported
+shell functions (`BASH_FUNC_*`) and `SHELLOPTS` — the lever table at the top of this ADR already
+records exported functions as verified, and it remains live: `/bin/sh` is bash 3.2.57 on macOS
+and imports them (`/bin/bash -c 'foo(){ echo PWNED; }; export -f foo; /bin/sh -c foo'` prints
+`PWNED`). Note this is NOT the `BASH_ENV`/`ENV` case verified not-live elsewhere in this ADR —
+function import is not startup-file sourcing, so that argument does not extend to it. (b) A
+committed project `settings.json` key that disables hooks wholesale. Both would defeat all five
+wrapped gates identically, before any `env -i` logic runs. This ADR does not record such a key and the
+evidence for a specific name was not confirmed; it is reported as a *class*, a plugin-wide
+residual for this ADR's own threat model, neither introduced nor closable by #616.
+
 **`mcp-health-check` — was accepted residual, now CONTAINED (#351).** Originally
 deferred: its exit-2 paths are env-DRIVEN (`exitCode: shouldFailOpen() ? 0 : 2`, gated
 on `ECC_MCP_HEALTH_FAIL_OPEN`, plus ≥4 other behavior-affecting vars), so `env -i` was
@@ -199,7 +271,10 @@ a solo repo whose hook set changes rarely.
   `SKIP_LITMUS=1` before starting `claude` now use `touch <repo>/.claude/skip-litmus.local`
   (or `skip-pr-grind` / `skip-design-review`). Docs updated repo-wide.
 - Gate scripts run with a fixed trusted `PATH` and no inherited env; a committed
-  `settings.json` can no longer bypass a gate or run code through one.
+  `settings.json` `env` block can no longer bypass a gate or run code through one **via any
+  variable the gate itself reads**. Amended #616: this does not extend to `BASH_FUNC_*` or
+  `SHELLOPTS`, which act on the shell that *invokes* the registration, before `/usr/bin/env -i`
+  runs — see the lever table at the top of this ADR, and the #616 amendment below.
 - The `BUSDRIVER_STATE_DIR` / `BUSDRIVER_PLUGIN_ROOT` / `LITMUS_PR_*` overrides still
   work when a gate script is invoked **directly** (tests, manual runs); they are only
   stripped on the production hook path. Test suites are unaffected.
@@ -235,12 +310,17 @@ a solo repo whose hook set changes rarely.
   `BASH_ENV` that `bash -c` *does* source (a `BASH_ENV` script that `exit 0`s suppresses
   the command only under `bash -c`). The single way this reopens is an upstream change to
   invoke hooks via `bash -c` — recorded as a revisit trigger.
-- Four `node` gate hooks are now CONTAINED via `sanitized-node.sh`: the three pure-block
-  hooks (Task 3, see Scope) plus `mcp-health-check` (#351 — it reads its repo cwd from the
-  hook payload instead of `process.cwd()`, so `env -i` no longer changes its behavior and
-  also wipes its `ECC_MCP_RECONNECT_COMMAND` shell-exec + `ECC_MCP_HEALTH_FAIL_OPEN`
-  channels). The remaining `node` reminder/logger/telemetry hooks make no allow/block
+- **FIVE `node` gate hooks are now CONTAINED** via `sanitized-node.sh` (amended #616): the
+  three pure-block hooks (Task 3, see Scope), `mcp-health-check` (#351 — it reads its repo
+  cwd from the hook payload instead of `process.cwd()`, so `env -i` no longer changes its
+  behavior and also wipes its `ECC_MCP_RECONNECT_COMMAND` shell-exec +
+  `ECC_MCP_HEALTH_FAIL_OPEN` channels), and **`gateguard-fact-force`** (#616, both
+  registrations). The remaining `node` reminder/logger/telemetry hooks make no allow/block
   decision and stay env-exposed (out of scope).
+
+  The earlier wording "the remaining node hooks make no allow/block decision" was falsified
+  by GateGuard, which decides and was nonetheless launched with bare `node`. That is what
+  #616 fixed.
 
 ## Revisit trigger
 

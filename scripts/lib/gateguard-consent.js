@@ -123,6 +123,43 @@ function assertDirNoFollow(dir) {
   if (!st.isDirectory()) throw new Error(`not a directory: ${dir}`);
 }
 
+// THE PARENT IS VALIDATED ON EVERY PATH, not only when creating. `lstat()` does not follow
+// the FINAL component, but it DOES follow intermediate ones. So when the parent is a symlink
+// whose target ALREADY contains `dir`, `lstat(dir)` resolves through the link and reports a
+// real, non-symlink directory — ensureDirNoFollow()'s "already exists, proceed" branch
+// (case 2 of its state machine) accepts it and
+// every later write lands inside the link's target. Verified directly: lstat of
+// `<symlinked-root>/enabled` returns isDirectory() true and isSymbolicLink() false.
+//
+// An earlier version checked the parent only inside the ENOENT arm. That closed the
+// create-through-a-link case and left the already-exists case open — the more dangerous
+// half, since it needs no race, only a pre-existing directory under the link target.
+//
+// The passwd home stays EXEMPT, and that exemption is load-bearing: on hosts whose home is
+// itself a symlink (/home/u -> /mnt/u) an unconditional check would refuse to create <root>
+// at all, so every state write would fail and each gated call of an enrolled operator would
+// land on allowWithStateWarning(). The home is this design's trust ANCHOR, not a boundary it
+// defends; what must never be followed is a symlink at or below <root>.
+// path.resolve() on BOTH sides, because the comparison is between a dirname()-normalized
+// string and a raw passwd field. A passwd home recorded with a trailing separator
+// ("/home/u/") never equals dirname()'s "/home/u", so the exemption would miss and
+// assertDirNoFollow() would reject the very symlinked home the exemption exists to allow --
+// enrolment fails and every state write of an enrolled operator lands on
+// allowWithStateWarning(). resolve() normalizes separators WITHOUT resolving symlinks
+// (that is realpath), so it cannot launder a symlink into passing assertDirNoFollow().
+// Extracted from ensureDirNoFollow() to clear CodeScene's Complex Method threshold on that
+// function; behaviour is unchanged.
+function checkParentNoFollow(dir) {
+  const parent = path.dirname(dir);
+  // Neither operand is user input: `parent` is dirname() of a path this module built, and
+  // homeDir() is the passwd field. resolve() is used ONLY to normalize separators for the
+  // string comparison below -- its result is never opened, joined onto, or returned.
+  // nosemgrep
+  if (parent !== dir && path.resolve(parent) !== path.resolve(homeDir())) {
+    assertDirNoFollow(parent);
+  }
+}
+
 /**
  * Three-way lstat state machine over ONE component.
  *
@@ -145,37 +182,7 @@ function assertDirNoFollow(dir) {
  * one that already exists, and it is masked by the process umask, so it is a ceiling.
  */
 function ensureDirNoFollow(dir, mode) {
-  // THE PARENT IS VALIDATED ON EVERY PATH, not only when creating. `lstat()` does not follow
-  // the FINAL component, but it DOES follow intermediate ones. So when the parent is a symlink
-  // whose target ALREADY contains `dir`, `lstat(dir)` resolves through the link and reports a
-  // real, non-symlink directory — the "already exists, proceed" branch below accepts it and
-  // every later write lands inside the link's target. Verified directly: lstat of
-  // `<symlinked-root>/enabled` returns isDirectory() true and isSymbolicLink() false.
-  //
-  // An earlier version checked the parent only inside the ENOENT arm. That closed the
-  // create-through-a-link case and left the already-exists case open — the more dangerous
-  // half, since it needs no race, only a pre-existing directory under the link target.
-  //
-  // The passwd home stays EXEMPT, and that exemption is load-bearing: on hosts whose home is
-  // itself a symlink (/home/u -> /mnt/u) an unconditional check would refuse to create <root>
-  // at all, so every state write would fail and each gated call of an enrolled operator would
-  // land on allowWithStateWarning(). The home is this design's trust ANCHOR, not a boundary it
-  // defends; what must never be followed is a symlink at or below <root>.
-  // path.resolve() on BOTH sides, because the comparison is between a dirname()-normalized
-  // string and a raw passwd field. A passwd home recorded with a trailing separator
-  // ("/home/u/") never equals dirname()'s "/home/u", so the exemption would miss and
-  // assertDirNoFollow() would reject the very symlinked home the exemption exists to allow --
-  // enrolment fails and every state write of an enrolled operator lands on
-  // allowWithStateWarning(). resolve() normalizes separators WITHOUT resolving symlinks
-  // (that is realpath), so it cannot launder a symlink into passing the check below.
-  const parent = path.dirname(dir);
-  // Neither operand is user input: `parent` is dirname() of a path this module built, and
-  // homeDir() is the passwd field. resolve() is used ONLY to normalize separators for the
-  // string comparison below -- its result is never opened, joined onto, or returned.
-  // nosemgrep
-  if (parent !== dir && path.resolve(parent) !== path.resolve(homeDir())) {
-    assertDirNoFollow(parent);
-  }
+  checkParentNoFollow(dir);
 
   let st;
   try {
@@ -354,6 +361,38 @@ function markerPath(cwd) {
  * make an older sentence true — that recreates the unenrolled oversized-payload hard
  * block steps 1 and 5(e) exist to remove.
  */
+// Pure mapping of anyMarkerPresent()'s 'absent'/'unreadable' results to the isEnabled()
+// return shape. Returns null for 'present', meaning the caller should continue to
+// identity resolution. Extracted from isEnabled() to clear CodeScene's Complex Method /
+// Overall Code Complexity thresholds on that function; behaviour is unchanged.
+function markerPresenceResult(presence) {
+  if (presence === 'absent') return { enabled: false, status: 'absent', cause: 'no markers' };
+  if (presence === 'unreadable') {
+    return { enabled: false, status: 'error', cause: 'marker directory unreadable' };
+  }
+  return null;
+}
+
+// Pure mapping of the marker-file lstat outcome to the isEnabled() return shape. Catches
+// internally, so isEnabled() stays total. Extracted alongside markerPresenceResult() for
+// the same reason.
+// The parameter is deliberately NOT called `markerPath`: that is the name of an exported
+// function in this same module, and shadowing it here would make any later call to
+// markerPath(cwd) from inside this function throw "not a function" instead of resolving.
+function markerFileResult(markerFilePath) {
+  try {
+    if (!fs.lstatSync(markerFilePath).isFile()) {
+      return { enabled: false, status: 'error', cause: 'marker is not a regular file' };
+    }
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { enabled: false, status: 'absent', cause: 'repository not enrolled' };
+    }
+    return { enabled: false, status: 'error', cause: `marker unreadable: ${err.message}` };
+  }
+  return { enabled: true, status: 'enabled' };
+}
+
 function isEnabled(cwd) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
     return { enabled: false, status: 'absent', cause: 'payload cwd not absolute' };
@@ -376,10 +415,8 @@ function isEnabled(cwd) {
   } catch (err) {
     return { enabled: false, status: 'error', cause: `marker scan failed: ${err.message}` };
   }
-  if (presence === 'absent') return { enabled: false, status: 'absent', cause: 'no markers' };
-  if (presence === 'unreadable') {
-    return { enabled: false, status: 'error', cause: 'marker directory unreadable' };
-  }
+  const presenceResult = markerPresenceResult(presence);
+  if (presenceResult) return presenceResult;
 
   let identity;
   try {
@@ -393,19 +430,7 @@ function isEnabled(cwd) {
     };
   }
 
-  try {
-    const st = fs.lstatSync(identity.markerPath);
-    if (!st.isFile()) {
-      return { enabled: false, status: 'error', cause: 'marker is not a regular file' };
-    }
-  } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      return { enabled: false, status: 'absent', cause: 'repository not enrolled' };
-    }
-    return { enabled: false, status: 'error', cause: `marker unreadable: ${err.message}` };
-  }
-
-  return { enabled: true, status: 'enabled' };
+  return markerFileResult(identity.markerPath);
 }
 
 module.exports = {

@@ -31,6 +31,12 @@ const req = createRequire(import.meta.url)
 const osCjs = req('node:os')
 const realUserInfo = osCjs.userInfo
 
+// GateGuard is documented POSIX-only, but this vitest lane still runs wherever a
+// contributor runs `vitest`. Directory names containing a literal newline/tab are
+// rejected by mkdirSync on Windows, so skip those rows there rather than failing with
+// an unrelated filesystem error.
+const posixOnly = process.platform === 'win32' ? it.skip : it
+
 let tmpRoot: string
 let home: string
 let repo: string
@@ -220,7 +226,7 @@ describe('assertDirNoFollow() / ensureDirNoFollow()', () => {
     fs.mkdirSync(victim)
     const evil = path.join(tmpRoot, 'evil')
     fs.symlinkSync(victim, evil)
-    expect(() => g.ensureDirNoFollow(path.join(evil, 'child'), 0o700)).toThrow()
+    expect(() => g.ensureDirNoFollow(path.join(evil, 'child'), 0o700)).toThrow(/refusing symlink/)
     expect(() => g.ensureDirNoFollow(evil, 0o700)).toThrow(/refusing symlink/)
     expect(fs.existsSync(path.join(victim, 'child'))).toBe(false)
   })
@@ -284,7 +290,7 @@ describe('resolveIdentity()', () => {
     expect(fs.realpathSync(linked)).not.toBe(g.resolveIdentity(linked).realpath)
   })
 
-  it('resolves a worktree path containing a NEWLINE (why --porcelain -z is used)', () => {
+  posixOnly('resolves a worktree path containing a NEWLINE (why --porcelain -z is used)', () => {
     // The design adopts `--porcelain -z` specifically so a newline in a path is handled rather
     // than declared unhandled, and the marker identity depends on parsing that framing
     // correctly — a regression here computes the wrong hash and silently turns the gate off for
@@ -415,7 +421,7 @@ describe('generated-input properties — totality and path containment', () => {
     }
   })
 
-  it('every resolvable identity yields a marker path INSIDE enabledDir(), hex-named', () => {
+  posixOnly('every resolvable identity yields a marker path INSIDE enabledDir(), hex-named', () => {
     const g = consentWithHome(home)
     const rand = lcg(777)
     const dir = g.enabledDir()

@@ -108,7 +108,7 @@ hook contains **no `process.env` reference at all**.
 
 **GateGuard is OFF by default and enabled per repository by an out-of-tree marker:**
 
-```
+```text
 <passwd-HOME>/.gateguard/enabled/<sha256(realpath(main-worktree))>
 ```
 

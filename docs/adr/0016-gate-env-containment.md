@@ -176,7 +176,7 @@ ships with the plugin, not an operator-environment condition, and must be loud.
 
 **Registration shape** (both GateGuard entries):
 
-```
+```bash
 /usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" \
   CLAUDE_HOOK_EVENT_NAME="$CLAUDE_HOOK_EVENT_NAME" \
   bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh" --fail-open \

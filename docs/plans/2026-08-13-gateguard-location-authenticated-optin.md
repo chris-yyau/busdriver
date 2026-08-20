@@ -1340,7 +1340,9 @@ Write, MultiEdit and Bash where today a shell `case` starts nothing. What is mea
 `node --check "$runner"` per candidate (`sanitized-node.sh:141-145`), so each gated call pays
 bash startup plus at least two node starts.
 
-- **Sampling contract**, since a p95 blocks the merge: 100 measured invocations per state
+- **Sampling contract.** A *conforming* p95 is what this section requires; see "Status of this
+  gate" below for the fact that no conforming run exists on this branch yet. 100 measured
+  invocations per state
   after 10 discarded warm-ups, p95 taken as the 95th-percentile order statistic of those 100,
   reported with min/median/max and the raw sample count. One run per state on an otherwise
   idle machine; no outlier discarding.
@@ -1368,7 +1370,8 @@ bash startup plus at least two node starts.
   measurement with its own budget, not a reinterpretation of this one.
 - **Three states.** (i) zero markers anywhere ⇒ no `git` spawn; (ii) a marker for another repo
   ⇒ spawn and hash miss; (iii) this repo enrolled ⇒ spawn and hit.
-- **Budget, and it blocks the change.** State (i) p95 **≤ 250 ms**, state (ii) p95
+- **Budget — a target, NOT a merge gate. See "Status of this gate" below: nothing enforces
+  these figures and no conforming run exists.** State (i) p95 **≤ 250 ms**, state (ii) p95
   **≤ 400 ms**, and state (iii) p95 **≤ 400 ms**. Round 12 left (iii) unbudgeted as "an
   enrolled operator has opted into the gate's cost"; that is wrong on this design's own
   mechanics — `anyMarkerPresent()` is machine-global, so (iii) is the *only* state an enrolled
@@ -1403,7 +1406,7 @@ bash startup plus at least two node starts.
     it exists, the measurement does not run on that machine — it does not enroll, does not clear,
     and does not "annotate" a number taken anyway. Clearing real enrollments to manufacture
     state (i) would destroy operator consent under cover of a documented procedure.
-  - The authoritative lane is therefore a **fresh home** — a CI runner, container or disposable
+  - The authoritative lane would therefore be a **fresh home** — a CI runner, container or disposable
     account — the same structure step 7 uses for its enrolled contained rows, and for the same
     reason: the operator's own machine must never be the thing that pays.
   - On that fresh home: fixture markers are planted through `resolveIdentity()` under **per-run
@@ -1437,9 +1440,27 @@ Every figure includes roughly 20 ms of timing-harness overhead (the sampler spaw
 read each timestamp), so the true values are lower and the margins wider; the numbers are
 reported unadjusted because an unadjusted number cannot flatter the result.
 
-**The verdict column says `indicative`, not `pass`, and that is the honest word.** This run
-**violated this section's own fresh-home precondition**, so it does not verify the budgets — it
-only fails to contradict them. A table that stamped `pass` on a run that broke its own stated
+**Status of this gate: UNMET on this branch, and NOTHING ENFORCES IT.** Two facts, stated
+separately because collapsing them is how this gets misread:
+
+1. *No conforming measurement exists here.* The verdict column says `indicative`, not `pass`,
+   because the run **violated this section's own fresh-home precondition** — it does not verify
+   the budgets, it only fails to contradict them.
+2. *No automated lane checks these budgets.* There is no CI job on this branch that runs the
+   100-sample benchmark or asserts the 250/400 ms p95 figures. `tests/test-gateguard-containment.sh`
+   is functional coverage and measures nothing. **If this change regresses past its budgets,
+   nothing in CI turns red.**
+
+An earlier draft of this paragraph said the gate was "discharged by the fresh-home CI lane".
+That lane does not exist, and writing it down would have been this design's own recurring
+defect — a guard named rather than built, certifying what it never checks — committed in the
+document whose whole subject is not doing that. The budgets are therefore **demoted from a merge
+gate to an operator-performed obligation carried to #712**, which is where the benchmark
+automation belongs alongside the enrolment CLI. Whoever merges this is accepting an unmeasured
+p95 on every gated call; that is the bounded, stated loss, not a covered risk. If a later
+conforming run misses a budget, the mitigations written below (no in-process cache is possible;
+narrow to the `Bash` registration; or close #616 as won't-fix with the bypass documented) are
+the recorded options, and choosing among them is the operator's call. A table that stamped `pass` on a run that broke its own stated
 method would be the guard-that-cannot-fire pattern in reporting form, which is the defect this
 design keeps removing.
 
@@ -1456,8 +1477,10 @@ handling. The count was wrong; the magnitude argument survives it — `os.userIn
 **0.82 µs** on this host, so three calls are **~0.002 ms** against a p95 near 100 ms, four
 orders of magnitude too small to explain any margin in the table, which is dominated by `env -i`
 + bash startup + `node --check` per candidate + a `git` spawn. What the redirect cannot repair
-is the precondition it was introduced to work around. **A fresh-home CI run is the authoritative
-lane**, and if it contradicts these figures, CI wins.
+is the precondition it was introduced to work around. **A fresh-home run on a disposable home
+would be the authoritative lane, and none has been run** — see "Status of this gate" above: no
+such lane exists in CI, so nothing currently produces a figure that could overrule the table.
+If one is ever run and contradicts these numbers, it wins.
 - **There is no in-process caching mitigation, and round 9's was inert.** It proposed a
   process-lifetime `cwd → main-worktree` memo. `run-with-flags.js:300-306` invokes `run()`
   exactly **once per process**, and every gated call is a fresh

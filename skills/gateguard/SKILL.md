@@ -180,8 +180,11 @@ into "unlink some unrelated file". **Check the path LIST printed, not `~/.gategu
 expands from `$HOME`, which this design establishes may name a different tree from the
 passwd-derived one the gate actually consults — validating the `~` tree while deleting from the
 passwd tree checks the wrong ancestors entirely. (LIST resolves that directory through the
-module and refuses outright if either component is a symlink, so if it printed a path, that
-much is already established.) #712's `--off` does all of this in one step.
+module and refuses outright if either component is a symlink — but note the **order**: it prints
+the directory line first and validates immediately after, so the printed line is *not itself*
+the proof. The proof is that LIST then ran to completion and listed enrolments instead of
+exiting with a refusal. An earlier draft of this note read the printed path as evidence of
+validation, which inverts the sequence.) #712's `--off` does all of this in one step.
 
 **What that costs, stated without overclaiming.** This file is loaded into the model's context
 when the skill is invoked, so any revocation instruction here — a paste-ready command *or* this

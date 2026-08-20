@@ -346,14 +346,18 @@ MODE="marker-free"
 # cleanup did not know. MARKER is a pure function of the repo path, so it is derivable up front
 # without writing anything.
 MARKER=""
-# Recorded BEFORE the mkdir attempt, so there is NO window. `CREATED_ROOT=1` used to be set
-# on the line AFTER `mkdir` returned, and bash defers a trapped signal until the foreground
-# command completes — a signal arriving in that gap ran cleanup with the flag still 0 and left
-# a <root> this run had created sitting in the operator's real passwd home. Pre-existence is
-# evidence rather than a flag: if <root> did not exist before and exists after, this run made
-# it, and no assignment has to win a race to record that.
-ROOT_PREEXISTED=0
-[[ -e "$GG_ROOT" ]] && ROOT_PREEXISTED=1
+# Cleanup removes <root> ONLY on proof this run created it, and that proof is `mkdir`'s own
+# success. A residual window is accepted deliberately: bash defers a trapped signal until the
+# foreground `mkdir` returns, so a signal landing between the mkdir and the assignment below
+# leaks a directory this run created.
+#
+# THAT IS THE SAFE DIRECTION, and a previous revision of this block got it backwards. It tried
+# to close the leak by recording the intent BEFORE the mkdir — which makes cleanup willing to
+# rmdir in the case where mkdir FAILED. mkdir fails precisely when another process won the race
+# and created <root> first, so that version would rmdir a concurrent enrolment's still-empty
+# directories out of the operator's real passwd home. Leaking a directory is recoverable and
+# visible; deleting another process's is neither. Prefer the leak.
+CREATED_ROOT=0
 cleanup_full() {
     if [[ -n "$MARKER" && -f "$MARKER" ]]; then rm -f "$MARKER"; fi
     # BY NAME, computed from the session ids this run used — NOT `rm state-*.json`.
@@ -370,7 +374,7 @@ cleanup_full() {
         # Its own crash-residue temp siblings, scoped to that one filename.
         rm -f "$_sf".tmp.* 2>/dev/null
     done <<< "$_sids"
-    if [[ "$ROOT_PREEXISTED" -eq 0 ]]; then
+    if [[ "$CREATED_ROOT" -eq 1 ]]; then
         rmdir "$GG_ENABLED" 2>/dev/null
         rmdir "$GG_ROOT" 2>/dev/null
     fi
@@ -388,8 +392,9 @@ trap '_on_signal 2'  INT
 trap '_on_signal 15' TERM
 trap '_on_signal 1'  HUP
 
-if [[ "$ROOT_PREEXISTED" -eq 0 ]] && mkdir -m 700 "$GG_ROOT" 2>/dev/null; then
+if [[ ! -e "$GG_ROOT" ]] && mkdir -m 700 "$GG_ROOT" 2>/dev/null; then
     MODE="full"
+    CREATED_ROOT=1
 fi
 
 if [[ "$MODE" == "full" ]]; then

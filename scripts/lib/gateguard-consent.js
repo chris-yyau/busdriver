@@ -8,9 +8,15 @@
  *     <passwd-HOME>/.gateguard/enabled/<sha256(realpath(main-worktree))>
  *
  * A pull request against a gated repository is a set of files tracked by that
- * repository; it cannot create, delete or modify anything under the operator's passwd
- * home. That is the whole of the protection — see the threat model in
- * docs/plans/2026-08-13-gateguard-location-authenticated-optin.md.
+ * repository, and in the ordinary case it cannot create, delete or modify anything under
+ * the operator's passwd home. That is the whole of the protection.
+ *
+ * The word "ordinary" is load-bearing and an earlier version of this header omitted it,
+ * stating the guarantee as absolute. It is not: when the gated repository IS the passwd
+ * home (dotfiles-as-worktree), `.gateguard` falls inside the repository's own namespace and
+ * a tracked deletion can remove a marker. The threat model records that residual; a header
+ * claiming more than the design delivers is the same defect this module exists to remove.
+ * See docs/plans/2026-08-13-gateguard-location-authenticated-optin.md.
  *
  * THE ONE RULE THIS FILE EXISTS TO ENFORCE: the home comes from `os.userInfo().homedir`
  * — never the HOME environment variable, and never the `os` module's home-directory

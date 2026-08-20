@@ -440,6 +440,12 @@ if [[ "$MODE" == "full" ]]; then
     _dec=$(decision_of "$out")
     assert_true test "$_dec" = "deny" \
         "enrolled Bash denies despite all six disable channels injected"
+    # Re-checked HERE, after the Bash registration has actually run. The earlier assertion at
+    # the static rows fires before this invocation, so a regression that re-imported
+    # NODE_OPTIONS in the Bash registration ALONE would execute the probe while the deny
+    # assertion above still passed -- a containment hole the suite would report as green.
+    assert_true test ! -e "$NODE_SENTINEL" \
+        "NODE_OPTIONS probe did not run for the Bash registration either"
 
     # V11: first touch denies, retry allows — state persisted under the passwd home even
     # though GATEGUARD_STATE_DIR=/dev/null was injected.

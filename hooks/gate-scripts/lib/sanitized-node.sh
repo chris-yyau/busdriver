@@ -247,16 +247,30 @@ fi
 # no reader for it, and the runner's fail-open behaviour is exactly the ABSENCE of
 # `--fail-closed` (failOpenExitCode(), run-with-flags.js:116-118). The token still appears in
 # the hooks.json command string, which is what #629's registration-derived detection keys on.
+# STDOUT IS BUFFERED IN THE OPEN DISPOSITION, and streamed in the closed one.
+#
+# Streaming is wrong for fail-open specifically: the runner inherits stdout, so a runner that
+# prints a deny decision and THEN dies with a status outside 0/2 has already put that decision
+# on the harness's stdout. `_block` in the open disposition emits nothing and exits 0 -- but it
+# cannot RETRACT what already left the process, so the harness blocks the tool call on an
+# infrastructure failure the registration explicitly declared fail-OPEN. Buffering makes the
+# decision conditional on a clean exit, which is what the disposition promises.
+#
+# The closed disposition keeps streaming: there, a decision surviving a crash biases toward
+# blocking, which is the direction that disposition already fails in.
+#
+# stderr is inherited in BOTH branches, so diagnostics are never withheld or reordered.
+_out=""
 set +e
 if [[ "$_disposition" == "open" ]]; then
-    "$_node" "$runner" "$@"
+    _out=$("$_node" "$runner" "$@")
 else
     "$_node" "$runner" "$@" --fail-closed
 fi
 _rc=$?
 set -e
 case "$_rc" in
-    0|2) exit "$_rc" ;;
+    0|2) if [[ "$_disposition" == "open" ]]; then printf '%s' "$_out"; fi; exit "$_rc" ;;
     *) _block "sanitized-node: runner exited $_rc (launch/crash, not a clean allow/block)" \
               "hook runner failed to execute (exit $_rc); blocking hook cannot confirm allow" ;;
 esac

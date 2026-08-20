@@ -912,6 +912,35 @@ _portable_timeout() {
 should_escalate_to_droid() {
   local primary_cli="$1" exit_code="$2" output_file="$3"
   [[ "$primary_cli" == "droid" ]] && return 1
+  # grok NEVER escalates, by name and unconditionally — the same rule pi and
+  # opencode already get at dispatch.sh's call site, but enforced HERE, inside
+  # the predicate, so it cannot be dropped by editing that one call site.
+  #
+  # This closes the DISPATCH path only. There is a second, independent droid
+  # fallback: blueprint-review's post-run loop calls `_bp_droid_rescue` directly
+  # (skills/blueprint-review/scripts/run-design-review-loop.sh) and never
+  # consults this predicate. That path is guarded separately, by the same
+  # name-keyed rule, inside `_bp_droid_rescue` itself. Both guards are load-
+  # bearing; neither subsumes the other.
+  #
+  # `_grok_refused` covered only the STATIC refusals (preflight failed, --model
+  # rejected). When the preflight PASSES and grok then fails at RUNTIME — most
+  # importantly when the custom profile cannot be applied and grok refuses to
+  # start with its protections missing — that flag is still 0, the failure reads
+  # as an ordinary CLI error, and the prompt plus the repo content quoted in it
+  # is forwarded to droid. A sandbox that correctly refused to run would have
+  # caused the content to be sent to a different provider anyway; the protection
+  # would have inverted into the leak it exists to prevent. Reported by Codex
+  # (P1) on PR #704.
+  #
+  # Keyed on the CLI NAME rather than on detecting the sandbox error, because
+  # only the name is knowable with certainty: matching grok's failure text would
+  # have to enumerate every way a sandbox can fail to apply, and any message it
+  # did not anticipate would fail OPEN into exactly this leak. The cost of the
+  # blunt rule is that an ordinary transient grok failure no longer gets a droid
+  # stand-in — the voice is simply reported failed, which is the correct
+  # direction for a cross-provider boundary and is already how pi behaves.
+  [[ "$primary_cli" == "grok" ]] && return 1
   is_cli_available droid || return 1
   [[ "$exit_code" -ne 0 ]] && return 0
   [[ ! -s "$output_file" ]] && return 0

@@ -2,6 +2,7 @@
 # Tests for runtime droid fallback.
 #   Part A: should_escalate_to_droid() predicate (resolve-cli.sh)
 #   Part B: dispatch.sh per-voice droid fallback (PATH-stubbed CLIs)
+#   Part C: blueprint-review's SEPARATE droid rescue (_bp_droid_rescue)
 #
 # Usage: bash tests/test-droid-escalation.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -28,14 +29,42 @@ NE="$TMP/ne"; printf x > "$NE"; EM="$TMP/em"; : > "$EM"; MI="$TMP/mi"
 # ── Part A: should_escalate_to_droid ────────────────────────────────
 echo "── should_escalate_to_droid ────────────────────────────────"
 is_cli_available() { [[ "$1" == "droid" ]]; }   # droid present
-should_escalate_to_droid grok 124 "$NE" && ok "timeout(124) → escalate"      || bad "timeout(124) → escalate"
-should_escalate_to_droid grok 1   "$NE" && ok "error(1) → escalate"          || bad "error(1) → escalate"
+# The escalating vehicle is CODEX, not grok: grok is now excluded by name (see
+# below), so using it here would assert the opposite of the rule.
+should_escalate_to_droid codex 124 "$NE" && ok "timeout(124) → escalate"      || bad "timeout(124) → escalate"
+should_escalate_to_droid codex 1   "$NE" && ok "error(1) → escalate"          || bad "error(1) → escalate"
 should_escalate_to_droid agy  0   "$EM" && ok "exit0 + empty → escalate"     || bad "exit0 + empty → escalate"
 should_escalate_to_droid agy  0   "$MI" && ok "exit0 + missing → escalate"   || bad "exit0 + missing → escalate"
 should_escalate_to_droid agy  0   "$NE" && bad "exit0 + good output → NO"     || ok "exit0 + good output → NO"
 should_escalate_to_droid droid 1  "$NE" && bad "primary IS droid → NO"        || ok "primary IS droid → NO"
+
+# grok is a DIFFERENT third party from droid, and its containment can fail at
+# RUNTIME after a clean static preflight — the profile may turn out to be
+# unappliable, and grok then refuses to start. `_grok_refused` does not cover
+# that case (it is set only on the static refusals), so without this exclusion
+# the prompt and the repo content quoted in it would be forwarded to droid at
+# the exact moment grok's sandbox proved it could not protect them. Every
+# failure shape must be refused, not just the ones a message matcher predicts.
+# Codex P1, PR #704.
+should_escalate_to_droid grok 1   "$NE" && bad "grok error(1) → NO cross-provider fallback"   || ok "grok error(1) → NO cross-provider fallback"
+should_escalate_to_droid grok 124 "$NE" && bad "grok timeout(124) → NO cross-provider fallback" || ok "grok timeout(124) → NO cross-provider fallback"
+should_escalate_to_droid grok 0   "$EM" && bad "grok exit0+empty → NO cross-provider fallback"  || ok "grok exit0+empty → NO cross-provider fallback"
+should_escalate_to_droid grok 0   "$MI" && bad "grok exit0+missing → NO cross-provider fallback" || ok "grok exit0+missing → NO cross-provider fallback"
+
+# The concrete scenario, not just its shape: the static preflight PASSED, grok
+# launched, and the kernel profile then could not be applied — grok refuses to
+# start and exits non-zero having written its refusal to the output file. This
+# is the state in which `_grok_refused` is still 0, so before the name-based
+# exclusion the very next step was `droid exec` with the same prompt.
+is_cli_available() { [[ "$1" == "droid" ]]; }   # droid present again
+RT="$TMP/runtime-sandbox-failure"
+printf 'Refusing to start with its protections missing\n' > "$RT"
+should_escalate_to_droid grok 1 "$RT" \
+  && bad "runtime sandbox failure after a PASSING preflight → NO droid fallback" \
+  || ok  "runtime sandbox failure after a PASSING preflight → NO droid fallback"
+
 is_cli_available() { return 1; }                 # droid absent
-should_escalate_to_droid grok 124 "$NE" && bad "droid absent → NO"            || ok "droid absent → NO"
+should_escalate_to_droid codex 124 "$NE" && bad "droid absent → NO"            || ok "droid absent → NO"
 
 # ── Part B: dispatch.sh per-voice fallback (PATH-stubbed) ───────────
 echo ""
@@ -79,6 +108,60 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=0 \
 RC=$?
 [[ "$RC" -ne 0 ]] && ok "exit0+empty+droid-fail → non-zero exit (not false success)" \
                   || bad "exit0+empty+droid-fail → non-zero exit (not false success)"
+
+# ── Part C: blueprint-review's independent droid rescue ────────────
+# blueprint-review does NOT call should_escalate_to_droid. Its post-run loop
+# reaches `_bp_droid_rescue` directly, so Part A proves nothing about it and the
+# two guards do not subsume each other. Behavioural, not a source grep: the
+# function is extracted and run with `execute_review` stubbed to record that it
+# was reached, because reaching it IS the leak — that is the call that hands
+# `$FULL_PROMPT`, and the repo content quoted inside it, to a different provider.
+echo ""
+echo "── blueprint _bp_droid_rescue ──────────────────────────────"
+BPLOOP="skills/blueprint-review/scripts/run-design-review-loop.sh"
+_bp_fn=$(sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP")
+if [[ -z "$_bp_fn" ]]; then
+  bad "could not extract _bp_droid_rescue from $BPLOOP (renamed? guard unverified)"
+else
+  _bp_probe() {  # $1=slot → prints CALLED if the rescue reached execute_review
+    local slot="$1"
+    (
+      set +u
+      # SC2034: read by the eval'd _bp_droid_rescue body below, which the
+      # linter cannot follow — these are the function's real inputs.
+      # shellcheck disable=SC2034
+      FULL_PROMPT="design spec plus quoted repository content"
+      # shellcheck disable=SC2034
+      RUN_ID=r1
+      # shellcheck disable=SC2034
+      CURRENT_ITERATION=1
+      # shellcheck disable=SC2034
+      SPEC_HASH=h1
+      # shellcheck disable=SC2034
+      SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"
+      log_warning() { :; }; log_info() { :; }
+      get_review_file() { echo "$TMP/$1"; }
+      execute_review() { echo CALLED >> "$TMP/reached"; printf '{}\n'; }
+      eval "$_bp_fn"
+      _bp_droid_rescue "$slot" "$TMP/${slot}.json" >/dev/null 2>&1
+    )
+  }
+
+  # grok: the runtime-sandbox-failure slot must never reach droid.
+  : > "$TMP/reached"
+  _bp_probe grok
+  grep -q CALLED "$TMP/reached" \
+    && bad "blueprint: grok slot → NO droid rescue (prompt not forwarded)" \
+    || ok  "blueprint: grok slot → NO droid rescue (prompt not forwarded)"
+
+  # Negative control — the guard must be load-bearing, not a dead branch that
+  # would pass the assertion above even if rescue were broken for everyone.
+  : > "$TMP/reached"
+  _bp_probe codex
+  grep -q CALLED "$TMP/reached" \
+    && ok  "blueprint: codex slot STILL rescued (grok guard is name-scoped, not a blanket kill)" \
+    || bad "blueprint: codex slot STILL rescued (grok guard is name-scoped, not a blanket kill)"
+fi
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

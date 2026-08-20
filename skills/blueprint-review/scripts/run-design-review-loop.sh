@@ -85,6 +85,29 @@ millis() {
 # Returns 0 on success (caller then stops — one droid voice).
 _bp_droid_rescue() {
   local slot="$1" out="$2" raw droid_exit=0
+  # grok is NEVER rescued by droid, by name and unconditionally. This is the
+  # blueprint-side half of the PR #704 P1 fix; the dispatch-side half lives in
+  # `should_escalate_to_droid` (scripts/lib/resolve-cli.sh), which THIS path
+  # does not call — the loop below reaches this function directly, so the two
+  # guards are independent and both are required.
+  #
+  # A grok slot reaches here with status not PASS/FAIL, which includes the case
+  # that matters: the static preflight PASSED and grok then failed at RUNTIME
+  # because the custom sandbox profile could not be applied, so grok refused to
+  # start with its protections missing. Rescuing that slot would take the very
+  # prompt whose containment just proved unenforceable — and the repo content
+  # quoted inside `$FULL_PROMPT` — and send it to droid, a different provider.
+  # The protection would invert into the leak it exists to prevent.
+  #
+  # Keyed on the slot NAME, not on grok's failure text: a message matcher would
+  # have to enumerate every way a sandbox can fail to apply, and any message it
+  # did not anticipate fails OPEN into exactly this forward. Accepted cost is
+  # that an ordinary transient grok failure gets no droid stand-in — the voice
+  # is simply reported failed, matching the dispatch-side rule.
+  if [[ "$slot" == "grok" ]]; then
+    log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
+    return 1
+  fi
   raw=$(get_review_file "${slot}-droid-raw.txt")
   log_warning "  ${slot} failed at runtime → retrying once via droid"
   execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?

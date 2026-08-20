@@ -1007,6 +1007,47 @@ else
   fail "resolve_role_cli no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
 fi
 
+# The cross-provider boundary must hold for RUNTIME failures, not just the
+# static refusals `_grok_refused` covers. A preflight can pass and grok can then
+# refuse to start because the profile cannot be applied — the moment its
+# containment proves unenforceable is precisely the moment the content must NOT
+# be forwarded to another provider. Enforced inside the predicate rather than at
+# dispatch.sh's call site, so it survives an edit to that call site (Codex P1).
+# This covers the DISPATCH path only — blueprint-review reaches droid through
+# its own `_bp_droid_rescue` and never consults this predicate; that half is
+# asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | /usr/bin/grep -q '"\$primary_cli" == "grok"'; then
+  pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
+else
+  fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"
+fi
+# ...and it must be by NAME, not by matching grok's failure text: an unanticipated
+# message would fail OPEN into that same forward.
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
+     | /usr/bin/grep -v '^[[:space:]]*#' \
+     | /usr/bin/grep -qiE 'refus|sandbox|protections missing'; then
+  fail "should_escalate_to_droid appears to detect grok's failure TEXT — any message it does not anticipate fails open; exclude by CLI name instead"
+else
+  pass "the grok exclusion keys on the CLI name, not on matching a failure message"
+fi
+
+# The blueprint half of the same boundary. Separate function, separate file, no
+# shared predicate — a guard on one path says nothing about the other.
+BPLOOP="$REPO_ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
+if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | /usr/bin/grep -q '"\$slot" == "grok"'; then
+  pass "_bp_droid_rescue refuses the grok slot by name, so blueprint cannot rescue a failed grok via droid"
+else
+  fail "_bp_droid_rescue does not exclude grok — blueprint's post-run loop escalates a runtime-failed grok slot to droid, forwarding \$FULL_PROMPT and the repo content quoted in it to a different provider"
+fi
+# ...by NAME there too: same fail-open hazard if it matched grok's failure text.
+if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" \
+     | /usr/bin/grep -v '^[[:space:]]*#' \
+     | /usr/bin/grep -qiE 'protections missing|unappliable'; then
+  fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by slot name instead"
+else
+  pass "the blueprint grok exclusion keys on the slot name, not on matching a failure message"
+fi
+
 if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then
   pass "an already-refused grok skips the preflight instead of overwriting its reason"
 else

@@ -1,3 +1,10 @@
+## [1.109.11](https://github.com/chris-yyau/busdriver/compare/v1.109.10...v1.109.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **gateguard:** contain the gate and move consent out of the repository namespace ([#616](https://github.com/chris-yyau/busdriver/issues/616)) ([#715](https://github.com/chris-yyau/busdriver/issues/715)) ([db806e4](https://github.com/chris-yyau/busdriver/commit/db806e45f157d30563640a4645432a913f3336be)), closes [#629](https://github.com/chris-yyau/busdriver/issues/629) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#612](https://github.com/chris-yyau/busdriver/issues/612) [#712](https://github.com/chris-yyau/busdriver/issues/712) [660/#703](https://github.com/chris-yyau/busdriver/issues/703)
+
 ## [1.109.10](https://github.com/chris-yyau/busdriver/compare/v1.109.9...v1.109.10) (2026-08-19)
 
 

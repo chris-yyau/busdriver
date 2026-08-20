@@ -1352,30 +1352,34 @@ def _shell_variants(text):
         sq = base.replace(chr(92) + chr(10), "")
         for _ch in (chr(39), chr(34), chr(92), "$"):
             sq = sq.replace(_ch, "")
-        # ...and COLLAPSE the whitespace runs that removal just created, which is a
-        # PERFORMANCE requirement, not tidying. Stripping the quote characters out of
-        # `echo <20000 empty quoted arguments>` leaves a 20001-character run of spaces,
-        # and _INDIRECTION_RE's `\s*` backtracks across it from every start position:
-        # measured 980ms for ONE search of ONE variant, against 6ms for the same search
-        # of the raw text. The gate asks for these variants eleven times, so a valid
-        # 60KB command cost 4.05s of which 3.97s was those searches -- through the hook's
-        # 5s timeout, which writes no decision and therefore reads as ALLOW. A slow
-        # scanner is a fail-open, exactly as the token budget's own comment says.
-        # PRE-EXISTING and not specific to here-strings: measured identically at the
-        # merge-base and on origin/main.
-        # cmdword's copy of this function is deliberately NOT changed with it: measured on
-        # the same input, its `_has_indirection` takes 27ms, because its own _INDIRECTION_RE
-        # leads with a `\b(?:eval|alias)\b` alternation rather than a separator followed by
-        # `\s*`. There is nothing to keep in step until that pattern grows one.
-        # A run KEEPS A NEWLINE if it had one. Collapsing to a bare space would be a
-        # fail-OPEN: _INDIRECTION_RE reads `\n` as a command separator in
-        # `[\n;&|{()]`, so `  \n  eval` losing its newline loses the match. Nothing
-        # else here distinguishes one separator from many -- `\s*` matches either, a
-        # substring test never spans a run, and both splits treat a run as one break --
-        # which is also what bash does once quote removal is over and IFS splitting runs.
-        sq = _WS_RUN_RE.sub(lambda m: chr(10) if chr(10) in m.group(0) else " ", sq)
         out.append(sq)
-    return out
+    # COLLAPSE every whitespace run, in EVERY variant. This is a PERFORMANCE requirement,
+    # not tidying, and it belongs to the whole list rather than to the stripped copies:
+    # _INDIRECTION_RE's `\s*` sits behind an alternation, so the engine retries it from
+    # every start position and a long run costs O(run^2). Two different commands reach it.
+    #   `echo <20000 empty quoted arguments>` -- the run is CREATED here, by removing the
+    #     quote characters, and measured 980ms for one search of one stripped variant
+    #     against 6ms for the same search of the raw text.
+    #   `echo a<20000 spaces>b` -- the run is WRITTEN OUT, so it is in `text` itself and
+    #     collapsing only the stripped copies left it: 4.34s at 20KB and 16.4s at 40KB,
+    #     both returning OK. Raised by codex on this change, and it is the sharper of the
+    #     two -- the first at least ended in BLOCK_UNSCANNABLE once it finished.
+    # Either way the hook's 5s timeout writes no decision, which reads as ALLOW, so a slow
+    # scanner is itself a fail-open -- the same reason the token budget exists.
+    # PRE-EXISTING, measured as such: 4.65s and 4.60s for the first shape at the merge-base
+    # and on origin/main, neither carrying any of this ticket's changes.
+    # A run KEEPS A NEWLINE if it had one. Collapsing to a bare space would be a fail-OPEN:
+    # _INDIRECTION_RE reads `\n` as a command separator in `[\n;&|{()]`, so `  \n  eval`
+    # losing its newline loses the match. Nothing else here distinguishes one separator
+    # from many -- `\s*` matches either, a substring test never spans a run, and both
+    # splits in _abandoned_scan_probe treat a run as one break -- which is also what bash
+    # does once quote removal is over and IFS splitting runs.
+    # cmdword's copy of this function is deliberately NOT changed with it: measured on the
+    # same input, its `_has_indirection` takes 27ms, because its own _INDIRECTION_RE leads
+    # with a `\b(?:eval|alias)\b` alternation rather than a separator followed by `\s*`.
+    # There is nothing to keep in step until that pattern grows one.
+    return [_WS_RUN_RE.sub(lambda m: chr(10) if chr(10) in m.group(0) else " ", _v)
+            for _v in out]
 
 
 # Shells that run a program fed to them on STDIN -- a SUPERSET of the -c runner list above,

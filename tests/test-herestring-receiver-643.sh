@@ -826,6 +826,23 @@ if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "BLOCK_UNSCANNABLE|" ]]; then
 else
     no "20000 empty quoted arguments classify in under 2s" "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
+# ...and the run WRITTEN OUT, not created by stripping quotes, which is the sharper half:
+# the collapse first landed on the stripped variants only, and `echo a<20000 spaces>b` --
+# whose run is in the text as typed -- still took 4.34s at 20KB and 16.4s at 40KB. Worse
+# than the case above, because it ends in OK rather than BLOCK_UNSCANNABLE, so the slow
+# path and the verdict point the same way. Raised by codex on this change. The bound is
+# asserted at 40000, where the pre-fix cost was 16.4s against 0.08s after -- no ambiguity
+# about which side of a 2s line either sits on.
+_ws_cmd="echo a$(python3 -c 'print(" " * 40000)')b"
+_t0=$(_now_ms)
+_got=$(verdict "$_ws_cmd")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "a 40000-character literal whitespace run classifies OK in under 2s ($((_t1 - _t0))ms; 16400ms before the collapse)"
+else
+    no "a 40000-character literal whitespace run classifies OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
 # PROCESS SUBSTITUTION is an expansion too: `<(cmd)` is one word and its `<` is NOT a
 # redirection. Read as one, `(cmd` became the target and the rest of the operand tokenized
 # as outer text. It is tested before the redirection regex, and a plain `<` still redirects.

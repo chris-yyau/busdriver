@@ -119,6 +119,14 @@ assert $? "sanitized-gate.sh: an exported getent() cannot supply HOME either ($g
 # The wrapper hardcodes scripts/hooks/run-with-flags.js as the runner and verifies the
 # named hook script exists, so the skeleton supplies both. The runner must parse under
 # `node --check` (the wrapper's node-validation step).
+#
+# THREE positional args are required -- <hookId> <scriptRelPath> <profilesCsv> -- and the
+# third is NOT optional padding: #616 made the wrapper reject any argument list that is not
+# exactly three non-empty, non-`--`-prefixed operands, failing CLOSED, because a registration
+# missing its profiles operand would otherwise reach the runner malformed. Every real
+# hooks.json registration passes all three, so a two-arg call here would test a shape the
+# plugin never emits. "standard,strict" mirrors the non-gateguard node registrations; the
+# stub runner below ignores the value, so only its presence and shape matter to this test.
 cat > "$TMP/root/scripts/hooks/run-with-flags.js" <<'RUNNER'
 console.log("HOME=[" + (process.env.HOME || "") + "]");
 RUNNER
@@ -129,7 +137,7 @@ assert $? "fixture is live: plant dir substituted into sanitized-node.sh's PATH 
 
 node_path_out="$(/usr/bin/env -i PATH=/usr/bin:/bin HOME="$DECOY" CLAUDE_PLUGIN_ROOT="$TMP/root" \
     CLAUDE_HOOK_EVENT_NAME=PreToolUse \
-    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" 2>&1)"
+    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" "standard,strict" 2>&1)"
 grep -q "HOME=\[$REAL_HOME\]" <<<"$node_path_out"
 assert $? "sanitized-node.sh: contained hook inherits the real passwd HOME, not the planted one ($node_path_out)"
 
@@ -139,7 +147,7 @@ node_fn_out="$(
   export -f getent
   export DECOY            # the function body expands $DECOY in the CHILD
   HOME="$DECOY" CLAUDE_PLUGIN_ROOT="$TMP/root" CLAUDE_HOOK_EVENT_NAME=PreToolUse \
-    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" 2>&1
+    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" "standard,strict" 2>&1
 )"
 grep -q "HOME=\[$REAL_HOME\]" <<<"$node_fn_out"
 assert $? "sanitized-node.sh: an exported getent() cannot supply HOME either ($node_fn_out)"

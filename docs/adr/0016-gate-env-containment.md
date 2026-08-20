@@ -209,12 +209,19 @@ acceptance argument rests on non-injectability, not on failing closed, and #616 
 disturb it.
 
 **Out of scope, and named so it is not mistaken for closed:** two classes act on the shell that
-*invokes* a registration, before `env -i` is reached, and neither is closed by #616. (a) Exported
-shell functions (`BASH_FUNC_*`) and `SHELLOPTS` — the lever table at the top of this ADR already
-records exported functions as verified, and it remains live: `/bin/sh` is bash 3.2.57 on macOS
-and imports them (`/bin/bash -c 'foo(){ echo PWNED; }; export -f foo; /bin/sh -c foo'` prints
-`PWNED`). Note this is NOT the `BASH_ENV`/`ENV` case verified not-live elsewhere in this ADR —
-function import is not startup-file sourcing, so that argument does not extend to it. (b) A
+*invokes* a registration, before `env -i` is reached, and neither is closed by #616. (a)
+`SHELLOPTS` and — for **bare-name registrations only** — exported shell functions
+(`BASH_FUNC_*`). `SHELLOPTS=noexec` makes the invoking shell parse a registration and run none
+of it (`env SHELLOPTS=noexec /bin/sh -c 'echo EXECUTED'` prints nothing, rc 0), so no decision
+is emitted and a fail-CLOSED gate that never runs cannot block. Exported functions remain a
+live lever too — `/bin/sh` is bash 3.2.57 on macOS and imports them (`/bin/bash -c 'foo(){ echo
+PWNED; }; export -f foo; /bin/sh -c foo'` prints `PWNED`) — but they shadow only a **bare
+command name**: 30 of the 49 commands in `hooks.json` start with a bare `node`/`bash` and are
+exposed, while the 19 beginning with the absolute `/usr/bin/env` are not (a function named
+`env` does not intercept `/usr/bin/env`, and `env -i` strips exported functions from the
+wrapped shell besides). Note this is NOT the `BASH_ENV`/`ENV` case verified not-live elsewhere
+in this ADR — function import is not startup-file sourcing, so that argument does not extend to
+it. (b) A
 committed project `settings.json` key that disables hooks wholesale. Both would defeat all five
 wrapped gates identically, before any `env -i` logic runs. This ADR does not record such a key and the
 evidence for a specific name was not confirmed; it is reported as a *class*, a plugin-wide
@@ -272,9 +279,9 @@ a solo repo whose hook set changes rarely.
   (or `skip-pr-grind` / `skip-design-review`). Docs updated repo-wide.
 - Gate scripts run with a fixed trusted `PATH` and no inherited env; a committed
   `settings.json` `env` block can no longer bypass a gate or run code through one **via any
-  variable the gate itself reads**. Amended #616: this does not extend to `BASH_FUNC_*` or
-  `SHELLOPTS`, which act on the shell that *invokes* the registration, before `/usr/bin/env -i`
-  runs — see the lever table at the top of this ADR, and the #616 amendment below.
+  variable the gate itself reads**. Amended #616: this does not extend to `SHELLOPTS` (nor, for
+  the plugin's bare-name registrations, to `BASH_FUNC_*`), which act on the shell that *invokes*
+  the registration, before `/usr/bin/env -i` runs — see the lever table at the top of this ADR, and the #616 amendment below.
 - The `BUSDRIVER_STATE_DIR` / `BUSDRIVER_PLUGIN_ROOT` / `LITMUS_PR_*` overrides still
   work when a gate script is invoked **directly** (tests, manual runs); they are only
   stripped on the production hook path. Test suites are unaffected.

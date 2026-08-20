@@ -339,45 +339,87 @@ MODE="marker-free"
 # enrollment sees it as pre-existing and (correctly) does not repair its mode. A bare mkdir
 # under a normal umask would leave 0755 for the duration of the run, and permanently if the
 # run is killed — contradicting the 0700 creation contract the gate itself honours.
-if [[ ! -e "$GG_ROOT" ]] && mkdir -m 700 "$GG_ROOT" 2>/dev/null; then
+# THE TRAP IS ARMED BEFORE <root> EXISTS, and MARKER is computed before enrolment writes it.
+# Both windows were real: an interruption between `mkdir` and the trap swap left `.gateguard`
+# behind permanently (forcing every later local run into marker-free mode), and learning MARKER
+# from enrolment's stdout meant an interruption mid-enrolment left a marker whose name the
+# cleanup did not know. MARKER is a pure function of the repo path, so it is derivable up front
+# without writing anything.
+MARKER=""
+# Recorded BEFORE the mkdir attempt, so there is NO window. `CREATED_ROOT=1` used to be set
+# on the line AFTER `mkdir` returned, and bash defers a trapped signal until the foreground
+# command completes — a signal arriving in that gap ran cleanup with the flag still 0 and left
+# a <root> this run had created sitting in the operator's real passwd home. Pre-existence is
+# evidence rather than a flag: if <root> did not exist before and exists after, this run made
+# it, and no assignment has to win a race to record that.
+ROOT_PREEXISTED=0
+[[ -e "$GG_ROOT" ]] && ROOT_PREEXISTED=1
+cleanup_full() {
+    if [[ -n "$MARKER" && -f "$MARKER" ]]; then rm -f "$MARKER"; fi
+    # BY NAME, computed from the session ids this run used — NOT `rm state-*.json`.
+    # The glob was a whole-class removal wearing a by-name comment: a session enrolling
+    # concurrently writes its own state-*.json into the same <root>, and the glob
+    # destroys it. §7/V20 require removing only what this run created, and the state
+    # filename is a pure function of the session id (sha256, first 24 hex), so the
+    # exact names are computable rather than guessable.
+    local _sid _sf _sids
+    _sids=$(our_session_ids)
+    while IFS= read -r _sid; do
+        _sf="$GG_ROOT/$(state_file_name_for "$_sid")"
+        rm -f "$_sf"
+        # Its own crash-residue temp siblings, scoped to that one filename.
+        rm -f "$_sf".tmp.* 2>/dev/null
+    done <<< "$_sids"
+    if [[ "$ROOT_PREEXISTED" -eq 0 ]]; then
+        rmdir "$GG_ENABLED" 2>/dev/null
+        rmdir "$GG_ROOT" 2>/dev/null
+    fi
+    rm -rf "$TMP"
+}
+# EXIT alone for the normal path. A signal handler that merely returns lets bash RESUME the
+# script: the remaining rows would then run against a $TMP and a <root> cleanup had already
+# deleted, and cleanup would run a second time via EXIT. Each signal therefore cleans once,
+# disarms EXIT, and exits 128+N so the status is honest to the caller.
+_cleanup_done=0
+_cleanup_once() { if [[ "$_cleanup_done" -eq 0 ]]; then _cleanup_done=1; cleanup_full; fi; }
+_on_signal() { _cleanup_once; trap - EXIT; exit $((128 + $1)); }
+trap _cleanup_once EXIT
+trap '_on_signal 2'  INT
+trap '_on_signal 15' TERM
+trap '_on_signal 1'  HUP
+
+if [[ "$ROOT_PREEXISTED" -eq 0 ]] && mkdir -m 700 "$GG_ROOT" 2>/dev/null; then
     MODE="full"
 fi
 
 if [[ "$MODE" == "full" ]]; then
     echo "── enrolled rows (this run created <root>; it will remove only what it created)"
-    MARKER=""
-    cleanup_full() {
-        [[ -n "$MARKER" && -f "$MARKER" ]] && rm -f "$MARKER"
-        # BY NAME, computed from the session ids this run used — NOT `rm state-*.json`.
-        # The glob was a whole-class removal wearing a by-name comment: a session enrolling
-        # concurrently writes its own state-*.json into the same <root>, and the glob
-        # destroys it. §7/V20 require removing only what this run created, and the state
-        # filename is a pure function of the session id (sha256, first 24 hex), so the
-        # exact names are computable rather than guessable.
-        local _sid _sf _sids
-        _sids=$(our_session_ids)
-        while IFS= read -r _sid; do
-            _sf="$GG_ROOT/$(state_file_name_for "$_sid")"
-            rm -f "$_sf"
-            # Its own crash-residue temp siblings, scoped to that one filename.
-            rm -f "$_sf".tmp.* 2>/dev/null
-        done <<< "$_sids"
-        rmdir "$GG_ENABLED" 2>/dev/null
-        rmdir "$GG_ROOT" 2>/dev/null
-        rm -rf "$TMP"
-    }
-    trap cleanup_full EXIT
-
+    # Derived read-only BEFORE enrolment writes anything, so an interruption mid-enrolment
+    # still leaves the cleanup knowing exactly which file to remove.
+    MARKER=$(cd / && node -e 'process.stdout.write(require(process.argv[1]).markerPath(process.argv[2]))' "$CONSENT" "$FIXTURE_REPO" 2>/dev/null) || MARKER=""
+    # ABORT BEFORE ENROLLING if the pre-derivation failed. This script has no `set -e`, so the
+    # `|| MARKER=""` above used to fall through into an enrolment that succeeds independently —
+    # writing a durable marker under the operator's real passwd home that cleanup_full then
+    # skips (`-n "$MARKER"` is false), leaving both it and <root> behind permanently. The whole
+    # point of pre-deriving is that cleanup knows the path; an empty value is the one state in
+    # which enrolling is unsafe.
+    if [[ ! "$MARKER" =~ /[0-9a-f]{64}$ ]]; then
+        echo "FATAL: could not pre-derive the marker path (got: '${MARKER}')." >&2
+        echo "       Refusing to enroll, because cleanup could not remove what enrolment writes." >&2
+        exit 1
+    fi
     # Enroll by running the documented manual procedure verbatim — one identity producer,
     # no shell-side hash (sha256sum is absent on macOS).
-    MARKER=$(cd / && node -e '
+    _enrolled=$(cd / && node -e '
       const g=require(process.argv[1]),f=require("fs"),i=g.resolveIdentity(process.argv[2]);
       g.ensureDirNoFollow(g.gateguardRoot(),0o700);
       g.ensureDirNoFollow(g.enabledDir(),0o700);
       f.writeFileSync(i.markerPath,i.realpath+"\n",{flag:"wx",mode:0o600});
       process.stdout.write(i.markerPath);
-    ' "$CONSENT" "$FIXTURE_REPO" 2>/dev/null)
+    ' "$CONSENT" "$FIXTURE_REPO" 2>/dev/null) || _enrolled=""
     assert_true test -f "$MARKER" "manual enrollment procedure created the marker"
+    # The path cleanup will remove must be the path enrolment actually wrote.
+    assert_true test "$_enrolled" = "$MARKER" "pre-derived MARKER equals the enrolled path"
 
     # V1: all six channels injected, both registrations, contained ⇒ still denies.
     _payload=$(edit_payload "enrolled-e-$RUN_TOKEN" "$FIXTURE_REPO")

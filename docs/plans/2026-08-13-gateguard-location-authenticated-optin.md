@@ -122,23 +122,75 @@ it wrong in the dangerous direction:
 - **`BASH_ENV` / `ENV`** — ADR 0016:293-303 records these as **verified not a live vector**:
   Claude Code invokes hook commands via `sh -c`, and a non-interactive POSIX `sh` sources no
   startup files. The revisit trigger is ADR 0016:323-324 (a harness that switches to `bash -c`).
-- **Exported functions (`BASH_FUNC_*`) and `SHELLOPTS` are LIVE, and the earlier draft claimed
-  otherwise.** That draft extended the `sh -c` argument to function import; the extension is
-  false, because function import is not startup-file sourcing. Measured on this host, where
-  `/bin/sh` is bash 3.2.57:
+- **`SHELLOPTS` is LIVE. `BASH_FUNC_*` is NOT live against these registrations.** Two drafts
+  got this wrong in opposite directions: the first extended the `sh -c` argument to function
+  import (false — function import is not startup-file sourcing), and the correction then
+  over-swung and called both channels live on the strength of a *bare-name* probe. Measured on
+  this host, where `/bin/sh` is bash 3.2.57:
 
   ```
+  $ env SHELLOPTS=noexec /bin/sh -c 'echo EXECUTED'     # prints nothing, rc 0
   $ /bin/bash -c 'foo(){ echo PWNED; }; export -f foo; /bin/sh -c foo'
-  PWNED
-  $ env SHELLOPTS=noexec /bin/sh -c 'echo EXECUTED'      # prints nothing, rc 0
+  PWNED                                                 # BARE name -- shadowable
+  $ /bin/bash -c 'env(){ echo PWNED; }; export -f env; /bin/sh -c \
+        "/usr/bin/env -i PATH=/usr/bin:/bin /bin/echo REAL-ENV-RAN"'
+  REAL-ENV-RAN                                          # ABSOLUTE path -- not shadowable
+  $ /bin/bash -c 'bar(){ echo PWNED; }; export -f bar; /usr/bin/env -i PATH=/usr/bin:/bin \
+        /bin/bash -c "bar 2>/dev/null || echo bar-not-defined"'
+  bar-not-defined                                       # env -i strips the function anyway
   ```
 
-  ADR 0016:21's own lever table already lists exported functions as a verified lever, so the
-  draft contradicted the ADR it cited as authority. Both are ordinary `env`-block values, so
-  they belong to the **plugin-wide residual class** the threat model already carries — the same
-  class as a hook-disabling settings key. They are **not introduced by #616**, are identical for
-  the five wrapped gates (worse there, since those are fail-CLOSED), and closing them is a
-  six-registration exec-form rewrite this change does not attempt.
+  `SHELLOPTS=noexec` makes the invoking shell **parse the registration and execute none of
+  it**: no decision reaches stdout, exit status 0. For GateGuard that merely reproduces its
+  declared fail-open disposition, but for the five wrapped gates it is a **silent bypass** — a
+  fail-CLOSED gate that never runs cannot block. That, stated mechanically, is why the residual
+  is worse there; an earlier draft asserted the "worse there" without the mechanism.
+
+  `BASH_FUNC_*` is the opposite case, and the reason is narrower than an earlier draft of this
+  paragraph claimed. That draft said a function can shadow only a bare command name. **That is
+  false** — bash accepts a slash-containing function name and it *does* shadow the absolute
+  path:
+
+  ```
+  $ /bin/bash -c 'function /usr/bin/env { echo PWNED; }; /usr/bin/env -i \
+        PATH=/usr/bin:/bin /bin/echo REAL'
+  PWNED                                                 # in-process: absolute path IS shadowed
+  ```
+
+  What actually holds is the **import** boundary, which is the channel #616 is about: a
+  settings-borne `env` block can only deliver a function as an environment variable, and bash
+  refuses to import one whose name contains a slash — measured on both shells on this host:
+
+  ```
+  $ env 'BASH_FUNC_/usr/bin/env%%=() { echo PWNED; }' /bin/sh -c \
+        '/usr/bin/env -i PATH=/usr/bin:/bin /bin/echo REAL'
+  /bin/sh: error importing function definition for `/usr/bin/env'
+  REAL                                                  # bash 3.2.57 refuses the import
+  $ env 'BASH_FUNC_/usr/bin/env%%=() { echo PWNED; }' /opt/homebrew/bin/bash -c \
+        '/usr/bin/env -i PATH=/usr/bin:/bin /bin/echo REAL'
+  ...: error importing function definition for `/usr/bin/env'
+  REAL                                                  # bash 5.3.15 refuses it too
+  ```
+
+  So the conclusion stands but rests on the import refusal, not on any inability to shadow an
+  absolute path: probe 3 shows a function named `env` does not intercept `/usr/bin/env`, the two
+  probes above show the one function name that *would* intercept it cannot cross the env
+  boundary, and probe 4 shows `env -i` strips exported functions from the wrapped `bash`
+  regardless. `BASH_FUNC_*` would be live against a registration that invoked a **bare** name —
+  neither of these does. **Revisit trigger:** a bash release that permits importing
+  slash-containing function names would reopen this for every absolute-path registration. ADR 0016:21 lists exported functions as a lever for the general
+  case and that entry **stands on its own evidence**: of the 49 commands in `hooks.json`, 30
+  begin with a bare `node` or `bash` and are shadowable exactly as probe 2 shows; only the 19
+  `/usr/bin/env` ones — the five wrapped gates and, after step 2, GateGuard's two — are closed
+  by command shape. So the correction runs one way only: `BASH_FUNC_*` is a live plugin-wide
+  lever that these particular registrations happen to escape. The design does not get to claim
+  it as a residual *it* carries when its own command shape closes it, and equally does not get
+  to report it as closed plugin-wide.
+
+  `SHELLOPTS` is an ordinary `env`-block value, so it belongs to the **plugin-wide residual
+  class** the threat model already carries — the same class as a hook-disabling settings key. It
+  is **not introduced by #616**, and closing it is a six-registration exec-form rewrite this
+  change does not attempt.
 
 The inventory states this so its own boundary is explicit rather than implying `env -i` covers
 everything. **`PATH` and `NODE_OPTIONS` are covered** by the containment step 2 adopts, and V1's
@@ -161,14 +213,15 @@ that an env var is a repo-injectable consent channel (ADR 0016 / #325; advisory-
 ### Threat model
 
 **Protected against:** the *passive repo-borne consent channels* — a committed
-`.claude/settings.json` **`env`** block **naming any of the six consent channels this change
+`.claude/settings.json` **`env`** block **naming any of the six consent channels or `HOME` (channel 3b) this change
 closes**, a tracked marker, a repo-supplied `GIT_*` variable. That is the whole of #616.
 
-The qualifier on the `env` block is not hedging: an `env` block can also carry `BASH_FUNC_*`
-or `SHELLOPTS`, which act on the shell that *invokes* the registration, before
-`/usr/bin/env -i` is reached (see the inventory above, where both are measured). Those belong
-to the plugin-wide residual class below — identical for the five wrapped gates — not to what
-#616 closes.
+The qualifier on the `env` block is not hedging: an `env` block can also carry `SHELLOPTS`,
+which acts on the shell that *invokes* the registration, before `/usr/bin/env -i` is reached
+(see the inventory above, where it is measured — along with why `BASH_FUNC_*`, despite ADR
+0016:21 listing it, does **not** reach these absolute-path registrations). That belongs to the
+plugin-wide residual class below — identical for the five wrapped gates, and worse there, since
+a fail-CLOSED gate that never runs cannot block — not to what #616 closes.
 
 **Not claimed: that a checked-out repo can do nothing at all.** Earlier rounds wrote
 "anything arriving by virtue of the repo being checked out", which is broader than this change
@@ -673,7 +726,7 @@ cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent
 # mode that can find an ORPHAN — a marker whose recorded repo no longer exists. STATUS
 # cannot: it answers for one repo path, and an orphan's path is precisely what stopped
 # resolving. Not `ls ~/.gateguard/enabled/` either — see the `cd /` note below.
-cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js"),f=require("fs"),pa=require("path");const none=()=>{console.log("  (nothing enrolled on this machine)");process.exit(0)};let d;try{d=g.enabledDir()}catch(e){console.error("cannot resolve passwd home: "+e.message);process.exit(1)}console.log(d);const bail=e=>{if(e.code==="ENOENT")none();console.error("  cannot read the enabled directory ("+(e.code||e.message)+") — GateGuard treats this as ERROR and stays OFF; check ownership/permissions, and that neither it nor its parent is a file or symlink");process.exit(1)};let es;try{g.assertDirNoFollow(g.gateguardRoot());g.assertDirNoFollow(d);es=f.readdirSync(d)}catch(e){bail(e)}const ms=es.filter(n=>/^[0-9a-f]{64}$/.test(n));if(!ms.length)none();const buf=Buffer.alloc(4096);for(const n of ms){const p=pa.join(d,n);let st;try{st=f.lstatSync(p)}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}if(!st.isFile()){console.log("  "+n+"  <INVALID: not a regular file>");continue}let r;try{const fd=f.openSync(p,"r");try{r=buf.slice(0,f.readSync(fd,buf,0,4096,0)).toString("utf8").replace(/\n$/,"")}finally{f.closeSync(fd)}}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}console.log("  "+n+"  "+r+(f.existsSync(r)?"":"   <-- ORPHAN"))}' "<PLUGIN_ROOT>"
+cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js"),f=require("fs"),pa=require("path");const none=()=>{console.log("  (nothing enrolled on this machine)");process.exit(0)};let d;try{d=g.enabledDir()}catch(e){console.error("cannot resolve passwd home: "+e.message);process.exit(1)}console.log(d);const bail=e=>{if(e.code==="ENOENT")none();console.error("  cannot read the enabled directory ("+(e.code||e.message)+") — GateGuard treats this as ERROR and stays OFF; check ownership/permissions, and that neither it nor its parent is a file or symlink");process.exit(1)};let es;try{g.assertDirNoFollow(g.gateguardRoot());g.assertDirNoFollow(d);es=f.readdirSync(d)}catch(e){bail(e)}const ms=es.filter(n=>/^[0-9a-f]{64}$/.test(n));if(!ms.length)none();const buf=Buffer.alloc(4096);for(const n of ms){const p=pa.join(d,n);let st;try{st=f.lstatSync(p)}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}if(!st.isFile()){console.log("  "+n+"  <INVALID: not a regular file>");continue}let r;try{const fd=f.openSync(p,"r");try{r=buf.slice(0,f.readSync(fd,buf,0,4096,0)).toString("utf8").replace(/\n$/,"")}finally{f.closeSync(fd)}}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}console.log("  "+n+"  "+JSON.stringify(r)+(f.existsSync(r)?"":"   <-- ORPHAN"))}' "<PLUGIN_ROOT>"
 
 # STATUS (read-only) — one repo. Reports that repo's consent state; cannot enumerate.
 cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js");console.log(JSON.stringify(g.isEnabled(process.argv[2])))' "<PLUGIN_ROOT>" "/path/to/repo"
@@ -1049,10 +1102,12 @@ Every surface that still advertises the deleted switches or the old contract:
 
 **The replacement `SKILL.md` states the bounded claim verbatim, not a broad one:** *"a gated
 repository cannot switch GateGuard off through a committed `settings.json` `env` block naming
-any of the six consent channels this change closes, a tracked in-tree marker, or a repo-supplied
+any of the six consent channels or `HOME` (channel 3b) this change closes, a tracked in-tree
+marker, or a repo-supplied
 `GIT_*` variable."* The qualifier is load-bearing and was added after the unqualified form was
-shown to overclaim: an `env` block can also carry `BASH_FUNC_*` or `SHELLOPTS`, which act on the
-invoking shell before `env -i` is reached (see the inventory above). Those are a plugin-wide
+shown to overclaim: an `env` block can also carry `SHELLOPTS`, which acts on the invoking shell
+before `env -i` is reached (see the inventory above, which also records why `BASH_FUNC_*` does
+not reach these absolute-path registrations). That is a plugin-wide
 residual identical for the five wrapped gates, not something #616 closes, and a skill sentence
 implying otherwise is the same defect this step exists to fix, pointed the other way. It does **not** say a repo can
 do nothing at all — the hook-disabling class in the threat model is a live plugin-wide
@@ -1359,7 +1414,50 @@ bash startup plus at least two node starts.
     but only as an *attribution* check — it proves a state-(ii) number was not reported as
     state (i). It is not the mutation control; the absent-`<root>` precondition is.
 - The published figures, the method, and the pre-change baseline (the current registration,
-  which in the default profile is a shell `case`) go in the PR body.
+  which in the default profile is a shell `case`) go in the PR body **and are recorded below**,
+  so the branch carries its own evidence rather than pointing at a body a reviewer of the diff
+  cannot see.
+
+#### Measured results (2026-08-20)
+
+100 measured invocations per state after 10 discarded warm-ups, p95 as the 95th-percentile
+order statistic, one run per state on an otherwise idle machine, no outlier discarding. Unit as
+pinned above: the `pre:edit-write:gateguard-fact-force` registration, an **Edit** payload, the
+full `/usr/bin/env -i … bash … node …` chain timed end to end, a fresh `session_id` per sample
+with that sample's state file removed outside the timed interval.
+
+| state | p95 | budget | verdict |
+|---|---|---|---|
+| (i) zero markers anywhere | **101 ms** | ≤ 250 ms | indicative |
+| (ii) marker for another repo | **107 ms** | ≤ 400 ms | indicative |
+| (iii) this repo enrolled, first-touch deny | **111 ms** | ≤ 400 ms | indicative |
+| pre-change baseline (shell `case`, no node) | 24 ms | — | — |
+
+Every figure includes roughly 20 ms of timing-harness overhead (the sampler spawns a process to
+read each timestamp), so the true values are lower and the margins wider; the numbers are
+reported unadjusted because an unadjusted number cannot flatter the result.
+
+**The verdict column says `indicative`, not `pass`, and that is the honest word.** This run
+**violated this section's own fresh-home precondition**, so it does not verify the budgets — it
+only fails to contradict them. A table that stamped `pass` on a run that broke its own stated
+method would be the guard-that-cannot-fire pattern in reporting form, which is the defect this
+design keeps removing.
+
+**The deviation, stated rather than buried.** The run used a **sandboxed home** — a copy of the
+plugin with only `homeDir()` redirected, the rest being the real chain. `<passwd-HOME>/.gateguard`
+exists on the measuring machine and the rule above forbids writing into a pre-existing `<root>`,
+so a conforming local run was impossible.
+
+An earlier draft of this paragraph then under-described the redirect as replacing "one
+`os.userInfo()` call". That was wrong, and measured: `isEnabled()` alone resolves the home
+**three** times (`gateguardRoot()`, the `ensureDirNoFollow()` parent comparison, and
+`resolveIdentity()`), with further resolutions on the enrolled path through `gitEnv()` and state
+handling. The count was wrong; the magnitude argument survives it — `os.userInfo()` measures
+**0.82 µs** on this host, so three calls are **~0.002 ms** against a p95 near 100 ms, four
+orders of magnitude too small to explain any margin in the table, which is dominated by `env -i`
++ bash startup + `node --check` per candidate + a `git` spawn. What the redirect cannot repair
+is the precondition it was introduced to work around. **A fresh-home CI run is the authoritative
+lane**, and if it contradicts these figures, CI wins.
 - **There is no in-process caching mitigation, and round 9's was inert.** It proposed a
   process-lifetime `cwd → main-worktree` memo. `run-with-flags.js:300-306` invokes `run()`
   exactly **once per process**, and every gated call is a fresh
@@ -1407,7 +1505,7 @@ cosmetic gaps would silently redirect every one of those references.
 | V14 | An enrolled session editing a path outside the enrolled repo is still gated; a **Bash** payload is still gated; and a MultiEdit payload carrying its target **only per-edit** (no top-level `file_path`) is still gated. Note a top-level `file_path` MultiEdit is *not* the negative control — `:840-850` reads it — so the falsifiable shape is the per-edit-only one | a `file_path`-keyed consent check, which stops gating exactly the #615 shapes |
 | V15 | No `hooks.json` command reaches `gateguard-fact-force.js` outside the wrapper. **In-process**, with `os.userInfo` patched to a temp home **and** `process.env.HOME` pointed at a *different* directory holding a planted 64-hex marker: `homeDir()` follows the patched `os.userInfo`, not `$HOME`, so `isEnabled()` is OFF for a repo enrolled only under the poisoned tree and ON for one enrolled under the patched home. Both halves run against temp directories — **nothing in this lane writes into the operator's real home**, which is a standing constraint on the in-process lane, not one V17 carried away with it | the pre-change bare-`node` registrations; round 4's `$HOME`-reading resolver; and an `os.homedir()` implementation, which the contained path alone cannot distinguish because the wrapper exports a passwd-derived `HOME` before node starts |
 | V16 | **The `git` child is observed RECEIVING the environment, not merely offered one** — the spawn's options object is captured and its `env` compared against `gitEnv()`'s return. Asserting only what the factory returns is satisfiable by a build that defines a correct `gitEnv()` and then omits `env:` from the `execFileSync` call, inheriting the parent environment while containing no `process.env` token for any grep to find; V1 cannot catch it either, because its contained invocation has already had the hostile `GIT_*` variables stripped by `env -i`. Also: `process.env` appears nowhere in `gateguard-fact-force.js` or `gateguard-consent.js`, **and neither contains the literal `os.homedir(`**; `GATEGUARD_STATE_DIR`, `GATEGUARD_DISABLED` and `ECC_GATEGUARD` appear in neither those files nor `SKILL.md`; `BUSDRIVER_STATE_DIR` appears in none of them; and `SKILL.md` contains no `ECC_HOOK_PROFILE=strict` enable instruction. `gitEnv()`'s **returned object** has exactly the five specified keys, `LC_ALL: 'C'` among them, and its `HOME` tracks a mid-run change to the patched `os.userInfo` — the property a module-scope constant would fail | the pre-change file's six `process.env` sites; the surviving `allowWithStateWarning()` string; the repo's dominant `process.env.HOME \|\| os.homedir()` idiom; and an implementation that omits `env:` entirely, inheriting the parent environment while writing no `process.env` anywhere |
-| V17c | `saveState()` prepares `<root>` through step 3's `ensureDirNoFollow()` — never `mkdirSync(..., {recursive:true})` — and **all three branches of the state machine are observed**, under a temp home: (a) `<root>` **absent** ⇒ created and the state write succeeds — asserted as **created and usable by its owner**, deliberately NOT as "exactly `0700`", because 5(b) concedes `mode` is a ceiling masked by the process umask and an exact-mode row would contradict it. (Measured: under `umask 0700` a `mkdir` requesting `0700` yields mode `077`, stripping the owner's own permissions; the state write then fails and the call lands on `allowWithStateWarning()` — gate off, warning on stderr. That is a **declared residual**, listed in "What this does NOT do": an exotic umask disables GateGuard loudly rather than silently, which for a non-boundary gate is the acceptable direction, and the gate deliberately never `chmod`s the operator's home to paper over it); (b) `<root>` an **ordinary pre-existing directory** ⇒ the state write succeeds with no EEXIST; (c) `<root>` a **symlink** ⇒ refused, nothing written into the target. (b) is the row that matters most and the one an earlier draft had no coverage for: it is the dominant real-machine state, and an "assert then create" implementation passes (c) while failing (b) silently into `allowWithStateWarning()`. (V17, V17b, V17d and V18, and this row's CLI half, moved to #712 with the helper. This clause stayed because it verifies 5(b), which this change still ships — the split is deliberate, not a leftover) | the current `:523-527`, which is exactly the `recursive` shape 5(b) forbids; an "assert then `mkdirSync`" build, which throws ENOENT on (a) and EEXIST on (b), both landing on `allowWithStateWarning()` (`:793`); and a build that states the contract without exercising it |
+| V17c | `saveState()` prepares `<root>` through step 3's `ensureDirNoFollow()` — never `mkdirSync(..., {recursive:true})` — and **all three branches of the state machine are observed**, under a temp home: (a) `<root>` **absent** ⇒ created and the state write succeeds — asserted as **created and usable by its owner**, deliberately NOT as "exactly `0700`", because 5(b) concedes `mode` is a ceiling masked by the process umask and an exact-mode row would contradict it. (Measured: under `umask 0700`, `fs.mkdirSync(dir, {mode: 0o700})` yields mode `000`, stripping the owner's own permissions — `077` is what a bare shell `mkdir` gives under the same umask, and an earlier draft quoted that number for the node call; the state write then fails and the call lands on `allowWithStateWarning()` — gate off, warning on stderr. That is a **declared residual**, listed in "What this does NOT do": an exotic umask disables GateGuard loudly rather than silently, which for a non-boundary gate is the acceptable direction, and the gate deliberately never `chmod`s the operator's home to paper over it); (b) `<root>` an **ordinary pre-existing directory** ⇒ the state write succeeds with no EEXIST; (c) `<root>` a **symlink** ⇒ refused, nothing written into the target. (b) is the row that matters most and the one an earlier draft had no coverage for: it is the dominant real-machine state, and an "assert then create" implementation passes (c) while failing (b) silently into `allowWithStateWarning()`. (V17, V17b, V17d and V18, and this row's CLI half, moved to #712 with the helper. This clause stayed because it verifies 5(b), which this change still ships — the split is deliberate, not a leftover) | the current `:523-527`, which is exactly the `recursive` shape 5(b) forbids; an "assert then `mkdirSync`" build, which throws ENOENT on (a) and EEXIST on (b), both landing on `allowWithStateWarning()` (`:793`); and a build that states the contract without exercising it |
 | V3b | **The payload `cwd` contract is pinned, not assumed — and this row is OPERATOR-PERFORMED, not a CI lane.** Capture a real PreToolUse payload from each of the four gated tools (Edit, Write, MultiEdit, Bash) and confirm each carries an absolute `cwd`; the evidence goes in the PR body. It is classified this way because no automated lane can produce a *live harness* payload — a fixture asserting what the fixture itself wrote would be a guard that cannot fail, which is the defect this document keeps having to remove. What the automated lanes DO cover is the consequence, and the citations are exact because an earlier draft's were not: **V3** pins that a payload without an absolute `cwd` allows, and the in-process taxonomy row pins that such a payload classifies `absent` (so it stays silent). **V4 does not cover this case** — its silent-`absent` row is the *non-repository* `cwd`, which is a different input reaching the same classification by a different route. The whole consent path keys on it, and §3's taxonomy makes a missing `cwd` a *silent* `absent` — so a harness change that stopped sending it would disable every enrolled gate with no signal anywhere. The repo already treats payload `cwd` as established (`config-protection.js:83-93`, `pre-implementation-gate.sh`, `freeze-guard.sh`), which is why this is a pin rather than a redesign | a build where the field is assumed; and the silent-`absent` classification, which is correct for a genuinely repo-less call and indistinguishable from a harness regression |
 | V19 | A `>MAX_STDIN` payload to an enrolled GateGuard registration ⇒ exit 0, no deny — the **declared, accepted** #612 residual, recorded so it is not forgotten | a build that leaves `--fail-closed` on GateGuard, hard-blocking unenrolled operators |
 | V20 | All three lanes green: **`npm run test:coverage`** (not bare `npm test` — `package.json` defines that as `vitest run` with no coverage, and the in-process lane's whole stated justification is patch coverage, so the criterion has to name the command that measures it) **and** `bash scripts/ci/run-shell-tests.sh` for the contained lane. The resulting patch coverage for `scripts/lib/gateguard-consent.js` and the touched branches of `scripts/hooks/gateguard-fact-force.js` goes in the PR body. A `<passwd-HOME>/.gateguard` that existed before the run still holds **the same marker set and the same modes**. One that did **not** exist is left absent *unless the contained lane declined to remove it* — §7 removes its own entries by name and the directories only if empty, so a concurrent enrollment landing mid-run legitimately leaves `<root>` behind. That is the designed outcome, not a leak: the alternative is a whole-tree removal that destroys the concurrent enrollment. The observable post-condition is therefore "no marker and no state file this run did not create", which holds in both cases. The post-condition is deliberately *not* "byte-identical": on a live enrolled machine the operator's own session rewrites `state-*.json` on its ≥60 s heartbeat (`:591-596`), so byte-equality is unobservable — and under the rule above the suite never writes into a pre-existing `<root>` anyway, so markers and modes are the properties that carry the guarantee | the un-migrated driver fixture, where all eight #615 denies flip to allow; a contained suite that enrolls without restoring; a suite that lets step 5(h)'s prune delete the operator's state; and a completion criterion that names only `npm test`, which never executes the shell lane |
@@ -1482,8 +1580,9 @@ evidence.
   convenience. The remedy is ownership of the checkout. Rare on a single-operator machine, and
   it fails to OFF with the step-3 diagnostic, which is the safe direction for a non-boundary
   gate.
-- **An exotic umask can disable the gate, loudly.** `mkdir`'s `mode` is masked by the process
-  umask, so under `umask 0700` a directory requested at `0700` is created `077` — the owner
+- **An exotic umask can disable the gate, loudly.** `mkdirSync`'s `mode` is masked by the
+  process umask, so under `umask 0700` a directory requested at `0700` is created `000` — the
+  owner
   loses access to their own state root, `saveState()` fails, and every gated call of an enrolled
   operator lands on `allowWithStateWarning()`: gate off, warning on stderr. The gate does not
   `chmod` its way out of this, because repairing modes under the operator's home is the one

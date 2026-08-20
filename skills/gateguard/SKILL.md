@@ -118,14 +118,23 @@ against a gated repository is a set of files tracked by that repository, and it 
 create, delete or modify anything under your passwd home.
 
 **What this buys, stated exactly:** a gated repository cannot switch GateGuard off through a
-committed `settings.json` `env` block **naming any of the six consent channels #616 closes**, a
-tracked in-tree marker, or a repo-supplied `GIT_*` variable. The qualifier matters: an `env`
-block can also carry `BASH_FUNC_*` (exported shell functions) or `SHELLOPTS`, which act on the
-shell that *invokes* the registration, before `/usr/bin/env -i` is ever reached. Measured on
-this host: `/bin/bash -c 'foo(){ echo PWNED; }; export -f foo; /bin/sh -c foo'` prints `PWNED`.
-That is a **plugin-wide** residual — identical for the five wrapped security gates, and worse
-there, since those fail CLOSED — recorded in ADR 0016:21 and neither introduced nor closed by
-#616. It does **not** mean a checked-out repo can do nothing at
+committed `settings.json` `env` block **naming any of the six consent channels #616 closes or
+`HOME`**, a tracked in-tree marker, or a repo-supplied `GIT_*` variable. The qualifier matters:
+an `env` block can also carry `SHELLOPTS`, which acts on the shell that *invokes* the
+registration, before `/usr/bin/env -i` is ever reached. Measured on this host,
+`env SHELLOPTS=noexec /bin/sh -c 'echo EXECUTED'` prints nothing and exits 0 — the registration
+is parsed and none of it runs, so no decision is emitted. That is a **plugin-wide** residual —
+identical for the five wrapped security gates, and worse there, since a fail-CLOSED gate that
+never runs cannot block — recorded in ADR 0016:21 and neither introduced nor closed by #616.
+Exported shell functions (`BASH_FUNC_*`) are *not* in this class for these registrations —
+though not for the reason an earlier draft of this file gave. It claimed a function can shadow
+only a bare command name; that is false, since bash accepts a slash-containing function name and
+it does shadow the absolute path when defined in-process. What protects these registrations is
+the **import** boundary, which is the only channel a settings-borne `env` block has: bash
+refuses to import a function whose name contains a slash. Measured on both shells here —
+`env 'BASH_FUNC_/usr/bin/env%%=() { echo PWNED; }' /bin/sh -c '/usr/bin/env …'` prints
+``error importing function definition for `/usr/bin/env` `` and runs the real binary, on bash
+3.2.57 and 5.3.15 alike. A bash that ever permitted such an import would reopen this. It does **not** mean a checked-out repo can do nothing at
 all — a committed project `settings.json` may carry keys beyond `env`, and a key that
 disables hooks wholesale would defeat all five wrapped gates identically, before any
 marker or `env -i` logic runs. That is a plugin-wide residual for ADR 0016's own threat
@@ -148,15 +157,19 @@ cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent
 # The only way to find an ORPHAN: a marker whose recorded path no longer exists (the repo
 # moved or was deleted). Do NOT substitute `ls ~/.gateguard/enabled/` — `~` is $HOME, which
 # may name a different tree from the passwd-derived one the gate consults.
-cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js"),f=require("fs"),pa=require("path");const none=()=>{console.log("  (nothing enrolled on this machine)");process.exit(0)};let d;try{d=g.enabledDir()}catch(e){console.error("cannot resolve passwd home: "+e.message);process.exit(1)}console.log(d);const bail=e=>{if(e.code==="ENOENT")none();console.error("  cannot read the enabled directory ("+(e.code||e.message)+") — GateGuard treats this as ERROR and stays OFF; check ownership/permissions, and that neither it nor its parent is a file or symlink");process.exit(1)};let es;try{g.assertDirNoFollow(g.gateguardRoot());g.assertDirNoFollow(d);es=f.readdirSync(d)}catch(e){bail(e)}const ms=es.filter(n=>/^[0-9a-f]{64}$/.test(n));if(!ms.length)none();const buf=Buffer.alloc(4096);for(const n of ms){const p=pa.join(d,n);let st;try{st=f.lstatSync(p)}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}if(!st.isFile()){console.log("  "+n+"  <INVALID: not a regular file>");continue}let r;try{const fd=f.openSync(p,"r");try{r=buf.slice(0,f.readSync(fd,buf,0,4096,0)).toString("utf8").replace(/\n$/,"")}finally{f.closeSync(fd)}}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}console.log("  "+n+"  "+r+(f.existsSync(r)?"":"   <-- ORPHAN"))}' "<PLUGIN_ROOT>"
+cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js"),f=require("fs"),pa=require("path");const none=()=>{console.log("  (nothing enrolled on this machine)");process.exit(0)};let d;try{d=g.enabledDir()}catch(e){console.error("cannot resolve passwd home: "+e.message);process.exit(1)}console.log(d);const bail=e=>{if(e.code==="ENOENT")none();console.error("  cannot read the enabled directory ("+(e.code||e.message)+") — GateGuard treats this as ERROR and stays OFF; check ownership/permissions, and that neither it nor its parent is a file or symlink");process.exit(1)};let es;try{g.assertDirNoFollow(g.gateguardRoot());g.assertDirNoFollow(d);es=f.readdirSync(d)}catch(e){bail(e)}const ms=es.filter(n=>/^[0-9a-f]{64}$/.test(n));if(!ms.length)none();const buf=Buffer.alloc(4096);for(const n of ms){const p=pa.join(d,n);let st;try{st=f.lstatSync(p)}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}if(!st.isFile()){console.log("  "+n+"  <INVALID: not a regular file>");continue}let r;try{const fd=f.openSync(p,"r");try{r=buf.slice(0,f.readSync(fd,buf,0,4096,0)).toString("utf8").replace(/\n$/,"")}finally{f.closeSync(fd)}}catch(e){console.log("  "+n+"  <unreadable: "+e.code+">");continue}console.log("  "+n+"  "+JSON.stringify(r)+(f.existsSync(r)?"":"   <-- ORPHAN"))}' "<PLUGIN_ROOT>"
 
 # STATUS (read-only) — for ONE repo. It reports that repo's consent state; it does not
 # list enrolments, so it cannot find an orphan. Use LIST above for that.
 cd / && node -e 'const g=require(process.argv[1]+"/scripts/lib/gateguard-consent.js");console.log(JSON.stringify(g.isEnabled(process.argv[2])))' "<PLUGIN_ROOT>" "/path/to/repo"
 ```
 
-**Revoking.** LIST prints the enabled directory on its **first line**, then one line per
-enrolment: the 64-character marker name followed by the repository path it records. The file to
+**Revoking.** LIST prints the enabled directory on its **first line**, then **exactly one line
+per enrolment**: the 64-character marker name followed by the recorded repository path, shown
+JSON-quoted. The quoting is not decoration — the resolver deliberately supports paths containing
+newlines (that is why it uses `--porcelain -z`), so printing one raw would split a single
+enrolment across several lines and could emit terminal control characters. Quoted, one enrolment
+is always one line. The file to
 delete is that directory joined with the marker name on the row whose recorded repository is the
 one you want to disable — LIST does not print the joined path itself.
 

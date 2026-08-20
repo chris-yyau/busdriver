@@ -19,11 +19,27 @@
 # hook directly. With the profile flags wiped, the runner falls back to each hook's
 # default-enabled state → the gate fires.
 #
-# FAIL-CLOSED LAUNCH: node normally lives at ~/.local/bin/node or /opt/homebrew/bin
-# — NOT on /usr/bin:/bin. A naive `env -i PATH=/usr/bin:/bin node …` would fail to
-# find node; a blocking hook that never launches never exits 2 → the tool proceeds
-# (fail-OPEN). So the trusted PATH re-adds the Homebrew/local dirs, and if node is
-# STILL not found the wrapper emits {"decision":"block"} + exit 2 rather than exit 0.
+# LAUNCH DISPOSITION — this wrapper has TWO, selected by the caller (#616):
+#
+#   default (no flag)  A blocking gate that cannot launch its runtime MUST block.
+#                      node normally lives at ~/.local/bin/node or /opt/homebrew/bin —
+#                      NOT on /usr/bin:/bin. A naive `env -i PATH=/usr/bin:/bin node …`
+#                      would fail to find node; a blocking hook that never launches
+#                      never exits 2 → the tool proceeds. So the trusted PATH re-adds
+#                      the Homebrew/local dirs, and if node is STILL not found the
+#                      wrapper emits {"decision":"block"} + exit 2 rather than exit 0.
+#
+#   --fail-open        A launch/infrastructure failure resolves to ALLOW: no stdout
+#                      decision at all ("no opinion"), exit 0. ONLY for a consumer that
+#                      guards no boundary. GateGuard (a quality prompt, off by default,
+#                      opt-in per repo) is the sole such consumer; adopting the closed
+#                      disposition for it would hard-block every Edit/Write/Bash of
+#                      operators who never opted in, on a missing node or one oversized
+#                      payload. Do NOT add a second consumer without the same argument.
+#                      See docs/adr/0016-gate-env-containment.md.
+#
+# A MALFORMED ARGUMENT LIST is not a launch failure and is never fail-open: it is a bug
+# in code that ships with the plugin, so it is forced to the closed disposition below.
 #
 # Re-imported vars (see ADR 0016): CLAUDE_PLUGIN_ROOT locates this wrapper + the
 # runner (Claude-set, authoritative over the settings `env` block); HOME for tools
@@ -31,6 +47,13 @@
 # contained hook may branch Pre- vs Post-event on it (Claude-set per event, not the
 # settings-env injection channel).
 set -euo pipefail
+
+# ── Disposition ────────────────────────────────────────────────────────────
+# Assignment and shift ONLY — no _block call here: _block is not defined yet, and
+# calling it would be a command-not-found (127) that `|| exit 0` silently swallows.
+# Validation of the remaining argument list happens right after _block's definition.
+_disposition="closed"; _disp_word="CLOSED"
+if [[ "${1:-}" == "--fail-open" ]]; then _disposition="open"; _disp_word="OPEN"; shift; fi
 
 # ── Trusted PATH ───────────────────────────────────────────────────────────
 # Same SYSTEM allowlist as sanitized-gate.sh — fixed absolute dirs, never inherited.
@@ -108,13 +131,47 @@ fi
 # fallback safe: even if ~/.local/bin/node is a symlink to a version manager, running it
 # from `/` means no repo-local .tool-versions/.nvmrc/package.json can steer it.
 
-# ── Fail-CLOSED helper ─────────────────────────────────────────────────────
-# A blocking hook that cannot launch its runtime MUST block, never pass through.
+# ── Disposition-aware failure helper ───────────────────────────────────────
+# Every failure path in this file routes through here, so the disposition is honoured
+# by construction rather than remembered at each of the eight call sites.
+#
+# The disposition word is appended HERE, not by the caller. In the OPEN disposition
+# nothing may reach stdout: the harness consumes a stdout decision regardless of exit
+# status, so printing block JSON and then exiting 0 would still block the tool call.
+# "No opinion" means no stdout at all.
+# An `if` rather than `[[ … ]] && exit 0`. To be accurate about why, because the obvious
+# reason is WRONG and was believed here at one point: the AND-list form is NOT a `set -e`
+# hazard. A failing `[[ ]]` as a non-final member of an AND-list is exempt from `set -e`,
+# so the AND-list form prints the block JSON and exits 2 correctly from every call shape
+# in this file — verified by execution on bash 3.2.57 (the macOS system bash this wrapper
+# actually runs under) and bash 5.3, in the `if … then`, `… || _block`, and bare-call
+# shapes. The `if` is kept only because it states the branch without relying on that
+# exemption being remembered by the next reader.
 _block() {
-    printf '%s\n' "$1" >&2
+    printf '%s — failing %s\n' "$1" "$_disp_word" >&2
+    if [[ "$_disposition" == "open" ]]; then
+        exit 0
+    fi
     printf '{"decision":"block","reason":"%s"}\n' "$2"
     exit 2
 }
+
+# ── Argument-list validation (forced CLOSED) ───────────────────────────────
+# Placed AFTER _block's definition — see the disposition block above for why.
+# Checked on ARITY, not by re-testing the leading token: `--fail-open A B C --fail-open`
+# has already been shifted once, so a leading-token re-check would pass it and the extra
+# operand would reach the runner through the verbatim "$@" below.
+# EMPTINESS too: `--fail-open "" "" "..."` satisfies arity with three args, and the
+# hookId/scriptPath emptiness would otherwise be caught further down — by then in the
+# OPEN disposition, i.e. a malformed registration silently allowing.
+# Forced closed: a malformed registration is a plugin bug, not an operator-environment
+# condition, and must be loud whatever the registration asked for.
+if [[ $# -ne 3 ]] || [[ -z "$1" || -z "$2" || -z "$3" ]] \
+   || [[ "$1" == --* || "$2" == --* || "$3" == --* ]]; then
+    _disposition="closed"; _disp_word="CLOSED"
+    _block "sanitized-node: malformed argument list" \
+           "malformed blocking-gate registration; cannot confirm gate decision"
+fi
 
 # ── Locate the runner ──────────────────────────────────────────────────────
 # Resolved BEFORE node so node candidates can be validated against the actual runner.
@@ -127,12 +184,12 @@ root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pw
 # would then fail CLOSED (safe, but a usability break). Resolving here keeps them valid.
 if [[ "$root" != /* ]]; then
     root=$(cd "$root" 2>/dev/null && pwd) || _block \
-        "sanitized-node: CLAUDE_PLUGIN_ROOT '$CLAUDE_PLUGIN_ROOT' does not resolve — failing CLOSED" \
+        "sanitized-node: CLAUDE_PLUGIN_ROOT '$CLAUDE_PLUGIN_ROOT' does not resolve" \
         "plugin root unresolvable; blocking hook cannot launch"
 fi
 runner="$root/scripts/hooks/run-with-flags.js"
 if [[ ! -f "$runner" ]]; then
-    _block "sanitized-node: runner not found: $runner — failing CLOSED" \
+    _block "sanitized-node: runner not found: $runner" \
            "hook runner missing; blocking hook cannot launch"
 fi
 
@@ -145,7 +202,7 @@ fi
 # three contained hooks stay correct: block-no-verify / dev-server-block act on the command
 # string; config-protection now resolves a relative file_path against the PAYLOAD cwd (not
 # process.cwd()), so a neutral process CWD does not weaken it (see config-protection.js).
-cd / 2>/dev/null || _block "sanitized-node: cannot cd to a neutral dir — failing CLOSED" \
+cd / 2>/dev/null || _block "sanitized-node: cannot cd to a neutral dir" \
                            "cannot neutralize CWD; blocking hook cannot launch safely"
 
 # ── Resolve node: system dirs first, passwd-HOME direct-binary dirs as fallback ──────
@@ -172,7 +229,7 @@ for _cand in "${_cands[@]}"; do
     _node="$_cand/node"; break
 done
 if [[ -z "$_node" ]]; then
-    _block "sanitized-node: no node able to parse the runner on trusted candidates (PATH=$PATH, +~/.local/bin, +nvm) — failing CLOSED" \
+    _block "sanitized-node: no node able to parse the runner on trusted candidates (PATH=$PATH, +~/.local/bin, +nvm)" \
            "no compatible node runtime; blocking hook cannot launch"
 fi
 
@@ -182,21 +239,17 @@ fi
 # not. (A deeper runner dispatch failure that still returns 0 — e.g. a require() throw on
 # a corrupted plugin file — is a bounded plugin-integrity residual: these three scripts
 # ship with the plugin and a PR cannot remove or rewrite them. See ADR 0016.)
-# A blocking-gate registration MUST name a hookId ($1) and a hook script ($2). An empty
-# arg means a malformed registration — and run-with-flags.js exits 0 (allow) on an empty
-# hookId/scriptPath — so fail CLOSED here rather than dispatch into that fail-open path.
-hook_id="${1:-}"
-hook_rel="${2:-}"
-if [[ -z "$hook_id" || -z "$hook_rel" ]]; then
-    _block "sanitized-node: missing hookId/scriptPath arg (id='$hook_id' script='$hook_rel') — failing CLOSED" \
-           "malformed blocking-gate registration; cannot confirm gate decision"
-fi
+# hookId ($1) and hook script ($2) are already guaranteed present and non-empty by the
+# forced-CLOSED argument-list validation near the top of this file — which is where that
+# check has to live, so a malformed registration cannot be adjudicated in the OPEN
+# disposition and silently allow.
+hook_rel="$2"
 case "$hook_rel" in
     /*|*..*) _block "sanitized-node: refusing hook path $hook_rel (absolute/traversal)" \
                     "bad hook script path; cannot confirm gate decision" ;;
 esac
 if [[ ! -f "$root/$hook_rel" ]]; then
-    _block "sanitized-node: hook script missing: $root/$hook_rel — failing CLOSED" \
+    _block "sanitized-node: hook script missing: $root/$hook_rel" \
            "target hook script absent; cannot confirm gate decision"
 fi
 
@@ -217,12 +270,35 @@ fi
 # `env` block could set a fail-closed ENV var and turn advisory hooks into spurious
 # blocks (a DoS). An argv is only settable via hooks.json (review-visible code), not the
 # silent settings-env channel this containment is built to defeat.
+#
+# Appended ONLY in the closed disposition. `--fail-open` is never forwarded: the runner has
+# no reader for it, and the runner's fail-open behaviour is exactly the ABSENCE of
+# `--fail-closed` (failOpenExitCode(), run-with-flags.js:116-118). The token still appears in
+# the hooks.json command string, which is what #629's registration-derived detection keys on.
+# STDOUT IS BUFFERED IN THE OPEN DISPOSITION, and streamed in the closed one.
+#
+# Streaming is wrong for fail-open specifically: the runner inherits stdout, so a runner that
+# prints a deny decision and THEN dies with a status outside 0/2 has already put that decision
+# on the harness's stdout. `_block` in the open disposition emits nothing and exits 0 -- but it
+# cannot RETRACT what already left the process, so the harness blocks the tool call on an
+# infrastructure failure the registration explicitly declared fail-OPEN. Buffering makes the
+# decision conditional on a clean exit, which is what the disposition promises.
+#
+# The closed disposition keeps streaming: there, a decision surviving a crash biases toward
+# blocking, which is the direction that disposition already fails in.
+#
+# stderr is inherited in BOTH branches, so diagnostics are never withheld or reordered.
+_out=""
 set +e
-"$_node" "$runner" "$@" --fail-closed
+if [[ "$_disposition" == "open" ]]; then
+    _out=$("$_node" "$runner" "$@")
+else
+    "$_node" "$runner" "$@" --fail-closed
+fi
 _rc=$?
 set -e
 case "$_rc" in
-    0|2) exit "$_rc" ;;
-    *) _block "sanitized-node: runner exited $_rc (launch/crash, not a clean allow/block) — failing CLOSED" \
+    0|2) if [[ "$_disposition" == "open" ]]; then printf '%s' "$_out"; fi; exit "$_rc" ;;
+    *) _block "sanitized-node: runner exited $_rc (launch/crash, not a clean allow/block)" \
               "hook runner failed to execute (exit $_rc); blocking hook cannot confirm allow" ;;
 esac

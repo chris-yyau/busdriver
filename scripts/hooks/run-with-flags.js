@@ -190,8 +190,11 @@ function truncationDisposition(failClosed) {
 // giving them a block they never had would let an oversized payload DoS every
 // non-gate hook. Keyed off argv only, for the same injection reason as
 // failOpenExitCode(). Only the exit-0 case is forced — a hook that already
-// decided nonzero has spoken, and both live gate registrations wrap the runner
-// with `|| exit 2` so any nonzero exit blocks anyway.
+// decided nonzero has spoken. The five WRAPPED gate registrations wrap the runner
+// with `|| exit 2`, so any nonzero exit blocks anyway. GateGuard's two do NOT: since
+// #616 they are `--fail-open` with `|| exit 0`, so `failClosed` is false for them and
+// this override never fires — an oversized GateGuard payload is allowed unchecked, a
+// declared and accepted residual (see skills/gateguard/SKILL.md).
 function enforceTruncation(code, { truncated, failClosed, hookId }) {
   // Named instead of a compound `if` (CodeScene Complex Conditional) — the
   // override applies only when a fail-closed gate saw a truncated payload

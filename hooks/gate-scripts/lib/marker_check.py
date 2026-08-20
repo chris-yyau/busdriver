@@ -237,6 +237,15 @@ _EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
 _SUBST_BODY_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 _UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(]")   # `(` is extglob: ba+(s)h expands to bash
+# A SECOND way to cut the text into candidate words for the structureless glob probe in
+# _abandoned_scan_probe -- the operator characters the shell separates on before it globs,
+# because a whitespace-only split left `lease_slo?.py;` as the pattern and matched the
+# helper nowhere (#640). It is asked ALONGSIDE the whitespace split, never instead of it:
+# an operator character is legal INSIDE a bracket expression, so this cuts `lease_slo[;t].py`
+# in half and on its own would have traded one bypass for another (raised by codex on #640).
+# Neither split is a tokenizer or claims to be; the union only ever yields more candidate
+# patterns to test, so it can add a block and never remove one.
+_OPERATOR_SPLIT_RE = re.compile(r"[\s;&|()<>]+")
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
 # brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
 # walk sees has already lost some of that syntax, so testing for the UNRESOLVED
@@ -2623,11 +2632,37 @@ def _abandoned_scan_probe(text):
     here is as likely to be prose as an operand, and a pattern that matches every filename
     ever written says nothing about the helper (#573). See that docstring for the residual
     that buys.
+
+    Over the SHELL VARIANTS, not the raw text: splitting `echo 'python3 lease_slo?.py'`
+    leaves the quote glued to the word, so the pattern read as `lease_slo?.py'` and matched
+    the helper nowhere -- a piped payload naming a globbed helper measured ALLOW (#640).
+    The substring backstop in _names_helper already asks the variants; this tail was the one
+    path that did not. `text` is itself a variant, so this only ever adds a match.
+
+    And cut on the OPERATORS as well as on whitespace, which is the same defect one
+    character further along: the shell separates `lease_slo?.py;` into a word and a `;`
+    before it globs, while a whitespace-only split hands fnmatch a pattern with the
+    terminator still in it -- so `;`, `&&`, `(`, `)` and a redirect each restored the bypass
+    the quote fix closed. BOTH splits are asked, never the operator one alone: an operator
+    character is legal inside a bracket expression, so cutting there halves
+    `lease_slo[;t].py` -- a pattern that DID block -- and the swap would have been a wash.
+    Testing the union is what makes this monotone. Both raised by codex on #640.
+
+    ACCEPTED OVER-BLOCK, and it is the ticket's own trade rather than a new cost: a payload
+    that merely QUOTES a globbed helper name as data -- `echo "printf '%s' 'lease_slo?.py'" | sh`,
+    which only prints it -- now blocks. Nothing static can tell print from run once the text
+    is inside an opaque payload, which is why this probe is the widest one and reads its
+    input as structureless. Measured against the pre-#640 classifier, the LITERAL spelling
+    of that same payload already blocked; only the glob spelling walked through. So this
+    aligns the two rather than opening a class, and the #573 release rule is what keeps a
+    wildcard in ordinary prose from paying for it. Raised by codex on #640.
     """
     hit = _names_helper(text)
     if hit:
         return hit
-    return next((h for w in text.split() if any(c in w for c in "*?[")
+    return next((h for v in _shell_variants(text)
+                 for w in v.split() + _OPERATOR_SPLIT_RE.split(v)
+                 if any(c in w for c in "*?[")
                  for h in [_glob_helper_targeted(w)] if h), None)
 
 

@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-commit-gate.sh",
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" XDG_CONFIG_HOME=\"${XDG_CONFIG_HOME:-}\" BUSDRIVER_ORIG_HOME=\"${HOME:-}\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-commit-gate.sh",
             "timeout": 10
           }
         ],
@@ -148,20 +148,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"${ECC_HOOK_PROFILE:-standard}\" in [Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd]|[Mm][Ii][Nn][Ii][Mm][Aa][Ll]) ;; *) node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2 ;; esac"
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" --fail-open \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"minimal,standard,strict\" || exit 0"
           }
         ],
-        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing. The case guard and the \"strict\" arg are deliberately redundant — see skills/gateguard/SKILL.md."
+        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary — see skills/gateguard/SKILL.md."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "case \"${ECC_HOOK_PROFILE:-standard}\" in [Ss][Tt][Aa][Nn][Dd][Aa][Rr][Dd]|[Mm][Ii][Nn][Ii][Mm][Aa][Ll]) ;; *) node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"strict\" --fail-closed || exit 2 ;; esac"
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" --fail-open \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"minimal,standard,strict\" || exit 0"
           }
         ],
-        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command. The case guard and the \"strict\" arg are deliberately redundant — see skills/gateguard/SKILL.md."
+        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary — see skills/gateguard/SKILL.md."
       },
       {
         "matcher": "Bash",
@@ -301,7 +301,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" post-merge-confirm-bypass.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ],
         "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge"

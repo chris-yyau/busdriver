@@ -1,3 +1,53 @@
+## [1.109.11](https://github.com/chris-yyau/busdriver/compare/v1.109.10...v1.109.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **gateguard:** contain the gate and move consent out of the repository namespace ([#616](https://github.com/chris-yyau/busdriver/issues/616)) ([#715](https://github.com/chris-yyau/busdriver/issues/715)) ([db806e4](https://github.com/chris-yyau/busdriver/commit/db806e45f157d30563640a4645432a913f3336be)), closes [#629](https://github.com/chris-yyau/busdriver/issues/629) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#612](https://github.com/chris-yyau/busdriver/issues/612) [#712](https://github.com/chris-yyau/busdriver/issues/712) [660/#703](https://github.com/chris-yyau/busdriver/issues/703)
+
+## [1.109.10](https://github.com/chris-yyau/busdriver/compare/v1.109.9...v1.109.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pre-merge:** confirm merges against the GitHub API, not CLI chatter ([#664](https://github.com/chris-yyau/busdriver/issues/664)) ([#709](https://github.com/chris-yyau/busdriver/issues/709)) ([9b58f6b](https://github.com/chris-yyau/busdriver/commit/9b58f6b106b60a2cd0cef33c77edd163961217f5)), closes [#98](https://github.com/chris-yyau/busdriver/issues/98)
+
+## [1.109.9](https://github.com/chris-yyau/busdriver/compare/v1.109.8...v1.109.9) (2026-08-19)
+
+
+### Bug Fixes
+
+* **gate:** ask the glob probe the shell variants and the operator splits ([#640](https://github.com/chris-yyau/busdriver/issues/640)) ([#707](https://github.com/chris-yyau/busdriver/issues/707)) ([2a5fa3c](https://github.com/chris-yyau/busdriver/commit/2a5fa3c4dbd05d474bb918a1b6f7ac5a8e3cfad4))
+
+## [1.109.8](https://github.com/chris-yyau/busdriver/compare/v1.109.7...v1.109.8) (2026-08-19)
+
+
+### Bug Fixes
+
+* **blueprint-review:** re-derive PASS from the arbiter verdict, never inherit it ([#656](https://github.com/chris-yyau/busdriver/issues/656)) ([#702](https://github.com/chris-yyau/busdriver/issues/702)) ([3fe9b56](https://github.com/chris-yyau/busdriver/commit/3fe9b56a1834c3824a79de2c451b50bdfaaba320)), closes [#449](https://github.com/chris-yyau/busdriver/issues/449)
+* **containment:** derive passwd HOME in a sterile child ([#660](https://github.com/chris-yyau/busdriver/issues/660)) ([#703](https://github.com/chris-yyau/busdriver/issues/703)) ([bca956c](https://github.com/chris-yyau/busdriver/commit/bca956cb9fa0fb59421ec8a2ffec0f3e76a554a3))
+
+## [1.109.7](https://github.com/chris-yyau/busdriver/compare/v1.109.6...v1.109.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pi-cert:** close [#692](https://github.com/chris-yyau/busdriver/issues/692) gaps 2/3 with per-anchor uniqueness checks ([#696](https://github.com/chris-yyau/busdriver/issues/696)) ([a3fbb99](https://github.com/chris-yyau/busdriver/commit/a3fbb995ada684e6de2b8c66a7129538e2ec17ae))
+
+## [1.109.6](https://github.com/chris-yyau/busdriver/compare/v1.109.5...v1.109.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **design-gate:** let a docs-only commit past the design review ([#685](https://github.com/chris-yyau/busdriver/issues/685)) ([#697](https://github.com/chris-yyau/busdriver/issues/697)) ([1e1069f](https://github.com/chris-yyau/busdriver/commit/1e1069f222f52fcf96f4c24b3537c760cad540dd))
+
+## [1.109.5](https://github.com/chris-yyau/busdriver/compare/v1.109.4...v1.109.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* **gate:** name the silent skip-lease refusals in the block message ([#681](https://github.com/chris-yyau/busdriver/issues/681)) ([#699](https://github.com/chris-yyau/busdriver/issues/699)) ([3ea037f](https://github.com/chris-yyau/busdriver/commit/3ea037f54214d57d97716089e64202fdb345960a))
+
 ## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
 
 

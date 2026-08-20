@@ -14,7 +14,8 @@
  *   - Bash (routine): quote current instruction (once per session)
  *
  * Compatible with run-with-flags.js via module.exports.run().
- * Cross-platform (Windows, macOS, Linux).
+ * POSIX-only since #616: both registrations launch via `/usr/bin/env -i ... bash
+ * sanitized-node.sh`, which does not start on native Windows.
  *
  * Full package with config support: pip install gateguard-ai
  * Repo: https://github.com/zunoworks/gateguard
@@ -32,8 +33,30 @@ const {
 } = require('../lib/shell-substitution');
 
 // Session state — scoped per session to avoid cross-session races.
-const STATE_DIR = process.env.GATEGUARD_STATE_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.gateguard');
-let activeStateFile = null;
+//
+// #616: the state root is the operator's passwd-derived home, resolved at USE time by
+// gateguard-consent.js — never a module-level constant, and never from the environment.
+// The former STATE_DIR const read a GateGuard-specific state-dir override plus HOME and
+// USERPROFILE, all three of which were off-switches: pointing any of them at an unwritable
+// path made the directory create fail and every call land on allowWithStateWarning(), i.e.
+// a pass-through allow. The override names are deliberately NOT spelled here — V16 greps
+// this file for them, so naming one in a comment would defeat its own guard.
+const {
+  gateguardRoot,
+  ensureDirNoFollow,
+  isEnabled: consentIsEnabled,
+} = require('../lib/gateguard-consent');
+
+function stateDir() {
+  return gateguardRoot();
+}
+
+// `undefined` = not yet computed for this run; `null` = computed, no usable session key.
+// Two distinct states, which is why this is not a single falsy sentinel: with `null` as
+// the initial value the memo would read as "computed, no key" on first load and strand any
+// caller that requires this module without going through run() — exactly what the
+// in-process test lane does.
+let activeStateFile;
 
 // State expires after 30 minutes of inactivity
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
@@ -43,9 +66,9 @@ const READ_HEARTBEAT_MS = 60 * 1000;
 const MAX_CHECKED_ENTRIES = 500;
 const MAX_SESSION_KEYS = 50;
 const ROUTINE_BASH_SESSION_KEY = '__bash_session__';
-const EDIT_WRITE_HOOK_ID = 'pre:edit-write:gateguard-fact-force';
-const BASH_HOOK_ID = 'pre:bash:gateguard-fact-force';
-const ECC_DISABLE_VALUES = new Set(['0', 'false', 'off', 'disabled', 'disable']);
+// #616: EDIT_WRITE_HOOK_ID / BASH_HOOK_ID were only ever read by withRecoveryHint()'s
+// disable recipe, and ECC_DISABLE_VALUES only by isGateGuardDisabled(). Both consumers
+// are gone, so the constants go with them.
 
 // SQL-keyword + dd patterns stay as a single regex — they are stable
 // phrases without shell-flag ordering concerns. Quoted strings are
@@ -426,16 +449,43 @@ function isDestructiveBash(command) {
 
 // --- State management (per-session, atomic writes, bounded) ---
 
-function normalizeEnvValue(value) {
-  return String(value || '').trim().toLowerCase();
+// #616: isGateGuardDisabled() is gone. Consent is now POSITIVE and out-of-tree — the
+// absent-marker default must read as OFF at the call site, and the environment is not a
+// consent channel. This returns the STRUCTURED result from gateguard-consent.js
+// unchanged; it is deliberately not a boolean wrapper over `.enabled`, because run()
+// must be able to distinguish 'absent' (silent, ordinary) from 'error' (a fault that
+// gets one stderr line).
+function isGateGuardEnabled(cwd) {
+  return consentIsEnabled(cwd);
 }
 
-function isGateGuardDisabled() {
-  if (normalizeEnvValue(process.env.GATEGUARD_DISABLED) === '1') {
-    return true;
-  }
-
-  return ECC_DISABLE_VALUES.has(normalizeEnvValue(process.env.ECC_GATEGUARD));
+// The `cause` strings are built from raw fs/exec error messages, which embed the marker
+// path and can be multi-line (a git spawn failure). The diagnostic that carries them
+// promises the opposite — one line, and no marker path — so this enforces it rather than
+// asserting it beside a statement that violated it.
+//
+// Not merely cosmetic: the marker path is the revocation recipe. It reaches only the
+// transcript here, not the model (GateGuard exits 0 on this branch, so the text is not a
+// permissionDecisionReason), which is why this is a tightening and not a fix for a live
+// leak — but 5(g)'s rule is that the path is never printed, and "the audience happens to
+// be safe today" is not the reason to keep a promise.
+const CAUSE_MAX = 120;
+function sanitizeCause(cause) {
+  const oneLine = String(cause || 'unknown').replace(/\s+/g, ' ').trim();
+  // The path pattern must NOT be built from \S: a passwd home containing a space
+  // (`/Users/Alice Smith/.gateguard/...`) would slip straight through and print the marker
+  // root, which is the one thing this function promises not to do. Match from the root
+  // marker directory to the end of the token instead, whitespace included, and scrub the
+  // resolved root literally as well so no spelling of it survives.
+  const rootLiteral = (() => {
+    try { return gateguardRoot(); } catch { return null; }
+  })();
+  let scrubbed = oneLine;
+  if (rootLiteral) scrubbed = scrubbed.split(rootLiteral).join('<marker-root>');
+  scrubbed = scrubbed
+    .replace(/\/[^\0]*?\.gateguard(?:\/[^\s]*)?/g, '<marker-root>')
+    .replace(/\b[0-9a-f]{64}\b/g, '<marker>');
+  return scrubbed.length > CAUSE_MAX ? `${scrubbed.slice(0, CAUSE_MAX)}…` : scrubbed;
 }
 
 function sanitizeSessionKey(value) {
@@ -444,11 +494,12 @@ function sanitizeSessionKey(value) {
     return '';
   }
 
-  const sanitized = raw.replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (sanitized && sanitized.length <= 64) {
-    return sanitized;
-  }
-
+  // #616: ALWAYS hash. The old `replace(/[^a-zA-Z0-9_-]/g, '_')` for values <= 64 chars is
+  // non-injective — 'a/b' and 'a?b' both become 'a_b', so two sessions could share a state
+  // file. The >64-char branch already hashed; this takes that branch unconditionally.
+  //
+  // It does NOT make the map injective in general: String()-coercion and .trim() above mean
+  // 'a' and ' a ' still collide. That is deliberate normalisation of a transport artefact.
   return hashSessionKey('sid', raw);
 }
 
@@ -456,8 +507,17 @@ function hashSessionKey(prefix, value) {
   return `${prefix}-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 24)}`;
 }
 
+// #616: PAYLOAD-ONLY. Under `env -i` + `cd /` the old five-tier chain collapsed — the env
+// tiers are wiped and process.cwd() is literally `/`, so every session without an id would
+// have shared one machine-wide state file. The env tiers and the cwd fingerprint are gone.
+//
+// Returns '' when nothing usable is present; the caller allows without touching state.
 function resolveSessionKey(data) {
-  const directCandidates = [data && data.session_id, data && data.sessionId, data && data.session && data.session.id, process.env.CLAUDE_SESSION_ID, process.env.ECC_SESSION_ID];
+  const directCandidates = [
+    data && data.session_id,
+    data && data.sessionId,
+    data && data.session && data.session.id,
+  ];
 
   for (const candidate of directCandidates) {
     const sanitized = sanitizeSessionKey(candidate);
@@ -466,19 +526,36 @@ function resolveSessionKey(data) {
     }
   }
 
-  const transcriptPath = (data && (data.transcript_path || data.transcriptPath)) || process.env.CLAUDE_TRANSCRIPT_PATH;
+  // Absolute only, for the same reason data.cwd is: this tier hashes path.resolve(), so
+  // under the wrapper's `cd /` a RELATIVE transcript path resolves against `/` and two
+  // sessions sharing that relative path collide on one state file.
+  const transcriptPath = data && (data.transcript_path || data.transcriptPath);
   if (transcriptPath && String(transcriptPath).trim()) {
-    return hashSessionKey('tx', path.resolve(String(transcriptPath).trim()));
+    const resolved = String(transcriptPath).trim();
+    if (path.isAbsolute(resolved)) {
+      // The resolved path is HASHED, never used as a path component — path.resolve() here
+      // only normalises the value before digesting it, and the digest is what reaches any
+      // filename. Absoluteness is checked directly above.
+      // nosemgrep
+      return hashSessionKey('tx', path.resolve(resolved));
+    }
   }
 
-  const projectFingerprint = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  return hashSessionKey('proj', path.resolve(projectFingerprint));
+  return '';
 }
 
+// The memo is NOT optional: loadState() and saveState() call this with NO argument and
+// rely on the module-level activeStateFile that run() primes. Without it both resolve
+// null, an enrolled gate can neither load nor save, and every call lands on
+// allowWithStateWarning() — enabled, warning on stderr, allowing everything.
 function getStateFile(data) {
-  if (!activeStateFile) {
+  if (activeStateFile === undefined) {
     const sessionKey = resolveSessionKey(data);
-    activeStateFile = path.join(STATE_DIR, `state-${sessionKey}.json`);
+    // `sessionKey` is a hashSessionKey() digest — `sid-` or `tx-` plus 24 hex characters —
+    // never raw payload text: sanitizeSessionKey() hashes unconditionally (5(f)), which is
+    // exactly what makes a `../` or a separator in a session id unrepresentable here.
+    // nosemgrep
+    activeStateFile = sessionKey ? path.join(stateDir(), `state-${sessionKey}.json`) : null;
   }
   return activeStateFile;
 }
@@ -524,7 +601,13 @@ function saveState(state) {
   const stateFile = getStateFile();
   let tmpFile = null;
   try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
+    // #616: the same no-follow rule the resolver uses, not `{recursive:true}` — a
+    // recursive create runs BEFORE any refusal could fire and would follow a pre-existing
+    // `.gateguard` symlink into its target. Creating is not repairing: `mode` applies only
+    // to a directory this call creates, so the gate never chmods the operator's home.
+    ensureDirNoFollow(stateDir(), 0o700);
+    // Reached only on an enabled gate performing a state write — see pruneStaleFiles().
+    pruneStaleFiles(stateDir());
 
     let mergedChecked = Array.isArray(state.checked) ? state.checked : [];
     let mergedLastActive = typeof state.last_active === 'number' ? state.last_active : 0;
@@ -550,7 +633,11 @@ function saveState(state) {
 
     // Atomic write: temp file + rename prevents partial reads
     tmpFile = `${stateFile}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(finalState, null, 2), 'utf8');
+    // mode 0o600 explicitly: the state file records which paths this session has been
+    // gated on. 5(b) deliberately does NOT repair a pre-existing 0755 <root>, so without a
+    // mode here the file lands 0o666 & ~umask inside a possibly world-readable directory.
+    // The mode is a ceiling (umask applies), which is why the design says ceiling.
+    fs.writeFileSync(tmpFile, JSON.stringify(finalState, null, 2), { encoding: 'utf8', mode: 0o600 });
     try {
       fs.renameSync(tmpFile, stateFile);
     } catch (error) {
@@ -597,15 +684,29 @@ function isChecked(key) {
   return found;
 }
 
-// Prune stale session files older than 1 hour
-(function pruneStaleFiles() {
+// Prune stale session files older than 1 hour.
+//
+// #616: a CALLED FUNCTION, not a module-scope IIFE. As an IIFE this ran at require() time
+// — before run(), on EVERY gated call, enrolled or not — so an unenrolled operator paid a
+// readdir of the state root for nothing. Worse, simply deleting the STATE_DIR const while
+// leaving the IIFE would be a ReferenceError at module load, and run-with-flags.js:280-284
+// catches a failed require() and falls through to the legacy spawn path, which for a hook
+// exporting run() with no main() is a pass-through allow — a gate that cannot fire.
+//
+// Now called from saveState() after the directory is ensured, so it is reached only when
+// the gate is enabled AND a state write occurs: on a deny via markChecked(), and on the
+// >=60s heartbeat refresh in isChecked(). The unenrolled path performs no directory read.
+function pruneStaleFiles(dir) {
   try {
-    const files = fs.readdirSync(STATE_DIR);
+    const files = fs.readdirSync(dir);
     const now = Date.now();
     for (const f of files) {
       const isStateFile = f.startsWith('state-') && (f.endsWith('.json') || f.includes('.json.tmp.'));
       if (!isStateFile) continue;
-      const fp = path.join(STATE_DIR, f);
+      // `f` comes from readdirSync of `dir` itself, so it is a single entry NAME with no
+      // separator, and the `state-` prefix / `.json` suffix filter above narrows it further.
+      // nosemgrep
+      const fp = path.join(dir, f);
       try {
         const stat = fs.statSync(fp);
         if (now - stat.mtimeMs > SESSION_TIMEOUT_MS * 2) {
@@ -618,7 +719,7 @@ function isChecked(key) {
   } catch (_) {
     /* ignore */
   }
-})();
+}
 
 // --- Sanitize file path against injection ---
 
@@ -755,14 +856,17 @@ function routineBashMsg() {
   ].join('\n');
 }
 
-function withRecoveryHint(message, hookIds = [EDIT_WRITE_HOOK_ID]) {
-  const disableTargets = hookIds.map(hookId => `\`${hookId}\``).join(' or ');
-  return [
-    message,
-    '',
-    `Recovery: if GateGuard is blocking setup or repair work, run this session with \`ECC_GATEGUARD=off\` or add ${disableTargets} to \`ECC_DISABLED_HOOKS\`.`
-  ].join('\n');
-}
+// #616 — withRecoveryHint() is DELETED (2026-08-13 ultimate-council, unanimous).
+// It conflated two instructions to two parties: a COMPLIANCE hint telling the constrained
+// party how to SATISFY the gate, and a REVOCATION hint telling it how to TURN THE GATE OFF.
+// Only the second is the defect, and every message builder above already ends "Present the
+// facts, then retry the same operation." — which is what makes the compliance half survive
+// the deletion.
+//
+// DO NOT replace it with the marker path or an `rm` recipe. That is strictly worse: the env
+// hint was session advice the model could not apply, whereas a marker path is a persistent
+// out-of-band switch. stderr was rejected too — its human-only property is path-conditional
+// and a solo operator never reads that stream.
 
 // #611 — there was an isSubagentInvocation() early-return here that allowed any
 // Edit/Write/MultiEdit carrying agent_id / parent_tool_use_id, on the unverified
@@ -775,15 +879,14 @@ function withRecoveryHint(message, hookIds = [EDIT_WRITE_HOOK_ID]) {
 
 // --- Deny helper ---
 
-function denyResult(reason, options = {}) {
-  const includeRecoveryHint = options.includeRecoveryHint !== false;
-  const hookIds = Array.isArray(options.hookIds) && options.hookIds.length > 0 ? options.hookIds : [EDIT_WRITE_HOOK_ID];
+// #616: no options object. Both former options existed only to steer withRecoveryHint().
+function denyResult(reason) {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: includeRecoveryHint ? withRecoveryHint(reason, hookIds) : reason
+        permissionDecisionReason: reason
       }
     }),
     exitCode: 0
@@ -792,14 +895,18 @@ function denyResult(reason, options = {}) {
 
 function allowWithStateWarning() {
   return {
-    stderr: '[Fact-Forcing Gate] GateGuard state could not be persisted; allowing this operation to avoid a permanent retry loop. Check GATEGUARD_STATE_DIR or filesystem permissions.',
+    stderr: '[Fact-Forcing Gate] GateGuard state could not be persisted; allowing this operation to avoid a permanent retry loop. Check filesystem permissions on the GateGuard state directory under your home.',
     exitCode: 0
   };
 }
 
 // --- Core logic (exported for run-with-flags.js) ---
 
-function run(rawInput) {
+// `context` is accepted and ignored: run-with-flags.js:300-306 already passes a second
+// argument. Declaring it with a default matches the caller and keeps one-argument callers
+// working. Nothing consults context.truncated — there is no truncation rule (#612 residual;
+// see the header and V19).
+function run(rawInput, context = {}) { // eslint-disable-line no-unused-vars
   let data;
   try {
     data = typeof rawInput === 'string' ? JSON.parse(rawInput) : rawInput;
@@ -807,12 +914,40 @@ function run(rawInput) {
     return rawInput; // allow on parse error
   }
 
-  if (isGateGuardDisabled()) {
+  // #616 ORDER IS LOAD-BEARING — do not reorder these four steps.
+  //
+  // (1) The reset comes FIRST, so neither guard below can read a memo left by a previous
+  //     require-scope call. That is reachable in the in-process test lane, where the module
+  //     is loaded once and run() called repeatedly; with the reset after the guards, the
+  //     second guard tests a stale path and lands on allowWithStateWarning().
+  activeStateFile = undefined;
+
+  // (2) Consent, as the STRUCTURED result — never a bare boolean over `.enabled`. A boolean
+  //     wrapper would satisfy the shape while silently dropping the write below, which V4
+  //     asserts. The line names no env var, no marker path and no helper command (5(g), V9):
+  //     it is a stderr diagnostic, never a permissionDecisionReason.
+  const consent = isGateGuardEnabled(data && data.cwd);
+  if (consent.status === 'error') {
+    process.stderr.write(
+      `[Fact-Forcing Gate] GateGuard consent could not be resolved (${sanitizeCause(consent.cause)}); treating this repository as not enrolled.\n`
+    );
+  }
+
+  // (3) Not enabled => allow, WITHOUT touching the state directory. The explicit return is
+  //     the point: without it the payload reaches the Edit/Write/MultiEdit/Bash dispatch,
+  //     which calls isChecked() -> loadState() -> getStateFile() argument-less, resolving
+  //     null, reaching saveState()'s unguarded tmpFile construction, throwing into its
+  //     catch, and landing every call on allowWithStateWarning() — an enabled-looking gate
+  //     that warns and allows.
+  if (!consent.enabled) {
     return rawInput;
   }
 
-  activeStateFile = null;
-  getStateFile(data);
+  // (4) No usable session key => allow, also without touching state. Same defect reached by
+  //     a different door: the argument-less callers would take the identical null route.
+  if (!getStateFile(data)) {
+    return rawInput;
+  }
 
   const rawToolName = data.tool_name || '';
   const toolInput = data.tool_input || {};
@@ -872,7 +1007,7 @@ function run(rawInput) {
         if (!markChecked(key)) {
           return allowWithStateWarning();
         }
-        return denyResult(destructiveBashMsg(), { includeRecoveryHint: false });
+        return denyResult(destructiveBashMsg());
       }
       return rawInput; // allow retry after facts presented
     }
@@ -881,7 +1016,7 @@ function run(rawInput) {
       if (!markChecked(ROUTINE_BASH_SESSION_KEY)) {
         return allowWithStateWarning();
       }
-      return denyResult(routineBashMsg(), { hookIds: [BASH_HOOK_ID] });
+      return denyResult(routineBashMsg());
     }
 
     return rawInput; // allow

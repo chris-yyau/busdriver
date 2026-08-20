@@ -1162,6 +1162,125 @@ fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 done
 
+# ── #672: the ambiguous fail-safe must say WHICH evidence path failed ──
+# The reported occurrences (PR #670, and chrisyau.me #272 below) were real
+# successful merges whose "Squashed and merged" confirmation gh prints only to a
+# TTY: stdout carried nothing but the --delete-branch local fast-forward
+# housekeeping. #664/#709 made those consume via the API. What stayed broken is
+# the audit trail: every ambiguous release logged one string, so "GitHub says it
+# did not merge" (nothing to do) and "nobody could answer, so a possibly-spent
+# token is still armed on disk" (delete it by hand) were indistinguishable.
+#
+# Verbatim stdout from the second occurrence in the issue.
+FF_ONLY_TEXT=$(cat <<'FFEOF'
+From https://github.com/Dive-And-Dev/chrisyau.me
+ * branch            main       -> FETCH_HEAD
+   60ddcb2..53968e7  main       -> origin/main
+Updating 60ddcb2..53968e7
+Fast-forward
+ .github/lighthouse.baseline.json | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+FFEOF
+)
+FF_ONLY_INPUT=$(printf '%s' "$FF_ONLY_TEXT" | python3 -c "
+import json, sys
+print(json.dumps({
+    'tool_name': 'Bash',
+    'tool_input': {'command': 'gh pr merge 42 --squash --delete-branch --match-head-commit ed5be327ffe2fc4c49b570a9835b853c03ae73b7'},
+    'tool_output': {'output': sys.stdin.read(), 'exit_code': 0},
+}))")
+
+# B24. The exact shape from the issue, merge confirmed by the API → consumed.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+printf '%s' "$FF_ONLY_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  #672 fast-forward-only output + API MERGED → skip consumed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 fast-forward-only output left skip armed: skip exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B25-B27. Same shape, no confirmation available → skip preserved (the fail-safe
+# is unchanged), but the reason must name the evidence path that failed.
+for _case in \
+    ":github-api-unreachable-merge-state-unknown" \
+    "OPEN:github-api-says-not-merged" \
+    "WEIRD:github-api-answer-unrecognized"; do
+_state="${_case%%:*}"
+_want="${_case#*:}"
+arm_skip_and_claim 42
+GH_STUB_PR_STATE="$_state"
+export GH_STUB_PR_STATE
+printf '%s' "$FF_ONLY_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'skip-pr-grind-released-ambiguous' \
+    && printf '%s' "$LAST_LOG" | grep -q "\"reason\":\"$_want\""; then
+    printf "  PASS  #672 ambiguous release names its cause: %s\n" "$_want"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 expected reason %s, got: %s\n" "$_want" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+done
+
+# B28. No explicit PR on the command → the query never runs, and the reason must
+#      say so rather than blame the output patterns.
+arm_skip_and_claim unknown
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+NO_PR_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge --squash --delete-branch"},"tool_output":{"output":"","exit_code":0}}'
+printf '%s' "$NO_PR_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-not-explicitly-known'; then
+    printf "  PASS  #672 unqueryable claim names the missing precondition\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 unqueryable claim: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B29. Both sides name a concrete PR but they DIFFER, with no evidence path
+#      reached (no explicit -R/--repo override, PR mismatch caught before the
+#      query runs) → must be distinguished from B28's "neither side known"
+#      case, not folded into the same reason string (#672 follow-up, Codex +
+#      Cursor Bugbot review on PR #717).
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+MISMATCH_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash --delete-branch"},"tool_output":{"output":"random unmatched text","exit_code":0}}'
+printf '%s' "$MISMATCH_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-mismatch-claimed-42-parsed-99'; then
+    printf "  PASS  #672 claimed-vs-parsed PR mismatch names both PRs, not a missing-PR reason\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 mismatch reason: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
 # ═══════════════════════════════════════════════════════════════════════
 # POST-PR-CREATED HOOK TESTS
 # ═══════════════════════════════════════════════════════════════════════

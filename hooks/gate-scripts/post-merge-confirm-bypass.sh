@@ -40,7 +40,32 @@
 #                                           keep their old meaning.
 #   skip-pr-grind-released-ambiguous      — tool_output matched neither success
 #                                           nor failure patterns AND the GitHub
-#                                           API did not answer MERGED; fail-safe
+#                                           API did not answer MERGED; fail-safe.
+#                                           reason names WHICH evidence path
+#                                           failed (#672), because "preserved
+#                                           because GitHub says it is still
+#                                           open" and "preserved because nobody
+#                                           could answer, so this token may be
+#                                           spent and is still armed" need
+#                                           different operator responses:
+#                                           github-api-says-not-merged,
+#                                           github-api-unreachable-merge-state-
+#                                           unknown, github-api-answer-
+#                                           unrecognized, github-api-not-queried-
+#                                           pr-not-explicitly-known (neither side
+#                                           names a concrete PR), or
+#                                           github-api-not-queried-pr-mismatch-
+#                                           claimed-<N>-parsed-<M> (both sides
+#                                           name a concrete PR but they differ —
+#                                           distinct from the "not explicitly
+#                                           known" case so the audit trail never
+#                                           tells the operator no PR was known
+#                                           when two conflicting ones were).
+#                                           The pre-#672 blanket reason
+#                                           tool-output-matched-no-known-pattern
+#                                           is retired; historical log entries
+#                                           keep their old (undifferentiated)
+#                                           meaning.
 #   skip-pr-grind-released-tampered       — skip file disappeared, mtime
 #                                           changed, or was <30s old at
 #                                           confirmation time
@@ -394,6 +419,14 @@ else
     PARSE_REPO_OVERRIDE=no
 fi
 _SUCCESS_SOURCE=""
+# Why the ambiguous fail-safe fired, in a FIXED vocabulary (#672). Before this,
+# every ambiguous release logged "tool-output-matched-no-known-pattern", which
+# since #664/#709 is both wrong (the API *is* consulted) and undiagnosable: it
+# covered "GitHub says the merge did not happen" (correct preserve, nothing to
+# do) and "nobody could answer, so a possibly-spent token is still armed on
+# disk" (operator must check by hand) with the same string. Fixed strings only —
+# never gh's own text — so the one audit trail cannot be injected or leaked into.
+_AMBIGUOUS_REASON="merge-state-unclassified"
 
 # ── Authoritative merge-state confirmation (issue #664) ────────────────
 # Neither of gh's local signals proves what the remote did:
@@ -471,10 +504,35 @@ case "$PARSE_STATUS" in
         else
             _PR_STATE=$(cd "$REPO_DIR" && gh pr view "$PARSE_PR" --json state -q .state 2>/dev/null) || _PR_STATE=""
         fi
-        if [ "$_PR_STATE" = "MERGED" ]; then
-            PARSE_STATUS="success"
-            _SUCCESS_SOURCE="github-api-state-merged"
-        fi
+        case "$_PR_STATE" in
+            MERGED)
+                PARSE_STATUS="success"
+                _SUCCESS_SOURCE="github-api-state-merged"
+                ;;
+            OPEN|CLOSED)
+                _AMBIGUOUS_REASON="github-api-says-not-merged"
+                ;;
+            "")
+                # Unreachable, unauthenticated, or timed out. THIS is the #672
+                # hazard: the merge may well have succeeded, so the preserved
+                # token may already be spent and stays armed for the rest of
+                # its window. Preserving is still the fail-safe direction; the
+                # operator just has to be able to tell this case from the one
+                # above and delete the file by hand.
+                _AMBIGUOUS_REASON="github-api-unreachable-merge-state-unknown"
+                ;;
+            *)
+                _AMBIGUOUS_REASON="github-api-answer-unrecognized"
+                ;;
+        esac
+        elif [ -n "$PARSE_PR" ] && [ -n "$CLAIMED_MERGE_PR" ] \
+            && [ "$CLAIMED_MERGE_PR" != "unknown" ]; then
+            # Both sides name a concrete PR but they differ — a cross-PR
+            # mismatch, not a missing PR. Distinct reason so the operator is
+            # never told "no PR was known" when two conflicting ones were.
+            _AMBIGUOUS_REASON="github-api-not-queried-pr-mismatch-claimed-${CLAIMED_MERGE_PR}-parsed-${PARSE_PR}"
+        else
+            _AMBIGUOUS_REASON="github-api-not-queried-pr-not-explicitly-known"
         fi
         ;;
 esac
@@ -560,7 +618,7 @@ case "$PARSE_STATUS" in
         # plain failure path so the bypass log surfaces output-parsing gaps
         # for future tuning.
         release_claim_preserving_skip "skip-pr-grind-released-ambiguous" \
-            "tool-output-matched-no-known-pattern"
+            "$_AMBIGUOUS_REASON"
         ;;
 esac
 

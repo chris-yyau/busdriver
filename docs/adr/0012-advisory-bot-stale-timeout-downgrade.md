@@ -31,9 +31,10 @@ a downgrade candidate.
 
 pr-grind's clean-marker (Invariant 2, `skills/pr-grind/SKILL.md`) refuses to
 write the `clean` (merge-ready) marker while ANY registered advisory reviewer bot
-(`cubic-dev-ai`, `coderabbitai`, `greptile-apps`, plus Codex tracked separately
-— `cursor`/Bugbot and `devin-ai-integration` were dropped from the registry by
-ADR 0035; `codescene-delta-analysis` is ledger-only, enumerated for content but
+(`cursor`, `cubic-dev-ai`, `coderabbitai`, `greptile-apps`, plus Codex tracked separately
+— `devin-ai-integration` was dropped from the registry by ADR 0035, and
+`cursor`/Bugbot was dropped by it and re-added by ADR 0041;
+`codescene-delta-analysis` is ledger-only, enumerated for content but
 with no `/reviews` entries so it never appears in this stale-gating set) is
 `stale` in the ack ledger. `stale` means the bot's last review targets a
 non-HEAD SHA.
@@ -100,6 +101,46 @@ distinct event `advisory_stale_timeout_downgrade`, carrying at least: `event`,
 `unresolved_bot_findings_on_head`, `unresolved_bot_threads`,
 `required_checks_state`, `litmus_state`, `wait_rounds`, `policy_version`,
 `operator`, `timestamp`.
+
+**Amendment (2026-08-17, issue #682) — `head_sha` is a join key, not forensics.**
+Two fields in that event are load-bearing at COMPLETION, not merely recorded:
+`timestamp` (the re-engagement reference, already anchored to GitHub's clock by
+\#302) and `head_sha`. `advisory-downgrade-revalidate.sh` will not suppress a bot
+whose downgrade event it cannot match by `(bot, head_sha)` — so an unmatchable
+event is a refused release.
+
+That made the format of `head_sha` a contract, and it was never specified. The
+producer documented it as "forensic context for the log" and wrote whatever the
+caller passed; the consumer compared it for strict equality against COMPLETION's
+`git rev-parse HEAD | cut -c1-8`. A dispatcher passing the full 40-char OID — the
+natural reading of SKILL.md's unannotated `HEAD_SHA=<sha>`, since `REVIEWED_HEAD`
+and `--match-head-commit` are both full-length on the same path — wrote an event
+that could never join. The release then fired correctly and was silently refused
+at merge, and because the whole path fails closed the refusal presented as
+correct strictness rather than a defect. Hit live on PR #680.
+
+The join now compares the two values over the **shorter of the two lengths, with an
+8-char floor**, so either form works and events already written remain matchable;
+the log keeps whatever the caller passed. Deliberately not a blanket truncation to
+8 chars: comparing over `min(len)` leaves two *full* shas compared over all 40
+characters, so tolerating the short form costs nothing when nobody used it, and
+only the genuinely mixed-form pair degrades to a prefix. The floor makes an under-8
+value join nothing at all rather than assert identity on 3 characters.
+
+That strengthening is worth nothing unless a real caller supplies the full sha, and
+COMPLETION derived its `HEAD_SHA` as `git rev-parse HEAD | cut -c1-8` — so every
+production comparison would have been capped at 8 chars regardless. COMPLETION now
+passes `HEAD_FULL_SHA` to the revalidator and SKILL.md step 4 directs the exhaustion
+path to log the full sha too, making full-on-both-sides the normal case and the
+40-char exactness real rather than theoretical. The short form remains accepted for
+compatibility (that is the defect being fixed), and a short-form side genuinely
+cannot distinguish two commits sharing an 8-char prefix — a ~2^32 collision scoped
+to one bot in one PR's log, and the pre-existing property of `cut -c1-8`. The
+difference is that this is now the fallback path rather than the only path.
+The revalidator also names, on stderr, which branch dropped each bot, and
+COMPLETION no longer discards that stderr — an empty result had been
+indistinguishable from "the bot re-engaged," which is the half of this defect that
+made it cost a live diagnosis instead of a glance.
 
 ## Alternatives
 

@@ -204,7 +204,7 @@ _read_user_config_value() {
 # The model id handed to `opencode run -m`. Configurable so the operator can
 # switch provider or model without editing dispatch code:
 #
-#   ~/.claude/busdriver.json  →  { "auditor": { "model": "zenmux/moonshotai/kimi-k3" } }
+#   ~/.claude/busdriver.json  →  { "auditor": { "model": "opencode-go-lb/deepseek-v4-flash" } }
 #
 # USER config ONLY, and no env override — both by the same rule the rest of this
 # file follows for external-transmission surfaces (#325 / ADR 0016): the value
@@ -257,10 +257,17 @@ default="$1"
 # the default rather than performing a wildcard read. Constructing a jq path
 # from a parameter would open a second injection surface inside the very child
 # that exists to escape one.
+# `shape` selects the validation grammar below. opencode-style lanes name a
+# provider AND a model (`provider/id`); agy's own ids are bare, with no provider
+# segment, so requiring a slash there would reject every valid value and
+# silently degrade to the default. Deliberately no example id in this comment:
+# an id may appear at its default constant and nowhere else (see
+# tests/test-auditor-model-config.sh), or the prose goes stale next to it.
 case "$2" in
-  auditor) jqf='.auditor.model // empty'; pykey='auditor' ;;
-  pi)      jqf='.pi.model // empty';      pykey='pi'      ;;
-  *)       printf '%s' "$default"; exit 0 ;;
+  auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
+  pi)       jqf='.pi.model | select(type=="string") // empty';       pykey='pi';       shape='slash' ;;
+  agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
+  *)        printf '%s' "$default"; exit 0 ;;
 esac
 cfg="$HOME/.claude/busdriver.json"
 m=""
@@ -295,9 +302,20 @@ fi
 # `#` silently dropped a valid user-selected reasoning/token variant. A bad
 # value degrades to the default with a loud note rather than killing an
 # AUXILIARY voice on a typo.
-if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$ ]]; then
+if [[ "$shape" == 'bare' ]]; then
+  # Same hazards, same guard, one less segment: leading `-` (option injection)
+  # and whitespace/control chars stay excluded by the character class. A bare id
+  # is the whole value, so no `/` and no `#variant` — those belong to the
+  # opencode reference grammar, not agy's.
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'
+  _bd_want='a bare model id with no provider/ prefix'
+else
+  _bd_re='^[A-Za-z0-9][A-Za-z0-9._:@-]*(/[A-Za-z0-9][A-Za-z0-9._:@-]*)+(#[A-Za-z0-9._-]+)?$'
+  _bd_want='provider/model'
+fi
+if [[ ! "$m" =~ $_bd_re ]]; then
   if [[ -n "$m" ]]; then
-    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using $default" >&2
+    echo "busdriver: ignoring invalid .${pykey}.model '$m' in ~/.claude/busdriver.json (expected ${_bd_want}) — using $default" >&2
   fi
   m="$default"
 fi
@@ -305,8 +323,19 @@ printf '%s' "$m"
 CHILD
 }
 
-BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
-
+# NO shipped default, deliberately. The auditor is an AUXILIARY advisory voice,
+# and a built-in model id is only ever consulted by an operator who has NOT
+# configured one — i.e. the one person guaranteed to hold no credential for
+# whichever provider we picked. That dispatch does not "work by default", it
+# fails at the provider, so the honest unconfigured outcome is no auditor at
+# all. Deleting the constant also ends the drift class for THIS key: there is no
+# longer an auditor model id in-tree to go stale. (Other ids remain and are
+# unaffected — the `.pi.model` default below, and the config example above.)
+#
+# Consequence to know: a MALFORMED `.auditor.model` now also yields empty, so a
+# typo skips the voice instead of degrading to a default. The loud stderr note
+# from the reader is unchanged, so the operator still learns why.
+#
 # Result comes back in a VARIABLE: an stdout hand-off would put a shadowable
 # `printf`/`echo` on the value's path, undoing the child (verified — an injected
 # BASH_FUNC_printf%% overwrote a correctly-read model on its way out). The body
@@ -314,8 +343,14 @@ BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
 # only command word left is the absolute `/usr/bin/env` inside the reader.
 _BD_AUDITOR_MODEL=""
 resolve_auditor_model() {
-  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
-  [[ -n "$_BD_AUDITOR_MODEL" ]] || _BD_AUDITOR_MODEL="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+  _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "")"
+  # Explicit success: the assignment is now the last statement, so without this
+  # the reader's exit status would become the function's, and a call under
+  # `set -e` would abort the whole lane. A failed read is not fatal here — it
+  # yields an empty model, and the dispatch-site guard turns that into a skipped
+  # advisory voice. (The old body ended with a `[[ -n ]] ||` fallback, which
+  # returned 0 incidentally; that prop went out with the default.)
+  return 0
 }
 
 # ── Operator home config validation for the opencode arms ────────────
@@ -773,6 +808,24 @@ _BD_PI_MODEL=""
 resolve_pi_model() {
   _BD_PI_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_PI_MODEL_DEFAULT" pi)"
   [[ -n "$_BD_PI_MODEL" ]] || _BD_PI_MODEL="$BUSDRIVER_PI_MODEL_DEFAULT"
+}
+
+# ── agy READ-lane model ─────────────────────────────────────────
+# Scoped to `--cli agy-read` ONLY. Plain `--cli agy` — the blueprint-review
+# reviewer_1 slot and every other reviewer dispatch — passes no `--model` and so
+# keeps agy's own configured model. That separation is the point: the read lane
+# wants a cheap fast model per dispatch, the reviewer slot must not silently get
+# downgraded to it.
+#
+# Same trust rules as `.pi.model` (USER config only, no env override, no project
+# config, password-DB-derived $HOME): the value names the third party this
+# repo's source is shipped to. `agy models` enumerates ids.
+BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
+
+_BD_AGY_READ_MODEL=""
+resolve_agy_read_model() {
+  _BD_AGY_READ_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
+  [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────
@@ -1935,6 +1988,12 @@ _agy_bytelen() {
 # letting it be overridden. Only the two assignments below ever populate it, and
 # only with a literal 1 or 0.
 _AGY_ARGV_PROMPT=""
+# Companion to the above, recording WHETHER the probe actually learned the
+# version (1) or fell back to the assume-modern default (0). Same
+# never-inherited discipline and the same reason: an inherited "1" would forge
+# "version confirmed" and re-enable the --model forwarding that
+# `_agy_model_flag_supported` below exists to refuse.
+_AGY_PROBE_CONCLUSIVE=""
 _agy_wants_argv_prompt() {
     case "$_AGY_ARGV_PROMPT" in
         1) return 0 ;;
@@ -1952,12 +2011,41 @@ _agy_wants_argv_prompt() {
     # (Even then it degrades safely: the mis-route yields no valid review and the
     # caller's droid fallback rescues it — same safe direction as a real timeout.)
     v=$(_portable_timeout 2 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
+    if [[ -z "$v" ]]; then _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; return 0; fi
+    _AGY_PROBE_CONCLUSIVE=1
     maj="${v%%.*}"; min="${v#*.}"
     if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
         _AGY_ARGV_PROMPT=1; return 0
     fi
     _AGY_ARGV_PROMPT=0; return 1
+}
+
+# True only when the probe PARSED a version and that version supports `--model`
+# (>=1.1). Runs the probe itself, so callers need not order the two.
+#
+# The distinction that matters is between the probe's two "argv" outcomes, which
+# `_agy_wants_argv_prompt` alone cannot tell apart (both return 0):
+#
+#   parsed >=1.1        → --model supported.
+#   parsed 1.0.x        → not supported (no --model flag at all).
+#   INCONCLUSIVE        → not supported *as far as we know*. Assume-modern is the
+#     (timeout /          right default for prompt DELIVERY — every current
+#      unparseable)       release is >=1.1, and guessing "old" would reintroduce
+#                         the /dev/stdin bug on a working install — but it is a
+#                         guess, and a guess is not evidence of flag support.
+#
+# Treating the guess as support is what PR #687 measured: a 1.0.x install whose
+# `agy --version` takes longer than the 2s probe budget is classified modern, so
+# `--model` is forwarded and the confirmed-1.0.x refusal is never reached. The
+# read lane is exempt from droid escalation (deliberately — ADR 0040), so the
+# rescue the assume-modern default originally leaned on is gone there, and the
+# operator gets agy's raw option/path error instead of an actionable one.
+# Refusing an inconclusive probe is the fail-CLOSED direction: it costs a false
+# refusal on a merely-slow modern install, which says exactly what happened,
+# rather than a confusing failure on a genuinely old one. Codex P2 on PR #687.
+_agy_model_flag_supported() {
+    _agy_wants_argv_prompt || return 1
+    [[ "$_AGY_PROBE_CONCLUSIVE" == 1 ]]
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
@@ -2033,6 +2121,11 @@ execute_review() {
     #   if it can't read headless — exactly today's behavior, no widened surface.
     # Align --print-timeout with our outer duration so agy's internal 5m default
     # doesn't abort before _portable_timeout does.
+    # `--add-dir "$PWD"` (#686): the reviewer must be scoped to the CWD — the
+    # tree under review — because unscoped agy resolves its own remembered
+    # workspace and can cite a DIFFERENT checkout with confident file:line
+    # refs and no error. Same flag dispatch.sh's agy arm passes; execute_review
+    # builds its own argv, so it must pass it itself.
     agy)     local _agy_perm=()
              if [[ "${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-0}" == "1" ]]; then
                _agy_perm=(--dangerously-skip-permissions)
@@ -2048,12 +2141,12 @@ execute_review() {
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
                _run_review_with_retries agy "$prompt" "$duration" none \
-                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
+                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
                _run_review_with_retries agy "$prompt" "$duration" pipe \
-                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
+                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this
@@ -2288,10 +2381,33 @@ execute_review() {
              # It is the TOOL path (_oc_trust's system half), not the arm's
              # narrower utility pin: on a Mac whose jq/python3 come only from
              # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
-             # configured model silently degrades to the default — i.e. the
-             # prompt goes to a provider they configured away from. These dirs
-             # are root-owned system install paths, not repo-writable.
+             # configured model reads as empty — which now skips the voice via the
+             # guard below instead of dispatching somewhere they configured away
+             # from. These dirs are root-owned system install paths, not
+             # repo-writable.
              PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
+             # No model → no auditor. There is no shipped default (see
+             # resolve_auditor_model), so an unconfigured or unparseable
+             # `.auditor.model` lands here. Skipping is correct for an ADVISORY
+             # voice and is the same shape as the `missing:*` / `unsupported:*`
+             # arms below: warn on stderr, return non-zero, never dispatch. An
+             # empty `-m` must never reach opencode — it would silently fall back
+             # to whatever model that CLI defaults to, which is precisely the
+             # unasked-for provider choice this deletion exists to prevent.
+             # rc 4 = SKIPPED, distinct from 1 (failed) and 3 (BUILTIN_FALLBACK).
+             # Callers must be able to tell "never ran, nothing was configured"
+             # from "ran and failed" — ADR 0027's ABSENT-vs-FAILED distinction for
+             # this witness. Collapsing it into 1 makes blueprint-review report the
+             # Mechanism Witness as FAILED for a config key the operator simply
+             # never set. Reported by Codex on this change.
+             # No cleanup needed on this path: $_oc_cwd is still the empty `local`
+             # init here — the sandbox is not staged until inside the subshell
+             # further down — so there is no temp dir to reclaim. Bailing before
+             # any allocation is the whole point of guarding this early.
+             if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
+               echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
+               return 4
+             fi
              # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
              # opencode loads these in EVERY environment — including this
              # sandbox — so they are a fourth config surface the three isolation

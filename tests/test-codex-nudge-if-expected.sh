@@ -5,7 +5,8 @@
 # revised, #320) that nudges a `none` (never-engaged) Codex with one `@codex
 # review` when EITHER a force-on opt-in file is present OR the repo is Codex-active
 # (active-bit positional arg, or self-detected via codex-active-repo.sh),
-# delegating the actual one-shot post to codex-retrigger.sh.
+# delegating the actual post — and its attempt budget / cooldown — to
+# codex-retrigger.sh.
 #
 # `gh` is stubbed on PATH (records `pr comment` argv/body; on `api graphql` returns
 # $GH_FIXTURE so the wrapper's self-detect path is deterministic). The main-repo
@@ -147,14 +148,17 @@ rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - "PR_GRIND_CODEX_RETRIGGE
   || fail "kill switch: rc=$rc posts=$(posts_in "$CALLLOG")"
 
 # ============================================================
-# 8. ONE-SHOT: active-bit=1 but marker already present → no second post.
+# 8. DEDUP: active-bit=1 but the attempt-1 marker is already present → no second
+#    post. Since #673 the delegate bounds posts by an attempt BUDGET paced by a
+#    cooldown rather than a hard one-shot; under default config (what this case
+#    runs) the cooldown holds it to one post, so the wrapper's contract is unchanged.
 # ============================================================
 read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
 : > "$ROOT/.claude/$MARKER_NAME"
 rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" 1 || rc=$?
 [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] \
-  && ok "one-shot: marker present → no second post (exit 0)" \
-  || fail "one-shot: rc=$rc posts=$(posts_in "$CALLLOG")"
+  && ok "dedup: attempt-1 marker present → no second post (exit 0)" \
+  || fail "dedup: rc=$rc posts=$(posts_in "$CALLLOG")"
 
 # ============================================================
 # 9. FAIL-SAFE: active-bit=1, gh post fails → exit 0, marker NOT written.

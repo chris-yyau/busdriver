@@ -1,3 +1,151 @@
+## [1.109.10](https://github.com/chris-yyau/busdriver/compare/v1.109.9...v1.109.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pre-merge:** confirm merges against the GitHub API, not CLI chatter ([#664](https://github.com/chris-yyau/busdriver/issues/664)) ([#709](https://github.com/chris-yyau/busdriver/issues/709)) ([9b58f6b](https://github.com/chris-yyau/busdriver/commit/9b58f6b106b60a2cd0cef33c77edd163961217f5)), closes [#98](https://github.com/chris-yyau/busdriver/issues/98)
+
+## [1.109.9](https://github.com/chris-yyau/busdriver/compare/v1.109.8...v1.109.9) (2026-08-19)
+
+
+### Bug Fixes
+
+* **gate:** ask the glob probe the shell variants and the operator splits ([#640](https://github.com/chris-yyau/busdriver/issues/640)) ([#707](https://github.com/chris-yyau/busdriver/issues/707)) ([2a5fa3c](https://github.com/chris-yyau/busdriver/commit/2a5fa3c4dbd05d474bb918a1b6f7ac5a8e3cfad4))
+
+## [1.109.8](https://github.com/chris-yyau/busdriver/compare/v1.109.7...v1.109.8) (2026-08-19)
+
+
+### Bug Fixes
+
+* **blueprint-review:** re-derive PASS from the arbiter verdict, never inherit it ([#656](https://github.com/chris-yyau/busdriver/issues/656)) ([#702](https://github.com/chris-yyau/busdriver/issues/702)) ([3fe9b56](https://github.com/chris-yyau/busdriver/commit/3fe9b56a1834c3824a79de2c451b50bdfaaba320)), closes [#449](https://github.com/chris-yyau/busdriver/issues/449)
+* **containment:** derive passwd HOME in a sterile child ([#660](https://github.com/chris-yyau/busdriver/issues/660)) ([#703](https://github.com/chris-yyau/busdriver/issues/703)) ([bca956c](https://github.com/chris-yyau/busdriver/commit/bca956cb9fa0fb59421ec8a2ffec0f3e76a554a3))
+
+## [1.109.7](https://github.com/chris-yyau/busdriver/compare/v1.109.6...v1.109.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pi-cert:** close [#692](https://github.com/chris-yyau/busdriver/issues/692) gaps 2/3 with per-anchor uniqueness checks ([#696](https://github.com/chris-yyau/busdriver/issues/696)) ([a3fbb99](https://github.com/chris-yyau/busdriver/commit/a3fbb995ada684e6de2b8c66a7129538e2ec17ae))
+
+## [1.109.6](https://github.com/chris-yyau/busdriver/compare/v1.109.5...v1.109.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **design-gate:** let a docs-only commit past the design review ([#685](https://github.com/chris-yyau/busdriver/issues/685)) ([#697](https://github.com/chris-yyau/busdriver/issues/697)) ([1e1069f](https://github.com/chris-yyau/busdriver/commit/1e1069f222f52fcf96f4c24b3537c760cad540dd))
+
+## [1.109.5](https://github.com/chris-yyau/busdriver/compare/v1.109.4...v1.109.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* **gate:** name the silent skip-lease refusals in the block message ([#681](https://github.com/chris-yyau/busdriver/issues/681)) ([#699](https://github.com/chris-yyau/busdriver/issues/699)) ([3ea037f](https://github.com/chris-yyau/busdriver/commit/3ea037f54214d57d97716089e64202fdb345960a))
+
+## [1.109.4](https://github.com/chris-yyau/busdriver/compare/v1.109.3...v1.109.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **pr-grind:** report the real commit SHA when a re-invoked fix-round has landed ([#698](https://github.com/chris-yyau/busdriver/issues/698)) ([15c7d31](https://github.com/chris-yyau/busdriver/commit/15c7d31b44372f5f82376dd4cac47fed749739fd)), closes [#668](https://github.com/chris-yyau/busdriver/issues/668)
+
+## [1.109.3](https://github.com/chris-yyau/busdriver/compare/v1.109.2...v1.109.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch:** scope every agy dispatch to the CWD via --add-dir ([#695](https://github.com/chris-yyau/busdriver/issues/695)) ([fb4c816](https://github.com/chris-yyau/busdriver/commit/fb4c816477d4472a2fbf4d1bf28fb9acbb8c5eb9)), closes [#686](https://github.com/chris-yyau/busdriver/issues/686)
+
+## [1.109.2](https://github.com/chris-yyau/busdriver/compare/v1.109.1...v1.109.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** read Codex's comment-form verdicts ([#690](https://github.com/chris-yyau/busdriver/issues/690)) ([#693](https://github.com/chris-yyau/busdriver/issues/693)) ([b6e3585](https://github.com/chris-yyau/busdriver/commit/b6e3585bc0ea960d6973cd3a526917f2dca2c1fb)), closes [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#687](https://github.com/chris-yyau/busdriver/issues/687) [#688](https://github.com/chris-yyau/busdriver/issues/688) [#694](https://github.com/chris-yyau/busdriver/issues/694) [#691](https://github.com/chris-yyau/busdriver/issues/691)
+
+## [1.109.1](https://github.com/chris-yyau/busdriver/compare/v1.109.0...v1.109.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** certify pi 0.84.2 and pin the certification ritual with tests ([#694](https://github.com/chris-yyau/busdriver/issues/694)) ([3338ea5](https://github.com/chris-yyau/busdriver/commit/3338ea514b5f9803c276eb3c74de3c46dba21537))
+
+# [1.109.0](https://github.com/chris-yyau/busdriver/compare/v1.108.0...v1.109.0) (2026-08-17)
+
+
+### Features
+
+* **pr-grind:** re-add cursor (Bugbot) to the ack registry (ADR 0041) ([#691](https://github.com/chris-yyau/busdriver/issues/691)) ([830d68e](https://github.com/chris-yyau/busdriver/commit/830d68eb9050542ca08a40b1121f664a3da208f2))
+
+# [1.108.0](https://github.com/chris-yyau/busdriver/compare/v1.107.4...v1.108.0) (2026-08-17)
+
+
+### Features
+
+* **dispatch-cli:** route repo reads to a new agy-read lane ([#687](https://github.com/chris-yyau/busdriver/issues/687)) ([c409d76](https://github.com/chris-yyau/busdriver/commit/c409d76714cb05c512cc57d8e668fb0c7ea5bc36)), closes [#689](https://github.com/chris-yyau/busdriver/issues/689)
+
+## [1.107.4](https://github.com/chris-yyau/busdriver/compare/v1.107.3...v1.107.4) (2026-08-17)
+
+
+### Bug Fixes
+
+* **pr-grind:** make the ADR 0012 head_sha join reachable across sha forms ([#682](https://github.com/chris-yyau/busdriver/issues/682)) ([#684](https://github.com/chris-yyau/busdriver/issues/684)) ([3dee6d0](https://github.com/chris-yyau/busdriver/commit/3dee6d05842b45228b5715c58f0957dc43e867c9)), closes [#302](https://github.com/chris-yyau/busdriver/issues/302)
+
+## [1.107.3](https://github.com/chris-yyau/busdriver/compare/v1.107.2...v1.107.3) (2026-08-15)
+
+
+### Bug Fixes
+
+* **pr-grind:** gate the worker Codex nudge on the staged index ([#678](https://github.com/chris-yyau/busdriver/issues/678)) ([#680](https://github.com/chris-yyau/busdriver/issues/680)) ([6167f9e](https://github.com/chris-yyau/busdriver/commit/6167f9e5885759ed452c8546c3602990e1f746f8)), closes [#673](https://github.com/chris-yyau/busdriver/issues/673)
+
+## [1.107.2](https://github.com/chris-yyau/busdriver/compare/v1.107.1...v1.107.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* **pr-grind:** make the Codex re-trigger bounded-N instead of one-shot ([#673](https://github.com/chris-yyau/busdriver/issues/673)) ([#676](https://github.com/chris-yyau/busdriver/issues/676)) ([3f7d1cf](https://github.com/chris-yyau/busdriver/commit/3f7d1cf64f69a89ad6e04ecd841d5d5603f5494a)), closes [#670](https://github.com/chris-yyau/busdriver/issues/670)
+
+## [1.107.1](https://github.com/chris-yyau/busdriver/compare/v1.107.0...v1.107.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **design-marker:** make listing truncation knowable, doc keys canonical ([#671](https://github.com/chris-yyau/busdriver/issues/671)) ([#674](https://github.com/chris-yyau/busdriver/issues/674)) ([89bbf71](https://github.com/chris-yyau/busdriver/commit/89bbf71f3e29b07cba05ecb9f4def3b93dead737)), closes [#670](https://github.com/chris-yyau/busdriver/issues/670) [#670](https://github.com/chris-yyau/busdriver/issues/670) [#670](https://github.com/chris-yyau/busdriver/issues/670)
+
+# [1.107.0](https://github.com/chris-yyau/busdriver/compare/v1.106.9...v1.107.0) (2026-08-14)
+
+
+### Features
+
+* **design-clear:** add --all-for-doc bulk release ([#665](https://github.com/chris-yyau/busdriver/issues/665)) ([#670](https://github.com/chris-yyau/busdriver/issues/670)) ([56cd952](https://github.com/chris-yyau/busdriver/commit/56cd9529eb35bb33e595bd069de02bfd28e90ba0)), closes [#405](https://github.com/chris-yyau/busdriver/issues/405) [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
+## [1.106.9](https://github.com/chris-yyau/busdriver/compare/v1.106.8...v1.106.9) (2026-08-14)
+
+
+### Bug Fixes
+
+* **dispatch:** ship no auditor model default; add zenmux capability skill ([#666](https://github.com/chris-yyau/busdriver/issues/666)) ([45bde9c](https://github.com/chris-yyau/busdriver/commit/45bde9c000a8ee818f66f00855d3f6b5fd2c2d71)), closes [#594](https://github.com/chris-yyau/busdriver/issues/594)
+
+## [1.106.8](https://github.com/chris-yyau/busdriver/compare/v1.106.7...v1.106.8) (2026-08-13)
+
+
+### Bug Fixes
+
+* **blueprint-review:** trajectory auto-stop must park, never approve ([#656](https://github.com/chris-yyau/busdriver/issues/656)) ([#663](https://github.com/chris-yyau/busdriver/issues/663)) ([6f3f71e](https://github.com/chris-yyau/busdriver/commit/6f3f71e261982ec1ec9958523c73d27fd4806bba)), closes [#355](https://github.com/chris-yyau/busdriver/issues/355) [#355](https://github.com/chris-yyau/busdriver/issues/355)
+
+## [1.106.7](https://github.com/chris-yyau/busdriver/compare/v1.106.6...v1.106.7) (2026-08-13)
+
+
+### Bug Fixes
+
+* **orchestrator:** stop mandating TDD ordering as a Phase 4 default ([#652](https://github.com/chris-yyau/busdriver/issues/652)) ([9ad8dd9](https://github.com/chris-yyau/busdriver/commit/9ad8dd913ba042326f2472a98aa6ed254da5a16c))
+
+## [1.106.6](https://github.com/chris-yyau/busdriver/compare/v1.106.5...v1.106.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **gate:** walk past an operand-taking wrapper to reach git/gh ([#641](https://github.com/chris-yyau/busdriver/issues/641)) ([#650](https://github.com/chris-yyau/busdriver/issues/650)) ([113811d](https://github.com/chris-yyau/busdriver/commit/113811db21ba3e3ee2ed57f5f707be642f8349f5)), closes [587/#593](https://github.com/chris-yyau/busdriver/issues/593) [#593](https://github.com/chris-yyau/busdriver/issues/593) [#593](https://github.com/chris-yyau/busdriver/issues/593) [#639](https://github.com/chris-yyau/busdriver/issues/639) [#654](https://github.com/chris-yyau/busdriver/issues/654)
+
 ## [1.106.5](https://github.com/chris-yyau/busdriver/compare/v1.106.4...v1.106.5) (2026-08-12)
 
 

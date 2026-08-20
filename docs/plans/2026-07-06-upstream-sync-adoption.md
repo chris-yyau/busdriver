@@ -1,6 +1,6 @@
 # Plan: Upstream Sync & Adoption — 2026-07-06
 
-**Status:** Blueprint-reviewed PASS 2026-07-06 (2 iterations, coverage DEGRADED 2/3 — grok slot ran as droid rescue both rounds; trajectory auto-stop) + ultra-council (Skeptic + Architect voices; Pragmatist/Critic/Researcher lenses fulfilled via the blueprint reviewers; **UltraOracle expert witness consulted 2026-07-07** — verdict "close but not yet zero-mistakes"; its 6 findings applied: executable effort-guard assertion, byte-identity check replacing residue grep, validator escape-hatch removed, object-store vendoring via `git show`, Tranche A pre-commit re-verification, hook-smoke scope honesty). Execution pending operator go.
+**Status:** Blueprint review PENDING — the original PASS (2026-07-06, 2 iterations, coverage DEGRADED 2/3 — grok slot ran as droid rescue both rounds; trajectory auto-stop) was invalidated by #656 and downgraded to PENDING (see the `marker-downgraded` note at the bottom of this file for why); re-review before relying on this document. Ultra-council (Skeptic + Architect voices; Pragmatist/Critic/Researcher lenses fulfilled via the blueprint reviewers; **UltraOracle expert witness consulted 2026-07-07** — verdict "close but not yet zero-mistakes"; its 6 findings applied: executable effort-guard assertion, byte-identity check replacing residue grep, validator escape-hatch removed, object-store vendoring via `git show`, Tranche A pre-commit re-verification, hook-smoke scope honesty) is unaffected by the downgrade. Execution pending operator go.
 **Scope:** Adopt superpowers v6 remainder; fix manifest integrity/attribution; sync verified ECC + small-upstream deltas; consent-gated vault additions.
 **Evidence base:** 6 audit agents + 4 adversarial verifiers + 2 operator corrections. Every action below is backed by a primary-source check (diff/grep/jq/ADR), not agent assertion. First-pass audit error rate was ~25% (8 of ~31 claims wrong); all actions from refuted claims have been removed or corrected.
 
@@ -124,5 +124,17 @@ Backlog (recorded, not built): GSD `STATE.md` living-position spine; GSD verify-
 7. Silent extensionless-file gaps in future syncs (Prerequisite section — the detector fix + dry-run fixture check, done before any tranche).
 8. Guards that cannot fire: pinned SHAs are full 40-char (short-pin equality never passes); effort-line guard runs pre-merge on the branch (post-merge `git diff main` is vacuous); hook smokes use `node --check`/`require.resolve` + wrapped run (bare `require()` of a hook CLI executes it).
 
-<!-- design-reviewed: PASS -->
+<!-- design-reviewed: PENDING -->
 <!-- design-review-coverage: DEGRADED 2/3 reviewer_3=runtime-droid-rescue -->
+<!-- marker-downgraded: 2026-08-14. The PASS this document carried was not a convergence,
+     and it failed TWO independent guards:
+     (1) the review early-stopped on `no_improvement_trajectory` with plan-blocking HIGH at
+         `[0,1]` — the count ROSE to one on the final iteration — and the loop resolved that
+         to `low_issues_only`, a PASS state (issue #656);
+     (2) coverage is DEGRADED 2/3, and per #355 a non-FULL run WITHHOLDS the PASS marker.
+         That path did not exist yet: it landed in `e95777e3` (2026-07-17 22:49) and this
+         PASS was committed in `c0bdaf7f` (2026-07-17 01:37), ~21h earlier. So (2) is
+         historical residue, not a live defect — checked against git log after an earlier
+         draft of this note wrongly claimed otherwise. Guard (1) is the reason this marker
+         is invalid.
+     Re-review before relying on this marker. -->

@@ -2,6 +2,8 @@
 
 Domain skills are loaded as context during execution. They are **additive** — a Go + React + PostgreSQL project loads all three simultaneously.
 
+**Testing entries and TDD ordering (ADR 0038):** a language's `Testing:` skill (`golang-testing`, `python-testing`, `rust-testing`, etc.) is reference material for writing tests — patterns, fixtures, coverage — regardless of when in the task those tests get written. Load it whenever the task touches tests, same as any other domain skill. Its RED-GREEN-REFACTOR walkthroughs describe how to do TDD *if* the task is TDD; they do not make ordering mandatory for an ordinary feature/bugfix task in that language. The Phase 4 "Always-on disciplines" policy is the single source of truth on ordering (advisory, not gate-enforced) — a domain Testing guide never overrides it.
+
 ### Go
 **Detection:** `*.go` files, `go.mod`, Go code context
 - Patterns: `busdriver:golang-patterns`

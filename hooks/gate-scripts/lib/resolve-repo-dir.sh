@@ -325,11 +325,26 @@ _gate_marker_state_dir() {
 # ADR-B · Physical absolute path = the token GROUP KEY. Non-zero if the parent
 # dir can't be resolved (deleted/unreadable/not-yet-created) → §2 best-effort miss.
 gate_marker_norm_path() {
-    local f="$1" dir
+    local f="$1" dir out
     [ -n "$f" ] || return 1
     dir="$(cd "$(dirname -- "$f")" 2>/dev/null && pwd -P)" || return 1
     [ -n "$dir" ] || return 1
-    printf '%s/%s\n' "$dir" "$(basename -- "$f")"
+    out="$dir/$(basename -- "$f")"
+    # #671 — COLLAPSE a leading `//` so the single-slash spelling is the one
+    # canonical key. POSIX leaves exactly-two leading slashes implementation-
+    # defined and this host's bash keeps them (`cd //tmp && pwd -P` -> `//private/
+    # tmp`) while python's os.path.realpath collapses them. The doc_path this
+    # prints is compared for STRING EQUALITY against the python-side legacy key
+    # (marker_ops _norm_legacy_doc_path), so a divergence splits one document
+    # into two keys and design-clear.sh's same-document screen stops seeing the
+    # other half. Collapsing on BOTH sides is the fix; making python preserve
+    # `//` instead was tried during the #670 grind and reverted (it only helps
+    # when both spellings are `//`, and breaks the case that works today).
+    # Three-or-more slashes already collapse in both, so only `//` needs this.
+    # It also fixes a pre-existing root-dir case: dirname of `/x.md` is `/`, and
+    # the join above produced `//x.md` where python realpath yields `/x.md`.
+    while [ "${out:0:2}" = "//" ]; do out="${out#/}"; done
+    printf '%s\n' "$out"
 }
 
 # Repo-relative path of <path> within its OWNING worktree — for the ADR-B
@@ -562,6 +577,95 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # command, so an operator (or agent) copying the hint would run something other
     # than what was intended.
     clear_sh="${clear_sh//\'/\'\\\'\'}"
+    # #665 — count tokens per validated doc BEFORE rendering, so the hint names a
+    # command that will actually run. Arming is per-EDIT, so a doc that went
+    # through a few review rounds holds many tokens; for those the plain
+    # `<doc-path>` selector REFUSES (">1 match"), and the un-counted render also
+    # repeated one identical hint line per token. Emitting a guaranteed-to-fail
+    # command N times at exactly the moment the backlog is largest is what pushed
+    # the operator toward an unaudited `rm` in the first place. Parallel arrays +
+    # linear scan, not an associative array: bash 3.2 has none, and the classifier
+    # caps records at 20 so the O(n²) is bounded and trivial.
+    # _doc_n counts only VALIDATED tokens (reason == "token"); _doc_mixed marks a
+    # doc that also has a non-token record. Counting every non-empty doc_path
+    # would fold in legacy-pending records — a doc with one token plus a legacy
+    # list-file marker would read as "2 tokens" and get hinted --all-for-doc,
+    # which design-clear.sh then refuses all-or-nothing. A hint that cannot
+    # succeed is the defect this whole change set out to remove, so a mixed doc
+    # keeps the per-record rendering it has today.
+    # Shared by the counting pass and the render loop: the docs that get rendered
+    # are exactly the docs appearing in the first _RCAP records, so ONE bound
+    # governs both. They must not drift — see the counting pass below.
+    local _RCAP=20
+    local -a _doc_key=() _doc_n=() _doc_mixed=() _doc_legacy=()
+    local _k _hit _idx _mixed _legacy_src
+    if [ -n "$clear_sh" ]; then
+        local _c_i=0 _c_f _c_sp="" _c_dp="" _c_reason=""
+        while IFS= read -r -d '' _c_f; do
+            _c_i=$((_c_i + 1))
+            case $(( _c_i % 4 )) in
+                2) _c_sp="$_c_f" ;;
+                3) _c_dp="$_c_f" ;;
+                0) _c_reason="$_c_f"
+                   # Scan the WHOLE stream, but bound the KEY ARRAY — not the
+                   # window (#671 finding 1). This pass used to stop after
+                   # _RCAP records for the same latency reason the render loop
+                   # does, which meant a doc's token count described the
+                   # rendered window rather than the doc: with >= _RCAP - 1
+                   # legacy records emitted ahead of it, a doc holding several
+                   # tokens looked single-token and got hinted the plain
+                   # `<doc>` selector — which design-clear.sh, scanning the
+                   # complete set, then refuses with ">1 match". That is the
+                   # doomed-hint class #665 set out to remove.
+                   #
+                   # A doc can only be RENDERED if it appears in the first
+                   # _RCAP records, and those hold at most _RCAP distinct
+                   # keys — so refusing to add a NEW key once the array is
+                   # full drops only docs that will never be rendered, while
+                   # every later record still counts toward a key already in
+                   # it. Cost stays bounded at O(records x _RCAP) string
+                   # comparisons with no subprocess: the expensive parts
+                   # (gate_marker_owner_note, git) live in the render loop and
+                   # are still capped there.
+                   if [ -n "$_c_dp" ]; then
+                       _k=0; _idx=-1
+                       while [ "$_k" -lt "${#_doc_key[@]}" ]; do
+                           if [ "${_doc_key[$_k]}" = "$_c_dp" ]; then _idx="$_k"; break; fi
+                           _k=$(( _k + 1 ))
+                       done
+                       if [ "$_idx" -lt 0 ]; then
+                           if [ "${#_doc_key[@]}" -ge "$_RCAP" ]; then
+                               _c_sp=""; _c_dp=""; continue    # never rendered
+                           fi
+                           _doc_key+=("$_c_dp"); _doc_n+=(0); _doc_mixed+=(0); _doc_legacy+=("")
+                           _idx=$(( ${#_doc_key[@]} - 1 ))
+                       fi
+                       if [ "$_c_reason" = "token" ]; then
+                           _doc_n[_idx]=$(( ${_doc_n[$_idx]} + 1 ))
+                       else
+                           # Remember WHICH file has to be edited: for a mixed
+                           # doc no design-clear selector works at all, so every
+                           # line for it must point at this path instead of a
+                           # command. First one wins; one actionable path beats
+                           # an exhaustive list.
+                           _doc_mixed[_idx]=1
+                           [ -n "${_doc_legacy[$_idx]}" ] || _doc_legacy[_idx]="$_c_sp"
+                       fi
+                   fi
+                   _c_sp=""; _c_dp="" ;;
+            esac
+        done <"$recs"
+    fi
+    # Bound the RENDERED output. The classifier's legacy budget is a BACKSTOP
+    # (marker_ops L=500), set that high because design-clear.sh's same-document
+    # screen wants every legacy record — but this renderer runs on the
+    # latency-sensitive PreToolUse gate path, does a linear key scan per record,
+    # and shells out to `gate_marker_owner_note` (git) per rendered doc. 500
+    # records of that would be a slow block message with nothing to act on. Cap
+    # what is RENDERED and count the rest: the block message only has to be actionable,
+    # not exhaustive, and design-clear.sh (interactive, no git-per-record) is
+    # where the complete listing lives.
+    local _rendered=0 _extra=0
     local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))
@@ -569,11 +673,75 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             2) _sp="$_field" ;;                      # source_path (token file)
             3) _dp="$_field" ;;                      # doc_path (validated abspath, or empty)
             0) _reason="$_field"
+               if [ "$_rendered" -ge "$_RCAP" ]; then
+                   # Count only — skip the key scan AND the per-doc git call.
+                   _extra=$(( _extra + 1 )); _sp=""; _dp=""; continue
+               fi
+               _rendered=$(( _rendered + 1 ))
                if [ -n "$_dp" ]; then
                    _note="$(gate_marker_owner_note "$_dp" "$self_root")"
-                   if [ -n "$clear_sh" ]; then
+                   if [ "$_reason" = "legacy-pending" ]; then
+                       # A legacy list-file marker holds several docs at once, so
+                       # naming IT via design-clear.sh's plain or --all-for-doc
+                       # selector always refuses — releasing it would be the
+                       # blanket wipe this whole tool exists to avoid (it drops
+                       # every OTHER doc the list file names, not just this one).
+                       # design-clear.sh's own listing already says so (cubic,
+                       # PR #670); mirror that here instead of advertising a
+                       # command that is guaranteed to fail.
+                       # Name the list file itself rather than pointing at
+                       # design-clear.sh: this branch sits ABOVE the
+                       # `[ -n "$clear_sh" ]` check, so referring to that helper
+                       # would send the operator to a missing script whenever it
+                       # cannot be located — the exact case the fallback below
+                       # exists to handle. The path is what they need either way.
+                       out="${out}  - ${_dp}${_note}  [${_reason}]  (not clearable by name — edit the legacy list file: ${_sp})\n"
+                   elif [ -n "$clear_sh" ]; then
                        _dp_q="${_dp//\'/\'\\\'\'}"   # shell-escape for the hint
-                       out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                       # Find this doc's token count, then mark it rendered with
+                       # -1 so the remaining records for the same doc are skipped
+                       # instead of repeating an identical line and hint.
+                       # _hit defaults to 1 so a doc the counting pass somehow
+                       # missed still gets the plain hint: the two passes read the
+                       # same file the same way and cannot disagree, but dropping
+                       # a pending doc from the block message would hide a review
+                       # requirement, which is the wrong way to fail.
+                       _k=0; _hit=1; _idx=-1; _mixed=0; _legacy_src=""
+                       while [ "$_k" -lt "${#_doc_key[@]}" ]; do
+                           if [ "${_doc_key[$_k]}" = "$_dp" ]; then
+                               _idx="$_k"; _hit="${_doc_n[$_k]}"; _mixed="${_doc_mixed[$_k]}"
+                               _legacy_src="${_doc_legacy[$_k]}"; break
+                           fi
+                           _k=$(( _k + 1 ))
+                       done
+                       # MIXED doc: a legacy entry names it AND it has tokens.
+                       # NO design-clear selector works — the plain `<doc>` form
+                       # matches more than one record and refuses, and
+                       # --all-for-doc refuses all-or-nothing on the non-token
+                       # record. Printing either is the doomed hint this renderer
+                       # exists to stop emitting, so name the one action that
+                       # unblocks them instead. Deduped to a single line per doc:
+                       # repeating it per token adds nothing once no command is
+                       # on offer. `_hit < 0` means already rendered.
+                       if [ "$_mixed" -eq 1 ] && [ "$_idx" -ge 0 ] && [ "$_hit" -ge 0 ]; then
+                           _doc_n[_idx]=-1
+                           out="${out}  - ${_dp}${_note}  (not clearable while a legacy list entry names it — edit ${_legacy_src:-the legacy list file} first)\n"
+                       elif [ "$_mixed" -eq 1 ] && [ "$_idx" -ge 0 ]; then
+                           :   # this doc's mixed-state line was already emitted
+                       else
+                           # Only a clean all-tokens doc is deduped and bulk-hinted.
+                           if [ "$_reason" != "token" ]; then
+                               _hit=1; _idx=-1
+                           fi
+                           [ "$_idx" -ge 0 ] && _doc_n[_idx]=-1
+                           if [ "$_hit" -lt 0 ]; then
+                               :   # already rendered under its first record
+                           elif [ "$_hit" -gt 1 ]; then
+                               out="${out}  - ${_dp}${_note}  (${_hit} tokens, one per edit — release all with an audit record each: bash '${clear_sh}' --all-for-doc '${_dp_q}')\n"
+                           else
+                               out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                           fi
+                       fi
                    else
                        _sp_q="${_sp//\'/\'\\\'\'}"
                        out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"
@@ -584,6 +752,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
                _sp=""; _dp="" ;;
         esac
     done <"$recs"
+    # Say so when the listing was cut, so a bounded message is never mistaken for
+    # a complete one. design-clear.sh (no git-per-record) shows the full set.
+    if [ "$_extra" -gt 0 ]; then
+        out="${out}  - … and ${_extra} more pending record(s) — run design-clear.sh with no args for the full listing\n"
+    fi
     [ -n "$out" ] || out="  - (design review pending)\n"
     printf '%s' "$out"
 }

@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (CodeRabbit, Cubic, Greptile, etc.)
+- AI reviewer acks (Cursor, CodeRabbit, Cubic, Greptile, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -71,7 +71,7 @@ loop exits clean — not before, and never skip it.
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | Cursor, CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -168,7 +168,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
+                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
                    PRIOR_CODEX_ACK="none"
                    # PRIOR_CODEX_ACK persists Codex's RESULT_CODEX_ACK across
                    # rounds (parallel to PRIOR_REVIEWER_ACKS), so the max-wait
@@ -315,6 +315,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         → BAIL judgment with reason `unrecognized RESULT_STATUS=<value>`.
   │
   │     Fix-round delegation:
+  │       # PRIOR_COMMIT_SHA (#668): the dispatcher's remembered LAST FIX-ROUND
+  │       # SHA — conversation state, so template-substitute the literal (shell
+  │       # vars do not survive Bash tool calls; "${PRIOR_COMMIT_SHA:-none}"
+  │       # would always expand to none and defeat the double-count guard).
+  │       # RETAINED across wait-rounds (a wait-round's RESULT_COMMIT_SHA=none
+  │       # must not reset it — see "Update state" below) and "none" only until
+  │       # the first fix-round reports a SHA.
   │       WORKTREE_DIR="$WORKTREE_DIR" \
   │       CLAUDE_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT" \
   │       PR_NUMBER="$PR_NUMBER" \
@@ -325,6 +332,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
   │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
+  │       PRIOR_COMMIT_SHA=<PRIOR_COMMIT_SHA — last fix-round SHA, literal, retained across wait-rounds; "none" until first fix-round> \
   │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
   │     Parse the last stdout line as exactly one JSON envelope:
@@ -374,7 +382,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
   │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
   │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
-  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all four
   │        registered bots acked HEAD but Codex is still reviewing — is
   │        legitimate and must NOT be misread as no-progress). A round with
   │        none of these is broken — re-dispatching would loop forever on no
@@ -421,17 +429,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        worked-example "always include codescene and
   │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the three registered ack-bots that the worker can
+  │        scoped to the four registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (5 bots: `cubic-dev-ai`, `coderabbitai`, `greptile-apps`,
-  │        `codescene-delta-analysis`, `chatgpt-codex-connector`).
-  │        After comma-splitting, the number of entries MUST equal 5; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
+  │        (6 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
+  │        `greptile-apps`, `codescene-delta-analysis`,
+  │        `chatgpt-codex-connector`).
+  │        After comma-splitting, the number of entries MUST equal 6; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 6
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -536,7 +545,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        legitimate grinds; loosening them silently allows the
   │        relabel-as-out-of-scope failure mode the rails exist to catch.
   │
-  ├── Codex first-engagement nudge on the CLEAN path (one-shot per HEAD) — issue #467.
+  ├── Codex first-engagement nudge on the CLEAN path (bounded-N per HEAD, ADR 0005 #673) — issue #467.
   │     # Fire the `none`-case nudge the INSTANT a round converges to clean, decoupled
   │     # from the COMPLETION merge machinery. Be precise about the gap this closes:
   │     # within a faithful top-to-bottom COMPLETION run the nudge ALREADY precedes the
@@ -550,14 +559,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # silently skipped on exactly the PRs that end in an operator bail. Firing here,
   │     # before any merge-path branching, makes the nudge independent of that shortcut;
   │     # the bounded grace POLL stays in COMPLETION (it only matters right before merge).
-  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's one-shot per-(PR,HEAD)
-  │     # marker dedupes the POST, so at most one `@codex review` is ever posted per HEAD.
+  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's per-(PR,HEAD) attempt
+  │     # markers plus its cooldown bound the POST, so the two call sites cannot compound —
+  │     # at most PR_GRIND_CODEX_RETRIGGER_MAX (default 3) `@codex review` posts per HEAD,
+  │     # spaced by PR_GRIND_CODEX_RETRIGGER_COOLDOWN (default 180s). Pre-#673 this was a
+  │     # hard one-shot; that made a single dropped nudge terminal for the PR (see ADR 0005).
   │     # COST (stated honestly, per the #467 review): on a clean `none` round this block runs
   │     # the wrapper's detection (`gh repo view` + the Codex-active GraphQL probe) ONCE, and
   │     # COMPLETION later re-derives active-ness independently — so a Codex-active / force-on
   │     # repo pays ONE extra codex-active probe per clean-none merge vs. pre-#467. This is a
-  │     # deliberate, bounded tradeoff: the marker dedupes the POST (never a double `@codex
-  │     # review`), but NOT the detection, because COMPLETION needs genuine active-ness for its
+  │     # deliberate, bounded tradeoff: the attempt markers + cooldown bound the POST (at most
+  │     # PR_GRIND_CODEX_RETRIGGER_MAX per HEAD, never unbounded), but NOT the detection, because
+  │     # COMPLETION needs genuine active-ness for its
   │     # "engaged on recent PRs" warning + full-grace wait and a nudge-marker cannot supply
   │     # that (it conflates force-on/kill-switched with historical activity). A detection-result
   │     # breadcrumb WOULD remove the extra probe but is not worth another per-HEAD state
@@ -610,16 +623,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # the dispatcher's tag-resolution step already canonicalized aliases
   │     # before this point (see "Resolution order" in Dispatch a Round below).
   │
-  │     # Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD) — ADR 0005.
+  │     # Codex sole-stale-blocker auto-re-trigger (bounded-N per HEAD, #673) — ADR 0005.
   │     # On this WAIT-round (RESULT_COMMIT_SHA == "none", so HEAD is unchanged)
   │     # where Codex is the SOLE stale ack — RESULT_CODEX_ACK == "stale" AND no
   │     # registered bot in RESULT_REVIEWER_ACKS is "stale" (they all acked HEAD) —
   │     # Codex will never self-ack the unchanged HEAD (it posts COMMENTED reviews /
   │     # 0 reactions; its thread resolutions predate the push, Tier-A.2 fail-closed),
   │     # so the next wait-rounds would just burn --max-wait and BAIL. Post `@codex
-  │     # review` ONCE so Codex re-reviews HEAD before the next round (→ fresh
+  │     # review` so Codex re-reviews HEAD before the next round (→ fresh
   │     # 👍/Tier-F ack → converge, or new findings → worker triages). The helper is
-  │     # idempotent (one-shot marker per (PR,HEAD)) so this is safe even though the
+  │     # deduped by attempt markers + cooldown (at most PR_GRIND_CODEX_RETRIGGER_MAX
+  │     # posts per (PR,HEAD)) so this is safe even though the
   │     # worker's Step 6.5 mirrors the same call. Opt out: PR_GRIND_CODEX_RETRIGGER=0;
   │     # phrase override (forks): PR_GRIND_CODEX_RETRIGGER_PHRASE. `|| true` keeps a
   │     # failed post from ever staling the gate. Distinct from the COMPLETION
@@ -636,7 +650,12 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
   │
   └── Update state:
-        PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
+        # PRIOR_COMMIT_SHA is the last FIX-ROUND's reported SHA and is RETAINED
+        # on wait-rounds: RESULT_COMMIT_SHA is "none" there, and overwriting
+        # would reset the #668 double-count guard — a later clean round sitting
+        # on the same Grind-PR commit would pass PRIOR_COMMIT_SHA=none and
+        # count the already-counted fix again.
+        PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA if RESULT_COMMIT_SHA != "none"; retained otherwise
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
         PRIOR_CODEX_ACK     = RESULT_CODEX_ACK   # on fix/wait-rounds: overwrite with result_codex_ack from commit-block envelope (post-push); on clean path: use worker-emitted value. Backward-compat: if result_codex_ack absent from envelope (legacy commit-block), retain worker RESULT_CODEX_ACK unchanged — do NOT default to "none" (that would lose a stale signal from the worker).
         PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): commit=<RESULT_COMMIT_SHA>; fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
@@ -698,7 +717,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           (e.g. Codex/Devin after a rebase). It NEVER touches merge authority — required
                           checks + litmus still gate; this only releases the *advisory* ack after those
                           are already green. Treats ALL registered advisory bots uniformly (no per-bot
-                          special-casing — Codex and Cubic/Coderabbit/Greptile are aligned).
+                          special-casing — Codex and Cursor/Cubic/Coderabbit/Greptile are aligned).
 
                           1. Opt-in gate: run the resolver and proceed ONLY if it prints `1`:
                              `OPTIN=$(bash "<PLUGIN_ROOT>/scripts/advisory-downgrade-optin.sh")`.
@@ -762,6 +781,17 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              `SERVER_NOW=$(bash "<PLUGIN_ROOT>/scripts/github-server-now.sh")`
                              (empty on any gh/parse failure → the call below fails CLOSED and downgrades
                              nothing — the safe direction). Then:
+                             **Pass the FULL 40-char sha** as `HEAD_SHA` (the same value as
+                             `REVIEWED_HEAD`). It is a JOIN KEY, not forensics: it is written
+                             verbatim into the event and COMPLETION's revalidator matches against
+                             it before it will honor any release, and COMPLETION now passes its own
+                             full sha — so full-on-both-sides is an exact 40-char match. The 8-char
+                             short form still joins (the revalidator compares over the shorter of
+                             the two lengths, with an 8-char floor below which nothing joins at
+                             all), but it caps that comparison at a prefix, so prefer the full one.
+                             #682: before that fix the comparison was strict equality against
+                             COMPLETION's `git rev-parse HEAD | cut -c1-8`, so a full-SHA caller
+                             here made the whole release path silently unreachable. Then:
                              `DOWNGRADED=$(SOLO_OPTIN=1 CI_GREEN=<0|1> LITMUS_GREEN=<0|1> HEAD_SHA=<sha> \
                                SERVER_NOW="$SERVER_NOW" \
                                PR=<PR_NUMBER> REPO=<owner/repo> WAIT_ROUNDS=<MAX_WAIT> \
@@ -1193,7 +1223,7 @@ RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
 RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
-RESULT_CODEX_ACK: <short-sha | stale | none>          (Codex's reaction-based ack; gated like a registered bot but tracked SEPARATELY from RESULT_REVIEWER_ACKS because its clean signal is a timestamp-keyed 👍 (Tier F), not a SHA-keyed structured ack. `stale` blocks `clean` AND counts as a legitimate wait-round in the no-progress invariant (Invariant 1 — a Codex-only wait-round must not be misread as no-progress); `<short-sha>` = acked HEAD via a fresh 👍 (Tier F) OR a resolved current-head thread (Tier A) — Codex findings (unresolved/outdated threads, COMMENTED /reviews) resolve to `stale`, never a SHA; `none` = not on this PR, non-gating. Additive/backward-compatible: MISSING TAG (old-contract worker) → treat as empty (`!= stale`), so Invariant 1 falls back to its registered-bot-only behavior. Do NOT bail "subagent output unparseable" on a missing RESULT_CODEX_ACK — additive, not version-pinned.)
+RESULT_CODEX_ACK: <short-sha | stale | none>          (Codex's ack, gated like a registered bot but tracked SEPARATELY from RESULT_REVIEWER_ACKS because none of its three ack tiers are the SHA-keyed structured acks the other bots use. `stale` blocks `clean` AND counts as a legitimate wait-round in the no-progress invariant (Invariant 1 — a Codex-only wait-round must not be misread as no-progress); `<short-sha>` = acked HEAD via ANY of: a 👍 reaction newer than the last push (Tier F, timestamp-keyed — the freshness check is specific to this tier), a clean-verdict issue comment naming HEAD (Tier G, #690, SHA-keyed — no freshness window, the SHA equality IS the proof), or a resolved-and-current-head inline thread (Tier A, resolution-state-keyed). Codex findings (unresolved/outdated threads, COMMENTED /reviews) resolve to `stale`, never a SHA; `none` = not on this PR, non-gating. Additive/backward-compatible: MISSING TAG (old-contract worker) → treat as empty (`!= stale`), so Invariant 1 falls back to its registered-bot-only behavior. Do NOT bail "subagent output unparseable" on a missing RESULT_CODEX_ACK — additive, not version-pinned.)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. n_actionable and n_total are different units — findings (decided per-finding) vs artifacts (review/comment entries examined); a single artifact can contain multiple findings, so n_actionable > n_total (e.g., `<bot>=2/1:fixed both`) is legitimate, not a typo. Invariant 3 only requires n_total >= 1 for HEAD-acked bots; it does NOT enforce n_actionable <= n_total. See `agents/pr-grinder.md` Step 3 worked examples. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. Backward compatibility: missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
@@ -1209,6 +1239,7 @@ Inputs (env vars, optional; default 0/empty):
 - `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for no-worktree mode (worker runs in the repo root and shares the parent index).
 - `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
+- `PRIOR_COMMIT_SHA` - the last FIX-round's reported commit SHA (dispatcher state, default `none`; retained across wait-rounds, which report `none`). The wait-round landed-fix check (#668) uses it to bind the reported SHA to THIS round: a clean-index invocation whose pinned HEAD equals `PRIOR_COMMIT_SHA` is sitting on an already-counted fix and must report `none`, never double-count it.
 
 Outputs (stdout, exactly one JSON object on the last line):
 Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
@@ -1274,10 +1305,10 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
-RESULT_ACK_TIERS: cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
+RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
+RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1288,10 +1319,10 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cursor=stale,...; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All four registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 
@@ -1343,12 +1374,12 @@ When the user wants to bypass the pre-merge gate (e.g., pr-grind stuck in a loop
 - Trigger: `gh pr merge`
 - On <30s rejection: gate **deletes** the file (user must `touch` again).
 - **Freshness window: 30s..3600s.** The gate silently deletes files ≥1h old without bypassing — the user has up to 1 hour between `touch` and the merge retry.
-- **Deferred consumption** (unique to pre-merge — added to fix the consume-on-gate-pass-but-API-fail bug surfaced during PR #115's dogfood): the PreToolUse gate writes a pending claim to `.claude/.merge-bypass-pending.local` and leaves the skip file alone. The PostToolUse hook `post-merge-confirm-bypass.sh` consumes the skip file ONLY when `gh pr merge` confirms success. On merge failure (`X Pull request is not mergeable`, conflicts, branch protection), `--auto` queued-but-not-yet-merged, ambiguous output, mtime tamper, or PR-number mismatch between the claim and the executed command, the skip file is preserved so the operator can retry without a re-touch. Audit events all log to `.claude/bypass-log.jsonl` — see README event taxonomy.
+- **Deferred consumption** (unique to pre-merge — added to fix the consume-on-gate-pass-but-API-fail bug surfaced during PR #115's dogfood): the PreToolUse gate writes a pending claim to `.claude/.merge-bypass-pending.local` and leaves the skip file alone. The PostToolUse hook `post-merge-confirm-bypass.sh` consumes the skip file ONLY when `gh pr merge` confirms success. On merge failure (`X Pull request is not mergeable`, conflicts, branch protection) that the GitHub API does not later confirm `MERGED`, ambiguous output, mtime tamper, or PR-number mismatch between the claim and the executed command, the skip file is preserved so the operator can retry without a re-touch. An **accepted** `--auto` queue is not one of these preserved cases (#664): GitHub lands that merge with no further hook event to confirm it later, so the token is consumed immediately (`reason: auto-merge-accepted-token-spent`) rather than left armed for a merge nothing will ever re-check. Audit events all log to `.claude/bypass-log.jsonl` — see README event taxonomy.
 - **Explicit-PR requirement when using the bypass**: `gh pr merge` (no PR number, auto-detect from current branch) records `merge_pr=unknown` in the pending claim. Confirmation then refuses to consume the bypass token (treated as `-released-mismatch` to prevent cross-PR token reuse via branch-switching). The merge itself proceeds (the gate already authorized it), but the bypass log will show `skip-pr-grind-released-mismatch` rather than `-consumed`, and the skip file remains valid until **1h after the original `touch`** (the 3600s window is anchored to the skip file's mtime, NOT to the failed merge — a released token does not refresh its clock). To get a clean audit trail and consume the bypass token, pass the PR number explicitly: `gh pr merge 42 --squash`.
 
 When emitting the verbatim message template (from the canonical protocol — see below), tell the user "the file must be touched within the last hour — the gate rejects ages of 3600s or more" so they don't sit on it indefinitely. Otherwise the protocol is identical to other gates: 35s `Monitor` wait, no Bash verification, NEVER create the skip file yourself, etc.
 
-**Stale-file recovery (pr-grind only):** If `gh pr merge` blocks after the user has already run `touch` and Claude has waited the 35s, the skip file may have expired (≥3600s since `touch`). The gate silently deletes stale files without bypassing — there's no "stale" message. Ask the user to `touch` again and restart the 35s wait. Note that with deferred consumption, a failed merge no longer requires a re-touch unless the file actually aged past 3600s.
+**Stale-file recovery (pr-grind only):** If `gh pr merge` blocks after the user has already run `touch` and Claude has waited the 35s, the skip file may have expired (≥3600s since `touch`). The gate silently deletes stale files without bypassing — there's no "stale" message. Ask the user to `touch` again and restart the 35s wait. Note that with deferred consumption, a failed merge no longer requires a re-touch unless the file actually aged past 3600s — or unless GitHub reports the PR `MERGED` anyway (the `--delete-branch` worktree-conflict shape), in which case the token is correctly spent on the merge it authorized (#664).
 
 **Full protocol** — verbatim message template (with `<GATE>` substitution), `Monitor`-based 35s wait pattern, and hard rules — lives canonically in `skills/blueprint-review/SKILL.md` → "User-Created Skip File". The protocol is identical across all busdriver gates; only the pre-merge specifics in the bullets above differ.
 

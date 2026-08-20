@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # tests/test-codex-retrigger.sh
 #
-# Verifies scripts/codex-retrigger.sh — the one-shot-per-(PR,HEAD) `@codex review`
+# Verifies scripts/codex-retrigger.sh — the bounded, paced per-(PR,HEAD) `@codex review`
 # re-trigger that breaks the Codex-stale-on-unchanged-HEAD wait-round dead-end.
 #
 # `gh` is stubbed (a fake on PATH) that records every invocation and the --body it
 # was given; the script's marker is redirected to a temp BUSDRIVER_STATE_DIR so the
 # real repo is never touched. We assert the OBSERVABLE contract: when (and only
-# when) a post happens, and that a failed post never writes the one-shot marker
+# when) a post happens, and that a failed post never writes the attempt marker
 # (so the next wait-round retries) and never returns non-zero (never stales gate).
 
 set -euo pipefail
@@ -70,7 +70,7 @@ posts_in() { [ -f "$1" ] && grep -c 'pr comment' "$1" 2>/dev/null || echo 0; }
 
 # ============================================================
 # 1. HAPPY PATH — marker absent, opt-in default ON: posts exactly one
-#    `@codex review` and writes the one-shot marker. Exit 0.
+#    `@codex review` and writes the attempt-1 marker. Exit 0.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
@@ -84,7 +84,9 @@ else
 fi
 
 # ============================================================
-# 2. ONE-SHOT — marker already present for this (PR,HEAD): no post, exit 0.
+# 2. SECOND ROUND, DEFAULT CONFIG — attempt-1 marker already present for this
+#    (PR,HEAD): no post, exit 0. Held by the default 180s cooldown since #673/#676
+#    (pre-#673 it was the hard one-shot marker); the observable contract is the same.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 : > "$STATE/$MARKER_NAME"          # pre-existing marker
@@ -92,9 +94,9 @@ rc=0
 ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
        "$BASH_BIN" "$RT" "$PR" "$HEAD" ) || rc=$?
 if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ]; then
-  ok "one-shot: marker present → no second post (exit 0)"
+  ok "default config: attempt-1 marker present → no second post (exit 0)"
 else
-  fail "one-shot: expected no post, rc=$rc posts=$(posts_in "$CALLLOG")"
+  fail "default config: expected no post, rc=$rc posts=$(posts_in "$CALLLOG")"
 fi
 
 # ============================================================
@@ -195,8 +197,8 @@ fi
 
 # ============================================================
 # 9. SEQUENTIAL IDEMPOTENCY — two real invocations on the same (PR,HEAD): the
-#    first posts + claims the marker, the second is a no-op. Validates the one-shot
-#    guarantee end-to-end (real post, then real re-run), not just a pre-seeded marker.
+#    first posts + claims the marker, the second is a no-op. Validates the dedup
+#    end-to-end (real post, then real re-run), not just a pre-seeded marker.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
@@ -208,6 +210,204 @@ if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$STATE/$MARKER_NAM
   ok "sequential idempotency: two real runs → exactly one post, marker held"
 else
   fail "sequential idempotency: rc=$rc posts=$(posts_in "$CALLLOG") (expected 1)"
+fi
+
+# ============================================================
+# #673 — BOUNDED-N RE-TRIGGER. ADR 0005 shipped one-shot per (PR,HEAD) for
+# anti-spam reasons only, which made a single dropped nudge terminal for the PR —
+# and #673 showed the Codex ack tiers cannot self-clear after the first fix round,
+# so this nudge is the ONLY exit. It is now N attempts (default 3) paced by a
+# cooldown. Cases 1–9 above already pin the DEFAULT-config behavior (the default
+# 180s cooldown is what holds cases 2 and 9 to a single post); these pin that the
+# budget both SPENDS and STOPS, that a failure costs nothing, and that a marker
+# from the pre-#673 plugin is honored rather than granting a fresh budget.
+#
+# #676 — COOLDOWN/WAIT-BUDGET COUPLING. #673 shipped MAX=3/COOLDOWN=900, which
+# needs 1800s to spend the full budget — over 3x the ~8-minute wait budget
+# `--max-wait 8` gives the dispatcher (ADR 0005's Context section), so under
+# default settings the loop bailed before attempt 2's cooldown ever elapsed,
+# silently reproducing the one-shot dead end #673 existed to close. Case 18 below
+# pins the corrected relationship as an executable assertion rather than prose.
+# ============================================================
+marker_n() {
+  if [ "$1" = 1 ]; then printf '%s' "$MARKER_NAME"
+  else printf '.pr-grind-codex-retriggered-pr%s-%s-%s.local' "$PR" "$HEAD8" "$1"; fi
+}
+# Run once in a sandbox; extra `VAR=value` args are passed as environment.
+run_rt() {
+  ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
+    env "$@" "$BASH_BIN" "$RT" "$PR" "$HEAD" ) >/dev/null 2>&1
+}
+
+# --- 10/11. The budget spends across rounds, then STOPS. Both directions of the
+#            same guard: a guard that only ever passes is not a guard.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in 1 2 3 4; do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3; done
+if [ "$(posts_in "$CALLLOG")" = 3 ] \
+   && [ -e "$STATE/$(marker_n 1)" ] && [ -e "$STATE/$(marker_n 2)" ] && [ -e "$STATE/$(marker_n 3)" ]; then
+  ok "bounded-N: 4 rounds with cooldown disabled → exactly 3 posts, one marker per attempt"
+else
+  fail "bounded-N: posts=$(posts_in "$CALLLOG") (expected 3) slots=$([ -e "$STATE/$(marker_n 1)" ] && printf 1)$([ -e "$STATE/$(marker_n 2)" ] && printf 2)$([ -e "$STATE/$(marker_n 3)" ] && printf 3)"
+fi
+
+# --- 12. MAX=1 restores ADR 0005's exact one-shot (the documented escape hatch).
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=1
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=1
+if [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$STATE/$(marker_n 2)" ]; then
+  ok "MAX=1: restores one-shot exactly (2 rounds → 1 post, no slot 2)"
+else
+  fail "MAX=1: posts=$(posts_in "$CALLLOG") (expected 1)"
+fi
+
+# --- 13. A marker left by the PRE-#673 plugin uses the unsuffixed slot-1 name, so
+#         it must read as "attempt 1 already spent". If the scan missed it, the
+#         upgrade would silently hand every in-flight PR a fresh full budget.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+: > "$STATE/$MARKER_NAME"
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$STATE/$(marker_n 2)" ] && [ ! -e "$STATE/$(marker_n 3)" ]; then
+  ok "legacy marker: counted as attempt 1 spent → next post lands in slot 2"
+else
+  fail "legacy marker: posts=$(posts_in "$CALLLOG") slot2=$([ -e "$STATE/$(marker_n 2)" ] && echo yes || echo no)"
+fi
+
+# --- 14. The cooldown must BLOCK while hot and RELEASE once elapsed. Backdated with
+#         `touch -t` (POSIX) rather than a sleep, so the elapsed branch is genuinely
+#         executed without slowing the suite.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # attempt 1
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # blocked: still hot
+hot=$(posts_in "$CALLLOG")
+touch -t 202001010000 "$STATE/$(marker_n 1)"               # age it past any cooldown
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3                      # attempt 2: cooldown elapsed
+if [ "$hot" = 1 ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$(marker_n 2)" ]; then
+  ok "cooldown: blocks while hot (1 post), releases once elapsed (2 posts)"
+else
+  fail "cooldown: hot=$hot (expected 1) after-elapse=$(posts_in "$CALLLOG") (expected 2)"
+fi
+
+# --- 15. A malformed budget knob must fall back to the DEFAULT, never to unlimited.
+#         Fail-safe direction matters here: the wrong fallback spams the PR.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in 1 2 3 4 5; do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=not-a-number; done
+if [ "$(posts_in "$CALLLOG")" = 3 ]; then
+  ok "malformed MAX: falls back to default 3, not unlimited"
+else
+  fail "malformed MAX: posts=$(posts_in "$CALLLOG") (expected 3)"
+fi
+
+# --- 15b. MAX has a CEILING, and it is load-bearing rather than tidiness: MAX drives
+#          the slot-scan loop, so an accidental huge-but-valid integer would run that
+#          many filesystem probes every wait-round and hang the merge gate (litmus
+#          MEDIUM on this PR). Out-of-range must land on the DEFAULT, not the ceiling
+#          and not unlimited. 10 is accepted; 11 and a fat-fingered 999999999 are not.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in $(seq 1 12); do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=10; done
+at_ceiling=$(posts_in "$CALLLOG")
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+for _i in $(seq 1 12); do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=999999999; done
+over_ceiling=$(posts_in "$CALLLOG")
+if [ "$at_ceiling" = 10 ] && [ "$over_ceiling" = 3 ]; then
+  ok "MAX ceiling: 10 honored, 999999999 rejected to default 3 (bounds the scan loop)"
+else
+  fail "MAX ceiling: at-ceiling=$at_ceiling (expected 10) over-ceiling=$over_ceiling (expected 3)"
+fi
+
+# --- 16. A failed post must spend NO attempt and start NO cooldown — the claim is
+#         released, so the next round re-derives the SAME slot. This is why the scan
+#         counts occupied markers and claims the lowest free slot, rather than
+#         taking the highest occupied slot (see case 17's hole-refill below).
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt STUB_GH_FAIL=1 PR_GRIND_CODEX_RETRIGGER_MAX=3
+failed_marker=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$failed_marker" = no ] && [ -e "$STATE/$(marker_n 1)" ] && [ ! -e "$STATE/$(marker_n 2)" ]; then
+  ok "failed post: spends no attempt, no cooldown — next round reclaims slot 1"
+else
+  fail "failed post: marker-after-failure=$failed_marker slot2=$([ -e "$STATE/$(marker_n 2)" ] && echo yes || echo no)"
+fi
+
+# --- 17. HOLE REFILL. A slot can be free BELOW an occupied one: a `gh pr comment`
+#         still in flight when the cooldown elapses lets a second run legitimately
+#         claim slot 2, and if the first post then fails it releases slot 1. Reading
+#         the highest occupied slot would count that hole as spent — silently
+#         shrinking the budget and making "a failed post spends no attempt" false
+#         (litmus MEDIUM, PR mode). Occupancy + lowest-free must refill the hole.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+: > "$STATE/$(marker_n 2)"                       # slot 2 occupied, slot 1 a hole
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+refilled=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3
+if [ "$refilled" = yes ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$(marker_n 3)" ]; then
+  ok "hole refill: free slot below an occupied one is reclaimed, full budget preserved"
+else
+  fail "hole refill: refilled=$refilled posts=$(posts_in "$CALLLOG") (expected 2, i.e. budget 3 minus the pre-seeded slot)"
+fi
+
+# --- 18. #676 — SHIPPED DEFAULTS MUST FIT THE DISPATCHER'S DEFAULT WAIT BUDGET.
+#         `COOLDOWN * (MAX - 1)` is the wall-clock needed to spend the full budget
+#         (MAX-1 gaps between MAX attempts); any attempt that would land later than
+#         the dispatcher's `--max-wait` wall-clock is never reached, because the
+#         dispatcher bails first. ADR 0005's Context section documents `--max-wait 8`
+#         exhausting in ~8 minutes (480s) — that is the wall-clock this pins against.
+#         A future default that violates this inequality makes the retry budget
+#         unreachable in practice: the exact #676 defect (900*2=1800s vs. a ~480s
+#         budget, i.e. attempt 2 would land 22.5 minutes after the dispatcher already
+#         bailed). Read the values out of the SHIPPED SCRIPT rather than hardcoding
+#         them here, so this fails loudly if either knob's default regresses.
+#
+#         THE MARGIN IS PART OF THE ASSERTION. A bare `<=` against the full 480s
+#         admits COOLDOWN=240 (240*2=480 exactly), which places the last attempt at
+#         the precise instant the dispatcher bails — reachable only with zero trigger
+#         latency, zero marker-write time and perfectly aligned polling. That was the
+#         FIRST attempt at fixing this defect and litmus flagged it MEDIUM on the same
+#         PR. So the budget must be fit INSIDE, not filled: require 20% headroom, and
+#         confirm this case rejects 240 as well as 900 before trusting it.
+#
+#         WHAT THIS DOES *NOT* PROVE — read before relying on it. `--max-wait` counts
+#         wait-ROUNDS, not seconds, and the dispatcher enforces no minimum duration per
+#         round. So 480s is a documented TYPICAL (ADR 0005's Context), never a
+#         guarantee: eight fast rounds can exhaust the budget in well under 360s, and
+#         the later attempts would be unreachable while this case still passes. Do not
+#         read a green result here as "the retry budget is always reachable" (litmus
+#         MEDIUM on PR #676 caught exactly that overclaim).
+#
+#         What it IS: a sanity bound on the two defaults against the only wall-clock
+#         figure the repo actually documents — enough to catch an order-of-magnitude
+#         mistake like COOLDOWN=900 (wrong by ~4x) or a zero-margin value like 240,
+#         which is what the two live defects on this PR were. Closing the gap properly
+#         means pacing in ROUNDS rather than wall-clock, or having the dispatcher
+#         enforce a minimum wait-round duration; both are caller-side changes tracked
+#         separately, not something this helper can assert from mtimes alone.
+# `|| true` is REQUIRED, not defensive noise. This file runs under `set -euo pipefail`,
+# so a no-match `grep` exits 1, the pipeline fails, and the assignment aborts the whole
+# script — before the guard below can run. Observed: breaking either regex ends the run
+# at case 17 with exit 1, no `Results:` line and no failure message, i.e. a red CI build
+# that names nothing. That made the guard added for the previous finding dead code
+# (cubic P3, PR #676). Swallowing the status here is what lets an empty value REACH the
+# guard and fail loudly with a diagnosis.
+DEFAULT_MAX=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_MAX:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+WAIT_BUDGET_WALLCLOCK=480   # ADR 0005 Context: `--max-wait 8` exhausts in ~8 min
+# 80% of the budget — integer arithmetic, no bc dependency.
+BUDGET_CEILING=$(( WAIT_BUDGET_WALLCLOCK * 8 / 10 ))
+# Guard BEFORE the arithmetic, not after: a source reformat that breaks either
+# regex yields an empty DEFAULT_MAX/DEFAULT_COOLDOWN, and bash arithmetic
+# silently reads an empty operand as 0 — so `needed` would evaluate to 0 and
+# the case would report a misleading "need 0s <= 384s" PASS instead of failing
+# loudly on the real problem (the extraction itself), masking the case behind
+# defaults that were never actually read (cubic P3, PR #676).
+if [ -z "$DEFAULT_MAX" ] || [ -z "$DEFAULT_COOLDOWN" ]; then
+  fail "wait-budget coupling: could not extract DEFAULT_MAX/DEFAULT_COOLDOWN from $RT — the read_int_knob call(s) no longer match this case's extraction regex (source reformatted?); fix the regex before trusting this case's PASS/FAIL"
+else
+  needed=$(( DEFAULT_COOLDOWN * (DEFAULT_MAX - 1) ))
+  if [ "$needed" -le "$BUDGET_CEILING" ]; then
+    ok "wait-budget coupling: shipped defaults (MAX=$DEFAULT_MAX, COOLDOWN=$DEFAULT_COOLDOWN) need ${needed}s <= ${BUDGET_CEILING}s (80% of the ${WAIT_BUDGET_WALLCLOCK}s wait budget)"
+  else
+    fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
+  fi
 fi
 
 echo "Results: $passed passed, $failed failed"

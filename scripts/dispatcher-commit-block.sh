@@ -13,6 +13,16 @@
 #   NO_WORKTREE             - "1" no-worktree mode (worker shares parent repo index)
 #   PRE_DISPATCH_BASELINE   - JSON array of paths staged before worker dispatch
 #   BUSDRIVER_ALLOW_NO_COMMITLINT - "1" allows missing local commitlint
+#   PRIOR_COMMIT_SHA        - the LAST FIX-ROUND's reported commit SHA
+#                             (dispatcher state, default "none"; RETAINED
+#                             across wait-rounds, which report "none" — see
+#                             pr-grind SKILL.md "Update state"). Used by the
+#                             wait-round landed-fix check (#668) to bind the
+#                             reported SHA to THIS round: a clean-index
+#                             invocation whose pinned HEAD equals
+#                             PRIOR_COMMIT_SHA is sitting on a fix that was
+#                             already counted and must report "none", not
+#                             double-count it.
 #   RESULT_REVIEWER_ACKS    - worker-computed ack ledger; passed through on
 #                             clean-path (no recompute); required for the
 #                             defensive clean-round routing path to return
@@ -106,11 +116,13 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-# cursor (Bugbot) and devin-ai-integration were DROPPED from the registry
-# (ADR 0035): both are review-once-at-create bots that never re-review fix-round
-# pushes, their findings were ~75-92% redundant with the remaining bots, and
-# dropping them removes the Case-4 devin whitelist machinery (ADR 0027).
-REGISTERED_ACK_BOTS=(cubic-dev-ai coderabbitai greptile-apps)
+# cursor (Bugbot) is RE-ADDED (ADR 0041): ADR 0035 dropped it because the then-$20
+# plan made it review-once-at-create (never re-reviewing fix-round pushes). On the
+# Cursor Ultra plan with run-on-every-push enabled it re-reviews each push like the
+# other registered bots, so the sole structural objection is gone.
+# devin-ai-integration stays DROPPED (ADR 0035): 34% fix rate on its exclusive
+# findings, and the Case-4 whitelist machinery (ADR 0027) it needed stays deleted.
+REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai greptile-apps)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -138,7 +150,9 @@ fi
 # clean (worker acks authoritative, no recompute), refresh acks only on
 # wait-rounds (needs_more + clean index).
 emit_success_no_commit() {
-    # $1 = acks ledger, $2 = ack-tier map, $3 = codex ack (callers pass all explicitly).
+    # $1 = acks ledger, $2 = ack-tier map, $3 = codex ack, $4 = commit SHA to
+    # report (default "none" — the wait-round/clean contract). Callers pass all
+    # explicitly.
     # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
     # so a valid bodyless-ack exemption (cubic=D / coderabbitai=E) survives to
     # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
@@ -149,11 +163,15 @@ emit_success_no_commit() {
     # $3 = codex ack: WAIT-ROUND callers pass freshly-computed value; CLEAN
     # pass-through passes RESULT_CODEX_ACK from the worker (worker is authoritative
     # on the clean path). Defaults to "none" when absent (backward-compat).
+    # $4 = commit SHA (#668): the WAIT-ROUND caller passes the real SHA when the
+    # round's fix already landed before this invocation (see the needs_more
+    # branch); everything else defaults to "none".
     local _acks="$1"
     local _tiers="$2"
     local _codex_ack="${3:-none}"
-    jq -nc --arg acks "$_acks" --arg tiers "$_tiers" --arg codex_ack "$_codex_ack" \
-        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks, result_ack_tiers:$tiers, result_codex_ack:$codex_ack}' || \
+    local _sha="${4:-none}"
+    jq -nc --arg sha "$_sha" --arg acks "$_acks" --arg tiers "$_tiers" --arg codex_ack "$_codex_ack" \
+        '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers, result_codex_ack:$codex_ack}' || \
         emit_bail "env" "dispatcher-commit-block: emit_success_no_commit jq call failed (jq binary missing or OOM)"
     exit 0
 }
@@ -180,7 +198,7 @@ case "$RESULT_STATUS" in
         # must survive). Fall back to all-`none` tiers / "none" codex only when
         # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
         emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
-            "${RESULT_ACK_TIERS:-cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
+            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none}" \
             "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)
@@ -233,6 +251,84 @@ case "$RESULT_STATUS" in
             # Matches the registered-bot `|| echo "stale"` fallback above.
             wait_codex_raw=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo "stale")
             wait_codex_ack="${wait_codex_raw%%:*}"
+            # #668: the dispatcher routes this script ONLY on fix-rounds
+            # (needs_more + staged changes + RESULT_FIXES populated). A clean
+            # index at this point means the round's fix ALREADY LANDED before
+            # this invocation — the lost-envelope re-invocation shape, where a
+            # first invocation committed and pushed the fix (Grind-PR trailer
+            # stamped) but its envelope was never parsed, so the dispatcher
+            # re-invoked and found the index consumed. Reporting "none" then
+            # mislabels the round as a wait-round, and the dispatcher classifies
+            # rounds by result_commit_sha: fix_round stays 0 and the --max-fix
+            # budget can never exhaust. So when RESULT_FIXES names a fix and
+            # HEAD carries the Grind-PR trailer for this PR, report the LANDED
+            # SHA instead of "none". (Fail-closed direction: a false positive
+            # here over-counts fix_round and bails earlier, never later.)
+            _report_sha="none"
+            _fixes_stripped=$(printf '%s' "${RESULT_FIXES:-}" | tr -d '[:space:]')
+            if [[ -n "$_fixes_stripped" && "$_fixes_stripped" != "none" ]]; then
+                # #668: a re-invoked fix-round (index consumed by the landed
+                # fix) must report the pushed commit, not "none" — the
+                # dispatcher classifies rounds by result_commit_sha, so "none"
+                # here starves the --max-fix budget. The predicate mirrors
+                # Step 10a's FULL trailer validation (rev-list prefilter AND
+                # the parsed-trailer block check, byte-for-byte the reader's
+                # contract) so a hook-mangled trailer is never treated as
+                # landed, and requires HEAD == origin/<branch> so a local-only
+                # commit (Step-11 push failure) never counts as pushed. Git
+                # read failures bail fail-closed: emitting "none" on a read
+                # error would recreate the under-count this guards against.
+                _landed_sha="none"
+                _grind_rc=0
+                _grind_match=""
+                # Pin HEAD ONCE: the three predicates below (message prefilter,
+                # parsed-trailer block, pushed-state comparison) must all refer
+                # to the SAME commit — independent rev-parse calls could each
+                # resolve a different HEAD if another process advances it
+                # mid-check, attributing the wrong commit to this round.
+                _round_head=""
+                _round_head=$(git rev-parse HEAD 2>/dev/null) || _grind_rc=$?
+                if [[ "$_grind_rc" != "0" ]]; then
+                    emit_bail "env" "wait-round: git rev-parse HEAD failed (rc=$_grind_rc) while checking whether the fix landed; refusing to classify the round"
+                fi
+                _grind_match=$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --no-walk --grep="^Grind-PR: ${PR_NUMBER}\$" "$_round_head" 2>/dev/null) || _grind_rc=$?
+                if [[ "$_grind_rc" != "0" ]]; then
+                    emit_bail "env" "wait-round: git rev-list failed (rc=$_grind_rc) while checking whether the fix landed; refusing to classify the round"
+                fi
+                if [[ -n "$_grind_match" ]]; then
+                    _grind_block=""
+                    _grind_block=$(GIT_NO_REPLACE_OBJECTS=1 git -c trailer.separators=':' log -1 --format='%(trailers)' "$_round_head" 2>/dev/null) || _grind_rc=$?
+                    if [[ "$_grind_rc" != "0" ]]; then
+                        emit_bail "env" "wait-round: git trailer read failed (rc=$_grind_rc) while checking whether the fix landed; refusing to classify the round"
+                    fi
+                    case $'\n'"$_grind_block"$'\n' in
+                        *$'\n'"Grind-PR: ${PR_NUMBER}"$'\n'*)
+                            # Pushed check against the PR's ACTUAL head on
+                            # GitHub — HEAD_FULL_SHA (full OID, from the fetch
+                            # above) is the authoritative pushed state, immune
+                            # to remote.pushDefault / push.default config that
+                            # can make a bare `git push` target somewhere other
+                            # than @{u} or origin/<branch>. Full-OID compare:
+                            # an 8-char prefix could collide with an unrelated
+                            # local-only commit.
+                            # Round binding: the landed commit must NOT be the
+                            # PRIOR_COMMIT_SHA the dispatcher already recorded
+                            # for the last round — if it is, this is a LATER
+                            # clean round still sitting on the previous fix,
+                            # and reporting it again would double-count
+                            # fix_round and exhaust --max-fix prematurely.
+                            # (The re-invoked round's fix is by construction a
+                            # different commit than the last reported one.)
+                            if [[ -n "$HEAD_FULL_SHA" \
+                                  && "$_round_head" = "$HEAD_FULL_SHA" \
+                                  && "$_round_head" != "${PRIOR_COMMIT_SHA:-none}" ]]; then
+                                _landed_sha="$_round_head"
+                            fi
+                            ;;
+                    esac
+                fi
+                _report_sha="$_landed_sha"
+            fi
             # Wait-round: acks, tiers, and codex_ack are all FRESHLY computed from the same
             # ack-ledger pass, so they are mutually consistent. Pass the fresh
             # tiers so Invariant 3's D/E bodyless-ack exemption can fire on
@@ -240,7 +336,7 @@ case "$RESULT_STATUS" in
             # still stale). The worker's old tier and codex snapshots are discarded.
             emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" \
                 "$(IFS=,; echo "${tier_entries[*]}")" \
-                "$wait_codex_ack"
+                "$wait_codex_ack" "$_report_sha"
         fi
         ;;
     bail)

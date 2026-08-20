@@ -9,6 +9,78 @@ Amended (2026-07-18): pr-grind's inline `--opus` execution mode was removed
 — the dispatcher loop and the worker's Step 6.5. References below to the "Inline
 `--opus`" detection site and the three-way ledger mirror are historical.
 
+**Amended (2026-08-15, issue #673): one-shot → bounded N, paced.** The re-trigger
+is now at most `PR_GRIND_CODEX_RETRIGGER_MAX` attempts (default 3) per (PR, HEAD),
+spaced by `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` (default 180s — see the
+**2026-08-15 (#676) cooldown correction** amendment below for why 180 replaced the
+originally-shipped 900, and why the intermediate 240 was itself insufficient). Every "one-shot" reference below should be read as
+"bounded budget"; `MAX=1` restores the original behavior exactly.
+
+**Amended (2026-08-15, PR #676): cooldown corrected from 900s to 180s — the
+shipped default was unreachable within the dispatcher's own documented wait
+budget.** `COOLDOWN * (MAX - 1)` must fit inside the dispatcher's
+`--max-wait` wall-clock, because an attempt whose cooldown has not yet elapsed
+when the dispatcher exhausts its wait budget is never reached. This Context
+section already documented `--max-wait 8` exhausting in "~8 min", but the
+originally-shipped `COOLDOWN=900` needs `900 * 2 = 1800s` (30 min) to spend all 3
+attempts — over 3x the ~8-minute default wait budget. Under default settings the
+bounded-N fix from the amendment above never actually reached attempt 2: the
+dispatcher bailed on `--max-wait` before the first cooldown elapsed, silently
+reproducing the exact one-shot dead end #673 shipped this ADR to close (Codex
+review, PR #676).
+
+The FIRST correction set `COOLDOWN=240` and tested it with a bare `<=` against the
+full 480s. That is exactly-equal, not inside: `240 * 2 = 480` places the last
+attempt at the precise instant the dispatcher bails, reachable only with zero
+trigger latency, zero marker-write time and perfectly aligned polling. Litmus
+caught that as MEDIUM on the same PR. The budget must be fit INSIDE, not filled, so
+the requirement carries an explicit 20% margin:
+
+    COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock
+
+Shipped defaults are `MAX=3, COOLDOWN=180` → `180 * 2 = 360s <= 384s`, leaving 120s
+of headroom. 180s still meets or exceeds the observed Codex turnaround (~3 minutes
+on PR #676); when it does not, this ADR's own Consequences section already settled
+the cost — Codex de-dupes, so the downside is one extra comment, never a
+correctness problem. See the coupling comment in `scripts/codex-retrigger.sh` and
+the pinned assertion in `tests/test-codex-retrigger.sh`, which is written against
+the 0.8 margin rather than a bare `<=` precisely so that restoring 240 fails.
+
+**Known residual — the inequality is a sanity bound, not a guarantee.** `--max-wait`
+counts wait-ROUNDS and the dispatcher enforces no minimum duration per round, so the
+480s figure is a documented typical rather than a contract. Eight fast rounds can
+exhaust the budget in well under 360s, leaving the later attempts unreachable even at
+`COOLDOWN=180`, with the pinned assertion still green. What the bound genuinely buys
+is rejection of order-of-magnitude and zero-margin defaults — the two live defects on
+PR #676. Closing the gap properly requires a caller-side change: pace in ROUNDS rather
+than wall-clock, or have the dispatcher enforce a minimum wait-round duration. Neither
+is derivable from the mtimes `codex-retrigger.sh` reads, so neither belongs in the
+helper; tracked as a follow-up.
+
+*Why the original reasoning does not survive.* This ADR justified one-shot purely
+as ANTI-SPAM (see the first Guards bullet) — never as a safety boundary. What it
+did not know is how much load the nudge carries. #673 measured it: after the FIRST
+fix round, the Codex ack tiers can no longer clear on their own. `ack-ledger.sh`'s
+outdated short-circuit (`:500-508`) fires forever once any Codex thread goes
+outdated, and its ALL-OR-STALE freshness proof (`:558-594`) is re-broken by every
+push, because a thread disposed in round N never gains a newer resolver comment
+afterwards. Both were reproduced against PR #670's live thread data, and each is
+independently sufficient to hold Codex `stale` for the life of the PR.
+
+So from round 2 onward a fresh Tier-F 👍 is the *only* exit, and this nudge is the
+only thing that asks for one. A single-use mechanism was holding up a gate it is
+structurally required to clear: one dropped or ignored nudge (PR #670 — delivered
+at 10:32:19Z, no Codex activity for the following 66 minutes) made
+`.claude/skip-pr-grind.local` the sole remaining exit, turning a deliberate risk
+acceptance into routine plumbing. The budget stays bounded, so this ADR's anti-spam
+intent is preserved; only its assumption that one attempt always suffices is
+retracted.
+
+**This does not close #673.** A bounded retry raises the probability of a Tier-F
+ack; it cannot manufacture one if Codex is genuinely unresponsive. The
+terminal-but-unacked classification that would close the dead end is merge-gate
+semantics and is tracked separately.
+
 ## Context
 
 pr-grind gates a merge on a *fresh per-HEAD* ack from each AI reviewer. Codex
@@ -70,7 +142,10 @@ above) is the caller's, because those signals live in the caller's context.
 
 **Guards / safety:**
 
-- **One-shot per (PR, HEAD)** — the marker prevents re-trigger spam across
+- **One-shot per (PR, HEAD)** *(amended 2026-08-15 → bounded N + cooldown, #673 —
+  this bullet's anti-spam rationale is exactly why the change is safe: it names no
+  safety boundary, so raising the budget from 1 to a small N loosens nothing)* —
+  the marker prevents re-trigger spam across
   consecutive wait-rounds on one HEAD; a new push (new HEAD) is eligible again.
   Per-(PR,HEAD) scoping means concurrent grinds on different PRs never race on a
   shared marker (same rationale as pr-grind's per-PR solo-opt-in snapshot).
@@ -104,13 +179,40 @@ expressions of trigger condition #1:
 - **Dispatcher loop** (`skills/pr-grind/SKILL.md`) — `RESULT_COMMIT_SHA == "none"`
   (the canonical classifier; this site is authoritative since the dispatcher
   overwrites the worker's advisory acks and owns the loop).
-- **Worker Step 6.5** (`agents/pr-grinder.md`) — a clean working tree: no unstaged
-  tracked changes (`git diff --quiet`), no staged changes (`git diff --cached
-  --quiet`), AND no new untracked files (`git ls-files --others --exclude-standard`
-  empty). The worker stages fixes but never commits (the dispatcher commit-block
-  does), so a fully clean tree means no fix was made this round (HEAD unchanged).
-  `--exclude-standard` honors `.gitignore`, so the re-trigger `.local` marker and
-  other ignored files never trip the guard.
+- **Worker Step 6.5** (`agents/pr-grinder.md`) — an empty staged index
+  (`git diff --cached --quiet`). The worker stages fixes but never commits (the
+  dispatcher commit-block does), so an empty index means this round produces no
+  push (HEAD unchanged).
+
+**Amendment (2026-08-15, issue #678) — the worker site was NOT an equivalent
+expression, and now is.** As originally shipped, Worker Step 6.5 tested a *clean
+working tree*: `git diff --quiet` AND `git diff --cached --quiet` AND
+`git ls-files --others --exclude-standard` empty. That is a strict superset of the
+canonical classifier, so the sentence above ("all equivalent expressions of trigger
+condition #1") was false for this site — it could only ever under-fire relative to
+`RESULT_COMMIT_SHA == "none"`, never over-fire.
+
+The extra clauses test states that cannot produce a push: `scripts/dispatcher-commit-block.sh`
+contains **zero `git add` calls** and commits the index alone, and its `needs_more`
+branch routes on `git diff --cached --quiet` alone (empty index →
+`emit_success_no_commit` → `result_commit_sha:"none"`). Unstaged tracked edits and
+untracked files are therefore invisible to the commit decision.
+
+The untracked clause was the live defect. `git ls-files --others --exclude-standard`
+returns **any** untracked non-ignored path, not only paths this round created, so
+one long-lived untracked file disables the nudge permanently and silently. In this
+repo `.claude/parked/` had done exactly that for weeks: the worker-side call site
+had never fired, and #676's grind needed the dispatcher-side site invoked by hand.
+That matters beyond cosmetics — #673 established the nudge as the only exit once
+the Codex ack tiers go sticky after round 1, so halving the delivery paths on
+unrelated repo debris raises the odds of the dead end.
+
+The guard is now the byte-identical predicate the dispatcher routes on, which makes
+the equivalence claim true by construction rather than by assertion. Pinned by
+`__tests__/codex-nudge-waitround-guard.test.ts`. Rejected alternative: comparing
+untracked paths against a pre-dispatch snapshot — `PRE_DISPATCH_BASELINE` is a
+*staged-paths* baseline (dispatcher-commit-block.sh:115-131), not an untracked one,
+so that route needed new plumbing to reproduce a signal the index already carries.
 
 ## Alternatives
 
@@ -137,7 +239,7 @@ expressions of trigger condition #1:
 ## Consequences
 
 - A Codex-only-stale, unchanged-HEAD PR now converges automatically: pr-grind posts
-  exactly one `@codex review`, Codex re-reviews, and the next wait-round acks via
+  up to `PR_GRIND_CODEX_RETRIGGER_MAX` `@codex review` attempts, Codex re-reviews, and the next wait-round acks via
   Tier F (or surfaces new findings the worker triages) — instead of dead-ending at
   `--max-wait`.
 - The gate is **not** loosened: the merge authority (required status checks) is
@@ -153,10 +255,19 @@ expressions of trigger condition #1:
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (9 cases, `gh` stubbed): one-shot post,
-  marker idempotency, opt-out, fail-safe (post failure → released claim, exit 0, no
-  marker), custom phrase, bad-input skip, usage error, `gh` missing, and sequential
-  idempotency (two real runs → exactly one post).
+- Covered by `tests/test-codex-retrigger.sh` (19 cases total: 10 original + 9 added
+  by #673, `gh` stubbed). The #673 cases pin the budget in BOTH directions — it
+  spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
+  pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
+  PRs a fresh budget), the cooldown blocking while hot and releasing once elapsed,
+  a malformed `MAX` falling back to the default rather than unlimited, a `MAX`
+  ceiling, a failed post spending no attempt, hole refill, and the #676
+  wait-budget-coupling assertion.
+  The original 10: happy path, one-shot
+  (marker present → no second post), opt-out, fail-safe (post failure → released
+  claim, exit 0, no marker), transient recovery, custom phrase, bad-input skip,
+  usage error, `gh` missing, and sequential idempotency (two real runs → exactly
+  one post).
 - **Bootstrapping caveat:** when this fix grinds its *own* PR, the running pr-grind
   is the *installed* plugin (which predates the fix), so it can still hit the very
   dead-end the PR fixes — resolve with a manual `@codex review`, exactly as for #217.
@@ -202,11 +313,32 @@ expressions of trigger condition #1:
 - Codex's GitHub integration changes its signal (e.g. starts emitting an `APPROVED`
   `/reviews` entry or a check-run on re-review) → the re-trigger may become
   unnecessary; reassess whether the ledger can ack Codex without it.
-- A repo reports re-trigger comment noise → consider tightening the trigger (e.g.
-  require N consecutive Codex-only-stale wait-rounds before posting) or lengthening
-  the one-shot scope.
+- A repo reports re-trigger comment noise → lower `PR_GRIND_CODEX_RETRIGGER_MAX`
+  (1 restores one-shot) or raise `PR_GRIND_CODEX_RETRIGGER_COOLDOWN` before
+  changing code; only if neither knob helps, consider tightening the trigger (e.g.
+  require N consecutive Codex-only-stale wait-rounds before posting). **Raising the
+  cooldown re-opens the coupling below — check it.**
+- **Either default changes, or the dispatcher's default `--max-wait` changes** →
+  re-check `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`. Violating it does
+  not fail loudly at runtime; it silently makes the later attempts unreachable and
+  degrades the budget back toward one-shot — the #676 defect. `--max-wait` is owned
+  by `skills/pr-grind/SKILL.md`, so a change there can break this from the other
+  side, and the pinned assertion in `tests/test-codex-retrigger.sh` reads the two
+  script defaults but NOT the dispatcher's `--max-wait` (it hardcodes the ~8-minute
+  figure from this ADR's Context). Changing `--max-wait`'s default therefore requires
+  updating that constant by hand — the test cannot catch that one for you.
+- Codex answers the *first* nudge essentially always, across many PRs → the budget
+  is dead weight; drop `MAX` back to 1 and keep the cooldown.
+- Codex ignores all N attempts often enough that operators still reach for the skip
+  file → the budget is not the binding constraint, and the terminal-but-unacked
+  classification (#673) is what needs shipping, not a larger N.
 - The trigger phrase or connector login changes upstream → update the
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` default / the `chatgpt-codex-connector` login.
+- **Raising `MAX` or `COOLDOWN`, or lowering the dispatcher's default `--max-wait`,
+  without re-checking `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`** →
+  re-creates the #676 dead end (a scheduled attempt whose cooldown has not yet
+  elapsed when `--max-wait` exhausts is never reached). Re-derive the inequality
+  against the current `--max-wait` default before changing either knob.
 
 <!-- design-reviewed: PASS -->
 <!-- design-review-coverage: FULL 3/3  -->

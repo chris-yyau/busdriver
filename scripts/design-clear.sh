@@ -8,7 +8,8 @@
 #
 #   - lists pending tokens through the same `marker_ops.py classify` the gate
 #     uses (never a blind glob),
-#   - clears exactly ONE named token, never a blanket wipe,
+#   - clears exactly ONE named token — or, with --all-for-doc, every token bound
+#     to ONE NAMED document — never a blanket wipe,
 #   - requires deliberate confirmation (interactive y/N, or explicit --yes),
 #   - writes one bypass-log.jsonl event per clear — the durable audit trail that
 #     a review requirement was operator-released.
@@ -43,6 +44,24 @@
 #   design-clear.sh <index>         # clear the Nth listed token (confirms)
 #   design-clear.sh <doc-path>      # clear the token bound to that design doc
 #   design-clear.sh <sel> --yes     # skip the interactive confirmation
+#   design-clear.sh --all-for-doc <doc-path>
+#                                   # clear every LISTED token for that ONE named
+#                                   # doc, one audit event each, one confirmation
+#
+# Editing a design doc arms a FRESH token each time, so one document routinely
+# accumulates a dozen or more (#665). --all-for-doc drains exactly that: the doc
+# is named (stable, unlike an index), no other doc can be touched, and the trail
+# still gets one design-marker-cleared event per released token.
+# It clears every token the CLASSIFIER LISTED. The classifier's emit budget is
+# PER-KIND: TOKEN records are capped at 20, legacy records at a far higher
+# backstop, so an unrelated legacy backlog can never hide a doc's tokens. When
+# either budget truncates, the classifier says so explicitly and this helper acts
+# on the signal rather than guessing (#671): a cut TOKEN listing under-reports
+# and the closing line says to re-run; a cut LEGACY listing makes the
+# same-document screen unsound, so every by-name release is refused outright.
+# A doc holding more than 20 tokens takes more than one run. It is not
+# a promise to empty the directory in one shot; it is a promise never to touch a
+# token belonging to another doc.
 #
 # Exit: 0 ok / 1 nothing to do or refused / 2 cannot resolve marker state.
 
@@ -65,10 +84,15 @@ source "$_SELF_DIR/../hooks/gate-scripts/lib/resolve-repo-dir.sh"
 
 SELECTOR=""
 ASSUME_YES=0
+ALL_FOR_DOC=0
 for arg in "$@"; do
     case "$arg" in
         --yes|-y) ASSUME_YES=1 ;;
-        -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --all-for-doc) ALL_FOR_DOC=1 ;;
+        # Address the header block by its terminator, not by line numbers: the
+        # old '2,28p' silently stopped short of Usage:, so every mode added since
+        # was undiscoverable from --help. A pattern range cannot drift.
+        -h|--help) sed -n '2,/^# Exit:/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         -*) printf 'design-clear: unknown flag %s\n' "$arg" >&2; exit 2 ;;
         *)
             if [ -n "$SELECTOR" ]; then
@@ -113,33 +137,77 @@ fi
 
 SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
 
-# The classifier caps emitted records at K=20 (marker_ops.py, ADR-C) — the gate
-# only needs "is anything pending", so it stops counting. Hitting the cap means
-# this listing may be INCOMPLETE, which bounds what the helper may honestly say:
-# no remaining-count arithmetic, and a doc selector that finds no match could
-# still be pending but unlisted. Clearing stays exact (one named token), so a
-# truncated list never over-deletes — it only under-reports.
-# ponytail: warn on truncation instead of adding an uncapped classify-all mode —
-# that means editing a fail-CLOSED security classifier for a case needing 21
-# simultaneously-pending design docs. Add the mode if that ever happens for real.
-CAP=20
+# The classifier's emit budgets are PER-KIND, and a truncated kind is announced
+# EXPLICITLY: one trailing `overflow` record naming which kind was cut (#671).
+# Read that signal rather than inferring truncation from "I counted exactly the
+# cap" — the old inference false-positived on a set that landed on the cap
+# exactly, and could not see valid tokens dropped before they ever reached the
+# emitter (marker_ops _classify_tokens buffers at K).
+#
+# The two kinds mean different things and are handled differently:
+#   token-overflow  — under-reports. Clearing stays exact (one named token), so
+#                     a short list never over-deletes; say so and let the
+#                     operator drain what IS listed and re-run. Refusing here
+#                     instead would refuse in #665's own motivating scenario.
+#   legacy-overflow — NOT safe the same way. The all-or-nothing screen below can
+#                     only refuse on records it was handed, so a cut legacy list
+#                     may be hiding the very entry that names the doc being
+#                     released. Every name-based selector is refused outright.
 TRUNCATED=0
-[ "${#SRCS[@]}" -ge "$CAP" ] && TRUNCATED=1
+LEGACY_OVERFLOW=0
+_n=0
+while [ "$_n" -lt "${#KINDS[@]}" ]; do
+    if [ "${KINDS[$_n]}" = "overflow" ]; then
+        case "${REASONS[$_n]}" in
+            token-overflow)  TRUNCATED=1 ;;
+            legacy-overflow) LEGACY_OVERFLOW=1 ;;
+        esac
+    fi
+    _n=$(( _n + 1 ))
+done
 
 truncation_note() {
-    [ "$TRUNCATED" -eq 1 ] || return 0
-    printf '\nNOTE: the classifier caps its listing at %d records and that cap was hit.\n' "$CAP"
-    printf '      More tokens may be pending than are shown. Clear a few, then re-run.\n'
+    if [ "$TRUNCATED" -eq 1 ]; then
+        printf '\nNOTE: the classifier truncated its TOKEN listing (it said so explicitly).\n'
+        printf '      More tokens are pending than are shown. Clear a few, then re-run.\n'
+    fi
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf '\nNOTE: the classifier truncated its LEGACY listing (it said so explicitly).\n'
+        printf '      Releasing by doc path is refused while that is true: the same-document\n'
+        printf '      screen needs the complete legacy set, and an unlisted entry could name\n'
+        printf '      the very doc being released. Trim the legacy list file first.\n'
+    fi
 }
 
 list_tokens() {
-    local n=0 note
+    # `gate_marker_owner_note` shells out to git once or twice PER RECORD, and
+    # the classifier's legacy budget is a high BACKSTOP (marker_ops L=500), not
+    # a listing size, so a long legacy list still means hundreds of subprocesses
+    # here where the token cap alone would have bounded it. Bound the
+    # NOTES rather than the listing: this is the tool that is supposed to show
+    # the complete set, and the note is a which-worktree convenience, not part
+    # of the record. Records past the budget still list, just without it.
+    local n=0 note notes_left=20
     printf 'Pending design-review tokens:\n\n'
     while [ "$n" -lt "${#SRCS[@]}" ]; do
         note=""
-        [ -n "${DOCS[$n]}" ] && note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
-        if [ -n "${DOCS[$n]}" ]; then
+        if [ -n "${DOCS[$n]}" ] && [ "$notes_left" -gt 0 ]; then
+            note="$(gate_marker_owner_note "${DOCS[$n]}" "$SELF_ROOT")"
+            notes_left=$(( notes_left - 1 ))
+        fi
+        if [ -n "${DOCS[$n]}" ] && [ "${KINDS[$n]}" = "token" ]; then
             printf '  [%d] %s%s\n' "$(( n + 1 ))" "${DOCS[$n]}" "$note"
+        elif [ -n "${DOCS[$n]}" ]; then
+            # A legacy list-file record IS bound to a doc_path (needed for the
+            # all-or-nothing safety check below), but it can never be cleared by
+            # naming that doc -- unlinking it would drop the whole shared list
+            # file, releasing every OTHER doc named in it too (a blanket wipe).
+            # Rendering it identically to a real per-doc token, as before,
+            # advertised `design-clear.sh '<doc>'` / --all-for-doc for a
+            # selector that always refuses. Show the doc for context but drop
+            # the clearable-looking format (cubic, PR #670).
+            printf '  [%d] %s%s  [%s]  (not clearable by name — edit the legacy list file, see below)\n' \
+                "$(( n + 1 ))" "${DOCS[$n]}" "$note" "${REASONS[$n]}"
         else
             printf '  [%d] %s  [%s]  (not clearable here — see below)\n' \
                 "$(( n + 1 ))" "${SRCS[$n]}" "${REASONS[$n]}"
@@ -151,8 +219,20 @@ list_tokens() {
 }
 
 if [ -z "$SELECTOR" ]; then
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        printf 'design-clear: --all-for-doc needs the design doc to drain.\n' >&2
+        printf '  design-clear.sh --all-for-doc <doc-path>\n' >&2
+        exit 2
+    fi
     list_tokens
-    printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf '\nLEGACY listing is truncated: by-name release (doc-path or --all-for-doc) is\n'
+        printf 'refused until you trim the legacy list file. Until then:\n'
+        printf '  design-clear.sh <index>   # needs a tty — an index is refused with --yes\n'
+    else
+        printf '\nClear one with:  design-clear.sh <index>   or   design-clear.sh <doc-path>\n'
+        printf 'Drain one doc:   design-clear.sh --all-for-doc <doc-path>\n'
+    fi
     exit 0
 fi
 
@@ -164,8 +244,21 @@ fi
 # confirmation prompt names the doc before anything is deleted. Under --yes
 # nothing re-checks it, so an index could silently release the WRONG review.
 # Non-interactive callers must name the doc, which is stable.
-TARGET=-1
+TARGETS=()
 if [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
+    # --all-for-doc releases a SET, and only a doc path can name a set: it is the
+    # stable key the classifier validated, so every token it selects is bound to
+    # the document the operator typed. An index names one position in a listing
+    # that reorders between runs — it cannot identify a set at all, and honoring
+    # it here would silently reinterpret "index 3" as "everything sharing index
+    # 3's doc", releasing reviews the operator never named.
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        printf 'design-clear: --all-for-doc takes a DOC PATH, not an index (%s).\n\n' "$SELECTOR" >&2
+        printf 'It releases every token bound to one document, so the selector has to name\n' >&2
+        printf 'that document. Indexes are positions in a listing that shift between runs:\n' >&2
+        printf '  design-clear.sh --all-for-doc <doc-path>\n' >&2
+        exit 2
+    fi
     if [ "$ASSUME_YES" -eq 1 ]; then
         printf 'design-clear: refusing an index selector with --yes.\n\n' >&2
         printf 'Indexes are positions in a listing that can shift between runs (a token\n' >&2
@@ -175,27 +268,108 @@ if [[ "$SELECTOR" =~ ^[0-9]+$ ]]; then
         exit 2
     fi
     if [ "$SELECTOR" -ge 1 ] && [ "$SELECTOR" -le "${#SRCS[@]}" ]; then
-        TARGET=$(( SELECTOR - 1 ))
+        TARGETS+=( "$(( SELECTOR - 1 ))" )
     fi
 else
+    # #671 — fail CLOSED on a truncated LEGACY listing. Both name-based forms
+    # depend on having been handed every legacy record for the doc: --all-for-doc
+    # refuses all-or-nothing on a non-token record in the set, and the plain
+    # selector's ">1 match" refusal is the same screen wearing a different hat.
+    # Neither can refuse on a record it never saw, so a cut legacy list would
+    # release a doc's tokens while an unlisted legacy entry for it stayed armed —
+    # the bypass PR #670 spent seven rounds closing, through a new door. An index
+    # selector never claimed that screen (it releases exactly one named token),
+    # so it stays available, as does the no-arg listing.
+    if [ "$LEGACY_OVERFLOW" -eq 1 ]; then
+        printf 'design-clear: refusing a doc-path selector — the legacy listing was truncated.\n\n' >&2
+        printf 'Releasing by name screens for a legacy list entry naming the SAME document,\n' >&2
+        printf 'and that screen can only see records the classifier emitted. It did not emit\n' >&2
+        printf 'them all, so an entry for %s could be pending and unlisted.\n\n' "$SELECTOR" >&2
+        printf 'Trim the legacy list file, then re-run — or, AT A TERMINAL, release one\n' >&2
+        printf 'token by its listed index, which never depended on that screen:\n' >&2
+        printf '  design-clear.sh            # full listing, names the file to trim\n' >&2
+        printf '  design-clear.sh <index>    # needs a tty — an index is refused with --yes,\n' >&2
+        printf '                             # so the prompt that names the doc always runs\n' >&2
+        exit 2
+    fi
     # Match on the doc path the classifier VALIDATED (token body), not on user
     # spelling: normalize the selector the same way arming did, so a relative
     # path or a `..` spelling still resolves to the one true token.
     NORM="$(gate_marker_norm_path "$SELECTOR" 2>/dev/null || printf '%s' "$SELECTOR")"
+    # Collect EVERY match first, then decide what to say. Erroring on the second
+    # match (as this used to) meant the message was chosen before the rest of the
+    # set was known — so a doc whose set includes a legacy record still got told
+    # to run --all-for-doc, which the all-or-nothing check below then refuses.
+    # Same rule the gate renderer follows: never print a command that cannot
+    # succeed (Codex, PR #670).
+    MIXED_SRC=""
     n=0
     while [ "$n" -lt "${#DOCS[@]}" ]; do
         if [ -n "${DOCS[$n]}" ] && [ "${DOCS[$n]}" = "$NORM" ]; then
-            if [ "$TARGET" -ge 0 ]; then
-                echo "design-clear: '$SELECTOR' matches more than one token — select by index." >&2
-                exit 2
+            TARGETS+=( "$n" )
+            if [ "${KINDS[$n]}" != "token" ] && [ -z "$MIXED_SRC" ]; then
+                MIXED_SRC="${SRCS[$n]}"
             fi
-            TARGET=$n
         fi
         n=$(( n + 1 ))
     done
+    if [ "$ALL_FOR_DOC" -eq 0 ] && [ "${#TARGETS[@]}" -gt 1 ]; then
+        printf "design-clear: '%s' matches more than one pending record.\n\n" "$SELECTOR" >&2
+        if [ -n "$MIXED_SRC" ]; then
+            printf 'One of them is a legacy list-file marker, which names several docs at\n' >&2
+            printf 'once — clearing it would be a blanket wipe, so NO selector can release\n' >&2
+            printf 'this doc while that entry stands (--all-for-doc refuses it too). Remove\n' >&2
+            printf 'this doc from the list file by hand first:\n  %s\n' "$MIXED_SRC" >&2
+        else
+            printf 'Editing a doc arms a fresh token each time, so this is the normal state\n' >&2
+            printf 'of a doc that went through a few review rounds. Release them together:\n' >&2
+            # Shell-quote it: this line is meant to be COPIED and run, so a
+            # path with a space or apostrophe must survive the round trip.
+            printf "  design-clear.sh --all-for-doc '%s'\n\n" "${SELECTOR//\'/\'\\\'\'}" >&2
+            printf 'Or pick exactly one by its listed index:  design-clear.sh <index>\n' >&2
+        fi
+        exit 2
+    fi
+    # --all-for-doc: also catch UNVALIDATED "token" records for the SAME doc.
+    # `arm` names a token `<sha(norm)>.<nonce>` before writing its body, so a
+    # write that fails partway (truncated/forged) leaves a correctly-named file
+    # with an unparseable body -- _classify_tokens emits it with an EMPTY
+    # doc_path (the body is untrusted, so it cannot bind one) and the doc-match
+    # loop above can therefore never select it. Left out of TARGETS, it is
+    # invisible to the all-or-nothing check below: every healthy sibling for
+    # the doc drains, the command exits 0, and the malformed marker for the
+    # SAME document stays armed -- reopening Codex's bypass (PR #670) through
+    # an unvalidated TOKEN instead of an unbound legacy record. The filename
+    # prefix is server-derived (arm writes it, independent of the body it
+    # failed to write), so it is trustworthy enough to route the record into
+    # the refusal below even though its content cannot be shown.
+    if [ "$ALL_FOR_DOC" -eq 1 ]; then
+        DOC_SHA="$(python3 -I "$_SELF_DIR/../hooks/gate-scripts/lib/marker_ops.py" sha "$NORM" 2>/dev/null || true)"
+        # Fail CLOSED. Without the digest this scan cannot run, and skipping it
+        # silently is the whole bypass: the drain would proceed exactly as if no
+        # malformed same-doc token existed. python3 is already a hard dependency
+        # (the classifier above ran through it), so an empty digest here means
+        # something is broken, not absent — refuse rather than release blind.
+        if [ -z "$DOC_SHA" ]; then
+            printf 'design-clear: cannot compute the doc digest needed to screen for\n' >&2
+            printf 'malformed same-document tokens — refusing --all-for-doc.\n\n' >&2
+            printf 'Releasing without that screen could drain every healthy token for %s\n' "$SELECTOR" >&2
+            printf 'while leaving an unvalidated marker for the SAME doc armed.\n' >&2
+            exit 2
+        fi
+        n=0
+        while [ "$n" -lt "${#SRCS[@]}" ]; do
+            if [ "${KINDS[$n]}" = "token" ] && [ -z "${DOCS[$n]}" ]; then
+                case "$(basename -- "${SRCS[$n]}")" in
+                    "$DOC_SHA".*) TARGETS+=( "$n" ) ;;
+                esac
+            fi
+            n=$(( n + 1 ))
+        done
+    fi
 fi
 
-if [ "$TARGET" -lt 0 ]; then
+if [ "${#TARGETS[@]}" -eq 0 ]; then
     printf 'design-clear: no pending token matches %s\n\n' "$SELECTOR" >&2
     list_tokens >&2
     exit 1
@@ -208,6 +382,25 @@ fi
 # index selector delete a fail-CLOSED marker whose subject is unknown — releasing
 # a review requirement with nothing to name in the audit trail. Require the
 # reason to be "token" AND a non-empty validated doc.
+# Validate EVERY selected record before releasing any of them. Under
+# --all-for-doc this is all-or-nothing on purpose: a doc whose token set contains
+# an anomalous marker is exactly the state the gate blocks on deliberately, and
+# draining the healthy siblings around it would clear the block while leaving the
+# anomaly — quietly converting "inspect this" into "already released most of it".
+_t=0
+while [ "$_t" -lt "${#TARGETS[@]}" ]; do
+TARGET="${TARGETS[$_t]}"
+if [ "${KINDS[$TARGET]}" = "overflow" ]; then
+    # Not a marker at all — the classifier's "this listing was cut" signal
+    # (#671). It occupies an index, so an index selector can land on it; there
+    # is nothing on disk behind it to release.
+    printf 'design-clear: [%d] is a listing-truncation notice (%s), not a marker.\n' \
+        "$(( TARGET + 1 ))" "${REASONS[$TARGET]}" >&2
+    printf 'It records that the classifier stopped emitting records of that kind;\n' >&2
+    printf 'there is nothing to clear. Re-run for the rest, or trim:\n  %s\n' \
+        "${SRCS[$TARGET]}" >&2
+    exit 1
+fi
 if [ "${KINDS[$TARGET]}" != "token" ]; then
     # A legacy list-file marker holds several docs at once, so removing it is the
     # blanket wipe this helper exists to avoid.
@@ -227,13 +420,47 @@ if [ "${REASONS[$TARGET]}" != "token" ] || [ -z "${DOCS[$TARGET]}" ]; then
         "${SRCS[$TARGET]}" >&2
     exit 1
 fi
+_t=$(( _t + 1 ))
+done
 
-TOKEN="${SRCS[$TARGET]}"
-DOC="${DOCS[$TARGET]}"
-TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+# NOTE on the caps and the all-or-nothing check above. The check can only refuse
+# on records the classifier EMITTED, and the emitter budgets are capped — so it
+# is only sound if a same-doc anomaly can never be the thing that got truncated.
+# Two mechanisms hold that, both upstream rather than here:
+#   * marker_ops.cmd_classify runs _classify_legacy BEFORE _classify_tokens and
+#     the budgets are per-kind (#665 review, Codex), so a token being visible
+#     never implies a legacy record was crowded out;
+#   * when the legacy budget itself truncates, the classifier says so with an
+#     explicit overflow record and every name-based selector is refused before
+#     reaching this point (#671) — the screen is never run against a set that is
+#     knowably partial.
+# What remains is TOKEN truncation, which only under-drains — handled honestly
+# by the closing message.
+#
+# A blanket "refuse whenever TRUNCATED" was the other candidate fix and is NOT
+# used: the cap is hit at ~20 pending records, which is precisely the backlog
+# size #665 exists to drain, so it would refuse in the feature's own motivating
+# scenario (verified: 0 of 23 tokens released) and leave the gate's hint pointing
+# at a command that always fails — the defect this change set removes.
 
-printf '\nAbout to release the design-review requirement for:\n\n  %s\n\ntoken: %s\n\n' "$DOC" "$TOKEN"
-printf 'The gate will stop blocking on this doc. This is logged to %s/bypass-log.jsonl.\n' "$STATE_DIR"
+# Every target is a validated token for the same doc, so one name covers them all.
+DOC="${DOCS[${TARGETS[0]}]}"
+N_TARGETS="${#TARGETS[@]}"
+
+printf '\nAbout to release the design-review requirement for:\n\n  %s\n\n' "$DOC"
+if [ "$N_TARGETS" -gt 1 ]; then
+    printf '%d tokens are bound to it (one per edit that armed a review):\n\n' "$N_TARGETS"
+    _t=0
+    while [ "$_t" -lt "$N_TARGETS" ]; do
+        printf '  %s\n' "${SRCS[${TARGETS[$_t]}]}"
+        _t=$(( _t + 1 ))
+    done
+    printf '\n'
+else
+    printf 'token: %s\n\n' "${SRCS[${TARGETS[0]}]}"
+fi
+printf 'The gate will stop blocking on this doc. This is logged to %s/bypass-log.jsonl\n' "$STATE_DIR"
+printf '(one event per released token).\n'
 
 # How this release was authorized, recorded in the audit event. `--yes` is
 # sanctioned by ADR 0017 (an operator scripting their own drain), but it is NOT a
@@ -257,7 +484,11 @@ else
         echo "design-clear: no terminal to confirm on. Re-run with --yes if you mean it." >&2
         exit 1
     fi
-    printf 'Clear it? [y/N] '
+    if [ "$N_TARGETS" -gt 1 ]; then
+        printf 'Clear all %d? [y/N] ' "$N_TARGETS"
+    else
+        printf 'Clear it? [y/N] '
+    fi
     read -r reply </dev/tty || reply=""
     case "$reply" in
         y|Y|yes|YES) : ;;
@@ -446,29 +677,61 @@ finally:
 # NOT 2>/dev/null: the writer prints a specific SHORT WRITE diagnostic telling
 # the operator the log must be REPAIRED, which the generic advice below would
 # contradict. The Python block exits quietly on the expected path errors.
-if ! log_event "design-marker-cleared"; then
-    printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
-    printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
-    exit 2
-fi
+# One event per released token, never a single summary event: the trail's unit is
+# the review requirement, and #665 asked for the drain to stay as legible as the
+# 14 individual clears it replaces. A partial run is therefore fully truthful —
+# every token released before the abort has its own durable record.
+CLEARED=0
+partial_note() {
+    [ "$CLEARED" -gt 0 ] || return 0
+    printf 'Released %d of %d token(s) for this doc before stopping; the rest stay armed.\n' \
+        "$CLEARED" "$N_TARGETS" >&2
+}
 
-if ! rm -f -- "$TOKEN"; then
-    # Already recorded as cleared, but it is not — emit the correction so the
-    # trail stays truthful rather than leaving a phantom release on the record.
-    if ! log_event "design-marker-clear-failed"; then
-        # The log now claims a release that did not happen and the correction
-        # could not be appended. Say so loudly — a silently inconsistent audit
-        # trail is worse than a noisy one.
-        printf 'design-clear: WARNING — the audit log records this token as CLEARED but it\n' >&2
-        printf 'was NOT removed, and the correcting entry could not be written. The log at\n' >&2
-        printf '%s is INCONSISTENT and needs manual reconciliation.\n' "$LOG" >&2
+_t=0
+while [ "$_t" -lt "$N_TARGETS" ]; do
+    TOKEN="${SRCS[${TARGETS[$_t]}]}"
+    TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+
+    if ! log_event "design-marker-cleared"; then
+        printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
+        printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
+        partial_note
+        exit 2
     fi
-    printf 'design-clear: could not remove %s.\n' "$TOKEN" >&2
-    exit 2
-fi
+
+    if ! rm -f -- "$TOKEN"; then
+        # Already recorded as cleared, but it is not — emit the correction so the
+        # trail stays truthful rather than leaving a phantom release on the record.
+        if ! log_event "design-marker-clear-failed"; then
+            # The log now claims a release that did not happen and the correction
+            # could not be appended. Say so loudly — a silently inconsistent audit
+            # trail is worse than a noisy one.
+            printf 'design-clear: WARNING — the audit log records this token as CLEARED but it\n' >&2
+            printf 'was NOT removed, and the correcting entry could not be written. The log at\n' >&2
+            printf '%s is INCONSISTENT and needs manual reconciliation.\n' "$LOG" >&2
+        fi
+        printf 'design-clear: could not remove %s.\n' "$TOKEN" >&2
+        partial_note
+        exit 2
+    fi
+    CLEARED=$(( CLEARED + 1 ))
+    _t=$(( _t + 1 ))
+done
 
 if [ "$TRUNCATED" -eq 1 ]; then
-    printf 'Cleared. Others remain pending (listing was capped — re-run to see them).\n'
+    # The classifier declared that it dropped token records (#671), so this doc
+    # may still hold tokens that were never listed — "all for doc" is all the
+    # tokens it could SEE. The old wording hedged ("MAY remain") because
+    # truncation was INFERRED from a count landing on the cap, which is also
+    # what an exactly-full-but-complete listing looks like. The signal is
+    # positive now: records really were dropped.
+    printf 'Cleared %d token(s). More tokens were pending than were listed — re-run to check.\n' \
+        "$CLEARED"
 else
-    printf 'Cleared. %d token(s) still pending.\n' "$(( ${#SRCS[@]} - 1 ))"
+    # SRCS holds every listed record across ALL docs (plus non-token markers),
+    # not just this one's tokens — say so, or an operator reads the count as
+    # leftovers for the doc just drained (CodeRabbit, PR #670).
+    printf 'Cleared %d token(s). %d marker record(s) still pending across all docs.\n' \
+        "$CLEARED" "$(( ${#SRCS[@]} - CLEARED ))"
 fi

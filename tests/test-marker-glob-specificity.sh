@@ -198,6 +198,93 @@ EOF
 python3 $qualified" "path-qualified wildcard: $qualified -> BLOCK"
 done
 
+echo "── D. a QUOTED targeted glob, in a payload piped to a shell (#640) ──"
+# The probe asked its glob question of the RAW words, so the quote the payload is wrapped
+# in stayed glued to the word: `lease_slo?.py'` is a pattern that matches the helper
+# nowhere, and the piped payload measured OK| while the same payload spelled literally
+# blocked. Section B's rows are all UNQUOTED, which is why they never caught it. The
+# literal twins are asserted alongside each glob so a regression that disables the whole
+# producer scan cannot pass this section by flipping both to allow.
+for recv in 'sh' 'bash -s' 'zsh'; do
+    assert_block "echo python3 lease_slot.py | $recv" "literal, unquoted -> $recv -> BLOCK"
+    assert_block "echo 'python3 lease_slot.py' | $recv" "literal, quoted -> $recv -> BLOCK"
+    assert_block "echo 'python3 lease_slo?.py' | $recv" "#640: quoted ? glob -> $recv -> BLOCK"
+    assert_block "echo 'python3 lease_slo[t].py' | $recv" "#640: quoted [] glob -> $recv -> BLOCK"
+    assert_block "printf '%s' 'python3 lease_slo?.py' | $recv" "#640: printf-quoted glob -> $recv -> BLOCK"
+done
+# Double quotes and a SPLIT quoted run: the shell concatenates adjacent runs, so the word
+# is a pattern about the helper even though no contiguous glob is spelled anywhere.
+assert_block 'echo "python3 lease_slo?.py" | sh' '#640: double-quoted glob -> BLOCK'
+assert_block "echo 'python3 lease_'slo?'.py' | sh" '#640: split quoted runs -> BLOCK'
+
+# GENERATED, not hand-picked — the same discipline section C's skeletons use, and for the
+# same reason: the first draft of this fix fixed the QUOTE and left every adjacent shell
+# OPERATOR as a live bypass (`lease_slo?.py;` is a pattern the helper does not match), and
+# a hand-written row per spelling is how that hole survived review once already. Codex
+# raised it on #640. The cross-product decorates each glob with what the shell separates
+# on before it globs, in both quote styles, and every cell must block.
+for quoting in single double; do
+    for pat in 'lease_slo?.py' 'lease_slo[t].py' 'lease_?lot.py'; do
+        for deco in '%s' '%s;' '%s ;' '%s&&true' 'true&&%s' '%s|cat' '(%s)' '%s>/dev/null' \
+                    '%s<in' '{ %s; }' 'true; %s & '; do
+            # The format string IS the fixture parameter here, by design.
+            # shellcheck disable=SC2059
+            payload="python3 $(printf "$deco" "$pat")"
+            case "$quoting" in
+                single) cmd="echo '$payload' | sh" ;;
+                double) cmd="echo \"$payload\" | sh" ;;
+            esac
+            assert_block "$cmd" "#640 generated: $quoting quotes, $deco with $pat -> BLOCK"
+        done
+    done
+done
+# An operator character INSIDE a bracket expression, which is why the probe asks the
+# whitespace split alongside the operator split rather than replacing it. These blocked
+# before #640 and must keep blocking: cutting the word at the `;` halves the pattern and
+# trades one bypass for another. Raised by codex on #640.
+#
+# NOT asserted, and named so it is not mistaken for coverage: a SPACE inside the class
+# (`lease_slo[<space>t].py`) still reads as OK. That one defeats the WHITESPACE split,
+# which has been the probe's only split since it was written -- verified allowing at
+# origin/main, so it is pre-existing and not #640's regression. Closing it needs a
+# bracket-aware scan, which is a wider change than this fix.
+for cls in 'lease_slo[;t].py' 'lease_slo[&t].py' 'lease_slo[|t].py' 'lease_slo[(t].py' 'lease_slo[<t].py'
+do
+    assert_block "eval \"python3 $LIB/$cls\"" "#640: operator inside a bracket class: $cls -> BLOCK"
+done
+
+# The accepted over-block, PINNED so it reads as a decision rather than an accident: a
+# payload that only quotes the name as data blocks too, because nothing static can tell
+# print from run inside an opaque payload. The literal twin is asserted first and blocked
+# BEFORE #640 as well -- that is the evidence this aligns the two spellings rather than
+# opening a class. Raised by codex on #640.
+assert_block "echo \"printf '%s' 'lease_slot.py'\" | sh" \
+    "#640 trade: quoted literal as data (blocked pre-#640 too) -> BLOCK"
+assert_block "echo \"printf '%s' 'lease_slo?.py'\" | sh" \
+    "#640 trade: quoted glob as data, now matching the literal -> BLOCK"
+
+# FD-PREFIXED REDIRECTS. Raised as Medium by Cursor Bugbot on #707: the claim was that a
+# globbed helper immediately before `2>` stays one token, so fnmatch never sees the
+# pattern the shell globs. Measured, the opposite is true and the probe is already right:
+# the FD digit binds to the WORD, not to the redirect, so the shell globs `lease_slo?.py2`
+# and matches nothing -- verified by EXECUTION (a stub helper in a temp dir never ran)
+# across bash, sh, zsh, dash and ksh, all five agreeing. The probe cutting on `>` and
+# leaving the digit attached is therefore the SAME tokenization the shell performs, not a
+# divergence from it.
+#
+# What is pinned here is the form that DOES execute -- the space-separated redirect, where
+# the digit is its own token and the glob really does reach the helper. That is the
+# security-relevant half and it was untested; the glued form needs no assertion because
+# the shell does not run it either.
+for redir in '2>&1' '2>/dev/null' '1>&2' '&>/dev/null' '3>/dev/null'; do
+    assert_block "eval \"python3 $LIB/lease_slo?.py $redir\"" \
+        "#707: executing FD redirect: $redir -> BLOCK"
+done
+
+# The release rule still holds through a quote: widening to the shell variants must not
+# hand `**` a new way to block, which is #573 reaching the same code path.
+assert_ok "echo 'it isn'\\''t ** anything **' | sh" "#573 holds: quoted ** in a piped payload -> allowed"
+
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"
 [[ "$FAIL" -eq 0 ]]

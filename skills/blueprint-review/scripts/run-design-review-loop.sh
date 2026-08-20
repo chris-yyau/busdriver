@@ -908,6 +908,13 @@ with open(pending, "w") as f:
         if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" 2>&1 > "$_aud_tmp"); then
           create_error_json "auditor" "unparseable witness output: ${_x_err:-no detail}" > "$_aud_tmp"
         fi
+      elif [[ "$_aud_exit" -eq 4 ]]; then
+        # rc 4 = SKIPPED (execute_review contract): no `.auditor.model` configured,
+        # so the witness never ran. ADR 0027's ABSENT-vs-FAILED distinction — an
+        # unset optional config key must not be reported as a failure. The message
+        # deliberately contains "not available" so the render below classifies it
+        # as absent rather than FAILED.
+        create_error_json "auditor" "witness not available — no .auditor.model configured (never ran)" > "$_aud_tmp"
       else
         # Empty output on a clean exit is the observed silent-stall shape — must
         # read as "witness absent", never as "witness found nothing".
@@ -1098,6 +1105,7 @@ with open(pending, "w") as f:
     if [[ "$_mw_status" == "ERROR" ]]; then
       _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
       case "$_mw_err" in
+        *"no .auditor.model configured"*) log_info "  Mechanism Witness: absent — no .auditor.model configured (never ran; set it in ~/.claude/busdriver.json to enable)" ;;
         *"not available"*) log_info "  Mechanism Witness: absent — opencode unavailable (no fallback)" ;;
         *)                 log_info "  Mechanism Witness: FAILED — $_mw_err (auxiliary; review unaffected)" ;;
       esac
@@ -1437,6 +1445,105 @@ EOF
     exit 1
   fi
 
+  # MOVED AHEAD OF THE FRESHNESS/JSON GATES (#656, Codex review on bceb00e7). Every
+  # exit between here and the verdict classification is fail-CLOSED and takes the
+  # script down: the freshness check below (`stale_claude_output`), validate_json_file
+  # (`invalid_claude_output`), and the countability guard (`uncountable_claude_output`).
+  # While this block sat AFTER them, a truncated or run_id-less claude.json exited at
+  # the freshness check and left the prior PASS standing in the document — the exact
+  # fail-open this block exists to close, reachable through the guards added to close it.
+  # The trigger is "a verdict FILE is present" (checked just above), not "the verdict
+  # parsed": a round that has a verdict to judge has already superseded the last one.
+  # HOISTED AGAIN (#656): these are now needed by the intake refusal a few lines
+  # below (an uncountable verdict must be able to downgrade a stale PASS before it
+  # exits), not only by Phase 5. Pure move — they depend only on DESIGN_FILE.
+  # Atomic in-place sed via an UNPREDICTABLE mktemp sibling — never a fixed
+  # `${DESIGN_FILE}.tmp`/.covtmp name a pre-existing symlink could hijack into
+  # truncating an arbitrary target. (Concurrent reviews of the SAME doc are already
+  # prevented upstream by the loop's review-pointer guard, so this only needs to be
+  # single-writer-safe.) The mode is copied from the source AFTER sed writes the
+  # temp — before-write would make a read-only (0444) source's redirect fail — so the
+  # replacement keeps the doc's original perms rather than mktemp's 0600. The temp is
+  # always removed, including on an mv failure, so no `.dr-edit.*` copy is leaked.
+  #
+  # HOISTED (#656) out of the approved-only branch below: the parked terminal state
+  # added by #656 must also be able to downgrade a stale PASS, and a second copy of
+  # this helper is exactly the "third copy drifting" defect this repo already tracks.
+  # Pure move — no logic change; it depends only on DESIGN_FILE.
+  _dr_atomic_sed() {  # <sed-expr> <file>
+    local _e="$1" _f="$2" _d _t _m
+    _d=$(dirname -- "$_f") || return 1
+    _t=$(mktemp "$_d/.dr-edit.XXXXXX") || return 1
+    # `if` guards throughout (never `cmd && ...`): a failing left-of-&& would trip
+    # set -e and skip the temp cleanup below.
+    if sed "$_e" "$_f" > "$_t"; then
+      # Copy the source mode onto the temp (GNU `stat -c` / BSD `stat -f`) before the
+      # swap; best-effort, and 0600 is the safe fallback if the mode is unreadable.
+      _m=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || true)
+      if [[ -n "$_m" ]]; then chmod "$_m" "$_t" 2>/dev/null || true; fi
+      if mv -f "$_t" "$_f"; then return 0; fi
+    fi
+    rm -f "$_t"
+    return 1
+  }
+
+  # WHOLE-LINE marker regexes (the writer always emits each marker on its own line).
+  # Every detect (grep) and rewrite (sed) below anchors to these so a marker string
+  # embedded in PROSE — `... the <!-- design-reviewed: PASS --> marker ...` — is never
+  # matched or corrupted. A marker ALONE on its own line is treated as a real marker
+  # by BOTH the writer here AND the reader (_doc_reviewed matches any occurrence): this
+  # is inherent to the machine-consumed marker design, so a tracked design doc must not
+  # place a bare-line marker example (even inside a ``` fence). No ERE-only metachars,
+  # so the same pattern is valid in grep BRE and sed BRE.
+  # _RE_COV keys on a line STARTING with the coverage prefix (not a complete `-->`),
+  # matching the reader's total count — so the upsert/strip below can also REPAIR a
+  # truncated/split/malformed stale marker line, not just a well-formed one. `.*$`
+  # consumes the rest of that line so the whole line is replaced/deleted. A prefix
+  # mid-line in prose is not at line start ⇒ untouched.
+  _RE_COV='^[[:space:]]*<!-- design-review-coverage:.*$'
+  _RE_PASS='^[[:space:]]*<!-- design-reviewed: PASS -->[[:space:]]*$'
+  _RE_PEND='^[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*$'
+
+  # #656: a PASS from a PRIOR run is superseded the moment a new round renders a verdict
+  # on this document — the approval branch re-stamps it below if and only if the NEW
+  # verdict earns it. Downgrading here, ahead of every fallible per-iteration write
+  # (validation, state fields, history appends, the follow-up file), is what makes the
+  # withholding paths trustworthy: each of those exits the script under `set -e`, and a
+  # failure anywhere between "verdict is in" and "document made honest" would leave a
+  # stale PASS standing over a blocking or malformed verdict. The readers
+  # (_doc_reviewed / gate_design_pass_honored) honor the DOCUMENT, never state.md, so the
+  # document is what has to be fixed first. ONE site ahead of everything fallible, rather
+  # than one per withholding branch — the per-branch downgrades below are kept as their
+  # own contract (#355 / #663) but are now no-ops in practice.
+  #
+  # Delegated to marker_ops.py `downgrade-pass` rather than the local grep/sed pair, for
+  # the reason #449 already wrote down: a shell strip is byte-level and LF-only, while the
+  # authoritative reader parses in TEXT mode where `\r`, `\n` and `\r\n` are ALL line
+  # boundaries. On a bare-CR document the shell pattern misses a marker the gate still
+  # honors — a stale PASS surviving precisely the check meant to remove it. Downgrading in
+  # the reader's own engine is the only way the two cannot diverge.
+  _MARKER_OPS="$_PLUGIN_ROOT/hooks/gate-scripts/lib/marker_ops.py"
+  if [[ -f "$DESIGN_FILE" ]]; then
+    if [[ ! -f "$_MARKER_OPS" ]] || ! command -v python3 >/dev/null 2>&1; then
+      # Fail-CLOSED: unable to prove the document does not carry an honored PASS.
+      log_error "Cannot reach the marker engine ($_MARKER_OPS) to clear a prior PASS."
+      log_error "  Refusing to judge a document whose marker state cannot be normalized."
+      exit 1
+    fi
+    # `-I` (isolated), matching every other marker_ops caller in the tree
+    # (check-design-document.sh:271, design-clear.sh:347): the repo being reviewed can
+    # ship a PYTHONPATH/sitecustomize, and an authorization control must not run inside
+    # an interpreter its subject can furnish.
+    if python3 -I "$_MARKER_OPS" downgrade-pass "$DESIGN_FILE"; then
+      log_info "  Prior PASS (if any) downgraded to PENDING pending this round's verdict."
+    else
+      log_error "Could not downgrade the prior PASS in '$DESIGN_FILE'."
+      log_error "  Refusing to judge a document that may still read PASS — it would be"
+      log_error "  honored whatever this run concludes. Fix the write error, then re-run."
+      exit 1
+    fi
+  fi
+
   # Freshness check on Claude output (Critic #2)
   # Decision 7 (ADR 0003): the verdict must come from the CURRENT run, with a
   # matching spec_hash. The pre-v3.3 branch accepted a different-run verdict on
@@ -1462,6 +1569,26 @@ EOF
   CLAUDE_END=$(millis)
   CLAUDE_DURATION=$((CLAUDE_END - CLAUDE_START))
 
+  # #656 (intake). validate_json_file only proves the file PARSES. A verdict that parses
+  # but cannot be COUNTED — `.issues: false`, an object, a string, absent — reaches
+  # `jq '.issues | length'` on the next line and aborts the whole script under `set -e`,
+  # BEFORE Phase 5 can withhold the PASS or take a stale one away. Refuse it here, where
+  # the exit is deliberate and the doc can still be made honest. Same shape the droid
+  # rescue already demands of a reviewer verdict (`_bp_droid_rescue`).
+  if ! jq -e '(.status == "PASS" or .status == "FAIL") and (.issues | type == "array")' \
+       "$CLAUDE_OUTPUT_FILE" >/dev/null 2>&1; then
+    log_error "Claude output is not a countable verdict — fail-closed."
+    log_error "  Needs a \"status\" of PASS|FAIL and an \"issues\" ARRAY: $CLAUDE_OUTPUT_FILE"
+    # Persist the same parked posture the Phase 5 write-site guard uses for this
+    # exact reason (arbiter_verdict_uncountable), so a reader of state.md sees a
+    # consistent terminal-state contract regardless of which guard caught the
+    # uncountable verdict. mark_review_complete only writes status/active.
+    update_state_field "progress_status" "\"parked_no_progress\""
+    update_state_field "early_stopped" "\"arbiter_verdict_uncountable\""
+    mark_review_complete "uncountable_claude_output"
+    exit 1
+  fi
+
   CLAUDE_STATUS=$(jq -r '.status' "$CLAUDE_OUTPUT_FILE")
   CLAUDE_ISSUE_COUNT=$(jq '.issues | length' "$CLAUDE_OUTPUT_FILE")
   log_info "  Claude: $CLAUDE_STATUS ($CLAUDE_ISSUE_COUNT issues, ${CLAUDE_DURATION}ms)"
@@ -1481,21 +1608,74 @@ EOF
   SCOPE_EXPANSION_PATTERN="OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"
 
   # Plan-blocking counts exclude TDD-discoverable categories AND scope-expansion suggestions.
-  PLAN_BLOCKING_HIGH=$(jq --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
-    '[.issues[] | select(
-      .severity == "high"
+  #
+  # ONE definition of the plan-blocking predicate, parameterised by severity. The
+  # counters here AND the #656 write-site guard below both evaluate it — a second
+  # hand-written copy is exactly the "third copy drifting" defect this repo tracks.
+  # shellcheck disable=SC2016  # $sevs/$tdd/$pat/$c/$s are jq variables, not shell ones
+  _PB_FILTER='[.issues[] | select(
+      (.severity as $s | $sevs | index($s))
       and .confidence >= 0.5
       and (.category as $c | $tdd | index($c) | not)
       and ((.suggestion // "") | test($pat) | not)
-    )] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
+    )] | length'
 
-  PLAN_BLOCKING_MEDIUM=$(jq --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
-    '[.issues[] | select(
-      .severity == "medium"
-      and .confidence >= 0.5
-      and (.category as $c | $tdd | index($c) | not)
-      and ((.suggestion // "") | test($pat) | not)
-    )] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
+  # Prints the count. Exits NON-ZERO when the arbiter output cannot be counted
+  # (no .issues array, entries jq cannot compare) — callers choose the posture.
+  _plan_blocking() {  # <severities-json-array>
+    jq --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
+       --argjson sevs "$1" "$_PB_FILTER" "$CLAUDE_OUTPUT_FILE"
+  }
+
+  # The `|| echo 0` default below is a FAIL-OPEN, left in place deliberately: these
+  # counts only steer WHICH convergence branch runs, and the authorization to stamp
+  # PASS is re-derived fail-CLOSED at the write site (_arbiter_earns_pass).
+  # shellcheck disable=SC2310  # the || is the point: an uncountable verdict must not
+  # abort here, it must fall through to the fail-CLOSED write-site guard below.
+  PLAN_BLOCKING_HIGH=$(_plan_blocking '["high"]' 2>/dev/null || echo 0)
+  # shellcheck disable=SC2310
+  PLAN_BLOCKING_MEDIUM=$(_plan_blocking '["medium"]' 2>/dev/null || echo 0)
+
+  # #656 (write-site invariant): whether the arbiter's verdict EARNS a PASS marker,
+  # re-derived from claude.json at the decision point rather than trusted from the
+  # PROGRESS_STATUS string computed 200 lines earlier and mutated by three branches.
+  #
+  # The counters above default to 0 on ANY jq failure, and their select() silently
+  # drops entries jq cannot compare. So a syntactically valid arbiter verdict the
+  # loop cannot actually COUNT reads as "zero findings" and stamps PASS. Measured on
+  # this tree before the fix — all four stamped `design-reviewed: PASS` and exited 0
+  # while claude.json said `"status": "FAIL"`:
+  #   * .issues absent / null
+  #   * 7 HIGH entries with no `confidence` field   (the shape #656 was filed on)
+  #   * 7 HIGH entries spelled "High"
+  #   * status FAIL enumerating no issues at all
+  # Same defect class #663 closed on the trajectory path: a NON-verdict (there "no
+  # progress", here "uncountable") laundered into a quality verdict.
+  #
+  # Fail-CLOSED — every conjunct must be provably true or the PASS is withheld.
+  # `confidence` is required on high/medium ONLY: LOW_COUNT has never required it,
+  # so demanding it on lows would reject verdicts that are legitimate today. It must also
+  # be IN RANGE: the counters filter on `>= 0.5`, so an out-of-band `-1` (or `1.5`, which
+  # over-counts) is silently dropped exactly like a missing field — numeric-type alone is
+  # not enough, the documented 0.0-1.0 domain is what makes the comparison meaningful. A FAIL
+  # that enumerates nothing contradicts itself (the arbiter prompt's own rule is
+  # "status FAIL if any high/medium with confidence >= 0.5"), so it is not countable
+  # either. Deferral semantics are UNCHANGED: a FAIL whose findings are all
+  # TDD-discoverable or scope-expansion still has zero plan-blocking and still passes.
+  _arbiter_earns_pass() {
+    jq -e \
+      --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" \
+      --arg pat "$SCOPE_EXPANSION_PATTERN" \
+      --argjson sevs '["high","medium"]' \
+      '(.status == "PASS" or .status == "FAIL")
+       and (.issues | type == "array")
+       and (.status == "PASS" or (.issues | length) > 0)
+       and (all(.issues[]; .severity as $s | ["high","medium","low"] | index($s)))
+       and (all(.issues[] | select(.severity != "low");
+                (.confidence | type == "number") and .confidence >= 0 and .confidence <= 1))
+       and (('"$_PB_FILTER"') == 0)' \
+      "$CLAUDE_OUTPUT_FILE" >/dev/null 2>&1
+  }
 
   HIGH_COUNT=$(jq '[.issues[] | select(.severity == "high" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
   MEDIUM_COUNT=$(jq '[.issues[] | select(.severity == "medium" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
@@ -1543,6 +1723,13 @@ EOF
     PROGRESS_STATUS="passed"
   fi
 
+  # Why the park reason is a SHELL var written later rather than persisted at the point
+  # of decision (#656): every persistence call is fallible, and under `set -e` a failing
+  # one exits the script. If that happened between deciding to park and rewriting the
+  # document, a stale PASS would survive a withheld verdict — the durable, reader-visible
+  # fix must land BEFORE the bookkeeping, so the parked branch writes both together after
+  # the downgrade succeeds.
+  _PARK_REASON=""
   update_state_field "progress_status" "\"$PROGRESS_STATUS\""
   update_state_field "high_issues" "$HIGH_COUNT"
   update_state_field "medium_issues" "$MEDIUM_COUNT"
@@ -1603,10 +1790,11 @@ EOF
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
       log_warning ""
       log_warning "  Trajectory: plan-blocking HIGH did not decrease from prior iteration ($HISTORY)"
-      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
-      PROGRESS_STATUS="low_issues_only"
-      update_state_field "progress_status" "\"$PROGRESS_STATUS\""
-      update_state_field "early_stopped" "\"no_improvement_trajectory\""
+      log_warning "  Auto-stop: convergence loop unproductive — PARKING (this is not an approval)"
+      # #656: was low_issues_only, i.e. a PASS state. A no-progress signal is not a
+      # quality verdict; park instead. Handled at the parked_no_progress branch in Phase 5.
+      PROGRESS_STATUS="parked_no_progress"
+      _PARK_REASON="no_improvement_trajectory"
     fi
   fi
 
@@ -1620,15 +1808,123 @@ EOF
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$MEDIUM_HISTORY" 1; then
       log_warning ""
       log_warning "  Trajectory: plan-blocking MEDIUM did not decrease from prior iteration ($MEDIUM_HISTORY)"
-      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
-      PROGRESS_STATUS="low_issues_only"
-      update_state_field "progress_status" "\"$PROGRESS_STATUS\""
-      update_state_field "early_stopped" "\"no_improvement_trajectory\""
+      log_warning "  Auto-stop: convergence loop unproductive — PARKING (this is not an approval)"
+      # #656: was low_issues_only, i.e. a PASS state. See the HIGH branch above.
+      PROGRESS_STATUS="parked_no_progress"
+      _PARK_REASON="no_improvement_trajectory"
     fi
   fi
 
+
   # ── Phase 5: Convergence (Critic #4: Claude verdict) ──────────────
   log_info "Phase 5: Convergence check..."
+
+  # #656 (write-site invariant, second half): before ANY terminal branch runs, refuse
+  # to let a PASS state stand unless the arbiter output actually earns it. This is the
+  # single place the invariant from SKILL.md's <EXTREMELY-IMPORTANT> block — "mark PASS
+  # ONLY when the arbiter's verdict has no HIGH/MEDIUM issues" — is enforced against
+  # the verdict FILE rather than against a derived string. #663 closed one path into
+  # the approval branch; this closes the branch itself, so a future path cannot reopen it.
+  #
+  # Reroutes into the parked branch below (identical posture: withhold PASS, downgrade a
+  # stale PASS, leave tokens ARMED, exit non-zero) with a DISTINCT early_stopped reason —
+  # the parked branch's own text says "stopped making progress", which would misdescribe
+  # a schema refusal, so the real reason is logged here before the flip.
+  #
+  # `if ! _arbiter_earns_pass` and never a bare call: this script runs under `set -e`.
+  # Deliberately a `case`, not a bracket comparison against the approval states: the
+  # sibling contract test locates the APPROVAL branch by grepping for the first such
+  # comparison in the file, so a second textual copy here (in code OR in a comment)
+  # shadows it and breaks its ordering assertion. This guard is not the approval
+  # branch and must not read like one.
+  _pass_state=false
+  case "$PROGRESS_STATUS" in passed|low_issues_only) _pass_state=true ;; esac
+  # shellcheck disable=SC2310  # predicate used in a condition by design (matches the
+  # _coverage_enabled sites below); its failure IS the branch, not an error to propagate.
+  if [[ "$_pass_state" == true ]] && ! _arbiter_earns_pass; then
+    log_error ""
+    log_error "  ARBITER VERDICT NOT COUNTABLE — refusing to authorize on it."
+    log_error "  The loop read zero plan-blocking findings, but re-deriving that"
+    log_error "  directly from the verdict file fails its schema/zero check."
+    log_error "  Verdict file: $CLAUDE_OUTPUT_FILE"
+    log_error "  Arbiter status: ${CLAUDE_STATUS:-<unset>} | issues recorded: ${CLAUDE_ISSUE_COUNT:-<unset>}"
+    log_error "  Every issue needs a severity of high|medium|low, and every high/medium"
+    log_error "  a numeric confidence; a FAIL status must enumerate its findings."
+    PROGRESS_STATUS="parked_no_progress"
+    _PARK_REASON="arbiter_verdict_uncountable"
+  fi
+
+  # #656: an early stop is a PROCESS signal ("this loop stopped making progress"),
+  # NEVER a quality verdict. Resolving it to low_issues_only laundered it into a PASS
+  # state and stamped `design-reviewed: PASS` onto documents whose arbiter verdict was
+  # FAIL with plan-blocking HIGH still open (six such markers found on this repo, one of
+  # them on the ADR that introduced the arbiter). The correct terminal state for "we
+  # stopped improving with findings open" is PARKED, not APPROVED.
+  #
+  # Posture is deliberately identical to the degraded_coverage branch below (#355):
+  # withhold the PASS, downgrade any stale PASS so the doc does not contradict the
+  # verdict, leave the pending tokens ARMED (never prune — the pre-implementation gate
+  # keys on tokens, so this is what actually keeps implementation blocked),
+  # mark_review_complete so the caller stops re-invoking, and exit non-zero.
+  if [[ "$PROGRESS_STATUS" == "parked_no_progress" ]]; then
+    log_warning ""
+    log_warning "=== DESIGN NOT CONVERGED — PARKED ==="
+    log_warning "  The loop stopped making progress with plan-blocking issues still open."
+    log_warning "  Run: $RUN_ID | High: $HIGH_COUNT | Medium: $MEDIUM_COUNT | Low: $LOW_COUNT"
+    log_warning "  PASS is WITHHELD — this is not an approval. Review stays PENDING."
+    log_warning "  Pending review tokens left ARMED — implementation stays gated."
+    log_warning "  Address the findings and re-run, or create skip-design-review.local to proceed knowingly."
+    if [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
+      # shellcheck disable=SC2310  # predicate used in a condition by design
+      if _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"; then
+        log_warning "  Stale PASS from a prior run downgraded to PENDING."
+      else
+        # Rewrite failed (temp-file create/swap error, read-only dir, full disk).
+        # STOP HERE — deliberately do NOT fall through to mark_review_complete.
+        #
+        # It is tempting to continue so the review does not stay "active" forever,
+        # and an earlier revision of this branch did exactly that on the grounds
+        # that "pending tokens stay ARMED, so the gate blocks regardless of what
+        # the doc marker says". That reasoning is WRONG and was caught in review:
+        # the pre-implementation gate is token-EXISTENCE based, and a review can be
+        # run against a document that never had a token armed (init-design-review.sh
+        # accepts any readable document). In that case there is no token to block
+        # on, the doc's stale PASS is the ONLY signal a reader sees, and continuing
+        # would let implementation proceed on a design the arbiter FAILED.
+        #
+        # So this is the fail-CLOSED direction: a review left "active" is a visible
+        # stall the operator can see and fix; a honored stale PASS is a silent
+        # authorization they cannot. Exit non-zero WITHOUT completing the review.
+        log_error "  Stale PASS downgrade FAILED and the doc still reads PASS."
+        log_error "  Refusing to complete the review — that PASS would otherwise be honored."
+        log_error "  Fix the write error, then either re-run the review or hand-edit"
+        log_error "  '$DESIGN_FILE' to '<!-- design-reviewed: PENDING -->'."
+        exit 1
+      fi
+    fi
+    # Coverage provenance summary + trend entry belong on every terminal path,
+    # parked included — otherwise repeated degraded parked runs are invisible to
+    # the chronic-coverage warning (this park path was the only terminal branch
+    # skipping it).
+    #
+    # Called PLAINLY, exactly as the other two terminal sites do (max-iterations at
+    # :447, approved/degraded at :1809). An `if ! record_coverage_finalize` wrapper was
+    # tried and removed: putting the call in a condition disables `set -e` for the
+    # whole function, so an early failure (append_to_state) is masked whenever the
+    # final command (append_coverage_trend) succeeds — the wrapper would report
+    # success and swallow the warning while state.md silently lacks its COVERAGE line.
+    # A guard that reports success on a partial failure is worse than no guard.
+    #
+    # So the failure posture here is `set -e` abort, matching every sibling path. That
+    # leaves the review "active" — which on THIS branch is the deliberate fail-closed
+    # stance already adopted for the downgrade failure above, not an oversight.
+    # Persisted only NOW — after the document is honest. See _PARK_REASON in Phase 4.
+    update_state_field "progress_status" "\"$PROGRESS_STATUS\""
+    update_state_field "early_stopped" "\"${_PARK_REASON:-no_improvement_trajectory}\""
+    record_coverage_finalize
+    mark_review_complete "parked_no_progress"
+    exit 1
+  fi
 
   if [[ "$PROGRESS_STATUS" == "passed" || "$PROGRESS_STATUS" == "low_issues_only" ]]; then
     log_info ""
@@ -1656,47 +1952,8 @@ EOF
       fi
     fi
 
-    # Atomic in-place sed via an UNPREDICTABLE mktemp sibling — never a fixed
-    # `${DESIGN_FILE}.tmp`/.covtmp name a pre-existing symlink could hijack into
-    # truncating an arbitrary target. (Concurrent reviews of the SAME doc are already
-    # prevented upstream by the loop's review-pointer guard, so this only needs to be
-    # single-writer-safe.) The mode is copied from the source AFTER sed writes the
-    # temp — before-write would make a read-only (0444) source's redirect fail — so the
-    # replacement keeps the doc's original perms rather than mktemp's 0600. The temp is
-    # always removed, including on an mv failure, so no `.dr-edit.*` copy is leaked.
-    _dr_atomic_sed() {  # <sed-expr> <file>
-      local _e="$1" _f="$2" _d _t _m
-      _d=$(dirname -- "$_f") || return 1
-      _t=$(mktemp "$_d/.dr-edit.XXXXXX") || return 1
-      # `if` guards throughout (never `cmd && ...`): a failing left-of-&& would trip
-      # set -e and skip the temp cleanup below.
-      if sed "$_e" "$_f" > "$_t"; then
-        # Copy the source mode onto the temp (GNU `stat -c` / BSD `stat -f`) before the
-        # swap; best-effort, and 0600 is the safe fallback if the mode is unreadable.
-        _m=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || true)
-        if [[ -n "$_m" ]]; then chmod "$_m" "$_t" 2>/dev/null || true; fi
-        if mv -f "$_t" "$_f"; then return 0; fi
-      fi
-      rm -f "$_t"
-      return 1
-    }
-
-    # WHOLE-LINE marker regexes (the writer always emits each marker on its own line).
-    # Every detect (grep) and rewrite (sed) below anchors to these so a marker string
-    # embedded in PROSE — `... the <!-- design-reviewed: PASS --> marker ...` — is never
-    # matched or corrupted. A marker ALONE on its own line is treated as a real marker
-    # by BOTH the writer here AND the reader (_doc_reviewed matches any occurrence): this
-    # is inherent to the machine-consumed marker design, so a tracked design doc must not
-    # place a bare-line marker example (even inside a ``` fence). No ERE-only metachars,
-    # so the same pattern is valid in grep BRE and sed BRE.
-    # _RE_COV keys on a line STARTING with the coverage prefix (not a complete `-->`),
-    # matching the reader's total count — so the upsert/strip below can also REPAIR a
-    # truncated/split/malformed stale marker line, not just a well-formed one. `.*$`
-    # consumes the rest of that line so the whole line is replaced/deleted. A prefix
-    # mid-line in prose is not at line start ⇒ untouched.
-    _RE_COV='^[[:space:]]*<!-- design-review-coverage:.*$'
-    _RE_PASS='^[[:space:]]*<!-- design-reviewed: PASS -->[[:space:]]*$'
-    _RE_PEND='^[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*$'
+    # (_dr_atomic_sed and the _RE_* marker regexes are defined above Phase 5 — hoisted
+    # out of this branch by #656 so the parked terminal state can share them.)
 
     # Write the coverage provenance marker FIRST — BEFORE any PASS — so a durable
     # PASS is never present without its coverage marker beside it. A crash between the

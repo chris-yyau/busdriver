@@ -113,7 +113,7 @@ fi
 # (3) ordering: guard must precede the COMPLETION FRESH_ACKS re-query.
 HOIST_ORDER=$(awk '
   /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { if (!hoist) hoist=NR }
-  /^FRESH_ACKS="cubic-dev-ai=/                            { if (!fresh) fresh=NR }
+  /^FRESH_ACKS="cursor=/                            { if (!fresh) fresh=NR }
   END { print (hoist && fresh && hoist < fresh) ? "OK" : "BAD" }' "$SKILL")
 if [[ "$HOIST_ORDER" == OK ]]; then
   ok "clean-path hoist ordered before COMPLETION FRESH_ACKS (#467)"
@@ -268,13 +268,13 @@ else
   ok "force-on marker does not diverge via BUSDRIVER_STATE_DIR"
 fi
 # After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
-# Re-folding Codex alone leaves 3 bots at pre-wait values across a 480s window, so a
+# Re-folding Codex alone leaves 4 bots at pre-wait values across a 480s window, so a
 # bot that posts CHANGES_REQUESTED during it would still read as passing.
 # #606: the discriminator is `${CODEX_REGRACE}` — the pre-wait line ends
 # `chatgpt-codex-connector=$(bash "$ACK_SCRIPT" ...)` and can never satisfy a pattern
 # that requires that token. Requiring EVERY non-Codex bot to show
 # `$(bash "$ACK_SCRIPT" ...)` on the SAME line also blocks partial re-folds (e.g.
-# cubic-dev-ai-only): the three registered bots must be re-derived from ack-ledger,
+# cubic-dev-ai-only): the four registered bots must be re-derived from ack-ledger,
 # not carried forward as literals, or a mid-wait CHANGES_REQUESTED still reads as passing.
 # Each ACK_SCRIPT argument is an EXACT shell field token, not a prefix: the
 # whitespace after every bot login is the shell argument terminator, so shadowed
@@ -287,10 +287,10 @@ fi
 # line cannot match — and the closing `"$` anchors the complete assignment to the
 # end of the line (CodeRabbit + litmus + cubic, PR #609).
 # shellcheck disable=SC2016  # POSTWAIT_LEDGER is a single-quoted grep -E regex; the literal backslashes are the point
-POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai 2>/dev/null \|\| echo stale\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai 2>/dev/null \|\| echo stale\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
+POSTWAIT_LEDGER='^[[:space:]]*FRESH_ACKS="cursor=\$\(bash "\$ACK_SCRIPT" cursor 2>/dev/null \|\| echo stale\),cubic-dev-ai=\$\(bash "\$ACK_SCRIPT" cubic-dev-ai 2>/dev/null \|\| echo stale\),coderabbitai=\$\(bash "\$ACK_SCRIPT" coderabbitai 2>/dev/null \|\| echo stale\),greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps 2>/dev/null \|\| echo stale\),chatgpt-codex-connector=\$\{CODEX_REGRACE\}"$'
 # shellcheck disable=SC2310  # hasre returns status by design; the harness counts failures instead of exiting
 if hasre "$POSTWAIT_LEDGER"; then
-  ok "full 4-bot ledger recomputed after the wait (post-wait line)"
+  ok "full 5-bot ledger recomputed after the wait (post-wait line)"
 else
   fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
 fi
@@ -334,7 +334,7 @@ POSTWAIT_CONSUMER_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:
 POSTWAIT_FENCE_CLOSE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^```$/ { print NR; exit }' "$SKILL" || true)
 POSTWAIT_MATCH_LINE=$(grep -nE "$POSTWAIT_LEDGER" "$SKILL" | head -1 | cut -d: -f1 || true)
 POSTWAIT_HEAD_IF_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*if \[ -z "\$CODEX_HEAD_NOW" \] \|\| \[ "\$CODEX_HEAD_NOW" != "\$HEAD_FULL_SHA" \]; then$/ { print NR; exit }' "$SKILL" || true)
-POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
+POSTWAIT_INVALIDATION_LINE=$(awk -v a="$POSTWAIT_ANCHOR_LINE" 'NR > a && /^[[:space:]]*FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale,chatgpt-codex-connector=stale"$/ { print NR; exit }' "$SKILL" || true)
 # The HEAD-divergence conditional's MATCHING `fi` (depth-aware: the first `fi`
 # that returns the block to depth 0, not the first lexical `fi`), plus the
 # nesting depth of the invalidation inside that block (must be 1 — directly in
@@ -468,42 +468,89 @@ POSTWAIT_BETWEEN_NORM_AND_MATCH=$(awk -v NORM_ESAC_LINE="$POSTWAIT_NORM_ESAC_LIN
 # moved head), sits at nesting depth 1 of the HEAD-divergence conditional (directly
 # in the branch — not wrapped in an inner `if false`), and precedes the consumer —
 # otherwise STALE_BOTS consumes acks without invalidating them after a HEAD change.
-POSTWAIT_INVALIDATION_OK="no"
-if [[ -n "$POSTWAIT_INVALIDATION_LINE" && -n "$POSTWAIT_HEAD_IF_LINE" && -n "$POSTWAIT_HEAD_IF_FI_LINE" && -n "$POSTWAIT_HEAD_IF_DEPTH_AT_INV" && -z "$POSTWAIT_HEAD_IF_ELSE_BEFORE_INV" \
-   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_INVALIDATION_LINE" \
-   && "$POSTWAIT_HEAD_GUARD_LINE" -lt "$POSTWAIT_INVALIDATION_LINE" \
-   && "$POSTWAIT_HEAD_IF_LINE" -lt "$POSTWAIT_INVALIDATION_LINE" \
-   && "$POSTWAIT_INVALIDATION_LINE" -lt "$POSTWAIT_HEAD_IF_FI_LINE" \
-   && "$POSTWAIT_HEAD_IF_DEPTH_AT_INV" == "1" \
-   && "$POSTWAIT_INVALIDATION_LINE" -lt "$POSTWAIT_CONSUMER_LINE" ]]; then
-  POSTWAIT_INVALIDATION_OK="yes"
+# Diagnosability (#623): accumulate each failed condition with its own message so a
+# missing scan result ("anchor comment not found") is not reported as an ordering
+# violation. Behaviour-identical to the prior mega-if.
+POSTWAIT_WHY=()
+req_n() { [[ -n "$1" ]] || POSTWAIT_WHY+=("$2"); }
+req_z() { [[ -z "$1" ]] || POSTWAIT_WHY+=("$2"); }
+# Ordering helpers only fire when both sides are present — a missing scan is
+# already named by req_n; do not also emit a misleading precede/follow message.
+req_lt() {
+  if [[ -n "$1" && -n "$2" ]]; then
+    [[ "$1" -lt "$2" ]] || POSTWAIT_WHY+=("$3")
+  fi
+}
+req_gt() {
+  if [[ -n "$1" && -n "$2" ]]; then
+    [[ "$1" -gt "$2" ]] || POSTWAIT_WHY+=("$3")
+  fi
+}
+req_eq() {
+  if [[ -n "$1" ]]; then
+    [[ "$1" == "$2" ]] || POSTWAIT_WHY+=("$3")
+  fi
+}
+
+req_n "$POSTWAIT_MATCH_LINE" "post-wait ledger match line not found"
+req_n "$POSTWAIT_ANCHOR_LINE" "anchor comment not found — was it reworded?"
+req_n "$POSTWAIT_CASE_LINE" "CODEX_REGRACE normalization case not found after the anchor"
+req_n "$POSTWAIT_NORM_ESAC_LINE" "normalization esac not found after the case"
+req_n "$POSTWAIT_GRACE_IF_LINE" "CODEX_GRACE if not found"
+req_n "$POSTWAIT_GRACE_IF_FI_LINE" "CODEX_GRACE matching fi not found"
+req_n "$POSTWAIT_HEAD_GUARD_LINE" "HEAD-MOVED GUARD comment not found after the anchor"
+req_n "$POSTWAIT_HEAD_IF_LINE" "HEAD-divergence if not found after the anchor"
+req_n "$POSTWAIT_HEAD_IF_FI_LINE" "HEAD-divergence matching fi not found"
+req_n "$POSTWAIT_HEAD_LOOKUP_LINE" "CODEX_HEAD_NOW lookup not found"
+req_n "$POSTWAIT_CONSUMER_LINE" "STALE_BOTS consumer not found after the anchor"
+req_n "$POSTWAIT_FENCE_CLOSE" "closing fence not found after the anchor"
+req_n "$POSTWAIT_INVALIDATION_LINE" "HEAD-moved all-stale invalidation line not found"
+req_n "$POSTWAIT_HEAD_IF_DEPTH_AT_INV" "could not compute nesting depth at invalidation"
+req_n "$POSTWAIT_DEPTH_AT_ANCHOR" "could not compute nesting depth at anchor"
+
+# Scans below the anchor use `NR > $POSTWAIT_ANCHOR_LINE`. An empty anchor makes
+# those awks return junk, which would look like ordering failures. Only evaluate
+# positional/structure checks when every prerequisite scan found its line.
+if [[ ${#POSTWAIT_WHY[@]} -eq 0 ]]; then
+  req_z "$POSTWAIT_BETWEEN_ANCHOR_AND_CASE" "block opener between anchor and case (line ${POSTWAIT_BETWEEN_ANCHOR_AND_CASE:-?})"
+  req_lt "$POSTWAIT_ANCHOR_LINE" "$POSTWAIT_CASE_LINE" "anchor must precede normalization case"
+  req_lt "$POSTWAIT_CASE_LINE" "$POSTWAIT_NORM_ESAC_LINE" "case must precede its esac"
+  req_gt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_NORM_ESAC_LINE" "ledger refresh must follow normalization esac"
+  req_lt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_HEAD_GUARD_LINE" "ledger refresh must precede HEAD-MOVED GUARD"
+  req_lt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_HEAD_LOOKUP_LINE" "ledger refresh must precede CODEX_HEAD_NOW lookup"
+  req_lt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_HEAD_IF_LINE" "ledger refresh must precede HEAD-divergence if"
+  req_lt "$POSTWAIT_HEAD_LOOKUP_LINE" "$POSTWAIT_HEAD_IF_LINE" "CODEX_HEAD_NOW lookup must precede HEAD-divergence if"
+  req_lt "$POSTWAIT_HEAD_GUARD_LINE" "$POSTWAIT_CONSUMER_LINE" "HEAD-MOVED GUARD must precede STALE_BOTS consumer"
+  req_lt "$POSTWAIT_GRACE_IF_FI_LINE" "$POSTWAIT_CONSUMER_LINE" "CODEX_GRACE fi must precede STALE_BOTS consumer"
+  req_lt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_CONSUMER_LINE" "ledger refresh must precede STALE_BOTS consumer"
+  req_lt "$POSTWAIT_CONSUMER_LINE" "$POSTWAIT_FENCE_CLOSE" "STALE_BOTS consumer must precede closing fence"
+
+  req_z "$POSTWAIT_HEAD_IF_ELSE_BEFORE_INV" "else/elif before invalidation moves it off the moved-HEAD path (line ${POSTWAIT_HEAD_IF_ELSE_BEFORE_INV:-?})"
+  req_lt "$POSTWAIT_MATCH_LINE" "$POSTWAIT_INVALIDATION_LINE" "ledger refresh must precede all-stale invalidation"
+  req_lt "$POSTWAIT_HEAD_GUARD_LINE" "$POSTWAIT_INVALIDATION_LINE" "HEAD-MOVED GUARD must precede all-stale invalidation"
+  req_lt "$POSTWAIT_HEAD_IF_LINE" "$POSTWAIT_INVALIDATION_LINE" "HEAD-divergence if must precede all-stale invalidation"
+  req_lt "$POSTWAIT_INVALIDATION_LINE" "$POSTWAIT_HEAD_IF_FI_LINE" "all-stale invalidation must precede HEAD-divergence fi"
+  req_eq "$POSTWAIT_HEAD_IF_DEPTH_AT_INV" "1" "all-stale invalidation nesting depth must be 1 (got ${POSTWAIT_HEAD_IF_DEPTH_AT_INV:-empty})"
+  req_lt "$POSTWAIT_INVALIDATION_LINE" "$POSTWAIT_CONSUMER_LINE" "all-stale invalidation must precede STALE_BOTS consumer"
+
+  req_z "$POSTWAIT_PRE_GRACE_FN" "function definition between fence and CODEX_GRACE if (line ${POSTWAIT_PRE_GRACE_FN:-?})"
+  req_z "$POSTWAIT_PRE_GRACE_OP" "line-continuation joins into CODEX_GRACE if (line ${POSTWAIT_PRE_GRACE_OP:-?})"
+  req_z "$POSTWAIT_INTERVENING" "FRESH_ACKS mutate/unset between refresh and consumer (line ${POSTWAIT_INTERVENING:-?})"
+  req_z "$POSTWAIT_BETWEEN_NORM_AND_MATCH" "block opener between normalization esac and refresh (line ${POSTWAIT_BETWEEN_NORM_AND_MATCH:-?})"
+  req_eq "$POSTWAIT_DEPTH_AT_ANCHOR" "1" "anchor nesting depth must be 1 inside grace block (got ${POSTWAIT_DEPTH_AT_ANCHOR:-empty})"
+  req_z "$POSTWAIT_BETWEEN_MATCH_AND_HEADIF" "block opener between refresh and HEAD-divergence if (line ${POSTWAIT_BETWEEN_MATCH_AND_HEADIF:-?})"
+  req_z "$POSTWAIT_MATCH_PREV" "subshell/heredoc before ledger refresh (line ${POSTWAIT_MATCH_PREV:-?})"
+  req_z "$POSTWAIT_MATCH_NEXT" "closing paren after ledger refresh (line ${POSTWAIT_MATCH_NEXT:-?})"
+  req_z "$POSTWAIT_INV_PREV" "subshell open before all-stale invalidation (line ${POSTWAIT_INV_PREV:-?})"
+  req_z "$POSTWAIT_INV_NEXT" "closing paren after all-stale invalidation (line ${POSTWAIT_INV_NEXT:-?})"
+  req_z "$POSTWAIT_LOOKUP_PREV" "unreachable join before CODEX_HEAD_NOW lookup (line ${POSTWAIT_LOOKUP_PREV:-?})"
+  req_z "$POSTWAIT_LOOKUP_HEREDOC" "heredoc wraps CODEX_HEAD_NOW lookup (line ${POSTWAIT_LOOKUP_HEREDOC:-?})"
 fi
-if [[ -n "$POSTWAIT_MATCH_LINE" && -n "$POSTWAIT_ANCHOR_LINE" && -n "$POSTWAIT_CASE_LINE" && -n "$POSTWAIT_NORM_ESAC_LINE" && -n "$POSTWAIT_GRACE_IF_LINE" && -n "$POSTWAIT_GRACE_IF_FI_LINE" && -n "$POSTWAIT_HEAD_GUARD_LINE" && -n "$POSTWAIT_HEAD_IF_LINE" && -n "$POSTWAIT_HEAD_IF_FI_LINE" && -n "$POSTWAIT_HEAD_LOOKUP_LINE" && -n "$POSTWAIT_CONSUMER_LINE" && -n "$POSTWAIT_FENCE_CLOSE" \
-   && -z "$POSTWAIT_BETWEEN_ANCHOR_AND_CASE" \
-   && "$POSTWAIT_ANCHOR_LINE" -lt "$POSTWAIT_CASE_LINE" \
-   && "$POSTWAIT_CASE_LINE" -lt "$POSTWAIT_NORM_ESAC_LINE" \
-   && "$POSTWAIT_MATCH_LINE" -gt "$POSTWAIT_NORM_ESAC_LINE" \
-   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_HEAD_GUARD_LINE" \
-   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_HEAD_LOOKUP_LINE" \
-   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_HEAD_IF_LINE" \
-   && "$POSTWAIT_HEAD_LOOKUP_LINE" -lt "$POSTWAIT_HEAD_IF_LINE" \
-   && "$POSTWAIT_HEAD_GUARD_LINE" -lt "$POSTWAIT_CONSUMER_LINE" \
-   && "$POSTWAIT_GRACE_IF_FI_LINE" -lt "$POSTWAIT_CONSUMER_LINE" \
-   && "$POSTWAIT_MATCH_LINE" -lt "$POSTWAIT_CONSUMER_LINE" \
-   && "$POSTWAIT_CONSUMER_LINE" -lt "$POSTWAIT_FENCE_CLOSE" \
-   && "$POSTWAIT_INVALIDATION_OK" == "yes" \
-   && -z "$POSTWAIT_PRE_GRACE_FN" \
-   && -z "$POSTWAIT_PRE_GRACE_OP" \
-   && -z "$POSTWAIT_INTERVENING" \
-   && -z "$POSTWAIT_BETWEEN_NORM_AND_MATCH" \
-   && "$POSTWAIT_DEPTH_AT_ANCHOR" == "1" \
-   && -z "$POSTWAIT_BETWEEN_MATCH_AND_HEADIF" \
-   && -z "$POSTWAIT_MATCH_PREV" && -z "$POSTWAIT_MATCH_NEXT" \
-   && -z "$POSTWAIT_INV_PREV" && -z "$POSTWAIT_INV_NEXT" \
-   && -z "$POSTWAIT_LOOKUP_PREV" && -z "$POSTWAIT_LOOKUP_HEREDOC" ]]; then
+
+if [[ ${#POSTWAIT_WHY[@]} -eq 0 ]]; then
   ok "post-wait ledger line sits between normalization and HEAD guard, before its STALE_BOTS consumer"
 else
-  fail "post-wait ledger line not positioned in the post-wait shell flow (normalization < refresh < invalidation < STALE_BOTS)"
+  fail "post-wait ledger positional check: ${POSTWAIT_WHY[*]}"
 fi
 # Deletion proof (issue #606, fixed per cubic + Codex review on PR #609): strip the
 # post-wait line by an INDEPENDENT selector — the `${CODEX_REGRACE}` discriminator
@@ -542,7 +589,7 @@ else
 fi
 rm -f "$PREFIX_FIELD"
 if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
-  fail "Codex-only sed re-fold still present — the other 3 bots stay stale"
+  fail "Codex-only sed re-fold still present — the other 4 bots stay stale"
 else
   ok "Codex-only sed re-fold removed"
 fi

@@ -21,7 +21,7 @@ skills/orchestrator/
    - **Pipeline phase work** (planning/execution/verification of features) → no orchestrator change; the new skill is invoked from within a phase.
    - **Domain/language pattern** (e.g., new framework patterns) → add a row to `domain-supplements.md`.
    - **Standalone task** (refactoring, ops, content, etc.) → add a row to `tasks-catalog.md`.
-   - **Always-on discipline** (TDD, verification, code review type) → add to Phase 4 disciplines in `SKILL.md`.
+   - **Always-on discipline** (verification, code review type) → add to Phase 4 disciplines in `SKILL.md`. Note TDD is deliberately NOT one of these — ordering is advisory and reached on demand via `/tdd` (ADR 0038).
 
 2. **Add a trigger keyword and the route format:**
    ```

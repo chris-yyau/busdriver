@@ -1,3 +1,10 @@
+## [1.109.12](https://github.com/chris-yyau/busdriver/compare/v1.109.11...v1.109.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **pre-merge:** name which evidence path failed on an ambiguous release ([#672](https://github.com/chris-yyau/busdriver/issues/672)) ([#717](https://github.com/chris-yyau/busdriver/issues/717)) ([8b0668d](https://github.com/chris-yyau/busdriver/commit/8b0668d0ec15177c7ccf14b7ffa7146518c55aa6)), closes [664/#709](https://github.com/chris-yyau/busdriver/issues/709)
+
 ## [1.109.11](https://github.com/chris-yyau/busdriver/compare/v1.109.10...v1.109.11) (2026-08-20)
 
 

@@ -1994,6 +1994,24 @@ def _inner_expands(text):
         if c == chr(36) and i + 1 < n and (inner[i + 1] in _PARAM_START
                                            or inner[i + 1] in "{("):
             return True
+        if c == "~":
+            # TILDE EXPANSION is an expansion too, and it is not spelled with a dollar.
+            # `HOME='<helper>'; sh <<< ~` executes the helper -- verified by running it --
+            # and the operand carries no `$` at all, so every test here answered "nothing
+            # unresolvable" and the payload went unscanned. The piped spelling
+            # (`printf %s ~ | sh`) had it identically.
+            #
+            # ANY tilde, with no position test. The first attempt allowed one after a blank
+            # or an `=`/`:` only, on the reasoning that a trailing `~` in a backup filename
+            # is ordinary text -- and review immediately produced two more positions bash
+            # also expands from: `sh<<<~`, where the tilde follows the redirection operator,
+            # and `{~,}`, where brace expansion manufactures a word-leading tilde behind a
+            # `{`. Enumerating word boundaries is the ladder this function exists to refuse,
+            # and it is the same refusal the dollar above already makes: over-block rather
+            # than maintain a list of positions that is only ever one review round from
+            # incomplete. The cost needs BOTH halves -- a `~` anywhere in the payload AND a
+            # command naming a helper somewhere in its text.
+            return True
         i += 1
     return False
 

@@ -1576,5 +1576,75 @@ assert_block "R=sh; o(){ i(){ \$R; }; i; }; o <<< '${STEM}slo[t].py'" \
     "...and one function deeper"
 assert_block "f(){ \${R:-sh}; }; f <<< '${STEM}slo[t].py'" \
     "...and named only as an expansion default"
+# -- Q. an expansion that is not spelled with a dollar --------------------------------
+# A BYPASS, reproduced before fixing. Every unresolvability test here looked for a `$`
+# or a backtick, and TILDE expansion is neither: `HOME='<helper>'; sh <<< ~` executes
+# the helper -- verified by running it -- while the operand carries no `$` at all, so
+# nothing widened and the payload went unscanned. The piped spelling had it too.
+#
+# ANY tilde, with no position test, and the property below is why. The first attempt
+# flagged one only after a blank or an `=`/`:`, reasoning that a trailing `~` in a backup
+# filename is ordinary text -- and review immediately produced two more positions bash
+# expands from: `sh<<<~`, where it follows the redirection operator, and `{~,}`, where
+# brace expansion manufactures a word-leading tilde behind a `{`. Enumerating word
+# boundaries is a ladder, and this file answers ladders the same way every time: over-block
+# rather than maintain a list that is one review round from incomplete. Quoting is not
+# consulted either, exactly as for the dollar.
+assert_block "HOME='$HELPER'; sh <<< ~" \
+    "a bare tilde is an expansion, and the receiver runs what it expands to"
+assert_block "HOME='$HELPER'; printf %s ~ | sh" \
+    "...identically through the piped transport"
+assert_block "HOME='$HELPER'; sh <<< ~/x" \
+    "...and as a path prefix"
+assert_block "HOME='$HELPER'; sh <<< A=~" \
+    "...and after the = of an assignment, where bash also expands it"
+assert_block "cat $HELPER; sh <<< 'backup~'" \
+    "...and even mid-word, which is the accepted cost of not enumerating positions"
+assert_ok    "HOME='$HELPER'; cat <<< ~" \
+    "...and a non-executing receiver never re-parses what it reads"
+
+# REFUTED in the same round: that `$IFS` inside a quoted command substitution is left
+# glued, because a substitution is a fresh quoting context while the rewrite treats the
+# enclosing double quote as still active. The premise about quoting is correct; the
+# conclusion is not, because a glued helper NAME is exactly what the squeezing probe
+# exists to catch. Measured in both spellings.
+# PROPERTY: a tilde anywhere in a payload bound for a shell is treated as live. Written
+# as a matrix rather than more examples precisely because hand-picked positions are what
+# missed `sh<<<~` and `{~,}` the first time.
+_tp_n=0
+for _tp in "sh <<< ~" "sh<<<~" "printf %s {~,}|sh" "sh <<< ~/x" "sh <<< A=~" \
+           "sh <<< a:~" "sh <<< backup~" "sh <<< ~root" "sh <<< x~y" "printf %s ~ | sh"; do
+    _tp_n=$((_tp_n + 1))
+    _got=$(verdict "HOME='$HELPER'; $_tp")
+    if ! is_block "$_got"; then
+        no "property: a tilde in a shell-bound payload is always live" "$_tp — got=${_got:-<empty>}"
+        _tp_n=-1; break
+    fi
+done
+if [[ "$_tp_n" -gt 0 ]]; then
+    ok "property: a tilde in a shell-bound payload is always live ($_tp_n)"
+fi
+# ...and the other half: the SAME placements into a non-executing receiver stay reads, so
+# the rule is about what the receiver does, not about the tilde.
+_tn_n=0
+for _tp in "cat <<< ~" "cat<<<~" "cat <<< ~/x" "cat <<< backup~"; do
+    _tn_n=$((_tn_n + 1))
+    _got=$(verdict "HOME='$HELPER'; $_tp")
+    if [[ "$_got" != "OK|" ]]; then
+        no "property: a tilde into a non-executing receiver is still data" "$_tp — got=${_got:-<empty>}"
+        _tn_n=-1; break
+    fi
+done
+if [[ "$_tn_n" -gt 0 ]]; then
+    ok "property: a tilde into a non-executing receiver is still data ($_tn_n)"
+fi
+
+# shellcheck disable=SC2016  # ${IFS} is literal text to splice into STEM, not an expansion
+_IFSGLUE='${IFS}'
+_glued="${STEM/ /$_IFSGLUE}slo[t].py"
+assert_block "echo \"\$($_glued)\"" \
+    "an IFS-glued helper inside a QUOTED command substitution is still found"
+assert_block "echo \$($_glued)" \
+    "...and unquoted, where the IFS really does word-split"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

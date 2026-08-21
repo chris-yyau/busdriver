@@ -1,3 +1,31 @@
+## [1.109.13](https://github.com/chris-yyau/busdriver/compare/v1.109.12...v1.109.13) (2026-08-21)
+
+
+### Bug Fixes
+
+* **pre-merge:** record every gate-authorized merge so absence is evidence ([#667](https://github.com/chris-yyau/busdriver/issues/667)) ([#718](https://github.com/chris-yyau/busdriver/issues/718)) ([988efd8](https://github.com/chris-yyau/busdriver/commit/988efd837941484d4671ea683f10fc67888c3a90)), closes [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
+## [1.109.12](https://github.com/chris-yyau/busdriver/compare/v1.109.11...v1.109.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **pre-merge:** name which evidence path failed on an ambiguous release ([#672](https://github.com/chris-yyau/busdriver/issues/672)) ([#717](https://github.com/chris-yyau/busdriver/issues/717)) ([8b0668d](https://github.com/chris-yyau/busdriver/commit/8b0668d0ec15177c7ccf14b7ffa7146518c55aa6)), closes [664/#709](https://github.com/chris-yyau/busdriver/issues/709)
+
+## [1.109.11](https://github.com/chris-yyau/busdriver/compare/v1.109.10...v1.109.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **gateguard:** contain the gate and move consent out of the repository namespace ([#616](https://github.com/chris-yyau/busdriver/issues/616)) ([#715](https://github.com/chris-yyau/busdriver/issues/715)) ([db806e4](https://github.com/chris-yyau/busdriver/commit/db806e45f157d30563640a4645432a913f3336be)), closes [#629](https://github.com/chris-yyau/busdriver/issues/629) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#712](https://github.com/chris-yyau/busdriver/issues/712) [#612](https://github.com/chris-yyau/busdriver/issues/612) [#712](https://github.com/chris-yyau/busdriver/issues/712) [660/#703](https://github.com/chris-yyau/busdriver/issues/703)
+
+## [1.109.10](https://github.com/chris-yyau/busdriver/compare/v1.109.9...v1.109.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* **pre-merge:** confirm merges against the GitHub API, not CLI chatter ([#664](https://github.com/chris-yyau/busdriver/issues/664)) ([#709](https://github.com/chris-yyau/busdriver/issues/709)) ([9b58f6b](https://github.com/chris-yyau/busdriver/commit/9b58f6b106b60a2cd0cef33c77edd163961217f5)), closes [#98](https://github.com/chris-yyau/busdriver/issues/98)
+
 ## [1.109.9](https://github.com/chris-yyau/busdriver/compare/v1.109.8...v1.109.9) (2026-08-19)
 
 

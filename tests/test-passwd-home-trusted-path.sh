@@ -30,7 +30,17 @@ assert() {
 # No `set -e` here (assertions rely on non-zero rc), so bail explicitly: an empty TMP
 # would make every path below resolve at the filesystem root.
 _user="$(/usr/bin/id -un)" || { echo "cannot resolve user" >&2; exit 1; }
-REAL_HOME="$(eval echo "~$_user")"
+# REAL_HOME is the EXPECTED value of all four containment assertions below, so it must come
+# from PASSWD and nowhere else. `$HOME` is specifically wrong here: it is the exact variable
+# the code under test must ignore, so sourcing the oracle from it makes the assertion
+# "the wrapper echoed $HOME back" -- which is equally true when the wrapper is correct and
+# when it has regressed to reading $HOME, on any host where the two diverge. That is the
+# guard-that-cannot-fail shape this whole suite exists to detect.
+# getpwuid() rather than `eval echo ~$_user`: same passwd authority, no eval (CodeRabbit).
+# Deliberately NOT the wrapper's own getent/dscl ladder -- an oracle that reimplements the
+# implementation cannot catch the implementation being wrong.
+REAL_HOME="$(/usr/bin/env python3 -c 'import pwd, os; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+  || { echo "cannot resolve passwd home" >&2; exit 1; }
 [[ -n "$REAL_HOME" && -d "$REAL_HOME" ]] || { echo "cannot resolve real home" >&2; exit 1; }
 TMP="$(mktemp -d)"
 [[ -n "$TMP" && -d "$TMP" ]] || { echo "mktemp -d failed" >&2; exit 1; }
@@ -119,6 +129,14 @@ assert $? "sanitized-gate.sh: an exported getent() cannot supply HOME either ($g
 # The wrapper hardcodes scripts/hooks/run-with-flags.js as the runner and verifies the
 # named hook script exists, so the skeleton supplies both. The runner must parse under
 # `node --check` (the wrapper's node-validation step).
+#
+# THREE positional args are required -- <hookId> <scriptRelPath> <profilesCsv> -- and the
+# third is NOT optional padding: #616 made the wrapper reject any argument list that is not
+# exactly three non-empty, non-`--`-prefixed operands, failing CLOSED, because a registration
+# missing its profiles operand would otherwise reach the runner malformed. Every real
+# hooks.json registration passes all three, so a two-arg call here would test a shape the
+# plugin never emits. "standard,strict" mirrors the non-gateguard node registrations; the
+# stub runner below ignores the value, so only its presence and shape matter to this test.
 cat > "$TMP/root/scripts/hooks/run-with-flags.js" <<'RUNNER'
 console.log("HOME=[" + (process.env.HOME || "") + "]");
 RUNNER
@@ -129,7 +147,7 @@ assert $? "fixture is live: plant dir substituted into sanitized-node.sh's PATH 
 
 node_path_out="$(/usr/bin/env -i PATH=/usr/bin:/bin HOME="$DECOY" CLAUDE_PLUGIN_ROOT="$TMP/root" \
     CLAUDE_HOOK_EVENT_NAME=PreToolUse \
-    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" 2>&1)"
+    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" "standard,strict" 2>&1)"
 grep -q "HOME=\[$REAL_HOME\]" <<<"$node_path_out"
 assert $? "sanitized-node.sh: contained hook inherits the real passwd HOME, not the planted one ($node_path_out)"
 
@@ -139,7 +157,7 @@ node_fn_out="$(
   export -f getent
   export DECOY            # the function body expands $DECOY in the CHILD
   HOME="$DECOY" CLAUDE_PLUGIN_ROOT="$TMP/root" CLAUDE_HOOK_EVENT_NAME=PreToolUse \
-    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" 2>&1
+    bash "$NODE_COPY" "pre:probe" "scripts/hooks/probe.js" "standard,strict" 2>&1
 )"
 grep -q "HOME=\[$REAL_HOME\]" <<<"$node_fn_out"
 assert $? "sanitized-node.sh: an exported getent() cannot supply HOME either ($node_fn_out)"

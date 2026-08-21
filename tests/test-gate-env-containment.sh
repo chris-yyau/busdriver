@@ -283,7 +283,11 @@ printf '%s' "$_payload" | CLAUDE_PLUGIN_ROOT="$TMP/failroot" \
 assert_true test "$fo_rc" -eq 0 "run() exception → exit 0 WITHOUT the arg (unchanged for non-gate hooks)"
 # Integration: the wrapper must actually pass --fail-closed to the runner (else the
 # runner-honors-arg unit test above proves nothing about the real path).
-grep -q -- '--fail-closed' "$NODE_WRAPPER"; assert $? "sanitized-node.sh passes --fail-closed to the runner"
+# Since #616 the append is conditional on the disposition: --fail-closed in the default
+# (closed) disposition, omitted under --fail-open. This asserts the DEFAULT path, which is
+# what the four wrapped gates use; the fail-open branch is covered by
+# tests/test-gateguard-containment.sh.
+grep -q -- 'runner\" \"\$@\" --fail-closed' "$NODE_WRAPPER"; assert $? "sanitized-node.sh passes --fail-closed to the runner in the default disposition"
 
 # config-protection e2e: a Write to an EXISTING protected config, with the profile-flag
 # injected, must still BLOCK under the sanitized wrapper.

@@ -27,7 +27,21 @@ TOTAL=0
 GATE_SCRIPT="hooks/gate-scripts/pre-merge-gate.sh"
 POST_HOOK_SCRIPT="hooks/gate-scripts/post-merge-confirm-bypass.sh"
 HOOK_SCRIPT="scripts/hooks/post-bash-pr-created.js"
-MARKER_DIR=".claude"
+
+# Isolated state dir for the WHOLE suite (#667 addendum): pre-merge-gate.sh's
+# new audit_authorized_merge() call means every "allow" path now performs a
+# real filesystem write to $STATE_DIR/bypass-log.jsonl. Both gate scripts here
+# read $BUSDRIVER_STATE_DIR (defaulting to ".claude"), so pointing it at a
+# per-process scratch dir keeps every marker/audit-log read+write in this file
+# off the operator's real ".claude/bypass-log.jsonl" — without this, every
+# "allow" run_gate_test call below appended fake pr-grind-clean-merge /
+# skip-pr-grind-claimed events for fixture PR 31/42/99 to that real, persistent
+# log (Cursor Bugbot Medium + Codex P1, PR #718). Unset before the standalone
+# post-merge-confirm-bypass block near the end, which builds its own isolated
+# $tmp repo and expects the script's real ".claude" default relative to that.
+ISO_STATE=".claude-test-667-$$"
+MARKER_DIR="$ISO_STATE"
+export BUSDRIVER_STATE_DIR="$MARKER_DIR"
 CLEAN_MARKER="$MARKER_DIR/pr-grind-clean.local"
 SKIP_FILE="$MARKER_DIR/skip-pr-grind.local"
 PENDING_MARKER="$MARKER_DIR/pr-pending-grind.local"
@@ -69,8 +83,21 @@ PY
   exit 0
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
-  # Only the headRefOid projection is exercised by the gate.
-  case "$*" in *headRefOid*) printf '%s\n' "${GH_STUB_HEAD_OID:-}" ;; esac
+  # Only two projections are exercised: headRefOid by the pre-merge gate, and
+  # `--json state` by post-merge-confirm-bypass.sh's authoritative merge-state
+  # check (#664). Both answer from an env var so a test can simulate any remote
+  # state without a network. GH_STUB_PR_STATE defaults to EMPTY = "GitHub did
+  # not answer", which is what every fixture written before #664 assumes.
+  case "$*" in
+    *headRefOid*) printf '%s\n' "${GH_STUB_HEAD_OID:-}" ;;
+    *"--json state"*)
+      # -R <repo> present → answer from GH_STUB_PR_STATE_NAMED, so a test can
+      # prove WHICH repo the hook asked about, not merely that it asked.
+      case "$*" in
+        *" -R "*) [ -n "${GH_STUB_PR_STATE_NAMED:-}" ] && printf '%s\n' "$GH_STUB_PR_STATE_NAMED" ;;
+        *) [ -n "${GH_STUB_PR_STATE:-}" ] && printf '%s\n' "$GH_STUB_PR_STATE" ;;
+      esac ;;
+  esac
   exit 0
 fi
 exit 0
@@ -139,8 +166,15 @@ PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
 [ -f "$PENDING_MARKER" ]  && HAD_PENDING=true  && PREV_PENDING=$(cat "$PENDING_MARKER")
 [ -f "$BYPASS_PENDING" ]  && HAD_BYPASS=true   && PREV_BYPASS=$(cat "$BYPASS_PENDING")
 
+# ISO_STATE/MARKER_DIR/BUSDRIVER_STATE_DIR are set once at the top of this
+# file (see the #667 addendum comment there) so the WHOLE suite, not only the
+# #667 assertions below, runs against the isolated dir. Restoring a snapshot
+# of the real log was tried and rejected: the restore would clobber any event
+# another session appended while the suite was running.
+
 cleanup() {
-    rm -rf "$GH_STUBDIR" 2>/dev/null || true
+    rm -rf "$GH_STUBDIR" "$ISO_STATE" "$ISO_STATE-real" 2>/dev/null || true
+    rm -f "$ISO_STATE" 2>/dev/null || true
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
@@ -171,6 +205,121 @@ run_gate_test "blocks gh pr merge without marker" "block" "$MERGE_INPUT"
 write_marker 31
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
+
+# ── 2a. #667: an AUTHORIZED merge must leave a post-hoc record ──────────
+# The whole point: a merge the gate authorized and a merge the gate never saw
+# (run from a shell outside the harness, where no PreToolUse hook fires) used to
+# be equally traceless on the normal marker+CI path. All three allow paths now
+# record, which is what makes the ABSENCE of a record evidence.
+#
+# Run against an ISOLATED state dir so these assertions neither read nor append
+# to the operator real audit log.
+ISO_LOG="$ISO_STATE/bypass-log.jsonl"
+rm -rf "$ISO_STATE"; mkdir -p "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+
+TOTAL=$((TOTAL + 1))
+BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" >/dev/null 2>&1 || true
+ISO_RECORDS=$(grep -c '"event":"pr-grind-clean-merge"' "$ISO_LOG" 2>/dev/null) || ISO_RECORDS=0
+ISO_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
+if [[ "$ISO_RECORDS" -eq 1 ]] \
+   && printf '%s' "$ISO_LINE" | grep -q '"pr":"31"' \
+   && printf '%s' "$ISO_LINE" | grep -q "\"head\":\"$GH_STUB_HEAD_OID_DEFAULT\""; then
+    printf "  PASS  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667) (got: %s)\n" "$ISO_LINE"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-neg. A BLOCKED merge must write nothing — otherwise a record would prove
+# only that a merge was attempted, not that it was authorized. Assert the
+# block decision itself, not just the unchanged line count — an unchanged
+# count alone also passes if the gate wrongly ALLOWED and wrote nothing,
+# which is the failure mode this PR exists to remove (CodeRabbit, PR #718).
+TOTAL=$((TOTAL + 1))
+rm -f "$ISO_STATE/pr-grind-clean.local"
+ISO_LINES_BEFORE=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+NEG_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+ISO_LINES_AFTER=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+if [[ "$ISO_LINES_AFTER" -eq "$ISO_LINES_BEFORE" ]] \
+   && printf '%s' "$NEG_OUT" | grep -q '"block"'; then
+    printf "  PASS  writes no record when the merge is blocked (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  writes no record when the merge is blocked (#667)\n"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-fc. The record IS the authorization evidence, so an unrecordable
+# authorization must BLOCK rather than merge unlogged — otherwise one swallowed
+# write makes an absent record meaningless on every path.
+#
+# chmod cannot create an unwritable directory for root (DAC override), so under
+# root this arm would "pass" without ever exercising the failure. Announce the
+# skip rather than bank a vacuous PASS. The symlink arm below needs no
+# permission trick and runs either way.
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    printf "  SKIP  blocks when the authorization record cannot be written (#667) — running as root, chmod cannot make the dir unwritable\n"
+else
+    TOTAL=$((TOTAL + 1))
+    rm -f "$ISO_LOG"
+    chmod 0555 "$ISO_STATE"
+    FC_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+    chmod 0755 "$ISO_STATE"
+    if printf '%s' "$FC_OUT" | grep -q '"block"' \
+       && printf '%s' "$FC_OUT" | grep -q 'could not be durably recorded'; then
+        printf "  PASS  blocks when the authorization record cannot be written (#667 fail-closed)\n"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  blocks when the authorization record cannot be written (#667 fail-closed) (got: %s)\n" "$FC_OUT"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+
+# 2a-sym. A symlinked audit log is the general defeat of the whole invariant:
+# `>>` follows it, so a link to /dev/null makes every write "succeed" while
+# recording nothing. `.claude/` is only gitignored, so a TRACKED symlink at that
+# path materializes on checkout — the gated party controlling the gate's input.
+TOTAL=$((TOTAL + 1))
+rm -f "$ISO_LOG"
+ln -s /dev/null "$ISO_LOG"
+SYM_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+rm -f "$ISO_LOG"
+if printf '%s' "$SYM_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYM_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the audit log is a symlink (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the audit log is a symlink (#667 fail-closed) (got: %s)\n" "$SYM_OUT"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-symdir. The case a shell `-L` test on the LEAF could never catch: the state
+# DIRECTORY itself is a symlink, so a plain redirect would follow it and land the
+# record outside the named dir. The hardened writer walks every component with
+# O_NOFOLLOW.
+TOTAL=$((TOTAL + 1))
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
+mkdir -p "$ISO_STATE-real"
+ln -s "$ISO_STATE-real" "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+SYMDIR_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+if printf '%s' "$SYMDIR_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYMDIR_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the state dir itself is a symlink (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the state dir itself is a symlink (#667 fail-closed) (got: %s)\n" "$SYMDIR_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$ISO_STATE"
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
+# ISO_STATE doubles as MARKER_DIR for the rest of the suite (see the #667
+# addendum at the top of this file) — recreate it so the write_marker calls
+# below don't fail against a directory the symlink arm just removed.
+mkdir -p "$MARKER_DIR"
 
 # ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
 # Regression: a marker written when the grind converged stayed valid for 2h, so a
@@ -769,8 +918,11 @@ printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
 AUTO_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --auto"},"tool_output":{"output":"✓ Pull request #42 will be automatically merged via squash when all requirements are met","exit_code":0}}'
 printf '%s' "$AUTO_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
-if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
-    printf "  PASS  --auto enable → released-auto-queued, skip preserved\n"
+# #664: GitHub ACCEPTED the merge and will land it with no further hook event,
+# so the token is spent here — preserving it left a spent bypass armed for a
+# second merge. (Was: released-auto-queued, skip preserved.)
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  --auto accepted → token spent, not left armed\n"
     PASS=$((PASS + 1))
 else
     printf "  FAIL  --auto case: skip exists=%s pending exists=%s\n" \
@@ -863,7 +1015,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42","event":"INJECTED-VIA-PR\nclaimed_at=%s\n' \
     "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
-LOG_LINES_BEFORE_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
+LOG_LINES_BEFORE_B15A=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -875,8 +1027,8 @@ else
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
     FAIL=$((FAIL + 1))
 fi
-LOG_LINES_AFTER_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
-LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+LOG_LINES_AFTER_B15A=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
 if [ "$LOG_LINES_AFTER_B15A" -gt "$LOG_LINES_BEFORE_B15A" ] \
     && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
@@ -898,7 +1050,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=2026-05-20T02:00:00Z","event":"INJECTED\n' \
     "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     > "$BYPASS_PENDING"
-LOG_LINES_BEFORE_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
+LOG_LINES_BEFORE_B15=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -913,8 +1065,8 @@ fi
 # Verify the bypass-log line for this injection attempt does NOT contain
 # the injected fragment in a JSON-key position. Assert a new line was
 # appended first, then validate the last line content.
-LOG_LINES_AFTER_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
-LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+LOG_LINES_AFTER_B15=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
 if [ "$LOG_LINES_AFTER_B15" -gt "$LOG_LINES_BEFORE_B15" ] \
     && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
@@ -950,6 +1102,317 @@ else
     printf "  FAIL  stale cleanup: skip exists=%s pending exists=%s\n" \
         "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# ── #664: consume on an API-confirmed merge, not on CLI chatter ────────
+# `gh pr merge` prints "✓ Squashed and merged pull request #N" only on a TTY,
+# and under the Claude Code Bash tool stdout never is — so a SUCCESSFUL
+# agent-driven merge produced no output at all and classified as `ambiguous`,
+# leaving the spent skip file armed for the rest of its 3600s window. These
+# fixtures drive the exact shape the harness produces (exit 0, empty output).
+arm_skip_and_claim() {
+    # Args: claimed_pr. Arms a 2-minute-old skip file + a matching claim.
+    touch "$SKIP_FILE"
+    touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+        || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+    printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
+        "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
+        "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "$BYPASS_PENDING"
+}
+
+# Exit 0, ZERO output — the real non-TTY success shape from issue #664.
+SILENT_SUCCESS_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"","exit_code":0}}'
+# Exit 1, unmatched output — `--delete-branch` hit a post-merge worktree
+# checkout conflict AFTER the remote already merged (empirical, PR #98).
+DELETE_BRANCH_CONFLICT_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"failed to delete local branch fix/x: worktree is checked out","exit_code":1}}'
+
+# B16. THE REGRESSION: silent success + GitHub says MERGED → must consume.
+#      Fails if a successful merge leaves the skip file armed.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+printf '%s' "$SILENT_SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'skip-pr-grind-consumed' \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-state-merged'; then
+    printf "  PASS  #664 silent success + API MERGED → skip consumed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 silent success left skip armed: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B17. Boundary: same silent output, but the PR is NOT merged (still OPEN)
+#      → the API must NOT promote it. Skip preserved, fail-safe intact.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=OPEN
+export GH_STUB_PR_STATE
+printf '%s' "$SILENT_SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  #664 silent output + API OPEN → skip preserved (fail-safe)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 OPEN case wrongly consumed: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B18. Sibling path: gh exited NON-ZERO (--delete-branch worktree conflict)
+#      but the remote merged → the exit code must not keep the token armed.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+printf '%s' "$DELETE_BRANCH_CONFLICT_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  #664 non-zero exit + API MERGED → skip consumed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 delete-branch-conflict left skip armed: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B19. Cross-PR reuse stays refused: the API answer for the CLAIMED PR must
+#      never rescue a command that merged a DIFFERENT PR.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+OTHER_PR_SILENT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash"},"tool_output":{"output":"","exit_code":0}}'
+printf '%s' "$OTHER_PR_SILENT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  #664 API check refuses cross-PR promotion\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 cross-PR: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B20. --auto with the PR still OPEN — the queue has NOT landed yet and nothing
+#      later will report it (no second PostToolUse event fires when GitHub
+#      merges). The token must be spent now rather than left armed, and the
+#      reason must say it was the queue, never a confirmed merge.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=OPEN
+export GH_STUB_PR_STATE
+printf '%s' "$AUTO_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'auto-merge-accepted-token-spent'; then
+    printf "  PASS  #664 --auto accepted while PR still OPEN → token spent\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 auto-queued left skip armed: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B21. Cross-repo merge (literal selector): the operator skip path is
+#      deliberately NOT covered by the gate's cross-repo guard, so a claimed
+#      merge can target another repo — where PR 42 is a different pull request.
+#      This checkout's PR 42 must not decide the outcome in EITHER direction —
+#      local state says MERGED here and must be ignored. The authorization was
+#      spent somewhere this hook cannot see, so the token is SPENT rather than
+#      left armed for the rest of the hour, and the reason must say so instead
+#      of claiming a confirmed merge.
+for _xrepo in \
+    "gh pr merge 42 --squash -R other/repo" \
+    "gh pr merge 42 --squash --repo=other/repo" \
+    "GH_REPO=other/repo gh pr merge 42 --squash"; do
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+_INPUT=$(python3 -c "import json,sys; print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_output':{'output':'','exit_code':0}}))" "$_xrepo")
+printf '%s' "$_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'cross-repo-merge-unverifiable-token-spent'; then
+    printf "  PASS  #664 cross-repo merge → token spent, not left armed: %s\n" "$_xrepo"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 cross-repo merge ('%s'): skip exists=%s log=%s\n" \
+        "$_xrepo" "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+done
+
+# B23. The override precondition must not swallow ordinary same-repo commands.
+#      Slash-bearing text is everywhere — a cd prefix, a redirect target, a
+#      sibling command — and a coarse owner/repo-SHAPE test (tried, reverted)
+#      spent the token on genuinely FAILED merges because of it. These shapes
+#      must still reach the authoritative query (API says OPEN → skip preserved,
+#      the retry reprieve deferred consumption exists for).
+for _cmd in \
+    "gh pr merge 42 --squash --delete-branch" \
+    "cd owner/repo && gh pr merge 42 --squash" \
+    "gh pr merge 42 --squash 2>logs/merge.err" \
+    "gh pr merge 42 --squash || echo owner/repo"; do
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=OPEN
+export GH_STUB_PR_STATE
+_INPUT=$(python3 -c "import json,sys; print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_output':{'output':'','exit_code':0}}))" "$_cmd")
+printf '%s' "$_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+# Assert only what this case is about — the skip file survives and no override
+# path fired. Pending-claim placement varies with cd-prefix repo resolution,
+# which tests/test-pre-merge-gate.sh covers separately.
+if [ -f "$SKIP_FILE" ] \
+    && ! printf '%s' "$LAST_LOG" | grep -q 'cross-repo-merge-unverifiable-token-spent'; then
+    printf "  PASS  #664 ordinary shape keeps the retry reprieve: %s\n" "$_cmd"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #664 override supplement over-triggered on '%s': skip exists=%s log=%s\n" \
+        "$_cmd" "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+done
+
+# ── #672: the ambiguous fail-safe must say WHICH evidence path failed ──
+# The reported occurrences (PR #670, and chrisyau.me #272 below) were real
+# successful merges whose "Squashed and merged" confirmation gh prints only to a
+# TTY: stdout carried nothing but the --delete-branch local fast-forward
+# housekeeping. #664/#709 made those consume via the API. What stayed broken is
+# the audit trail: every ambiguous release logged one string, so "GitHub says it
+# did not merge" (nothing to do) and "nobody could answer, so a possibly-spent
+# token is still armed on disk" (delete it by hand) were indistinguishable.
+#
+# Verbatim stdout from the second occurrence in the issue.
+FF_ONLY_TEXT=$(cat <<'FFEOF'
+From https://github.com/Dive-And-Dev/chrisyau.me
+ * branch            main       -> FETCH_HEAD
+   60ddcb2..53968e7  main       -> origin/main
+Updating 60ddcb2..53968e7
+Fast-forward
+ .github/lighthouse.baseline.json | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+FFEOF
+)
+FF_ONLY_INPUT=$(printf '%s' "$FF_ONLY_TEXT" | python3 -c "
+import json, sys
+print(json.dumps({
+    'tool_name': 'Bash',
+    'tool_input': {'command': 'gh pr merge 42 --squash --delete-branch --match-head-commit ed5be327ffe2fc4c49b570a9835b853c03ae73b7'},
+    'tool_output': {'output': sys.stdin.read(), 'exit_code': 0},
+}))")
+
+# B24. The exact shape from the issue, merge confirmed by the API → consumed.
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+printf '%s' "$FF_ONLY_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  #672 fast-forward-only output + API MERGED → skip consumed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 fast-forward-only output left skip armed: skip exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B25-B27. Same shape, no confirmation available → skip preserved (the fail-safe
+# is unchanged), but the reason must name the evidence path that failed.
+for _case in \
+    ":github-api-unreachable-merge-state-unknown" \
+    "OPEN:github-api-says-not-merged" \
+    "WEIRD:github-api-answer-unrecognized"; do
+_state="${_case%%:*}"
+_want="${_case#*:}"
+arm_skip_and_claim 42
+GH_STUB_PR_STATE="$_state"
+export GH_STUB_PR_STATE
+printf '%s' "$FF_ONLY_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'skip-pr-grind-released-ambiguous' \
+    && printf '%s' "$LAST_LOG" | grep -q "\"reason\":\"$_want\""; then
+    printf "  PASS  #672 ambiguous release names its cause: %s\n" "$_want"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 expected reason %s, got: %s\n" "$_want" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+done
+
+# B28. No explicit PR on the command → the query never runs, and the reason must
+#      say so rather than blame the output patterns.
+arm_skip_and_claim unknown
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+NO_PR_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge --squash --delete-branch"},"tool_output":{"output":"","exit_code":0}}'
+printf '%s' "$NO_PR_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-not-explicitly-known'; then
+    printf "  PASS  #672 unqueryable claim names the missing precondition\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 unqueryable claim: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B29. Both sides name a concrete PR but they DIFFER, with no evidence path
+#      reached (no explicit -R/--repo override, PR mismatch caught before the
+#      query runs) → must be distinguished from B28's "neither side known"
+#      case, not folded into the same reason string (#672 follow-up, Codex +
+#      Cursor Bugbot review on PR #717).
+arm_skip_and_claim 42
+GH_STUB_PR_STATE=MERGED
+export GH_STUB_PR_STATE
+MISMATCH_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash --delete-branch"},"tool_output":{"output":"random unmatched text","exit_code":0}}'
+printf '%s' "$MISMATCH_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+unset GH_STUB_PR_STATE
+TOTAL=$((TOTAL + 1))
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'github-api-not-queried-pr-mismatch-claimed-42-parsed-99'; then
+    printf "  PASS  #672 claimed-vs-parsed PR mismatch names both PRs, not a missing-PR reason\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  #672 mismatch reason: skip exists=%s pending exists=%s log=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"
@@ -1240,6 +1703,11 @@ run_gate_test "blocks 'command gh pr merge' (wrapper prefix)" "block" \
 # ═══════════════════════════════════════════════════════════════════════
 # POST-MERGE-CONFIRM detection: prose must NOT be treated as a merge (Task 1)
 # ═══════════════════════════════════════════════════════════════════════
+# This block builds its OWN isolated repo per case (below, via $tmp + a `cwd`
+# field) and expects the script's real ".claude" default relative to that
+# $tmp, not the suite-wide isolated dir set at the top of this file — unset it
+# so it doesn't leak into these subshells.
+unset BUSDRIVER_STATE_DIR
 echo ""
 echo "── post-merge-confirm-bypass prose vs command ──────────────"
 PMCB="hooks/gate-scripts/post-merge-confirm-bypass.sh"

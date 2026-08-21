@@ -17,15 +17,55 @@
 #      preserve the skip file so the operator can retry without a re-touch.
 #
 # Status taxonomy (all logged to bypass-log.jsonl):
-#   skip-pr-grind-consumed                — gh pr merge confirmed-merged, all
-#                                           validations passed; skip file deleted
+#   skip-pr-grind-consumed                — the PR is confirmed merged and all
+#                                           validations passed; skip file deleted.
+#                                           reason names the evidence: the GitHub
+#                                           API state of THIS checkout's PR
+#                                           (github-api-state-merged; a merge
+#                                           steered at another repo is not
+#                                           queried at all), cli-pattern-merged
+#                                           when gh's own output confirmed it,
+#                                           cross-repo-merge-unverifiable-token-
+#                                           spent for an unconfirmable cross-repo
+#                                           merge, or auto-merge-accepted-token-
+#                                           spent for an accepted --auto queue.
 #   skip-pr-grind-released                — gh pr merge failed; skip preserved
-#   skip-pr-grind-released-auto-queued    — gh pr merge --auto enabled
-#                                           auto-merge but did not merge yet;
-#                                           skip preserved for the eventual real
-#                                           merge attempt
+#   skip-pr-grind-released-auto-queued    — RETIRED in #664, no longer emitted.
+#                                           An accepted --auto queue now spends
+#                                           the token (reason auto-merge-
+#                                           accepted-token-spent) because no
+#                                           later event can ever confirm it, and
+#                                           preserving left it armed for a
+#                                           second merge. Historical log entries
+#                                           keep their old meaning.
 #   skip-pr-grind-released-ambiguous      — tool_output matched neither success
-#                                           nor failure patterns; fail-safe
+#                                           nor failure patterns AND the GitHub
+#                                           API did not answer MERGED; fail-safe.
+#                                           reason names WHICH evidence path
+#                                           failed (#672), because "preserved
+#                                           because GitHub says it is still
+#                                           open" and "preserved because nobody
+#                                           could answer, so this token may be
+#                                           spent and is still armed" need
+#                                           different operator responses:
+#                                           github-api-says-not-merged,
+#                                           github-api-unreachable-merge-state-
+#                                           unknown, github-api-answer-
+#                                           unrecognized, github-api-not-queried-
+#                                           pr-not-explicitly-known (neither side
+#                                           names a concrete PR), or
+#                                           github-api-not-queried-pr-mismatch-
+#                                           claimed-<N>-parsed-<M> (both sides
+#                                           name a concrete PR but they differ —
+#                                           distinct from the "not explicitly
+#                                           known" case so the audit trail never
+#                                           tells the operator no PR was known
+#                                           when two conflicting ones were).
+#                                           The pre-#672 blanket reason
+#                                           tool-output-matched-no-known-pattern
+#                                           is retired; historical log entries
+#                                           keep their old (undifferentiated)
+#                                           meaning.
 #   skip-pr-grind-released-tampered       — skip file disappeared, mtime
 #                                           changed, or was <30s old at
 #                                           confirmation time
@@ -236,7 +276,7 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json, re
-    from gitcmd_detect import gh_pr
+    from gitcmd_detect import gh_pr, gh_pr_repo_override
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -306,6 +346,9 @@ try:
     #   3. Confirmed-merge pattern → success.
     #   4. Fall back to exit code: 0 with no patterns → ambiguous (fail-safe).
     #      Non-zero → failure.
+    # Both 'ambiguous' and 'failure' are re-checked against the GitHub API
+    # by the caller (#664) — gh's stdout and its exit code are BOTH unreliable
+    # signals for whether the remote actually merged.
     if has_failure:
         status = 'failure'
     elif has_auto_queued and not has_success:
@@ -323,12 +366,176 @@ try:
 
     print(status)
     print(pr_num)
+    # Line 3: does the merge carry a repo/host selector? The pre-merge gate's
+    # cross-repo guard sits BELOW its skip branch on purpose (an operator skip
+    # is an explicit human bypass, not evidence-based authorization), so a
+    # claimed merge CAN steer at another repo — and then PR #N in THIS checkout
+    # is a different pull request, which the query below must not judge it by.
+    # A detected selector makes the caller SPEND the token (see below) rather
+    # than query. Reading the selector's VALUE and querying the named repo was
+    # tried and reverted: a whole-command regex picks up a sibling command's
+    # selector (gh pr view 7 -R wrong/repo; gh pr merge 42 -R right/repo) and
+    # misses clustered/spaced/URL spellings — scoping a value to the right
+    # invocation belongs in gitcmd_detect beside _gh_pr_argv, not in a
+    # hook-local regex.
+    #
+    # RESIDUAL, stated rather than papered over: a selector the SHELL assembles
+    # leaves no literal to detect, and no static reader can resolve it —
+    # resolving it means running the command, which a hook must never do. There
+    # the query answers for this checkout's unrelated PR and a non-MERGED answer
+    # preserves a token that was in fact spent: pre-#664 behaviour for that one
+    # shape, never worse than today, bounded by the operator's own 3600s window,
+    # and reachable only while their skip token is live. It is the same residual
+    # this detector already carries for the GATE, and accepted for the same
+    # reason (see gh_pr_repo_override's docstring): defense-in-depth against the
+    # literal forms, never a boundary.
+    print('yes' if gh_pr_repo_override(cmd, 'merge') else 'no')
+    # Line 4: explicit completion marker. Printed only once every prior print
+    # succeeded — an exception anywhere above (including inside
+    # gh_pr_repo_override itself) truncates the output before this line ever
+    # runs. Without it, a truncated line 3 was indistinguishable from a real
+    # 'yes': both look non-'no' to the bash side below.
+    print('parse-complete')
 except Exception:
     pass
 " 2>/dev/null || true)
 
 PARSE_STATUS=$(echo "$PARSE" | sed -n '1p')
 PARSE_PR=$(echo "$PARSE" | sed -n '2p')
+PARSE_REPO_OVERRIDE=$(echo "$PARSE" | sed -n '3p')
+PARSE_COMPLETE=$(echo "$PARSE" | sed -n '4p')
+# Trust an explicit "yes" ONLY when the parse fully completed (line 4 present
+# — proves no exception truncated the output before or during line 3). A
+# truncated/garbled/missing line 3 must default to "no", not "yes": "yes"
+# immediately forces PARSE_STATUS to "success" and spends the token below
+# (cross-repo-merge-unverifiable-token-spent) even when PARSE_STATUS was
+# genuinely 'failure' — burning the token on a same-repo failure the parser
+# never actually confirmed was cross-repo. "no" instead falls through to the
+# normal query/preserve path, which can only ever preserve the skip file on
+# an anomaly, never force-spend it.
+if [ "$PARSE_COMPLETE" = "parse-complete" ] && [ "$PARSE_REPO_OVERRIDE" = "yes" ]; then
+    PARSE_REPO_OVERRIDE=yes
+else
+    PARSE_REPO_OVERRIDE=no
+fi
+_SUCCESS_SOURCE=""
+# Why the ambiguous fail-safe fired, in a FIXED vocabulary (#672). Before this,
+# every ambiguous release logged "tool-output-matched-no-known-pattern", which
+# since #664/#709 is both wrong (the API *is* consulted) and undiagnosable: it
+# covered "GitHub says the merge did not happen" (correct preserve, nothing to
+# do) and "nobody could answer, so a possibly-spent token is still armed on
+# disk" (operator must check by hand) with the same string. Fixed strings only —
+# never gh's own text — so the one audit trail cannot be injected or leaked into.
+_AMBIGUOUS_REASON="merge-state-unclassified"
+
+# ── Authoritative merge-state confirmation (issue #664) ────────────────
+# Neither of gh's local signals proves what the remote did:
+#   - stdout: `gh pr merge` prints "✓ Squashed and merged pull request #N"
+#     only when stdout is a TTY. Under the Claude Code Bash tool it never
+#     is, so a SUCCESSFUL agent-driven merge emits nothing at all → exit 0
+#     with zero pattern matches → 'ambiguous', leaving a spent bypass token
+#     armed for the rest of its 3600s window. Deterministic, not a race.
+#   - exit code: with --delete-branch a post-merge worktree-checkout
+#     conflict makes gh exit non-zero on a merge the remote already
+#     accepted (empirical, PR #98) → 'failure', same armed-token outcome.
+#   - --auto: gh reports the merge QUEUED, but GitHub merges immediately when
+#     the required checks are already green, so the PR can be MERGED by the
+#     time this hook runs — 'auto_queued' then armed the token too. (The
+#     gate's --auto guard, like its cross-repo guard, sits BELOW the skip
+#     branch, so a claimed merge can carry --auto.)
+# So ask GitHub, the authority pr-grind already treats as definitive
+# (skills/pr-grind/SKILL.md), for EVERY non-success classification, and
+# promote only on MERGED. The CLI patterns stay as the offline path; an
+# unreachable, unauthenticated or non-MERGED answer leaves the fail-safe
+# classification untouched.
+# An ACCEPTED --auto queue spends the token even though the PR has not merged
+# yet. The gate authorized one merge; GitHub took it and will land it with no
+# further PostToolUse event, so nothing will ever confirm it — preserving here
+# left the spent token armed for a second merge (the #664 hole through the
+# --auto door; the gate's own --auto guard, like its cross-repo guard, sits
+# BELOW the skip branch, so a claimed merge can carry it). The retry reprieve
+# deferred consumption exists for covers merges that FAILED, not merges that
+# were accepted; if the queue later fails its checks the operator re-touches.
+# Promoted before the query so it still passes every tamper/age/PR validation.
+case "$PARSE_STATUS" in
+    success)
+        # The CLI patterns already confirmed it (a TTY ran the merge, or gh
+        # printed on stderr). Name that evidence rather than logging an empty
+        # reason — including for a cross-repo merge, where the pattern is the
+        # only thing that can speak to another repo's PR and the query below
+        # would never run.
+        _SUCCESS_SOURCE="cli-pattern-merged"
+        ;;
+    auto_queued)
+        PARSE_STATUS="success"
+        _SUCCESS_SOURCE="auto-merge-accepted-token-spent"
+        ;;
+esac
+
+case "$PARSE_STATUS" in
+    success) ;;
+    *)
+        # Fail-closed precondition for the query: a concretely-known PR on
+        # BOTH sides. The query needs an unambiguous target, and judging by
+        # some other PR's state is the cross-PR token reuse the success path
+        # refuses below.
+        if [ "$PARSE_REPO_OVERRIDE" = "yes" ]; then
+            # A merge steered at another repo/host. No query here can speak to
+            # it — this checkout's PR #N is a different pull request — so the
+            # token cannot be CONFIRMED. Spend it rather than leave it armed:
+            # the gate authorized one merge, that merge was attempted somewhere
+            # this hook cannot see, and a live token nobody knows about for the
+            # rest of the hour is the #664 defect itself. Consumption is the
+            # fail-CLOSED direction (it removes a bypass, never grants one);
+            # the cost is a re-touch if that cross-repo merge failed. The
+            # detector is the same one the GATE trusts to BLOCK a merge, so
+            # trusting it here is strictly less consequential than its existing
+            # use. Logged with its own reason, so the audit trail never claims
+            # a merge was confirmed.
+            PARSE_STATUS="success"
+            _SUCCESS_SOURCE="cross-repo-merge-unverifiable-token-spent"
+        elif [ -n "$PARSE_PR" ] && [ "$PARSE_PR" = "$CLAIMED_MERGE_PR" ]; then
+            # Bound the network call well inside the hook timeout; absent a
+            # timeout binary, run unbounded (the harness timeout still caps
+            # it, and a killed hook consumes nothing — fail-safe).
+        _BOUND=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+        if [ -n "$_BOUND" ]; then
+            _PR_STATE=$(cd "$REPO_DIR" && "$_BOUND" 6 gh pr view "$PARSE_PR" --json state -q .state 2>/dev/null) || _PR_STATE=""
+        else
+            _PR_STATE=$(cd "$REPO_DIR" && gh pr view "$PARSE_PR" --json state -q .state 2>/dev/null) || _PR_STATE=""
+        fi
+        case "$_PR_STATE" in
+            MERGED)
+                PARSE_STATUS="success"
+                _SUCCESS_SOURCE="github-api-state-merged"
+                ;;
+            OPEN|CLOSED)
+                _AMBIGUOUS_REASON="github-api-says-not-merged"
+                ;;
+            "")
+                # Unreachable, unauthenticated, or timed out. THIS is the #672
+                # hazard: the merge may well have succeeded, so the preserved
+                # token may already be spent and stays armed for the rest of
+                # its window. Preserving is still the fail-safe direction; the
+                # operator just has to be able to tell this case from the one
+                # above and delete the file by hand.
+                _AMBIGUOUS_REASON="github-api-unreachable-merge-state-unknown"
+                ;;
+            *)
+                _AMBIGUOUS_REASON="github-api-answer-unrecognized"
+                ;;
+        esac
+        elif [ -n "$PARSE_PR" ] && [ -n "$CLAIMED_MERGE_PR" ] \
+            && [ "$CLAIMED_MERGE_PR" != "unknown" ]; then
+            # Both sides name a concrete PR but they differ — a cross-PR
+            # mismatch, not a missing PR. Distinct reason so the operator is
+            # never told "no PR was known" when two conflicting ones were.
+            _AMBIGUOUS_REASON="github-api-not-queried-pr-mismatch-claimed-${CLAIMED_MERGE_PR}-parsed-${PARSE_PR}"
+        else
+            _AMBIGUOUS_REASON="github-api-not-queried-pr-not-explicitly-known"
+        fi
+        ;;
+esac
 
 # Helpers — kept in this scope so they can access CLAIMED_* and log_event.
 release_claim_preserving_skip() {
@@ -339,7 +546,7 @@ release_claim_preserving_skip() {
 
 consume_bypass() {
     rm -f "$SKIP_FILE" "$PENDING_FILE"
-    log_event "skip-pr-grind-consumed"
+    log_event "skip-pr-grind-consumed" "${_SUCCESS_SOURCE:-}"
 }
 
 case "$PARSE_STATUS" in
@@ -402,16 +609,6 @@ case "$PARSE_STATUS" in
 
         consume_bypass
         ;;
-    auto_queued)
-        # gh pr merge --auto enabled auto-merge but the PR has not actually
-        # merged yet (CI may still be running). Releasing the claim and
-        # preserving the skip file means: the next attempt to merge (when
-        # CI completes) will re-enter pre-merge-gate.sh, write a fresh
-        # claim, and either consume (on real success) or release (if the
-        # eventual auto-merge fails).
-        release_claim_preserving_skip "skip-pr-grind-released-auto-queued" \
-            "auto-merge-queued-not-yet-confirmed"
-        ;;
     failure)
         release_claim_preserving_skip "skip-pr-grind-released" "merge-failed"
         ;;
@@ -421,7 +618,7 @@ case "$PARSE_STATUS" in
         # plain failure path so the bypass log surfaces output-parsing gaps
         # for future tuning.
         release_claim_preserving_skip "skip-pr-grind-released-ambiguous" \
-            "tool-output-matched-no-known-pattern"
+            "$_AMBIGUOUS_REASON"
         ;;
 esac
 

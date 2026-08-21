@@ -832,6 +832,13 @@ def _quote_aware_rewrites(text):
     #    that had just been taken out for `$IFS`: one occurrence anywhere would again make
     #    every transport in the command unresolvable and over-block unrelated reads.
     #
+    #    The `$"` form is RECORDED as it is dropped, because it is locale translation and
+    #    its result is not statically known -- a payload of `$"harmless"` would otherwise
+    #    look perfectly resolvable and not widen. It cannot simply be left in place: the
+    #    command word `$"bash"` then resolves to `$bash` instead of `bash`, and a real shell
+    #    receiver stops being recognised, which is a worse hole than the one being closed.
+    #    So the drop stays and `_locale_string` carries the fact instead.
+    #
     # 2. SEPARATE `$IFS`/`${IFS}` -- but only where it is live, meaning unquoted and
     #    unescaped. A blind substitution also rewrote a PROTECTED one: `sh <<< 'echo
     #    \$IFS'` became `echo \ $IFS `, which the expansion detector then read as live and
@@ -843,6 +850,8 @@ def _quote_aware_rewrites(text):
     while i < n:
         c = text[i]
         if not in_s and not in_d and c == chr(36) and i + 1 < n and text[i + 1] in (_SQ, _DQ):
+            if text[i + 1] == _DQ:
+                _locale_string[0] = True
             i += 1                      # drop the dollar; the quote below opens the string
             continue
         if not in_s and not in_d:
@@ -916,6 +925,15 @@ _helper_budget = [0]
 # Set by _defuse_comments on a `)#`, whose meaning it refuses to guess. Read by
 # _helper_invoked, which answers it by fail-CLOSED probe.
 _paren_hash_ambiguous = [False]
+# Did this command contain a LOCALE string? `$"..."` is gettext translation, so its result
+# is not statically known -- and the `$` is dropped during normalization (see
+# `_quote_aware_rewrites`), which leaves the segment looking perfectly resolvable. Recorded
+# per command rather than per segment because the evidence is gone by the time segments
+# exist, and command-wide is affordable HERE where it was not for `$IFS`: an unrelated
+# `$IFS` is common enough that a command-wide flag demonstrably over-blocked a real read,
+# whereas a benign command carrying `$"..."` AND naming a mutating helper AND feeding a
+# shell on stdin is not a shape that occurs.
+_locale_string = [False]
 # Total BYTES of watch suffix candidates materialized per scan. The cost of that
 # expansion is copying, not token count, so it is bounded in the unit it actually spends.
 # Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
@@ -2034,6 +2052,12 @@ def _text_unresolvable(text):
     # that shell RECEIVES, and the inner shell's quoting decides what it then expands.
     # Verified by running it: `export P='<helper>'; sh <<< '$P'` prints nothing from the
     # outer shell and executes the helper in the inner one, and it classified OK.
+    if _locale_string[0]:
+        # A locale string ANYWHERE in this command: what it translates to is not visible
+        # here, so no payload in the command can be called statically known. See
+        # `_locale_string` for why command-wide is the right grain for this one and was the
+        # wrong grain for `$IFS`.
+        return True
     # Outer quote removal FIRST, because quoting CONCATENATES: `'$'P` is three characters
     # the outer shell joins into `$P`, which a scan of the raw text would never see. What
     # it does NOT buy is a judgement about escaping -- `_inner_expands` deliberately trusts
@@ -2339,10 +2363,14 @@ def _shell_pieces(text):
 
     def _open(at, quoted):
         # Does an expansion START here? Returns the characters consumed, 0 if not, and
-        # pushes the level it opens. A form that expands but nests NOTHING (a bare `$NAME`)
-        # sets the flag and returns 0: callers read nonzero as "a level was opened" and
-        # adjust quote state on it, so reporting consumption without an entry to close
-        # corrupts the scan. ONE routine, called from the ordinary state, from
+        # pushes the level it opens. STRUCTURED forms only -- a bare `$NAME` is not tracked
+        # here at all. It was, briefly, and that was wrong twice over: it corrupted the scan
+        # (callers read a nonzero return as "a level was opened" and adjust quote state on
+        # it, so reporting consumption with no entry to close left a double-quoted string
+        # unterminated) and it fed the wrong question, since `saw_exp` drives the
+        # no-receiver terminator, whose concern is a mis-decided expansion BOUNDARY and a
+        # bare parameter has none. Whether a payload is statically known is asked by
+        # `_text_unresolvable` instead. ONE routine, called from the ordinary state, from
         # inside double quotes, and from inside another expansion -- the three had separate
         # copies and the copies disagreed: only the outer one knew that `$((` opens TWICE,
         # so an arithmetic expansion NESTED in a command substitution pushed one level and
@@ -3134,6 +3162,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
         _paren_hash_ambiguous[0] = False
+        _locale_string[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)
         if hit:

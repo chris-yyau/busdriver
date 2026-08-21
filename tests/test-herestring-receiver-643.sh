@@ -1670,5 +1670,34 @@ assert_block "${STEM}slo[t].py" \
     "...while the GLOB spelling, which this file does close, still blocks"
 assert_block "bash <<< '${STEM}slo[t].py'" \
     "...including through a here-string"
+# -- S. a locale string is not statically known ---------------------------------------
+# `$"..."` is gettext TRANSLATION, so unlike ANSI-C quoting its result is not visible
+# here. Normalization drops the `$` from both forms, which left a payload of
+# `$"harmless"` looking perfectly resolvable, so it did not widen. Raised in review as
+# a fail-open, and it was one.
+#
+# The `$` cannot simply be left in place, which the last two assertions are here to
+# stop anyone trying: the command word `$"bash"` then resolves to `$bash` instead of
+# `bash` and a real shell receiver stops being recognised -- a worse hole than the one
+# being closed. So the drop stays and the FACT is recorded instead.
+#
+# Recorded per COMMAND, not per segment, because the evidence is gone by the time
+# segments exist. That grain was wrong for `$IFS` -- an unrelated one is common enough
+# that a command-wide flag demonstrably over-blocked a real read, which section J pins
+# -- and is right here, because a benign command carrying `$"..."` AND naming a helper
+# AND feeding a shell on stdin is not a shape that occurs. The `cat` line below is the
+# limit of the cost.
+assert_block "cat $HELPER; sh <<< \$\"harmless\"" \
+    "a locale string makes the payload unknown, so the command is probed"
+assert_block "export P='$HELPER'; sh <<< \$\"\$P\"" \
+    "...and an expansion inside one is flagged as it always was"
+assert_ok    "cat $HELPER; cat <<< \$\"harmless\"" \
+    "...while a non-executing receiver never re-parses it, so the cost stops there"
+assert_ok    "sh <<< \$\"harmless\"" \
+    "...and one naming no helper anywhere is still a read"
+assert_block "\$\"bash\" <<< '$HELPER'" \
+    "...and this is what the drop buys: a locale-quoted command word still resolves"
+assert_block "\$'bash' <<< '$HELPER'" \
+    "...as does the ANSI-C spelling the drop was written for"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

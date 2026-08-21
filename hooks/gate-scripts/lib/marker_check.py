@@ -280,6 +280,9 @@ def _dequote(w):
     return w.replace(chr(34), "").replace(chr(39), "")
 
 
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+
+
 def _reserved_word(w, raw=None):
     # Is this word shell GRAMMAR? Bash recognises a reserved word before quote removal and
     # matches it EXACTLY, so `'fi'`, `f\i` and `./fi` are ordinary external commands that
@@ -305,7 +308,7 @@ def _bare_assign(raw):
 
 def _skippable(w, raw=None):
     # A leading assignment, a flag, or a bare numeric wrapper operand (timeout 5 ...).
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w) is not None:
+    if _ASSIGN_RE.match(w) is not None:
         return _bare_assign(raw)
     return (w.startswith("-")
             or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
@@ -384,6 +387,19 @@ def _strip_time_prefix(words, raws=None):
     # quoted external `then` as syntax again, promoted the `.` behind it, and refused an
     # ordinary read -- the exact over-block the exact/bare rules exist to stop.
     keep = list(range(len(rest)))
+    seen_assign = False
+
+    def _bare_at(k):
+        # Same rule as `_cmd_position`'s `_bare`, applied where the peel actually happens.
+        # Carrying the spellings this far and then matching `time` on the DECODED word left
+        # the peel recognising a keyword bash never saw: verified against real bash,
+        # `FOO=bar 'time' echo HI` runs the EXTERNAL time (it prints the /usr/bin/time
+        # format), and `time '-p' echo HI` answers `-p: command not found`, so the quoted
+        # option is a command word too. With no spellings to judge, every word reads as
+        # bare, which is the behaviour the one-argument callers already had.
+        if raws is None:
+            return True
+        return not any(c in raws[keep[k]] for c in ("'", chr(34), "\\"))
     # ONE walk, not "reserved words, then times": bash allows an introducer BETWEEN timed
     # pipelines (`time ! time source ...`, `time { time source ...; }`), so two sequential
     # loops peel the first keyword and leave the second as the command word.
@@ -395,9 +411,18 @@ def _strip_time_prefix(words, raws=None):
     # catching up rather than a new rule. Same bare-vs-attached operand rule as
     # `_starts_with_wrapper`: a bare operator takes the FOLLOWING token as its target.
     while i < len(rest):
-        if rest[i] == "time":
+        # AN ASSIGNMENT ENDS KEYWORD RECOGNITION. `time` is reserved only in
+        # pipeline-prefix position; once an assignment word has been walked past, bash is
+        # parsing a SIMPLE COMMAND and the next word is its NAME. Measured, not reasoned:
+        # `time echo HI` prints the keyword's `real 0m0.000s`, `FOO=bar time echo HI`
+        # prints /usr/bin/time's `0.00 real 0.00 user 0.00 sys`, and
+        # `time FOO=bar time echo HI` prints BOTH -- outer keyword, inner program. Peeling
+        # the second one promoted the `.` behind it and refused an ordinary read.
+        # Reserved INTRODUCERS are different and still allowed to precede it: `{` or `then`
+        # opens a new command, which is why `{ time source /dev/stdin; }` must still peel.
+        if rest[i] == "time" and _bare_at(i) and not seen_assign:
             del rest[i], keep[i]
-            if i < len(rest) and rest[i] == "-p":
+            if i < len(rest) and rest[i] == "-p" and _bare_at(i):
                 del rest[i], keep[i]
             continue
         m = _REDIR_PREFIX_RE.match(rest[i])
@@ -406,6 +431,10 @@ def _strip_time_prefix(words, raws=None):
             del rest[i], keep[i]
             if not attached and i < len(rest):
                 del rest[i], keep[i]
+            continue
+        if _ASSIGN_RE.match(rest[i]) is not None:
+            seen_assign = True
+            i += 1
             continue
         if _skippable(rest[i]) or _bn(rest[i]) in _RESERVED_SH:
             # `_skippable` covers the BARE fd of `2 > /dev/null`, which shlex hands over as

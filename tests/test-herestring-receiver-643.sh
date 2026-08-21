@@ -1138,5 +1138,55 @@ else
         "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
 
+# -- F. the peel's own spellings, and a refuted bypass --------------------------------
+# Carrying raws through `_strip_time_prefix` is only half the job: the peel matched `time`
+# on the DECODED word, so it kept recognising a keyword bash never saw. Verified against
+# REAL bash, not asserted: `FOO=bar 'time' echo HI` prints the /usr/bin/time format, so the
+# quoted word ran the EXTERNAL program.
+assert_ok    "time FOO=bar 'time' . /dev/stdin <<< '$HELPER'" \
+    "a quoted time behind an assignment is the external program, not a second keyword"
+# AND SO IS A BARE ONE. An earlier revision of this block asserted the opposite and
+# enshrined a false positive; raised in review, then settled by RUNNING bash rather than
+# reasoning about it. `time echo HI` prints the keyword's `real 0m0.000s`, `FOO=bar time
+# echo HI` prints /usr/bin/time's `0.00 real 0.00 user 0.00 sys`, and `time FOO=bar time
+# echo HI` prints BOTH -- so only the FIRST time is the keyword and an assignment ends
+# keyword recognition. Peeling the second promoted a `.` that sources nothing.
+assert_ok    "time FOO=bar time . /dev/stdin <<< '$HELPER'" \
+    "an assignment ends keyword recognition: the second time is a program, not syntax"
+assert_ok    "FOO=bar time . /dev/stdin <<< '$HELPER'" \
+    "...and with no keyword in front at all, the very first time is already a program"
+assert_block "time time . /dev/stdin <<< '$HELPER'" \
+    "...while a doubled keyword with NO assignment between still peels both"
+assert_block "{ time source /dev/stdin; } <<< '$HELPER'" \
+    "a reserved INTRODUCER is not an assignment, so the peel still reaches inside it"
+# RESIDUAL, an over-block, measured rather than assumed. Real bash answers `-p: command not
+# found` for `time '-p' echo HI`, so the quoted option is a COMMAND word and this ought to
+# read as data. It blocks because `_skippable` steps over any word starting with `-`, the
+# rule that makes wrapper options resolve (`env -u X sh`), and that rule is deliberately
+# position-blind: a quoted option is still an option TO A WRAPPER, so making it bare-aware
+# would be wrong, and making it position-aware is a larger change than a command literally
+# named `-p` justifies. Pinned so the residual stays visible.
+assert_block "time '-p' . /dev/stdin <<< '$HELPER'" \
+    "residual over-block: a quoted -p in command position is stepped over as a flag"
+assert_block "time -p . /dev/stdin <<< '$HELPER'" \
+    "...and the bare option is genuinely the keyword's, so it peels"
+
+# CLAIM (high, PR round 4): `_decode_escapes` is applied to the WHOLE composed word, while
+# bash decodes only inside `$'...'` and treats a bare backslash as quoting the next
+# character -- so `$'\x62'\ash` (which really does execute bash, verified by running it)
+# yields neither `bash` nor anything matching it, and the here-string payload goes
+# unscanned. The MECHANISM is accurate. The BYPASS is not: twelve spellings were measured
+# against a payload naming the helper only through a GLOB, which is caught solely by
+# re-entering the payload, so an unrecognised launcher would show up as OK. None did --
+# every one fails closed, because an unresolvable command word is itself a block. The
+# `cat` line is the control that proves these are not just the wide substring rule firing.
+_glob="${STEM}slo[t].py"
+assert_block "\$'\\x62'\\ash <<< '$_glob'"        "mixed ANSI-C and backslash launcher fails closed"
+assert_block "\$'\\142'\\ash <<< '$_glob'"        "...the octal spelling too"
+assert_block "\\b\\a\\s\\h <<< '$_glob'"             "...an all-backslash spelling"
+assert_block "\$'\\x62'\$'\\x61'sh <<< '$_glob'"   "...two ANSI-C fragments"
+assert_block "\$'\\x73'\\h <<< '$_glob'"           "...and the short name"
+assert_ok    "cat <<< '$_glob'"                 "control: the same globbed payload into cat is data"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

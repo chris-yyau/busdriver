@@ -164,8 +164,7 @@ allow_merge() {
 # shell outside the harness, where no PreToolUse hook fires by design). That
 # inference is only sound if EVERY allow path is guaranteed to have recorded.
 # One swallowed write on any path and an absent record stops meaning anything
-# on all of them. Callers pass a pre-formatted JSON object; $2 is optional
-# cleanup to run before blocking.
+# on all of them. Callers pass a pre-formatted JSON object as the only argument.
 audit_authorized_merge() {
     local _record="$1" _lib
     _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -740,8 +739,8 @@ if [ -f "$MARKER_FILE" ]; then
         #
         _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         audit_authorized_merge \
-            "$(printf '{"ts":"%s","event":"pr-grind-clean-merge","gate":"pre-merge","pr":%s,"head":"%s"}' \
-                "$_NOW" "$MERGE_PR_NUM" "$MARKER_SHA")"
+            "$(printf '{"ts":"%s","event":"pr-grind-clean-merge","gate":"pre-merge","pr":"%s","head":"%s"}' \
+                "$_NOW" "${MERGE_PR_NUM:-unknown}" "$MARKER_SHA")"
         allow_merge "pr-grind-clean+ci"
     else
         # Stale marker — remove and require fresh grind
@@ -791,8 +790,8 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
                 mkdir -p "$REPO_DIR/$STATE_DIR"
                 _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                 audit_authorized_merge \
-                    "$(printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}' \
-                        "$_NOW" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED")"
+                    "$(printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":"%s","gate_files":%s}' \
+                        "$_NOW" "${MERGE_PR_NUM:-unknown}" "${GATE_FILES_CHANGED:-0}")"
                 allow_merge "bootstrap-merge"
             fi
         fi

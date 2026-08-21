@@ -900,10 +900,54 @@ def _quote_aware_rewrites(text):
     #    is still standing for the detector to see.
     out, i, n = [], 0, len(text)
     in_s = in_d = False
+    # SAVED QUOTE STATE per open command substitution. `$( )` and backticks start a FRESH
+    # quoting context in bash, so an enclosing double quote does not reach inside them --
+    # and tracking only the outer state left every rewrite here suppressed in there:
+    # `echo "$(${IFS}touch <marker>)"` kept its glued spelling, the write verb stayed hidden
+    # behind the expansion, and the marker was forged. Unquoted `$( )` was unaffected, which
+    # is what made it look like the quoting was already handled.
+    # A COMMAND SUBSTITUTION STARTS A FRESH QUOTING CONTEXT, and this never tries to work
+    # out where that context ENDS. Detecting the end is a ladder: the first attempt closed
+    # on any unquoted `)`, which an ordinary nested subshell popped early; adding a paren
+    # depth fixed that and left `case x in x) ... esac`, whose pattern terminator is a bare
+    # `)` with NO opener -- a shape this file already documents in
+    # `_piped_shell_producers`. Each round of review produced another spelling.
+    #
+    # So the switch is ONE-WAY: the first `$(` or backtick clears the quote state for the
+    # REST of the text and nothing restores it. That cannot be defeated by any paren shape,
+    # because there is no closing detection left to defeat.
+    #
+    # The cost is that text after a substitution is rewritten as though unquoted, which
+    # means MORE separation and more dropped `$` prefixes, never less -- more tokens
+    # visible to the scanners downstream, which is the fail-closed direction. Measured
+    # against the whole gate surface before adopting it.
+    _fresh = False
     while i < n:
         c = text[i]
+        if not in_s and not _fresh and (c == _BT
+                                        or (c == chr(36) and i + 1 < n and text[i + 1] == "(")):
+            _fresh = True
+            in_s = in_d = False
+            out.append(c)
+            i += 1
+            continue
         if not in_s and not in_d and c == chr(36) and i + 1 < n and text[i + 1] in (_SQ, _DQ):
             if text[i + 1] == _DQ:
+                # UNCONDITIONAL, including past the one-way fresh switch, and an attempt to
+                # narrow it here was reverted. Review had flagged the over-block it causes:
+                # after a substitution the quote state is unknown, so a single-quoted
+                # `$"literal"` reads as a live locale string and widens the whole command --
+                # `echo "$(true)"; echo (single-quoted $"literal"); cat <helper>` blocks a
+                # plain read. Withholding the flag under `_fresh` fixed that and opened a
+                # HOLE: `echo "$(true)"; $"runner" -c 'python3 <helper>'` went BLOCK -> OK,
+                # as did the bare-argument spelling. Those two transports resolve ONLY
+                # through this flag -- the `<<<` spellings survive on the dropped-`$` text,
+                # which is what made the first measurement look free.
+                #
+                # So the cost stands. An over-block on a read is a bad day; a translated
+                # command word that execs the protected helper is the hole this section
+                # exists to close, and the module's rule is that over-blocks are acceptable
+                # and fail-opens are not. Both directions are pinned in the suite.
                 _locale_string[0] = True
             i += 1                      # drop the dollar; the quote below opens the string
             continue
@@ -921,7 +965,15 @@ def _quote_aware_rewrites(text):
                 out.append(text[i + 1])
             i += 2
             continue
-        if c == _SQ and not in_d:
+        if _fresh:
+            # QUOTE TRACKING IS OVER once the context is unknowable. Leaving it on meant the
+            # enclosing substitution's CLOSING quote was read as an OPENING one, so every
+            # rewrite after it was suppressed as though quoted:
+            # `echo "$(true)" ; ${IFS}touch <marker>` forged the marker. Ignoring the
+            # toggles keeps `in_s`/`in_d` False for the remainder, which is what "treat the
+            # rest as unquoted" has to mean to be worth anything.
+            pass
+        elif c == _SQ and not in_d:
             in_s = not in_s
         elif c == _DQ and not in_s:
             in_d = not in_d
@@ -2068,7 +2120,14 @@ def _inner_expands(text):
         if c == _BT:
             return True
         if c == chr(36) and i + 1 < n and (inner[i + 1] in _PARAM_START
-                                           or inner[i + 1] in "{("):
+                                           or inner[i + 1] in "{(" + _DQ):
+            # `$"` is here for the same reason as everything else in this scan: the inner
+            # shell TRANSLATES it, and what it translates to is not visible. The
+            # command-wide `_locale_string` flag does not cover this one, because that is
+            # set only where normalization DROPS a `$"` -- which it does only when the form
+            # is unquoted. Inside an outer single-quoted payload the normalization leaves it
+            # alone, so `sh <<< 'python3 $"safe"'` reached here with no flag set and no
+            # dollar-form this scan recognised.
             return True
         if c == "~":
             # TILDE EXPANSION is an expansion too, and it is not spelled with a dollar.

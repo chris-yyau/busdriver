@@ -132,6 +132,88 @@ assert_block() { # <command> <label>
 # guard under test: a Bash call whose text contains the literal invocation is refused
 # ("Cannot call ... directly"), which is how the first attempt to write this file failed.
 # The classifier sees the assembled string in the payload, which is all that matters.
+# THIS SUITE MUST NEVER FORGE A GATE MARKER, and it did once. Two fixtures written to
+# pin the quoted-substitution residual put `$(touch <marker>)` inside the harness's own
+# double quotes, so BASH executed the substitution before the classifier ever saw the
+# string -- creating the real skip file in the real .claude directory, and asserting
+# nothing. The fixtures are escaped now; this records the state up front so the check at
+# the end can prove it, rather than relying on that escaping staying correct.
+# BOTH locations, because the two can differ. The fixtures name `.claude/...` with a
+# RELATIVE path, which resolves against $PWD, while $ROOT is derived from this file's
+# own location -- run the suite from anywhere but the repo root and a forge would land
+# somewhere this check was not looking. Raised in review against the first version.
+_MARKER_DIRS=("$ROOT/.claude" "$PWD/.claude")
+_MARKER_NAMES=(skip-litmus skip-design-review skip-pr-grind)
+# Full paths WITH the suffix, because the closing pass does a set-membership test against
+# this list to decide what is NEW. The first version stored `$_d/$_mk` while testing
+# `$_d/$_mk.local`, so no entry could ever match and every pre-existing operator marker
+# would have looked freshly forged.
+# `stat` is not portable between BSD and GNU, and this suite runs on both.
+_mtime() { python3 -c 'import os,sys;print(int(os.stat(sys.argv[1]).st_mtime_ns))' "$1" 2>/dev/null || echo 0; }
+# MTIME, not merely existence. A marker that already exists is skipped below as "not
+# ours" -- correctly, since removing the operator's file would be its own bug -- but a
+# fixture that TOUCHED it still changed something security-relevant: two of these gates
+# read the mtime as the age of the consent, and `skip-pr-grind.local` is only honoured
+# inside a 3600s window. Re-arming one silently is the same bypass as forging one, so the
+# stamp is recorded and compared rather than just the name.
+_forged_before=""
+for _d in "${_MARKER_DIRS[@]}"; do
+    for _mk in "${_MARKER_NAMES[@]}"; do
+        _p="$_d/$_mk.local"
+        [[ -e "$_p" ]] || continue
+        _forged_before="$_forged_before $_p@$(_mtime "$_p")"
+    done
+done
+
+# Removal runs from an EXIT TRAP, not only from the tail of the script. Review's point:
+# a suite that dies early -- an interrupt, an unbound variable, a fixture that exits --
+# never reaches its last line, so the cleanup that only lived there would be skipped in
+# exactly the runs most likely to have gone wrong, leaving the live bypass behind.
+#
+# And the removal is CHECKED. `rm -f` reports success for a file it did not have to touch
+# and stays quiet about a permission failure, so reporting "REMOVED" on its say-so could
+# announce a cleanup that never happened -- about the worst thing a security guard can
+# print. The file is re-tested and a survivor is named separately.
+_forge_swept=0
+_forged_new=""
+_forge_stuck=""
+_forge_touched=""
+_forge_sweep() {
+    [[ "$_forge_swept" -eq 1 ]] && return 0     # idempotent: the tail calls it, the trap re-fires
+    _forge_swept=1
+    local _d _mk _p _now_stamp
+    for _d in "${_MARKER_DIRS[@]}"; do
+        for _mk in "${_MARKER_NAMES[@]}"; do
+            _p="$_d/$_mk.local"
+            [[ -e "$_p" ]] || continue
+            if [[ " $_forged_before " == *" $_p@"* ]]; then
+                # Armed before the run, so it is the operator's and is NOT removed -- but if
+                # the stamp moved, a fixture re-armed it and that is reported.
+                _now_stamp="$(_mtime "$_p")"
+                [[ " $_forged_before " == *" $_p@$_now_stamp "* ]] \
+                    || _forge_touched="$_forge_touched $_p"
+                continue
+            fi
+            rm -f "$_p" 2>/dev/null
+            if [[ -e "$_p" ]]; then
+                _forge_stuck="$_forge_stuck $_p"
+            else
+                _forged_new="$_forged_new $_p"
+            fi
+        done
+    done
+    # On the abnormal path there is no assertion left to fail into, so say it here too.
+    if [[ -n "$_forge_stuck" ]]; then
+        printf '  !! FORGED GATE MARKER COULD NOT BE REMOVED:%s\n' "$_forge_stuck" >&2
+    elif [[ -n "$_forge_touched" ]]; then
+        printf '  !! EXISTING GATE MARKER RE-ARMED:%s\n' "$_forge_touched" >&2
+    elif [[ -n "$_forged_new" ]]; then
+        printf '  !! forged gate marker removed:%s\n' "$_forged_new" >&2
+    fi
+    return 0
+}
+trap _forge_sweep EXIT
+
 STEM="python3 hooks/gate-scripts/lib/lease_"
 TAIL="slot.py"
 HELPER="$STEM$TAIL"
@@ -1357,6 +1439,22 @@ assert_ok    "cat $HELPER; echo \"\$IFS\" >/dev/null; printf 'echo safe' | sh" \
 # Found by the PR security BACKSTOP, on a change the lead had already passed. Pinned here
 # because the two halves pull against each other: erase it and the payload tests go blind,
 # leave it standing and the verb goes missing.
+# A KNOWN GAP, pinned so it stays measured rather than re-derived -- not a requirement.
+# Passes on OK like assert_ok; differs only in what it says when it stops passing, because
+# the two mean opposite things. An assert_ok failure is a regression to fix; a residual
+# that starts BLOCKing has been FIXED, and the fixture is the stale part.
+assert_residual() { # <command> <label>
+    local got
+    got="$(verdict "$1")"
+    if [[ "$got" == "OK|" ]]; then
+        ok "$2"
+    elif is_block "$got"; then
+        no "$2" "got=$got — the RESIDUAL IS FIXED. This fixture pinned a known gap; delete it (and its note) rather than restoring the OK."
+    else
+        no "$2" "got=${got:-<empty>} — neither the pinned residual nor a block"
+    fi
+}
+
 assert_marker_block() { # <command> <label>
     local got
     got="$(verdict "$1")"
@@ -1742,6 +1840,29 @@ assert_block "\$\"bash\" <<< '$HELPER'" \
     "...and this is what the drop buys: a locale-quoted command word still resolves"
 assert_block "\$'bash' <<< '$HELPER'" \
     "...as does the ANSI-C spelling the drop was written for"
+# AND THE FLAG IS NOT NARROWED BY THE ONE-WAY FRESH SWITCH, which was tried and
+# reverted -- both directions pinned here because the attempt looked free right up until
+# it was measured properly.
+#
+# Past the first substitution the quote state is declared unknowable, so a SINGLE-QUOTED
+# `$"...' literal after one reads as a live locale string and, because this flag is
+# command-WIDE, widens every unrelated transport in the command. The first line below is
+# that cost: a plain read, refused. Withholding the flag under the switch removed it --
+# and opened a hole, because the `-c` and bare-argument spellings resolve ONLY through
+# this flag. The `<<<` spellings survive on the dropped-`$` text, which is exactly why a
+# first measurement that used only `<<<` reported no loss.
+#
+# Over-block kept, hole closed: this module's rule is that an over-block is a bad day and
+# a fail-open is not survivable. Whoever revisits this must move the FIRST assertion and
+# keep the other three.
+assert_block "echo \"\$(true)\"; echo '\$\"literal\"'; cat $HELPER" \
+    "ACCEPTED COST: a single-quoted locale-LOOKING literal after a substitution widens"
+assert_block "echo \"\$(true)\"; \$\"runner\" -c 'python3 $HELPER'" \
+    "...and this is what that buys: a translated command word with -c still blocks"
+assert_block "echo \"\$(true)\"; \$\"runner\" $HELPER" \
+    "...as does the bare-argument spelling -- neither survives without the flag"
+assert_block "echo \"\$(true)\"; sh <<< \$\"python3 $HELPER\"" \
+    "...while a <<< payload blocks on the dropped-$ text, which is what misled the first measurement"
 # WHICH SHELL EXPANDS IT DECIDES WHETHER THE FIXTURE NEEDS `export`, and getting that
 # wrong makes an assertion pass without reproducing anything -- raised in review against
 # this section. A double-quoted `"$P"` is substituted by the OUTER shell, so a plain
@@ -1804,5 +1925,137 @@ assert_block "~/bin/tool <<< '$HELPER'" \
 # shellcheck disable=SC2088  # literal tilde, same reason as above
 assert_ok    "~/bin/tool <<< 'ordinary data'" \
     "...but it needs a helper named too, so an ordinary read is unaffected"
+# -- V. a command substitution is a fresh quoting context -----------------------------
+# `$( )` and backticks start a FRESH quoting context in bash, so an enclosing double
+# quote does not reach inside them. The rewrites tracked only the outer state, so every
+# one of them was suppressed in there and the text kept its glued spelling. Fixed: the
+# normalization now saves and restores quote state across a substitution.
+#
+# WHAT THAT DOES NOT FIX, measured rather than assumed. Review reported this as a
+# marker forge introduced by separating the IFS expansion. It is not: a quoted
+# substitution body is not scanned for marker writes AT ALL, with or without an IFS in
+# it, and `origin/main` behaves identically on the plain spelling -- so the gap predates
+# this branch and belongs to the marker scanner, not to the normalization. The three
+# assertions below record that state of affairs so the next reader measures instead of
+# re-deriving it, and the unquoted spelling is pinned blocking beside them.
+assert_marker_block "echo \$(touch .claude/skip-litmus.local)" \
+    "an UNQUOTED substitution body is scanned, and a marker write in it is seen"
+assert_marker_block "echo \$(\${IFS}touch .claude/skip-litmus.local)" \
+    "...including through a separated token"
+# Pinned through assert_residual, NOT assert_ok. These two record a KNOWN GAP rather than
+# desired behaviour, and an `assert_ok` makes the gap look required: when someone finally
+# teaches the scanner to read quoted substitution bodies, this suite goes red and reads as
+# "your fix broke a regression test". The distinct helper puts the disposition in the
+# failure text instead -- a BLOCK here is the good news, and the fixture is what to delete.
+assert_residual "echo \"\$(touch .claude/skip-litmus.local)\"" \
+    "residual, same on origin/main: a QUOTED substitution body is not scanned at all"
+assert_residual "echo \"\`touch .claude/skip-litmus.local\`\"" \
+    "...nor a quoted backtick body -- the gap is the scanner, not the normalization"
+
+# -- W. the one-way fresh context can EXPOSE a marker write, never hide one -----------
+# The switch is deliberately irreversible: the first `$(` or backtick clears the quote
+# state for the REST of the text and nothing restores it. Its safety argument is a
+# DIRECTION, not a case -- rewriting the tail as unquoted yields more separation and more
+# dropped `$` prefixes, so strictly more tokens reach the scanners. Review's objection was
+# that the argument had only worked examples behind it, and the failure it rules out
+# (a prefix shape that switches the context and then swallows what follows) is exactly
+# the shape three rounds of closing-detection bugs kept producing.
+#
+# So it is asserted as a property over the cross product instead. Every PREFIX below
+# opens a substitution -- including the two that broke the earlier attempts, a nested
+# subshell and a `case` pattern's unopened `)` -- and every WRITE after it must still be
+# seen.
+#
+# SINGLE-quoted, and that is load-bearing. These strings hold live substitutions and
+# backticks; in double quotes bash would run them before the classifier ever saw the
+# text, which is precisely how this suite once forged a real gate marker. Single quotes
+# cannot expand.
+# shellcheck disable=SC2016  # NOT expanding is the whole point: these strings are payloads
+# for the classifier, and in double quotes bash would run them here instead -- the exact
+# mistake that once forged a real gate marker. Silencing it AT the arrays, with the reason,
+# so the next reader does not 'fix' the quoting back into a forge.
+_W_PREFIX=(
+    'echo "$(true)" ; '
+    'echo "$( ( : ) )" ; '
+    'echo "$(case x in x) : ;; esac)" ; '
+    'echo `true` ; '
+    'X="$(true)" ; '
+    'echo "$((1+1))" ; '
+)
+# shellcheck disable=SC2016  # same reason as above -- these must reach the classifier unexpanded
+_W_WRITE=(
+    'touch .claude/skip-litmus.local'
+    '${IFS}touch .claude/skip-litmus.local'
+    '$IFS touch .claude/skip-litmus.local'
+    '> .claude/skip-litmus.local'
+    '>${IFS}.claude/skip-litmus.local'
+)
+for _pfx in "${_W_PREFIX[@]}"; do
+    for _wr in "${_W_WRITE[@]}"; do
+        _got="$(verdict "$_pfx$_wr")"
+        if [[ "$_got" == BLOCK_MARKER\|* ]]; then
+            ok "fresh context does not hide: ${_pfx}${_wr}"
+        else
+            no "fresh context does not hide: ${_pfx}${_wr}" \
+               "got=${_got:-<empty>} — the one-way switch swallowed a marker write after it"
+        fi
+    done
+done
+
+
+# The same switch must not START blocking ordinary text, which is the failure the
+# fail-closed direction invites. Same prefixes, tails with no marker write in them:
+# every one must still read as an ordinary command.
+# shellcheck disable=SC2016  # unexpanded payloads, same reason as the matrices above
+_W_SAFE=(
+    'echo "$(true)" "just text"'
+    'echo "$(true)" ; echo hello'
+    'echo "$(true)" ; ls -la'
+    'echo "$((1+1)) plain words"'
+)
+for _sf in "${_W_SAFE[@]}"; do
+    assert_ok "$_sf" "fresh context does not over-block: $_sf"
+done
+
+# ARITHMETIC EXPANSION, pinned because review reported it as a defect and the
+# measurement says otherwise. `$((` is arithmetic, not a command substitution, and the
+# switch does fire on it -- but the predicted consequence, a FALSE marker-write block on
+# a quoted argument, does not occur: the reported command reads OK, and so does the same
+# command with no arithmetic in it at all. `origin/main` returns OK for both as well, so
+# the OK is a quoted argument not being a command position -- nothing to do with the
+# switch. No special case was added for it: declining to fire would keep quote tracking
+# ON for longer, the direction that hides tokens, and shape-detecting `$((` is the same
+# class of guess that the three closing-detection bugs above came from.
+assert_ok "printf '%s' \"\$((1 + 1)) \${IFS}touch .claude/skip-litmus.local\"" \
+    "the reported arithmetic case reads OK -- as it does on origin/main"
+assert_ok "printf '%s' \"plain \${IFS}touch .claude/skip-litmus.local\"" \
+    "...and so does the same thing with NO arithmetic, which is what makes it unrelated"
+# ...and the check itself. A suite that writes a real gate marker has bypassed the very
+# control it exists to protect.
+#
+# REPORTING IT IS NOT ENOUGH, and the first version only reported. When this actually
+# happened the failed assertion left a live skip marker on disk, and the next `git commit`
+# would have silently spent it -- a real bypass, surviving the very run that detected it.
+# Worse, the operator could not simply delete it: the gate refuses a write to a marker
+# path, so the artifact outlived the session that made it. So anything that appeared
+# DURING the run is removed here. The set difference against the opening snapshot is what
+# makes that safe -- a marker the operator armed before the suite started is not in the
+# new set and is never touched.
+#
+# The suite still FAILS. Cleaning up is not absolution: a fixture that executed instead of
+# being classified is a defect in the fixture, and the run must go red so it gets fixed.
+_forge_sweep
+if [[ -n "$_forge_stuck" ]]; then
+    no "this suite forged no gate marker while running" \
+       "forged and STILL PRESENT:$_forge_stuck — remove it by hand before committing"
+elif [[ -n "$_forge_touched" ]]; then
+    no "this suite forged no gate marker while running" \
+       "RE-ARMED an existing marker:$_forge_touched — its consent window was silently extended"
+elif [[ -n "$_forged_new" ]]; then
+    no "this suite forged no gate marker while running" \
+       "forged and removed:$_forged_new — a fixture EXECUTED instead of being classified"
+else
+    ok "this suite forged no gate marker while running"
+fi
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

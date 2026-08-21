@@ -1726,8 +1726,16 @@ assert_block "cat $HELPER; sh <<< \$\"harmless\"" \
     "a locale string makes the payload unknown, so the command is probed"
 assert_block "export P='$HELPER'; sh <<< \$\"\$P\"" \
     "...and an expansion inside one is flagged as it always was"
-assert_ok    "cat $HELPER; cat <<< \$\"harmless\"" \
-    "...while a non-executing receiver never re-parses it, so the cost stops there"
+# THE COST DOES NOT STOP AT THE RECEIVER, and that is deliberate. Translation can
+# produce the RECEIVER too, not only the payload -- with a catalog mapping it,
+# `$"runner" <<< P` execs a shell while the segment shows the ordinary-looking word
+# `runner`, and the piped spelling yields no stage at all. Both were fail-opens found
+# in review. Gating the widen on a transport this scan can RECOGNISE is precisely the
+# assumption that failed, so a locale string now probes the whole command once,
+# unconditionally -- which means even a data-only receiver blocks when the command also
+# names a helper. Pinned as the accepted cost rather than left to surprise someone.
+assert_block "cat $HELPER; cat <<< \$\"harmless\"" \
+    "a locale string probes the whole command, so even a cat receiver is caught"
 assert_ok    "sh <<< \$\"harmless\"" \
     "...and one naming no helper anywhere is still a read"
 assert_block "\$\"bash\" <<< '$HELPER'" \

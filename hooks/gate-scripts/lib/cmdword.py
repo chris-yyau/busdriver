@@ -1078,7 +1078,9 @@ _EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
 _SUBST_BODY_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 
-_UNRESOLVED_CW_CHARS = "$*?[{(" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
+# `~` expands to a path, so it can name the command itself -- see the note on
+# marker_check._UNRESOLVED_CW_RE, which this is kept in step with.
+_UNRESOLVED_CW_CHARS = "$*?[{(~" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
 
 # Compound-command keyword sets -- see the definitions above _FUNC_NAME.
 

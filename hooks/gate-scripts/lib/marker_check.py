@@ -236,7 +236,14 @@ _EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
 # KEEP IN STEP WITH cmdword._SUBST_BODY_RE.
 _SUBST_BODY_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
-_UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(]")   # `(` is extglob: ba+(s)h expands to bash
+# `~` is here because a tilde can produce the RECEIVER, not just a payload:
+# `HOME=/bin/bash bash -c '~ <<< "<helper>"'` runs the helper -- verified by running it --
+# while the receiver predicate saw the literal word `~` and no disjunct matched. The
+# payload-side handling added earlier does not reach this, because it is only consulted
+# once a receiver has been recognised. An unresolved command word already fails closed
+# here (that is what catches `/bin/ba{s..s}h`), so the fix is to admit that a tilde makes
+# one unresolved. KEEP IN STEP WITH cmdword._UNRESOLVED_CW_CHARS.
+_UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(~]")  # `(` is extglob: ba+(s)h expands to bash
 # A SECOND way to cut the text into candidate words for the structureless glob probe in
 # _abandoned_scan_probe -- the operator characters the shell separates on before it globs,
 # because a whitespace-only split left `lease_slo?.py;` as the pattern and matched the
@@ -3087,7 +3094,14 @@ def _herestring_shell_payloads(pairs):
             out.append(seg)
         else:
             _t, _e = _cmd_expansion()
-            if _e:
+            if _e or _locale_string[0]:
+                # `_locale_string` as well, because translation can produce the RECEIVER
+                # and not only the payload. With a catalog mapping it, `$"runner" <<< P`
+                # execs a shell while this segment shows the ordinary-looking word
+                # `runner` -- the `$` having been dropped during normalization -- and no
+                # disjunct matches. The payload-side check does not reach it: that runs
+                # only after a receiver has been recognised, which is exactly what fails
+                # here.
                 out.append(_t)
                 break
     return out
@@ -3286,6 +3300,21 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # A shell on the RECEIVING end of a pipe runs whatever the producer wrote, and the
         # walk below can only see that payload as data. Same condition and same reason as
         # cmdword._piped_shell_producers -- keep the two in step.
+        if _locale_string[0]:
+            # A LOCALE STRING ANYWHERE, probed once before either transport. Translation can
+            # produce the RECEIVER, and both transports find their receiver by looking at
+            # words: the here-string branch sees the ordinary-looking `runner` (the `$` was
+            # dropped during normalization) and the piped branch never yields a stage for it
+            # at all, so neither reaches the payload test that already knows about locale
+            # strings. Widening here covers both, and covers the ones neither branch models.
+            #
+            # Unconditional rather than transport-gated on purpose: the cost is the same
+            # trade already accepted for locale strings -- it needs a `$"..."` AND a helper
+            # named somewhere in the command -- and gating it on a transport this scan can
+            # RECOGNISE is exactly the assumption that failed here.
+            _hit = _abandoned_scan_probe(cmd)
+            if _hit:
+                return _hit
         for _prod in _piped_shell_producers(_pairs):
             # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes
             # GLOB characters, so a payload naming `lease_slo?.py` -- which the shell

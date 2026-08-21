@@ -251,7 +251,7 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 
 **Event types written to `bypass-log.jsonl`:**
 
-All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-merge`, `bootstrap-merge`) record through one helper that **fails CLOSED**: if the record cannot be appended, the gate blocks instead of authorizing an unlogged merge (#667). That is what makes the *absence* of a record meaningful — a merged PR carrying none of them was merged around the gate, typically from a shell outside Claude Code where no PreToolUse hook fires by design. Detection, not prevention: nothing here can observe an out-of-harness merge.
+All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-merge`, `bootstrap-merge`) record through one helper that **fails CLOSED**: if the record cannot be appended, the gate blocks instead of authorizing an unlogged merge (#667). That is what makes the *absence* of a record meaningful. Be precise about the claim: these record **authorized attempts**, so a blocked attempt is also recordless — the gate saw it and refused. What absence shows is that the gate never *authorized* a merge. Combined with GitHub reporting the PR merged, that means it merged without gate authorization — typically from a shell outside Claude Code, where no PreToolUse hook fires by design. Detection, not prevention: nothing here can observe an out-of-harness merge.
 
 | Event | Source | Meaning |
 |-------|--------|---------|
@@ -301,9 +301,11 @@ tail -10 .claude/bypass-log.jsonl | jq .
 # Count bypasses by event type
 jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
 
-# Did PR 666 merge through the pre-merge gate? (#667 — no output for that PR
-# number means the gate never saw it; check whether it was merged from a shell
-# outside Claude Code, where no PreToolUse hook fires)
+# Did the gate authorize PR 666's merge? (#667 — no output means it never did.
+# If GitHub says the PR is merged, it merged without gate authorization; check
+# whether it was merged from a shell outside Claude Code, where no PreToolUse
+# hook fires. A blocked attempt is also recordless, so absence alone does not
+# distinguish "never attempted" from "attempted and refused".)
 jq -r --arg pr 666 'select(.gate == "pre-merge" and (.pr | tostring) == $pr)
   | "\(.ts) \(.event)"' .claude/bypass-log.jsonl
 

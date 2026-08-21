@@ -318,6 +318,39 @@ def _bare_assign(raw):
     return not any(c in raw[:raw.index("=") + 1] for c in ("'", chr(34), "\\"))
 
 
+def _mentions_marker(segtext, markers, simple_vars=None):
+    # The could-not-resolve fallback: a segment that does not even NAME a marker cannot be
+    # a forge, so it is allowed; anything that names one fails CLOSED.
+    #
+    # SQUEEZED FIRST, because quoting CONCATENATES. A raw `in` test wants the basename
+    # contiguous, and `.claude/skip-"litmus.local"` is the same file to bash while matching
+    # nothing -- so the fallback waved through exactly the command it exists to catch. Same
+    # squeeze the command-word comparisons downstream already apply, for the same reason.
+    _sq = segtext.replace(chr(39), "").replace(chr(34), "").replace(chr(92), "")
+    hit = next((mf for mf in markers if _bn(mf) in _sq or _bn(mf) in segtext), None)
+    if hit is not None:
+        return hit
+    # ALREADY-RESOLVED VALUES COUNT AS A MENTION. The text of a segment that only
+    # DEREFERENCES an earlier assignment names no marker at all -- `M=<marker>; ...; touch
+    # "$M"` puts the basename in a previous segment -- so a text-only test allowed the write
+    # whenever this fallback was reached. The caller owns `simple_vars` across segments
+    # precisely so the earlier assignment is still visible here.
+    for _k, _v in (simple_vars or {}).items():
+        # REFERENCED, not merely defined. Every name the caller has ever recorded lives in
+        # this table, so counting them all made an unrelated earlier assignment block a
+        # later benign command outright -- `M=<marker>; ...; /bin/echo harmless` has nothing
+        # to do with the marker. Only a name this segment actually dereferences can carry
+        # the value into it.
+        # WHOLE NAME. A substring test made a marker-valued `M` look referenced by an
+        # unrelated `$MORE` or `$M_SUFFIX`, blocking a command that never expands `M` at all.
+        if not re.search(r"\$\{?" + re.escape(_k) + r"\}?(?![A-Za-z0-9_])", segtext):
+            continue
+        hit = next((mf for mf in markers if _bn(mf) in _v), None)
+        if hit is not None:
+            return hit
+    return None
+
+
 def _skippable(w, raw=None):
     # A leading assignment, a flag, a bare numeric wrapper operand (timeout 5 ...), or the
     # separated `$IFS` token.
@@ -473,7 +506,23 @@ def _strip_time_prefix(words, raws=None):
             attached = m.group(0) != rest[i]
             del rest[i], keep[i]
             if not attached and i < len(rest):
-                del rest[i], keep[i]
+                # A SEPARATED `$IFS` IS NOT THE OPERAND. The fifth site to need this and the
+                # one that stayed open longest, because a helper hidden this way reaches
+                # `_helper_invoked` rather than the marker scan: `printf '%s' "python3
+                # <helper>" | (2>${IFS}/dev/null . /dev/stdin)` left `/dev/null` in command
+                # position, so the `.` that sources the payload was never the command word
+                # and the protected helper ran. Blocked on origin/main, OK here until this.
+                #
+                # PROVENANCE IS USED, unlike in `_scan_segment` where shlex has already
+                # thrown it away: `_bare_at` reads the parallel raw spellings, so only an
+                # unquoted occurrence counts as the injected separator and a literal
+                # `'$IFS'` filename is still consumed as the real operand. Judged BEFORE the
+                # delete, since `keep` shifts under it.
+                #
+                # Never past the end: a trailing `$IFS` has nothing behind it, so it IS the
+                # operand and stepping over it would consume nothing at all.
+                if i < len(rest):
+                    del rest[i], keep[i]
             continue
         if _ASSIGN_RE.match(rest[i]) is not None:
             seen_assign = True
@@ -552,6 +601,14 @@ def _strip_redirs(toks):
     helper guard measured ALLOW for the sudo, script and flock forms alike.
 
     A leading file descriptor (`2` in `2>&1`) stays, and is already _skippable.
+
+    A `$IFS` in operand position needs no special case. Normalization ERASES an unquoted
+    `$IFS` to whitespace rather than injecting a token for it, exactly as `cmdword.py` has
+    always done, so nothing here can mistake a separator for an operand: an unquoted one is
+    gone by the time these tokens exist, and a quoted one keeps its quotes and is a real
+    filename. An earlier version separated instead, and every walk that consumes "the next
+    token" then had to be taught which token was not it -- six of them, each found only
+    after the previous fix shipped.
     """
     out, skip = [], False
     for t in toks:
@@ -581,6 +638,12 @@ def _starts_with_wrapper(words):
     skip_next = False
     for w in words:
         if skip_next:
+            # NO `$IFS` step-over of its own. These words are DEQUOTED, so this cannot tell
+            # an injected separator from a literal operand -- and the callers now hand it
+            # one reading at a time, in which the injected separator has already been
+            # removed. Stepping over here as well consumed the token AFTER the separator,
+            # which is the wrapper: `< '$IFS' script -q /dev/null python3 <helper>` lost the
+            # `script` wrapper, selected the non-wrapper regime, and returned OK.
             skip_next = False
             continue
         m = _REDIR_PREFIX_RE.match(w)
@@ -625,7 +688,14 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
         # riskier diff than an out-param for a message-only distinction.
         if flags is not None:
             flags["unparseable"] = True
-        return next((mf for mf in markers if _bn(mf) in segtext), None)
+        return _mentions_marker(segtext, markers, simple_vars)
+
+    return _scan_token_walk(toks, markers, simple_vars, flags)
+
+
+def _scan_token_walk(toks, markers, simple_vars, flags=None):
+    # The walk itself. Split out of `_scan_segment` so the two readings above can each be
+    # run over it; everything below is unchanged.
     seg = []
     seg_words = []   # command-position candidates: redirect operators/targets excluded
     seg_has_cmd = False
@@ -656,9 +726,10 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
                 # target is deliberately NOT a command word, so it never goes through the
                 # peels. Found by the PR security backstop, which also noted the gap was
                 # invisible because the new fixtures covered only command position.
+                # NO step-over here: `_scan_segment` runs this walk over BOTH readings of a
+                # `$IFS` in operand position, so this one stays the plain literal reading and
+                # the injected one arrives as a stream with the token already removed.
                 _j = i + 1
-                while _j < n and toks[_j] == chr(36) + "IFS":
-                    _j += 1
                 if _j < n and not _is_redir(toks[_j]):
                     nxt = toks[_j]
                     m = _match_marker(nxt, markers, simple_vars)
@@ -673,7 +744,9 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
                     continue
                 i = _j
                 continue
-            # "<" read redirect; skip operator AND its source (a read, not a write)
+            # "<" read redirect; skip operator AND its source (a read, not a write).
+            # Plain literal reading, as the write twin above: the separated spelling is
+            # covered by the two-reading walk in `_scan_segment`, not here.
             i += 2 if (i + 1 < n and not _is_redir(toks[i + 1])) else 1
             continue
         # Leading name=value tokens (before the command word) are real shell
@@ -922,6 +995,8 @@ def _quote_aware_rewrites(text):
     # visible to the scanners downstream, which is the fail-closed direction. Measured
     # against the whole gate surface before adopting it.
     _fresh = False
+    _wstart = 0            # index into `out` where the current shell WORD began
+    _pstart = _pend = 0    # bounds of the previous complete word, built only when needed
     while i < n:
         c = text[i]
         if not in_s and not _fresh and (c == _BT
@@ -954,7 +1029,49 @@ def _quote_aware_rewrites(text):
         if not in_s and not in_d:
             _m = _IFS_RE.match(text, i)
             if _m:
-                out.append(" " + chr(36) + "IFS ")
+                # ERASED TO WHITESPACE, like `cmdword.py`, because that is what bash does
+                # to an unquoted `$IFS` at a word-splitting position: the glued token comes
+                # apart, and nothing is left for a later walk to mistake for a redirect
+                # operand. An earlier version SEPARATED it into a real ` $IFS ` token
+                # instead, to keep the expansion visible -- and every walk that consumes
+                # "the next token" then had to be taught which token was not it. Six of
+                # them, each found only after the previous fix shipped.
+                #
+                # EXCEPT AS A HERE-STRING OPERAND, which is not a word-splitting position.
+                # `sh <<< $IFS` feeds the WHOLE value to the shell without splitting it, so
+                # there is no glue to break -- and erasing there destroys the only evidence
+                # that the payload is an expansion at all: with `IFS` holding a helper
+                # invocation, `IFS=...; sh <<< $IFS` ran it and classified OK. Keeping the
+                # text verbatim is both more accurate and what `_text_unresolvable` needs.
+                # WORD-AWARE look-back, not "the text ends with `<<<`". Bash concatenates
+                # adjacent quote fragments inside one word, so the operand can begin with
+                # them and the operator is no longer the last thing emitted: `sh <<< ""$IFS`
+                # and `sh <<< \'\'${IFS}` still feed the whole value to the shell unsplit,
+                # while the naive test saw a prefix ending in quotes, erased the expansion,
+                # and returned OK on a command that runs the protected helper.
+                #
+                # Two shapes, because the operator may be attached to its operand or stand
+                # apart: the word BEING BUILT starts with `<<`, or the word BEFORE it was
+                # the operator. Quotes are squeezed out before either comparison, since they
+                # are exactly what bash removes after deciding the grammar.
+                _sqz = lambda _x: _x.replace(chr(39), "").replace(chr(34), "").replace(chr(92), "")
+                _cur = _sqz("".join(out[_wstart:]))
+                _ptok = _sqz("".join(out[_pstart:_pend]))
+                # ANYWHERE IN THE WORD, not just at its start. Bash recognises an unquoted
+                # redirect operator inside a word, so `sh<<<$IFS` and `sh 0<<<$IFS` are real
+                # here-strings whose word begins with the command name or a file descriptor
+                # -- a startswith test read those as ordinary words and erased the expansion.
+                # `endswith("<<<")` is subsumed by `endswith("<<")`.
+                #
+                # Quotes are squeezed out before the test, so a QUOTED `"<<"` also matches
+                # and keeps its `$IFS` verbatim although bash would treat it as literal text.
+                # That is the erring-toward-visible direction: the expansion stays readable
+                # to the payload tests instead of vanishing.
+                if "<<" in _cur or _ptok.endswith("<<"):
+                    out.append(text[i:_m.end()])
+                    i = _m.end()
+                    continue
+                out.append(" ")
                 i = _m.end()
                 continue
         if c == chr(92) and not in_s:
@@ -977,6 +1094,20 @@ def _quote_aware_rewrites(text):
             in_s = not in_s
         elif c == _DQ and not in_s:
             in_d = not in_d
+        if c.isspace() and not in_s and not in_d:
+            # A WORD BOUNDARY, recorded here because this is the only place the quote state
+            # for this character is known. The here-string look-back below used to find the
+            # boundary by scanning `out` backwards for whitespace, which cannot tell a
+            # separator from a space INSIDE an adjacent quoted fragment: `sh <<< " "$IFS`
+            # is one word to bash, and the backward scan cut it in two, lost the operator,
+            # and erased an expansion that bash feeds whole to the shell.
+            # INDICES ONLY. Joining the word here ran on every unquoted space in the
+            # command, which is O(n) each time and made the whole rewrite quadratic -- it
+            # blew the 200ms observe-parity budget at 267ms. The strings are built only in
+            # the `$IFS` branch, which is rare.
+            if len(out) > _wstart:          # a non-empty word just ended
+                _pstart, _pend = _wstart, len(out)
+            _wstart = len(out) + 1
         out.append(c)
         i += 1
     return "".join(out)
@@ -3485,8 +3616,8 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # word and hides the interpreter behind it. Two different failures, one on each
         # side, which is why the choice is conditional rather than either one alone.
         _wrapped = _starts_with_wrapper(toks)
-        _scan_toks = toks if _wrapped else _strip_redirs(toks)
-        _tokp, _strp = _exec_payloads(_scan_toks)
+        _words = toks if _wrapped else _strip_redirs(toks)
+        _tokp, _strp = _exec_payloads(_words)
         for _p in _tokp:
             # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
             # quoted token carried, so `-exec sh -c "python3 -I .../lease_slot.py ..."`
@@ -3505,161 +3636,165 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
         # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those
         # contradicts the read/mention contract the rest of this detector maintains.
-        words = _scan_toks
-        # Locate the interpreter. Two regimes, same reasoning as the verb scan above: a
-        # wrapper can carry flags that take an OPERAND (`env -u FOO python3 ...`,
-        # `sudo -u root python3 ...`), so peeling to the first non-flag word picks the
-        # operand and misses the interpreter behind it. When the segment STARTS with a
-        # wrapper, look for the interpreter anywhere; otherwise require it in command
-        # position, which is what keeps `echo python3 lease_slot.py` a mention.
-        pyi = None
-        if _wrapped:
-            pyi = next((i for i, t in enumerate(words)
-                        if _bn(t).startswith("python")), None)
-        else:
-            cw = _peel_wrappers(words)
-            if cw is not None and _bn(cw).startswith("python"):
-                pyi = words.index(cw)
-            elif cw is not None and _bn(cw) in _MUTATING_HELPERS:
-                # The script itself is the command word (executable bit set).
-                i = words.index(cw)
-                if not (i + 1 < len(words) and words[i + 1] == "--self-check"):
-                    return _bn(cw)
-                continue
-        if pyi is None:
-            continue
-        # The EXECUTED script is the interpreter first non-flag argument. Anything later
-        # is that script own argument, so `python3 safe.py lease_slot.py` runs safe.py,
-        # and `python3 -c ... # lease_slot.py` runs a -c program.
-        script = None
-        j = pyi + 1
-        while j < len(words):
-            w = words[j]
-            # Normalized first: `/dev/fd/./0`, `/dev//fd/0` and `/dev/fd/../fd/0` all
-            # open descriptor 0, and matching the canonical spelling alone let each of
-            # them read as an ordinary script name.
-            if (_FD_SCRIPT_RE.match(posixpath.normpath(w))
-                    or _UNRESOLVED_OPERAND_RE.search(w)):
-                # The PROGRAM comes from stdin, so it is not an argument at all and the
-                # operand walk picked the next plain operand as the script:
-                # `python3 - .claude 20 0 3600 < .../lease_slot.py` ran the helper while
-                # the parser judged `.claude`. What stdin carries is not statically
-                # visible -- it arrives by redirect, by pipe from an earlier segment, or
-                # by heredoc -- so the WHOLE command is searched, not this segment.
-                # That over-blocks a contrived `python3 - lease_slot.py </dev/null`,
-                # where the helper is only an argument and stdin is empty. Accepted:
-                # `python3 -` is an execution context, not a mention, and enumerating
-                # the empty-stdin spellings is the allowlist this file keeps deleting.
-                hit = _glob_helper(w) or _names_helper(_whole)
-                if hit:
-                    return hit
+        def _locate(words, _wrapped):
+            # Locate the interpreter. Two regimes, same reasoning as the verb scan above: a
+            # wrapper can carry flags that take an OPERAND (`env -u FOO python3 ...`,
+            # `sudo -u root python3 ...`), so peeling to the first non-flag word picks the
+            # operand and misses the interpreter behind it. When the segment STARTS with a
+            # wrapper, look for the interpreter anywhere; otherwise require it in command
+            # position, which is what keeps `echo python3 lease_slot.py` a mention.
+            pyi = None
+            if _wrapped:
+                pyi = next((i for i, t in enumerate(words)
+                            if _bn(t).startswith("python")), None)
+            else:
+                cw = _peel_wrappers(words)
+                if cw is not None and _bn(cw).startswith("python"):
+                    pyi = words.index(cw)
+                elif cw is not None and _bn(cw) in _MUTATING_HELPERS:
+                    # The script itself is the command word (executable bit set).
+                    i = words.index(cw)
+                    if not (i + 1 < len(words) and words[i + 1] == "--self-check"):
+                        return _bn(cw)
+                    return None   # nothing executable located in this segment
+            if pyi is None:
+                return None   # nothing executable located in this segment
+            # The EXECUTED script is the interpreter first non-flag argument. Anything later
+            # is that script own argument, so `python3 safe.py lease_slot.py` runs safe.py,
+            # and `python3 -c ... # lease_slot.py` runs a -c program.
+            script = None
+            j = pyi + 1
+            while j < len(words):
+                w = words[j]
+                # Normalized first: `/dev/fd/./0`, `/dev//fd/0` and `/dev/fd/../fd/0` all
+                # open descriptor 0, and matching the canonical spelling alone let each of
+                # them read as an ordinary script name.
+                if (_FD_SCRIPT_RE.match(posixpath.normpath(w))
+                        or _UNRESOLVED_OPERAND_RE.search(w)):
+                    # The PROGRAM comes from stdin, so it is not an argument at all and the
+                    # operand walk picked the next plain operand as the script:
+                    # `python3 - .claude 20 0 3600 < .../lease_slot.py` ran the helper while
+                    # the parser judged `.claude`. What stdin carries is not statically
+                    # visible -- it arrives by redirect, by pipe from an earlier segment, or
+                    # by heredoc -- so the WHOLE command is searched, not this segment.
+                    # That over-blocks a contrived `python3 - lease_slot.py </dev/null`,
+                    # where the helper is only an argument and stdin is empty. Accepted:
+                    # `python3 -` is an execution context, not a mention, and enumerating
+                    # the empty-stdin spellings is the allowlist this file keeps deleting.
+                    hit = _glob_helper(w) or _names_helper(_whole)
+                    if hit:
+                        return hit
+                    break
+                if w.startswith("-"):
+                    # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
+                    # `-m MODULE` runs the helper without ever naming the FILE, and `-m`
+                    # was on the list of flags whose operand is skipped as an option value.
+                    # Matched inside a short-flag CLUSTER, the same way the -c handler
+                    # reads its program: CPython accepts `-Bm mod` and `-Bmmod`, so
+                    # anchoring on a leading `-m` caught only the simplest spelling.
+                    # `--` ends option parsing: the NEXT word is the script, and a word that
+                    # merely looks like an option is a filename from here on.
+                    if w == "--":
+                        script = words[j + 1] if j + 1 < len(words) else None
+                        break
+                    if w == "--module" and j + 1 < len(words):
+                        if _module_helper(words[j + 1]):
+                            return _module_helper(words[j + 1])
+                        if not _PLAIN_MODULE_RE.match(words[j + 1]):
+                            stem = next((m for m in _MUTATING_MODULES
+                                         for v in _shell_variants(_whole) if m in v), None)
+                            if stem:
+                                return stem + ".py"
+                        break
+                    if w.startswith("--"):
+                        j += 2 if w == "--check-hash-based-pycs" else 1
+                        continue
+                    # A short-option CLUSTER is consumed left to right, and the FIRST
+                    # option taking an operand swallows the cluster remainder -- or the
+                    # next word when the cluster ends there. Testing for an `m` ANYWHERE
+                    # read `-Wm` (which is `-W m`) as a module switch, then skipped the
+                    # script word that followed it as if it were the module name.
+                    k = next((i for i, ch in enumerate(w[1:]) if ch in "cmWXQ"), None)
+                    if k is None:
+                        j += 1
+                        continue
+                    tail = w[2 + k:]
+                    if w[1 + k] == "m":
+                        mod = tail if tail else (words[j + 1] if j + 1 < len(words) else "")
+                        if _module_helper(mod):
+                            return _module_helper(mod)
+                        # An operand the shell rewrites (`M=lease_slot; python3 -m "$M"`)
+                        # names its module only at run time, so the whole command is
+                        # searched for a helper STEM -- the module spelling, which carries
+                        # no `.py` for _names_helper to find.
+                        if not _PLAIN_MODULE_RE.match(mod):
+                            stem = next((m for m in _MUTATING_MODULES
+                                         for v in _shell_variants(_whole) if m in v), None)
+                            if stem:
+                                return stem + ".py"
+                    if w[1 + k] in ("c", "m"):
+                        # CPython STOPS parsing options at -c and -m; everything after is
+                        # argv for the program it already chose. Walking on read the next
+                        # operand as a second module or as a script, so `python3 -m json.tool
+                        # lease_slot.py` -- which only READS the helper -- was blocked.
+                        #
+                        # But stopping OUTRIGHT was a fail-open: several stdlib modules take a
+                        # SCRIPT PATH and run it. `python3 -m cProfile <helper>.py .claude 20
+                        # 0 3600` executes the helper -- claiming a real lease slot and
+                        # minting a skip-review-consumed event -- while this walk classified
+                        # only `cProfile` and allowed it. Confirmed for cProfile, profile,
+                        # pdb, trace, timeit and runpy, which is already too many spellings to
+                        # chase one at a time.
+                        #
+                        # So the question is INVERTED, the way it is everywhere else in this
+                        # file: an executes-its-argument list fails OPEN on the module nobody
+                        # thought of, while a READS-ONLY list fails CLOSED on it. Only the
+                        # handful of modules that provably just read their operand let the
+                        # walk stop; for anything else the remaining words are still searched
+                        # for a protected helper. The cost of being wrong is a false block on
+                        # an unlisted read-only module, which is the safe direction and is
+                        # cleared by adding it to the list.
+                        # Both spellings of "the helper", because a runner module accepts
+                        # both. _glob_helper resolves a FILE operand, including the expanded
+                        # forms `lease_slo[t].py` and `lease_slot*.py` -- an equality test on
+                        # the literal spelling never matches those while the command still
+                        # runs the helper, and the direct-script path below already resolves
+                        # operands this way. _module_helper resolves a MODULE operand:
+                        # `python3 -m cProfile -m lease_slot` hands cProfile its OWN -m, which
+                        # runs the helper as __main__ without the name ever carrying `.py`.
+                        #
+                        # EVERY later word is scanned, with no stop. A stop at the first `.py`
+                        # operand was tried, to spare the one false positive where the helper
+                        # is merely argv to another profiled script -- and it was a bad trade:
+                        # an option operand can itself end in `.py`, so `-o out.py <helper>`
+                        # broke at out.py while cProfile still executed the helper. That
+                        # exchanged a false BLOCK for a fail-OPEN. Any narrowing here needs
+                        # per-option arity, the table this file refuses everywhere because it
+                        # fails open wherever it is wrong. The residual false positive is
+                        # deliberate and recoverable through the skip lease.
+                        if w[1 + k] == "m" and not _readonly_module_trusted(mod, words):
+                            for later in words[j + 1:]:
+                                _g = _glob_helper(later) or _module_helper(later)
+                                if _g:
+                                    return _g
+                        break
+                    j += 1 if tail else 2
+                    continue
+                script = w
                 break
-            if w.startswith("-"):
-                # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
-                # `-m MODULE` runs the helper without ever naming the FILE, and `-m`
-                # was on the list of flags whose operand is skipped as an option value.
-                # Matched inside a short-flag CLUSTER, the same way the -c handler
-                # reads its program: CPython accepts `-Bm mod` and `-Bmmod`, so
-                # anchoring on a leading `-m` caught only the simplest spelling.
-                # `--` ends option parsing: the NEXT word is the script, and a word that
-                # merely looks like an option is a filename from here on.
-                if w == "--":
-                    script = words[j + 1] if j + 1 < len(words) else None
-                    break
-                if w == "--module" and j + 1 < len(words):
-                    if _module_helper(words[j + 1]):
-                        return _module_helper(words[j + 1])
-                    if not _PLAIN_MODULE_RE.match(words[j + 1]):
-                        stem = next((m for m in _MUTATING_MODULES
-                                     for v in _shell_variants(_whole) if m in v), None)
-                        if stem:
-                            return stem + ".py"
-                    break
-                if w.startswith("--"):
-                    j += 2 if w == "--check-hash-based-pycs" else 1
-                    continue
-                # A short-option CLUSTER is consumed left to right, and the FIRST
-                # option taking an operand swallows the cluster remainder -- or the
-                # next word when the cluster ends there. Testing for an `m` ANYWHERE
-                # read `-Wm` (which is `-W m`) as a module switch, then skipped the
-                # script word that followed it as if it were the module name.
-                k = next((i for i, ch in enumerate(w[1:]) if ch in "cmWXQ"), None)
-                if k is None:
-                    j += 1
-                    continue
-                tail = w[2 + k:]
-                if w[1 + k] == "m":
-                    mod = tail if tail else (words[j + 1] if j + 1 < len(words) else "")
-                    if _module_helper(mod):
-                        return _module_helper(mod)
-                    # An operand the shell rewrites (`M=lease_slot; python3 -m "$M"`)
-                    # names its module only at run time, so the whole command is
-                    # searched for a helper STEM -- the module spelling, which carries
-                    # no `.py` for _names_helper to find.
-                    if not _PLAIN_MODULE_RE.match(mod):
-                        stem = next((m for m in _MUTATING_MODULES
-                                     for v in _shell_variants(_whole) if m in v), None)
-                        if stem:
-                            return stem + ".py"
-                if w[1 + k] in ("c", "m"):
-                    # CPython STOPS parsing options at -c and -m; everything after is
-                    # argv for the program it already chose. Walking on read the next
-                    # operand as a second module or as a script, so `python3 -m json.tool
-                    # lease_slot.py` -- which only READS the helper -- was blocked.
-                    #
-                    # But stopping OUTRIGHT was a fail-open: several stdlib modules take a
-                    # SCRIPT PATH and run it. `python3 -m cProfile <helper>.py .claude 20
-                    # 0 3600` executes the helper -- claiming a real lease slot and
-                    # minting a skip-review-consumed event -- while this walk classified
-                    # only `cProfile` and allowed it. Confirmed for cProfile, profile,
-                    # pdb, trace, timeit and runpy, which is already too many spellings to
-                    # chase one at a time.
-                    #
-                    # So the question is INVERTED, the way it is everywhere else in this
-                    # file: an executes-its-argument list fails OPEN on the module nobody
-                    # thought of, while a READS-ONLY list fails CLOSED on it. Only the
-                    # handful of modules that provably just read their operand let the
-                    # walk stop; for anything else the remaining words are still searched
-                    # for a protected helper. The cost of being wrong is a false block on
-                    # an unlisted read-only module, which is the safe direction and is
-                    # cleared by adding it to the list.
-                    # Both spellings of "the helper", because a runner module accepts
-                    # both. _glob_helper resolves a FILE operand, including the expanded
-                    # forms `lease_slo[t].py` and `lease_slot*.py` -- an equality test on
-                    # the literal spelling never matches those while the command still
-                    # runs the helper, and the direct-script path below already resolves
-                    # operands this way. _module_helper resolves a MODULE operand:
-                    # `python3 -m cProfile -m lease_slot` hands cProfile its OWN -m, which
-                    # runs the helper as __main__ without the name ever carrying `.py`.
-                    #
-                    # EVERY later word is scanned, with no stop. A stop at the first `.py`
-                    # operand was tried, to spare the one false positive where the helper
-                    # is merely argv to another profiled script -- and it was a bad trade:
-                    # an option operand can itself end in `.py`, so `-o out.py <helper>`
-                    # broke at out.py while cProfile still executed the helper. That
-                    # exchanged a false BLOCK for a fail-OPEN. Any narrowing here needs
-                    # per-option arity, the table this file refuses everywhere because it
-                    # fails open wherever it is wrong. The residual false positive is
-                    # deliberate and recoverable through the skip lease.
-                    if w[1 + k] == "m" and not _readonly_module_trusted(mod, words):
-                        for later in words[j + 1:]:
-                            _g = _glob_helper(later) or _module_helper(later)
-                            if _g:
-                                return _g
-                    break
-                j += 1 if tail else 2
-                continue
-            script = w
-            break
-        if script is None or _bn(script) not in _MUTATING_HELPERS:
-            continue
-        # Exempt ONLY the exact `<helper> --self-check` shape: the flag must be the
-        # helper FIRST argument. A looser any-token test was satisfied by a trailing
-        # `# --self-check`, which bash treats as a comment but this parser (with
-        # commenters disabled) tokenizes -- so the real, mutating invocation ran.
-        if j + 1 < len(words) and words[j + 1] == "--self-check":
-            continue
-        return _bn(script)
+            if script is None or _bn(script) not in _MUTATING_HELPERS:
+                return None   # nothing executable located in this segment
+            # Exempt ONLY the exact `<helper> --self-check` shape: the flag must be the
+            # helper FIRST argument. A looser any-token test was satisfied by a trailing
+            # `# --self-check`, which bash treats as a comment but this parser (with
+            # commenters disabled) tokenizes -- so the real, mutating invocation ran.
+            if j + 1 < len(words) and words[j + 1] == "--self-check":
+                return None   # nothing executable located in this segment
+            return _bn(script)
+
+        _found = _locate(_words, _wrapped)
+        if _found:
+            return _found
     return None
 
 

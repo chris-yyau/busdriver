@@ -2030,6 +2030,107 @@ assert_ok "printf '%s' \"\$((1 + 1)) \${IFS}touch .claude/skip-litmus.local\"" \
     "the reported arithmetic case reads OK -- as it does on origin/main"
 assert_ok "printf '%s' \"plain \${IFS}touch .claude/skip-litmus.local\"" \
     "...and so does the same thing with NO arithmetic, which is what makes it unrelated"
+# -- X. a separated $IFS is never the REDIRECT OPERAND ------------------------------
+# Separating that expansion rather than erasing it injects a real token, and every place
+# that consumes "the next token" had to be told this one is not it. `_skippable` covers
+# COMMAND position; a redirect operand is deliberately not a command word, so it never
+# goes through those peels and stayed exposed. A bare operator ate the injected token and
+# left the REAL target standing in command position, where it hid the verb behind it.
+#
+# Both spellings were REGRESSIONS OF THIS BRANCH, blocked on origin/main and OK here
+# until the PR lead found them: `<${IFS}/dev/null touch <marker>` reduced to a command
+# word of `/dev/null`, and `<${IFS}/dev/null . /dev/stdin <<< <helper>` hid the dot that
+# sources the payload. Four call sites shared the defect and now share one predicate.
+#
+# Asserted over the cross product rather than the two reported spellings, because the
+# shape is the bug: an operator, any of the separations, then a decoy target.
+_X_OP=('<' '2<' '<>' '0<' '>' '1>' '>>' '2>')
+# shellcheck disable=SC2016  # unexpanded payloads, as in the matrices above
+_X_IFS=('${IFS}' '$IFS ')
+for _op in "${_X_OP[@]}"; do
+    for _if in "${_X_IFS[@]}"; do
+        assert_marker_block "${_op}${_if}/dev/null touch .claude/skip-litmus.local" \
+            "decoy target does not hide the write verb: ${_op}${_if}"
+        assert_block "${_op}${_if}/dev/null . /dev/stdin <<< '$HELPER'" \
+            "...nor the dot that sources the payload: ${_op}${_if}"
+    done
+done
+# -- Y. an unquoted $IFS is ERASED, not turned into a token ------------------------
+# Normalization erases an unquoted `$IFS` to whitespace, which is what bash does to it at
+# a word-splitting position, and is what `cmdword.py` has always done -- the two copies
+# carry an explicit KEEP IN STEP contract.
+#
+# An earlier version SEPARATED it into a real ` $IFS ` token instead, to keep the
+# expansion visible. That token then had to be excluded by hand from every walk that
+# consumes "the next token" after a redirect operator, because a bare operator took the
+# INJECTED token as its operand and left the real target standing in command position,
+# where it hid the verb behind it. Six such walks were found, each only after the previous
+# fix shipped, and the last of them could not be fixed at all: after shlex the injected
+# token and a literal file named `$IFS` are the same string, and stepping over is a
+# fail-open for one while not stepping over is a fail-open for the other.
+#
+# Erasing removes the ambiguity rather than adjudicating it: an unquoted occurrence is gone
+# before tokens exist, and a quoted one keeps its quotes and is an ordinary filename. What
+# is asserted here is that both halves of that still hold.
+assert_marker_block "\${IFS}touch .claude/skip-litmus.local" \
+    "the glue an unquoted $IFS makes still comes apart"
+assert_marker_block "<\${IFS}/dev/null touch .claude/skip-litmus.local" \
+    "...and no injected token is left for a redirect to eat instead of its target"
+assert_marker_block "<'\$IFS' touch .claude/skip-litmus.local" \
+    "...while a QUOTED one is a real filename and is consumed as the operand"
+assert_block "printf x > '\$IFS'; < '\$IFS' $HELPER .claude fake 1" \
+    "...so it never discards the helper standing behind it"
+assert_block "printf '%s' \"python3 $HELPER\" | (2>\${IFS}/dev/null . /dev/stdin)" \
+    "...nor the dot receiver, in the pipeline subshell that has no raw spellings"
+assert_block "< '\$IFS' script -q /dev/null $HELPER .claude fake 1" \
+    "...nor the wrapper in front of the helper"
+# THE HERE-STRING OPERAND IS THE EXCEPTION, and it is the one place the text is kept
+# verbatim: `<<<` does not word-split, so there is no glue to break -- and erasing there
+# destroyed the only evidence that the payload IS an expansion. With a helper invocation
+# in the variable, `IFS=...; sh <<< $IFS` ran it and classified OK. origin/main misses
+# both spellings; they block here.
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< \$IFS" \
+    "an IFS-valued here-string payload is executed, so the expansion must survive"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< \${IFS}" \
+    "...in the braced spelling too"
+# The look-back for that exception is WORD-AWARE, because bash concatenates adjacent
+# quote fragments inside one word: the operand can begin with them, so the operator is
+# no longer the last thing emitted. A naive ends-with test saw a prefix ending in quotes,
+# erased the expansion, and returned OK on a command that runs the helper.
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< \"\"\$IFS" \
+    "...through an empty double-quoted fragment"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< ''\${IFS}" \
+    "...an empty single-quoted one"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<<\"\"\$IFS" \
+    "...and with the operator attached to its operand"
+# FRAGMENT CONTENTS ARE VARIED, not just empty ones. The boundary is now recorded as the
+# rewrite walks forward, where the quote state for each character is known -- a backward
+# scan for whitespace cannot tell a separator from a space INSIDE an adjacent fragment,
+# and `sh <<< \" \"\$IFS`, one word to bash, was cut in two.
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< \" \"\$IFS" \
+    "...through a double-quoted SPACE, which is not a word boundary"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< ' '\${IFS}" \
+    "...a single-quoted one"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh <<< \$'\\x20'\$IFS" \
+    "...and an ANSI-C encoded one"
+# The operator may also sit INSIDE the word. Bash recognises an unquoted `<<<` there, so
+# these are real here-strings whose word begins with the command name or a descriptor.
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh<<<\$IFS" \
+    "...with the operator attached to the command name"
+assert_block "IFS='python3 $HELPER .claude fake 1'; sh 0<<<\$IFS" \
+    "...and behind a file descriptor"
+assert_ok    "sh <<< \$IFS" \
+    "...while one naming no helper stays an ordinary read"
+
+# RESIDUAL, measured on origin/main and unchanged here: an ESCAPED or DOUBLE-QUOTED
+# `$IFS` as the operand still hides a dot receiver. A sweep of 240 operator/spelling
+# /context combinations puts this branch at 48 leaks against main's 208, with ZERO new
+# ones -- so these are the tail of a pre-existing gap, not fallout from the separation,
+# and closing them is not #643's job. Pinned so the number is a measurement.
+assert_residual "2> \"\$IFS\" /dev/null . /dev/stdin <<< 'python3 $HELPER'" \
+    "residual, same on origin/main: a double-quoted \$IFS operand still hides the dot"
+assert_residual "2> \\\$IFS /dev/null . /dev/stdin <<< 'python3 $HELPER'" \
+    "...as does the escaped spelling"
 # ...and the check itself. A suite that writes a real gate marker has bypassed the very
 # control it exists to protect.
 #

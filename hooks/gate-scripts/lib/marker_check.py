@@ -313,7 +313,38 @@ def _bare_assign(raw):
 
 
 def _skippable(w, raw=None):
-    # A leading assignment, a flag, or a bare numeric wrapper operand (timeout 5 ...).
+    # A leading assignment, a flag, a bare numeric wrapper operand (timeout 5 ...), or the
+    # separated `$IFS` token.
+    #
+    # THE `$IFS` CASE IS THE PRICE OF SEPARATING IT. `_quote_aware_rewrites` stops erasing
+    # that expansion so the evidence survives for the payload tests, but separating it
+    # injects a real TOKEN, and a token in front of a command word takes its place:
+    # `${IFS}touch .claude/skip-litmus.local` normalized to ` $IFS touch ...`, the peels
+    # returned `$IFS` as the command word, and the marker-write verb behind it was never
+    # seen -- `touch` alone blocks, that spelling returned OK. Found by the PR security
+    # backstop, not by the lead.
+    #
+    # Stepping over it here restores every command-position caller at once (`_peel_wrappers`,
+    # `_first_word`, `_starts_with_wrapper`) while leaving the token in the text, which is
+    # what the payload tests read. Exact match: normalization emits this one spelling, and
+    # `_inner_expands` scans raw text for the `$` rather than matching tokens, so nothing
+    # downstream loses the expansion by our stepping over it.
+    if w == chr(36) + "IFS" and (raw is None
+                                 or not any(c in raw for c in ("'", chr(34), "\\"))):
+        # BARE where the caller has the spelling, by the same rule as everything else here:
+        # normalization only ever separates an UNQUOTED occurrence, so a quoted token was
+        # written that way and is an ordinary command whose NAME happens to be those
+        # characters, with whatever follows it as ARGUMENTS.
+        #
+        # RESIDUAL, an OVER-block, measured and accepted. The marker scanner calls the peel
+        # WITHOUT raws -- its tokenizer erased the quoting long before -- so there `raw is
+        # None` and the quoted spellings are skipped too: a command literally NAMED with
+        # those characters, carrying a marker write as its argument, is refused although it
+        # runs no verb. Raised in review. The alternative is threading raw spellings through
+        # that scanner's tokenizer, a different subsystem from #643, and it would risk the
+        # fail-open this skip exists to close. With no spelling to judge, skipping is the
+        # fail-CLOSED answer, which is the direction this module always takes.
+        return True
     if _ASSIGN_RE.match(w) is not None:
         return _bare_assign(raw)
     return (w.startswith("-")
@@ -2873,10 +2904,15 @@ def _herestring_shell_payloads(pairs):
             _t = chr(10).join(_s2 for _o2, _s2 in pairs)
             _r0 = _shell_pieces(_t)
             _lazy["t"] = _t
-            # No IFS special case is needed HERE any more: `_norm_for_scan` now separates
-            # that expansion rather than erasing it, so `$IFS` is still standing in the
-            # text this scan reads and is flagged like any other expansion. While it was
-            # erased, `IFS='<helper>'; sh <<< "$IFS"` read as a payload of `" "`.
+            # No IFS special case is needed HERE any more, but NOT because this scan
+            # flags it: `_open` tracks only STRUCTURED expansions, and normalization emits
+            # the BARE `$IFS`, which sets no flag. What changed is that the expansion is
+            # separated rather than erased, so it is still standing for
+            # `_inner_expands`/`_text_unresolvable` -- which scan raw text for a `$` -- to
+            # find. While it was erased, `IFS='<helper>'; sh <<< "$IFS"` read as a payload
+            # of `" "`. The no-receiver terminator here does not widen on a bare `$IFS`,
+            # and does not need to: a separated token cannot glue a receiver out of view,
+            # which is the only thing this terminator guards against.
             _lazy["e"] = True if _r0 is None else _r0[1]
         return _lazy["t"], _lazy["e"]
     for _op, seg in pairs:

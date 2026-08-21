@@ -1347,6 +1347,41 @@ assert_ok    "rm\${IFS}.claude/review-marker" \
     "...while the glued form the rewrite exists for still tokenizes"
 assert_ok    "cat $HELPER; echo \"\$IFS\" >/dev/null; printf 'echo safe' | sh" \
     "...and one unrelated IFS does not make every transport in the command unresolvable"
+# SEPARATING IT INJECTS A TOKEN, and a token in front of a command word takes its place.
+# `${IFS}touch .claude/skip-litmus.local` normalized to ` $IFS touch ...`, the peels
+# returned `$IFS` as the command word, and the marker-write verb behind it was never seen
+# -- `touch` alone blocks, that spelling returned OK. That is the cost of not erasing the
+# expansion, and it is paid by making the token SKIPPABLE rather than by erasing it again,
+# so the payload tests keep the evidence they need.
+#
+# Found by the PR security BACKSTOP, on a change the lead had already passed. Pinned here
+# because the two halves pull against each other: erase it and the payload tests go blind,
+# leave it standing and the verb goes missing.
+assert_marker_block() { # <command> <label>
+    local got
+    got="$(verdict "$1")"
+    if [[ "$got" == BLOCK_MARKER\|* ]]; then
+        ok "$2"
+    else
+        no "$2" "got=${got:-<empty>} — a marker write was not seen"
+    fi
+}
+assert_marker_block "touch .claude/skip-litmus.local" \
+    "a plain marker write is seen"
+assert_marker_block "\${IFS}touch .claude/skip-litmus.local" \
+    "...and one behind a separated IFS is still seen, not hidden by the new token"
+assert_marker_block "\$IFS touch .claude/skip-litmus.local" \
+    "...in the already-separated spelling too"
+assert_marker_block "\${IFS}\${IFS}touch .claude/skip-litmus.local" \
+    "...and behind two of them"
+# RESIDUAL, an over-block, raised in review and accepted. A QUOTED occurrence is an
+# ordinary command whose name happens to be those characters, so the word after it is
+# an ARGUMENT and no verb runs -- but the marker scanner calls the peel without raw
+# spellings (its tokenizer erased them long before), so there the skip cannot tell the
+# two apart and takes the fail-CLOSED branch. Threading raws through that scanner is a
+# different subsystem from #643 and would risk the fail-open the skip exists to close.
+assert_marker_block "'\$IFS' touch .claude/skip-litmus.local" \
+    "residual: a QUOTED IFS in command position over-blocks, no spelling reaches there"
 
 # `$'` was stripped blindly to undo ANSI-C quoting, which also ate the dollar out of
 # `'$'P` -- three characters the shell CONCATENATES into `$P`, so the payload the inner

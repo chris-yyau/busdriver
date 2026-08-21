@@ -1771,5 +1771,38 @@ assert_block "HOME='$HELPER'; sh <<< $'\\x7e'" \
     "...and an encoded TILDE, crossing the newer rule with the decode"
 assert_ok    "HOME=/bin/bash; sh <<< $'\\x7e'" \
     "...while the same spelling naming no helper anywhere is still a read"
+# -- U. the separated token in REDIRECT-TARGET position -------------------------------
+# A marker FORGE, found by the PR security backstop after the command-position spelling
+# had already been fixed and pinned. Separating the expansion injects a token, and the
+# redirect branch takes the NEXT token as its target -- so a redirect through it read
+# the injected token as the target, matched no marker, and the marker itself fell
+# through as an ordinary word with no write verb in front of it. The command wrote the
+# marker and classified OK.
+#
+# The command-position skip does not reach this: a redirect target is deliberately NOT
+# a command word, so it never goes through the peels. Two positions, two fixes -- and
+# the backstop's point about WHY it was missed is pinned here as much as the behaviour:
+# the earlier fixtures covered only the position that had been fixed.
+assert_marker_block "> .claude/skip-litmus.local" \
+    "a plain redirect to the marker is seen"
+assert_marker_block ">\${IFS}.claude/skip-litmus.local" \
+    "...and one through a separated token is still seen"
+assert_marker_block "echo x >\$IFS.claude/skip-litmus.local" \
+    "...in the already-separated spelling"
+assert_marker_block ">\${IFS}\${IFS}.claude/skip-litmus.local" \
+    "...and through two of them"
+
+# ACCEPTED COST of putting `~` in the unresolved-command-word set, which is shared with
+# cmdword and consulted beyond command position -- for executed operands, substitution
+# bodies, and every word of an unresolved stage. A tilde is commoner in ordinary
+# commands than the rest of that set, so these now read as unresolved. Fail-CLOSED, and
+# pinned so the cost stays visible rather than being rediscovered.
+# shellcheck disable=SC2088  # the tilde is deliberately LITERAL: it is classifier input,
+# not a path this harness should expand. Expanding it here would test the wrong string.
+assert_block "~/bin/tool <<< '$HELPER'" \
+    "cost: a tilde path as the receiver is unresolved, so the payload is probed"
+# shellcheck disable=SC2088  # literal tilde, same reason as above
+assert_ok    "~/bin/tool <<< 'ordinary data'" \
+    "...but it needs a helper named too, so an ordinary read is unaffected"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

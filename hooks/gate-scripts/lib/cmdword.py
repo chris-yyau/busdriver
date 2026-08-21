@@ -1080,6 +1080,16 @@ _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 
 # `~` expands to a path, so it can name the command itself -- see the note on
 # marker_check._UNRESOLVED_CW_RE, which this is kept in step with.
+#
+# WIDER THAN COMMAND POSITION, and knowingly so. This set is also consulted for every
+# executed operand, for the whole BODY of a command substitution, and for every word
+# of an unresolved stage -- and a tilde is far commoner in ordinary commands than the
+# rest of the set, so `~/bin/tool` and a `~` inside a substitution body now read as
+# unresolved too. That is fail-CLOSED and it is the accepted cost: scoping the tilde
+# to the command-word tests alone would mean two sets where there is now one, and a
+# receiver assembled in an operand is exactly the shape that motivated adding it.
+# Raised by the PR security backstop; the cost is pinned in
+# tests/test-herestring-receiver-643.sh rather than left to be rediscovered.
 _UNRESOLVED_CW_CHARS = "$*?[{(~" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
 
 # Compound-command keyword sets -- see the definitions above _FUNC_NAME.

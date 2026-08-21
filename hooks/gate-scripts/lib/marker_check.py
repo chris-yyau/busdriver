@@ -287,7 +287,6 @@ def _dequote(w):
     return w.replace(chr(34), "").replace(chr(39), "")
 
 
-_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # What may FOLLOW a `$` and still be an expansion: a name character, or one of bash's
 # special parameters (`$?`, `$@`, `$*`, `$#`, `$!`, `$$`, `$-`, `$0`-`$9`). A lone trailing
 # `$` is literal text, so a following character is required.
@@ -644,8 +643,24 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
             continue
         if _is_redir(t):
             if ">" in t:  # write redirect; next word is its target
-                if i + 1 < n and not _is_redir(toks[i + 1]):
-                    nxt = toks[i + 1]
+                # STEP OVER a separated `$IFS` first. Separating that expansion instead of
+                # erasing it (see `_quote_aware_rewrites`) injects a real token, and this
+                # branch takes the NEXT token as the redirect target -- so
+                # `>${IFS}<marker>` normalized to `> $IFS <marker>`, the target read as
+                # `$IFS`, matched no marker, and the marker itself fell through the main
+                # loop as an ordinary word with no write verb in front of it. The command
+                # forged the marker and classified OK. Bash really does expand here: a
+                # redirection word is expanded, so `>$IFS<marker>` writes the marker.
+                #
+                # The command-position skip in `_skippable` does not reach this: a redirect
+                # target is deliberately NOT a command word, so it never goes through the
+                # peels. Found by the PR security backstop, which also noted the gap was
+                # invisible because the new fixtures covered only command position.
+                _j = i + 1
+                while _j < n and toks[_j] == chr(36) + "IFS":
+                    _j += 1
+                if _j < n and not _is_redir(toks[_j]):
+                    nxt = toks[_j]
                     m = _match_marker(nxt, markers, simple_vars)
                     if m:
                         return m
@@ -654,9 +669,9 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
                     # (> /dev/null m=.../marker) is still recorded as an assignment
                     # and a later rm "$m" resolves to the marker.
                     seg.append(nxt)
-                    i += 2
+                    i = _j + 1
                     continue
-                i += 1
+                i = _j
                 continue
             # "<" read redirect; skip operator AND its source (a read, not a write)
             i += 2 if (i + 1 < n and not _is_redir(toks[i + 1])) else 1
@@ -1763,6 +1778,11 @@ _CMD_PREFIX_WORDS = ("time", "command", "exec", "nohup", "builtin", "!",
 # difference between a separator `;` and an operand one. KEEP IN STEP WITH cmdword.
 _COMPOUND_WORDS = _GROUP_OPEN + _GROUP_CLOSE + _GROUP_CONNECT
 # An assignment prefix needs a valid IDENTIFIER before the `=`. KEEP IN STEP WITH cmdword.
+# ONE definition, used by `_skippable`/`_strip_time_prefix` above as well as here. A
+# second, narrower copy was briefly added beside `_skippable`; because both bound at
+# import time the later one silently won, so editing the earlier one would have had no
+# effect at all. The subscript form is deliberate -- bash treats `a[0]=1` as an assignment
+# prefix too.
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*(?:\[[^]]*\])?\+?=")
 # Openers whose next word is a variable or a subject. KEEP IN STEP WITH cmdword.
 _GROUP_HEADERS = ("for", "select", "case")

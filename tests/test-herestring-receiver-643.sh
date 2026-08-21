@@ -81,6 +81,21 @@ assert_parses() { # <command> <label>
 # quoted-operator properties, which is exactly the crash-masking this file set out to stop.
 is_block() { [[ "$1" == BLOCK_* && "$1" != BLOCK_CLASSIFIER_ERROR* ]]; }
 
+# A BENCHMARK THAT DID NOT BUILD ITS INPUT MEASURES NOTHING, and it passes while doing
+# it -- a tiny command classifies fast and satisfies any time bound. This file has shipped
+# that mistake three times now: twice by sizing an input past the token budget so it was
+# refused before the timed code ran, and once by a quoting slip that made the python
+# builder exit with a SyntaxError and left the command empty. Every timed fixture below
+# states the size it expects, so a builder that silently produces nothing FAILS instead of
+# passing in 60ms.
+assert_built() { # <built-command> <min-bytes> <label>
+    if [[ "${#1}" -ge "$2" ]]; then
+        ok "$3 (${#1}B)"
+    else
+        no "$3" "built only ${#1}B, expected >= $2 — the benchmark would measure nothing"
+    fi
+}
+
 # Deliberately if/then/else rather than `cond && ok || no` (shellcheck SC2015).
 assert_ok() { # <command> <label>
     local got
@@ -1497,7 +1512,9 @@ assert_block "sh <(echo x) <<< '$HELPER'" \
 # a deeply nested command O(depth^2) -- raised in review, measured at 2.2s for the case
 # below against 0.01s before it, which is most of the 5s hook timeout, and a timed-out
 # hook writes no decision and therefore ALLOWS. Behind the character test it is ~0.27s.
+# shellcheck disable=SC2016  # the `${x-` is literal text for python to repeat
 _nest_cmd="echo $(python3 -c 'print("${x-"*13000 + "a" + "}"*13000)')"
+assert_built "$_nest_cmd" 60000 "the deep-nesting benchmark really built its input"
 _t0=$(_now_ms)
 _got=$(verdict "$_nest_cmd")
 _t1=$(_now_ms)
@@ -1505,6 +1522,30 @@ if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
     ok "13000 nested parameter expansions classify OK in under 2s ($((_t1 - _t0))ms; 2200ms with the walk unguarded)"
 else
     no "13000 nested parameter expansions classify OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
+# ...and the SECOND perf shape, which the first fix did not cover. Moving the walk
+# behind the character test stopped it running per character, but a word can hold
+# thousands of literal `<(` inside thousands of frames, which is O(depth x
+# occurrences): measured 1.03s at depth 6000 and extrapolating to ~2.3s at the
+# 65536-byte ceiling. Each frame now records the answer at push time, so the test is
+# O(1) and the same input is linear. Both shapes are pinned, because they fail
+# differently and a fix for one is not a fix for the other.
+# shellcheck disable=SC2016  # the `${x-` and `<(` are literal text for python
+_qo_cmd="sh <<< \"$(python3 -c 'print("${x-"*9000 + "<("*9000 + "a" + "}"*9000)')\""
+assert_built "$_qo_cmd" 60000 "the quoting-context benchmark really built its input"
+_t0=$(_now_ms)
+_got=$(verdict "$_qo_cmd")
+_t1=$(_now_ms)
+# 1s, not the 2s the other benchmarks use. This input is already near the 65536-byte
+# ceiling, so the regression cannot be made slower by enlarging it: measured 2.31s before
+# the per-frame flag against 0.30s after, which puts a 2s bound only 15% clear of the
+# failure and would call a partial regression healthy. 1s sits between the two with room
+# on both sides.
+if [[ $((_t1 - _t0)) -lt 1000 && "$_got" == "OK|" ]]; then
+    ok "9000 frames x 9000 literal <( classify OK in under 1s ($((_t1 - _t0))ms; 2310ms before the per-frame flag)"
+else
+    no "9000 frames x 9000 literal <( classify OK in under 1s" \
         "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"

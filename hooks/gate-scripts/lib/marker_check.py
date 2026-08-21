@@ -809,9 +809,11 @@ def _defuse_comments(s):
     return "".join(out)
 
 
-# Named, because two places must agree on it: `_norm_for_scan` REMOVES this expansion, and
-# anything asking "was something unresolvable here" has to know it was removed. A second
-# literal copy is how the two would drift apart.
+# Named, because two places must agree on it: `_quote_aware_rewrites` SEPARATES this
+# expansion -- surrounding it with spaces rather than erasing it -- and anything asking
+# "was something unresolvable here" has to find it still standing. An earlier version did
+# erase it, and the evidence went with it. A second literal copy is how the two would
+# drift apart again.
 _IFS_RE = re.compile(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])")
 
 
@@ -2328,13 +2330,18 @@ def _shell_pieces(text):
         # so an arithmetic expansion NESTED in a command substitution pushed one level and
         # its `))` popped the substitution as well, leaking the rest of the operand.
         # `quoted` is the double-quote state to restore when this level closes.
+        def _inh():
+            # Effective double-quote state INSIDE the innermost open frame. Each frame
+            # carries it, so this never walks.
+            return stack[-1][2] if stack else False
+
         c = text[at]
         if c == _BT:
             # BACKTICKS are a command substitution too, and they were not tracked at all --
             # their spaces and operators reached the outer tokenizer, which is the same
             # leak this scan exists to stop. They do not nest, so the next unquoted
             # backtick closes.
-            stack.append((_BT, quoted))
+            stack.append((_BT, quoted, False))
             saw_exp[0] = True
             return 1
         if c in "<>" and at + 1 < n and text[at + 1] == "(":
@@ -2359,36 +2366,36 @@ def _shell_pieces(text):
             # one bug, after the bare `(` inside `$( )` and the quoted `<(` above.
             #
             # A COMMAND substitution IS a fresh context (`$(printf "a b")` re-quotes
-            # inside), so the walk stops at the first non-`}` frame instead of scanning the
-            # whole stack. It sits INSIDE this character test, never in front of it:
-            # `_open` runs for very nearly every character, and walking unconditionally
-            # made a deeply nested command O(depth^2) -- 13000 nested `${x-...}` in 65KB
-            # went from 0.01s to 2.2s, most of the 5s hook timeout, and a timed-out hook
-            # writes no decision, which reads as ALLOW.
-            _q_eff = quoted
-            if not _q_eff:
-                for _c2, _q2 in reversed(stack):
-                    if _c2 != "}":
-                        break
-                    if _q2:
-                        _q_eff = True
-                        break
-            if not _q_eff:
-                stack.append((")", quoted))
+            # inside), so only `${` frames inherit -- see the push above, which records the
+            # answer per frame. Two perf shapes were measured on the way to that: walking
+            # the stack in FRONT of this character test made every character O(depth)
+            # (13000 nested frames: 0.01s -> 2.2s), and walking it behind the test still
+            # left O(depth x occurrences) for a word full of literal `<(` (depth 6000:
+            # 1.03s, extrapolating to ~2.3s at the 65536-byte ceiling). Both matter because
+            # a timed-out hook writes no decision, which reads as ALLOW.
+            if not (quoted or _inh()):
+                stack.append((")", quoted, False))
                 saw_exp[0] = True
                 return 2
         if c == "$" and at + 1 < n and text[at + 1] == "[":
             # `$[...]` is bash's LEGACY arithmetic form. It was only ever named in the
             # substring list the terminator used to consult; once that flag came from the
             # scan itself, the scan had to know the form too.
-            stack.append(("]", quoted))
+            stack.append(("]", quoted, False))
             saw_exp[0] = True
             return 2
         if c == "$" and at + 1 < n and text[at + 1] in "{(":
-            stack.append(("}" if text[at + 1] == "{" else ")", quoted))
+            # A PARAMETER expansion inherits the enclosing quoting; a COMMAND
+            # substitution starts a fresh context. Recorded per frame at push time so the
+            # `<(` test below is O(1): walking the stack for each occurrence instead was
+            # O(depth x occurrences), measured 1.03s at depth 6000 and extrapolating to
+            # ~2.3s at the 65536-byte scan ceiling -- inside a hook whose timeout writes no
+            # decision and therefore ALLOWS.
+            stack.append(("}" if text[at + 1] == "{" else ")", quoted,
+                          (quoted or _inh()) if text[at + 1] == "{" else False))
             saw_exp[0] = True
             if text[at + 1] == "(" and at + 2 < n and text[at + 2] == "(":
-                stack.append((")", False))
+                stack.append((")", False, False))
                 return 3
             return 2
         return 0

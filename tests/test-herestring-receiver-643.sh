@@ -1408,5 +1408,36 @@ assert_block "cat $HELPER; sh <<< \"echo '\\\$P'\"" \
 assert_ok    "export P='$HELPER'; \$P" \
     "residual: a helper named through a command-word variable is ADR 0006, not this gate"
 
+# -- M. a comment must not swallow the widened command ------------------------------
+# Raised in review as a fail-open: the compound widening rejoins segments, and a `#`
+# surviving `_defuse_comments` would comment out everything after it once the newline
+# that ended it is gone -- hiding a launcher, which no other disjunct catches.
+#
+# MEASURED, and it did not happen: eleven comment shapes all blocked, because
+# `_defuse_comments` blanks the separators AND the quotes inside a comment (the same
+# measurement refuted a companion claim that an unmatched quote in a comment poisons
+# the quote state and suppresses the `$IFS` rewrite -- `# it's fine` arrives as
+# `# it s fine`, and `$IFS` is separated either way).
+#
+# The join was hardened anyway, to ` ;<newline>`, which is both a command separator and
+# a comment terminator. That is defense in depth, not a fix: it was adopted only after
+# confirming every suite and both sweeps still pass, because the ` ; ` join it replaces
+# was itself introduced to close a real fail-open (a space join erased the command
+# boundaries and hid a launcher inside a compound), and that case is pinned below.
+assert_block "# preface
+if true; then unshare; fi <<< '$HELPER'" \
+    "a comment before a compound does not hide the launcher inside it"
+assert_block "# it's fine
+if true; then unshare; fi <<< '$HELPER'" \
+    "...nor does one carrying an unmatched quote"
+assert_block "if true; then # c
+unshare; fi <<< '$HELPER'" \
+    "...nor a comment INSIDE the compound, between the introducer and the launcher"
+assert_block "# it's fine
+IFS='$HELPER'; sh <<< \"\$IFS\"" \
+    "...and a quote in a comment does not suppress the IFS separation behind it"
+assert_ok    "# preface
+cat <<< '$HELPER'" \
+    "...while a commented preface still leaves an ordinary read alone"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

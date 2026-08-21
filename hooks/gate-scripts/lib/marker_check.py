@@ -1921,8 +1921,11 @@ def _outer_removal(text):
     while i < n:
         c = text[i]
         if in_s:
-            # Single quotes preserve EVERYTHING, backslash included. That is why `'\$P'`
-            # reaches the inner shell as an escaped dollar and expands nothing there.
+            # Single quotes preserve EVERYTHING, backslash included, so `'\$P'` reaches
+            # the receiver with its backslash intact. That is faithfully what it GETS;
+            # whether the backslash still protects anything by the time it is parsed is
+            # `_inner_expands`'s question, and its answer is no -- an escape survives one
+            # parse and a payload can be parsed again.
             if c == _SQ:
                 in_s = False
             else:
@@ -2011,12 +2014,10 @@ def _text_unresolvable(text):
     # that shell RECEIVES, and the inner shell's quoting decides what it then expands.
     # Verified by running it: `export P='<helper>'; sh <<< '$P'` prints nothing from the
     # outer shell and executes the helper in the inner one, and it classified OK.
-    # TWO STAGES, because one is not enough in either direction. Quoting CONCATENATES, so
-    # `'$'P` is three characters the outer shell joins into `$P` and a regex over the raw
-    # text matches nothing. But quoting also PROTECTS: `'\$P'` keeps its backslash, so the
-    # inner shell sees an escaped dollar and expands nothing -- and a squeeze that deleted
-    # every backslash called that live and blocked it. So apply the outer shell's quote
-    # removal to get what the receiver is handed, then ask whether THAT expands.
+    # Outer quote removal FIRST, because quoting CONCATENATES: `'$'P` is three characters
+    # the outer shell joins into `$P`, which a scan of the raw text would never see. What
+    # it does NOT buy is a judgement about escaping -- `_inner_expands` deliberately trusts
+    # none, since an escape survives only one parse. See its own note.
     if _inner_expands(text):
         return True
     _r = _shell_pieces(text)
@@ -2076,7 +2077,7 @@ def _piped_shell_producers(pairs):
             pass                          # a normalized newline/comment between | and the shell
         else:
             if last is not None:
-                out.append(" ; ".join(p[1] for p in pairs[start:last]))
+                out.append((" ;" + chr(10)).join(p[1] for p in pairs[start:last]))
             start, last, fed = i, None, False
         _words = seg.split()
         bare = _carries_no_command(seg)
@@ -2266,7 +2267,7 @@ def _piped_shell_producers(pairs):
                     last = i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
-        out.append(" ; ".join(p[1] for p in pairs[start:last]))
+        out.append((" ;" + chr(10)).join(p[1] for p in pairs[start:last]))
     return out
 
 
@@ -2914,7 +2915,7 @@ def _herestring_shell_payloads(pairs):
                 # returned OK while unshare exec'd a shell on the payload. Launchers are
                 # deliberately absent from _SHELL_NAMES, so no other disjunct catches them.
                 # The payload emitted below already used `" ; "`; these two now agree.
-                _alltext = " ; ".join(_s2 for _o2, _s2 in pairs)
+                _alltext = (" ;" + chr(10)).join(_s2 for _o2, _s2 in pairs)
                 for _o2, _s2 in pairs:
                     # `_walk_words` regardless of whether THIS segment holds the operator:
                     # the receiver is in a different segment, which is the whole reason
@@ -2937,7 +2938,7 @@ def _herestring_shell_payloads(pairs):
             # a timed-out hook writes no decision, which reads as ALLOW. Widening once
             # already covers every segment, so there is nothing left for a second copy to
             # find and the loop can end here.
-            out.append(" ; ".join(_s2 for _o2, _s2 in pairs))
+            out.append((" ;" + chr(10)).join(_s2 for _o2, _s2 in pairs))
             break
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
                                 _cmd_candidates(cw_words, _dwords, _raws)):

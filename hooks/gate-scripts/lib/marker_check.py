@@ -1384,6 +1384,29 @@ def _ansi_c(text):
 _WS_RUN_RE = re.compile(r"\s{2,}")
 
 
+def _collapse_ws(m):
+    # A whitespace run becomes exactly ONE character. That much is the PERFORMANCE
+    # requirement described at the call site, and it applies to every run: _INDIRECTION_RE's
+    # `\s*` sits behind an alternation, so the engine retries it from every offset inside a
+    # long run.
+    #
+    # WHICH character is a separate, correctness question, and `\s` is wider than bash's
+    # idea of a blank. Bash separates words on space, tab and newline only -- exactly
+    # `_SH_BLANK` -- so a carriage return, vertical tab, form feed or Unicode space sits
+    # INSIDE a word. Rewriting a run of those to a space manufactured a word boundary bash
+    # never makes, splitting one command word into two and refusing ordinary commands.
+    # Returning the run's OWN character keeps the collapse (one character, no backtracking)
+    # without inventing the separator. The single-character case never reaches here: the
+    # pattern requires a run of two or more, which is why one no-break space was already
+    # handled correctly and this went unnoticed.
+    run = m.group(0)
+    if chr(10) in run:
+        return chr(10)
+    if any(c in _SH_BLANK for c in run):
+        return " "
+    return run[0]
+
+
 def _shell_variants(text):
     # The text as written, and as the shell will have rewritten it before running it.
     # Quoting, escaping, the ANSI-C `$` prefix and a backslash-newline continuation are
@@ -1420,8 +1443,7 @@ def _shell_variants(text):
     # same input, its `_has_indirection` takes 27ms, because its own _INDIRECTION_RE leads
     # with a `\b(?:eval|alias)\b` alternation rather than a separator followed by `\s*`.
     # There is nothing to keep in step until that pattern grows one.
-    return [_WS_RUN_RE.sub(lambda m: chr(10) if chr(10) in m.group(0) else " ", _v)
-            for _v in out]
+    return [_WS_RUN_RE.sub(_collapse_ws, _v) for _v in out]
 
 
 # Shells that run a program fed to them on STDIN -- a SUPERSET of the -c runner list above,

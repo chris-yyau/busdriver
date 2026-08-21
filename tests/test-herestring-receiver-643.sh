@@ -40,7 +40,18 @@ verdict() { # <command> -> the verdict line, or ERROR
     local payload
     payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' \
         "$1" 2>/dev/null) || { printf 'ERROR'; return; }
-    python3 -I "$CLASSIFIER" <<<"$payload" 2>/dev/null || printf 'ERROR'
+    # CAPTURED, not streamed: a crashing classifier prints a verdict-shaped prefix and
+    # THEN exits nonzero, so appending ERROR to whatever already reached stdout left
+    # `BLOCK_MARKER_SCRIPT|...ERROR` -- which `assert_block`'s `BLOCK_*` glob accepts. Every
+    # security regression here would then still "pass" while the classifier was crashing,
+    # masking the very fail-open the suite exists to catch. On a nonzero exit the partial
+    # output is DISCARDED and the verdict is exactly ERROR, which matches neither assertion.
+    local out
+    if out=$(python3 -I "$CLASSIFIER" <<<"$payload" 2>/dev/null); then
+        printf '%s' "$out"
+    else
+        printf 'ERROR'
+    fi
 }
 
 # BSD `date` has no %N, so the millisecond clock comes from python3 — which this harness
@@ -76,6 +87,16 @@ assert_ok() { # <command> <label>
 assert_block() { # <command> <label>
     local got
     got="$(verdict "$1")"
+    # BLOCK_CLASSIFIER_ERROR is NOT a pass. A caught exception inside the classifier prints
+    # it and exits SUCCESSFULLY, so the nonzero-exit capture in `verdict` never sees it and
+    # a bare `BLOCK_*` glob accepted it -- every block fixture here would keep passing while
+    # the classifier crashed on every one of them. It fails closed in production, which is
+    # why it is a correct VERDICT and an unacceptable TEST RESULT: the suite exists to prove
+    # a specific rule fired, not merely that something went wrong on the way.
+    if [[ "$got" == BLOCK_CLASSIFIER_ERROR* ]]; then
+        no "$2" "got=$got — the classifier raised; the rule under test never ran"
+        return
+    fi
     if [[ "$got" == BLOCK_* ]]; then
         ok "$2"
     else
@@ -1045,6 +1066,77 @@ assert_block "time then . /dev/stdin <<< '$HELPER'" \
     "the bare keyword behind time still hides a real dot"
 assert_block "time FOO=bar . /dev/stdin <<< '$HELPER'" \
     "...as does a real assignment (the pair that must not loosen)"
+
+# -- E. two review claims, settled by measurement rather than argument ----------------
+# CLAIM (high, PR round 3): `_cmd_expansion` joins the whole command and runs
+# `_shell_pieces` over it BEFORE the token budget can reject oversized input, so a large
+# benign prefix ahead of an early here-string buys an unbounded pre-budget scan -- and
+# because the hook's 5s timeout writes no decision and therefore ALLOWS, a slow scan is
+# itself a fail-open. That reasoning is sound in shape, which is why it is measured here
+# rather than waved away. Measured, it does not happen: the budget rejects first.
+# ~60KB, and the ceiling is what makes it a MEASUREMENT rather than a decoration. Two
+# separate limits sit above it, and the first two sizes tried here tripped both:
+#   * over 65536 characters the classifier short-circuits to `_helper_substring` and never
+#     reaches `_helper_invoked`, so the scan this claim is ABOUT never runs -- the fixture
+#     would assert a fast BLOCK_UNSCANNABLE while measuring nothing. That is the vacuous
+#     benchmark this file has already shipped once; the `OK|` assertion below is what proves
+#     the full scan really ran.
+#   * over 131072 bytes Linux refuses a single ARGV element (MAX_ARG_STRLEN), and `verdict`
+#     passes the command as `sys.argv[1]`, so a 2MB spelling returned ERROR on macOS
+#     (ARG_MAX 1048576) and would return it in CI regardless.
+_bigpfx="cat <<< 'x' ; echo $(python3 -c 'print(" ".join("x"*100 for _ in range(600)))')"
+_t0=$(_now_ms)
+_got=$(verdict "$_bigpfx")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "a ~60KB benign prefix behind an early here-string scans OK in under 2s ($((_t1 - _t0))ms)"
+else
+    no "a ~60KB benign prefix behind an early here-string scans OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
+# The same shape UNDER the budget, where the scan really does run over every token: still
+# milliseconds, ~23x clear of the 5s timeout that would be the fail-open.
+# shellcheck disable=SC2016  # the `$(` is literal text for python to repeat, not expansion
+_ladder="cat <<< 'x' ; echo $(python3 -c 'print("$(" * 3900 + "a" + ")" * 3900)')"
+_t0=$(_now_ms)
+_got=$(verdict "$_ladder")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "a 3900-deep expansion ladder under budget classifies OK in under 2s ($((_t1 - _t0))ms)"
+else
+    no "a 3900-deep expansion ladder under budget classifies OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
+
+# CLAIM (high, same round): `_WS_RUN_RE` uses Unicode `\s` while `_SH_BLANK` documents that
+# bash breaks words only on space, tab and newline, so a run of two carriage returns,
+# vertical tabs or no-break spaces inside a word is rewritten to a space -- a word boundary
+# bash never makes. The REGEX half is true and is now fixed (`_collapse_ws` returns the
+# run's own character unless the run really contains a blank). The BEHAVIOURAL half could
+# not be reproduced in either direction: every spelling below returns the same verdict
+# before and after, because anything naming the helper is already caught by the wide
+# substring rule, and the variants are additive so a manufactured boundary can only ADD a
+# block. Pinned as measured-inert rather than claimed as a fixed over-block.
+_VT=$(printf '\013'); _NB=$(printf '\302\240')
+assert_ok "cat ${STEM}${_VT}${_VT}${TAIL}"     "a vertical-tab run inside a word is not a separator"
+assert_ok "cat ${STEM}${_NB}${_NB}${TAIL}"     "...nor a no-break-space run"
+assert_ok "cat ${STEM}  ${TAIL}"               "...while a real blank run still separates"
+# And the collapse still has to COLLAPSE: it is a performance requirement, so a long run of
+# NON-blank whitespace must not reopen the backtracking the run-collapse exists to stop.
+# 60000, not 200000: same 65536-character ceiling as above -- a longer run short-circuits
+# before `_shell_variants` runs and would time a code path that never executed. Measured at
+# ~630ms here against ~60ms for the same length in real blanks; that gap is PRE-EXISTING
+# (598ms on the parent commit) and comes from CR handling elsewhere, not from the collapse.
+_crrun="cat a$(python3 -c 'print(chr(13)*60000)')b"
+_t0=$(_now_ms)
+_got=$(verdict "$_crrun")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "a 60000-character non-blank whitespace run still collapses, under 2s ($((_t1 - _t0))ms)"
+else
+    no "a 60000-character non-blank whitespace run still collapses, under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

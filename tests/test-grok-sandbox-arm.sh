@@ -437,6 +437,23 @@ deny = []' > "$tmp/commented.toml"
                   "'deny = [${_REL_DENY}${_HOME_DENY}]'," \
                   ']' ; } > "$tmp/decoy-deny.toml"
 
+  # ...and the SAME decoy without the apostrophe. This is the one that mattered:
+  # `decoy-deny` above is refused by the literal-string guard, not by the
+  # extractor, so it never exercised the key match at all. Here the decoy
+  # element is plain double-quoted text, it sits BEFORE the real `deny = []`
+  # (order is what lets the extractor lock onto it), and nothing downstream
+  # objects — no apostrophe, no backslash, no multiline delimiter. With an
+  # unbalanced-quote key match this profile is ACCEPTED while grok gets an empty
+  # deny list. Codex P1, PR #704.
+  { printf '%s\n' '[profiles.busdriver-review]' \
+                  'extends = "strict"' \
+                  'restrict_network = true' \
+                  'notes = [' \
+                  '"deny = [",' \
+                  "${_REL_DENY}${_HOME_DENY}" \
+                  ']' \
+                  'deny = []' ; } > "$tmp/decoy-deny-clean.toml"
+
   # ...and the balanced alternation must still accept the quoted-key spellings
   # TOML allows, or "close the unbalanced-quote hole" would silently start
   # refusing every profile that quotes its keys.
@@ -469,7 +486,7 @@ deny = []' > "$tmp/commented.toml"
   # that the symlink case really is a symlink.
   for _f in good wrong header-only no-extends no-restrict half-deny commented \
             decoy-assign decoy-multiline-assign inline-comment \
-            decoy-assign-hash decoy-restrict quoted-keys decoy-deny \
+            decoy-assign-hash decoy-restrict quoted-keys decoy-deny decoy-deny-clean \
             literal-quotes escaped-quotes widened quoted-widen squoted-widen read-only-widen \
             unicode-key unicode-key-upper multiline decoy-head \
             no-home-secrets placeholder-home; do
@@ -792,6 +809,7 @@ deny = []' > "$tmp/commented.toml"
     "decoy-assign-hash.toml|a # inside a single-quoted element truncates it into a lookalike assignment"
     "decoy-restrict.toml|the real restrict_network is false; only a decoy element says true"
     "decoy-deny.toml|the real deny is empty; a decoy element supplies the globs the extractor reads"
+    "decoy-deny-clean.toml|a decoy notes array before the real empty deny supplies the globs, with no apostrophe or backslash for a later guard to catch"
   )
   # Guarded: with none of ~/.ssh, ~/.aws, ~/.netrc present there is nothing to
   # require, so these two fixtures are legitimately VALID and asserting refusal
@@ -1180,6 +1198,25 @@ if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" \
   fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by resolved CLI name instead"
 else
   pass "the blueprint grok exclusion keys on the resolved CLI name, not on matching a failure message"
+fi
+
+# A --model refusal must block the LAUNCH unconditionally. The reporting flag
+# (_grok_refused) is set only when the skip marker reaches $outfile, so gating
+# the dispatch on it alone meant an unwritable $outfile fell through into a real
+# `--model` grok launch (Cursor Bugbot, PR #704). Two halves, both required:
+# the arm sets the launch-block flag OUTSIDE the write's success branch, and the
+# gate consults it.
+_mr_set=$(/usr/bin/grep -c '^[[:space:]]*_grok_model_rejected=1[[:space:]]*$' "$DISPATCH" || true)
+if [[ "${_mr_set:-0}" -ge 1 ]]; then
+  pass "the --model arm sets a launch-block flag that does not depend on the skip-marker write"
+else
+  fail "no unconditional _grok_model_rejected=1 in $DISPATCH — a --model refusal whose \$outfile write fails would fall through and launch grok with the flag it cannot accept"
+fi
+_mr_gate=$(/usr/bin/grep -c '_grok_model_rejected:-0' "$DISPATCH" || true)
+if [[ "${_mr_gate:-0}" -ge 1 ]]; then
+  pass "the grok dispatch gate consults the launch-block flag, not only the reporting flag"
+else
+  fail "the grok dispatch gate does not consult _grok_model_rejected — it keys on _grok_refused alone, which is conditional on a filesystem write"
 fi
 
 if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then

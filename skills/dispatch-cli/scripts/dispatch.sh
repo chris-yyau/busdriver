@@ -864,6 +864,14 @@ dispatch_one() {
     # does not meet the contract — so it must not be retried, must not be
     # rescued by droid, and must not fail a whole batch for the other voices.
     local _grok_refused=0
+    # Separate from `_grok_refused` ON PURPOSE. `_grok_refused` answers "how is
+    # this voice REPORTED" (skipped vs error) and is therefore conditional on the
+    # skip marker reaching "$outfile". This one answers "may grok be launched at
+    # all", and must never depend on a filesystem write succeeding. Conflating
+    # them meant an unwritable "$outfile" left _grok_refused=0 and the dispatch
+    # gate below fell through into a real `--model` launch of the one CLI that
+    # cannot accept --model. Reported by Cursor Bugbot on PR #704.
+    local _grok_model_rejected=0
     # Set ONLY where a teardown ran and could not confirm the jail was removed,
     # i.e. a projected credential may still be on disk. It is deliberately NOT
     # `[[ -n "$_pi_jail" ]]` at classification time: the parent NAMES the jail
@@ -2048,6 +2056,9 @@ CHILD
             # succeeded, so an unwritable outfile stays `error`.
             if [[ -n "$MODEL" ]]; then
                 echo "Error: --model is not supported by grok-build (single model; rejects --model flag). Remove --model or use --cli codex to pin a specific model." >&2
+                # Set BEFORE the write, and outside its success branch: whether
+                # the marker landed decides reporting, never whether grok runs.
+                _grok_model_rejected=1
                 if printf 'Skipped: %s\n' "--model is not supported by grok-build (single model) — grok not dispatched" >> "$outfile" 2>/dev/null; then
                     _grok_refused=1
                 else
@@ -2227,7 +2238,7 @@ CHILD
             # exported BASH_FUNC_exit%% turns the bail into a fall-through and
             # grok runs with no verified profile. There is nothing to fall
             # through into here.
-            if [[ "${_grok_refused:-0}" == "1" ]]; then
+            if [[ "${_grok_refused:-0}" == "1" || "${_grok_model_rejected:-0}" == "1" ]]; then
                 # Already refused above (--model). The reason is in "$outfile"
                 # already; running the preflight now would only overwrite it
                 # with a profile hint that is not why this voice was skipped.

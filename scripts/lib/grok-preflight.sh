@@ -304,8 +304,20 @@ printf '%s\n' "$block" | /usr/bin/grep -qi '\\u' && why profile
 printf '%s\n' "$block" | /usr/bin/grep -qF '"""' && why profile
 printf '%s\n' "$block" | /usr/bin/grep -qF "'''" && why profile
 
+# The deny key is matched BALANCED for the same reason the two assignment
+# anchors above are, and closing it here is what makes those siblings load-
+# bearing rather than decorative. The old `["\x27]?deny["\x27]?` accepted an
+# UNBALANCED opening quote, so a TOML array ELEMENT reading `"deny = [",`
+# satisfied it — placed before the real `deny = []`, the extractor locked onto
+# the DECOY array and read the ten required globs out of it while grok received
+# an empty deny list and the documented hook + home-secret paths stayed
+# readable. The pre-existing `decoy-deny` fixture did not catch this: its decoy
+# is single-quoted, so the `\x27` guard below refused the extracted text for an
+# unrelated reason. Codex's variant quotes nothing but the elements themselves —
+# no apostrophe, no backslash, no multiline delimiter — so every later guard
+# passed it. Reported by Codex (P1) on PR #704; pinned as `decoy-deny-clean`.
 deny="$(printf '%s\n' "$block" | /usr/bin/awk '
-  /^[[:space:]]*["\x27]?deny["\x27]?[[:space:]]*=/ { indeny = 1 }
+  /^[[:space:]]*(deny|"deny"|[\x27]deny[\x27])[[:space:]]*=/ { indeny = 1 }
   indeny { print }
   indeny && /\]/ { exit }
 ')" || why profile

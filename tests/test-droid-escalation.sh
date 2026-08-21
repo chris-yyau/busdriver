@@ -176,6 +176,49 @@ else
   grep -q CALLED "$TMP/reached" \
     && ok  "blueprint: codex slot STILL rescued (grok guard is name-scoped, not a blanket kill)" \
     || bad "blueprint: codex slot STILL rescued (grok guard is name-scoped, not a blanket kill)"
+
+  # ── Part D: the caller's post-exclusion scan ──────────────────────
+  # A route override can put grok's CLI in reviewer 1 (agy slot). If that
+  # slot fails at runtime, _bp_droid_rescue excludes it WITHOUT launching
+  # droid (rc=2). The caller must keep scanning for a later failed slot
+  # instead of stopping there — otherwise a legitimately-rescuable codex
+  # failure never gets its droid attempt even though droid was never spent
+  # on grok. (Cursor Bugbot + Codex, PR #704 round 2.)
+  echo ""
+  echo "── blueprint post-exclusion scan continues past grok ──────────"
+  _bp_loop=$(sed -n '/Runtime droid fallback (capped at one voice)/,/^  fi$/p' "$BPLOOP")
+  if [[ -z "$_bp_loop" ]]; then
+    bad "could not extract the runtime-droid-fallback loop from $BPLOOP (reshaped? guard unverified)"
+  else
+    : > "$TMP/reached"
+    # SC2034: every assignment in this subshell is an input to the eval'd
+    # _bp_droid_rescue body and the eval'd caller loop, neither of which the
+    # linter can follow. Scoped to the subshell, not the file.
+    # shellcheck disable=SC2034
+    (
+      set +u
+      log_warning() { :; }; log_info() { :; }
+      get_review_file() { echo "$TMP/$1"; }
+      is_cli_available() { [[ "$1" == "droid" ]]; }
+      # agy slot resolves to grok and "failed" (status neither PASS nor FAIL);
+      # codex slot resolves to codex and also "failed" — this is the scenario
+      # the fix targets.
+      REVIEWER_1_CLI=grok; REVIEWER_2_CLI=codex; REVIEWER_3_CLI=agy
+      AGY_AVAILABLE=true; CODEX_AVAILABLE=true; GROK_AVAILABLE=false
+      AGY_OUTPUT_FILE="$TMP/agy.json"; CODEX_OUTPUT_FILE="$TMP/codex.json"; GROK_OUTPUT_FILE="$TMP/grok.json"
+      printf '{"status":"ERROR"}\n' > "$AGY_OUTPUT_FILE"
+      printf '{"status":"ERROR"}\n' > "$CODEX_OUTPUT_FILE"
+      FULL_PROMPT="design spec plus quoted repository content"
+      RUN_ID=r1; CURRENT_ITERATION=1; SPEC_HASH=h1
+      SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"
+      execute_review() { echo CALLED >> "$TMP/reached"; printf '{}\n'; }
+      eval "$_bp_fn"
+      eval "$_bp_loop"
+    )
+    grep -q CALLED "$TMP/reached" \
+      && ok  "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued" \
+      || bad "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued"
+  fi
 fi
 
 echo ""

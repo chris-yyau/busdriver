@@ -111,9 +111,15 @@ _bp_droid_rescue() {
   # exactly this forward. Accepted cost is that an ordinary transient grok
   # failure gets no droid stand-in — the voice is simply reported failed,
   # matching the dispatch-side rule.
+  # Return 2 (not 1) here: no droid attempt was made — the one-droid-voice cap
+  # was never spent — so the caller must keep scanning for a later failed slot
+  # instead of stopping. A route override can place grok's CLI in reviewer 1
+  # or 2 (Cursor Bugbot + Codex, PR #704 round 2): if the caller unconditionally
+  # stopped after this exclusion, a later genuinely-rescuable non-grok slot
+  # would never get its droid attempt even though droid was never launched.
   if [[ "$cli" == "grok" ]]; then
     log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
-    return 1
+    return 2
   fi
   raw=$(get_review_file "${slot}-droid-raw.txt")
   log_warning "  ${slot} failed at runtime → retrying once via droid"
@@ -1059,15 +1065,27 @@ with open(pending, "w") as f:
       [[ "$_av" == "true" ]] || continue
       _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
       [[ "$_st" == "PASS" || "$_st" == "FAIL" ]] && continue   # ran fine — not a runtime failure
-      # First failed reviewer only: ONE droid attempt, then stop regardless of
-      # outcome. A failed/slow droid must not trigger more long rescue waits
-      # (execute_review's timeout is 1200s) — and the cap is one droid voice.
-      # $_slot is the output-file position (filenames/logging); $_cli is the
-      # RESOLVED CLI that actually ran there — a route override can put grok
-      # in the agy or codex slot, so the grok exclusion inside
-      # _bp_droid_rescue must key on $_cli, not $_slot (PR #704).
-      # shellcheck disable=SC2310  # rescue handles its own errors; || true ignores its rc
-      _bp_droid_rescue "$_slot" "$_so" "$_cli" || true
+      # First failed reviewer that gets an ACTUAL droid attempt: ONE droid
+      # attempt total, then stop regardless of outcome. A failed/slow droid
+      # must not trigger more long rescue waits (execute_review's timeout is
+      # 1200s) — and the cap is one droid voice. $_slot is the output-file
+      # position (filenames/logging); $_cli is the RESOLVED CLI that actually
+      # ran there — a route override can put grok in the agy or codex slot,
+      # so the grok exclusion inside _bp_droid_rescue must key on $_cli, not
+      # $_slot (PR #704).
+      #
+      # rc==2 means _bp_droid_rescue excluded a grok slot WITHOUT launching
+      # droid — no rescue attempt was spent, so the one-voice cap is still
+      # unspent and the scan must continue to the next failed slot. Only rc==1
+      # (a genuine droid attempt that failed) or rc==0 (success) stops the
+      # loop. Without this, a route override placing grok in reviewer 1 or 2
+      # would consume the loop's single rescue opportunity on a slot that
+      # never dispatched droid, starving a later legitimately-rescuable
+      # non-grok slot (Cursor Bugbot + Codex, PR #704 round 2).
+      # shellcheck disable=SC2310  # rescue handles its own errors; rc captured explicitly
+      _rescue_rc=0
+      _bp_droid_rescue "$_slot" "$_so" "$_cli" || _rescue_rc=$?
+      [[ "$_rescue_rc" -eq 2 ]] && continue
       break
     done
   fi

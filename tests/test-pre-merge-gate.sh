@@ -27,7 +27,21 @@ TOTAL=0
 GATE_SCRIPT="hooks/gate-scripts/pre-merge-gate.sh"
 POST_HOOK_SCRIPT="hooks/gate-scripts/post-merge-confirm-bypass.sh"
 HOOK_SCRIPT="scripts/hooks/post-bash-pr-created.js"
-MARKER_DIR=".claude"
+
+# Isolated state dir for the WHOLE suite (#667 addendum): pre-merge-gate.sh's
+# new audit_authorized_merge() call means every "allow" path now performs a
+# real filesystem write to $STATE_DIR/bypass-log.jsonl. Both gate scripts here
+# read $BUSDRIVER_STATE_DIR (defaulting to ".claude"), so pointing it at a
+# per-process scratch dir keeps every marker/audit-log read+write in this file
+# off the operator's real ".claude/bypass-log.jsonl" — without this, every
+# "allow" run_gate_test call below appended fake pr-grind-clean-merge /
+# skip-pr-grind-claimed events for fixture PR 31/42/99 to that real, persistent
+# log (Cursor Bugbot Medium + Codex P1, PR #718). Unset before the standalone
+# post-merge-confirm-bypass block near the end, which builds its own isolated
+# $tmp repo and expects the script's real ".claude" default relative to that.
+ISO_STATE=".claude-test-667-$$"
+MARKER_DIR="$ISO_STATE"
+export BUSDRIVER_STATE_DIR="$MARKER_DIR"
 CLEAN_MARKER="$MARKER_DIR/pr-grind-clean.local"
 SKIP_FILE="$MARKER_DIR/skip-pr-grind.local"
 PENDING_MARKER="$MARKER_DIR/pr-pending-grind.local"
@@ -152,8 +166,15 @@ PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
 [ -f "$PENDING_MARKER" ]  && HAD_PENDING=true  && PREV_PENDING=$(cat "$PENDING_MARKER")
 [ -f "$BYPASS_PENDING" ]  && HAD_BYPASS=true   && PREV_BYPASS=$(cat "$BYPASS_PENDING")
 
+# ISO_STATE/MARKER_DIR/BUSDRIVER_STATE_DIR are set once at the top of this
+# file (see the #667 addendum comment there) so the WHOLE suite, not only the
+# #667 assertions below, runs against the isolated dir. Restoring a snapshot
+# of the real log was tried and rejected: the restore would clobber any event
+# another session appended while the suite was running.
+
 cleanup() {
-    rm -rf "$GH_STUBDIR" 2>/dev/null || true
+    rm -rf "$GH_STUBDIR" "$ISO_STATE" "$ISO_STATE-real" 2>/dev/null || true
+    rm -f "$ISO_STATE" 2>/dev/null || true
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
@@ -184,6 +205,121 @@ run_gate_test "blocks gh pr merge without marker" "block" "$MERGE_INPUT"
 write_marker 31
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
+
+# ── 2a. #667: an AUTHORIZED merge must leave a post-hoc record ──────────
+# The whole point: a merge the gate authorized and a merge the gate never saw
+# (run from a shell outside the harness, where no PreToolUse hook fires) used to
+# be equally traceless on the normal marker+CI path. All three allow paths now
+# record, which is what makes the ABSENCE of a record evidence.
+#
+# Run against an ISOLATED state dir so these assertions neither read nor append
+# to the operator real audit log.
+ISO_LOG="$ISO_STATE/bypass-log.jsonl"
+rm -rf "$ISO_STATE"; mkdir -p "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+
+TOTAL=$((TOTAL + 1))
+BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" >/dev/null 2>&1 || true
+ISO_RECORDS=$(grep -c '"event":"pr-grind-clean-merge"' "$ISO_LOG" 2>/dev/null) || ISO_RECORDS=0
+ISO_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
+if [[ "$ISO_RECORDS" -eq 1 ]] \
+   && printf '%s' "$ISO_LINE" | grep -q '"pr":"31"' \
+   && printf '%s' "$ISO_LINE" | grep -q "\"head\":\"$GH_STUB_HEAD_OID_DEFAULT\""; then
+    printf "  PASS  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667) (got: %s)\n" "$ISO_LINE"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-neg. A BLOCKED merge must write nothing — otherwise a record would prove
+# only that a merge was attempted, not that it was authorized. Assert the
+# block decision itself, not just the unchanged line count — an unchanged
+# count alone also passes if the gate wrongly ALLOWED and wrote nothing,
+# which is the failure mode this PR exists to remove (CodeRabbit, PR #718).
+TOTAL=$((TOTAL + 1))
+rm -f "$ISO_STATE/pr-grind-clean.local"
+ISO_LINES_BEFORE=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+NEG_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+ISO_LINES_AFTER=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+if [[ "$ISO_LINES_AFTER" -eq "$ISO_LINES_BEFORE" ]] \
+   && printf '%s' "$NEG_OUT" | grep -q '"block"'; then
+    printf "  PASS  writes no record when the merge is blocked (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  writes no record when the merge is blocked (#667)\n"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-fc. The record IS the authorization evidence, so an unrecordable
+# authorization must BLOCK rather than merge unlogged — otherwise one swallowed
+# write makes an absent record meaningless on every path.
+#
+# chmod cannot create an unwritable directory for root (DAC override), so under
+# root this arm would "pass" without ever exercising the failure. Announce the
+# skip rather than bank a vacuous PASS. The symlink arm below needs no
+# permission trick and runs either way.
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    printf "  SKIP  blocks when the authorization record cannot be written (#667) — running as root, chmod cannot make the dir unwritable\n"
+else
+    TOTAL=$((TOTAL + 1))
+    rm -f "$ISO_LOG"
+    chmod 0555 "$ISO_STATE"
+    FC_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+    chmod 0755 "$ISO_STATE"
+    if printf '%s' "$FC_OUT" | grep -q '"block"' \
+       && printf '%s' "$FC_OUT" | grep -q 'could not be durably recorded'; then
+        printf "  PASS  blocks when the authorization record cannot be written (#667 fail-closed)\n"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  blocks when the authorization record cannot be written (#667 fail-closed) (got: %s)\n" "$FC_OUT"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+
+# 2a-sym. A symlinked audit log is the general defeat of the whole invariant:
+# `>>` follows it, so a link to /dev/null makes every write "succeed" while
+# recording nothing. `.claude/` is only gitignored, so a TRACKED symlink at that
+# path materializes on checkout — the gated party controlling the gate's input.
+TOTAL=$((TOTAL + 1))
+rm -f "$ISO_LOG"
+ln -s /dev/null "$ISO_LOG"
+SYM_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+rm -f "$ISO_LOG"
+if printf '%s' "$SYM_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYM_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the audit log is a symlink (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the audit log is a symlink (#667 fail-closed) (got: %s)\n" "$SYM_OUT"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-symdir. The case a shell `-L` test on the LEAF could never catch: the state
+# DIRECTORY itself is a symlink, so a plain redirect would follow it and land the
+# record outside the named dir. The hardened writer walks every component with
+# O_NOFOLLOW.
+TOTAL=$((TOTAL + 1))
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
+mkdir -p "$ISO_STATE-real"
+ln -s "$ISO_STATE-real" "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+SYMDIR_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+if printf '%s' "$SYMDIR_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYMDIR_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the state dir itself is a symlink (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the state dir itself is a symlink (#667 fail-closed) (got: %s)\n" "$SYMDIR_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$ISO_STATE"
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
+# ISO_STATE doubles as MARKER_DIR for the rest of the suite (see the #667
+# addendum at the top of this file) — recreate it so the write_marker calls
+# below don't fail against a directory the symlink arm just removed.
+mkdir -p "$MARKER_DIR"
 
 # ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
 # Regression: a marker written when the grind converged stayed valid for 2h, so a
@@ -879,7 +1015,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42","event":"INJECTED-VIA-PR\nclaimed_at=%s\n' \
     "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
-LOG_LINES_BEFORE_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
+LOG_LINES_BEFORE_B15A=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -891,8 +1027,8 @@ else
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
     FAIL=$((FAIL + 1))
 fi
-LOG_LINES_AFTER_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
-LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+LOG_LINES_AFTER_B15A=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
 if [ "$LOG_LINES_AFTER_B15A" -gt "$LOG_LINES_BEFORE_B15A" ] \
     && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
@@ -914,7 +1050,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=2026-05-20T02:00:00Z","event":"INJECTED\n' \
     "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     > "$BYPASS_PENDING"
-LOG_LINES_BEFORE_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
+LOG_LINES_BEFORE_B15=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -929,8 +1065,8 @@ fi
 # Verify the bypass-log line for this injection attempt does NOT contain
 # the injected fragment in a JSON-key position. Assert a new line was
 # appended first, then validate the last line content.
-LOG_LINES_AFTER_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
-LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+LOG_LINES_AFTER_B15=$(wc -l < "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || echo 0)
+LAST_LOG=$(tail -1 "$MARKER_DIR/bypass-log.jsonl" 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
 if [ "$LOG_LINES_AFTER_B15" -gt "$LOG_LINES_BEFORE_B15" ] \
     && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
@@ -1567,6 +1703,11 @@ run_gate_test "blocks 'command gh pr merge' (wrapper prefix)" "block" \
 # ═══════════════════════════════════════════════════════════════════════
 # POST-MERGE-CONFIRM detection: prose must NOT be treated as a merge (Task 1)
 # ═══════════════════════════════════════════════════════════════════════
+# This block builds its OWN isolated repo per case (below, via $tmp + a `cwd`
+# field) and expects the script's real ".claude" default relative to that
+# $tmp, not the suite-wide isolated dir set at the top of this file — unset it
+# so it doesn't leak into these subshells.
+unset BUSDRIVER_STATE_DIR
 echo ""
 echo "── post-merge-confirm-bypass prose vs command ──────────────"
 PMCB="hooks/gate-scripts/post-merge-confirm-bypass.sh"

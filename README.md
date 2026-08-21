@@ -251,6 +251,8 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 
 **Event types written to `bypass-log.jsonl`:**
 
+All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-merge`, `bootstrap-merge`) record through one helper that **fails CLOSED**: if the record cannot be appended, the gate blocks instead of authorizing an unlogged merge (#667). That is what makes the *absence* of a record meaningful. Be precise about the claim: these record **authorized attempts**, so a blocked attempt is also recordless — the gate saw it and refused. What absence shows is that the gate never *authorized* a merge. (One narrow exception in the other direction: the skip path records before writing its `.merge-bypass-pending.local` claim — deliberately, so a refused record has no unlink to roll back through a possibly-symlinked parent — so if that claim write then fails, a `skip-pr-grind-claimed` event survives for a merge the gate went on to block. Over-recording a visibly blocked attempt is the harmless direction, and nothing reads these events as authorization.) Combined with GitHub reporting the PR merged, absence means it merged without gate authorization — typically from a shell outside Claude Code, where no PreToolUse hook fires by design. Detection, not prevention: nothing here can observe an out-of-harness merge.
+
 | Event | Source | Meaning |
 |-------|--------|---------|
 | `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
@@ -271,6 +273,7 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |
 | `short-circuit-pass` | litmus commit mode | Diff met all short-circuit criteria; Codex skipped |
 | `pr-fast-bypass` | litmus PR mode | `LITMUS_PR_FAST=1` skipped multi-agent review |
+| `pr-grind-clean-merge` | pre-merge gate | PR merge authorized on the normal path — a fresh `pr-grind-clean.local` for this PR, its head SHA matching the PR's live HEAD, and relevant CI green. Records `pr` and the reviewed `head` SHA. Added in #667: this path previously authorized silently, so the merge nearly every PR takes left no trace and was indistinguishable afterwards from one the gate never saw. Attempt-time, like its two siblings: it records that the gate authorized the merge, not that GitHub completed it |
 | `bootstrap-merge` | pre-merge gate | PR merge allowed via bootstrap bypass for gate-config PRs |
 | `builtin-review-accepted` | post-commit marker consumer | Builtin-agent review (not Codex) was accepted for a commit |
 | `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc) |
@@ -297,6 +300,14 @@ tail -10 .claude/bypass-log.jsonl | jq .
 
 # Count bypasses by event type
 jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
+
+# Did the gate authorize PR 666's merge? (#667 — no output means it never did.
+# If GitHub says the PR is merged, it merged without gate authorization; check
+# whether it was merged from a shell outside Claude Code, where no PreToolUse
+# hook fires. A blocked attempt is also recordless, so absence alone does not
+# distinguish "never attempted" from "attempted and refused".)
+jq -r --arg pr 666 'select(.gate == "pre-merge" and (.pr | tostring) == $pr)
+  | "\(.ts) \(.event)"' .claude/bypass-log.jsonl
 
 # Seatbelt scanner bypasses (which scanner + env var)
 jq -r 'select(.event == "seatbelt-skip") | "\(.scanner) via \(.reason) at \(.ts)"' .claude/bypass-log.jsonl

@@ -883,6 +883,12 @@ fi
 # would be an example that protects no one.
 if ! declare -F grok_sandbox_preflight >/dev/null; then
   fail "grok_sandbox_preflight is not defined — the example profile cannot be validated"
+elif [[ -z "$ACCT_HOME" ]]; then
+  # _acct_home yields nothing when neither /usr/bin/dscl nor /usr/bin/getent is
+  # executable (common in minimal CI images). Substituting a placeholder would
+  # make the preflight refuse for a host-environment reason and report it as a
+  # defect — the exact trap this file's header warns against. Skip loudly.
+  echo "  SKIP  example-profile validation: the account home could not be derived on this host"
 else
   _ex_edited="$(mktemp)"
   # $ACCT_HOME, not $HOME: the preflight resolves the account home itself, so
@@ -955,6 +961,15 @@ if [[ "${_unquoted:-0}" -eq 0 ]]; then
   pass "the containment comparisons keep the checkout root quoted"
 else
   fail "a containment comparison uses an UNQUOTED root (\${root%/}/*) — a checkout path containing [ ] * or ? would stop matching as a prefix and the gate would fail OPEN"
+fi
+# ...and the quoted form must actually still BE there. The check above names one
+# spelling of one variable; rename `root` and it counts 0 and passes while the
+# gate has no containment comparison left at all. Raised by CodeRabbit on #704.
+_quoted=$(/usr/bin/grep -c '== "\${root%/}/"\*' "$CHILD" || true)
+if [[ "${_quoted:-0}" -ge 1 ]]; then
+  pass "the quoted containment comparison is still present under the expected spelling"
+else
+  fail "no quoted \"\${root%/}/\"* comparison found in $CHILD — the containment check was renamed or reshaped, so the unquoted-root check above is now vacuous"
 fi
 
 # ── bash 3.2 parse ──────────────────────────────────────────────────────
@@ -1091,10 +1106,17 @@ else
 fi
 # The refusal must still be VISIBLE on a route that names only grok: silently
 # degrading everywhere would trade one invisible failure for another.
-if /usr/bin/grep -q 'missing:' "$RESOLVE"; then
+# Scoped to the function that actually emits it, not the whole file: a comment,
+# a log string or a `missing:*` CONSUMER arm elsewhere in resolve-cli.sh would
+# satisfy a file-wide grep while the emit site was gone (CodeRabbit, #704). The
+# emitter is `_resolve_role_cli_impl`, not the thin `resolve_role_cli` wrapper —
+# CodeRabbit named the wrapper, whose 37-line body contains no `missing:` at all,
+# so scoping there would have turned a real assertion into a permanent FAIL.
+if /usr/bin/sed -n '/^_resolve_role_cli_impl()/,/^}/p' "$RESOLVE" \
+     | /usr/bin/grep -v '^[[:space:]]*#' | /usr/bin/grep -q 'missing:'; then
   pass "a sole-grok route still reports missing:<cli> rather than resolving to nothing"
 else
-  fail "resolve_role_cli no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
+  fail "_resolve_role_cli_impl no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
 fi
 
 # The cross-provider boundary must hold for RUNTIME failures, not just the
@@ -1140,9 +1162,9 @@ fi
 if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" \
      | /usr/bin/grep -v '^[[:space:]]*#' \
      | /usr/bin/grep -qiE 'protections missing|unappliable'; then
-  fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by slot name instead"
+  fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by resolved CLI name instead"
 else
-  pass "the blueprint grok exclusion keys on the slot name, not on matching a failure message"
+  pass "the blueprint grok exclusion keys on the resolved CLI name, not on matching a failure message"
 fi
 
 if /usr/bin/grep -q 'elif grok_sandbox_preflight ""' "$DISPATCH"; then

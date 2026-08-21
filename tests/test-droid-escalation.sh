@@ -191,6 +191,7 @@ else
     bad "could not extract the runtime-droid-fallback loop from $BPLOOP (reshaped? guard unverified)"
   else
     : > "$TMP/reached"
+    rm -f "$TMP/agy-droid-raw.txt" "$TMP/codex-droid-raw.txt"
     # SC2034: every assignment in this subshell is an input to the eval'd
     # _bp_droid_rescue body and the eval'd caller loop, neither of which the
     # linter can follow. Scoped to the subshell, not the file.
@@ -215,9 +216,23 @@ else
       eval "$_bp_fn"
       eval "$_bp_loop"
     )
-    grep -q CALLED "$TMP/reached" \
-      && ok  "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued" \
-      || bad "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued"
+    # The CALLED marker alone is too weak to carry this case: the sed range
+    # above ends at the first line that is exactly two spaces plus `fi`, so a
+    # future nested `if` truncates the extraction to a fragment that can still
+    # reach execute_review for the codex slot while dropping the grok-exclusion
+    # `continue` entirely — and a bare `grep -q CALLED` reports PASS on it
+    # (CodeRabbit, #704). Assert the whole path instead: exactly one rescue ran,
+    # it wrote the CODEX slot's droid raw file, and it wrote no file for the agy
+    # slot that grok occupied.
+    _calls=0
+    [[ -s "$TMP/reached" ]] && _calls=$(grep -c CALLED "$TMP/reached")
+    _codex_raw=no; [[ -e "$TMP/codex-droid-raw.txt" ]] && _codex_raw=yes
+    _agy_raw=no;   [[ -e "$TMP/agy-droid-raw.txt"   ]] && _agy_raw=yes
+    if [[ "$_calls" -eq 1 && "$_codex_raw" == yes && "$_agy_raw" == no ]]; then
+      ok  "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued exactly once"
+    else
+      bad "blueprint: grok-in-agy-slot excluded, scan continues → codex slot rescued exactly once (calls=$_calls codex-raw=$_codex_raw agy-raw=$_agy_raw)"
+    fi
   fi
 fi
 

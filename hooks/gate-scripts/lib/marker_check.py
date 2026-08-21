@@ -481,6 +481,35 @@ def _class_members(body, negated, literal_hyphen=False):
     return r1 | r2
 
 
+def _span_endpoint(body, p):
+    """The single character a range endpoint at `p` denotes, and where it ends.
+
+    An endpoint is not always one character of TEXT, which is the whole trouble. Quote
+    removal leaves an escaped member behind (`[\\ -u]` reaches the matcher as `[ -u]`), and
+    POSIX spells a collating element `[.a.]` and an equivalence class `[=a=]` -- and the
+    shell accepts every one of those on either side of a `-`. Reading them only as
+    standalone MEMBERS is what let `[\\ -u]` and `[[.a.]-[.z.]]` expand onto the helper
+    while this file answered OK; codex found them one round apart.
+
+    Returns (None, p) when `p` does not begin a single-character endpoint -- an unbalanced
+    subexpression, a multi-character collating element, a `]` or a `-` -- so every caller
+    can simply skip the span rather than guess at one.
+    """
+    n = len(body)
+    if p >= n:
+        return None, p
+    if body[p] == chr(92) and p + 1 < n:
+        return body[p + 1], p + 2
+    if body[p] == "[" and p + 1 < n and body[p + 1] in ".=":
+        k = body.find(body[p + 1] + "]", p + 2)
+        if k >= 0 and k - (p + 2) == 1:
+            return body[p + 2], k + 2
+        return None, p
+    if body[p] in "]-":
+        return None, p
+    return body[p], p + 1
+
+
 def _resolve_members(body, literal_hyphen=False):
     """One reading of a class body, as the set of helper characters it can match."""
     out, i, n = set(), 0, len(body)
@@ -502,12 +531,9 @@ def _resolve_members(body, literal_hyphen=False):
             # family -- the reported bug was a quoted space in a class, this is an escaped
             # one acting as an endpoint. ADDED rather than substituted, like every other
             # reading here, so it can only widen.
-            j = i + 2
-            if (not literal_hyphen and j + 1 < n and body[j] == "-"
-                    and body[j + 1] != "]"):
-                hi = (body[j + 2] if body[j + 1] == chr(92) and j + 2 < n
-                      else body[j + 1])
-                if ord(esc) <= ord(hi):
+            if not literal_hyphen and i + 2 < n and body[i + 2] == "-":
+                hi, _ = _span_endpoint(body, i + 3)
+                if hi is not None and ord(esc) <= ord(hi):
                     out |= {ch for ch in _HELPER_ALPHABET
                             if ord(esc) <= ord(ch) <= ord(hi)}
             i += 2
@@ -522,6 +548,16 @@ def _resolve_members(body, literal_hyphen=False):
                 out |= _POSIX_MEMBERS.get(name, _HELPER_ALPHABET)
             else:
                 out |= set(name)
+                # `[[.a.]-[.z.]]` is a RANGE whose endpoints happen to be spelled as
+                # collating elements, and the shell reads it as one -- it expanded onto the
+                # helper's `t` while only `a` and `z` were recorded here. A named class
+                # (`[:alpha:]`) is not an endpoint, so only `.` and `=` qualify.
+                if (not literal_hyphen and len(name) == 1
+                        and k + 2 < n and body[k + 2] == "-"):
+                    hi, _ = _span_endpoint(body, k + 3)
+                    if hi is not None and ord(name) <= ord(hi):
+                        out |= {ch for ch in _HELPER_ALPHABET
+                                if ord(name) <= ord(ch) <= ord(hi)}
             i = k + 2
             continue
         if (not literal_hyphen and i + 2 < n and body[i + 1] == "-"
@@ -535,9 +571,20 @@ def _resolve_members(body, literal_hyphen=False):
             # which covers `.`. A differential over 7,385 bodies caught that, which is the
             # whole reason readings here are only ever added. Advancement is left alone, so
             # the escaped character is simply re-scanned as an ordinary member.
-            if hi == chr(92) and i + 3 < n and ord(lo) <= ord(body[i + 3]):
+            hi2, e2 = _span_endpoint(body, i + 2)
+            if hi2 is not None and hi2 != hi and ord(lo) <= ord(hi2):
                 out |= {ch for ch in _HELPER_ALPHABET
-                        if ord(lo) <= ord(ch) <= ord(body[i + 3])}
+                        if ord(lo) <= ord(ch) <= ord(hi2)}
+                if ord(lo) > ord(hi):
+                    # The PLAIN reading is reversed -- in `[a-[.z.]]` the `[` that starts
+                    # the collating element sorts below `a` -- and the reversed answer
+                    # below is `set()`, the empty class. Falling into it would DISCARD the
+                    # span just added, which is how this spelling still ran the helper
+                    # after the endpoint reader already resolved it correctly. The
+                    # subexpression reading is a real span the shell honours, so take it
+                    # and step past the endpoint it ends at.
+                    i = e2
+                    continue
             if ord(lo) <= ord(hi):
                 out |= {ch for ch in _HELPER_ALPHABET if ord(lo) <= ord(ch) <= ord(hi)}
                 i += 3

@@ -972,6 +972,25 @@ else
     g_case "cd $LIB; python3 lease_slo[a-\\u].py" \
         "an escaped char as the HIGH endpoint"
 
+
+    # (u) an endpoint is not always one character of TEXT. POSIX spells a collating element
+    #     `[.a.]` and an equivalence class `[=a=]`, and the shell accepts either side of a
+    #     `-` -- so `[[.a.]-[.z.]]` is a RANGE covering the helper's `t`, while the reader
+    #     recorded only `a` and `z` and answered OK. Same shape as (t): a class element read
+    #     ONLY as a standalone member. One reader now answers "what character does this
+    #     endpoint denote" for all three spellings -- escape, collating, equivalence -- so
+    #     the next spelling in this family is covered by construction rather than by a row.
+    #
+    #     `[a-[.z.]]` is the case that survived the first fix: its PLAIN reading is reversed
+    #     (`[` sorts below `a`), and the reversed answer is the empty class, which discarded
+    #     the span the endpoint reader had just resolved correctly.
+    for _g_cls in "[[.a.]-[.z.]]" "[[.a.]-z]" "[a-[.z.]]" "[[.t.]]" "[[=t=]]"; do
+        g_case "cd $LIB; python3 lease_slo$_g_cls.py" \
+            "a collating or equivalence element as a class member or endpoint"
+    done
+    g_case "eval 'python3 $LIB/lease_slo[[.a.]-[.z.]].py'" \
+        "the same, delivered through eval"
+
     rm -rf "$_G_DIR"
 
     # The other direction, and the reason (b) is not simply "block every bracket after a
@@ -1035,7 +1054,7 @@ EOF" \
     assert_ok "ls my\\ file[0].txt" \
         "#708: an escaped space in an ordinary filename -> allowed"
 
-    if [[ "$_G_RAN" -ge 52 ]]; then
+    if [[ "$_G_RAN" -ge 58 ]]; then
         ok "#708 exhaustion: the fixtures still reach the helper ($_G_RAN cases)"
     else
         no "#708 exhaustion: the fixtures still reach the helper" \

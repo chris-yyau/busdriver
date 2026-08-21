@@ -956,6 +956,22 @@ else
     g_case "$_g_drain python3 $_g_bg ; python3 $LIB/lease_slo[' 't].py" \
         "an oversized word arriving on a nearly-spent budget"
 
+
+    # (t) #708's own family, one round later. The reported bug was a QUOTED space inside a
+    #     class; this is an ESCAPED one acting as a range ENDPOINT. Quote removal happens
+    #     before globbing, so `[\\ -u]` reaches the matcher as `[ -u]` -- a span from space
+    #     to `u` covering the helper's `t` -- while the reader took `\\ ` as an isolated
+    #     member and resolved {space, -, u}. It RAN and answered OK. The escape is now read
+    #     BOTH ways, member and endpoint, which is the same add-never-substitute rule every
+    #     other reading here follows. The unescaped `[ -u]` spelling stays allowed because
+    #     bash does not expand it onto anything -- precision, not just blocking.
+    g_case "eval 'python3 $LIB/lease_slo[\\ -u].py'" \
+        "an escaped space as the LOW endpoint of a range"
+    g_case "eval \"python3 $LIB/lease_slo[\\ -u].py\"" \
+        "the same, delivered through double quotes"
+    g_case "cd $LIB; python3 lease_slo[a-\\u].py" \
+        "an escaped char as the HIGH endpoint"
+
     rm -rf "$_G_DIR"
 
     # The other direction, and the reason (b) is not simply "block every bracket after a
@@ -1019,7 +1035,7 @@ EOF" \
     assert_ok "ls my\\ file[0].txt" \
         "#708: an escaped space in an ordinary filename -> allowed"
 
-    if [[ "$_G_RAN" -ge 49 ]]; then
+    if [[ "$_G_RAN" -ge 52 ]]; then
         ok "#708 exhaustion: the fixtures still reach the helper ($_G_RAN cases)"
     else
         no "#708 exhaustion: the fixtures still reach the helper" \

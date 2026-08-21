@@ -492,7 +492,24 @@ def _resolve_members(body, literal_hyphen=False):
             i += 1
             continue
         if c == chr(92) and i + 1 < n:   # an escaped member
-            out.add(body[i + 1])
+            esc = body[i + 1]
+            out.add(esc)
+            # ...and it may ALSO be a range ENDPOINT. Quote removal happens BEFORE globbing,
+            # so `[\ -u]` reaches the matcher as `[ -u]` -- a span from space to `u` that
+            # covers the helper's `t`. Reading the escape only as an isolated member saw
+            # {space, -, u} and missed the span entirely:
+            # `eval 'python3 <lib>/<stem>[\ -u].py'` RAN while this answered OK. #708's own
+            # family -- the reported bug was a quoted space in a class, this is an escaped
+            # one acting as an endpoint. ADDED rather than substituted, like every other
+            # reading here, so it can only widen.
+            j = i + 2
+            if (not literal_hyphen and j + 1 < n and body[j] == "-"
+                    and body[j + 1] != "]"):
+                hi = (body[j + 2] if body[j + 1] == chr(92) and j + 2 < n
+                      else body[j + 1])
+                if ord(esc) <= ord(hi):
+                    out |= {ch for ch in _HELPER_ALPHABET
+                            if ord(esc) <= ord(ch) <= ord(hi)}
             i += 2
             continue
         if c == "[" and i + 1 < n and body[i + 1] in ":.=":
@@ -510,6 +527,17 @@ def _resolve_members(body, literal_hyphen=False):
         if (not literal_hyphen and i + 2 < n and body[i + 1] == "-"
                 and body[i + 2] not in ("]",)):
             lo, hi = c, body[i + 2]
+            # The upper endpoint can be escaped too (`[a-\u]`), and quote removal drops that
+            # backslash exactly as it drops the lower one's -- so the span may also run to
+            # the character BEHIND the escape. ADDED as a second span, not substituted for
+            # the first: reading the backslash itself as the endpoint is what this line
+            # already did, and re-pointing it LOST members -- ` -\ ` spans space..backslash,
+            # which covers `.`. A differential over 7,385 bodies caught that, which is the
+            # whole reason readings here are only ever added. Advancement is left alone, so
+            # the escaped character is simply re-scanned as an ordinary member.
+            if hi == chr(92) and i + 3 < n and ord(lo) <= ord(body[i + 3]):
+                out |= {ch for ch in _HELPER_ALPHABET
+                        if ord(lo) <= ord(ch) <= ord(body[i + 3])}
             if ord(lo) <= ord(hi):
                 out |= {ch for ch in _HELPER_ALPHABET if ord(lo) <= ord(ch) <= ord(hi)}
                 i += 3

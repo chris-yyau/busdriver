@@ -995,5 +995,42 @@ assert_block "sh <<EOF
 $HELPER
 EOF" "real heredoc body is scanned by this module (differs from cmdword's residual)"
 
+# -- D. grammar is EXACT and BARE, not a basename ------------------------------------
+# Bash decides which words are syntax BEFORE quote removal, and matches them literally.
+# Both halves of this were being decided on the basename of the DECODED word, which
+# called three different things the same: the keyword, a quoted program that spells it,
+# and a path that ends in it. Each pair below is the same word bare (syntax, still
+# blocked) and dressed (an ordinary external command, and now allowed).
+#
+# These are OVER-blocks, so every one of them allows something that was refused. That is
+# the direction this module normally refuses to move in, so each is paired with the bare
+# spelling it must NOT loosen -- and all eight were run against the parent commit, where
+# the four allows fail and the four blocks are unchanged.
+
+# The wrapper peel re-skipped reserved words on the basename, undoing the raw-aware
+# check its own caller had just made.
+assert_ok    "'then' . /dev/stdin <<< '$HELPER'" \
+    "a QUOTED reserved word is an external command, so the dot behind it sources nothing"
+assert_block "then . /dev/stdin <<< '$HELPER'" \
+    "...but the BARE keyword still hides a real dot (the pair that must not loosen)"
+
+# Assignment recognition has the same before-quote-removal rule: the name and the `=`
+# must both be unquoted, while the VALUE may be quoted freely.
+assert_ok    "FOO\"=\"bar . /dev/stdin <<< '$HELPER'" \
+    "a quoted = is not an assignment, it names a program called FOO=bar"
+assert_block "FOO=bar . /dev/stdin <<< '$HELPER'" \
+    "a real assignment is still stepped over to reach the dot"
+assert_block "FOO=b\"a\"r . /dev/stdin <<< '$HELPER'" \
+    "a quoted VALUE leaves it an assignment (only the name and = decide)"
+
+# The compound-widening trigger read `'fi'` and `./fi` as syntax, widened to the whole
+# command, and let an unrelated `sh` in an earlier segment block a data-only read.
+assert_ok    "echo sh; 'fi' <<< '$HELPER'" \
+    "a quoted fi is an external command, so there is no compound to widen to"
+assert_ok    "echo sh; ./fi <<< '$HELPER'" \
+    "a PATH ending in fi is a program, not a compound terminator"
+assert_block "if true; then sh; fi <<< '$HELPER'" \
+    "the real compound still widens and finds the shell (the pair that must not loosen)"
+
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

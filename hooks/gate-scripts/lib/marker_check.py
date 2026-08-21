@@ -280,19 +280,52 @@ def _dequote(w):
     return w.replace(chr(34), "").replace(chr(39), "")
 
 
-def _skippable(w):
+def _reserved_word(w, raw=None):
+    # Is this word shell GRAMMAR? Bash recognises a reserved word before quote removal and
+    # matches it EXACTLY, so `'fi'`, `f\i` and `./fi` are ordinary external commands that
+    # merely spell one -- the redirection behind them attaches to that command, not to a
+    # compound. Deciding this on the basename of the DECODED word called all three syntax.
+    #
+    # With no raw spelling to judge (callers that never captured one), the wider basename
+    # reading is kept: absent the information, this module over-blocks rather than guess.
+    if raw is None:
+        return _bn(w) in _RESERVED_SH
+    return w in _RESERVED_SH and not any(c in raw for c in ("'", chr(34), "\\"))
+
+
+def _bare_assign(raw):
+    # Bash reads a word as an assignment only when the name AND the `=` are unquoted, so
+    # `FOO"="bar` and `"FOO"=bar` are command words naming a program called `FOO=bar`,
+    # while `FOO=b"a"r` is still an assignment -- the value may be quoted freely. Judge on
+    # the raw text up to and including the first `=`; with nothing to judge, stay wide.
+    if raw is None or "=" not in raw:
+        return True
+    return not any(c in raw[:raw.index("=") + 1] for c in ("'", chr(34), "\\"))
+
+
+def _skippable(w, raw=None):
     # A leading assignment, a flag, or a bare numeric wrapper operand (timeout 5 ...).
-    return (re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w) is not None
-            or w.startswith("-")
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w) is not None:
+        return _bare_assign(raw)
+    return (w.startswith("-")
             or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
 
 
-def _peel_wrappers(words):
+def _peel_wrappers(words, raws=None):
     # First word that actually EXECUTES: skip leading assignments, flags, bare numeric
     # wrapper operands, and wrapper commands themselves. Returns None when nothing
     # survives, so the caller falls back to its raw first word.
-    for w in words:
-        if _skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH:
+    #
+    # `raws` is the as-written spelling of each word, and it is what makes the grammar
+    # skips agree with bash. Without it, a caller that had carefully checked `'then'` was
+    # BARE before stepping over it handed the quote-squeezed words here, where the skip ran
+    # again on the basename and stepped over it anyway -- so `'then' . /dev/stdin <<< P`
+    # and `FOO"="bar . /dev/stdin <<< P` promoted a `.` that sources nothing and were
+    # refused. Wrapper COMMANDS stay basename-matched on purpose: `'env' sh` really does
+    # exec a shell, because quoting changes a word's grammar, not what a program does.
+    for _i, w in enumerate(words):
+        _r = None if raws is None else raws[_i]
+        if _skippable(w, _r) or _bn(w) in _WRAPPER_CMDS or _reserved_word(w, _r):
             continue
         if _bn(w) in _TEST_OPEN_SH:
             return None
@@ -2334,7 +2367,11 @@ def _cmd_position(words, raws=None):
     _w = words
     if _j < len(words) and words[_j] == "time" and _bare(_j):
         _w = words[:_j] + _strip_time_prefix(words[_j:])
-    return _peel_wrappers(_w) or (_w[0] if _w else None)
+    # Raws travel with the words ONLY while the two stay index-parallel. `_strip_time_prefix`
+    # drops tokens, so past it the spellings no longer line up and are dropped rather than
+    # misaligned -- the peel then falls back to its wide basename reading, which is the
+    # fail-closed direction.
+    return _peel_wrappers(_w, raws if _w is words else None) or (_w[0] if _w else None)
 
 
 def _cmd_candidates(words, dwords, raws=None):
@@ -2603,7 +2640,11 @@ def _herestring_shell_payloads(pairs):
         # the operator and leaves this segment wordless -- the receiver is elsewhere and
         # this segment cannot answer the question. Requiring a NONEMPTY word list was
         # exactly that bypass: the subshell spelling executed the payload and returned OK.
-        _only_reserved = all(_bn(w) in _RESERVED_SH for w in cw_words)
+        # EXACT and BARE, the same rule `_cmd_position` applies: `echo sh; 'fi' <<< P` and
+        # `echo sh; ./fi <<< P` run an external command named `fi`, so the here-string is
+        # attached to THAT command and there is no compound to widen to. Reading them as
+        # syntax widened to the whole command, where the unrelated `sh` blocked the read.
+        _only_reserved = all(_reserved_word(w, r) for w, r in zip(cw_words, _raws))
         if _only_reserved:
             # Ask the SAME question of the whole command rather than widening blind: an
             # unconditional widen blocked `if true; then cat; fi <<< '<helper>'`, where the

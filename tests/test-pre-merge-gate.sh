@@ -159,7 +159,8 @@ PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
 ISO_STATE=".claude-test-667-$$"
 
 cleanup() {
-    rm -rf "$GH_STUBDIR" "$ISO_STATE" 2>/dev/null || true
+    rm -rf "$GH_STUBDIR" "$ISO_STATE" "$ISO_STATE-real" 2>/dev/null || true
+    rm -f "$ISO_STATE" 2>/dev/null || true
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
@@ -205,7 +206,7 @@ printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.loc
 
 TOTAL=$((TOTAL + 1))
 BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" >/dev/null 2>&1 || true
-ISO_RECORDS=$(grep -c '"event":"pr-grind-clean-merge"' "$ISO_LOG" 2>/dev/null || echo 0)
+ISO_RECORDS=$(grep -c '"event":"pr-grind-clean-merge"' "$ISO_LOG" 2>/dev/null) || ISO_RECORDS=0
 ISO_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
 if [[ "$ISO_RECORDS" -eq 1 ]] \
    && printf '%s' "$ISO_LINE" | grep -q '"pr":31' \
@@ -235,21 +236,68 @@ fi
 # 2a-fc. The record IS the authorization evidence, so an unrecordable
 # authorization must BLOCK rather than merge unlogged — otherwise one swallowed
 # write makes an absent record meaningless on every path.
-TOTAL=$((TOTAL + 1))
+#
+# chmod cannot create an unwritable directory for root (DAC override), so under
+# root this arm would "pass" without ever exercising the failure. Announce the
+# skip rather than bank a vacuous PASS. The symlink arm below needs no
+# permission trick and runs either way.
 printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    printf "  SKIP  blocks when the authorization record cannot be written (#667) — running as root, chmod cannot make the dir unwritable\n"
+else
+    TOTAL=$((TOTAL + 1))
+    rm -f "$ISO_LOG"
+    chmod 0555 "$ISO_STATE"
+    FC_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+    chmod 0755 "$ISO_STATE"
+    if printf '%s' "$FC_OUT" | grep -q '"block"' \
+       && printf '%s' "$FC_OUT" | grep -q 'could not be durably recorded'; then
+        printf "  PASS  blocks when the authorization record cannot be written (#667 fail-closed)\n"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  blocks when the authorization record cannot be written (#667 fail-closed) (got: %s)\n" "$FC_OUT"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+
+# 2a-sym. A symlinked audit log is the general defeat of the whole invariant:
+# `>>` follows it, so a link to /dev/null makes every write "succeed" while
+# recording nothing. `.claude/` is only gitignored, so a TRACKED symlink at that
+# path materializes on checkout — the gated party controlling the gate's input.
+TOTAL=$((TOTAL + 1))
 rm -f "$ISO_LOG"
-chmod 0555 "$ISO_STATE"
-FC_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
-chmod 0755 "$ISO_STATE"
-if printf '%s' "$FC_OUT" | grep -q '"block"' \
-   && printf '%s' "$FC_OUT" | grep -q 'could not be appended'; then
-    printf "  PASS  blocks when the authorization record cannot be written (#667 fail-closed)\n"
+ln -s /dev/null "$ISO_LOG"
+SYM_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+rm -f "$ISO_LOG"
+if printf '%s' "$SYM_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYM_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the audit log is a symlink (#667 fail-closed)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  blocks when the authorization record cannot be written (#667 fail-closed) (got: %s)\n" "$FC_OUT"
+    printf "  FAIL  blocks when the audit log is a symlink (#667 fail-closed) (got: %s)\n" "$SYM_OUT"
     FAIL=$((FAIL + 1))
 fi
-rm -rf "$ISO_STATE"
+
+# 2a-symdir. The case a shell `-L` test on the LEAF could never catch: the state
+# DIRECTORY itself is a symlink, so a plain redirect would follow it and land the
+# record outside the named dir. The hardened writer walks every component with
+# O_NOFOLLOW.
+TOTAL=$((TOTAL + 1))
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
+mkdir -p "$ISO_STATE-real"
+ln -s "$ISO_STATE-real" "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+SYMDIR_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+if printf '%s' "$SYMDIR_OUT" | grep -q '"block"' \
+   && printf '%s' "$SYMDIR_OUT" | grep -q 'could not be durably recorded'; then
+    printf "  PASS  blocks when the state dir itself is a symlink (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the state dir itself is a symlink (#667 fail-closed) (got: %s)\n" "$SYMDIR_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$ISO_STATE"
+rm -rf "$ISO_STATE" "$ISO_STATE-real"
 
 # ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
 # Regression: a marker written when the grind converged stayed valid for 2h, so a

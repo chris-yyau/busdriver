@@ -156,8 +156,8 @@ allow_merge() {
 }
 
 # ── #667: audit-record helper (fail-CLOSED) ──────────────────────────
-# Appends ONE record to the audit log for a merge this gate is about to
-# authorize, and BLOCKS if the append fails.
+# Records ONE audit line for a merge this gate is about to authorize, and
+# BLOCKS if it cannot be durably recorded.
 #
 # Why fail-closed rather than the old `|| true`: the value of these records is
 # that a merged PR carrying NONE of them was merged around the gate (from a
@@ -167,10 +167,35 @@ allow_merge() {
 # on all of them. Callers pass a pre-formatted JSON object; $2 is optional
 # cleanup to run before blocking.
 audit_authorized_merge() {
-    local _record="$1" _rollback="${2:-}"
-    if ! printf '%s\n' "$_record" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null; then
-        [ -n "$_rollback" ] && rm -f "$_rollback"
-        block_emit "Pre-merge gate: PR #${MERGE_PR_NUM:-<unknown>} passed every check, but the merge-authorization record could not be appended to ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/bypass-log.jsonl. Blocking as precaution: an authorized merge that leaves no record is indistinguishable afterwards from one the gate never saw. Fix the filesystem permissions and retry."
+    local _record="$1" _rollback="${2:-}" _lib
+    _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+    # Delegate the write to lib/audit_append.py rather than `>>`. A shell
+    # redirect follows symlinks at EVERY path component, so a repo-writable
+    # bypass-log.jsonl -> /dev/null, or a symlinked $STATE_DIR, makes the
+    # write "succeed" while retaining nothing — and a shell `-L` pre-check
+    # tests only the FINAL name and leaves a TOCTOU window before the open.
+    # The path is attacker-influenced ($STATE_DIR is repo-relative and
+    # `.claude/` is only gitignored, so a TRACKED symlink there materializes on
+    # checkout). audit_append walks every component with dir_fd + O_NOFOLLOW,
+    # takes the lock, and refuses a torn trailing line. It is the same writer
+    # the #519 skip-lease path already trusts for this exact log.
+    #
+    # Imported, not shelled out to: audit_append deliberately exposes NO writing
+    # CLI (a generic one would let any caller forge a `skip-review-consumed`
+    # line that post-commit-consume-marker.sh reads as proof of a sanctioned
+    # bypass). Importing it from the gate's own trusted lib dir adds no such
+    # entry point. Same `-S` + sys.path scrub as the merge parser above, because
+    # cwd here is the repo.
+    if ! (cd "$REPO_DIR" 2>/dev/null && PYTHONPATH="$_lib" python3 -S -c "
+import sys
+_gatelib = [q for q in sys.path if q.endswith('gate-scripts/lib')]
+sys.path[:] = [q for q in sys.path
+               if q not in ('', '.') and q not in _gatelib] + _gatelib
+from audit_append import append
+raise SystemExit(0 if append(sys.argv[1], sys.argv[2]) else 1)
+" "$STATE_DIR" "$_record" 2>/dev/null); then
+        if [[ -n "$_rollback" ]]; then rm -f "$_rollback"; fi
+        block_emit "Pre-merge gate: PR #${MERGE_PR_NUM:-<unknown>} passed every check, but the merge-authorization record could not be durably recorded in ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/bypass-log.jsonl. Blocking as precaution: an authorized merge that leaves no record is indistinguishable afterwards from one the gate never saw. The write is refused when any path component is a symlink or not a directory, when the log is not a plain writable file, or when it ends in a torn line. Repair it and retry."
         exit 0
     fi
 }

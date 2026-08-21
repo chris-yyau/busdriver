@@ -939,6 +939,23 @@ else
     g_case "python3 $_g_big ; python3 $_g_big ; python3 $LIB/lease_slo[' 't].py" \
         "a costly word repeated across segments"
 
+
+    # (s) the budget is a RESOURCE, so what matters is the state it is in when a word
+    #     arrives -- not whether that word is affordable in isolation. Two ways it was
+    #     loose: a word costing more than what is LEFT was still admitted (the check asked
+    #     whether anything remained, not whether this fit, so it overdrew by its own
+    #     length), and an EXPLICIT deep= -- which the abandoned-scan probe settles once for
+    #     a whole family -- never consulted the budget at all. Neither reached the hook's 5s
+    #     budget in measurement, but a bound that does not mean what it says is one shape
+    #     away from doing so. Drain first, then hand it the expensive word: the answer must
+    #     still be right, which is what refusing-into-the-fallback buys.
+    _g_sm="["; for ((_g_i = 0; _g_i < 20; _g_i++)); do _g_sm+="a-z"; done; _g_sm+="\"]]]\""
+    _g_bg="["; for ((_g_i = 0; _g_i < 1360; _g_i++)); do _g_bg+="a-z"; done; _g_bg+="\"]]]\""
+    _g_drain=""
+    for ((_g_i = 0; _g_i < 20; _g_i++)); do _g_drain+="python3 $_g_sm ; "; done
+    g_case "$_g_drain python3 $_g_bg ; python3 $LIB/lease_slo[' 't].py" \
+        "an oversized word arriving on a nearly-spent budget"
+
     rm -rf "$_G_DIR"
 
     # The other direction, and the reason (b) is not simply "block every bracket after a
@@ -1002,7 +1019,7 @@ EOF" \
     assert_ok "ls my\\ file[0].txt" \
         "#708: an escaped space in an ordinary filename -> allowed"
 
-    if [[ "$_G_RAN" -ge 48 ]]; then
+    if [[ "$_G_RAN" -ge 49 ]]; then
         ok "#708 exhaustion: the fixtures still reach the helper ($_G_RAN cases)"
     else
         no "#708 exhaustion: the fixtures still reach the helper" \

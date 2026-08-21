@@ -588,7 +588,7 @@ def _deep_affordable(s):
     an affordable string. At the structured call sites the question is asked per WORD, where
     the word term is vacuously 1, so nothing bounded the total until the budget did.
     """
-    if _deep_budget[0] <= 0:
+    if _deep_budget[0] < len(s):
         return False
     if len(s) > _CLASS_DEEP_MAX_LEN or s.count("]") > _CLASS_DEEP_MAX_CLOSERS:
         return False
@@ -684,8 +684,17 @@ def _class_variants(s, deep=None):
         deep = _deep_affordable(s)
     if deep:
         # Charged where the work is actually done, so the same word cannot be paid for twice
-        # by the predicate being asked about it twice.
-        _deep_budget[0] -= len(s)
+        # by the predicate being asked about it twice -- and re-checked here, because the
+        # budget is the one term in _deep_affordable that is not a property of `s`. An
+        # EXPLICIT deep= never consults it: the abandoned-scan probe settles the question
+        # once for a whole family of variants, so without this the family would charge
+        # without ever checking. Refusing costs nothing that matters -- it drops to the base
+        # reading AND routes through _bracket_prefix_hit, the same fail-CLOSED answer every
+        # other exhausted bound gives.
+        if _deep_budget[0] < len(s):
+            deep = False
+        else:
+            _deep_budget[0] -= len(s)
     out = []
     for perline in (False, True) if deep else (False,):
         for nearest in (False, True) if deep else (False,):

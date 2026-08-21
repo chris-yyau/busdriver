@@ -73,6 +73,14 @@ assert_parses() { # <command> <label>
     fi
 }
 
+# Is this verdict a genuine BLOCK? BLOCK_CLASSIFIER_ERROR is excluded for the reason spelled
+# out on assert_block below: it means the classifier RAISED, so whatever rule the fixture was
+# probing never ran. Every property loop asks through this one predicate, because the
+# exclusion held in assert_block and lapsed in all seven matrices -- a classifier exception
+# passed the time, encoded-shell, launcher, expansion, terminator, operand and
+# quoted-operator properties, which is exactly the crash-masking this file set out to stop.
+is_block() { [[ "$1" == BLOCK_* && "$1" != BLOCK_CLASSIFIER_ERROR* ]]; }
+
 # Deliberately if/then/else rather than `cond && ok || no` (shellcheck SC2015).
 assert_ok() { # <command> <label>
     local got
@@ -97,7 +105,7 @@ assert_block() { # <command> <label>
         no "$2" "got=$got — the classifier raised; the rule under test never ran"
         return
     fi
-    if [[ "$got" == BLOCK_* ]]; then
+    if is_block "$got"; then
         ok "$2"
     else
         no "$2" "got=${got:-<empty>} — here-string payload reached a shell unscanned (#643)"
@@ -253,7 +261,7 @@ for _pre in "" "{ " "if true; then "; do
     [[ "$_pre" == "if true; then " ]] && _suf="; fi"
     _t_n=$((_t_n + 1))
     _got=$(verdict "${_pre}time . /dev/stdin${_suf} <<< '$HELPER'")
-    if [[ "$_got" != BLOCK_* ]]; then
+    if ! is_block "$_got"; then
         no "property: a bare time in keyword position always peels" "${_pre}time — got=${_got:-<empty>}"
         _t_n=-1; break
     fi
@@ -289,7 +297,7 @@ _enc_n=0
 for _spell in "\$'\\x62ash'" "\$'\\142ash'" "\$'\\x62\\x61sh'" "bash" "'bash'" "ba'sh'"; do
     _enc_n=$((_enc_n + 1))
     _got=$(verdict "$_spell <<< '$HELPER'")
-    if [[ "$_got" != BLOCK_* ]]; then
+    if ! is_block "$_got"; then
         no "property: every spelling that resolves to a shell blocks" "$_spell — got=${_got:-<empty>}"
         _enc_n=-1; break
     fi
@@ -385,7 +393,7 @@ for _shape in "if true; then @; fi" "while :; do @; done" "until false; do @; do
               "( @ )" "case x in x) @;; esac" "if true; then a; @; fi"; do
     _lp_n=$((_lp_n + 1))
     _got=$(verdict "${_shape//@/unshare} <<< '$HELPER'")
-    if [[ "$_got" != BLOCK_* ]]; then
+    if ! is_block "$_got"; then
         no "property: a launcher is a receiver in every compound shape" "${_shape//@/unshare} — got=${_got:-<empty>}"
         _lp_n=-1; break
     fi
@@ -710,7 +718,7 @@ for _x in "\${x:-a b > y}" "\$(printf \"a b > y\")" "\$((1 + 2))" "\$(echo \$(ec
           "\`echo \$(echo a) b\`"; do
     _xp_n=$((_xp_n + 1))
     _got=$(verdict "<<< $_x . /dev/stdin <<< '$HELPER'")
-    if [[ "$_got" != BLOCK_* ]]; then
+    if ! is_block "$_got"; then
         no "property: no word or operator escapes an expansion" "<<< $_x — got=${_got:-<empty>}"
         _xp_n=-1; break
     fi
@@ -748,7 +756,7 @@ for _cmd in "<<< \$[1 + 2 > 0] . /dev/stdin <<< '$HELPER'" \
             "cat <<< \"\$(date) $HELPER\""; do
     _term_n=$((_term_n + 1))
     _got=$(verdict "$_cmd")
-    if [[ "$_got" != BLOCK_* ]]; then
+    if ! is_block "$_got"; then
         no "property: an expansion downgrades \"no receiver\" to \"unknown\"" "$_cmd — got=${_got:-<empty>}"
         _term_n=-1; break
     fi
@@ -894,7 +902,7 @@ for _operand in "'x'" "'x'\"y\"" "x" "x\\<" "'x'\\ y" "x'<'"; do
     for _cmd in ". /dev/stdin" "source /dev/stdin"; do
         _prop_n=$((_prop_n + 1))
         _got=$(verdict "<<< $_operand $_cmd <<< '$HELPER'")
-        if [[ "$_got" != BLOCK_* ]]; then
+        if ! is_block "$_got"; then
             no "property: operand spelling never hides the command behind it" \
                 "<<< $_operand $_cmd — got=${_got:-<empty>}"
             _prop_n=-1
@@ -984,7 +992,7 @@ for _q in "'<<<'" "'>'" "'<'" "'>>'" "'2>'"; do
         # Invoked separately rather than inside the test, so the command's own return
         # value is not masked (shellcheck SC2312).
         _got="$(verdict "$_cmd")"
-        if [[ "$_got" == BLOCK_* ]]; then
+        if is_block "$_got"; then
             _prop_pass=$((_prop_pass + 1))
         else
             _prop_fail=$((_prop_fail + 1))
@@ -1187,6 +1195,218 @@ assert_block "\\b\\a\\s\\h <<< '$_glob'"             "...an all-backslash spelli
 assert_block "\$'\\x62'\$'\\x61'sh <<< '$_glob'"   "...two ANSI-C fragments"
 assert_block "\$'\\x73'\\h <<< '$_glob'"           "...and the short name"
 assert_ok    "cat <<< '$_glob'"                 "control: the same globbed payload into cat is data"
+
+# -- G. the value is in the command, so the scan has to look at the command ------------
+# A BYPASS of the unconditional guard, found in PR review and reproduced before fixing:
+# `P='<helper>'; sh <<< "$P"` returned OK while sh executed the helper. The probe received
+# only the segment holding `<<<`, and the note explaining why an unresolvable operand needs
+# no special case -- "the scan already covers the text it sits in" -- is true only WITHIN a
+# segment. It reasoned from the fixture below, where the name shares the segment.
+#
+# Two things were wrong and both had to change: a CONFIRMED receiver never widened at all
+# (only the no-receiver branch did), and `saw_exp` ignored a bare `$NAME`, which opens no
+# nesting level, so the commonest expansion bash has never counted as unresolvable.
+assert_block "P='$HELPER'; sh <<< \"\$P\"" \
+    "a value assigned in an earlier segment of the SAME command is in scope"
+assert_block "P='$HELPER'; sh <<< \"\${P}\"" \
+    "...in the braced spelling too"
+assert_block "P='$HELPER'; sh <<< \$P" \
+    "...and unquoted"
+assert_block "export P='$HELPER'; sh <<< \"\$P\"" \
+    "...through an export"
+assert_block "P='$HELPER'; bash -s <<< \"\$P\"" \
+    "...and into a different launcher spelling"
+assert_block "P='$HELPER'; . /dev/stdin <<< \"\$P\"" \
+    "...and into a command-position dot"
+assert_block "P='${STEM}slo[t].py'; sh <<< \"\$P\"" \
+    "...including a globbed name, which only the squeezing probe catches"
+# The residuals this deliberately does NOT close, both pinned so they stay visible.
+assert_ok    "sh <<< \"\$VAR\"" \
+    "residual kept: a value from OUTSIDE the command is still not statically visible"
+assert_ok    "A='${STEM}'; B='slot.py'; sh <<< \"\$A\$B\"" \
+    "residual kept: a name assembled across two variables (ADR 0006, allowed before this fix too)"
+# And a bare `$` counting as an expansion must not turn ordinary text into a block.
+assert_ok    "X=\$(date); sh <<< \"\$X\"" \
+    "an expansion naming no helper is still a read"
+assert_ok    "cat <<< 'cost\$P'" \
+    "a \$ inside single quotes is literal, not an expansion"
+assert_ok    "echo cost\$" \
+    "a trailing lone \$ is literal text, so it opens nothing"
+# And flagging it must not be mistaken for OPENING something. Every caller reads a nonzero
+# return from `_open` as "a level was pushed" -- the double-quote caller clears `in_d` on
+# it, trusting the entry to restore the state when the level closes. A bare `$NAME` pushes
+# no entry, so reporting consumption left the string unterminated and these began to block.
+# Caught in review; the fix is that the branch flags and returns 0.
+assert_ok    "cat \"\$X\" '<<<' $HELPER" \
+    "a bare expansion inside double quotes does not leave the string unterminated"
+assert_ok    "cat \"\${X}\" '<<<' $HELPER" \
+    "...and the braced spelling, which pushes a real level, still agrees with it"
+assert_ok    "cat \"a \$X b\"" \
+    "...nor does one in the middle of a quoted word"
+
+# -- H. the two spellings the normalization and the sibling transport hid --------------
+# `$IFS` was rewritten to a literal space before the scan ran, so no `$` survived and the
+# operand looked perfectly resolvable: `IFS='<helper>'; sh <<< "$IFS"` returned OK while
+# sh executed the payload. Found in review. See section J for how it is handled now -- the
+# expansion is SEPARATED rather than erased, so no flag travels beside the text. Two
+# intermediate designs (a command-wide flag, then a quote-blind substitution) were tried
+# and each over-blocked; both of their costs are pinned there.
+assert_block "IFS='$HELPER'; sh <<< \"\$IFS\"" \
+    "an IFS-carried payload is unresolvable"
+assert_block "IFS='$HELPER'; sh <<< \"\${IFS}\"" \
+    "...in the braced spelling too"
+assert_block "cat $HELPER; sh <<< 'echo \\\$IFS'" \
+    "...and an ESCAPED one blocks too: a backslash survives only ONE parse"
+assert_block "cat $HELPER; sh <<< 'echo \$IFS'" \
+    "...while single quotes protect it only from the OUTER shell, which is not enough"
+assert_ok    "rm\${IFS}.claude/review-marker" \
+    "...while the glued form the normalization exists for still reads as before"
+assert_ok    "IFS=x; sh <<< \"\$IFS\"" \
+    "...and an IFS naming no helper is still a read"
+
+# THE SAME DEFECT ONE TRANSPORT APART, fixed alongside it rather than left for the next
+# round. Review reported only the here-string spelling, but this file's own comment calls
+# the two "same reason, different transport": a producer's text is only its PIPELINE, so a
+# value assigned behind a `;` is in a different pipeline and never part of it.
+assert_block "P='$HELPER'; echo \"\$P\" | sh" \
+    "a piped producer widens on an unresolvable value, like the here-string side"
+assert_block "IFS='$HELPER'; echo \"\$IFS\" | sh" \
+    "...including the IFS spelling"
+assert_block "P='$HELPER'; printf %s \"\$P\" | sh" \
+    "...and through a different producer command"
+assert_ok    "X=\$(date); echo \"\$X\" | sh" \
+    "...while a piped expansion naming no helper is still a read"
+
+# -- I. quoting in the OUTER shell is not inertness in the INNER one -------------------
+# The payload a shell reads on stdin is SOURCE CODE that shell parses and expands again,
+# so what the outer shell leaves literal the inner one still expands. Every other expansion
+# test in this file is quote-aware, which is correct for the outer shell and wrong here.
+# Verified by RUNNING it: `export P='echo ...'; sh <<< '$P'` prints nothing from the outer
+# shell and executes the payload in the inner one. It classified OK until the payload test
+# went quote-blind.
+assert_block "export P='$HELPER'; sh <<< '\$P'" \
+    "a single-quoted expansion is inert outside and live inside the receiving shell"
+assert_block "export P='$HELPER'; sh <<< '\${P}'" \
+    "...braced, same answer"
+assert_block "export P='$HELPER'; sh <<< '\`\$P\`'" \
+    "...and a backtick payload, which the inner shell substitutes"
+assert_block "export P='$HELPER'; printf %s '\$P' | sh" \
+    "...and the same through the piped transport"
+assert_ok    "export P='echo hi'; sh <<< '\$P'" \
+    "...while an inner expansion naming no helper is still a read"
+assert_ok    "sh <<< 'echo \$HOME'" \
+    "...as is an ordinary variable in a payload that names nothing"
+assert_ok    "cat <<< '\$P'" \
+    "...and a non-executing receiver never re-parses its payload at all"
+
+# A CONTINUATION CAN BUILD THE EXPANSION. `_norm_for_scan` removes backslash-newline
+# BEFORE it handles `$IFS`, so `$I\<newline>FS` only BECOMES `$IFS` partway through
+# normalization -- invisible to anything searching the RAW command, which is how an early
+# version of this derived its answer. Keeping the expansion in the normalized text instead
+# of flagging it separately makes the ordering irrelevant: whatever normalization builds,
+# the later tests read.
+assert_block "IFS='$HELPER'; sh <<< \"\$I\\
+FS\"" \
+    "an IFS expansion assembled across a line continuation is still flagged"
+
+# -- J. normalization must not destroy the evidence it normalizes ---------------------
+# Twice on this branch a pre-tokenization rewrite erased the very thing a later test asks
+# about, and both times it read as OK. They are pinned together because they are one
+# lesson: a normalization may MOVE a token, never delete it.
+#
+# `$IFS` was replaced by a bare space, so `sh <<< "$IFS"` arrived as a payload of `" "`.
+# It is now SEPARATED instead (` $IFS `), which un-glues the token -- all the rewrite was
+# ever for -- and leaves it where it stands, so the flag is per-segment by construction.
+# A command-wide flag was tried first and over-blocked in the other direction, which the
+# third assertion here pins.
+assert_block "IFS='$HELPER'; sh <<< \"\$IFS\"" \
+    "an IFS-carried payload is unresolvable"
+assert_ok    "rm\${IFS}.claude/review-marker" \
+    "...while the glued form the rewrite exists for still tokenizes"
+assert_ok    "cat $HELPER; echo \"\$IFS\" >/dev/null; printf 'echo safe' | sh" \
+    "...and one unrelated IFS does not make every transport in the command unresolvable"
+
+# `$'` was stripped blindly to undo ANSI-C quoting, which also ate the dollar out of
+# `'$'P` -- three characters the shell CONCATENATES into `$P`, so the payload the inner
+# shell expands arrived with no `$` left to notice. The strip is now quote-aware.
+assert_block "export P='$HELPER'; sh <<< '\$'P" \
+    "a dollar concatenated out of quotes is still an expansion to the inner shell"
+assert_block "export P='$HELPER'; sh <<< \"\$\"P" \
+    "...in the double-quoted spelling too"
+assert_block "export P='$HELPER'; printf %s '\$'P | sh" \
+    "...and through the piped transport"
+assert_block "\$'\x62'\ash <<< '${STEM}slo[t].py'" \
+    "...while a real ANSI-C command word still decodes, so the strip still does its job"
+assert_ok    "cat <<< '\$'P" \
+    "...and a non-executing receiver still reads it as data"
+
+# -- K. one shell's quoting decides what the OTHER one receives -----------------------
+# The payload is source code for a second shell, so TWO levels of quoting apply and a
+# single-level answer is wrong in both directions. Quoting CONCATENATES, so `'$'P` is
+# three characters the outer shell joins into `$P` -- a regex over the raw text sees no
+# expansion. Quoting also PROTECTS, so `'\$P'` keeps its backslash and the inner shell
+# sees an escaped dollar -- a squeeze that deleted every backslash called that live.
+# Both spellings were wrong at some point on this branch, in opposite directions.
+#
+# The escape half was ALSO wrong, and section L records why: a backslash neutralizes an
+# expansion for exactly one parse, and a payload can be parsed more than once. So both
+# spellings below block. What `_outer_removal` still buys is the CONCATENATION half --
+# `'$'P` is three characters the outer shell joins into `$P`.
+assert_block "P='$HELPER'; sh <<< '\\\$P'" \
+    "an escaped dollar blocks as well, because the escape survives only one parse"
+assert_block "export P='$HELPER'; sh <<< \"\\\$P\"" \
+    "...as does the double-quoted spelling, which the outer shell unescapes outright"
+assert_block "P='$HELPER'; printf %s '\\\$P' | sh" \
+    "...and identically through the piped transport"
+
+# WIDENING IS PER-SEGMENT. `_cmd_expansion` answers for the whole command, which is right
+# where nothing identifies a segment to blame and wrong for a CONFIRMED receiver: an
+# unrelated expansion elsewhere made one widen and turned a benign helper read into a
+# block. The segment holding the here-string is what decides whether ITS payload is known.
+assert_ok    "cat '$HELPER'; echo \"\$X\" >/dev/null; sh <<< 'echo safe'" \
+    "an unrelated expansion elsewhere does not widen a segment whose payload is literal"
+assert_block "cat '$HELPER'; echo \"\$X\" >/dev/null; sh <<< \"\$X\"" \
+    "...but the segment whose OWN payload is unresolvable still widens"
+
+# -- L. the inner-shell test is a TERMINATOR, not a model -----------------------------
+# Modelling the receiving shell's quoting is a ladder. Single quotes were handled, then
+# a literal quote inside DOUBLE quotes turned out to make the text between them look
+# inert and skip a live dollar -- a fail-open, found in review. Each rung is discovered
+# only after the one before it ships, which is the same unbounded problem this file
+# already refused once in `_herestring_shell_payloads` and answered the same way: keep
+# the precision on the BLOCK side and stop trusting the ALLOW side.
+#
+# So only the BACKSLASH is honoured -- the one construct that makes a dollar inert
+# whatever encloses it -- and the inner shell's own quotes are ignored entirely. A
+# dollar inside inner single quotes really is literal, so calling it live is an
+# OVER-BLOCK, the direction this module accepts. The pair below IS that trade, written
+# as a test rather than as prose, so neither half can be lost quietly.
+assert_block "P='$HELPER'; sh <<< '\\\$P'" \
+    "nothing about a payload's escaping is trusted, so an escaped dollar blocks"
+# THE CASE THAT SETTLED IT. A backslash is not a property of the text, it is a
+# property of ONE parse -- and this payload is parsed twice. The first shell removes
+# the backslash from its `-c` operand, and the shell it then starts expands `P` and
+# runs the helper. There is no depth at which that stops, which is why nothing about a
+# payload's escaping is trusted rather than trusted one level deeper.
+assert_block "export P='$HELPER'; sh <<< 'sh -c \\\$P'" \
+    "an escape survives one parse, and a payload can be parsed more than once"
+
+# THE CONTRACT THIS MUST NOT BREAK. A non-executing receiver never re-parses anything,
+# so it is never probed -- an earlier revision wired bare `$NAME` into the scan's
+# structured-expansion flag, which drives the no-receiver terminator, and this began to
+# block. The payload question is asked of the payload, not of the whole-command scan.
+assert_ok    "P='$HELPER'; cat <<< \"\$P\"" \
+    "cat executes nothing, so an unresolvable payload into it is still data"
+assert_block "cat $HELPER; sh <<< \"echo '\\\$P'\"" \
+    "...while a dollar in INNER single quotes is called live (the accepted over-block)"
+
+# RESIDUAL, pre-existing and out of scope: a variable in COMMAND position. Verified OK
+# on this branch's base commit too, so it is ADR 0006's runtime-assembly limitation and
+# not something these transports introduced -- #643 is about what a shell reads on
+# STDIN, and refusing this would mean refusing every command with a variable as its
+# command word.
+assert_ok    "export P='$HELPER'; \$P" \
+    "residual: a helper named through a command-word variable is ADR 0006, not this gate"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

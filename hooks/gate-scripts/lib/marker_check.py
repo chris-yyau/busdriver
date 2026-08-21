@@ -281,6 +281,12 @@ def _dequote(w):
 
 
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# What may FOLLOW a `$` and still be an expansion: a name character, or one of bash's
+# special parameters (`$?`, `$@`, `$*`, `$#`, `$!`, `$$`, `$-`, `$0`-`$9`). A lone trailing
+# `$` is literal text, so a following character is required.
+_PARAM_START = frozenset("abcdefghijklmnopqrstuvwxyz"
+                         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                         "0123456789_?@*#!$-")
 
 
 def _reserved_word(w, raw=None):
@@ -803,6 +809,63 @@ def _defuse_comments(s):
     return "".join(out)
 
 
+# Named, because two places must agree on it: `_norm_for_scan` REMOVES this expansion, and
+# anything asking "was something unresolvable here" has to know it was removed. A second
+# literal copy is how the two would drift apart.
+_IFS_RE = re.compile(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])")
+
+
+def _quote_aware_rewrites(text):
+    # Two rewrites that must both respect quoting, done in ONE pass because they need the
+    # same state and a second scanner is a second place to get it wrong.
+    #
+    # 1. Drop the `$` of `$'...'` and `$"..."`, but ONLY where that `$` is not itself
+    #    quoted.
+    # A blind `.replace("$'", "'")` also ate the dollar out of `'$'P`, which is three
+    # characters the shell CONCATENATES into the word `$P` -- so a payload the inner shell
+    # would expand arrived here with no `$` left to notice, and
+    # `export P='<helper>'; sh <<< '$'P` classified OK.
+    #
+    #    Fixed here rather than by flagging the pattern command-wide, which is the shape
+    #    that had just been taken out for `$IFS`: one occurrence anywhere would again make
+    #    every transport in the command unresolvable and over-block unrelated reads.
+    #
+    # 2. SEPARATE `$IFS`/`${IFS}` -- but only where it is live, meaning unquoted and
+    #    unescaped. A blind substitution also rewrote a PROTECTED one: `sh <<< 'echo
+    #    \$IFS'` became `echo \ $IFS `, which the expansion detector then read as live and
+    #    blocked. Inside quotes nothing is separated and nothing needs to be: `"${IFS}"`
+    #    does not word-split, so there is no glued token to break apart, and the expansion
+    #    is still standing for the detector to see.
+    out, i, n = [], 0, len(text)
+    in_s = in_d = False
+    while i < n:
+        c = text[i]
+        if not in_s and not in_d and c == chr(36) and i + 1 < n and text[i + 1] in (_SQ, _DQ):
+            i += 1                      # drop the dollar; the quote below opens the string
+            continue
+        if not in_s and not in_d:
+            _m = _IFS_RE.match(text, i)
+            if _m:
+                out.append(" " + chr(36) + "IFS ")
+                i = _m.end()
+                continue
+        if c == chr(92) and not in_s:
+            # A backslash quotes the next character, `$` included, so `\$'x'` is a literal
+            # dollar beside an ordinary quoted string -- not an ANSI-C opener.
+            out.append(c)
+            if i + 1 < n:
+                out.append(text[i + 1])
+            i += 2
+            continue
+        if c == _SQ and not in_d:
+            in_s = not in_s
+        elif c == _DQ and not in_s:
+            in_d = not in_d
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _norm_for_scan(cmd):
     # Pre-tokenization normalization shared by the marker scan and the helper guard, so
     # the two cannot disagree on what a token is.
@@ -818,11 +881,14 @@ def _norm_for_scan(cmd):
     # strip that prefix and let the quote tokenize to the literal path. (Escape
     # SEQUENCES such as \x6c remain undecodable by shlex and stay out of scope per the
     # residual note above.)
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
+    norm = _quote_aware_rewrites(norm)
     # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
     # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
     # operands are recognized rather than glued into one token.
-    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    # `$IFS` is SEPARATED rather than erased, and quote-awarely -- both done in the pass
+    # above. Erasing it destroyed the evidence that anything unresolvable had been there,
+    # so a payload of `"$IFS"` looked like a payload of `" "`.
+    return norm
 
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
@@ -1845,6 +1911,118 @@ def _stage_words(toks):
                 yield w
 
 
+def _outer_removal(text):
+    # The bytes a receiving shell actually GETS: the outer shell's quote removal, applied.
+    # This is the half a plain "strip every quote and backslash" squeeze got wrong in both
+    # directions -- it deleted backslashes that single quotes preserve, and it joined
+    # `'$'P` correctly only by accident.
+    out, i, n = [], 0, len(text)
+    in_s = in_d = False
+    while i < n:
+        c = text[i]
+        if in_s:
+            # Single quotes preserve EVERYTHING, backslash included. That is why `'\$P'`
+            # reaches the inner shell as an escaped dollar and expands nothing there.
+            if c == _SQ:
+                in_s = False
+            else:
+                out.append(c)
+            i += 1
+        elif c == chr(92):
+            # Inside double quotes a backslash is special only before these four; outside
+            # quotes it always quotes the next character.
+            if in_d and (i + 1 >= n or text[i + 1] not in (chr(36), _DQ, chr(92), _BT)):
+                out.append(c)
+                i += 1
+            elif i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+            else:
+                i += 1
+        elif c == _SQ and not in_d:
+            in_s = True
+            i += 1
+        elif c == _DQ and not in_s:
+            in_d = not in_d
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _inner_expands(text):
+    # Given what the inner shell RECEIVES, could it expand anything?
+    #
+    # A TERMINATOR, not a model, and it took three attempts to find the only version that
+    # actually terminates. Every rung of the ladder was a fail-open found after the one
+    # before it shipped: single quotes were modelled, then a literal quote inside DOUBLE
+    # quotes made `"'" ; $P ; echo "'"` look inert and skipped a live `$P`; then only the
+    # BACKSLASH was honoured, and that broke too, because a backslash neutralizes an
+    # expansion for exactly ONE parse and a payload can be parsed more than once --
+    # `sh <<< 'sh -c \$P'` hands the inner shell `sh -c $P`, whose own nested shell
+    # expands it and runs the helper.
+    #
+    # There is no depth at which this stops, so nothing about the payload's quoting or
+    # escaping is trusted at all: a `$` that could begin an expansion, or a backtick, is
+    # LIVE. That is the answer this file already reached for the same shape in
+    # `_herestring_shell_payloads` -- keep the precision on the BLOCK side, stop trusting
+    # the ALLOW side -- and unlike the three attempts above it cannot acquire a new rung,
+    # because no quoting construct anywhere can turn "there is a dollar here" into "there
+    # is not".
+    #
+    # The cost is an OVER-BLOCK, the direction this module accepts, and it needs BOTH
+    # halves: a payload carrying a `$` or a backtick AND a command naming a mutating helper
+    # somewhere in its text. Review flagged the escaped spelling as a false positive while
+    # it was still believed inert; it is knowingly kept, because the alternative is the
+    # unbounded ladder above.
+    #
+    # `_outer_removal` still runs first, and still earns its keep: quoting CONCATENATES, so
+    # `'$'P` is three characters the outer shell joins into `$P` that no scan of the raw
+    # text would see.
+    inner = _outer_removal(text)
+    i, n = 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c == _BT:
+            return True
+        if c == chr(36) and i + 1 < n and (inner[i + 1] in _PARAM_START
+                                           or inner[i + 1] in "{("):
+            return True
+        i += 1
+    return False
+
+
+# NOT WIRED INTO `saw_exp`. A bare `$NAME` was briefly flagged there so that an
+# unresolvable payload would be noticed, and it broke a documented contract: `saw_exp`
+# drives the no-receiver TERMINATOR, whose reason is that the scan may mis-decide where a
+# structured expansion ENDS and let a word escape it. A bare parameter opens no nesting
+# level, so there is no boundary to get wrong -- and feeding it in made
+# `P='<helper>'; cat <<< "$P"` block, although `cat` executes nothing and the file promises
+# a non-executing receiver is never probed. The payload question is asked directly below
+# instead, where it belongs.
+def _text_unresolvable(text):
+    # Does this text contain anything whose VALUE is not statically visible? Used by both
+    # stdin transports to decide when a per-stage or per-segment view is too narrow to
+    # answer with, so the search has to widen to the whole command.
+    # TWO-LEVEL, unlike every other expansion test in this file, and deliberately so.
+    # Everywhere else the question is what the OUTER shell expands. Here the text becomes
+    # the PROGRAM a second shell parses, so the outer shell's quoting decides only what
+    # that shell RECEIVES, and the inner shell's quoting decides what it then expands.
+    # Verified by running it: `export P='<helper>'; sh <<< '$P'` prints nothing from the
+    # outer shell and executes the helper in the inner one, and it classified OK.
+    # TWO STAGES, because one is not enough in either direction. Quoting CONCATENATES, so
+    # `'$'P` is three characters the outer shell joins into `$P` and a regex over the raw
+    # text matches nothing. But quoting also PROTECTS: `'\$P'` keeps its backslash, so the
+    # inner shell sees an escaped dollar and expands nothing -- and a squeeze that deleted
+    # every backslash called that live and blocked it. So apply the outer shell's quote
+    # removal to get what the receiver is handed, then ask whether THAT expands.
+    if _inner_expands(text):
+        return True
+    _r = _shell_pieces(text)
+    return _r is None or _r[1]
+
+
 def _piped_shell_producers(pairs):
     # Text feeding each pipeline stage that might be a shell reading its PROGRAM from
     # stdin. `bash -c "<helper> ..."` was blocked while `printf "<helper> ..." | bash` was
@@ -2140,7 +2318,10 @@ def _shell_pieces(text):
 
     def _open(at, quoted):
         # Does an expansion START here? Returns the characters consumed, 0 if not, and
-        # pushes the level it opens. ONE routine, called from the ordinary state, from
+        # pushes the level it opens. A form that expands but nests NOTHING (a bare `$NAME`)
+        # sets the flag and returns 0: callers read nonzero as "a level was opened" and
+        # adjust quote state on it, so reporting consumption without an entry to close
+        # corrupts the scan. ONE routine, called from the ordinary state, from
         # inside double quotes, and from inside another expansion -- the three had separate
         # copies and the copies disagreed: only the outer one knew that `$((` opens TWICE,
         # so an arithmetic expansion NESTED in a command substitution pushed one level and
@@ -2612,6 +2793,10 @@ def _herestring_shell_payloads(pairs):
             _t = chr(10).join(_s2 for _o2, _s2 in pairs)
             _r0 = _shell_pieces(_t)
             _lazy["t"] = _t
+            # No IFS special case is needed HERE any more: `_norm_for_scan` now separates
+            # that expansion rather than erasing it, so `$IFS` is still standing in the
+            # text this scan reads and is flagged like any other expansion. While it was
+            # erased, `IFS='<helper>'; sh <<< "$IFS"` read as a payload of `" "`.
             _lazy["e"] = True if _r0 is None else _r0[1]
         return _lazy["t"], _lazy["e"]
     for _op, seg in pairs:
@@ -2756,6 +2941,33 @@ def _herestring_shell_payloads(pairs):
             break
         if _herestring_receiver(cw_words + _extras, " ".join(cw_words + _extras),
                                 _cmd_candidates(cw_words, _dwords, _raws)):
+            # A CONFIRMED receiver widens on an expansion too, exactly as the `else` branch
+            # below does. The note further down -- that an unresolvable operand needs no
+            # special case because "the scan already covers the text it sits in" -- is true
+            # only WITHIN a segment. It reasoned from `sh <<< "$VAR" # <helper>`, where the
+            # name shares the segment, and missed that an earlier segment of the SAME
+            # command can hold the value: `P='<helper>'; sh <<< "$P"` probed only
+            # `sh <<< "$P"`, found no name, and returned OK while sh executed the helper.
+            # That is a bypass of an UNCONDITIONAL guard, the same class as #643 itself.
+            #
+            # The documented `-` / /dev/fd/N residual is untouched and still correct: what
+            # a variable holds from OUTSIDE the command is not statically visible, so a
+            # bare `sh <<< "$VAR"` naming the helper nowhere still allows. What changes is
+            # only that the search for the name now covers the whole command it was
+            # assigned in. Once, then stop, for the quadratic reason given above.
+            # THIS SEGMENT, not `_e`. `_cmd_expansion` answers for the WHOLE command, which
+            # is right for the no-receiver branch below (nothing there identifies a segment
+            # to blame) and wrong here: an unrelated `echo "$X"` elsewhere made a confirmed
+            # receiver widen and turned a benign `cat <helper>` into a block. The segment
+            # holding the here-string is exactly what decides whether ITS payload is known.
+            #
+            # And the question is what the RECEIVING shell gets. This receiver executes the
+            # payload, so the operand is source code a second shell parses and expands
+            # again -- outer quoting says nothing about it.
+            _t, _e = _cmd_expansion()
+            if _text_unresolvable(seg):
+                out.append(_t)
+                break
             out.append(seg)
         else:
             _t, _e = _cmd_expansion()
@@ -2966,8 +3178,27 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             _hit = _abandoned_scan_probe(_prod)
             if _hit:
                 return _hit
+            # SAME WIDENING AS THE HERE-STRING SIDE, and for the same reason: a producer
+            # whose text is unresolvable cannot be answered from the PIPELINE alone,
+            # because the value can be assigned in an earlier pipeline of the same command.
+            # `P='<helper>'; echo "$P" | sh` executes the helper, and the producer text for
+            # that pipeline is only `echo "$P"` -- the assignment is behind a `;`, so it is
+            # a different pipeline and never part of the producer.
+            #
+            # Fixed alongside the here-string spelling deliberately. Review found only that
+            # one, but the two are the same defect one transport apart -- this file's own
+            # comment calls them "same reason, different transport" -- and closing a single
+            # spelling of a class it can already demonstrate is the mistake this module
+            # documents elsewhere. Once, then stop, for the quadratic reason given below.
+            if _text_unresolvable(_prod):
+                _hit = _abandoned_scan_probe(cmd)
+                if _hit:
+                    return _hit
+                break
         # Same reason as the producer loop above, different transport: a here-string
         # operand feeding a shell IS the program (#643).
+        # The PRE-normalization text is what still says whether an IFS expansion was
+        # there; `_pairs` is built from the normalized copy, where it is already a space.
         for _hs in _herestring_shell_payloads(_pairs):
             # `_hs` is the whole SEGMENT, not a reconstructed operand -- see the
             # generator. An unresolvable operand (`sh <<< "$VAR"`) needs no special case

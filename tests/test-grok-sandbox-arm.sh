@@ -80,6 +80,21 @@ FAILED=0
 pass() { printf 'ok   — %s\n' "$1"; }
 fail() { printf 'FAIL — %s\n' "$1"; FAILED=1; }
 
+# `set -uo pipefail` (above) turns `... | grep -q PAT` into a trap, and this file
+# paid for it in CI on PR #704: `grep -q` exits the instant it matches, the
+# upstream `sed`/`grep -v` is then killed mid-write ("/usr/bin/grep: write error:
+# Broken pipe"), and pipefail reports the WHOLE pipeline as failed — so a
+# SUCCESSFUL match is scored as FAIL. It is a race on how much the upstream has
+# already flushed, which is why GNU grep in CI failed two assertions that BSD
+# grep passed locally every single run. `grep -c` never exits early, so nothing
+# upstream is ever cut off and the pipeline status is honest.
+# Usage: <producer> | has_match [grep-opts] PATTERN   → 0 iff at least one match.
+has_match() {
+  local _n
+  _n=$(/usr/bin/grep -c "$@" || true)
+  [[ "${_n:-0}" -ge 1 ]]
+}
+
 # Slice each file down to the grok COMMAND ITSELF — not the whole case arm.
 # Two ways an arm-wide slice lies about the argv, both of them found the hard
 # way: the arm's comments name flags it deliberately does NOT pass, and its
@@ -828,7 +843,7 @@ EXAMPLE="$REPO_ROOT/docs/examples/grok-sandbox.toml"
 # The reason helper must TERMINATE. It was briefly self-recursive here (a bulk
 # edit rewrote its own `exit 1` into a `why` call), which printed WHY= forever
 # instead of refusing — a hang where a refusal belongs.
-if /usr/bin/grep -A2 '^why() {' "$CHILD" | /usr/bin/grep -q '^[[:space:]]*why '; then
+if /usr/bin/grep -A2 '^why() {' "$CHILD" | has_match '^[[:space:]]*why '; then
   fail "why() calls itself — a refusal would loop instead of exiting"
 else
   pass "why() exits rather than recursing"
@@ -978,7 +993,7 @@ fi
 # heredoc-inside-$() as a syntax error hundreds of lines away, at an unrelated
 # `case` arm, and `bash -n` under a Homebrew bash 5 said nothing. That is the
 # #595 silent-fail-open shape, so both files are parsed with the real 3.2.
-if [[ -x /bin/bash ]] && /bin/bash --version 2>/dev/null | /usr/bin/grep -q 'version 3\.2'; then
+if [[ -x /bin/bash ]] && /bin/bash --version 2>/dev/null | has_match 'version 3\.2'; then
   for _f in "$RESOLVE" "$DISPATCH" "$CHILD"; do
     if /bin/bash -n "$_f" 2>/dev/null; then
       pass "$(basename "$_f") parses under macOS /bin/bash 3.2"
@@ -1093,13 +1108,13 @@ fi
 # The fix is delegation, so what this pins is the delegation itself: there is no
 # second candidate list left to drift, which is the point.
 _avail_body="$(/usr/bin/sed -n '/^_grok_available()/,/^}/p' "$RESOLVE")"
-if /usr/bin/printf '%s' "$_avail_body" | /usr/bin/grep -q 'grok_sandbox_preflight'; then
+if /usr/bin/printf '%s' "$_avail_body" | has_match 'grok_sandbox_preflight'; then
   pass "grok availability delegates to the preflight, so routing and execution agree"
 else
   fail "grok availability does not consult grok_sandbox_preflight -- a host with the binary but no sandbox profile would route to grok, be refused at dispatch, and lose its configured droid fallback"
 fi
 # ...and it must not have grown a private copy of the candidate list again.
-if /usr/bin/printf '%s' "$_avail_body" | /usr/bin/grep -q '\.grok/bin'; then
+if /usr/bin/printf '%s' "$_avail_body" | has_match '\.grok/bin'; then
   fail "the availability probe has re-acquired its own candidate directory list -- that duplication is exactly what drifted out of step with the preflight"
 else
   pass "the availability probe keeps no candidate list of its own"
@@ -1113,7 +1128,7 @@ fi
 # CodeRabbit named the wrapper, whose 37-line body contains no `missing:` at all,
 # so scoping there would have turned a real assertion into a permanent FAIL.
 if /usr/bin/sed -n '/^_resolve_role_cli_impl()/,/^}/p' "$RESOLVE" \
-     | /usr/bin/grep -v '^[[:space:]]*#' | /usr/bin/grep -q 'missing:'; then
+     | /usr/bin/grep -v '^[[:space:]]*#' | has_match 'missing:'; then
   pass "a sole-grok route still reports missing:<cli> rather than resolving to nothing"
 else
   fail "_resolve_role_cli_impl no longer emits a missing:<cli> sentinel -- a broken grok profile on a non-fallback route would resolve silently"
@@ -1128,7 +1143,7 @@ fi
 # This covers the DISPATCH path only — blueprint-review reaches droid through
 # its own `_bp_droid_rescue` and never consults this predicate; that half is
 # asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | /usr/bin/grep -q '"\$primary_cli" == "grok"'; then
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | has_match '"\$primary_cli" == "grok"'; then
   pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
 else
   fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"
@@ -1137,7 +1152,7 @@ fi
 # message would fail OPEN into that same forward.
 if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
      | /usr/bin/grep -v '^[[:space:]]*#' \
-     | /usr/bin/grep -qiE 'refus|sandbox|protections missing'; then
+     | has_match -iE 'refus|sandbox|protections missing'; then
   fail "should_escalate_to_droid appears to detect grok's failure TEXT — any message it does not anticipate fails open; exclude by CLI name instead"
 else
   pass "the grok exclusion keys on the CLI name, not on matching a failure message"
@@ -1153,7 +1168,7 @@ fi
 # defaults to $slot when the caller passes only two args, so existing callers
 # are unaffected.
 BPLOOP="$REPO_ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | /usr/bin/grep -q '"\$cli" == "grok"'; then
+if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | has_match '"\$cli" == "grok"'; then
   pass "_bp_droid_rescue refuses the resolved grok CLI by name, so blueprint cannot rescue a failed grok via droid regardless of which slot it ran in"
 else
   fail "_bp_droid_rescue does not exclude grok — blueprint's post-run loop escalates a runtime-failed grok slot to droid, forwarding \$FULL_PROMPT and the repo content quoted in it to a different provider"
@@ -1161,7 +1176,7 @@ fi
 # ...by NAME there too: same fail-open hazard if it matched grok's failure text.
 if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" \
      | /usr/bin/grep -v '^[[:space:]]*#' \
-     | /usr/bin/grep -qiE 'protections missing|unappliable'; then
+     | has_match -iE 'protections missing|unappliable'; then
   fail "_bp_droid_rescue appears to detect grok's failure TEXT — an unanticipated message fails open; exclude by resolved CLI name instead"
 else
   pass "the blueprint grok exclusion keys on the resolved CLI name, not on matching a failure message"

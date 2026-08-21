@@ -554,8 +554,13 @@ assert_block "env 'b''a''s''h' <<< '$HELPER'"  "fragmented shell name after a wr
 #   it, which is why the cap is gone rather than larger — 40 is here to say so.
 # Built with a loop rather than `printf ... $(seq ...)`: the nested substitution masks
 # seq's return value (SC2312), and this file is shellcheck-clean by policy.
+# BRACE EXPANSION, not `$(seq ...)`, for the range as well. `seq` is an external command,
+# so on a host without it the substitution is empty, the loop body never runs, and the
+# padding these fixtures are ABOUT silently disappears -- leaving them to pass in
+# milliseconds while measuring nothing. Brace expansion is bash syntax and cannot go
+# missing. Same reason as `assert_built` above; this is the other half of it.
 _pad12=""; _pad40=""
-for _n in $(seq 1 40); do
+for _n in {1..40}; do
     _pad40="$_pad40''"
     if [[ $_n -le 12 ]]; then _pad12="$_pad12''"; fi
 done
@@ -590,7 +595,8 @@ assert_ok "cat ba s h <<< '$HELPER'" \
 #     segment, which is quadratic: measured at 8.88s before the answer was widened once
 #     and memoized.
 _big=""
-for _i in $(seq 1 400); do _big="$_big; if true; then cat; fi <<< 'x'"; done
+for _i in {1..400}; do _big="$_big; if true; then cat; fi <<< 'x'"; done
+assert_built "$_big" 12000 "the disjoint benchmark really built its input"
 # `cat`, NOT `sh`: the positive path stops at the first receiver it finds, so a benchmark
 # built on `sh` exercises one scan and misses the slow path entirely. The NEGATIVE path is
 # the quadratic one — it was ~23s before the compound answer was memoized.
@@ -609,7 +615,8 @@ fi
 #     under it, against 0.07s for the whole-command answer that shipped. The bound is a
 #     regression guard on that revert, not a restatement of the disjoint case above.
 _nest="cat"
-for _i in $(seq 1 300); do _nest="if true; then $_nest; fi <<< 'x'"; done
+for _i in {1..300}; do _nest="if true; then $_nest; fi <<< 'x'"; done
+assert_built "$_nest" 7000 "the nested benchmark really built its input"
 assert_parses "$_nest" "the nested benchmark is valid shell"
 _t0=$(_now_ms)
 _got=$(verdict "$_nest")
@@ -1548,5 +1555,26 @@ else
     no "9000 frames x 9000 literal <( classify OK in under 1s" \
         "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
 fi
+# -- P. a dynamic shell inside a function -------------------------------------------
+# Raised in review as a fail-open: `R=sh; f(){ $R; }; f <<< '<helper>'` really does
+# execute the payload -- verified by running it -- and the here-string segment shows
+# only the harmless-looking receiver `f`, while a bare `$R` is not a STRUCTURED
+# expansion so the no-receiver terminator's flag stays false.
+#
+# The mechanism is described correctly and the conclusion still does not follow: the
+# interpreter is NAMED in the same command, so the scan finds it wherever it sits.
+# Eight spellings were measured, including a launcher body and a `${R:-sh}` default,
+# and all blocked. This is the same shape as section N -- a receiver that hides what it
+# runs cannot hide where the name is WRITTEN.
+assert_block "R=sh; f(){ \$R; }; f <<< '${STEM}slo[t].py'" \
+    "a dynamic shell inside a function is still named in the command"
+assert_block "R=unshare; f(){ \$R; }; f <<< '${STEM}slo[t].py'" \
+    "...including a launcher, which only the command-position test would catch"
+assert_block "R=sh; f(){ exec \$R; }; f <<< '${STEM}slo[t].py'" \
+    "...behind an exec"
+assert_block "R=sh; o(){ i(){ \$R; }; i; }; o <<< '${STEM}slo[t].py'" \
+    "...and one function deeper"
+assert_block "f(){ \${R:-sh}; }; f <<< '${STEM}slo[t].py'" \
+    "...and named only as an expansion default"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -1409,11 +1409,11 @@ assert_ok    "cat <<< '\$'P" \
 # expansion for exactly one parse, and a payload can be parsed more than once. So both
 # spellings below block. What `_outer_removal` still buys is the CONCATENATION half --
 # `'$'P` is three characters the outer shell joins into `$P`.
-assert_block "P='$HELPER'; sh <<< '\\\$P'" \
+assert_block "export P='$HELPER'; sh <<< '\\\$P'" \
     "an escaped dollar blocks as well, because the escape survives only one parse"
 assert_block "export P='$HELPER'; sh <<< \"\\\$P\"" \
     "...as does the double-quoted spelling, which the outer shell unescapes outright"
-assert_block "P='$HELPER'; printf %s '\\\$P' | sh" \
+assert_block "export P='$HELPER'; printf %s '\\\$P' | sh" \
     "...and identically through the piped transport"
 
 # WIDENING IS PER-SEGMENT. `_cmd_expansion` answers for the whole command, which is right
@@ -1438,7 +1438,7 @@ assert_block "cat '$HELPER'; echo \"\$X\" >/dev/null; sh <<< \"\$X\"" \
 # dollar inside inner single quotes really is literal, so calling it live is an
 # OVER-BLOCK, the direction this module accepts. The pair below IS that trade, written
 # as a test rather than as prose, so neither half can be lost quietly.
-assert_block "P='$HELPER'; sh <<< '\\\$P'" \
+assert_block "export P='$HELPER'; sh <<< '\\\$P'" \
     "nothing about a payload's escaping is trusted, so an escaped dollar blocks"
 # THE CASE THAT SETTLED IT. A backslash is not a property of the text, it is a
 # property of ONE parse -- and this payload is parsed twice. The first shell removes
@@ -1742,5 +1742,34 @@ assert_block "\$\"bash\" <<< '$HELPER'" \
     "...and this is what the drop buys: a locale-quoted command word still resolves"
 assert_block "\$'bash' <<< '$HELPER'" \
     "...as does the ANSI-C spelling the drop was written for"
+# WHICH SHELL EXPANDS IT DECIDES WHETHER THE FIXTURE NEEDS `export`, and getting that
+# wrong makes an assertion pass without reproducing anything -- raised in review against
+# this section. A double-quoted `"$P"` is substituted by the OUTER shell, so a plain
+# `P=` is faithful. A single-quoted `'$P'`, an escaped `'\$P'`, and an ANSI-C `$'\x24P'`
+# all reach the receiver with the dollar intact, so it is the INNER shell that expands
+# them -- and an unexported variable is invisible there, leaving the payload empty. Those
+# spellings use `export`; the outer-expanded ones deliberately do not.
+# -- T. an ANSI-C encoded expansion character -----------------------------------------
+# Raised in review as a fail-open: normalization drops the `$` that identifies ANSI-C
+# quoting, so `$'\x24P'` was said to reach the payload test as literal `\x24P` with no
+# dollar in it, while the outer shell decodes it to `$P` before the receiving shell
+# parses it.
+#
+# MEASURED, and it does not bypass: `_shell_variants` carries a DECODED copy of the
+# text alongside the raw one, and the scan is additive over all of them, so the decoded
+# `$P` is seen even though the segment's own spelling hides it. Hex, octal, the piped
+# transport, and the encoded TILDE all block once a helper is named -- the last of
+# those being a spelling the review did not raise, checked because the tilde rule is
+# newer than the decode and had not been crossed with it.
+assert_block "export P='$HELPER'; sh <<< $'\\x24P'" \
+    "an ANSI-C encoded dollar is decoded before the payload test sees it"
+assert_block "export P='$HELPER'; sh <<< $'\\044P'" \
+    "...in the octal spelling too"
+assert_block "export P='$HELPER'; printf %s $'\\x24P' | sh" \
+    "...and through the piped transport"
+assert_block "HOME='$HELPER'; sh <<< $'\\x7e'" \
+    "...and an encoded TILDE, crossing the newer rule with the decode"
+assert_ok    "HOME=/bin/bash; sh <<< $'\\x7e'" \
+    "...while the same spelling naming no helper anywhere is still a read"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

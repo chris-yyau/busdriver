@@ -1439,5 +1439,32 @@ IFS='$HELPER'; sh <<< \"\$IFS\"" \
 assert_ok    "# preface
 cat <<< '$HELPER'" \
     "...while a commented preface still leaves an ordinary read alone"
+# -- N. a function can shadow the receiver ------------------------------------------
+# Raised in review as a fail-open: `cat(){ sh; }; cat <<< '<helper>'` really does
+# execute the payload -- verified by running it -- because the function body inherits
+# the here-string, and `cat` is one of the names this file treats as data-only.
+#
+# MEASURED, and it does not bypass: the shell that runs the payload is written in the
+# SAME command, so the scan finds it wherever the definition sits. Nine spellings were
+# tried, including bodies using a LAUNCHER -- which is the interesting case, since
+# launchers are deliberately absent from `_SHELL_NAMES` and only the command-position
+# test catches them. All blocked. Pinned so that stays true.
+assert_block "cat(){ sh; }; cat <<< '${STEM}slo[t].py'" \
+    "a function body shadowing a data-only receiver is still found"
+assert_block "cat(){ unshare; }; cat <<< '${STEM}slo[t].py'" \
+    "...including a LAUNCHER body, which no name list would catch"
+assert_block "function cat { unshare; }; cat <<< '${STEM}slo[t].py'" \
+    "...in the keyword spelling of a definition"
+assert_block "runit(){ unshare; }; runit <<< '${STEM}slo[t].py'" \
+    "...and under a name no list could have known in advance"
+assert_block "outer(){ inner(){ unshare; }; inner; }; outer <<< '${STEM}slo[t].py'" \
+    "...and nested one level deeper"
+# The residual is the SAME one the plain receiver has, which is what shows the function
+# is not what carries it: a value from outside the command is invisible either way, and
+# assigning it inside the command blocks with the definition present.
+assert_ok    "cat(){ unshare; }; cat <<< \"\$P\"" \
+    "residual, unchanged by the definition: a value from outside is not visible"
+assert_block "P='${STEM}slo[t].py'; cat(){ unshare; }; cat <<< \"\$P\"" \
+    "...and assigning it IN the command blocks, definition and all"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

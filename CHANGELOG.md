@@ -1,3 +1,10 @@
+## [1.109.14](https://github.com/chris-yyau/busdriver/compare/v1.109.13...v1.109.14) (2026-08-21)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** run grok under a fail-closed custom sandbox profile ([#704](https://github.com/chris-yyau/busdriver/issues/704)) ([95f44dc](https://github.com/chris-yyau/busdriver/commit/95f44dc20d3f684846b01fc1285c429fb7dafcd8)), closes [#595](https://github.com/chris-yyau/busdriver/issues/595)
+
 ## [1.109.13](https://github.com/chris-yyau/busdriver/compare/v1.109.12...v1.109.13) (2026-08-21)
 
 

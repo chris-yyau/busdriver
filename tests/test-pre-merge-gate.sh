@@ -152,8 +152,14 @@ PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
 [ -f "$PENDING_MARKER" ]  && HAD_PENDING=true  && PREV_PENDING=$(cat "$PENDING_MARKER")
 [ -f "$BYPASS_PENDING" ]  && HAD_BYPASS=true   && PREV_BYPASS=$(cat "$BYPASS_PENDING")
 
+# The #667 assertions below run the gate against an ISOLATED state dir
+# (BUSDRIVER_STATE_DIR), so they never read or append to the operator real audit
+# log. Restoring a snapshot of the real log was tried and rejected: the restore
+# would clobber any event another session appended while the suite was running.
+ISO_STATE=".claude-test-667-$$"
+
 cleanup() {
-    rm -rf "$GH_STUBDIR" 2>/dev/null || true
+    rm -rf "$GH_STUBDIR" "$ISO_STATE" 2>/dev/null || true
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
@@ -184,6 +190,66 @@ run_gate_test "blocks gh pr merge without marker" "block" "$MERGE_INPUT"
 write_marker 31
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
+
+# ── 2a. #667: an AUTHORIZED merge must leave a post-hoc record ──────────
+# The whole point: a merge the gate authorized and a merge the gate never saw
+# (run from a shell outside the harness, where no PreToolUse hook fires) used to
+# be equally traceless on the normal marker+CI path. All three allow paths now
+# record, which is what makes the ABSENCE of a record evidence.
+#
+# Run against an ISOLATED state dir so these assertions neither read nor append
+# to the operator real audit log.
+ISO_LOG="$ISO_STATE/bypass-log.jsonl"
+rm -rf "$ISO_STATE"; mkdir -p "$ISO_STATE"
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+
+TOTAL=$((TOTAL + 1))
+BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" >/dev/null 2>&1 || true
+ISO_RECORDS=$(grep -c '"event":"pr-grind-clean-merge"' "$ISO_LOG" 2>/dev/null || echo 0)
+ISO_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
+if [[ "$ISO_RECORDS" -eq 1 ]] \
+   && printf '%s' "$ISO_LINE" | grep -q '"pr":31' \
+   && printf '%s' "$ISO_LINE" | grep -q "\"head\":\"$GH_STUB_HEAD_OID_DEFAULT\""; then
+    printf "  PASS  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  logs pr-grind-clean-merge with PR + reviewed head on an authorized merge (#667) (got: %s)\n" "$ISO_LINE"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-neg. A BLOCKED merge must write nothing — otherwise a record would prove
+# only that a merge was attempted, not that it was authorized.
+TOTAL=$((TOTAL + 1))
+rm -f "$ISO_STATE/pr-grind-clean.local"
+ISO_LINES_BEFORE=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" >/dev/null 2>&1 || true
+ISO_LINES_AFTER=$(wc -l < "$ISO_LOG" 2>/dev/null || echo 0)
+if [[ "$ISO_LINES_AFTER" -eq "$ISO_LINES_BEFORE" ]]; then
+    printf "  PASS  writes no record when the merge is blocked (#667)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  writes no record when the merge is blocked (#667)\n"
+    FAIL=$((FAIL + 1))
+fi
+
+# 2a-fc. The record IS the authorization evidence, so an unrecordable
+# authorization must BLOCK rather than merge unlogged — otherwise one swallowed
+# write makes an absent record meaningless on every path.
+TOTAL=$((TOTAL + 1))
+printf '%s %s\n' 31 "$GH_STUB_HEAD_OID_DEFAULT" > "$ISO_STATE/pr-grind-clean.local"
+rm -f "$ISO_LOG"
+chmod 0555 "$ISO_STATE"
+FC_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null || true)
+chmod 0755 "$ISO_STATE"
+if printf '%s' "$FC_OUT" | grep -q '"block"' \
+   && printf '%s' "$FC_OUT" | grep -q 'could not be appended'; then
+    printf "  PASS  blocks when the authorization record cannot be written (#667 fail-closed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  blocks when the authorization record cannot be written (#667 fail-closed) (got: %s)\n" "$FC_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$ISO_STATE"
 
 # ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
 # Regression: a marker written when the grind converged stayed valid for 2h, so a

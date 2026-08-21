@@ -259,9 +259,42 @@ block="$(printf '%s\n' "$block" | /usr/bin/awk '{
   print out
 }')" || why profile
 
-# keys matched bare, double-quoted and single-quoted: TOML accepts all three
-printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?extends[\"']?[[:space:]]*=[[:space:]]*\"strict\"" || why profile
-printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?restrict_network[\"']?[[:space:]]*=[[:space:]]*true" || why profile
+# keys matched bare, double-quoted and single-quoted: TOML accepts all three.
+# End-anchored ($): without it, a decoy array ELEMENT that happens to read
+# like the key assignment — e.g. an unrelated array containing the literal
+# string 'extends = "strict"' — satisfies the match on its own line while the
+# profile's REAL extends key is absent or set to something else ("workspace"),
+# because the line-based grep never checks what follows the matched value.
+# Anchoring the end forces the line to be nothing BUT the assignment, which a
+# quoted decoy element can never be (it always carries a trailing quote/comma
+# from its own array). Reported by Codex (P1) on PR #704.
+#
+# Two things a reader of these two lines ALONE will get wrong — both were
+# raised against this change and both are already closed elsewhere in this
+# function, so do not "fix" them here:
+#
+#  1. Inline comments still pass. `extends = "strict" # required` is NOT
+#     rejected: the comment-stripping awk above runs FIRST and leaves
+#     `extends = "strict" ` (trailing space), which `[[:space:]]*$` absorbs.
+#     Verified by probe.
+#  2. A TOML multiline string cannot smuggle a standalone `extends = "strict"`
+#     line past these greps, because a multiline string needs `"""` or `'''`
+#     delimiters and BOTH are refused outright a few lines below. The decoy
+#     line does match this grep — and then the profile is refused anyway.
+#     Verified by probe. The guards are siblings; neither is redundant.
+#
+# The key is matched as a BALANCED alternation — bare `extends`, `"extends"`,
+# or `'extends'` — never `["']?extends["']?`, which also accepts an
+# UNBALANCED opening quote. That was a real bypass, not a style point: a TOML
+# literal-string array element `'extends = "strict" #',` is truncated by the
+# comment stripper above (it tracks double quotes only, so the `#` inside a
+# SINGLE-quoted string reads as a comment) down to `'extends = "strict" `,
+# which the optional-quote form matched end-anchored and the balanced form
+# does not. Closing it here rather than in the stripper keeps the assignment
+# checks correct no matter what the stripper does to the line. Reported by
+# litmus on PR #704; verified by probe in both directions.
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*(extends|\"extends\"|'extends')[[:space:]]*=[[:space:]]*\"strict\"[[:space:]]*\$" || why profile
+printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*(restrict_network|\"restrict_network\"|'restrict_network')[[:space:]]*=[[:space:]]*true[[:space:]]*\$" || why profile
 # read_write grants writable paths; read_only grants extra readable ones —
 # `read_only = ["/"]` would defeat the CWD-only confinement
 printf '%s\n' "$block" | /usr/bin/grep -qE "^[[:space:]]*[\"']?read_(write|only)[\"']?[[:space:]]*=" && why profile

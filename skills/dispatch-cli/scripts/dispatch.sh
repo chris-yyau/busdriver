@@ -2262,9 +2262,22 @@ CHILD
                 # dispatched, to a different CLI. Reported by Cursor Bugbot on
                 # PR #704, against the repo's own rule that dispatch errors must
                 # not fall through to droid escalation.
+                #
+                # The flag is set only if the write to $outfile succeeded,
+                # matching the sibling refusal paths above (--model) and
+                # opencode's _oc_no_model bail. Setting it unconditionally
+                # would let an unwritable outfile still classify as "skipped
+                # with a reason" while the reason itself was lost — the batch
+                # banner would print "(no output)" and the refusal cause would
+                # never reach the operator. Reported by CodeRabbit on PR #704.
                 grok_preflight_hint >&2
-                grok_preflight_hint > "$outfile"
-                _grok_refused=1
+                # shellcheck disable=SC2310  # deliberate: the hint's failure IS
+                # the branch condition here, so `set -e` must not preempt it.
+                if grok_preflight_hint > "$outfile" 2>/dev/null; then
+                    _grok_refused=1
+                else
+                    echo "busdriver: could not write the grok refusal reason to \$outfile — classifying as error, not skipped" >&2
+                fi
                 exit_code=1
             fi ;;
     esac

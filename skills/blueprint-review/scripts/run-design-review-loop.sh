@@ -84,7 +84,7 @@ millis() {
 # would otherwise treat a droid-supplied run_id as STALE and discard the rescue.
 # Returns 0 on success (caller then stops — one droid voice).
 _bp_droid_rescue() {
-  local slot="$1" out="$2" raw droid_exit=0
+  local slot="$1" out="$2" cli="${3:-$1}" raw droid_exit=0
   # grok is NEVER rescued by droid, by name and unconditionally. This is the
   # blueprint-side half of the PR #704 P1 fix; the dispatch-side half lives in
   # `should_escalate_to_droid` (scripts/lib/resolve-cli.sh), which THIS path
@@ -99,12 +99,19 @@ _bp_droid_rescue() {
   # quoted inside `$FULL_PROMPT` — and send it to droid, a different provider.
   # The protection would invert into the leak it exists to prevent.
   #
-  # Keyed on the slot NAME, not on grok's failure text: a message matcher would
-  # have to enumerate every way a sandbox can fail to apply, and any message it
-  # did not anticipate fails OPEN into exactly this forward. Accepted cost is
-  # that an ordinary transient grok failure gets no droid stand-in — the voice
-  # is simply reported failed, matching the dispatch-side rule.
-  if [[ "$slot" == "grok" ]]; then
+  # Keyed on the resolved CLI ($cli), NOT the slot label ($slot). $slot is the
+  # historical output-file position (agy/codex/grok — still used below for
+  # filenames and log lines) and a route override or BUSDRIVER_REVIEW_CLI=grok
+  # can put grok's CLI in the agy or codex slot. Keying on $slot alone would
+  # miss that case and forward the prompt (plus quoted repo content) to droid —
+  # the exact cross-provider leak this guard exists to close. Reported by
+  # Cursor Bugbot on PR #704. Keyed on the CLI NAME, not on grok's failure
+  # text: a message matcher would have to enumerate every way a sandbox can
+  # fail to apply, and any message it did not anticipate fails OPEN into
+  # exactly this forward. Accepted cost is that an ordinary transient grok
+  # failure gets no droid stand-in — the voice is simply reported failed,
+  # matching the dispatch-side rule.
+  if [[ "$cli" == "grok" ]]; then
     log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
     return 1
   fi
@@ -1045,9 +1052,9 @@ with open(pending, "w") as f:
      && [[ "$REVIEWER_1_CLI" != "droid" && "$REVIEWER_2_CLI" != "droid" && "$REVIEWER_3_CLI" != "droid" ]]; then
     for _slot in agy codex grok; do
       case "$_slot" in
-        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE" ;;
-        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE" ;;
-        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE" ;;
+        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE";   _cli="$REVIEWER_1_CLI" ;;
+        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE"; _cli="$REVIEWER_2_CLI" ;;
+        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE";  _cli="$REVIEWER_3_CLI" ;;
       esac
       [[ "$_av" == "true" ]] || continue
       _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
@@ -1055,8 +1062,12 @@ with open(pending, "w") as f:
       # First failed reviewer only: ONE droid attempt, then stop regardless of
       # outcome. A failed/slow droid must not trigger more long rescue waits
       # (execute_review's timeout is 1200s) — and the cap is one droid voice.
+      # $_slot is the output-file position (filenames/logging); $_cli is the
+      # RESOLVED CLI that actually ran there — a route override can put grok
+      # in the agy or codex slot, so the grok exclusion inside
+      # _bp_droid_rescue must key on $_cli, not $_slot (PR #704).
       # shellcheck disable=SC2310  # rescue handles its own errors; || true ignores its rc
-      _bp_droid_rescue "$_slot" "$_so" || true
+      _bp_droid_rescue "$_slot" "$_so" "$_cli" || true
       break
     done
   fi

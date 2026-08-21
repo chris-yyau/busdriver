@@ -123,8 +123,8 @@ _bp_fn=$(sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP")
 if [[ -z "$_bp_fn" ]]; then
   bad "could not extract _bp_droid_rescue from $BPLOOP (renamed? guard unverified)"
 else
-  _bp_probe() {  # $1=slot → prints CALLED if the rescue reached execute_review
-    local slot="$1"
+  _bp_probe() {  # $1=slot [$2=resolved cli] → records CALLED if the rescue reached execute_review
+    local slot="$1" cli="${2:-}"
     (
       set +u
       # SC2034: read by the eval'd _bp_droid_rescue body below, which the
@@ -143,7 +143,11 @@ else
       get_review_file() { echo "$TMP/$1"; }
       execute_review() { echo CALLED >> "$TMP/reached"; printf '{}\n'; }
       eval "$_bp_fn"
-      _bp_droid_rescue "$slot" "$TMP/${slot}.json" >/dev/null 2>&1
+      if [[ -n "$cli" ]]; then
+        _bp_droid_rescue "$slot" "$TMP/${slot}.json" "$cli" >/dev/null 2>&1
+      else
+        _bp_droid_rescue "$slot" "$TMP/${slot}.json" >/dev/null 2>&1
+      fi
     )
   }
 
@@ -153,6 +157,17 @@ else
   grep -q CALLED "$TMP/reached" \
     && bad "blueprint: grok slot → NO droid rescue (prompt not forwarded)" \
     || ok  "blueprint: grok slot → NO droid rescue (prompt not forwarded)"
+
+  # The slot label is NOT the CLI. `blueprint-review.reviewer_N` is resolved by
+  # `resolve_role_cli`, so operator config can put grok's CLI in the agy or codex
+  # slot while the output-file position keeps its historical name. A guard keyed
+  # on the slot would wave that case straight through to droid — the same leak,
+  # reached by configuration instead of by failure mode. Cursor Bugbot, PR #704.
+  : > "$TMP/reached"
+  _bp_probe agy grok
+  grep -q CALLED "$TMP/reached" \
+    && bad "blueprint: grok CLI in the agy slot → NO droid rescue (guard keys on CLI, not slot)" \
+    || ok  "blueprint: grok CLI in the agy slot → NO droid rescue (guard keys on CLI, not slot)"
 
   # Negative control — the guard must be load-bearing, not a dead branch that
   # would pass the assertion above even if rescue were broken for everyone.

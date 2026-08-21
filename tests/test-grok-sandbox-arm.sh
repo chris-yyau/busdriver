@@ -359,6 +359,89 @@ deny = []' > "$tmp/commented.toml"
   # it LOOKS like the entries are there.
   _profile 'deny' "deny = [${_REL_DENY}, \"/Users/YOU/.ssh\", \"/Users/YOU/.ssh/**\", \"/Users/YOU/.aws\", \"/Users/YOU/.aws/**\", \"/Users/YOU/.netrc\"]" > "$tmp/placeholder-home.toml"
 
+  # The two decoy shapes the end-anchored extends/restrict_network greps exist
+  # to refuse. Both keep a REAL extends of "workspace", so the only thing that
+  # could make them pass is a grep matching text that is not the assignment.
+  #   1. an array ELEMENT whose text reads like the assignment (Codex P1)
+  #   2. the same text inside a multiline string
+  # (2) is refused by the sibling """/''' guards rather than by the anchor —
+  # asserted here so deleting EITHER guard fails a test, not merely a comment.
+  { _profile 'extends' 'extends = "workspace"'
+    printf '%s\n' 'notes = [' \
+                  "'extends = \"strict\"'," \
+                  "'restrict_network = true'," \
+                  ']' ; } > "$tmp/decoy-assign.toml"
+  { _profile 'extends' 'extends = "workspace"'
+    printf 'notes = """\nextends = "strict"\nrestrict_network = true\n"""\n' ; } \
+    > "$tmp/decoy-multiline-assign.toml"
+
+  # ...and the regression guard in the other direction: an inline comment on a
+  # COMPLIANT profile must still be ACCEPTED. The comment-stripping awk runs
+  # before those greps, so `extends = "strict" # required` reaches them as
+  # `extends = "strict" ` and the anchor's trailing [[:space:]]* absorbs it.
+  # Without this case, "tighten the anchor" could start refusing every
+  # commented profile and no test would notice.
+  { printf '%s\n' '[profiles.busdriver-review]' \
+                  'extends = "strict" # required by the review lane' \
+                  'restrict_network = true # no egress' \
+                  "deny = [${_REL_DENY}${_HOME_DENY}]" ; } > "$tmp/inline-comment.toml"
+
+  # The `#`-truncation variant of the same decoy. The comment stripper tracks
+  # DOUBLE quotes only, so a `#` inside a SINGLE-quoted TOML literal string
+  # reads to it as a comment and truncates the element to `'extends = "strict" `
+  # — which an optional-quote key pattern (["']?extends["']?) matched even
+  # end-anchored. The balanced key alternation is what refuses it. Reported by
+  # litmus on PR #704.
+  { _profile 'extends' 'extends = "workspace"'
+    printf '%s\n' 'notes = [' \
+                  "'extends = \"strict\" #'," \
+                  ']' ; } > "$tmp/decoy-assign-hash.toml"
+
+  # restrict_network gets its OWN decoy: the fixtures above all leave the real
+  # `restrict_network = true` in place, so weakening the SECOND anchor would
+  # not have failed any of them. Here the real value is false and only a decoy
+  # element carries the required text.
+  { _profile 'restrict_network' 'restrict_network = false'
+    printf '%s\n' 'notes = [' \
+                  "'restrict_network = true #'," \
+                  ']' ; } > "$tmp/decoy-restrict.toml"
+
+  # The deny EXTRACTOR has the same optional-quote shape the assignment greps
+  # just lost, and it is genuinely fooled: fed a single-quoted decoy element
+  # placed BEFORE the real `deny = []`, it returns the DECOY's text, which
+  # carries every required glob double-quoted. It is not fixed there because
+  # the sibling guards below it already refuse the result — the extracted text
+  # still contains the `'` that the literal-string guard rejects (and a
+  # double-quoted decoy would need `\"`, which the backslash guard rejects,
+  # and a multiline one needs delimiters that are refused outright). This
+  # fixture pins that defence-in-depth: if either guard is ever relaxed, the
+  # extractor's blind spot becomes a real fail-open on the home-secret list
+  # and THIS test is what fails. Probed on PR #704.
+  { _profile 'deny' 'deny = []'
+    printf '%s\n' 'notes = [' \
+                  "'deny = [${_REL_DENY}${_HOME_DENY}]'," \
+                  ']' ; } > "$tmp/decoy-deny.toml"
+
+  # ...and the balanced alternation must still accept the quoted-key spellings
+  # TOML allows, or "close the unbalanced-quote hole" would silently start
+  # refusing every profile that quotes its keys.
+  { printf '%s\n' '[profiles.busdriver-review]' \
+                  '"extends" = "strict"' \
+                  "'restrict_network' = true" \
+                  "deny = [${_REL_DENY}${_HOME_DENY}]" ; } > "$tmp/quoted-keys.toml"
+
+  if grok_sandbox_preflight "$tmp/quoted-keys.toml"; then
+    pass "preflight accepts TOML quoted-key spellings (\"extends\" / 'restrict_network')"
+  else
+    fail "preflight refused a compliant profile using TOML quoted keys — the balanced key alternation must accept bare, double-quoted and single-quoted spellings"
+  fi
+
+  if grok_sandbox_preflight "$tmp/inline-comment.toml"; then
+    pass "preflight accepts a compliant profile carrying inline comments"
+  else
+    fail "preflight refused a compliant profile whose extends/restrict_network lines carry inline comments — the end-anchored greps must run AFTER comment stripping"
+  fi
+
   if grok_sandbox_preflight "$tmp/good.toml"; then
     pass "preflight accepts the shipped profile shape"
   else
@@ -370,6 +453,8 @@ deny = []' > "$tmp/commented.toml"
   # would pass without testing anything. Verify each one exists first — and
   # that the symlink case really is a symlink.
   for _f in good wrong header-only no-extends no-restrict half-deny commented \
+            decoy-assign decoy-multiline-assign inline-comment \
+            decoy-assign-hash decoy-restrict quoted-keys decoy-deny \
             literal-quotes escaped-quotes widened quoted-widen squoted-widen read-only-widen \
             unicode-key unicode-key-upper multiline decoy-head \
             no-home-secrets placeholder-home; do
@@ -687,6 +772,11 @@ deny = []' > "$tmp/commented.toml"
     "decoy-head.toml|a [decoy] table owns the fields, not the profile"
     "link.toml|a symlink can point back into the reviewed tree"
     "missing.toml|the file does not exist"
+    "decoy-assign.toml|an array element reading like the assignment is not the assignment"
+    "decoy-multiline-assign.toml|a multiline string can carry the assignment text"
+    "decoy-assign-hash.toml|a # inside a single-quoted element truncates it into a lookalike assignment"
+    "decoy-restrict.toml|the real restrict_network is false; only a decoy element says true"
+    "decoy-deny.toml|the real deny is empty; a decoy element supplies the globs the extractor reads"
   )
   # Guarded: with none of ~/.ssh, ~/.aws, ~/.netrc present there is nothing to
   # require, so these two fixtures are legitimately VALID and asserting refusal
@@ -1033,9 +1123,16 @@ fi
 
 # The blueprint half of the same boundary. Separate function, separate file, no
 # shared predicate — a guard on one path says nothing about the other.
+#
+# Keyed on $cli (the RESOLVED CLI passed by the caller), not $slot (the
+# historical agy/codex/grok output-file position): a route override or
+# BUSDRIVER_REVIEW_CLI=grok can put the grok CLI in the agy or codex slot, and
+# a slot-keyed guard would miss that case (Cursor Bugbot, PR #704). $cli
+# defaults to $slot when the caller passes only two args, so existing callers
+# are unaffected.
 BPLOOP="$REPO_ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | /usr/bin/grep -q '"\$slot" == "grok"'; then
-  pass "_bp_droid_rescue refuses the grok slot by name, so blueprint cannot rescue a failed grok via droid"
+if /usr/bin/sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP" | /usr/bin/grep -q '"\$cli" == "grok"'; then
+  pass "_bp_droid_rescue refuses the resolved grok CLI by name, so blueprint cannot rescue a failed grok via droid regardless of which slot it ran in"
 else
   fail "_bp_droid_rescue does not exclude grok — blueprint's post-run loop escalates a runtime-failed grok slot to droid, forwarding \$FULL_PROMPT and the repo content quoted in it to a different provider"
 fi

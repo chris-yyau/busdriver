@@ -162,7 +162,8 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 **grok requires `~/.grok/sandbox.toml` — the lane refuses to dispatch without it.**
 Copy `docs/examples/grok-sandbox.toml` to `~/.grok/sandbox.toml` (edit the absolute
 home paths in its `deny` list) before using `--cli grok`, or the dispatcher exits with
-`grok dispatch refused — the operator sandbox profile is missing`.
+`grok dispatch refused — the operator sandbox profile is missing or does not meet the
+contract` (`grok_preflight_hint`'s `WHY=profile` branch, `scripts/lib/resolve-cli.sh`).
 
 That extra step buys the only fail-CLOSED posture grok offers. Measured 2026-08-19:
 

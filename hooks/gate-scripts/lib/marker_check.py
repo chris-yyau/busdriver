@@ -2337,7 +2337,7 @@ def _shell_pieces(text):
             stack.append((_BT, quoted))
             saw_exp[0] = True
             return 1
-        if c in "<>" and at + 1 < n and text[at + 1] == "(" and not quoted:
+        if c in "<>" and at + 1 < n and text[at + 1] == "(":
             # PROCESS SUBSTITUTION. `<(cmd)` is one word to bash, and the `<` is not a
             # redirection -- reading it as one took `(cmd` for the target and let the rest
             # of the operand tokenize as outer text. Tested BEFORE the redirection regex
@@ -2348,9 +2348,35 @@ def _shell_pieces(text):
             # it pushed a `)` the string never closes, and a later quoted `)` anywhere in
             # the command closed it instead -- swallowing the command in between.
             # `A="x<(y" . /dev/stdin <<< P ")"` sources the payload and returned OK.
-            stack.append((")", quoted))
-            saw_exp[0] = True
-            return 2
+            #
+            # EFFECTIVE quoting, not the caller's local flag. A PARAMETER expansion is not
+            # a fresh quoting context -- `"${x:-a<(b}"` is inside double quotes all the way
+            # through -- but opening its frame clears `in_d`, and the nested call passes
+            # that cleared value down. So a literal `<(` in a parameter word read as a
+            # process substitution again, and a later quoted `)}` drained the false level:
+            # the real `<<<` was absorbed into a redirection operand, no here-string was
+            # reported, and the payload went unscanned. That was the THIRD spelling of this
+            # one bug, after the bare `(` inside `$( )` and the quoted `<(` above.
+            #
+            # A COMMAND substitution IS a fresh context (`$(printf "a b")` re-quotes
+            # inside), so the walk stops at the first non-`}` frame instead of scanning the
+            # whole stack. It sits INSIDE this character test, never in front of it:
+            # `_open` runs for very nearly every character, and walking unconditionally
+            # made a deeply nested command O(depth^2) -- 13000 nested `${x-...}` in 65KB
+            # went from 0.01s to 2.2s, most of the 5s hook timeout, and a timed-out hook
+            # writes no decision, which reads as ALLOW.
+            _q_eff = quoted
+            if not _q_eff:
+                for _c2, _q2 in reversed(stack):
+                    if _c2 != "}":
+                        break
+                    if _q2:
+                        _q_eff = True
+                        break
+            if not _q_eff:
+                stack.append((")", quoted))
+                saw_exp[0] = True
+                return 2
         if c == "$" and at + 1 < n and text[at + 1] == "[":
             # `$[...]` is bash's LEGACY arithmetic form. It was only ever named in the
             # substring list the terminator used to consult; once that flag came from the

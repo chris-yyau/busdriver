@@ -1466,5 +1466,46 @@ assert_ok    "cat(){ unshare; }; cat <<< \"\$P\"" \
     "residual, unchanged by the definition: a value from outside is not visible"
 assert_block "P='${STEM}slo[t].py'; cat(){ unshare; }; cat <<< \"\$P\"" \
     "...and assigning it IN the command blocks, definition and all"
+# -- O. a parameter expansion is not a fresh quoting context -------------------------
+# A BYPASS, reproduced before fixing. `<(` is not a process substitution inside double
+# quotes, and this file already knew that -- but opening a `${...}` frame CLEARS the
+# double-quote state, and the nested scan was handed that cleared value. So a literal
+# `<(` in a parameter word read as a process substitution, pushed a `)` the text never
+# closes, and a later quoted `)}` drained it. The real `<<<` was then absorbed into a
+# redirection operand, no here-string was reported, and the payload went unscanned
+# while the dot sourced it.
+#
+# This is the THIRD spelling of one bug -- the first two were a bare `(` inside `$( )`
+# and a quoted `<(` in an ordinary word, both pinned elsewhere in this file. The
+# distinction that fixes it is that a PARAMETER expansion inherits the enclosing
+# quoting while a COMMAND substitution starts a fresh one, so the walk outward stops at
+# the first non-`}` frame.
+assert_block "> \"\${x:-/tmp/x<(}\" . /dev/stdin <<< '$HELPER' \")}\"" \
+    "a literal <( inside a quoted parameter word does not open a process substitution"
+assert_block "> \"\${a:-\${b:-x<(}}\" . /dev/stdin <<< '$HELPER' \")}}\"" \
+    "...nor one nested a second parameter expansion deep"
+# The other side of the distinction: real process substitutions must still group, and a
+# command substitution must still re-quote inside.
+assert_ok    "diff <(echo a) <(echo b)" \
+    "...while a REAL process substitution is still one word"
+assert_ok    "echo \$(diff <(echo a) <(echo b))" \
+    "...including inside a command substitution, which IS a fresh context"
+assert_block "sh <(echo x) <<< '$HELPER'" \
+    "...and a real one does not hide the here-string behind it"
+# AND THE WALK MUST NOT COST ANYTHING. `_open` runs for very nearly every character
+# inside an expansion, so a stack walk placed in FRONT of the `<(` character test made
+# a deeply nested command O(depth^2) -- raised in review, measured at 2.2s for the case
+# below against 0.01s before it, which is most of the 5s hook timeout, and a timed-out
+# hook writes no decision and therefore ALLOWS. Behind the character test it is ~0.27s.
+_nest_cmd="echo $(python3 -c 'print("${x-"*13000 + "a" + "}"*13000)')"
+_t0=$(_now_ms)
+_got=$(verdict "$_nest_cmd")
+_t1=$(_now_ms)
+if [[ $((_t1 - _t0)) -lt 2000 && "$_got" == "OK|" ]]; then
+    ok "13000 nested parameter expansions classify OK in under 2s ($((_t1 - _t0))ms; 2200ms with the walk unguarded)"
+else
+    no "13000 nested parameter expansions classify OK in under 2s" \
+        "took $((_t1 - _t0))ms, got=${_got:-<empty>}"
+fi
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

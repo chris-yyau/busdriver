@@ -1,3 +1,10 @@
+## [1.109.13](https://github.com/chris-yyau/busdriver/compare/v1.109.12...v1.109.13) (2026-08-21)
+
+
+### Bug Fixes
+
+* **pre-merge:** record every gate-authorized merge so absence is evidence ([#667](https://github.com/chris-yyau/busdriver/issues/667)) ([#718](https://github.com/chris-yyau/busdriver/issues/718)) ([988efd8](https://github.com/chris-yyau/busdriver/commit/988efd837941484d4671ea683f10fc67888c3a90)), closes [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
 ## [1.109.12](https://github.com/chris-yyau/busdriver/compare/v1.109.11...v1.109.12) (2026-08-20)
 
 

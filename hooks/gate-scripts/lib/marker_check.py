@@ -333,7 +333,7 @@ def _peel_wrappers(words, raws=None):
     return None
 
 
-def _strip_time_prefix(words):
+def _strip_time_prefix(words, raws=None):
     """Peel a leading bare `time [-p]` keyword, for callers asking only what a stage
     ACTUALLY RUNS.
 
@@ -377,6 +377,13 @@ def _strip_time_prefix(words):
     side of that trade, and it is the same answer `/usr/bin/time source` already gets.
     """
     rest, i = list(words), 0
+    # SOURCE INDEX of every surviving token, deleted in lockstep with `rest` so a caller
+    # holding the parallel raw spellings can follow the same peel. Without it those raws
+    # had to be dropped past this point, which silently restored the decoded-basename
+    # grammar rules inside `_peel_wrappers`: `time 'then' . /dev/stdin <<< P` read the
+    # quoted external `then` as syntax again, promoted the `.` behind it, and refused an
+    # ordinary read -- the exact over-block the exact/bare rules exist to stop.
+    keep = list(range(len(rest)))
     # ONE walk, not "reserved words, then times": bash allows an introducer BETWEEN timed
     # pipelines (`time ! time source ...`, `time { time source ...; }`), so two sequential
     # loops peel the first keyword and leave the second as the command word.
@@ -389,16 +396,16 @@ def _strip_time_prefix(words):
     # `_starts_with_wrapper`: a bare operator takes the FOLLOWING token as its target.
     while i < len(rest):
         if rest[i] == "time":
-            del rest[i]
+            del rest[i], keep[i]
             if i < len(rest) and rest[i] == "-p":
-                del rest[i]
+                del rest[i], keep[i]
             continue
         m = _REDIR_PREFIX_RE.match(rest[i])
         if m:
             attached = m.group(0) != rest[i]
-            del rest[i]
+            del rest[i], keep[i]
             if not attached and i < len(rest):
-                del rest[i]
+                del rest[i], keep[i]
             continue
         if _skippable(rest[i]) or _bn(rest[i]) in _RESERVED_SH:
             # `_skippable` covers the BARE fd of `2 > /dev/null`, which shlex hands over as
@@ -409,7 +416,9 @@ def _strip_time_prefix(words):
             i += 1
             continue
         break
-    return rest
+    if raws is None:
+        return rest
+    return rest, [raws[k] for k in keep]
 
 
 def _first_word(words):
@@ -2364,14 +2373,17 @@ def _cmd_position(words, raws=None):
     _j = 0
     while _j < len(words) and words[_j] in _RESERVED_SH and _bare(_j):
         _j += 1
-    _w = words
+    # The spellings travel THROUGH the peel, not up to it. `_strip_time_prefix` removes
+    # tokens, so it reports which survived and the raws are filtered the same way; dropping
+    # them here instead restored the basename reading for everything behind a `time`.
+    _w, _r = words, raws
     if _j < len(words) and words[_j] == "time" and _bare(_j):
-        _w = words[:_j] + _strip_time_prefix(words[_j:])
-    # Raws travel with the words ONLY while the two stay index-parallel. `_strip_time_prefix`
-    # drops tokens, so past it the spellings no longer line up and are dropped rather than
-    # misaligned -- the peel then falls back to its wide basename reading, which is the
-    # fail-closed direction.
-    return _peel_wrappers(_w, raws if _w is words else None) or (_w[0] if _w else None)
+        if raws is None:
+            _w = words[:_j] + _strip_time_prefix(words[_j:])
+        else:
+            _tw, _tr = _strip_time_prefix(words[_j:], raws[_j:])
+            _w, _r = words[:_j] + _tw, raws[:_j] + _tr
+    return _peel_wrappers(_w, _r) or (_w[0] if _w else None)
 
 
 def _cmd_candidates(words, dwords, raws=None):

@@ -918,7 +918,7 @@ assert_block "sh <<< '$HELPER"                 "an unparseable command is probed
 
 # INNER LEXER FAILURE still fails CLOSED — but this pair no longer reaches it. Adjacent
 # quoting like a'<<<' is VALID and only `punctuation_chars=True` choked on it; once
-# operator splitting moved out of the lexer and into the quote-aware `_redir_pieces`, the
+# operator splitting moved out of the lexer and into the quote-aware `_shell_pieces`, the
 # lexer keeps the one job it does correctly and this parses. Both spellings stay pinned,
 # because they are the pair a future change trades against each other: skipping an
 # unlexable segment let the first execute UNSCANNED, and appending it blocked the second,
@@ -941,7 +941,8 @@ assert_ok "echo 'a <<< b is a here-string'"    "the operator named in prose is n
 # A QUOTED `<<<` is an ARGUMENT, not an operator. posix shlex strips the quotes that say
 # so, and an early version of this fix read the argument as a redirection and blocked a
 # command carrying no here-string at all. Raised in review on this PR. The fix takes the
-# EXISTENCE of a bare operator from a non-posix pass, which keeps quotes on the token.
+# EXISTENCE of a bare operator from `_shell_pieces`, whose own quote-aware scan knows
+# which `<<<` was written bare without needing the quotes stripped off it first.
 assert_ok "echo '<<<' '$HELPER' sh"            "a quoted <<< argument is not a here-string"
 
 # PROPERTY: a quoted redirection-shaped ARGUMENT must never change the verdict of a
@@ -1031,6 +1032,19 @@ assert_ok    "echo sh; ./fi <<< '$HELPER'" \
     "a PATH ending in fi is a program, not a compound terminator"
 assert_block "if true; then sh; fi <<< '$HELPER'" \
     "the real compound still widens and finds the shell (the pair that must not loosen)"
+
+# ...and the spellings must survive the `time` peel, not stop at it. `_strip_time_prefix`
+# REMOVES tokens, so an index-parallel raw list stops lining up unless it is filtered the
+# same way. Dropping it there instead silently restored the basename reading for every
+# word behind a `time` -- the fix above, undone one line later.
+assert_ok    "time 'then' . /dev/stdin <<< '$HELPER'" \
+    "a quoted reserved word behind time is still an external command"
+assert_ok    "time FOO\"=\"bar . /dev/stdin <<< '$HELPER'" \
+    "...and a quoted = behind time is still not an assignment"
+assert_block "time then . /dev/stdin <<< '$HELPER'" \
+    "the bare keyword behind time still hides a real dot"
+assert_block "time FOO=bar . /dev/stdin <<< '$HELPER'" \
+    "...as does a real assignment (the pair that must not loosen)"
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

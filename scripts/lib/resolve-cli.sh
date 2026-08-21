@@ -310,6 +310,17 @@ case "$2" in
   auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
   pi)       jqf='.pi.model | select(type=="string") // empty';       pykey='pi';       shape='slash' ;;
   agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
+  writing_prose) jqf='.writing_prose.model | select(type=="string") // empty'; pykey='writing_prose'; shape='bare' ;;
+  # PRESENCE probe for the prose lane. Same hardened child, same enum-of-literals
+  # discipline — but `shape='any'` skips the grammar check, so this reports
+  # whether the key holds ANY non-empty value. Pairing it with the validated read
+  # above is what lets the caller tell "absent" (both empty → use agy's own
+  # model, normal) from "present but rejected" (this non-empty, that empty →
+  # refuse). Doing the presence read HERE rather than via _read_config_value
+  # keeps it inside `env -i` with absolute parser paths; the earlier attempt used
+  # that weaker reader and introduced a PATH-resolved code-execution surface to
+  # protect a provider selection, which was a losing trade.
+  writing_prose_raw) jqf='.writing_prose.model | select(type=="string") // empty'; pykey='writing_prose'; shape='any' ;;
   *)        printf '%s' "$default"; exit 0 ;;
 esac
 cfg="$HOME/.claude/busdriver.json"
@@ -345,6 +356,17 @@ fi
 # `#` silently dropped a valid user-selected reasoning/token variant. A bad
 # value degrades to the default with a loud note rather than killing an
 # AUXILIARY voice on a typo.
+if [[ "$shape" == 'any' ]]; then
+  # PRESENCE probe: report the value as read, with NO grammar check, so the
+  # caller can distinguish an absent key from one whose value the grammar
+  # rejected. Honest limit: the jq/python readers above both keep only STRINGS,
+  # so a present-but-non-string value (a number, a bool) still reads as empty
+  # and is therefore indistinguishable from absent. This probe closes the
+  # dominant real case — a well-formed string in the wrong grammar, e.g. a
+  # `provider/id` pasted from the pi config — not every shape.
+  printf '%s' "$m"
+  exit 0
+fi
 if [[ "$shape" == 'bare' ]]; then
   # Same hazards, same guard, one less segment: leading `-` (option injection)
   # and whitespace/control chars stay excluded by the character class. A bare id
@@ -869,6 +891,37 @@ _BD_AGY_READ_MODEL=""
 resolve_agy_read_model() {
   _BD_AGY_READ_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_AGY_READ_MODEL_DEFAULT" agy_read)"
   [[ -n "$_BD_AGY_READ_MODEL" ]] || _BD_AGY_READ_MODEL="$BUSDRIVER_AGY_READ_MODEL_DEFAULT"
+}
+
+# ── writing-prose lane model ────────────────────────────────────
+# Scoped to `--cli agy-prose` ONLY, exactly as `.agy_read.model` is scoped to
+# `--cli agy-read`. Plain `--cli agy` (blueprint-review reviewer_1 and friends)
+# is unaffected and keeps agy's own configured model.
+#
+# Same trust rules as `.pi.model` / `.agy_read.model` (USER config only, no env
+# override, no project config, password-DB-derived $HOME): the value names the
+# third party your prose — and anything quoted into the brief — is shipped to.
+# `agy models` enumerates ids; the value is BARE (no `provider/` segment).
+#
+# DELIBERATE DIVERGENCE from pi and agy_read — do NOT "unify" this away:
+# there is no shipped default and empty is NOT a refusal. Empty means "pass no
+# --model", i.e. agy's own configured model, which is the behaviour this lane
+# was validated on. The read lane refuses on empty because falling through to
+# agy's model would silently price every repo read at the reviewer's model;
+# prose has no such cost cliff, and a writer that stops dead because an
+# optional key is unset is worse than one that uses the operator's own default.
+_BD_WRITING_PROSE_MODEL=""
+resolve_writing_prose_model() {
+  _BD_WRITING_PROSE_MODEL="$(_bd_read_auditor_model "$HOME" "" writing_prose)"
+}
+
+# Presence probe — see the `writing_prose_raw` enum entry. Non-empty here with an
+# EMPTY resolve_writing_prose_model means the key was set to something the `bare`
+# grammar rejected, which the lane refuses rather than dispatching on a model the
+# operator did not choose. Both empty means absent, which is this lane's normal.
+_BD_WRITING_PROSE_RAW=""
+resolve_writing_prose_raw() {
+  _BD_WRITING_PROSE_RAW="$(_bd_read_auditor_model "$HOME" "" writing_prose_raw)"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────

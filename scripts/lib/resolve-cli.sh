@@ -51,12 +51,55 @@ fi
 
 is_cli_available() {
   local cli_name="$1"
+  if [[ "$cli_name" == "grok" ]]; then
+    _grok_available
+    return
+  fi
   command -v "$cli_name" &>/dev/null
+}
+
+# grok availability IS preflight readiness — one question, one answer.
+#
+# A binary-only probe reported grok available on a host that has the binary but
+# not the now-mandatory ~/.grok/sandbox.toml. A route like
+# `council.researcher: ["grok", "droid"]` then STOPPED at grok, the dispatch
+# preflight refused, and the voice was skipped — an upgraded host silently lost
+# its documented droid fallback. Reported by Codex on PR #704.
+#
+# Delegating wholesale (rather than bolting a profile check onto a copied
+# directory list) is what removes the failure class instead of this instance of
+# it: the preflight already checks the pinned candidate directories, the binary
+# identity, in-tree containment AND the profile contract, so there is now ONE
+# definition of "can grok run here" and nothing left to drift out of step.
+#
+# Note WHICH fallback this is. Falling back at ROUTING time is safe because no
+# prompt has been committed to grok yet. Falling back after a DISPATCH-time
+# refusal is not, and is deliberately not done: `_grok_refused` exists precisely
+# to stop a refused grok's prompt — and the repo content quoted in it — from
+# being handed to another CLI after the operator was told the lane refuses.
+# Same word, opposite safety, different moment.
+#
+# Fail direction is safe: anything that prevents the preflight from answering
+# (including a shell with no BASH_SOURCE, which resolves the child to /dev/null)
+# refuses, so grok reads as unavailable and the route continues to droid.
+_grok_available() {
+  grok_sandbox_preflight ""
 }
 
 get_cli_version() {
   local cli_name="$1"
   if is_cli_available "$cli_name"; then
+    # grok may not be on the ambient PATH at all — that mismatch is this PR's
+    # whole subject. The availability check above ran the preflight, which
+    # published the pinned PATH, so ask the binary that would actually run
+    # rather than reporting `unknown` for a perfectly good pinned-only install.
+    # Guarded on the value being present: if the side effect ever stops being
+    # set, this degrades to the ambient lookup rather than running with an
+    # empty PATH.
+    if [[ "$cli_name" == "grok" && -n "${_GROK_PINNED_PATH:-}" ]]; then
+      PATH="$_GROK_PINNED_PATH" command grok --version 2>/dev/null || echo "unknown"
+      return
+    fi
     "$cli_name" --version 2>/dev/null || echo "unknown"
   else
     echo "not-installed"
@@ -869,6 +912,35 @@ _portable_timeout() {
 should_escalate_to_droid() {
   local primary_cli="$1" exit_code="$2" output_file="$3"
   [[ "$primary_cli" == "droid" ]] && return 1
+  # grok NEVER escalates, by name and unconditionally — the same rule pi and
+  # opencode already get at dispatch.sh's call site, but enforced HERE, inside
+  # the predicate, so it cannot be dropped by editing that one call site.
+  #
+  # This closes the DISPATCH path only. There is a second, independent droid
+  # fallback: blueprint-review's post-run loop calls `_bp_droid_rescue` directly
+  # (skills/blueprint-review/scripts/run-design-review-loop.sh) and never
+  # consults this predicate. That path is guarded separately, by the same
+  # name-keyed rule, inside `_bp_droid_rescue` itself. Both guards are load-
+  # bearing; neither subsumes the other.
+  #
+  # `_grok_refused` covered only the STATIC refusals (preflight failed, --model
+  # rejected). When the preflight PASSES and grok then fails at RUNTIME — most
+  # importantly when the custom profile cannot be applied and grok refuses to
+  # start with its protections missing — that flag is still 0, the failure reads
+  # as an ordinary CLI error, and the prompt plus the repo content quoted in it
+  # is forwarded to droid. A sandbox that correctly refused to run would have
+  # caused the content to be sent to a different provider anyway; the protection
+  # would have inverted into the leak it exists to prevent. Reported by Codex
+  # (P1) on PR #704.
+  #
+  # Keyed on the CLI NAME rather than on detecting the sandbox error, because
+  # only the name is knowable with certainty: matching grok's failure text would
+  # have to enumerate every way a sandbox can fail to apply, and any message it
+  # did not anticipate would fail OPEN into exactly this leak. The cost of the
+  # blunt rule is that an ordinary transient grok failure no longer gets a droid
+  # stand-in — the voice is simply reported failed, which is the correct
+  # direction for a cross-provider boundary and is already how pi behaves.
+  [[ "$primary_cli" == "grok" ]] && return 1
   is_cli_available droid || return 1
   [[ "$exit_code" -ne 0 ]] && return 0
   [[ ! -s "$output_file" ]] && return 0
@@ -934,11 +1006,14 @@ _resolve_from_route_array() {
       echo "busdriver: config route '$role_key' references 'opencode', which is only valid for the Auditor role (it always runs the fixed read-only Auditor harness) — skipping" >&2
       last_rejected="opencode"
     elif [[ "$cli" == "auto" ]]; then
-      # grok is INTENTIONALLY excluded from the auto-detect cascade: its
-      # safety model (--sandbox readonly + user-config "always approve"
-      # disabled) is documented but not enforceable from code, so silently
-      # picking grok via auto would extend its exposure surface to contexts
-      # whose threat model wasn't reviewed. Grok must be explicitly named
+      # grok is INTENTIONALLY excluded from the auto-detect cascade. Since
+      # 2026-08-19 its containment is enforceable from code (--sandbox
+      # busdriver-review + --deny Bash/Edit/MCPTool + the vendor-hook
+      # switches), so the
+      # exclusion rests on scope, not on an unenforceable model: grok still
+      # transmits externally and keeps its web tools, so silently picking it
+      # via auto would extend its exposure surface to contexts whose threat
+      # model wasn't reviewed. Grok must be explicitly named
       # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
       #
       # opencode is excluded because its read-only posture is not a property of
@@ -1223,12 +1298,15 @@ _resolve_role_cli_impl() {
                                 echo "none" && return ;;
   esac
 
-  # Step 5: Auto-detect — grok intentionally excluded. Its safety model
-  # (--sandbox readonly + user-config "always approve" disabled) is
-  # documented but not enforceable from code, so it must be explicitly
-  # named via BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to
-  # opt in. Auto-picking grok would extend its exposure surface to contexts
-  # whose threat model wasn't reviewed.
+  # Step 5: Auto-detect — grok intentionally excluded. Not because its
+  # containment is unenforceable (since 2026-08-19 it is: --sandbox
+  # busdriver-review + --deny Bash/Edit/MCPTool + the vendor-hook switches),
+  # but because grok
+  # still transmits externally
+  # and keeps its web tools, so it must be explicitly named via
+  # BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to opt in.
+  # Auto-picking grok would extend its exposure surface to contexts whose
+  # threat model wasn't reviewed.
   for cli in codex agy droid; do
     is_cli_available "$cli" && echo "$cli" && return
   done
@@ -2058,6 +2136,160 @@ _agy_prompt_oversize() {
     [[ "$size" -gt "$limit" ]]
 }
 
+# -- grok sandbox preflight -------------------------------------------------
+# The grok lane runs under the CUSTOM sandbox profile `busdriver-review`, not a
+# built-in one, because built-in profiles FAIL OPEN (grok warns and runs
+# unconfined when the kernel policy cannot be applied) while an explicitly
+# requested custom profile refuses to start. Verified 2026-08-19: naming a
+# profile that does not exist prints "Refusing to start with its protections
+# missing" and exits non-zero.
+#
+# That guarantee has one hole, and this check closes it. Custom profiles resolve
+# from the operator's ~/.grok/sandbox.toml OR a project `.grok/sandbox.toml`;
+# the user file wins when both define the name, but with NO user file the REPO's
+# definition is what applies — a reviewed branch writing its own containment.
+# So: refuse unless the operator's own file defines the profile.
+#
+# $HOME is not trusted for the lookup. An inherited HOME is repo-injectable via
+# a committed settings.json env block (#325 / ADR 0016), which would let the
+# reviewed tree aim this check at a sandbox.toml it controls. The home comes
+# from the password database instead — the same derivation the agy-read and
+# opencode lanes use.
+#
+# Checking the right file is only half the job: grok reads its config directory
+# from $GROK_HOME (default ~/.grok), so verifying the password-database copy
+# while the child inherits a repo-set GROK_HOME would check one file and load
+# another. On success this publishes the derived home in _GROK_TRUSTED_HOME, and
+# BOTH call sites pin HOME and GROK_HOME to it on the `env` line — check and
+# child then read the same directory by construction.
+#
+# $1 overrides the file path and exists ONLY for tests; production callers pass
+# nothing and get the derived path.
+# The PATH grok is executed under, and the one the preflight checks it against.
+# Repo-injectable PATH entries are excluded by construction: only the operator's
+# own home and the system prefixes are listed.
+# ── grok sandbox preflight ────────────────────────────────────────────────
+# Runs every check inside a FUNCTION-CLEAN CHILD: `/usr/bin/env -i /bin/bash -p`.
+# That is the point, not a detail. This function is sourced by blueprint-review,
+# whose shell has no `bash -p` boundary (dispatch.sh re-execs under one — see its
+# header), so an exported BASH_FUNC_* can shadow any name the checks use. Trying
+# to clean up from inside that shell is a regress with no bottom: `unset` can be
+# shadowed, and so can the `builtin` that would un-shadow `unset`. `env -i` drops
+# the exported functions along with the rest of the environment, `-p` stops bash
+# re-importing them, and an ABSOLUTE path cannot be shadowed at all — a function
+# name may not contain `/`.
+#
+# The child body avoids `case` on purpose: bash 3.2 (macOS /bin/bash) mis-parses
+# a quoted heredoc inside `$( )` when the body contains case patterns, which is
+# the #595 silent fail-open this repo has already been bitten by once.
+#
+# WHAT IT DEFENDS. The grok lane runs under the CUSTOM profile
+# `busdriver-review` because built-in profiles FAIL OPEN — grok warns and runs
+# unconfined when the kernel policy cannot be applied — while an explicitly
+# requested custom profile refuses to start ("Refusing to start with its
+# protections missing", verified 2026-08-19). Custom profiles resolve from the
+# operator's ~/.grok/sandbox.toml OR a project `.grok/sandbox.toml`; the user
+# file wins when both define the name, but with NO user file the REPO's
+# definition applies — the reviewed branch writing its own containment. So the
+# case being defended against is a MISSING or MISCONFIGURED operator profile.
+#
+# WHAT IT DOES NOT. A maliciously crafted profile in the operator's own home is
+# not in the threat model: an attacker who can write there has already won. The
+# body checks below are conservative configuration checks — anything unusual
+# (escapes, multiline strings, single-quoted deny entries) is refused rather
+# than interpreted. If a legitimate profile ever needs one of those spellings,
+# parse TOML properly rather than adding another regex here.
+#
+# The CALLERS matter as much as this function: both sites put the dispatch in
+# the POSITIVE branch of an `if`, never after a `return`/`exit` in a failure
+# branch. A shadowed `return` would fall through such a branch straight into the
+# dispatch it was meant to stop; there is nothing to fall through into when the
+# only path to the invocation is the branch where the check passed.
+#
+# $1 overrides the file path and exists ONLY for tests; production callers pass
+# nothing and get the derived path.
+grok_sandbox_preflight() {
+  # NO shadowable command word runs in the parent — not even `local` or
+  # `return`. Everything here is either a KEYWORD (`[[`, `&&`, `||`, `{`), which
+  # bash resolves before functions and which cannot be defined as a function
+  # name, a plain ASSIGNMENT, which is not a command lookup at all, or an
+  # ABSOLUTE path, which no function name can spell. The function's exit status
+  # is the status of its last command, so the `[[ ... ]] && { ... }` at the
+  # bottom IS the return value: empty output from the child ⇒ non-zero ⇒ refuse.
+  # That is why the variables below are unprefixed globals rather than `local`s.
+  # The trailing `|| _GSP_OUT="${_GSP_OUT}"` is a deliberate no-op, not a
+  # mistake: `VAR="$(cmd)"` keeps cmd's stdout even when cmd exits non-zero, so
+  # the self-assignment preserves the child's WHY= line while neutralising
+  # `set -e`. `|| _GSP_OUT=""` would throw the refusal reason away and every
+  # failure would report the generic one.
+  # The loader blanks apply to THIS exec too, not only to grok's: LD_PRELOAD &
+  # friends are processed while /usr/bin/env is being loaded, so without them
+  # injected code runs inside the very check that authorises the dispatch — and
+  # could forge its HOME=/PATH= success output.
+  #
+  # They are STATEMENTS, not an assignment prefix on the command substitution:
+  # macOS /bin/bash 3.2 mis-parses a prefixed heredoc inside `$( )` and the
+  # error surfaces hundreds of lines later, at an unrelated `case` arm (#595,
+  # and this file broke exactly that way once during review). Assigning to a
+  # variable that was already exported updates the exported value, so the child
+  # sees the blank; one that was never in the environment just stays a harmless
+  # shell variable.
+  # shellcheck disable=SC2034  # not unused: these are inherited EXPORTED vars,
+  # and assigning to one keeps it exported with the new (empty) value
+  # Clear the outputs FIRST. They are globals (the parent side may not use
+  # `local` — see above), so a value inherited from the environment, or left
+  # by an earlier dispatch, would otherwise still be sitting there if any
+  # path returned success without setting them.
+  _GROK_TRUSTED_HOME=''
+  _GROK_PINNED_PATH=''
+  _GROK_PREFLIGHT_WHY=''
+  # shellcheck disable=SC2034  # not unused: inherited EXPORTED vars, and
+  # assigning to one keeps it exported with the new (empty) value
+  LD_PRELOAD=''
+  # shellcheck disable=SC2034
+  LD_AUDIT=''
+  # shellcheck disable=SC2034
+  LD_LIBRARY_PATH=''
+  # shellcheck disable=SC2034
+  DYLD_INSERT_LIBRARIES=''
+  # shellcheck disable=SC2034
+  DYLD_LIBRARY_PATH=''
+  # The child is a FILE beside this one, not a heredoc inside this `$( )`:
+  # macOS /bin/bash 3.2 mis-parses a quoted heredoc in a command substitution
+  # once the body carries enough quoting, and reports the error hundreds of
+  # lines away at an unrelated `case` arm while bash 5 stays silent (#595).
+  # `${BASH_SOURCE[0]%/*}` is parameter expansion, so no command lookup — and
+  # it resolves under the installed plugin root, giving the child the same
+  # trust as this file rather than the checkout's.
+  _GSP_CHILD="${BASH_SOURCE[0]%/*}/grok-preflight.sh"
+  [[ -f "$_GSP_CHILD" && ! -L "$_GSP_CHILD" ]] || _GSP_CHILD=/dev/null
+  # shellcheck disable=SC2269
+  _GSP_OUT="$(/usr/bin/env -i /bin/bash -p "$_GSP_CHILD" "${1:-}")" || _GSP_OUT="${_GSP_OUT}"
+
+  # Publish what the child derived. Both are consumed on the `env` line of the
+  # grok invocation, so the file that was checked and the file that is loaded
+  # are the same one. A refusal prints `WHY=<reason>` instead, so the HOME=
+  # prefix — not emptiness — is the success test, and this compound command is
+  # the function's exit status.
+  _GROK_PREFLIGHT_WHY="${_GSP_OUT#WHY=}"
+  [[ "$_GROK_PREFLIGHT_WHY" == "$_GSP_OUT" ]] && _GROK_PREFLIGHT_WHY="profile"
+  [[ "$_GSP_OUT" == HOME=* ]] && {
+    _GROK_TRUSTED_HOME="${_GSP_OUT#HOME=}"
+    _GROK_TRUSTED_HOME="${_GROK_TRUSTED_HOME%%$'\n'*}"
+    _GROK_PINNED_PATH="${_GSP_OUT#*$'\n'PATH=}"
+  }
+}
+
+# The hint is chosen by the child's reason code, because "install the example
+# profile" is wrong advice for four of the five ways this refuses.
+grok_preflight_hint() {
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == configdir ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok is missing, or is a symlink. A symlinked config directory can be pointed into the reviewed tree, which would hand the branch both the sandbox profile and the grok binary. Replace it with a real directory." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0
+  printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
+}
+
 execute_review() {
   local cli="$1"
   local prompt="$2"
@@ -2161,20 +2393,43 @@ execute_review() {
     # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
     #
     # SAFETY MODEL (must match dispatch.sh's grok case — single source of truth
-    # for the threat model lives there; this is the mirrored summary):
-    #   * --sandbox readonly blocks project-root writes (verified empirically).
-    #     Does NOT block shell exec, /tmp writes, or network.
-    #   * End-to-end safety requires "always approve" DISABLED in the grok
-    #     user-config (per-machine setting via `grok` `/permissions`).
-    #     With that, writes/shell denied in headless; without it, grok auto-
-    #     approves arbitrary tool use including the bash tool.
+    # for the threat model lives there; this is the mirrored summary. The two
+    # argv lists are pinned together by tests/test-grok-sandbox-arm.sh so they
+    # cannot drift):
+    #   * --sandbox strict: kernel-enforced (Seatbelt/Landlock). Reads confined
+    #     to CWD + system paths. Does NOT block CWD writes — its write set is
+    #     CWD + ~/.grok/ + temp dirs.
+    #   * --deny 'Bash(*)': shell exec denied by policy.
+    #   * --deny 'Edit': write/edit tool class denied, inside the project root
+    #     and outside it. Required because strict permits CWD writes and a Bash
+    #     deny alone does not gate the write tool.
+    #   * --deny 'MCPTool(*)': MCP is a separate permission class the Bash and
+    #     Edit denies do not reach, and a write/exec-capable MCP server would
+    #     bypass both under a CWD-writable strict profile. grok's own
+    #     websearch/webfetch classes are unaffected.
+    #   * GROK_CLAUDE_HOOKS_ENABLED=0 / GROK_CURSOR_HOOKS_ENABLED=0: hooks run
+    #     outside the permission system, so no deny rule reaches them, and
+    #     under strict anything grok spawns can write the CWD. Measured
+    #     2026-08-19 (GROK_HOOK_DEBUG + GROK_HOOKS_LOG), grok loads NO project
+    #     hook source here (`project_sources=0`), so this is defense-in-depth
+    #     against a future version that does, not a live hole being plugged —
+    #     see the dispatch.sh block for the full measurement and for why a
+    #     marker file is not evidence. Set via `env` so an inherited value
+    #     cannot re-enable them.
+    #   * The grok USER-CONFIG is not part of the boundary. The pre-2026-08-19
+    #     model claimed safety required "always approve" DISABLED; re-measured,
+    #     shell exec and out-of-tree writes succeeded under that setting too.
+    #   * Residuals, in full in the dispatch.sh block: a kernel fail-open
+    #     degrades this to policy-only containment (the denies still hold, so
+    #     it lands on the old `readonly` posture, not below it); strict permits
+    #     CWD writes by SPAWNED processes, which matters only for hooks, and no
+    #     project hook source loads here; /tmp stays writable; network egress
+    #     is not blocked on macOS.
     #   * Threat surface here: blueprint-review feeds design-document content
-    #     into this path. A prompt-injected design doc on a host where grok
-    #     user-config is permissive could get shell/write actions auto-
-    #     approved. This is the same residual risk class as dispatch.sh's
-    #     grok path and is documented in skills/dispatch-cli/scripts/dispatch.sh.
-    #   * No --always-approve / --disallowed-tools / --deny flags passed:
-    #     empirically they are no-ops in headless mode (false safety).
+    #     into this path, so a prompt-injected design doc is in scope. With the
+    #     flags above it can no longer obtain shell or write actions; the
+    #     residual is exfiltration of CWD-readable content via grok's own web
+    #     tools (network egress is not blocked on macOS).
     #
     # The stderr warning below is captured by run-design-review-loop.sh into
     # the per-reviewer raw file (e.g. grok-raw.txt). It will not surface to
@@ -2186,9 +2441,32 @@ execute_review() {
     # is destructive — whole output discarded — so err generous, not tight).
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
-    grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+    grok)    # The explicit "" is the no-override argument. The parameter exists
+             # only so tests can point the check at a fixture; passing it
+             # explicitly here says so at the call site, and keeps shellcheck
+             # from reading a parameter no caller ever supplies (SC2119/SC2120)
+             # as a sign the argument was forgotten.
+             if grok_sandbox_preflight ""; then
+             echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+             # The loader blanks are an assignment PREFIX on the helper call,
+             # not argv words: the helper execs "$@", where `LD_PRELOAD=` would
+             # be taken as the command name. They must be in the environment
+             # before /usr/bin/env is exec'd, because the dynamic loader acts on
+             # them while loading env itself — too early for env's own `-i`.
+             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+             DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
              _run_review_with_retries grok "$prompt" "$duration" pipe \
-               grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
+               /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
+               HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
+               GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
+               grok --prompt-file /dev/stdin --max-turns 150 --sandbox busdriver-review --deny 'Bash(*)' --deny 'Edit' --deny 'MCPTool(*)'
+             else
+               grok_preflight_hint >&2
+               # `[[ -n "" ]]` and not `false` or `return 1`: a keyword cannot be
+               # shadowed by an exported function, and this arm's status is what
+               # the caller reads.
+               [[ -n "" ]]
+             fi ;;
     # opencode — added 2026-07-20 as the "Auditor" / Mechanism Witness voice. The
     # MODEL is not part of this arm's contract: it comes from `.auditor.model`
     # (resolve_auditor_model above), so provider and model can change without

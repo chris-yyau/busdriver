@@ -3249,13 +3249,12 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 break
         # Same reason as the producer loop above, different transport: a here-string
         # operand feeding a shell IS the program (#643).
-        # The PRE-normalization text is what still says whether an IFS expansion was
-        # there; `_pairs` is built from the normalized copy, where it is already a space.
         for _hs in _herestring_shell_payloads(_pairs):
             # `_hs` is the whole SEGMENT, not a reconstructed operand -- see the
-            # generator. An unresolvable operand (`sh <<< "$VAR"`) needs no special case
-            # for the same reason: the scan already covers the text it sits in. What that
-            # cannot reach is what the VARIABLE holds, which is the `-` / /dev/fd/N
+            # generator. An unresolvable operand no longer relies on the scan happening
+            # to cover the text it sits in -- that reasoning held only WITHIN a segment and
+            # was the bypass fixed above; the payload test widens instead. What no widening
+            # can reach is what the VARIABLE holds, which is the `-` / /dev/fd/N
             # branch's own documented residual -- what stdin carries is not statically
             # visible -- so a bare `sh <<< "$VAR"` naming the helper nowhere still allows.
             _hit = _abandoned_scan_probe(_hs)

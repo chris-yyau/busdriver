@@ -1646,5 +1646,29 @@ assert_block "echo \"\$($_glued)\"" \
     "an IFS-glued helper inside a QUOTED command substitution is still found"
 assert_block "echo \$($_glued)" \
     "...and unquoted, where the IFS really does word-split"
+# -- R. brace expansion of the NAME is ADR 0006, and predates this branch -------------
+# Raised in review as a fail-open, and it is one: bash expands
+# `<stem>{s,x}lot.py` to the helper, and neither the literal-name test nor the
+# glob-squeezing probe rewrites a brace, so it classifies OK. It does so as a DIRECT
+# command too, not only through a here-string.
+#
+# Measured on `origin/main` and on this branch's base commit: identical there. It is
+# the residual ADR 0006 names in this very file -- `-m lease_{slot,x}` appears in the
+# comment above `_helper_invoked`, alongside the reasoning for leaving it: closing one
+# spelling does not close the class, since the same actor writes
+# `python3 -c "$(cat lease_slo{t..t}.py)"` where the name is equally invisible.
+#
+# Pinned as OK deliberately, so it stays VISIBLE and cannot be mistaken for a
+# regression of this branch. Changing it is an ADR 0006 decision, not a #643 one --
+# #643 is about what a shell reads on STDIN, and every transport here is unaffected.
+# The glob spelling beside it is what this file DOES close, and it still blocks.
+assert_ok    "${STEM}{s,x}lot.py" \
+    "residual (ADR 0006, same on main): a braced helper name is not rewritten"
+assert_ok    "bash <<< '${STEM}{s,x}lot.py'" \
+    "...and the same through a here-string, which adds nothing to it"
+assert_block "${STEM}slo[t].py" \
+    "...while the GLOB spelling, which this file does close, still blocks"
+assert_block "bash <<< '${STEM}slo[t].py'" \
+    "...including through a here-string"
 printf '\n%s: %d passed, %d failed\n' "$(basename "${BASH_SOURCE[0]}")" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

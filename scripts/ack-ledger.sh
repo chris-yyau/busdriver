@@ -432,6 +432,10 @@ _body_is_rate_limit_notice() {
 #     the verbs skipped / aborted / cancelled, a negated (not|never) or yet-to or
 #     unable-to / not-able-to or failed-to start|complete|finish, "review timed out", and the
 #     bare "review failed";
+#   * a NEGATED SUBJECT at the head, over the performance verbs only — "No review
+#     was completed" reports that nothing was reviewed. Anchored to the start and
+#     restricted to start/complete/finish so it cannot invert the skip family:
+#     "Review completed; no review was skipped" says one DID run;
 #   * the review as OBJECT of a denial ("could not start this review") — where the
 #     object must END the clause, so "failed to complete the review summary" is
 #     about the summary and still acks;
@@ -449,14 +453,16 @@ _body_is_rate_limit_notice() {
 #
 # OUTSIDE the contract, by construction and after measurement:
 #
-#   * a QUALIFIED subject or object beyond a single article — "The code review
-#     started", "could not complete the full automated security review". One more
-#     qualifier word is always available, so no threshold is defensible;
+#   * a QUALIFIED subject or object beyond one closed determiner — "The scheduled
+#     nightly review started", "could not complete the full automated security
+#     review". The subject at the HEAD of the description may carry one word from a
+#     closed determiner set (the/a/an/this/that/code/pr); past that, one more
+#     qualifier word is always available and no threshold is defensible;
 #   * a denial introduced by a colon, dash or comma anywhere but the START of the
-#     description — "The review started: failed to complete". A description that
-#     OPENS with the review is covered; telling the review's own introducer from
-#     another subject's mid-string ("artifacts for review: failed to complete")
-#     needs the same unbounded qualifier count;
+#     description — "Nightly job ran: review failed to complete". A description
+#     that OPENS with the review (with or without that one determiner) is covered;
+#     telling the review's own introducer from another subject's mid-string
+#     ("artifacts for review: failed to complete") needs the unbounded count;
 #   * a clause that DENIES and then RECOVERS — "failed to complete after retry but
 #     later completed" demotes on its first half. The adjunct that may follow a
 #     subjectless denial is not required to end the clause, and requiring it to
@@ -547,9 +553,9 @@ _body_is_rate_limit_notice() {
 # reason: without it "not complete" matches inside "was not completely clean",
 # which reports a review that DID run. POSIX bracket form rather than \< or \b so
 # it behaves identically under GNU grep (CI) and BSD grep (macOS).
-_STATUS_NONREVIEW_RE='rate.?limited|rate.?limit (exceeded|reached|hit)|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|(^|[^[:alnum:]_])review limit reached|skipping review([^[:alnum:]_]|$)|unable to review([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (skipped|aborted|cancelled|canceled)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* timed out([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (unable|not able) to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|unable to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
+_STATUS_NONREVIEW_RE='^no review( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$| *([[:punct:]]|—|–)|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(^|[^[:alnum:]_])rate[^[:alnum:]_]{0,3}limited|(^|[^[:alnum:]_])rate[^[:alnum:]_]{0,3}limit (exceeded|reached|hit)|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|(^|[^[:alnum:]_])review limit reached|skipping review([^[:alnum:]_]|$)|unable to review([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (skipped|aborted|cancelled|canceled)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* timed out([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (unable|not able) to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|unable to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
 
-_STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
+_STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
 
 _status_desc_is_non_review() {
   local rc desc clauses
@@ -607,8 +613,11 @@ _status_desc_is_non_review() {
   # with a modal — "couldn't start" normalizes to "could not start". The FIRST
   # auxiliary additionally tolerates no space at all, because pass 3 hands it a
   # clause sitting flush against the introducer it absorbed ("Review started,could
-  # not complete"). Spacing the text instead would be wrong: `rate.?limited` reads
-  # "rate:limited" as one budget token, and inserting a space there ACKS it.
+  # not complete"). Spacing the text instead would be wrong: the rate-limited token
+  # reads "rate:limited" as one budget token, and inserting a space there ACKS it.
+  # That token spans its separator with a bounded run of non-word BYTES rather than
+  # `.?`, because `.` matches one byte under the LC_ALL=C this script inherits and
+  # the em-dash spelling is three.
   clauses=" ${desc//;/$'\n' }"
   clauses="${clauses//./$'\n' }"
   clauses="${clauses//!/$'\n' }"
@@ -625,10 +634,14 @@ _status_desc_is_non_review() {
   # description OPENS with the review: "Review started: failed to complete" is the
   # review's own failure. The same shape mid-string ("artifacts for review: failed
   # to complete") belongs to whatever noun precedes it, and telling those apart
-  # anywhere else needs an unbounded qualifier count — see the contract. The prefix
-  # may not cross another introducer, so in "Review completed: preview rendering -
-  # failed to complete" the failure still belongs to the rendering.
-  printf '%s' "$desc" | grep -qiE "^review[^;.!?:,—–-]*[-:,—–] *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
+  # anywhere else needs an unbounded qualifier count — see the contract. What may
+  # sit between that subject and its introducer is the CLOSED auxiliary set plus a
+  # closed progress vocabulary, never free text: "The reviewer started", "The review
+  # summary started" and "The review's author started" all name something other than
+  # the review, and a free-form fragment would hand them the subject slot. The
+  # prefix also may not cross another introducer, so in "Review completed: preview
+  # rendering - failed to complete" the failure still belongs to the rendering.
+  printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *[-:,—–] *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
   [[ "$rc" -eq 0 ]] && return 0
   [[ "$rc" -eq 1 ]] && return 1
   return 0

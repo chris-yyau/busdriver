@@ -158,6 +158,20 @@ for desc in \
   'Review started:was not completed' \
   'Review rate:limited' \
   'Review rate—limited' \
+  'No review was completed' \
+  'No review was started' \
+  'No review was completed due to quota' \
+  'No review was completed, due to quota' \
+  'No review was completed. Logs attached' \
+  'No review was completed: service unavailable' \
+  'No review was completed, service unavailable' \
+  'No review was completed—due to quota' \
+  'No review was completed–due to quota' \
+  'No review was started; service unavailable' \
+  'The review started, failed to complete' \
+  'Code review started, failed to complete' \
+  'Review started successfully, failed to complete' \
+  'Review had successfully started, failed to complete' \
   'Review started,failed to complete' \
   'Review did not get completed' \
   "Review didn't get started" \
@@ -289,6 +303,13 @@ for desc in \
   'Review failed to find any issues' \
   'Review completed; failed to complete the review summary' \
   'Review completed; skipping reviewer profile update' \
+  'The reviewer started, failed to complete' \
+  'The review summary started, failed to complete' \
+  "The review's author started, failed to complete" \
+  'No review was completed without findings' \
+  'Review reply: failed to complete' \
+  'Review completed; corporate: limited scope' \
+  'Review completed; corporate - limited scope' \
   'Review completed: preview rendering - failed to complete'
 do
   status=$(mk_status success "$desc")
@@ -299,7 +320,7 @@ do
   fi
 done
 if [[ "$prop_ok_fail" -eq 0 ]]; then
-  ok "property(inverse): 30 keyword-bearing/trailing-clause verdicts still ack HEAD"
+  ok "property(inverse): 37 keyword-bearing/trailing-clause verdicts still ack HEAD"
 fi
 
 # ---------------------------------------------------------------------------
@@ -340,8 +361,8 @@ done
 # Under-block residual: outside the contract, so it ACKS. Not a silent gap — a
 # newly OBSERVED payload in this shape is a new case with a new fixture.
 for desc in \
-  'The review started, failed to complete' \
-  'No review was completed' \
+  'The scheduled nightly review started, failed to complete' \
+  'No review of this commit was completed' \
   'Could not complete the full automated code review'
 do
   status=$(mk_status success "$desc")

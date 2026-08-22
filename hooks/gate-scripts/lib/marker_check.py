@@ -3336,6 +3336,257 @@ def _abandoned_scan_probe(text):
     return None
 
 
+# A QUOTED heredoc opener -- `<<'D'`, `<<"D"`, `<<\D`, and the `<<-` spellings of each.
+# KEEP IN STEP WITH gitcmd_detect._HEREDOC_QUOTED, which carries the reasoning for both
+# guards: `(?<!<)` keeps a here-STRING out (`<<<` has its own path, #643), and the trailing
+# lookahead requires the delimiter token to END here, so a delimiter assembled from several
+# quoting runs (`<<'EO'F`) is not half-matched onto the wrong terminator. Copied rather than
+# imported: this file runs under `python3 -I`, where the script directory is off sys.path
+# and a sibling import raises ModuleNotFoundError -- which this gate reports as
+# BLOCK_CLASSIFIER_ERROR on EVERY Bash call. Spelled through _SQ/_DQ because no code here
+# carries a literal quote; the sibling's `[^\']` is the same class.
+_HEREDOC_QUOTED = re.compile(
+    r"(?<!<)<<-?[ \t]*(?:"
+    + _SQ + r"([^" + _SQ + r"]*)" + _SQ + r"|"     # <<'D'
+    + _DQ + r"([^" + _DQ + r"]*)" + _DQ + r"|"     # <<"D"
+    + r"\\(\w+))(?=[\s;|&<>)]|$)")                 # <<\D
+
+
+# A quote WEDGED BETWEEN TWO WORD CHARACTERS, which is the apostrophe of ordinary prose:
+# `it's`, `the library's`. Deleting one cannot change where a word begins or ends, because
+# by construction no whitespace is adjacent to it -- it can only JOIN two word characters,
+# which is what the shell itself does to `a'b'c`. Every OTHER quote is left alone.
+_PROSE_QUOTE = re.compile(r"(?<=\w)[" + _SQ + _DQ + r"](?=\w)")
+
+# ANY heredoc redirect operator, quoted delimiter or not, `<<<` excluded. Used only to
+# count how many share the opener's line -- see the ownership guard below.
+_HEREDOC_OP = re.compile(r"(?<!<)<<-?(?!<)")
+
+
+def _dq_heredoc_unescape(text):
+    """`text` -- the raw capture of a `<<"D"` delimiter -- with bash's own quote
+    removal applied, so the actual TERMINATOR line can be found.
+
+    Inside double quotes a backslash keeps its meaning only before `$`, a backtick,
+    `"`, another backslash, or a newline -- everywhere else it is a literal,
+    unremoved backslash. `<<"E\\$OF"` is closed by the line spelled `E$OF`, not by
+    the raw capture `E\\$OF`; searching for the raw spelling either misses the real
+    terminator (an over-block, the safe direction) or -- if that raw spelling also
+    happens to occur earlier, inside the body -- stops the body short of where bash
+    actually ends it, so a live command past that point reads as heredoc data and
+    is never walked. Codex in review.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == chr(92) and i + 1 < n and text[i + 1] == "\n":
+            # LINE CONTINUATION, not an escape: inside double quotes bash removes the
+            # backslash AND the newline, so `<<"E\<newline>OF"` is terminated by `EOF`.
+            # Decoding it to a bare newline (the first draft) left the terminator
+            # unmatchable, so recovery bailed and the #639 prose block persisted for that
+            # spelling. Raised by codex on the PR; `bash -n` accepts the command.
+            i += 2
+            continue
+        if ch == chr(92) and i + 1 < n and text[i + 1] in ("$", "`", _DQ, chr(92)):
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _squeeze_quoted_heredocs(cmd):
+    """Drop the PROSE apostrophes from every quoted heredoc BODY.
+
+    The outer shell does no quote processing at all inside `<<'DELIM'` -- an apostrophe
+    there is a letter, not an opener. The segmenter models the body as shell source anyway
+    (which is what lets a body that RUNS something still be walked), so the apostrophe reads
+    as an unterminated quote, the whole command comes back unparseable, and the caller falls
+    to the structureless probe -- which then finds a helper NAME in ordinary prose and blocks
+    a command that invokes nothing (#639).
+
+    Three choices here are load-bearing. Each was measured; each has a fixture.
+
+    EXACTLY ONE quote character in the body, and it must be WEDGED between two word
+    characters. That is the ONLY deletion that is boundary-safe, and the bound is not
+    cosmetic -- two wider drafts were refuted by codex on this change, each verified against
+    HEAD:
+
+      - delete every quote: `python3 "/tmp/path with space/<helper>"` becomes three words,
+        the script operand reads as `/tmp/path`, and the helper is demoted to an argument.
+      - delete every WEDGED quote: a wedged pair still quotes the whitespace BETWEEN it, so
+        `sh -c X'x=1 python3 <helper> Z'Y` -- one word to bash, an executed payload -- comes
+        apart the same way.
+
+    A LONE quote delimits nothing: there is no run for its removal to disturb, and being
+    wedged means no whitespace sits beside it either, so no word can split and no command
+    word can move. Anything more is undecidable from text -- three prose apostrophes and
+    that `sh -c` payload are the SAME SHAPE (all wedged, whitespace between them), which is
+    the wall the parked #639 design hit from the other side.
+
+    RESIDUAL, honest and measured: only an ODD number of quotes reaches here at all (an even
+    number pairs up and the command already parses), so this fixes the reported N=1 body and
+    leaves N=3, 5, ... over-blocking. Fail-CLOSED, and not the reported shape.
+
+    RESIDUAL, same direction: "logical line" means backslash-newline only. Bash also
+    continues a command after `|`, `&&`, an open group and a multiline string, and after any
+    of those the real body starts further down than this walks. Two consequences, and only
+    one of them is real. The one that happens: that line's own text is read as body, its
+    quotes lift the count above one, and the command is REFUSED -- an over-block. The one
+    repeatedly proposed and DISMISSED ON EVIDENCE: a decoy terminator inside such a
+    continuation letting the squeeze rewrite live syntax and hide an invocation. Asserted in
+    four review rounds; SEVEN constructions were run, including the reviewer's own verbatim
+    one, and none reproduced. That last one, measured:
+
+        cat <<'D' |
+        sh -c X'x=1 python3 <helper> Z
+        D
+        #'
+        D
+
+    -- HEAD `BLOCK_MARKER_SCRIPT`, this classifier `BLOCK_MARKER_SCRIPT`, `bash -n` clean,
+    and a real bash run does not reach the helper at all (`bash: line 5: D: command not
+    found`). So the claim fails on both legs: no verdict divergence, and no execution to
+    hide. The masking is not luck -- the body's one-quote rule, the operator count taken
+    outside the body, and comment defusing each independently refuse these shapes.
+
+    RESIDUAL, measured and left: the operator count reads `<<` as an operator wherever it
+    appears outside the body, including inside a STRING -- `echo "x << y"; cat <<'EOF' ...`
+    counts two and refuses. An over-block, and the same family as the in-body `<<` already
+    excluded above; separating them needs quote provenance this scan does not keep, and
+    adding a second quote state machine to loosen a fail-CLOSED answer is the trade every
+    fail-open in this change came from. Reported and reproduced; not chased.
+
+        Left as a DOCUMENTED GAP IN THE MODEL rather than a closed hole: the reasoning that a
+    non-backslash continuation moves the real body is correct, and a future change that
+    relaxes any of those three guards could make it reachable. What is not warranted is
+    modelling the rest of bash's continuation grammar to close a path nobody has been able to
+    walk -- that is the shell parser this file keeps declining to become, and the parked #639
+    design is the record of where that road ends.
+
+    NEVER the BACKSLASH. `_norm_for_scan` rejoins a backslash-newline continuation, so
+    deleting backslashes FIRST splits the name the shell assembles across that continuation
+    into two commands and it is never seen. Also raised by codex, also verified against HEAD.
+
+    SQUEEZED, not EXCISED. #639 proposed dropping the body when the consumer is not an
+    interpreter. Four drafts of that predicate were each refuted by measurement --
+    `cat(){ bash /dev/stdin; }; cat <<'EOF'` runs its body, and ANY name can be a shell
+    function, so "positively proven non-executing data sink" is not decidable from text.
+    Squeezing needs no such predicate: the body is still segmented and walked, whoever
+    consumes it.
+
+    EXACTLY ONE quoted heredoc in the whole command, which is why this is a single pass and
+    not a loop. Deleting a quote shifts the parity of the ENTIRE command, so a SECOND
+    heredoc's prose apostrophe -- correctly left in place, because that body was not
+    squeezed -- stops being odd-one-out and pairs with a third across the live shell between
+    them, hiding it as quoted data. Measured: five heredocs carrying one apostrophe each,
+    with a real invocation between bodies 2 and 3; `bash -n` valid, HEAD blocking, and both
+    the looping draft AND a stop-after-the-first-squeeze draft returning OK. Raised by codex
+    on this change and reproduced before fixing. One heredoc has no such interaction: the
+    opener's own two quotes balance, so removing the body's lone quote leaves every other
+    quote in the command paired exactly as it already was.
+
+    Called ONLY on the retry path below, never on a command that already parsed. Every other
+    exit is a refusal, and refusing is free -- the command stays unparseable and the caller
+    probes it exactly as it does today.
+    """
+    # Openers are matched against the COMMENT-DEFUSED copy, which blanks the quotes inside
+    # a comment byte-for-byte -- so offsets still index `cmd`, while `# <<'FAKE'` no longer
+    # looks like syntax. Every `return cmd` below is a refusal: the command stays
+    # unparseable and the caller probes it exactly as it does today.
+    scan = _defuse_comments(cmd)
+    ms = list(_HEREDOC_QUOTED.finditer(scan))
+    # ONE heredoc in the whole command, counted BOTH ways: exactly one quoted delimiter this
+    # can read, and exactly one heredoc operator of any spelling. The second count is what
+    # makes the first sound -- `_HEREDOC_QUOTED` deliberately refuses a delimiter assembled
+    # from several quoting runs (`<<'E'2`), and an unquoted `<<U` it cannot see at all, so
+    # counting only its own matches let two further heredocs hide beside the one it matched
+    # and reopened the parity bypass below. Raised by codex in the PR pass. Counting every
+    # operator also subsumes the per-line ownership question: one operator in the command is
+    # necessarily the only one on its line, so `3<<U 4<<'N'` is refused here.
+    # The operator count runs AFTER the body is located, below -- inside the body a `<<` is
+    # prose, not an operator, and counting it there refused every command whose body merely
+    # writes one. "The library's <helper> documents x << 1." stayed blocked while the same
+    # sentence without the `<<` was fixed: this branch re-breaking its own bug. Raised by
+    # codex and reproduced.
+    if not ms:
+        return cmd
+    m = ms[0]
+    # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the
+    # fail-CLOSED direction -- an opener this cannot vouch for is left alone.
+    # RESIDUAL, reported and deliberately NOT chased: an ESCAPED quote counts here too, so a
+    # prefix such as `echo it\'s;` reads as odd parity and refuses a recovery it could have
+    # allowed. That is an over-block. Teaching this to skip escapes would loosen the one
+    # guard standing between a false opener inside a string and a deleted quote -- the
+    # direction every fail-open in this change came from -- for a shape nobody reported.
+    if any(scan[:m.start()].count(_q) % 2 for _q in (_SQ, _DQ)):
+        return cmd
+    nl = scan.find("\n", m.end())
+    if nl == -1:
+        return cmd
+    # The body starts after the opener's LOGICAL line. Bash removes a backslash-newline
+    # before it reads redirections, so a continued opener pushes the body down; taking the
+    # first physical newline instead pulls the continuation's own text INTO the body, and a
+    # continuation carrying balanced quotes (`cat <<'EOF' \` / `"notes file.md"`) then lifts
+    # the count below above one and refuses to recover an ordinary command.
+    # Only an ODD run of backslashes continues: with `\\` the first escapes the second and
+    # the newline still ends the line, and treating that as a continuation skipped the body's
+    # first line instead. All three spellings raised by codex across the PR passes -- the
+    # last of them after this walk had been deleted as unfireable, which it is not: the
+    # mutation that missed it used a continuation line carrying no quotes.
+    while nl > 0:
+        k = nl
+        while k > 0 and scan[k - 1] == chr(92):
+            k -= 1
+        if (nl - k) % 2 == 0:
+            break
+        nl = scan.find("\n", nl + 1)
+        if nl == -1:
+            return cmd
+    tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
+    raw_delim = next(g for g in m.groups() if g is not None)
+    # Only the DOUBLE-quoted spelling needs decoding: `<<'D'` performs no quote
+    # removal at all, and the backslash spelling's own backslash is consumed by
+    # the pattern, not captured -- group(2) is the sole raw-vs-actual mismatch.
+    if m.group(2) is not None:
+        raw_delim = _dq_heredoc_unescape(raw_delim)
+    delim = re.escape(raw_delim)
+    # `\r?$`, because this searches the RAW command while `_norm_for_scan` (applied later,
+    # to the squeezed result) is what folds CRLF to LF. On a CRLF command the terminator
+    # line is `EOF\r`, `^EOF$` never matches, recovery bails, and the #639 prose block
+    # persists for the identical command in Windows line endings. Raised by CodeRabbit.
+    term = re.compile("^" + tabs + delim + r"\r?$", re.M).search(scan, nl + 1)
+    if not term:
+        return cmd
+    # ONE heredoc in the command, counted OUTSIDE the body now that the body is known --
+    # everything between the opener's line and the terminator is data, where `<<` is prose.
+    # Counted as OPERATORS rather than as `_HEREDOC_QUOTED` matches, because that pattern
+    # deliberately refuses a delimiter assembled from several quoting runs (`<<'E'2`) and
+    # cannot see an unquoted `<<U` at all, so counting only its own matches let two further
+    # heredocs hide beside the one it matched and reopened the parity bypass. Over a
+    # continuation-JOINED copy, since bash removes a backslash-newline before it tokenizes
+    # and `<\<D` is a real operator the raw text never spells. Each of these three was a
+    # separate codex finding; joining and operator-counting only ever refuse MORE.
+    # BOTH counts run out here, for the same reason: a body documenting `<<\END` produced a
+    # second `_HEREDOC_QUOTED` match and a body writing `x << 1` a second operator, and either
+    # one refused the recovery -- #639's false block, rebuilt out of the guard meant to make
+    # the fix safe. The opener is `ms[0]`, which is sound because a match inside the body can
+    # only come after it. Both raised by codex, one round apart.
+    if sum(1 for x in ms if not (nl + 1 <= x.start() < term.start())) != 1:
+        return cmd
+    outside = (scan[:nl + 1] + scan[term.start():]).replace(chr(92) + "\n", "")
+    if len(_HEREDOC_OP.findall(outside)) != 1:
+        return cmd
+    body = cmd[nl + 1:term.start()]
+    # EXACTLY ONE quote character in the body -- see the docstring. The sub then fires only
+    # if it is also WEDGED; an unwedged lone quote leaves the body untouched.
+    if sum(body.count(_q) for _q in (_SQ, _DQ)) != 1:
+        return cmd
+    return cmd[:nl + 1] + _PROSE_QUOTE.sub("", body) + cmd[term.start():]
+
+
 def _helper_invoked(cmd, _depth=0, _full=None):
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
@@ -3444,6 +3695,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         if _hit:
             return _hit
     _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    if not ok:
+        # RETRY, once, with the quoting dropped from every quoted heredoc body. The body of
+        # a `<<'DELIM'` is literal to the outer shell, so an apostrophe in prose there is
+        # the segmenter's own limitation rather than a broken command -- and abandoning to
+        # the structureless probe over it blocks `cat > notes.md <<'EOF'` whose body merely
+        # NAMES a helper, which is a command operators write repeatedly (#639).
+        # Recovering the structure is what fixes it: the walk below then reads that name as
+        # the operand it is, exactly as it already does for the identical command without
+        # the apostrophe. A body that RUNS a helper still blocks -- the name reaches the
+        # walk as a COMMAND WORD, which is the same evidence the parseable spelling uses.
+        # Only reached when the plain parse FAILED, so no command that parses today changes.
+        _sq = _squeeze_quoted_heredocs(cmd)
+        if _sq != cmd:
+            _pairs, ok = _split_with_ops(_norm_for_scan(_sq))
+            if ok:
+                # Both, or the walk reads one command and the whole-command answers below
+                # read another: `_whole` is what the unresolvable-operand and marker tails
+                # search, and it carries the same body.
+                cmd, _whole = _sq, _squeeze_quoted_heredocs(_whole)
     # `)#` -- the comment defuser could not tell whether that paren delimited a command and
     # said so instead of guessing. Unresolved is the fail-CLOSED case, the same as an
     # unparseable command below, so the squeezed probe answers it.

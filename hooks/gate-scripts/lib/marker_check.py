@@ -2297,10 +2297,17 @@ def _squeeze_quoted_heredocs(cmd):
 
     RESIDUAL, same direction: "logical line" means backslash-newline only. Bash also
     continues a command after `|`, `&&`, an open group and a multiline string, and after any
-    of those the body starts further down than this walks -- so that line's own text is read
-    as body, its quotes lift the count above one, and the command is REFUSED. An over-block,
-    never a bypass. Modelling the rest of that grammar is the shell parser this file has
-    repeatedly declined to become; see the parked #639 design for where that road ends.
+    of those the real body starts further down than this walks. Two consequences, and only
+    one of them is real. The one that happens: that line's own text is read as body, its
+    quotes lift the count above one, and the command is REFUSED -- an over-block. The one
+    repeatedly proposed and repeatedly NOT reproduced: a decoy terminator inside such a
+    continuation letting the squeeze rewrite live syntax and hide an invocation. Every
+    construction tried (`cat <<'EOF' | echo "x`, `bash <<'D' |` with a decoy `D`) blocks on
+    this classifier exactly as it blocks on HEAD, because the text the squeeze would have to
+    rewrite is a quoted run that bash then executes as one bogus command word, not as the
+    helper. Recorded as unproven rather than closed: modelling the rest of that grammar is
+    the shell parser this file has repeatedly declined to become, and the parked #639 design
+    is the record of where that road ends.
 
     NEVER the BACKSLASH. `_norm_for_scan` rejoins a backslash-newline continuation, so
     deleting backslashes FIRST splits the name the shell assembles across that continuation

@@ -46,7 +46,7 @@
 #   L  ...and so is the OPENER count — a body documenting an opener produced a second match
 #
 # B..F and H all BLOCK on the pre-fix classifier too. That is the point: they are controls,
-# not coverage, and only A, G, I, J and K may change verdict. B and C also assert that the
+# not coverage, and only A, G, I, J, K and L may change verdict. B and C also assert that the
 # body is still read as shell source, so a change that stopped scanning heredocs fails them.
 #
 # Each is bitten by a mutation the others survive — verified, not assumed. The set was

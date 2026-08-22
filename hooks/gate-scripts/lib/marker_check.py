@@ -47,6 +47,61 @@ def _match_marker(tok, markers, simple_vars):
     return None
 
 
+def _bind_loop_vars(toks, simple_vars):
+    # `for NAME in W...` / `select NAME in W...` bind NAME to each word of the list in
+    # turn, so a marker named in the HEADER reaches a dangerous position in the BODY as
+    # "$NAME" -- `for f in <marker>; do rm -f "$f"; done` (#638). The body is a separate
+    # simple command and simple_vars persists across them, so recording the binding here
+    # is all that the delete AND the redirect/tee/indirect-verb forge paths need; neither
+    # `for` nor the header itself is a dangerous position, which is why _RESERVED_SH is
+    # left alone.
+    #
+    # Space-JOINED, not concatenated: _match_marker substring-matches, and a separator
+    # stops two adjacent list words assembling a basename that neither of them contains.
+    #
+    # LITERAL list words only, deliberately. A name the shell assembles at RUNTIME -- a
+    # glob (`for f in .claude/*.local`), a positional parameter (`set -- <marker>`), a
+    # function argument, `${f%x}`, a command substitution -- is the ADR 0006
+    # runtime-name-synthesis residual already documented in _writes_marker: the value
+    # never appears in the command text, so no static scan can see it, and anything able
+    # to do it can `python3 -c` the write directly. The shape closed here is the ORDINARY
+    # loop an agent writes without meaning to bypass anything, which is what #638 hit.
+    # Leading RESERVED words are skipped with the list this module already keeps for
+    # exactly that ("reserved words that PRECEDE a command"): `! for …`, `{ for …; }` and
+    # `if for …; then` are the same literal loop with a prefix, and matching only toks[0]
+    # let all three past. `function NAME {` is skipped too: it is the ksh spelling of
+    # `NAME() {`, which already skips because `)` and `{` are reserved, so leaving it out
+    # made one of two spellings of the SAME wrapper a bypass. `coproc NAME` is the only
+    # other construct in the language that puts a NAME between a keyword and a compound
+    # command, and `coproc` alone was already reserved -- so its optional NAME is the last
+    # member of this family, not the next of infinitely many. The `for`/`select` guard
+    # keeps the UNNAMED `coproc for f in …` (a loop AS the coprocess command) recognized:
+    # `for` matches the NAME pattern, and eating it would have re-opened that shape.
+    i = 0
+    while i < len(toks):
+        if (toks[i] in ("function", "coproc") and i + 1 < len(toks)
+                and toks[i + 1] not in ("for", "select")
+                and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", toks[i + 1])):
+            i += 2                    # the wrapper's optional NAME
+        elif toks[i] in _RESERVED_SH:
+            # The RAW token, not its basename: a reserved word is never path-qualified, so
+            # `_bn` made an ordinary external command named `/tmp/if` read as shell syntax
+            # and over-blocked a command that establishes no loop binding at all.
+            i += 1
+        else:
+            break
+    if (len(toks) > i + 3 and toks[i] in ("for", "select") and toks[i + 2] == "in"
+            and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", toks[i + 1])):
+        # APPEND, never overwrite: the loop body is a separate segment, so a destructive
+        # write would ERASE a marker the variable already held and open a shape the plain
+        # assignment path used to catch -- `f=<marker>; (for f in safe; do :; done);
+        # rm -f "$f"`, where the subshell rebinding does not reach the parent at all.
+        # Keeping both values over-approximates in the fail-CLOSED direction.
+        name = toks[i + 1]
+        prev = simple_vars.get(name, "")
+        simple_vars[name] = (prev + " " + " ".join(toks[i + 3:])).strip()
+
+
 def _is_redir(t):
     # A redirect operator token: pure punctuation that includes < or > (so >, >>,
     # <, <<, <<<, >|, >&, <&, <> all qualify). Bare ; | & ( ) are NOT redirects:
@@ -490,6 +545,9 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
         if flags is not None:
             flags["unparseable"] = True
         return next((mf for mf in markers if _bn(mf) in segtext), None)
+    # A loop binding a plain NAME=VALUE walk cannot see (#638), recorded before the token
+    # walk so the body segment that follows resolves "$NAME" through simple_vars.
+    _bind_loop_vars(toks, simple_vars)
     seg = []
     seg_words = []   # command-position candidates: redirect operators/targets excluded
     seg_has_cmd = False

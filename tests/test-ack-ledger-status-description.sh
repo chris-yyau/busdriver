@@ -158,6 +158,9 @@ for desc in \
   'Review started:was not completed' \
   'Review rate:limited' \
   'Review rate—limited' \
+  'Review failed:see log' \
+  'Review failed,retry later' \
+  'Review failed—see log' \
   'No review was completed' \
   'No review was started' \
   'No review was completed due to quota' \
@@ -182,7 +185,15 @@ for desc in \
   'Unable to complete a review' \
   'Failed to start this review' \
   'Review completed; not rate limited' \
-  'Review completed; no longer at capacity'
+  'Review completed; no longer at capacity' \
+  'Review failed: see log' \
+  'Review failed, retry later' \
+  'Review failed - contact support' \
+  'Could not start this review: see log' \
+  'Could not start this review, retry later' \
+  'Unable to start this review: contact support' \
+  'Failed to start this review: see log' \
+  'Yet to start this review: see log'
 do
   status=$(mk_status success "$desc")
   result=$(run_ledger "$status" "$PRIOR_REVIEW")
@@ -308,6 +319,8 @@ for desc in \
   "The review's author started, failed to complete" \
   'No review was completed without findings' \
   'Review reply: failed to complete' \
+  'Could not start this review-summary generator' \
+  'Review failed-safe check passed' \
   'Review completed; corporate: limited scope' \
   'Review completed; corporate - limited scope' \
   'Review completed: preview rendering - failed to complete'
@@ -320,7 +333,7 @@ do
   fi
 done
 if [[ "$prop_ok_fail" -eq 0 ]]; then
-  ok "property(inverse): 37 keyword-bearing/trailing-clause verdicts still ack HEAD"
+  ok "property(inverse): 39 keyword-bearing/trailing-clause verdicts still ack HEAD"
 fi
 
 # ---------------------------------------------------------------------------
@@ -331,7 +344,7 @@ fi
 # The last three are the exact strings a review flagged as wrongly demoted by an
 # earlier, looser regex (bare `quota`/`capacity`/`skipped` alternatives). They
 # describe reviews that DID run and must keep acking.
-for desc in 'Review completed' 'No issues found' '' \
+for desc in 'Review completed' 'No issues found' '' '   ' \
   'Review completed within quota' \
   'Capacity analysis completed' \
   'Review completed; generated files skipped'

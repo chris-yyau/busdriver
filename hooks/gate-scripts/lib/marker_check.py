@@ -2347,11 +2347,16 @@ def _squeeze_quoted_heredocs(cmd):
     # writes one. "The library's <helper> documents x << 1." stayed blocked while the same
     # sentence without the `<<` was fixed: this branch re-breaking its own bug. Raised by
     # codex and reproduced.
-    if len(ms) != 1:
+    if not ms:
         return cmd
     m = ms[0]
     # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the
     # fail-CLOSED direction -- an opener this cannot vouch for is left alone.
+    # RESIDUAL, reported and deliberately NOT chased: an ESCAPED quote counts here too, so a
+    # prefix such as `echo it\'s;` reads as odd parity and refuses a recovery it could have
+    # allowed. That is an over-block. Teaching this to skip escapes would loosen the one
+    # guard standing between a false opener inside a string and a deleted quote -- the
+    # direction every fail-open in this change came from -- for a shape nobody reported.
     if any(scan[:m.start()].count(_q) % 2 for _q in (_SQ, _DQ)):
         return cmd
     nl = scan.find("\n", m.end())
@@ -2390,6 +2395,13 @@ def _squeeze_quoted_heredocs(cmd):
     # continuation-JOINED copy, since bash removes a backslash-newline before it tokenizes
     # and `<\<D` is a real operator the raw text never spells. Each of these three was a
     # separate codex finding; joining and operator-counting only ever refuse MORE.
+    # BOTH counts run out here, for the same reason: a body documenting `<<\END` produced a
+    # second `_HEREDOC_QUOTED` match and a body writing `x << 1` a second operator, and either
+    # one refused the recovery -- #639's false block, rebuilt out of the guard meant to make
+    # the fix safe. The opener is `ms[0]`, which is sound because a match inside the body can
+    # only come after it. Both raised by codex, one round apart.
+    if sum(1 for x in ms if not (nl + 1 <= x.start() < term.start())) != 1:
+        return cmd
     outside = (scan[:nl + 1] + scan[term.start():]).replace(chr(92) + "\n", "")
     if len(_HEREDOC_OP.findall(outside)) != 1:
         return cmd

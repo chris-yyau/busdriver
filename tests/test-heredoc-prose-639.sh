@@ -43,6 +43,7 @@
 #   K  H is counted OUTSIDE the body — inside it a `<<` is prose, and counting it there
 #                                      refused every body that merely writes one: this
 #                                      branch re-breaking its own bug
+#   L  ...and so is the OPENER count — a body documenting an opener produced a second match
 #
 # B..F and H all BLOCK on the pre-fix classifier too. That is the point: they are controls,
 # not coverage, and only A, G, I, J and K may change verdict. B and C also assert that the
@@ -183,6 +184,13 @@ assert_ok "$DBS" "J. a DOUBLE backslash ending the opener line -> allowed"
 assert_ok "cat > /tmp/c.md <<'EOF'
 The library${Q}s ${HELPER} documents x << 1.
 EOF" "K. a body whose prose contains << -> allowed"
+
+# L. ...and the OPENER count is outside the body for the same reason K's operator count is:
+# a body documenting a heredoc opener produced a second `_HEREDOC_QUOTED` match and refused
+# the recovery. `ms[0]` is still the real opener — a match inside the body can only follow it.
+printf -v DOCHD 'cat > /tmp/c.md <<%sEOF%s\nThe library%ss %s documents <<%sEND here.\nEOF' \
+    "$Q" "$Q" "$Q" "$HELPER" "$BS"
+assert_ok "$DOCHD" "L. a body documenting a heredoc opener -> allowed"
 
 echo
 if [[ $FAIL -eq 0 ]]; then

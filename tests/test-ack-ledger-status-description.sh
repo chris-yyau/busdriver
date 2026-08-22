@@ -413,5 +413,44 @@ else
   fail "pending status produced '$result', expected 'stale'"
 fi
 
+# ---------------------------------------------------------------------------
+# LOCALE FAIL-OPEN — Pass 3's introducer must match a real em/en dash as ONE
+# character even under LC_ALL=C. A [-:,—–] bracket class matches exactly one
+# BYTE under C locale, and the em/en dash are each 3 UTF-8 bytes, so the class
+# silently never matches them and the whole pass falls through to the ack
+# default — reopening the fail-open this guard exists to close.
+# ---------------------------------------------------------------------------
+status=$(mk_status success $'Review started\xe2\x80\x94 failed to complete')
+result=$(LC_ALL=C run_ledger "$status" "$PRIOR_REVIEW")
+if [[ "$result" == "stale" ]]; then
+  ok "Pass 3 em-dash introducer demotes under LC_ALL=C"
+else
+  fail "em-dash introducer under LC_ALL=C produced '$result', expected 'stale' — the [-:,—–] bracket-class regression is back"
+fi
+
+# ---------------------------------------------------------------------------
+# PIPELINE-FAILURE FAIL-OPEN — a failed `tr` in the description normalizer
+# must fail the whole `desc=$(...)` assignment (pipefail scoped to that
+# command substitution's own subshell), not be silently swallowed by a
+# successful trailing `sed`. Simulated with a stub `tr` placed first on PATH
+# that always fails without producing output.
+# ---------------------------------------------------------------------------
+STUB_BIN_DIR=$(mktemp -d)
+trap 'rm -rf "$STUB_BIN_DIR"' EXIT
+cat > "$STUB_BIN_DIR/tr" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$STUB_BIN_DIR/tr"
+status=$(mk_status success 'Review completed')
+result=$(PATH="$STUB_BIN_DIR:$PATH" run_ledger "$status" "$PRIOR_REVIEW")
+if [[ "$result" == "stale" ]]; then
+  ok "failed tr in the desc normalizer fails CLOSED (pipefail), not silently acked"
+else
+  fail "failed tr produced '$result', expected 'stale' — pipefail is not scoping to the normalizer pipeline"
+fi
+rm -rf "$STUB_BIN_DIR"
+trap - EXIT
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -589,7 +589,13 @@ _status_desc_is_non_review() {
   # both into one `|| desc=""` branch made a whitespace-only description read
   # as a broken pipeline and demote, when the contract (see above) says an
   # EMPTY description acks — whitespace-only is the same empty state.
-  if ! desc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+  # `set -o pipefail` is scoped to THIS command substitution's own subshell —
+  # it does not leak into the caller's shell option state — so a failed `tr`
+  # (rather than only the trailing `sed`) is what `desc=$(...)` fails on; a
+  # bare pipeline without it reports only the last command's exit status and
+  # a failed `tr` producing empty output would be misread as the whitespace-
+  # only empty-input case below instead of a genuine pipeline failure.
+  if ! desc=$(set -o pipefail; printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
     | sed "s/cannot/can not/g;
            s/can't/can not/g; s/can’t/can not/g;
            s/won't/will not/g; s/won’t/will not/g;
@@ -650,7 +656,14 @@ _status_desc_is_non_review() {
   # the review, and a free-form fragment would hand them the subject slot. The
   # prefix also may not cross another introducer, so in "Review completed: preview
   # rendering - failed to complete" the failure still belongs to the rendering.
-  printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *[-:,—–] *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
+  # The introducer is an ALTERNATION (-|:|,|—|–), not a [-:,—–] bracket class:
+  # under the LC_ALL=C this script inherits, a bracket class matches exactly one
+  # BYTE, and the em/en dash are each 3 UTF-8 bytes, so a class containing them
+  # never matches a real em/en dash as a single character — the introducer
+  # silently fails to match and the whole pass falls through to the ack default.
+  # Pass 1/2's own dash handling already avoids this (named as alternation
+  # branches, e.g. `| *—| *–`); this pass's bracket class was the one holdout.
+  printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *(-|:|,|—|–) *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
   [[ "$rc" -eq 0 ]] && return 0
   [[ "$rc" -eq 1 ]] && return 1
   return 0

@@ -160,6 +160,10 @@ NODE_GATE = re.compile(
     r'/usr/bin/env -i PATH=/usr/bin:/bin (?:HOME="\$HOME" )?'
     r'CLAUDE_PLUGIN_ROOT="' + ROOT + r'" CLAUDE_HOOK_EVENT_NAME="\$CLAUDE_HOOK_EVENT_NAME" '
     r'bash "' + ROOT + r'/hooks/gate-scripts/lib/sanitized-node\.sh" '
+    # ONLY `--fail-open` — `sanitized-node.sh` shifts that token and nothing else, so a
+    # `--fail-closed` registration leaves four operands, trips the wrapper's arity check and
+    # is force-blocked on every invocation. Accepting it here would have this file approve a
+    # registration the wrapper itself rejects; as an unrecognized shape it fails loudly.
     r'(?:--fail-open )?' + EVENT + ' ' + SCRIPT + ' ' + PROFILES + r' \|\| exit (0|2)'
 )
 SHELL_GATE = re.compile(
@@ -337,7 +341,9 @@ cat > "$_fix/hooks/hooks.json" <<'JSON'
   { "type": "command",
     "command":
       "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-deny-gate.js\" ||\texit  2" },
-  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-decoy.js\"" }, { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/unrelated.sh\" || exit 2" }
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-decoy.js\"" }, { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/unrelated.sh\" || exit 2" },
+  { "type": "command",
+    "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:synthetic\" \"scripts/hooks/synthetic-canonical-gate.js\" \"strict\" || exit 2" }
 ] } ] } }
 JSON
 # Subshells so the fixture paths can never leak into the guards below.
@@ -347,9 +353,13 @@ _fixture_src_only="$( HOOKS_DIR="$_fix/scripts/hooks"; discover_exit2 )"
 _m1="registration-only permissionDecision gate is discovered and flagged unclassified"
 _m2="↳ control: the source grep alone does NOT see it (the registration net is what fired)"
 _m3="↳ structural isolation: split key/value + tab-spaced tail found, shared-line decoy not blamed"
+_m4="↳ a canonical fail-closed registration is classified by the RULE, not the unrecognized fallback"
 if [[ "$_fixture_unclassified" == *"synthetic-deny-gate.js"* ]]; then assert 0 "$_m1"; else assert 1 "$_m1"; fi
 if [[ -z "$_fixture_src_only" ]]; then assert 0 "$_m2"; else assert 1 "$_m2"; fi
 if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3"; else assert 1 "$_m3"; fi
+# `1 1` = blocking AND contained, which only the canonical NODE_GATE shape can produce;
+# the `!unrecognized` fallback can only ever emit `1 0`.
+if grep -qx "synthetic-canonical-gate.js 1 1" <<< "$_fixture_index"; then assert 0 "$_m4"; else assert 1 "$_m4"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook
@@ -362,7 +372,7 @@ if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3
 # caveat as the exit-2 grep: a deny hidden behind a constant is not greppable, which is why
 # the explicit lists stay the human authority.
 discover_deny_capable() {
-    grep -lE "permissionDecision['\"]?[[:space:]]*:[[:space:]]*['\"]deny" "$HOOKS_DIR"/*.js 2>/dev/null \
+    grep -lE "permissionDecision['\"\`]?[[:space:]]*:[[:space:]]*['\"\`]deny" "$HOOKS_DIR"/*.js 2>/dev/null \
       | sed 's|.*/||' | sort -u
 }
 # Capture first (SC2312): a process-substitution feed would mask discover_deny_capable's rc.

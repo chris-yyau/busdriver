@@ -29,6 +29,11 @@
 #                                      splits the path out of the script operand
 #   G  a benign CONTINUATION is fine — refusing every continuation was tried and re-blocked
 #                                      ordinary prose, so H is a second BUG-side case
+#   I  the body starts after the      — a continuation carrying BALANCED quotes would
+#      LOGICAL line                     otherwise pull them into the body and lift H's
+#                                       count above one, refusing an ordinary command
+#   J  ...and only an ODD backslash    — with `\\` the first escapes the second and the
+#      run continues                    newline still ends the line
 #   H  ONE heredoc per command       — deleting a quote shifts the parity of the WHOLE
 #                                      command, so other bodies' apostrophes pair across the
 #                                      live shell between them. Counted as OPERATORS, not as
@@ -38,13 +43,12 @@
 #                                      matched.
 #
 # B..F and H all BLOCK on the pre-fix classifier too. That is the point: they are controls,
-# not coverage, and only A and G may change verdict. B and C also assert that the body is
+# not coverage, and only A, G, I and J may change verdict. B and C also assert that the body is
 # still read as shell source, so a change that stopped scanning heredocs fails them.
 #
 # Each is bitten by a mutation the others survive — verified, not assumed. The set was
 # trimmed to exactly that: a plain-invocation case, a spaced-quoted-path case, a
-# two-heredocs-on-one-line case, a continuation-joined case, a double-backslash case and a
-# three-simple-heredocs case were all dropped once measured to be strict subsets of the survivors, as was a delete-vs-escape
+# two-heredocs-on-one-line case, a continuation-joined case, and a three-simple-heredocs case were dropped once measured to be strict subsets of the survivors, as was a delete-vs-escape
 # case the narrowed squeeze made unbiteable.
 #
 # C is also why the guard COUNTS quotes instead of judging them: `library's prose` plus that
@@ -135,8 +139,8 @@ assert_block "sh <<'EOF'
 python3 \"/tmp/path with space/${HELPER} --seize
 EOF" "F. a lone UNWEDGED quote opening a spaced path -> BLOCK"
 
-# G. ...but only because a SECOND heredoc hides on that logical line. One heredoc whose
-# opener line merely continues is the ordinary case A shape and must still be allowed —
+# G. ...but only when a SECOND heredoc actually hides on that line. One heredoc whose
+# opener line merely continues is the ordinary case-A shape and must still be allowed —
 # refusing every continuation outright was tried and re-introduced the false positive.
 printf -v BENIGN 'cat > /tmp/c.md <<%sEOF%s %s\n  2>/dev/null\nThe library%ss %s builds records.\nEOF' \
     "$Q" "$Q" "$BS" "$Q" "$HELPER"
@@ -155,6 +159,21 @@ python3 ${HELPER}
 cat > /tmp/n3.md <<${Q}E${Q}3
 it${Q}s 3
 E3" "H. ASSEMBLED quoted delimiters beside a simple one -> BLOCK"
+
+# I. The body starts after the opener's LOGICAL line, not its first newline. A continuation
+# carrying BALANCED quotes would otherwise pull them into the body, lifting the quote count
+# above one and refusing to recover an ordinary command. This is the case that proved the
+# logical-line walk is load-bearing after it had been deleted as unfireable.
+printf -v QCONT 'cat <<%sEOF%s %s\n  > %snotes file.md%s\nThe library%ss %s builds records.\nEOF' \
+    "$Q" "$Q" "$BS" '"' '"' "$Q" "$HELPER"
+assert_ok "$QCONT" "I. a continuation carrying BALANCED quotes -> allowed"
+
+# J. ...and only an ODD backslash run continues. With `\\` the first escapes the second and
+# the newline still ends the opener line, so treating it as a continuation skips the body's
+# first line and falsely blocks.
+printf -v DBS 'cat > /tmp/c.md <<%sEOF%s %s%s\nThe library%ss %s builds records.\nEOF' \
+    "$Q" "$Q" "$BS" "$BS" "$Q" "$HELPER"
+assert_ok "$DBS" "J. a DOUBLE backslash ending the opener line -> allowed"
 
 echo
 if [[ $FAIL -eq 0 ]]; then

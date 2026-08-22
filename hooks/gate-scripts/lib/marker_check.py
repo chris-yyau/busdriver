@@ -2345,13 +2345,25 @@ def _squeeze_quoted_heredocs(cmd):
     nl = scan.find("\n", m.end())
     if nl == -1:
         return cmd
-    # NO logical-line extension here, deliberately. A continued opener line does push the
-    # real body down, and two drafts chased that: refusing every continuation (which
-    # re-blocked ordinary prose) and then walking the backslash runs. Once the count above
-    # became one heredoc OPERATOR in the whole command, neither could be made to change a
-    # verdict -- there is no second operator left for a continuation to hide, and a body that
-    # starts one line early still carries the same lone apostrophe. An unfireable guard
-    # certifies safety it never checks, so it is gone rather than kept for symmetry.
+    # The body starts after the opener's LOGICAL line. Bash removes a backslash-newline
+    # before it reads redirections, so a continued opener pushes the body down; taking the
+    # first physical newline instead pulls the continuation's own text INTO the body, and a
+    # continuation carrying balanced quotes (`cat <<'EOF' \` / `"notes file.md"`) then lifts
+    # the count below above one and refuses to recover an ordinary command.
+    # Only an ODD run of backslashes continues: with `\\` the first escapes the second and
+    # the newline still ends the line, and treating that as a continuation skipped the body's
+    # first line instead. All three spellings raised by codex across the PR passes -- the
+    # last of them after this walk had been deleted as unfireable, which it is not: the
+    # mutation that missed it used a continuation line carrying no quotes.
+    while nl > 0:
+        k = nl
+        while k > 0 and scan[k - 1] == chr(92):
+            k -= 1
+        if (nl - k) % 2 == 0:
+            break
+        nl = scan.find("\n", nl + 1)
+        if nl == -1:
+            return cmd
     tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
     delim = re.escape(next(g for g in m.groups() if g is not None))
     term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)

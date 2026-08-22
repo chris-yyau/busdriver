@@ -47,6 +47,22 @@
 #   design-clear.sh --all-for-doc <doc-path>
 #                                   # clear every LISTED token for that ONE named
 #                                   # doc, one audit event each, one confirmation
+#   design-clear.sh --skip <name>   # DISARM one spent skip/review marker in
+#                                   # $STATE_DIR (see the drainable list below)
+#   design-clear.sh --skip          # list what is drainable, change nothing
+#
+# --skip is the #516 drain, in this tool rather than a second one. It covers only
+# markers whose REMOVAL TIGHTENS a gate -- a spent skip file, a consumed review
+# artifact -- so the worst case is an unnecessary review. Markers whose removal
+# LOOSENS a gate (the design tokens above, the skip lease ledger) or erases the
+# trail (bypass-log.jsonl) are refused by name, and forging any of them stays
+# blocked by the gate exactly as before.
+#
+# It exists because #638 closed the accidental workaround: a loop binding
+# (a for-loop over the marker with rm in its body) used to walk straight past the
+# marker-forge guard, which was the only way an agent could disarm its own spent
+# skip file. Closing that without landing this would have traded a fail-open for
+# a harder fail-closed.
 #
 # Editing a design doc arms a FRESH token each time, so one document routinely
 # accumulates a dozen or more (#665). --all-for-doc drains exactly that: the doc
@@ -85,10 +101,12 @@ source "$_SELF_DIR/../hooks/gate-scripts/lib/resolve-repo-dir.sh"
 SELECTOR=""
 ASSUME_YES=0
 ALL_FOR_DOC=0
+SKIP_MODE=0
 for arg in "$@"; do
     case "$arg" in
         --yes|-y) ASSUME_YES=1 ;;
         --all-for-doc) ALL_FOR_DOC=1 ;;
+        --skip) SKIP_MODE=1 ;;
         # Address the header block by its terminator, not by line numbers: the
         # old '2,28p' silently stopped short of Usage:, so every mode added since
         # was undiscoverable from --help. A pattern range cannot drift.
@@ -103,6 +121,157 @@ for arg in "$@"; do
     esac
 done
 
+if [ "$SKIP_MODE" -eq 1 ] && [ "$ALL_FOR_DOC" -eq 1 ]; then
+    echo "design-clear: --skip and --all-for-doc are different drains; pick one." >&2
+    exit 2
+fi
+
+# Needed by BOTH modes (the audit log is anchored off it), so it is resolved
+# before the design-token enumeration that --skip skips.
+SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+
+# ── --skip: disarm ONE spent skip/review marker (#516) ────────────────────
+# An ALLOWLIST BY NAME, not a path the caller chooses: the drain must not become a
+# way to unlink an arbitrary file with an audit event stamped on it. Membership is
+# decided by ONE question -- does removing this marker make the next gate stricter?
+# If yes it is drainable; if removing it lifts a block or erases the trail it is
+# refused here and stays refused by the gate.
+DRAINABLE="skip-litmus.local skip-design-review.local litmus-passed.local pr-review-passed.local pr-codex-lead.local.json pr-backstop-verdict.local.json"
+# Named explicitly so the refusal can say WHY rather than "not on the list".
+# The lease ledger bounds the skip bypass to 20 writes (#519) -- draining it resets
+# the ceiling; bypass-log.jsonl IS the audit trail this tool exists to write;
+# design-review-needed.local blocks until a review happens, so removing it is the
+# bypass, not the cleanup.
+# reviewed-commits.local is here for a DIFFERENT reason than the other three: no gate
+# in this repo reads it (post-commit-consume-marker.sh only appends to it and
+# invalidates it on a SHA change), so removing it tightens nothing and simply destroys
+# the accumulated branch:SHA review records. It fails the drain invariant from the
+# other side.
+NEVER_DRAINABLE=".skip-design-review-lease.d bypass-log.jsonl design-review-needed.local reviewed-commits.local"
+
+TRUNCATED=0
+LEGACY_OVERFLOW=0
+CLEAR_EVENT="design-marker-cleared"
+FAIL_EVENT="design-marker-clear-failed"
+
+# Resolve $STATE_DIR from the repo root with O_NOFOLLOW on EVERY component, then stat
+# (and later unlink) the marker BY NAME relative to that descriptor. A `-L` test checks
+# only the final component, and `.claude/` itself is repo-controlled -- in a linked
+# worktree it can be a symlink to the MAIN worktree state dir -- so a shell test plus
+# `rm -f "$path"` would unlink an allowlisted basename outside this repo, with the audit
+# event claiming otherwise. `open_state_dir` is the same containment the gate own state
+# writers use (#519), so both halves of this file contain the path identically.
+# Exit: 0 regular file (unlinked, in unlink mode) / 2 absent / 3 not a regular file /
+#       4 state dir unopenable without following a symlink / 5 unlink failed /
+#       6 the state dir was swapped out from under the open descriptor.
+skip_probe() {   # [unlink]
+    ( cd "$SELF_ROOT" || exit 4
+      MODE="${1:-probe}" NAME="$SELECTOR" STATE="$STATE_DIR" \
+      LIB="$_SELF_DIR/../hooks/gate-scripts/lib" python3 -I -c '
+import os, stat, sys
+sys.path.insert(0, os.environ["LIB"])
+import audit_append
+dfd = audit_append.open_state_dir(os.environ["STATE"])
+if dfd is None:
+    sys.exit(4)
+name = os.environ["NAME"]
+try:
+    st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+except OSError:
+    sys.exit(2)
+if not stat.S_ISREG(st.st_mode):
+    sys.exit(3)
+# A directory DESCRIPTOR outlives its own entry: rename the state dir after the open and
+# every name checked through dfd lands in a detached tree, so the unlink would report
+# success while the real marker stayed armed and the audit event claimed otherwise.
+# Checked on both sides of the unlink -- same reasoning, and the same helper, as the
+# gate own state writers (#519).
+if not audit_append.state_dir_unchanged(dfd, os.environ["STATE"]):
+    sys.exit(6)
+if os.environ["MODE"] == "unlink":
+    try:
+        os.unlink(name, dir_fd=dfd)
+    except OSError:
+        sys.exit(5)
+    if not audit_append.state_dir_unchanged(dfd, os.environ["STATE"]):
+        sys.exit(6)
+' )
+}
+
+if [ "$SKIP_MODE" -eq 1 ]; then
+    CLEAR_EVENT="skip-marker-cleared"
+    FAIL_EVENT="skip-marker-clear-failed"
+    if [ -z "$SELF_ROOT" ]; then
+        echo "design-clear: not inside a git work tree - cannot locate the state dir." >&2
+        exit 2
+    fi
+    if [ -z "$SELECTOR" ]; then
+        printf 'Drainable with --skip <name> (removal makes the next gate STRICTER):\n\n'
+        for _n in $DRAINABLE; do
+            if [ -e "$SELF_ROOT/$STATE_DIR/$_n" ]; then
+                printf '  %-34s ARMED\n' "$_n"
+            else
+                printf '  %-34s -\n' "$_n"
+            fi
+        done
+        printf '\nNever drainable (removal would loosen a gate or erase the trail):\n\n'
+        for _n in $NEVER_DRAINABLE; do printf '  %s\n' "$_n"; done
+        exit 1
+    fi
+    # Basename only: a caller-supplied path is how a drain turns into an arbitrary
+    # unlink, and every one of these markers lives at exactly one place.
+    case "$SELECTOR" in
+        *[/]*|..|.) echo "design-clear: --skip takes a bare marker NAME, not a path." >&2; exit 2 ;;
+    esac
+    for _n in $NEVER_DRAINABLE; do
+        if [ "$SELECTOR" = "$_n" ]; then
+            printf 'design-clear: %s is NOT drainable.\n' "$SELECTOR" >&2
+            printf 'Removing it would loosen a gate, or destroy records nothing re-creates - the\n' >&2
+            printf 'opposite of\n' >&2
+            printf 'what this drain is for. Run --skip with no name to see what IS drainable.\n' >&2
+            exit 1
+        fi
+    done
+    _ok=0
+    for _n in $DRAINABLE; do
+        [ "$SELECTOR" = "$_n" ] && _ok=1
+    done
+    if [ "$_ok" -eq 0 ]; then
+        printf 'design-clear: %s is not a drainable marker. Run --skip with no name.\n' "$SELECTOR" >&2
+        exit 2
+    fi
+    SKIP_PATH="$SELF_ROOT/$STATE_DIR/$SELECTOR"
+    skip_probe   # sets nothing; exit code classifies (see the helper above)
+    _PROBE_STATUS=$?
+    case "$_PROBE_STATUS" in
+        0) : ;;
+        2) printf '%s is not armed. Nothing to drain.\n' "$SELECTOR"; exit 1 ;;
+        3) printf 'design-clear: %s is not a regular file (symlink, dir, or device) -\n' "$SELECTOR" >&2
+           printf 'refusing to unlink it. That is anomalous marker state, not a spent marker.\n' >&2
+           exit 2 ;;
+        6) printf 'design-clear: %s/ changed under us mid-check - refusing.\n' "$STATE_DIR" >&2
+           exit 2 ;;
+        4) printf 'design-clear: cannot open %s/ without following a symlink - refusing.\n' "$STATE_DIR" >&2
+           exit 2 ;;
+        # Only status 4 is the symlink refusal. Any OTHER status is a probe failure
+        # (a helper import error, an unhandled exception, command-not-found) and
+        # reporting it as a symlink refusal sends the operator after the wrong fix.
+        *) printf 'design-clear: skip_probe failed unexpectedly (status %s) for %s - refusing as a precaution.\n' "$_PROBE_STATUS" "$SELECTOR" >&2
+           exit 2 ;;
+    esac
+    DOC="$SKIP_PATH"
+    DOCS=("$SKIP_PATH")
+    SRCS=("$SKIP_PATH")
+    KINDS=("skip")
+    REASONS=("")
+    TARGETS=(0)
+    N_TARGETS=1
+    printf '\nAbout to DISARM the spent gate marker:\n\n  %s\n\n' "$SKIP_PATH"
+    printf 'Removing it makes the next gate STRICTER, never looser. This is logged to\n'
+    printf '%s/bypass-log.jsonl as a %s event.\n' "$STATE_DIR" "$CLEAR_EVENT"
+fi
+
+if [ "$SKIP_MODE" -eq 0 ]; then
 # ── Enumerate through the gate's own classifier ───────────────────────────────
 RECS="$(mktemp)" || { echo "design-clear: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$RECS"' EXIT
@@ -135,7 +304,6 @@ if [ "${#SRCS[@]}" -eq 0 ]; then
     exit 2
 fi
 
-SELF_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
 
 # The classifier's emit budgets are PER-KIND, and a truncated kind is announced
 # EXPLICITLY: one trailing `overflow` record naming which kind was cut (#671).
@@ -461,6 +629,7 @@ else
 fi
 printf 'The gate will stop blocking on this doc. This is logged to %s/bypass-log.jsonl\n' "$STATE_DIR"
 printf '(one event per released token).\n'
+fi   # end design-token mode (--skip built its own single target above)
 
 # How this release was authorized, recorded in the audit event. `--yes` is
 # sanctioned by ADR 0017 (an operator scripting their own drain), but it is NOT a
@@ -532,22 +701,32 @@ fi
 # a newline, and silently falling back on such a path would file the record in
 # the disposable linked worktree — exactly the failure this block prevents. With
 # -z there is no quoting, so every valid path is handled.
-_MAIN_WT=""
-while IFS= read -r -d '' _wt_field; do
-    case "$_wt_field" in
-        "worktree "*) _MAIN_WT="${_wt_field#worktree }"; break ;;
-    esac
-done < <(git -C "$PWD" worktree list --porcelain -z 2>/dev/null || true)
-if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
-    _MAIN_WT=""                      # separate-git-dir: that was the git dir
+#
+# --skip is a DIFFERENT case: the marker `skip_probe` clears lives in THIS
+# worktree's $SELF_ROOT/$STATE_DIR (not behind the shared git-common-dir token
+# the main-worktree anchoring above exists for), so anchoring its audit log to
+# the main worktree instead would file the record somewhere other than the
+# worktree the marker was actually cleared from. Use $SELF_ROOT directly.
+if [ "$SKIP_MODE" -eq 1 ]; then
+    ROOT_DIR="$SELF_ROOT"
+else
+    _MAIN_WT=""
+    while IFS= read -r -d '' _wt_field; do
+        case "$_wt_field" in
+            "worktree "*) _MAIN_WT="${_wt_field#worktree }"; break ;;
+        esac
+    done < <(git -C "$PWD" worktree list --porcelain -z 2>/dev/null || true)
+    if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
+        _MAIN_WT=""                      # separate-git-dir: that was the git dir
+    fi
+    [ -n "$_MAIN_WT" ] || _MAIN_WT="$SELF_ROOT"
+    ROOT_DIR="$_MAIN_WT"
 fi
-[ -n "$_MAIN_WT" ] || _MAIN_WT="$SELF_ROOT"
-if [ -z "$_MAIN_WT" ] || [ ! -d "$_MAIN_WT" ]; then
+if [ -z "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR" ]; then
     echo "design-clear: cannot resolve the canonical repo root for the audit log." >&2
     echo "Refusing to clear rather than file the record somewhere unmonitored." >&2
     exit 2
 fi
-ROOT_DIR="$_MAIN_WT"
 LOG="$ROOT_DIR/$STATE_DIR/bypass-log.jsonl"
 HEAD_SHA="$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)"
 
@@ -691,19 +870,32 @@ partial_note() {
 _t=0
 while [ "$_t" -lt "$N_TARGETS" ]; do
     TOKEN="${SRCS[${TARGETS[$_t]}]}"
-    TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+    if [ "$SKIP_MODE" -eq 1 ]; then
+        # A skip marker has no <sha>.<nonce> name to report; an empty field is
+        # truthful where a basename would read as a token sha that never existed.
+        TOKEN_SHA=""
+    else
+        TOKEN_SHA="$(basename -- "$TOKEN")"; TOKEN_SHA="${TOKEN_SHA%%.*}"
+    fi
 
-    if ! log_event "design-marker-cleared"; then
+    if ! log_event "$CLEAR_EVENT"; then
         printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
         printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
         partial_note
         exit 2
     fi
 
-    if ! rm -f -- "$TOKEN"; then
+    if [ "$SKIP_MODE" -eq 1 ]; then
+        skip_probe unlink
+        _unlinked=$?
+    else
+        rm -f -- "$TOKEN"
+        _unlinked=$?
+    fi
+    if [ "$_unlinked" -ne 0 ]; then
         # Already recorded as cleared, but it is not — emit the correction so the
         # trail stays truthful rather than leaving a phantom release on the record.
-        if ! log_event "design-marker-clear-failed"; then
+        if ! log_event "$FAIL_EVENT"; then
             # The log now claims a release that did not happen and the correction
             # could not be appended. Say so loudly — a silently inconsistent audit
             # trail is worse than a noisy one.
@@ -719,7 +911,9 @@ while [ "$_t" -lt "$N_TARGETS" ]; do
     _t=$(( _t + 1 ))
 done
 
-if [ "$TRUNCATED" -eq 1 ]; then
+if [ "$SKIP_MODE" -eq 1 ]; then
+    printf 'Disarmed %s. The next gate it fed will run its review normally.\n' "$SELECTOR"
+elif [ "$TRUNCATED" -eq 1 ]; then
     # The classifier declared that it dropped token records (#671), so this doc
     # may still hold tokens that were never listed — "all for doc" is all the
     # tokens it could SEE. The old wording hedged ("MAY remain") because

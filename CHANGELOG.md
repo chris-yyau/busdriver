@@ -1,3 +1,10 @@
+## [1.110.2](https://github.com/chris-yyau/busdriver/compare/v1.110.1...v1.110.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ack-ledger:** reject non-review status descriptions in Tier E ([#721](https://github.com/chris-yyau/busdriver/issues/721)) ([dabf717](https://github.com/chris-yyau/busdriver/commit/dabf7177d6a452e103efdbff20a9496dce5576f3)), closes [#709](https://github.com/chris-yyau/busdriver/issues/709) [#353](https://github.com/chris-yyau/busdriver/issues/353) [#294](https://github.com/chris-yyau/busdriver/issues/294) [#709](https://github.com/chris-yyau/busdriver/issues/709) [#709](https://github.com/chris-yyau/busdriver/issues/709) [#709](https://github.com/chris-yyau/busdriver/issues/709) [#353](https://github.com/chris-yyau/busdriver/issues/353) [#294](https://github.com/chris-yyau/busdriver/issues/294) [#709](https://github.com/chris-yyau/busdriver/issues/709) [#664](https://github.com/chris-yyau/busdriver/issues/664)
+
 ## [1.110.1](https://github.com/chris-yyau/busdriver/compare/v1.110.0...v1.110.1) (2026-08-22)
 
 

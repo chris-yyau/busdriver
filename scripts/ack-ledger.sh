@@ -465,14 +465,17 @@ _body_is_rate_limit_notice() {
 #     limited" over-blocks. Deliberate: every normalization that removed the
 #     over-block introduced a fail-OPEN instead.
 #
-# Those three were each implemented and then REMOVED after review found that each
-# fix opened a defect in the opposite direction: widening the qualifier run
-# swallowed foreign subjects, narrowing it missed real ones, and deleting negated
-# phrases swallowed the verdict they qualified. A status description is free
-# English; a regex over it has no fixed point. Widening this classifier is
-# therefore not automatically an improvement — a change here must show it closes an
-# OBSERVED payload without opening the mirror-image defect, and must land with both
-# fixtures.
+# All FOUR are measured, not assumed. Three were implemented and then REMOVED after
+# review found the fix opened a defect in the opposite direction: widening the
+# qualifier run swallowed foreign subjects, narrowing it missed real ones, and
+# deleting negated budget phrases swallowed the verdict they qualified. The fourth
+# — deny-then-recover — is the standing cost of letting an adjunct follow a
+# subjectless denial, and closing it by requiring the denial to end its clause was
+# tried and reverted because it dropped "Could not start due to quota", a real
+# non-review. A status description is free English; a regex over it has no fixed
+# point. Widening this classifier is therefore not automatically an improvement — a
+# change here must show it closes an OBSERVED payload without opening the
+# mirror-image defect, and must land with both fixtures.
 #
 # So: this guard closes the demonstrated fail-open (#709, "Review rate limited")
 # and its structural neighbours, and NOTHING WIDER. A newly observed phrasing is a

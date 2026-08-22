@@ -1,3 +1,10 @@
+## [1.110.1](https://github.com/chris-yyau/busdriver/compare/v1.110.0...v1.110.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **gate:** scan here-string shell payloads as programs ([#643](https://github.com/chris-yyau/busdriver/issues/643)) ([#722](https://github.com/chris-yyau/busdriver/issues/722)) ([d999c6d](https://github.com/chris-yyau/busdriver/commit/d999c6d061eecf8ad0afb18d89dcd4cfa6a2f635))
+
 # [1.110.0](https://github.com/chris-yyau/busdriver/compare/v1.109.14...v1.110.0) (2026-08-22)
 
 

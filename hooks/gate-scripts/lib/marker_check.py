@@ -2300,14 +2300,29 @@ def _squeeze_quoted_heredocs(cmd):
     of those the real body starts further down than this walks. Two consequences, and only
     one of them is real. The one that happens: that line's own text is read as body, its
     quotes lift the count above one, and the command is REFUSED -- an over-block. The one
-    repeatedly proposed and repeatedly NOT reproduced: a decoy terminator inside such a
-    continuation letting the squeeze rewrite live syntax and hide an invocation. Every
-    construction tried (`cat <<'EOF' | echo "x`, `bash <<'D' |` with a decoy `D`) blocks on
-    this classifier exactly as it blocks on HEAD, because the text the squeeze would have to
-    rewrite is a quoted run that bash then executes as one bogus command word, not as the
-    helper. Recorded as unproven rather than closed: modelling the rest of that grammar is
-    the shell parser this file has repeatedly declined to become, and the parked #639 design
-    is the record of where that road ends.
+    repeatedly proposed and DISMISSED ON EVIDENCE: a decoy terminator inside such a
+    continuation letting the squeeze rewrite live syntax and hide an invocation. Asserted in
+    four review rounds; SEVEN constructions were run, including the reviewer's own verbatim
+    one, and none reproduced. That last one, measured:
+
+        cat <<'D' |
+        sh -c X'x=1 python3 <helper> Z
+        D
+        #'
+        D
+
+    -- HEAD `BLOCK_MARKER_SCRIPT`, this classifier `BLOCK_MARKER_SCRIPT`, `bash -n` clean,
+    and a real bash run does not reach the helper at all (`bash: line 5: D: command not
+    found`). So the claim fails on both legs: no verdict divergence, and no execution to
+    hide. The masking is not luck -- the body's one-quote rule, the operator count taken
+    outside the body, and comment defusing each independently refuse these shapes.
+
+    Left as a DOCUMENTED GAP IN THE MODEL rather than a closed hole: the reasoning that a
+    non-backslash continuation moves the real body is correct, and a future change that
+    relaxes any of those three guards could make it reachable. What is not warranted is
+    modelling the rest of bash's continuation grammar to close a path nobody has been able to
+    walk -- that is the shell parser this file keeps declining to become, and the parked #639
+    design is the record of where that road ends.
 
     NEVER the BACKSLASH. `_norm_for_scan` rejoins a backslash-newline continuation, so
     deleting backslashes FIRST splits the name the shell assembles across that continuation

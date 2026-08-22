@@ -99,9 +99,13 @@ Typical task shape (ordering flexible):
 - [ ] **Implement the behavior with tests** (order flexible unless TDD was explicitly requested)
 
 ```python
+# src/path/file.py
 def function(input):
     return expected
+```
 
+```python
+# tests/path/test.py
 def test_specific_behavior():
     result = function(input)
     assert result == expected

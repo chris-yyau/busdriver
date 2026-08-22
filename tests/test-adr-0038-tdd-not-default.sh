@@ -470,15 +470,17 @@ for case in nonunique separated semantic; do
       cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
     ## Tests
 
-    When TDD was required for this task (`/tdd` or a direct ask),
+    The implementer already ran the tests and reported results for exactly
+    this code. When TDD was required for this task (`/tdd` or a direct ask),
+    their report must include RED/GREEN evidence; otherwise verify behavioral
 
     ## Part 1: Spec Compliance
 
-    The implementer already ran the tests and reported results for exactly this code.
+    unrelated content
 
     ## Tests
 
-    their report must include RED/GREEN evidence;
+    decoy second heading
 EOF
       ;;
     separated)
@@ -512,10 +514,34 @@ EOF
     violates=$((violates + 1))
   fi
 done
+cat > "$TMP/decoy-sdd-reviewer-nonunique.md" <<'EOF'
+    ## Tests
+
+    The implementer already ran the tests and reported results for exactly
+    this code. When TDD was required for this task (`/tdd` or a direct ask),
+    their report must include RED/GREEN evidence; otherwise verify behavioral
+
+    ## Part 1: Spec Compliance
+
+    unrelated content
+
+    ## Tests
+
+    decoy second heading
+EOF
 if [[ "$violates" -eq 0 ]]; then
   ok "negative control: section-scoped TDD evidence assertion rejects non-unique or separated phrases"
 else
   bad "negative control FAILED — section-scoped TDD evidence assertion passes with non-unique or separated phrases"
+fi
+
+NONUNIQUE_UNGATED="$(awk '/^[[:space:]]*## Tests$/{found=1;next} found && /^[[:space:]]*## /{exit} found' "$TMP/decoy-sdd-reviewer-nonunique.md")"
+if [[ -n "$NONUNIQUE_UNGATED" ]] \
+  && printf '%s\n' "$NONUNIQUE_UNGATED" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }' \
+  && [[ -z "$(sdd_reviewer_tests_section "$TMP/decoy-sdd-reviewer-nonunique.md")" ]]; then
+  ok "negative control: uniqueness gate blocks false-pass extraction from duplicate Tests headings"
+else
+  bad "negative control FAILED — duplicate Tests decoy does not prove uniqueness gate"
 fi
 
 violating=0

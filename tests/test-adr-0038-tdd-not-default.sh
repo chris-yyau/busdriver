@@ -227,16 +227,10 @@ has_mandated_wp_step1_ordering() {
   printf '%s\n' "$1" | grep -qE '\*\*Step 1: (Write the failing test|Write minimal implementation)\*\*'
 }
 
-has_separate_ordered_impl_test_checkboxes() {
-  local section impl_line test_line
-  section="$1"
-  if ! printf '%s\n' "$section" | grep -q '\*\*Implement the behavior\*\*' \
-    || ! printf '%s\n' "$section" | grep -q '\*\*Add or update tests\*\*'; then
-    return 1
-  fi
-  impl_line=$(printf '%s\n' "$section" | grep -n '\*\*Implement the behavior\*\*' | head -1 | cut -d: -f1)
-  test_line=$(printf '%s\n' "$section" | grep -n '\*\*Add or update tests\*\*' | head -1 | cut -d: -f1)
-  [[ -n "$impl_line" && -n "$test_line" && "$impl_line" -lt "$test_line" ]]
+has_separate_impl_test_checkboxes() {
+  local section="$1"
+  printf '%s\n' "$section" | grep -q '\*\*Implement the behavior\*\*' \
+    && printf '%s\n' "$section" | grep -q '\*\*Add or update tests\*\*'
 }
 
 wp_bite_sized_section() {
@@ -268,10 +262,10 @@ if [[ -z "$WP_TASK_STRUCTURE" ]]; then
   bad "writing-plans Task Structure section missing — cannot anchor #653 assertions"
 elif has_mandated_wp_step1_ordering "$WP_TASK_STRUCTURE"; then
   bad "writing-plans task template restored mandated Step 1 ordering (#653)"
-elif has_separate_ordered_impl_test_checkboxes "$WP_TASK_STRUCTURE"; then
-  bad "writing-plans task template restored implementation-before-test checkbox ordering (#653)"
+elif has_separate_impl_test_checkboxes "$WP_TASK_STRUCTURE"; then
+  bad "writing-plans task template restored separate implementation and test checkbox steps (#653)"
 else
-  ok "writing-plans task template does not mandate Step 1 or checkbox ordering"
+  ok "writing-plans task template does not mandate Step 1 or separate impl/test checkboxes"
 fi
 
 if [[ -n "$WP_TASK_STRUCTURE" ]] && printf '%s\n' "$WP_TASK_STRUCTURE" | grep -q 'either order'; then
@@ -339,12 +333,11 @@ else
   ok "task-reviewer-prompt does not unconditionally assume TDD evidence"
 fi
 
-if grep -q 'TDD was required' "$SDD_REVIEWER" \
-  && grep -q 'do not treat missing' "$SDD_REVIEWER" \
-  && grep -q 'TDD evidence as a defect when TDD was not required' "$SDD_REVIEWER"; then
-  ok "task-reviewer-prompt scopes TDD evidence to when TDD was required"
+if grep -q 'When TDD was required' "$SDD_REVIEWER" \
+  && grep -q 'must include RED/GREEN evidence' "$SDD_REVIEWER"; then
+  ok "task-reviewer-prompt requires RED/GREEN evidence only when TDD was required"
 else
-  bad "task-reviewer-prompt lost conditional TDD evidence wording (#653)"
+  bad "task-reviewer-prompt lost positive conditional TDD evidence wording (#653)"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------
@@ -459,14 +452,18 @@ else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
 fi
 
-printf '%s\n' \
-  '- [ ] **Implement the behavior**' \
-  '- [ ] **Add or update tests**' \
-  > "$TMP/violating-wp-checkbox-order.md"
-if has_separate_ordered_impl_test_checkboxes "$(cat "$TMP/violating-wp-checkbox-order.md")"; then
-  ok "negative control: the checkbox-ordering assertion fires on a violating template"
+violating=0
+for section in \
+  "$(printf '%s\n' '- [ ] **Implement the behavior**' '- [ ] **Add or update tests**')" \
+  "$(printf '%s\n' '- [ ] **Add or update tests**' '- [ ] **Implement the behavior**')"; do
+  if ! has_separate_impl_test_checkboxes "$section"; then
+    violating=$((violating + 1))
+  fi
+done
+if [[ "$violating" -eq 0 ]]; then
+  ok "negative control: the separate-checkbox assertion fires on both orientations"
 else
-  bad "negative control FAILED — the checkbox-ordering assertion cannot detect a violation"
+  bad "negative control FAILED — the separate-checkbox assertion cannot detect a violation"
 fi
 
 printf '%s\n' '- [ ] **Step 1: Write the failing test**' > "$TMP/violating-wp-template.md"

@@ -94,16 +94,16 @@ Typical task shape (ordering flexible):
 
 (Interfaces make cross-task dependencies explicit so a worker implementing Task N — possibly in a fresh subagent with no memory of Task 1 — knows the exact signatures it can rely on and must expose. Omit only for a single-task plan.)
 
-**Tests:** behavioral changes ship with tests. **Ordering is not mandated** (ADR 0038). When TDD was explicitly requested (`/tdd` or direct ask) for **this task**, use failing test → verify fail → implementation → verify pass → commit (supersedes the step order below).
+**Tests:** behavioral changes ship with tests. **Ordering is not mandated** (ADR 0038). Implementation and tests may be done in either order unless TDD was explicitly requested (`/tdd` or direct ask) for **this task** — then use failing test → verify fail → implementation → verify pass → commit.
 
-- [ ] **Step 1: Write minimal implementation**
+- [ ] **Implement the behavior**
 
 ```python
 def function(input):
     return expected
 ```
 
-- [ ] **Step 2: Add or update tests**
+- [ ] **Add or update tests**
 
 ```python
 def test_specific_behavior():
@@ -111,12 +111,12 @@ def test_specific_behavior():
     assert result == expected
 ```
 
-- [ ] **Step 3: Run tests to verify**
+- [ ] **Run tests and verify pass**
 
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [ ] **Commit**
 
 ```bash
 git add tests/path/test.py src/path/file.py

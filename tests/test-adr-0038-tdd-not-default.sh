@@ -218,12 +218,16 @@ fi
 # No prose-equivalence classifier: variant detection has no bounded completeness
 # guarantee and produced false positives in PR #732 review.
 
-wp_bite_sized_section() {
-  awk '/^## Bite-Sized Task Granularity$/{found=1;next} found && /^## /{exit} found' "$1"
-}
-
 wp_task_structure_section() {
   awk '/^## Task Structure$/{found=1;next} found && /^## /{exit} found' "$1"
+}
+
+has_mandated_wp_step1_ordering() {
+  printf '%s\n' "$1" | grep -qE '\*\*Step 1: (Write the failing test|Write minimal implementation)\*\*'
+}
+
+wp_bite_sized_section() {
+  awk '/^## Bite-Sized Task Granularity$/{found=1;next} found && /^## /{exit} found' "$1"
 }
 
 sdd_advantages_section() {
@@ -249,10 +253,16 @@ fi
 
 if [[ -z "$WP_TASK_STRUCTURE" ]]; then
   bad "writing-plans Task Structure section missing — cannot anchor #653 assertions"
-elif printf '%s\n' "$WP_TASK_STRUCTURE" | grep -qF '**Step 1: Write the failing test**'; then
-  bad "writing-plans task template restored unconditional test-first Step 1 (#653)"
+elif has_mandated_wp_step1_ordering "$WP_TASK_STRUCTURE"; then
+  bad "writing-plans task template restored mandated Step 1 ordering (#653)"
 else
-  ok "writing-plans task template does not mandate test-first Step 1"
+  ok "writing-plans task template does not mandate Step 1 ordering"
+fi
+
+if [[ -n "$WP_TASK_STRUCTURE" ]] && printf '%s\n' "$WP_TASK_STRUCTURE" | grep -q 'either order'; then
+  ok "writing-plans task template states implementation and tests may be done in either order"
+else
+  bad "writing-plans task template lost order-neutral wording (#653)"
 fi
 
 if [[ -n "$WP_BITE_SIZED" ]] && printf '%s\n' "$WP_BITE_SIZED" | grep -q 'Ordering is not mandated'; then
@@ -414,10 +424,10 @@ else
 fi
 
 printf '%s\n' '- [ ] **Step 1: Write the failing test**' > "$TMP/violating-wp-template.md"
-if grep -qF '**Step 1: Write the failing test**' "$TMP/violating-wp-template.md"; then
-  ok "negative control: the writing-plans Step 1 assertion fires on a violating template"
+if has_mandated_wp_step1_ordering "$(cat "$TMP/violating-wp-template.md")"; then
+  ok "negative control: the Step 1 ordering assertion fires on a violating template"
 else
-  bad "negative control FAILED — the writing-plans Step 1 assertion cannot detect a violation"
+  bad "negative control FAILED — the Step 1 ordering assertion cannot detect a violation"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

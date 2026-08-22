@@ -20,13 +20,14 @@ ORCH="$ROOT/skills/orchestrator/SKILL.md"
 GUIDE="$ROOT/agents/tdd-guide.md"
 TDD_SKILL="$ROOT/skills/test-driven-development/SKILL.md"
 TDD_WORKFLOW="$ROOT/skills/tdd-workflow/SKILL.md"
+SYSDBG="$ROOT/skills/systematic-debugging/SKILL.md"
 ADR="$ROOT/docs/adr/0038-tdd-not-a-phase-4-default.md"
 
 pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-for f in "$ORCH" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$ADR"; do
+for f in "$ORCH" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
   [[ -f "$f" ]] || { echo "FAIL missing required file: $f"; exit 1; }
 done
 
@@ -162,6 +163,52 @@ if [[ -n "$TESTS_BULLET" ]] && printf '%s\n' "$TESTS_BULLET" | grep -q 'behavior
   ok "Phase 4 Tests bullet still requires behavioral changes to ship with tests"
 else
   bad "Phase 4 Tests bullet lost the 'behavioral changes ship with tests' requirement — ADR 0038 relaxed ordering, not the tests themselves"
+fi
+
+# --- systematic-debugging must not re-mandate TDD via bug-fix auto-routing (#657) ----
+# Pins the exact retired mandate and positive Phase-4 contract from issue #657.
+# No prose-equivalence classifier: variant detection has no bounded completeness
+# guarantee and produced false positives in PR #732 review.
+
+phase4_implementation_section() {
+  awk '/^### Phase 4: Implementation/,/^## Red Flags/' "$1"
+}
+
+SYSDBG_PHASE4="$(phase4_implementation_section "$SYSDBG")"
+if [[ -z "$SYSDBG_PHASE4" ]]; then
+  bad "systematic-debugging Phase 4 section missing — cannot anchor #657 assertions"
+elif printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'MUST have before fixing'; then
+  bad "systematic-debugging restored unconditional 'MUST have before fixing' (ADR 0038 / #657)"
+else
+  ok "systematic-debugging has no unconditional failing-test-before-fix mandate"
+fi
+
+if printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'Ordering is not mandated'; then
+  ok "systematic-debugging Phase 4 states ordering is not mandated"
+else
+  bad "systematic-debugging Phase 4 lost 'Ordering is not mandated' (ADR 0038 / #657)"
+fi
+
+if [[ -n "$SYSDBG_PHASE4" ]] \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'explicitly requested' \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q '/tdd'; then
+  ok "systematic-debugging Phase 4 scopes strict TDD to explicit request"
+else
+  bad "systematic-debugging Phase 4 no longer scopes TDD to explicit request (ADR 0038 / #657)"
+fi
+
+if grep -q 'NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST' "$SYSDBG"; then
+  ok "systematic-debugging retains root-cause Iron Law"
+else
+  bad "systematic-debugging lost the root-cause Iron Law"
+fi
+
+if [[ -n "$SYSDBG_PHASE4" ]] \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'nontrivial fixes' \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'reproducible check'; then
+  ok "systematic-debugging Phase 4 still requires a regression check for nontrivial fixes"
+else
+  bad "systematic-debugging Phase 4 lost the regression-check requirement (ADR 0038 / #657)"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------

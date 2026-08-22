@@ -935,6 +935,151 @@ else
   fail "dispatch.sh pi probes: username checks missing tilde-stack guard"
 fi
 
+# ── 11. #541 — banner-only opencode output must reach the empty-output guard ──
+# Both opencode execution sites share one false-success mechanism: `opencode
+# run` prints "> busdriver-review · <model>" (+ blank lines) UNCONDITIONALLY, so
+# a run that produced NO assistant text is 32 bytes of "output" — the generic
+# byte-size/empty-string guards cannot fire, the retry never runs, and a
+# content-free result reports as success. The fix normalizes the banner away AT
+# EACH SITE via one canonical predicate (_oc_output_is_banner_only in
+# resolve-cli.sh, fallback copy in dispatch.sh), so guard/retry/MECHANISM_FAILED
+# work untouched. 11a executes the REAL dispatch.sh block; 11b executes the
+# REAL _run_review_with_retries — both mutation-biting.
+# shellcheck source=/dev/null
+source "$RC"
+# ── 11a. dispatch.sh file-based site ──────────────────────────────
+# The arm's block, extracted verbatim (not a copy) and run against fixtures:
+# deleting or weakening it fails the banner-only case (extraction goes empty →
+# eval no-ops → outfile keeps its bytes). The canonical predicate comes from
+# the sourced $RC, so weakening the predicate fails here too.
+OC_BLOCK="$(awk '/#541: opencode prints/{f=1} f{print} f&&/^ +fi *$/{exit}' "$DP")"
+_oc_norm_case() { # $1=fixture-content-file $2=label $3=expected-bytes-after (-1 = unchanged)
+  local fx="$1" label="$2" expect="$3" before after work cap
+  [[ -s "$fx" ]] || { fail "$label: empty fixture"; return; }
+  before=$(wc -c < "$fx" | tr -d ' ')
+  work="$(mktemp "${TMPDIR:-/tmp}/oc541.XXXXXX")"
+  cp "$fx" "$work"
+  # The block runs in an `if` condition whose stdout is the caller's — a
+  # classifier that PRINTS matched lines would leak the verdict text here.
+  # Capture and require silence (litmus round-2 finding).
+  cap="$( { # shellcheck disable=SC2034  # outfile is consumed by the evaluated block, not this shell
+    outfile="$work"; eval "$OC_BLOCK"; } 2>&1 )" || { fail "$label: block errored"; rm -f "$work"; return; }
+  after=$(wc -c < "$work" | tr -d ' ')
+  rm -f "$work"
+  if [[ -n "$cap" ]]; then
+    fail "$label: block emitted output (${cap:0:40}…)"
+    return
+  fi
+  if [[ "$expect" == "-1" ]]; then
+    if [[ "$after" -eq "$before" ]]; then
+      pass "$label"
+    else
+      fail "$label: output changed ($before → $after bytes)"
+    fi
+  elif [[ "$after" -eq "$expect" ]]; then
+    pass "$label"
+  else
+    fail "$label: expected $expect bytes, got $after"
+  fi
+}
+FIX="$(mktemp "${TMPDIR:-/tmp}/oc541fix.XXXXXX")" || exit 1
+# The exact artifact from the issue: banner + blank lines, nothing else.
+printf '\n> busdriver-review · kimi-k3\n\n' > "$FIX"
+_oc_norm_case "$FIX" "banner-only outfile truncates to byte-empty → retry guard can fire" 0
+# Healthy run: banner + substantive verdict. Every byte must survive unchanged.
+printf '\n> busdriver-review · kimi-k3\n\nPONG\n' > "$FIX"
+_oc_norm_case "$FIX" "healthy opencode output is byte-identical" -1
+# ANSI-styled banner-only run must still classify as empty (the predicate
+# strips ANSI escapes before classifying).
+printf '\033[1m> busdriver-review · kimi-k3\033[0m\n\n' > "$FIX"
+_oc_norm_case "$FIX" "ANSI-styled banner-only outfile truncates to byte-empty" 0
+# A Markdown quotation containing '·' is substantive prose, not a banner; the
+# setup-bail reason written to $outfile must survive too (the batch banner
+# reads it).
+printf '> substantive verdict · confidence 95\n' > "$FIX"
+_oc_norm_case "$FIX" "markdown quote with middot survives normalization" -1
+printf 'Skipped: no usable .auditor.model and no --model — auditor not dispatched\n' > "$FIX"
+_oc_norm_case "$FIX" "setup-bail reason survives normalization" -1
+# Malformed UTF-8 must ALSO survive: sed exits non-zero on invalid bytes in a
+# multibyte locale, and a negated pipeline would invert that processing error
+# into "banner-only" and truncate the review (litmus round-3 finding). The
+# classifier treats processing failure as "not banner-only".
+# A Markdown blockquote that QUOTES the banner plus a verdict is substantive
+# prose — the exemption must match THE literal banner line (whole line, one
+# token after the middot), not any line that merely begins like one (litmus
+# round-4 finding).
+printf '> busdriver-review · final verdict: no issues found\n' > "$FIX"
+_oc_norm_case "$FIX" "banner-quoting verdict survives (whole-line anchor)" -1
+rm -f "$FIX"
+rm -f "$FIX"
+rm -f "$FIX"
+# Fail-closed: a processing error (unreadable input) must NOT be inverted into
+# "banner-only" — that would truncate the review. Direct predicate check
+# (deterministic on any platform; sed cannot read a missing file).
+if _oc_output_is_banner_only < /nonexistent/bd-541-missing-input 2>/dev/null; then
+  fail "banner predicate: processing failure classified as banner-only (fail-open truncation)"
+else
+  pass "banner predicate fails closed on unreadable input"
+fi
+# Fail-closed, grep side: a grep execution error (status 2) must NOT be
+# classified as banner-only — explicit status handling keeps the output
+# (litmus round-5 finding). Inject a grep stub that always exits 2.
+_grp_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541grep.XXXXXX")"
+printf '#!/bin/sh\nexit 2\n' > "$_grp_stub/grep"
+chmod +x "$_grp_stub/grep"
+if PATH="$_grp_stub:/usr/bin:/bin" _oc_output_is_banner_only <<'EOF'
+substantive output must survive a grep error
+EOF
+then
+  fail "banner predicate: grep error (status 2) classified as banner-only (fail-open truncation)"
+else
+  pass "banner predicate fails closed on injected grep error"
+fi
+rm -rf "$_grp_stub"
+# Wiring: the arm calls the shared predicate, and dispatch.sh carries the
+# fallback copy for the resolve-cli.sh-missing degraded path (repo convention
+# for shared classifiers — keep in sync).
+# shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
+if grep -q 'if _oc_output_is_banner_only < "\$outfile"' "$DP" \
+   && grep -q 'if ! type _oc_output_is_banner_only &>/dev/null; then' "$DP"; then
+  pass "dispatch.sh: arm wired to _oc_output_is_banner_only + fallback copy present"
+else
+  fail "dispatch.sh: arm/fallback wiring for _oc_output_is_banner_only missing"
+fi
+# ── 11b. resolve-cli.sh variable-based site ───────────────────────
+# Run the REAL retry wrapper with a stub "opencode" that prints ONLY the banner
+# and exits 0. Pre-#541 that classified as success (the banner passes the
+# non-empty check and carries no transient token). With the fix the banner-only
+# capture normalizes to empty → the wrapper's empty-verdict path marks the run
+# FAILED (rc=1, no output). Healthy control: banner + PONG succeeds unchanged.
+# stdin mode `none` (stub takes no prompt on fd 0) avoids the pipefail SIGPIPE
+# class; RETRIES=0/RETRY_DELAY=0 keep the test instant.
+if (
+  set -uo pipefail
+  BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0
+  export BUSDRIVER_CLI_RETRIES BUSDRIVER_CLI_RETRY_DELAY
+  ok=1
+  out=""; rc=0
+  out=$(_run_review_with_retries opencode "probe" 5 none \
+    sh -c 'printf "\n> busdriver-review · kimi-k3\n\n"') || rc=$?
+  [[ "$rc" -eq 1 && -z "$out" ]] \
+    || { echo "  ✗ banner-only stub → rc=$rc out=${out:-<empty>} (expected rc=1, empty)"; ok=0; }
+  # Healthy control must be BYTE-IDENTICAL: a predicate that prints matched
+  # lines while classifying would duplicate the review text into the returned
+  # output (litmus round-2 finding). Note: $(...) strips trailing newlines, so
+  # expected matches the captured value, not the stub's raw stdout.
+  expected=$'\n> busdriver-review · kimi-k3\n\nPONG'
+  out=""; rc=0
+  out=$(_run_review_with_retries opencode "probe" 5 none \
+    sh -c 'printf "\n> busdriver-review · kimi-k3\n\nPONG\n"') || rc=$?
+  [[ "$rc" -eq 0 && "$out" == "$expected" ]] \
+    || { echo "  ✗ healthy stub → rc=$rc out=${out:-<empty>} (expected byte-identical stdout)"; ok=0; }
+  exit $((1 - ok))
+); then
+  pass "banner-only _run_review_with_retries marks failure (rc=1, empty); healthy run succeeds"
+else
+  fail "banner normalization missing/weakened in _run_review_with_retries"
+fi
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

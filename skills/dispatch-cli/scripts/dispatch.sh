@@ -337,6 +337,33 @@ if ! type _is_bare_transient_notice_file &>/dev/null; then
     _is_hard_transient_signal < "$f"
   }
 fi
+# #541: True (0) when stdin is ONLY opencode's unconditional agent banner
+# ("> busdriver-review · <model>", ANSI escapes stripped first) plus blank
+# lines — i.e. an EMPTY VERDICT, not output. Canonical copy lives in
+# scripts/lib/resolve-cli.sh; keep the pattern identical there — including
+# the fail-closed two-step (sed into a variable first, so a processing error
+# like malformed UTF-8 returns "not banner-only" instead of being inverted
+# into a truncation), the no-`-q` rule (grep -c drains the stream; grep -q
+# (grep -c emits only a count — discarded via >/dev/null — never review text
+# on the caller's stdout), the whole-line banner anchor, and the EXPLICIT
+# status classification (0 = substantive → not banner-only; 1 = banner-only;
+# any other status = processing error → not banner-only, fail closed).
+# (grep -c emits only a count, captured into a variable — never review text
+# on the caller's stdout), the whole-line banner anchor, and the EXPLICIT
+# status classification (0 = substantive → not banner-only; 1 = banner-only;
+# any other status = processing error → not banner-only, fail closed).
+if ! type _oc_output_is_banner_only &>/dev/null; then
+  _oc_output_is_banner_only() {
+    local stripped rc
+    stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
+    printf '%s' "$stripped" | grep -c -v -e '^[[:space:]]*$' -e '^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$' >/dev/null 2>&1
+    rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+      return 0
+    fi
+    return 1
+  }
+fi
 
 LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
@@ -1635,6 +1662,20 @@ dispatch_one() {
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                     -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                # #541: opencode prints "> busdriver-review · <model>" plus
+                # blank lines UNCONDITIONALLY — healthy runs included — so
+                # _is_bare_transient_notice_file's size floor saw 32 bytes and
+                # a content-free run was reported as success with no retry.
+                # Normalize AT THE SOURCE instead of widening that shared
+                # classifier: banner-only output truncates to byte-empty and
+                # the existing guard / retry loop / council's MECHANISM_FAILED
+                # render all work untouched; substantive output keeps every
+                # byte. Canonical predicate: resolve-cli.sh (fallback copy
+                # above); resolve-cli.sh's _run_review_with_retries carries the
+                # sibling variable-based normalization for the same exposure.
+                if _oc_output_is_banner_only < "$outfile"; then
+                    : > "$outfile"
+                fi
                 # The subshell's EXIT/TERM/INT trap owns write-back + cleanup
                 # (the sandbox var lives only inside the subshell).
                 fi

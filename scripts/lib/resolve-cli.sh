@@ -1557,6 +1557,55 @@ _is_bare_transient_notice() {
   printf '%s' "$out" | _is_hard_transient_signal
 }
 
+# #541: opencode prints "> busdriver-review · <model>" plus blank lines
+# UNCONDITIONALLY — healthy runs included — so a run that produced no assistant
+# text is NOT byte-empty: it carries just the banner (32 bytes, model id
+# length aside).
+# The generic empty-output guards test byte size / non-empty strings, so a
+# banner-only result was reported as success and never retried. This predicate
+# recognizes exactly that: stdin containing ONLY blank lines and/or the
+# literal "> busdriver-review ·" agent banner (ANSI escapes stripped first, so
+# a styled banner still classifies). The agent name is anchored literally — the
+# arm pins --agent busdriver-review — so a Markdown quote that merely contains
+# '·' ("> substantive verdict · confidence 95") is substantive prose, not a
+# banner. Substantive output keeps every byte.
+# True (0) when stdin is banner-only. Mirrored by a fallback copy in
+# dispatch.sh; keep the pattern identical there.
+# (a) NO `-q` on the grep — grep -q exits as soon as it finds a substantive
+# line and SIGPIPEs the upstream printf on any larger stream, so a negated
+# pipeline would misclassify substantial output as banner-only and the arm
+# would truncate it (litmus round-1 finding). `-c` drains the whole stream.
+# (b) The sed runs into a VARIABLE first, NOT into a pipeline: sed exits
+# non-zero on malformed UTF-8 in a multibyte locale ("stream did not contain
+# valid UTF-8"), and a negated pipeline would invert that processing failure
+# into "banner-only" — erasing a substantive review (litmus round-3 finding).
+# The `|| return 1` makes any sed failure mean "not banner-only" (keep the
+# output). (c) The matched lines are never printed — `grep -c` emits only a
+# count, captured into a variable, so no review text reaches the caller's
+# stdout (litmus round-2 finding; the predicate runs in an `if` condition
+# whose stdout is the CALLER's). (d) The banner exemption is anchored to the
+# WHOLE line — `> busdriver-review · <model>` is a complete line (one token
+# after the middot) — so a Markdown quote that merely BEGINS like the banner
+# ("> busdriver-review · final verdict …") stays substantive (litmus round-4
+# finding). (e) grep's status is classified EXPLICITLY, never negated: 0 =
+# substantive lines exist → not banner-only; 1 = no substantive lines →
+# banner-only; any other status (execution/processing error) → NOT banner-only
+# (fail closed — a classifier error must never erase a review; litmus
+# round-5 finding). The status is captured IMMEDIATELY after the pipeline
+# (`rc=$?`) — bash resets $? to 1 inside an elif condition, so
+# `elif [[ "$?" -eq 1 ]]` would match ANY failure status and re-open the
+# fail-open hole (verified empirically on bash 5.x).
+_oc_output_is_banner_only() {
+  local stripped rc
+  stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
+  printf '%s' "$stripped" | grep -c -v -e '^[[:space:]]*$' -e '^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$' >/dev/null 2>&1
+  rc=$?
+  if [[ "$rc" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # ── Shared duration validator (retry engines) ────────────────────
 # $duration feeds `$(( ))` budget arithmetic in both retry engines below, and
 # bash evaluates arithmetic operands RECURSIVELY — a numeric-prefixed string
@@ -1681,6 +1730,18 @@ _run_review_with_retries() {
       output=$(_portable_timeout "$remaining" "$@" </dev/null 2>&1) || exit_code=$?
     else
       output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    fi
+    # #541: opencode prints "> busdriver-review · <model>" (+ blank lines)
+    # UNCONDITIONALLY — healthy runs included — so a banner-only capture is an
+    # EMPTY VERDICT, not output: left in place it passes the non-empty
+    # classification below (it carries no transient token) and a content-free
+    # run reports as success with no retry. Normalize AT THE SOURCE so the
+    # empty-output retry and the final empty-verdict failure marking below work
+    # untouched. Keyed on the opencode label — agy/grok/droid print no such
+    # banner. Sibling: the file-based normalization in dispatch.sh's opencode
+    # arm (fallback copy of the predicate lives there too).
+    if [[ "$label" == "opencode" ]] && printf '%s' "$output" | _oc_output_is_banner_only; then
+      output=""
     fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     [[ "$exit_code" -eq 124 ]] && break

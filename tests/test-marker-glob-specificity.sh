@@ -479,16 +479,19 @@ do
         "#708: whitespace as a range ENDPOINT, not a member: $rcls -> BLOCK"
 done
 
-# TWO classes in one word, each needing a different terminator, and a class carrying many
-# quoted `]` members. Both measured running; codex in review. The depth here is bounded and
-# the bound is documented in _class_variants -- these rows pin the part that is covered.
-# NOT asserted, and named so the absence reads as a decision. TWO classes in one operand,
-# each carrying quoted `]` members, need a DIFFERENT terminator choice each -- and a
-# reading applies one choice to the whole string, so covering it means combining choices
-# per class, which is exponential in the number of classes. Measured running; codex
-# raised it in review. Left in the residual _class_variants documents rather than
-# half-covered: the helpers are safe by construction since #519, and this is the
-# last-resort probe for text nothing could parse.
+# A class carrying many quoted `]` members. The depth here is bounded and the bound is
+# documented in _class_variants; the row below pins the part that is covered. The two-class
+# terminator shape is asserted separately in 6h, and the multi-class over-block it forced is
+# stated at the end of that section.
+#
+# NOT asserted, and named so the absence reads as a decision: a word combining TWO classes
+# that each carry quoted `]` members needs a DIFFERENT terminator choice per class, and a
+# reading applies one choice to the whole string, so covering it means combining choices per
+# class, which is exponential in the number of classes. Measured running; codex raised it in
+# review. Left in the residual _class_variants documents rather than half-covered: the
+# helpers are safe by construction since #519, and this is the last-resort probe for text
+# nothing could parse -- such a word is answered by the prefix fallback instead (see
+# _count_classes) rather than read precisely.
 
 __DEEP="lease_sl["
 __DEEP+='"x] '
@@ -667,6 +670,12 @@ echo "── F. what EXECUTES must BLOCK (property, #708) ──"
 # shell behaviour this suite does not own (the same call the FD-redirect note above makes).
 _F_TOTAL=0
 _F_RAN=0
+# ONE trap for BOTH section temp dirs, armed before either exists. Two separate
+# `trap ... EXIT` statements do not compose -- the second REPLACES the first, so arming one
+# per section silently left the FIRST dir to leak on an interrupt, which is the whole thing
+# the trap is for. The body is evaluated when the trap FIRES, so naming `$_G_DIR` here while
+# it is still unset is fine, and `rm -rf ""` is a no-op.
+trap 'rm -rf "${_F_DIR:-}" "${_G_DIR:-}"' EXIT INT TERM
 _F_DIR="$(mktemp -d)" || { no "#708 property: mktemp -d" "could not create a temp dir"; _F_DIR=""; }
 # An EMPTY _F_DIR would make every path below absolute -- the stub would be written to
 # /hooks/... and the commands would run against the real tree. Refuse rather than guess.

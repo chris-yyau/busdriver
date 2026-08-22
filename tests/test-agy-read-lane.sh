@@ -133,7 +133,11 @@ fi
 #               stops producing findings.
 scope_build="$(grep -cE '^[[:space:]]+local _agy_lane=\(--add-dir "\$PWD"\)$' "$DISPATCH")"
 scope_plan="$(grep -cE '^[[:space:]]+_agy_lane\+=\(--mode plan\)$' "$DISPATCH")"
-scope_gate="$(grep -cE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \]\]; then$' "$DISPATCH")"
+# Both agy lanes (agy-read, agy-prose) share the plan-mode pin. The invariant
+# is unchanged and is what this counts: plan mode is LANE-GATED, never
+# unconditional — a reviewer silently switched into plan mode stops producing
+# findings. Adding a lane extends the gate; it must never remove it.
+scope_gate="$(grep -cE '^[[:space:]]+if \[\[ -n "\$_AGY_READ_LANE" \|\| -n "\$_AGY_PROSE_LANE" \]\]; then$' "$DISPATCH")"
 lane_sites="$(grep -cE '^[[:space:]]+"\$\{_agy_lane\[@\]\+"\$\{_agy_lane\[@\]\}"\}" \\$' "$DISPATCH")"
 agy_sites="$(grep -cE '^[[:space:]]+_portable_timeout "\$_budget" agy ' "$DISPATCH")"
 if [[ "$scope_build" == "1" && "$lane_sites" == "$agy_sites" && "$lane_sites" == "4" ]]; then
@@ -260,7 +264,7 @@ line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
 l_init="$(line_of '^REPORT_CLI_NAME=""$')"
 l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-read"$')"
 l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
-l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|droid\|grok\|opencode\|pi\) ;;$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi\) ;;$')"
 l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
 l_log="$(line_of 'log_event "\$REPORT_NAME"')"
 l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"

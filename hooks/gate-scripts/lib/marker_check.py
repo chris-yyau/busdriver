@@ -1701,6 +1701,214 @@ def _stage_words(toks):
                 yield w
 
 
+# How deep a nest of extglob groups is resolved before the text is called unresolvable.
+# Bounded rather than looped to convergence: the input is attacker-chosen and this runs
+# under a hook timeout that kills the check with NO decision, which reads as allow.
+# Exceeding it is NOT covered by the command-word comparison -- a nest deeper than this
+# survives every pass unchanged, so the two spellings agree; the trailing-`@`/`+` test on
+# the command word is what catches those, and a fixture pins it.
+_EXTGLOB_PASSES = 4
+
+
+def _lex_seg(text):
+    # The lexer configuration this scan already uses: posix, so quotes resolve;
+    # punctuation_chars, so `<<<` separates from the word it touches;
+    # whitespace_split; and commenters off, because the newline->";" normalization
+    # leaves a `#` with no terminating newline to end it.
+    lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    return list(lex)
+
+
+def _herestring_shell_payloads(pairs, whole):
+    # A here-string feeding a shell RUNS its operand, so that operand is a PROGRAM (#643).
+    # `sh <<< '<helper>'` classified OK while `echo '<helper>' | sh` blocked -- the same
+    # invocation, one transport apart. `_piped_shell_producers` yields the text feeding a
+    # pipeline STAGE; a here-string has no producer stage, because the payload is the
+    # operand of `<<<` on the receiver's own command line. Nothing was yielded, so the
+    # payload was never scanned as a program.
+    #
+    # NO cmdword TWIN IS NEEDED, checked rather than assumed: its stdin-fed shell-source
+    # branch (`base in _SHELLS and t2 == "<<<"`) already classifies this shape, which is why
+    # the asymmetry was one-directional -- the sibling closed `<<<` and the copy the helper
+    # guard actually consults did not.
+    #
+    # ROUTING ONLY. Everything here is an existing part: the receiver question is the one
+    # `_peel_wrappers`/`_is_shell_name` already answer, and what is yielded goes to the same
+    # `_abandoned_scan_probe` the pipe producers are handed to. No new model of the language.
+    #
+    # NINE RESIDUALS, measured and accepted as out of scope for #643 rather than assumed
+    # away. Each is a place where this routing differs from the pipe path it feeds:
+    #
+    #   1. The receiver and the `<<<` must land in the SAME split segment, so a redirection
+    #      attached to a COMPOUND command is separated from the shell inside it --
+    #      `(sh) <<< P`, `{ sh; } <<< P` and `if true; then sh; fi <<< P` all read OK.
+    #      Associating a redirection with an enclosed receiver is compound-command modelling,
+    #      which this file's history says to stop short of rather than climb.
+    #
+    #   3. A here-string bound to a NON-ZERO descriptor (`sh 3<<< P`) is scanned anyway,
+    #      and a later `<<<` or `</dev/null` that overrides an earlier operand does not
+    #      un-scan it. Both OVER-block. A descriptor guard was tried and removed: after
+    #      `shlex` the operand `3` in `bash -s 3 <<< P` is indistinguishable from the fd in
+    #      `sh 3<<< P` -- adjacency is gone -- so the guard turned an over-block into a
+    #      FAIL-OPEN, which is the trade this file never makes. Deciding which redirection
+    #      wins is redirection-order modelling, the same class as residual 1.
+    #
+    #   2. The receiver test here is the shell-name one in COMMAND POSITION. The pipe
+    #      path's is wider -- it also reaches an applet multiplexer (`busybox sh`,
+    #      `toybox sh`), where the command word is the multiplexer and the shell is its
+    #      first operand, and `. /dev/stdin` -- but it is 48 lines inline inside
+    #      `_piped_shell_producers`, entangled with that loop's budget charging and its
+    #      `_executed_operands` mirror. Sharing it means extracting and re-plumbing a hot
+    #      path with a second caller in `cmdword`, which is its own change, not this one.
+    #      (A receiver behind a WRAPPER is not in this set: it is unresolved, and the
+    #      unresolved answer below covers it without naming a single flag.)
+    #
+    #   5. An OVER-block that falls out of that same answer: a NON-executing receiver
+    #      behind a wrapper is unresolved too, so `timeout 5 cat <<< '<helper text>'` is
+    #      refused. The unwrapped spelling, which is #573's actual shape, still reads.
+    #
+    #   6. An OVER-block held in COMMON with the pipe path: an interpreter taking its
+    #      program from a flag or an operand (`bash -c ':' <<< P`, `sh script <<< P`) still
+    #      has its here-string scanned as source. Whether a shell reads stdin from its FLAGS
+    #      is the arity question `_piped_shell_producers` states it refuses, and all three
+    #      spellings block identically through a PIPE today -- measured, so this is parity.
+    #
+    #   8. An OVER-block: a `<<<` written inside a COMMENT is still read as an operator.
+    #      `_defuse_comments` blanks separators and quotes inside a comment and keeps every
+    #      other byte ON PURPOSE (deleting moved 14 real commands to allow), so the operator
+    #      survives it. Ending a segment at `#` instead is comment modelling, and it would
+    #      hide a payload written after one -- the fail-OPEN direction.
+    #
+    #   9. An OVER-block, the price of taking whole-command text whenever the command
+    #      carries an expansion ANYWHERE: normalization has already erased the expansion
+    #      from the segment that would prove it relevant (`sh <<< :$IFS` arrives as
+    #      `sh <<< :`), so the choice cannot be made segment-locally without provenance
+    #      this scan does not keep. An unrelated `cat "$X/<helper>"` beside a harmless
+    #      here-string is refused.
+    #
+    #   7. A gap in the SHARED probe rather than in this routing: an extglob-spelled helper
+    #      PATH (`lease_slo@(x|t).py`) is unresolved everywhere -- measured OK through a
+    #      pipe, through `-c`, and as a direct invocation. Expanding alternations belongs to
+    #      `_abandoned_scan_probe` and every caller, not here. The `?` spelling resolves.
+    #
+    #   4. A LITERAL `<<<` argument (`sh '<<<' P`) is read as the operator, because the
+    #      lexer dequotes before this sees the token -- see the paragraph below. It
+    #      OVER-blocks, and the guard that would fix it is residual 3's.
+    #
+    # 1, 2 and 7 are FAIL-OPENS; 3, 4, 5, 6, 8 and 9 OVER-block, which is the trade this file makes. None
+    # is a regression: every one of them reads OK on `origin/main` too, because on main
+    # this whole path does not exist. This change strictly reduces the fail-open set.
+    #
+    # `<<<` arrives as its OWN token from the lexer already used below -- attached
+    # (`sh<<<x`), spaced, and fd-prefixed (`sh 0<<< x`) spellings all separate. Quoted
+    # PROSE is out of this path because the quotes carry other words in the same token
+    # (`echo 'use <<< like this'`, #573's case) -- NOT because quoting is visible: the
+    # lexer is posix, so a bare `sh '<<<' P` dequotes to exactly `<<<` and is read as the
+    # operator it is spelled like. That OVER-blocks a literal `<<<` argument (residual 4);
+    # telling the two apart needs raw spans and quote state, which is the adjacency
+    # modelling residual 3 records as having turned an over-block into a fail-open.
+    seen_whole = False
+    for _op, seg in pairs:
+        if "<<<" not in seg:
+            continue
+        if seen_whole:
+            return
+        # EXTGLOB, asked of the COMMAND WORD and nothing else. The lexer treats `(` as
+        # punctuation, so `/bin/@(sh)` reaches the command word as `/bin/@` -- neither a
+        # shell nor unresolvable -- while bash expands it and runs the payload. Resolving
+        # the group changes that word; resolving a group somewhere else does not. So peel
+        # BOTH spellings and compare: a command word that moves under the rewrite was
+        # spelled with a group and is unresolved (an alternation or a negation names more
+        # than the text it wraps, and a nested group survives one pass), while
+        # `echo '@(x|y)' <<< 'prose'` peels to `echo` either way and stays a read. Asking
+        # the region instead refused exactly that command, and asking it with quote
+        # provenance is the quote-state model this file does not keep.
+        # To a FIXED POINT, bounded: one `sub` pass resolves one level, so `/bin/@(@(sh))`
+        # comes back as `/bin/@(sh)` -- still truncated at the `(`, and still equal to the
+        # unrewritten command word, which read as "no group here" and let it through.
+        # A nest DEEPER than the bound survives the passes unchanged, so the comparison
+        # below cannot see it either; the trailing-`@`/`+`/`!` test on the command word is
+        # what catches that, and the fixture for it is in the suite because the first
+        # spelling of this comment claimed the bound was harmless and the test said
+        # otherwise. `!` is on that list for a second reason: `_EXTGLOB_RE` deliberately
+        # EXCLUDES a negation (resolving `!(z)` to its contents yields the one spelling it
+        # cannot match), so `/bin/b!(z)sh` is never rewritten at all and the truncated
+        # command word is the only trace of it left.
+        _flat = seg
+        for _ in range(_EXTGLOB_PASSES):
+            _next = _EXTGLOB_RE.sub(r"\1", _flat)
+            if _next == _flat:
+                break
+            _flat = _next
+        try:
+            toks = _lex_seg(_flat)
+            _otoks = toks if _flat == seg else _lex_seg(seg)
+        except ValueError:
+            # An unparseable segment is already probed by the caller's own fail-closed
+            # path; guessing at one here would only duplicate it.
+            continue
+        if "<<<" not in toks:
+            continue
+        # COMMAND POSITION, not "a shell name anywhere". The wide test the pipe path uses
+        # is safe there because a pipeline STAGE's words ARE the command; here the operand
+        # and the arguments sit in the same segment, so any mention of an interpreter read
+        # as the receiver -- `echo sh <<< P` merely redirects stdin to `echo`. Ordinary
+        # commands that MENTION an interpreter are reads, which is the contract the rest of
+        # this file keeps.
+        cw = _peel_wrappers(_strip_time_prefix(_strip_redirs(toks)))
+        if _otoks is not toks \
+                and _peel_wrappers(_strip_time_prefix(_strip_redirs(_otoks))) != cw:
+            seen_whole = True
+            yield whole
+            return
+        if cw is None:
+            # NOTHING survived the peel, which is not "no receiver": `shlex` has already
+            # removed quoting, so a quoted operand that LOOKS like an operator is stripped
+            # as one and takes the receiver with it (`env -u '>' sh <<< P`).
+            _runs = _starts_with_wrapper(toks)
+        elif not cw.strip() or any(_c.isspace() for _c in cw) or "\\" in cw \
+                or cw[-1:] in ("+", "@", "!") or _UNRESOLVED_CW_RE.search(cw):
+            # A receiver the text does not SPELL. `"$S"`, `"${IFS}sh"`, `{ba,z}sh`,
+            # `/bin/[b]ash`, an undecoded escape: each names a shell after the shell
+            # expands it and names nothing to `_is_shell_name` before. Unresolved is not
+            # `no`. The COMMAND-WORD regex, not the operand one -- the wider set (`{`, `(`)
+            # is why it already exists.
+            _runs = True
+        else:
+            # ...or a WRAPPER in command position that the peel could not see past.
+            # `_peel_wrappers` skips a FLAG but not the operand a flag CONSUMES, so
+            # `env -u FOO bash <<< P` peels to `FOO`. WHICH flags take an operand is the
+            # per-flag arity table this file refuses to keep -- it failed open four ways
+            # when tried. So do not answer it: unresolved behind a wrapper is unresolved.
+            _runs = _is_shell_name(_bn(cw)) or _starts_with_wrapper(toks)
+        if _runs:
+            # WHICH text the probe is handed. Never the operand alone: normalization
+            # rewrites operands out of recognition (a `$IFS` concatenation, an ANSI-C
+            # escape, a value assigned earlier in the command), and scanning them made
+            # every such rewrite a bypass, one spelling at a time.
+            #
+            # So: the SEGMENT, which holds the receiver and its operand together -- unless
+            # the original command carries an EXPANSION anywhere, in which case the segment
+            # view is exactly what cannot be trusted and the whole command is searched
+            # instead. That is the answer the `-` / `/dev/fd/N` interpreter branch already
+            # gives to the same question. Handing over the whole command UNCONDITIONALLY
+            # was tried and over-blocked ordinary work: `sh <<< ':'` beside a `cat` of the
+            # helper is two unrelated commands, and each of them alone reads.
+            if _UNRESOLVED_OPERAND_RE.search(whole):
+                # ONCE per command: the probe's answer cannot differ between occurrences,
+                # and yielding it per segment made a command holding a thousand
+                # `sh <<< "$X"` stages rescan the whole text a thousand times -- ~6.3s,
+                # past the hook timeout, and a timed-out hook writes NO decision, which the
+                # harness reads as ALLOW. A DoS on the check is a fail-open.
+                seen_whole = True
+                yield whole
+                return
+            yield seg
+
+
+
 def _piped_shell_producers(pairs):
     # Text feeding each pipeline stage that might be a shell reading its PROGRAM from
     # stdin. `bash -c "<helper> ..."` was blocked while `printf "<helper> ..." | bash` was
@@ -2140,6 +2348,17 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # A shell on the RECEIVING end of a pipe runs whatever the producer wrote, and the
         # walk below can only see that payload as data. Same condition and same reason as
         # cmdword._piped_shell_producers -- keep the two in step.
+        # A here-string receiver runs its operand for the same reason a piped receiver runs
+        # what the producer wrote, and both are answered by the same probe (#643).
+        # `_whole`, NOT `cmd`: on recursion `cmd` is a FRAGMENT, and the unresolvable-operand
+        # answer below searches the whole command for the helper. Passing the fragment made
+        # `VAR='<helper>' sh -c 'sh <<< "$VAR"'` classify OK -- the nested scan saw the
+        # unresolved operand but not the assignment, which lives only in the outer command.
+        # Same variable every sibling call site here already threads through for this reason.
+        for _prod in _herestring_shell_payloads(_pairs, _whole):
+            _hit = _abandoned_scan_probe(_prod)
+            if _hit:
+                return _hit
         for _prod in _piped_shell_producers(_pairs):
             # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes
             # GLOB characters, so a payload naming `lease_slo?.py` -- which the shell

@@ -157,6 +157,27 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
 | pi | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
+| grok | `--sandbox busdriver-review` (custom kernel profile) + `--deny Bash(*)/Edit/MCPTool(*)` + vendor hook switches | ✅ yes — reads kernel-confined to CWD; **requires one-time operator setup, see below** |
+
+**grok requires `~/.grok/sandbox.toml` — the lane refuses to dispatch without it.**
+Copy `docs/examples/grok-sandbox.toml` to `~/.grok/sandbox.toml` (edit the absolute
+home paths in its `deny` list) before using `--cli grok`, or the dispatcher exits with
+`grok dispatch refused — the operator sandbox profile is missing or does not meet the
+contract` (`grok_preflight_hint`'s `WHY=profile` branch, `scripts/lib/resolve-cli.sh`).
+
+That extra step buys the only fail-CLOSED posture grok offers. Measured 2026-08-19:
+
+| Property | Built-in profile | `busdriver-review` (custom) |
+|---|---|---|
+| Kernel policy cannot be applied | **warns and runs unconfined** | **refuses to start** |
+| Definition can come from the reviewed repo | n/a | no — grok's sandbox docs give the user file precedence over a project `.grok/sandbox.toml` of the same name, and busdriver's preflight independently requires the user file to exist and meet the contract, so the repo copy is never what is trusted |
+| `~/.ssh` readable | yes under `readonly` (returned a full key listing) | no — `Permission denied` |
+| In-tree hook sources readable | yes | no — kernel-denied, so a branch-planted hook cannot load |
+| Shell / writes / MCP | policy-dependent | denied by the three `--deny` rules |
+
+Residual, unchanged: network egress is not blocked on macOS and grok's own web tools
+stay open, so CWD-readable content can still leave. Gate the lane on **who wrote the
+content**, exactly as for agy.
 
 **Codex caveat — `-s read-only` was observed NOT confining.** Measured 2026-08-09 on
 **codex-cli 0.147.0**, workdir a fresh `mktemp -d` outside any git checkout (so this is

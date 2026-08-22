@@ -1,3 +1,38 @@
+## [1.110.1](https://github.com/chris-yyau/busdriver/compare/v1.110.0...v1.110.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **gate:** scan here-string shell payloads as programs ([#643](https://github.com/chris-yyau/busdriver/issues/643)) ([#722](https://github.com/chris-yyau/busdriver/issues/722)) ([d999c6d](https://github.com/chris-yyau/busdriver/commit/d999c6d061eecf8ad0afb18d89dcd4cfa6a2f635))
+
+# [1.110.0](https://github.com/chris-yyau/busdriver/compare/v1.109.14...v1.110.0) (2026-08-22)
+
+
+### Features
+
+* **skills:** writing-prose skill on a write-blocked agy-prose dispatch lane ([#720](https://github.com/chris-yyau/busdriver/issues/720)) ([3ee8da4](https://github.com/chris-yyau/busdriver/commit/3ee8da43eb7260f081526410b2c9221dcfd3ec05))
+
+## [1.109.14](https://github.com/chris-yyau/busdriver/compare/v1.109.13...v1.109.14) (2026-08-21)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** run grok under a fail-closed custom sandbox profile ([#704](https://github.com/chris-yyau/busdriver/issues/704)) ([95f44dc](https://github.com/chris-yyau/busdriver/commit/95f44dc20d3f684846b01fc1285c429fb7dafcd8)), closes [#595](https://github.com/chris-yyau/busdriver/issues/595)
+
+## [1.109.13](https://github.com/chris-yyau/busdriver/compare/v1.109.12...v1.109.13) (2026-08-21)
+
+
+### Bug Fixes
+
+* **pre-merge:** record every gate-authorized merge so absence is evidence ([#667](https://github.com/chris-yyau/busdriver/issues/667)) ([#718](https://github.com/chris-yyau/busdriver/issues/718)) ([988efd8](https://github.com/chris-yyau/busdriver/commit/988efd837941484d4671ea683f10fc67888c3a90)), closes [#519](https://github.com/chris-yyau/busdriver/issues/519)
+
+## [1.109.12](https://github.com/chris-yyau/busdriver/compare/v1.109.11...v1.109.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **pre-merge:** name which evidence path failed on an ambiguous release ([#672](https://github.com/chris-yyau/busdriver/issues/672)) ([#717](https://github.com/chris-yyau/busdriver/issues/717)) ([8b0668d](https://github.com/chris-yyau/busdriver/commit/8b0668d0ec15177c7ccf14b7ffa7146518c55aa6)), closes [664/#709](https://github.com/chris-yyau/busdriver/issues/709)
+
 ## [1.109.11](https://github.com/chris-yyau/busdriver/compare/v1.109.10...v1.109.11) (2026-08-20)
 
 

@@ -155,6 +155,49 @@ allow_merge() {
     exit 0
 }
 
+# ── #667: audit-record helper (fail-CLOSED) ──────────────────────────
+# Records ONE audit line for a merge this gate is about to authorize, and
+# BLOCKS if it cannot be durably recorded.
+#
+# Why fail-closed rather than the old `|| true`: the value of these records is
+# that a merged PR carrying NONE of them was merged around the gate (from a
+# shell outside the harness, where no PreToolUse hook fires by design). That
+# inference is only sound if EVERY allow path is guaranteed to have recorded.
+# One swallowed write on any path and an absent record stops meaning anything
+# on all of them. Callers pass a pre-formatted JSON object as the only argument.
+audit_authorized_merge() {
+    local _record="$1" _lib
+    _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+    # Delegate the write to lib/audit_append.py rather than `>>`. A shell
+    # redirect follows symlinks at EVERY path component, so a repo-writable
+    # bypass-log.jsonl -> /dev/null, or a symlinked $STATE_DIR, makes the
+    # write "succeed" while retaining nothing — and a shell `-L` pre-check
+    # tests only the FINAL name and leaves a TOCTOU window before the open.
+    # The path is attacker-influenced ($STATE_DIR is repo-relative and
+    # `.claude/` is only gitignored, so a TRACKED symlink there materializes on
+    # checkout). audit_append walks every component with dir_fd + O_NOFOLLOW,
+    # takes the lock, and refuses a torn trailing line. It is the same writer
+    # the #519 skip-lease path already trusts for this exact log.
+    #
+    # Imported, not shelled out to: audit_append deliberately exposes NO writing
+    # CLI (a generic one would let any caller forge a `skip-review-consumed`
+    # line that post-commit-consume-marker.sh reads as proof of a sanctioned
+    # bypass). Importing it from the gate's own trusted lib dir adds no such
+    # entry point. Same `-S` + sys.path scrub as the merge parser above, because
+    # cwd here is the repo.
+    if ! (cd "$REPO_DIR" 2>/dev/null && PYTHONPATH="$_lib" python3 -S -c "
+import sys
+_gatelib = [q for q in sys.path if q.endswith('gate-scripts/lib')]
+sys.path[:] = [q for q in sys.path
+               if q not in ('', '.') and q not in _gatelib] + _gatelib
+from audit_append import append
+raise SystemExit(0 if append(sys.argv[1], sys.argv[2]) else 1)
+" "$STATE_DIR" "$_record" 2>/dev/null); then
+        block_emit "Pre-merge gate: PR #${MERGE_PR_NUM:-<unknown>} passed every check, but the merge-authorization record could not be durably recorded in ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/bypass-log.jsonl. Blocking as precaution: an authorized merge that leaves no record is indistinguishable afterwards from one the gate never saw. The write is refused when any path component is a symlink or not a directory, when the log is not a plain writable file, or when it ends in a torn line. Repair it and retry."
+        exit 0
+    fi
+}
+
 # ── Shared repo-dir resolver ──────────────────────────────────────────
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
@@ -430,16 +473,26 @@ if [ -f "$SKIP_FILE" ] \
         # operator does not need to re-touch it. This closes the
         # consume-on-gate-pass-but-command-fail gap.
         mkdir -p "$REPO_DIR/$STATE_DIR"
+        # Pre-claim telemetry (final consumption logged by PostToolUse hook).
+        # Fail-CLOSED (#667). Recorded BEFORE the pending claim is written, so a
+        # refused record has nothing to undo: an earlier revision passed the
+        # claim path in for rollback, but `rm -f` on a path whose $STATE_DIR
+        # component is repo-controlled can unlink through a symlinked parent —
+        # the exact traversal the helper otherwise refuses. Ordering removes the
+        # unlink instead of trying to make it safe. Cost of this order: if the
+        # claim write below then fails, the log carries a `claimed` event for a
+        # merge that was blocked. That over-records a visibly blocked attempt,
+        # which is the harmless direction; the reverse leaves an unlogged one.
+        _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        audit_authorized_merge \
+            "$(printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}' \
+                "$_NOW" "${MERGE_PR_NUM:-unknown}")"
         if ! printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
-            "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$_NOW" \
             > "$REPO_DIR/$STATE_DIR/.merge-bypass-pending.local" 2>/dev/null; then
             block_emit "Pre-merge gate: failed to write bypass-pending claim to $REPO_DIR/$STATE_DIR/.merge-bypass-pending.local. Cannot proceed safely (PostToolUse hook cannot confirm consumption). Check filesystem permissions."
             exit 0
         fi
-        # Pre-claim telemetry (final consumption logged by PostToolUse hook)
-        printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
-            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         allow_merge "skip-pr-grind"
     else
         rm -f "$SKIP_FILE"
@@ -673,6 +726,21 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
             fi
         fi
+        # ── #667: post-hoc record of a GATED merge ───────────────────
+        # The skip path and the bootstrap path already log to bypass-log.jsonl;
+        # this — the NORMAL path, and the one nearly every merge takes — did
+        # not, so a gated merge and a merge the gate never saw were equally
+        # traceless afterwards. Now every merge the gate authorizes leaves a
+        # record, which is what makes the ABSENCE of one meaningful.
+        # DETECTION, not prevention: a merge run from a shell outside the
+        # harness fires no PreToolUse hook by design and cannot be observed
+        # here. Attempt-time, like both siblings: it records that the gate
+        # authorized the merge, not that GitHub completed it.
+        #
+        _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        audit_authorized_merge \
+            "$(printf '{"ts":"%s","event":"pr-grind-clean-merge","gate":"pre-merge","pr":"%s","head":"%s"}' \
+                "$_NOW" "${MERGE_PR_NUM:-unknown}" "$MARKER_SHA")"
         allow_merge "pr-grind-clean+ci"
     else
         # Stale marker — remove and require fresh grind
@@ -720,9 +788,10 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
                 : # fall through to the BLOCK below
             elif [[ "${FAILED:-0}" -eq 0 && "${PENDING:-0}" -eq 0 && "${KEPT:-0}" -gt 0 ]]; then
                 mkdir -p "$REPO_DIR/$STATE_DIR"
-                printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
-                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \
-                    >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+                _NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                audit_authorized_merge \
+                    "$(printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":"%s","gate_files":%s}' \
+                        "$_NOW" "${MERGE_PR_NUM:-unknown}" "${GATE_FILES_CHANGED:-0}")"
                 allow_merge "bootstrap-merge"
             fi
         fi

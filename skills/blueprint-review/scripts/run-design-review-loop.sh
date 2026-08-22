@@ -84,7 +84,43 @@ millis() {
 # would otherwise treat a droid-supplied run_id as STALE and discard the rescue.
 # Returns 0 on success (caller then stops — one droid voice).
 _bp_droid_rescue() {
-  local slot="$1" out="$2" raw droid_exit=0
+  local slot="$1" out="$2" cli="${3:-$1}" raw droid_exit=0
+  # grok is NEVER rescued by droid, by name and unconditionally. This is the
+  # blueprint-side half of the PR #704 P1 fix; the dispatch-side half lives in
+  # `should_escalate_to_droid` (scripts/lib/resolve-cli.sh), which THIS path
+  # does not call — the loop below reaches this function directly, so the two
+  # guards are independent and both are required.
+  #
+  # A grok slot reaches here with status not PASS/FAIL, which includes the case
+  # that matters: the static preflight PASSED and grok then failed at RUNTIME
+  # because the custom sandbox profile could not be applied, so grok refused to
+  # start with its protections missing. Rescuing that slot would take the very
+  # prompt whose containment just proved unenforceable — and the repo content
+  # quoted inside `$FULL_PROMPT` — and send it to droid, a different provider.
+  # The protection would invert into the leak it exists to prevent.
+  #
+  # Keyed on the resolved CLI ($cli), NOT the slot label ($slot). $slot is the
+  # historical output-file position (agy/codex/grok — still used below for
+  # filenames and log lines) and a route override or BUSDRIVER_REVIEW_CLI=grok
+  # can put grok's CLI in the agy or codex slot. Keying on $slot alone would
+  # miss that case and forward the prompt (plus quoted repo content) to droid —
+  # the exact cross-provider leak this guard exists to close. Reported by
+  # Cursor Bugbot on PR #704. Keyed on the CLI NAME, not on grok's failure
+  # text: a message matcher would have to enumerate every way a sandbox can
+  # fail to apply, and any message it did not anticipate fails OPEN into
+  # exactly this forward. Accepted cost is that an ordinary transient grok
+  # failure gets no droid stand-in — the voice is simply reported failed,
+  # matching the dispatch-side rule.
+  # Return 2 (not 1) here: no droid attempt was made — the one-droid-voice cap
+  # was never spent — so the caller must keep scanning for a later failed slot
+  # instead of stopping. A route override can place grok's CLI in reviewer 1
+  # or 2 (Cursor Bugbot + Codex, PR #704 round 2): if the caller unconditionally
+  # stopped after this exclusion, a later genuinely-rescuable non-grok slot
+  # would never get its droid attempt even though droid was never launched.
+  if [[ "$cli" == "grok" ]]; then
+    log_warning "  grok failed at runtime → NOT rescued via droid (cross-provider containment, PR #704)"
+    return 2
+  fi
   raw=$(get_review_file "${slot}-droid-raw.txt")
   log_warning "  ${slot} failed at runtime → retrying once via droid"
   execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?
@@ -560,7 +596,7 @@ $DESIGN_CONTENT
   # Suppressible via BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1.
   if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]] && \
      [[ "$REVIEWER_1_CLI" == "grok" || "$REVIEWER_2_CLI" == "grok" || "$REVIEWER_3_CLI" == "grok" ]]; then
-    log_warning "  grok dispatch in blueprint-review: --sandbox readonly blocks project writes only; shell exec / /tmp writes NOT blocked. Safety also requires 'always approve' DISABLED in grok user-config. Design-document content flows through this path — review the dispatch.sh grok-case comment for the full threat model. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress."
+    log_warning "  grok dispatch in blueprint-review: containment is --sandbox busdriver-review, a custom kernel profile that refuses to start if it cannot be enforced (reads confined to CWD) + --deny Bash/Edit/MCPTool (shell, writes and MCP denied) — all dispatcher-side; the grok user-config is NOT part of the boundary. RESIDUAL: network egress is not blocked on macOS and grok's web tools stay open, so CWD-readable content can still leave. Design-document content flows through this path — review the dispatch.sh grok-case comment for the full threat model. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress."
   fi
 
   # ── Phase 1: Launch Agy + Codex + Grok in PARALLEL ────────────
@@ -1022,18 +1058,34 @@ with open(pending, "w") as f:
      && [[ "$REVIEWER_1_CLI" != "droid" && "$REVIEWER_2_CLI" != "droid" && "$REVIEWER_3_CLI" != "droid" ]]; then
     for _slot in agy codex grok; do
       case "$_slot" in
-        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE" ;;
-        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE" ;;
-        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE" ;;
+        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE";   _cli="$REVIEWER_1_CLI" ;;
+        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE"; _cli="$REVIEWER_2_CLI" ;;
+        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE";  _cli="$REVIEWER_3_CLI" ;;
       esac
       [[ "$_av" == "true" ]] || continue
       _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
       [[ "$_st" == "PASS" || "$_st" == "FAIL" ]] && continue   # ran fine — not a runtime failure
-      # First failed reviewer only: ONE droid attempt, then stop regardless of
-      # outcome. A failed/slow droid must not trigger more long rescue waits
-      # (execute_review's timeout is 1200s) — and the cap is one droid voice.
-      # shellcheck disable=SC2310  # rescue handles its own errors; || true ignores its rc
-      _bp_droid_rescue "$_slot" "$_so" || true
+      # First failed reviewer that gets an ACTUAL droid attempt: ONE droid
+      # attempt total, then stop regardless of outcome. A failed/slow droid
+      # must not trigger more long rescue waits (execute_review's timeout is
+      # 1200s) — and the cap is one droid voice. $_slot is the output-file
+      # position (filenames/logging); $_cli is the RESOLVED CLI that actually
+      # ran there — a route override can put grok in the agy or codex slot,
+      # so the grok exclusion inside _bp_droid_rescue must key on $_cli, not
+      # $_slot (PR #704).
+      #
+      # rc==2 means _bp_droid_rescue excluded a grok slot WITHOUT launching
+      # droid — no rescue attempt was spent, so the one-voice cap is still
+      # unspent and the scan must continue to the next failed slot. Only rc==1
+      # (a genuine droid attempt that failed) or rc==0 (success) stops the
+      # loop. Without this, a route override placing grok in reviewer 1 or 2
+      # would consume the loop's single rescue opportunity on a slot that
+      # never dispatched droid, starving a later legitimately-rescuable
+      # non-grok slot (Cursor Bugbot + Codex, PR #704 round 2).
+      # shellcheck disable=SC2310  # rescue handles its own errors; rc captured explicitly
+      _rescue_rc=0
+      _bp_droid_rescue "$_slot" "$_so" "$_cli" || _rescue_rc=$?
+      [[ "$_rescue_rc" -eq 2 ]] && continue
       break
     done
   fi

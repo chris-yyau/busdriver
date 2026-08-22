@@ -657,6 +657,32 @@ assert_unit "'t' in m._class_members('z-\\\\ta', True)" \
 assert_ok "python3 $LIB/safe[a].py \">\" ignored 'lease_slo[\"x\"]t.py'" \
     "#708 round 2: a quoted redirect-looking argument must not drop the raw pass -> allowed"
 
+# 12. A round-4 finding, directly observable end to end: an incomplete POSIX sub-expression
+# opener (`[:`, `[.`, `[=` with no matching closer) made the terminator scan ABANDON the
+# whole class instead of reading those characters as ordinary members and continuing to look
+# for the class's own `]` -- bash itself reads `[^[[=]` as a negated class of the ordinary
+# members `{[, =}`, and _resolve_members already gets that right for a class BODY once its
+# boundary is known. The two scanners that decide where the boundary IS
+# (_squeeze_span_classes, _count_classes) gave up instead: _count_classes reporting zero
+# classes routed the word past every multi-class guard, and _class_variants never produced a
+# matching rewrite, so a command bash expands straight onto the helper read as a plain miss.
+# Raised by codex in review.
+assert_block "python3 $LIB/lease_slo[^[[=].py" \
+    "#708 round 4: an incomplete POSIX sub-expression opener is an ordinary member, not an abandoned class"
+
+# 13. A round-4 finding, masked end to end the same way 8-9 were: _glob_helper asks
+# _deep_affordable(word) a second time to decide whether the search it just ran was
+# exhaustive, but by then _class_variants has already DEBITED the budget for that exact
+# word -- so a word that WAS affordable, and got the full deep search it paid for, can fail
+# the same question once it is asked again against the post-charge balance. That routed a
+# fully-searched precise miss (`<stem>[a].py`) through the fail-closed prefix fallback and
+# over-blocked it. Fixed by resolving affordability ONCE, before the charge, and reusing
+# that answer instead of re-asking the budget. Raised by cursor and codex both, from the
+# same call. `__setitem__` returns None so `None or expr` reduces to `expr`, keeping this a
+# single expression the way assert_unit requires.
+assert_unit "(m._deep_budget.__setitem__(0, len('lease_slo[a].py')) or m._glob_helper('lease_slo[a].py')) is None" \
+    "#708 round 4: a word must not price itself out of its own already-paid-for deep search"
+
 echo "── F. what EXECUTES must BLOCK (property, #708) ──"
 # The discipline the sections above are written to, made mechanical. Every row here is a
 # command that is actually RUN in a throwaway directory holding a STUB helper: if the shell

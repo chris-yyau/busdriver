@@ -942,13 +942,18 @@ def _squeeze_span_classes(s, close, rewrite, cross=False):
             if s[j] == chr(92) and j + 1 < n:
                 j += 2
                 continue
-            # [:alpha:] [.x.] [=x=] -- the inner `]` belongs to the sub-expression
+            # [:alpha:] [.x.] [=x=] -- the inner `]` belongs to the sub-expression. NO
+            # closer at all is not an abandoned class: bash reads an unterminated
+            # `[:`/`[.`/`[=` as ordinary members and keeps scanning for the class's own
+            # `]`, which is what _resolve_members already does for the class BODY -- this
+            # boundary scan was abandoning the whole class instead, reporting no class at
+            # all for `<stem>[^[[=].py`, which bash expands onto the helper. Codex found it
+            # running.
             if s[j] == "[" and j + 1 < n and s[j + 1] in ":.=":
                 k = s.find(s[j + 1] + "]", j + 2)
-                if k < 0:
-                    break
-                j = k + 2
-                continue
+                if k >= 0:
+                    j = k + 2
+                    continue
             j += 1
         if j >= n or s[j] != "]":
             break
@@ -1565,6 +1570,13 @@ def _glob_helper(word, deep=None):
     same disagreement twice from the probe side.
     """
     seen = set()
+    # Resolved BEFORE _class_variants can charge the deep budget, and reused below instead
+    # of asked again afterward. Asking again re-tests the SAME word's length against the
+    # budget the call just DEBITED for it, so a word that was affordable -- and got the full
+    # deep search it paid for -- can price itself out of its own answer once the charge
+    # lands, over-blocking a precise miss like `<stem>[a].py`. Cursor and Codex both raised
+    # this from the same post-charge recheck in review.
+    was_affordable = deep if deep is not None else _deep_affordable(word)
     variants = _class_variants(word, deep)
     for cand in [_bn(word)] + [_bn(v) for v in variants]:
         if cand in seen:
@@ -1588,7 +1600,7 @@ def _glob_helper(word, deep=None):
     # word returned None where the same word unpadded returned the helper.
     if (len(variants) >= _CLASS_VARIANT_CAP
             or word.count("]") > _CLOSE_CANDIDATES
-            or (deep is None and not _deep_affordable(word))
+            or (deep is None and not was_affordable)
             or _count_classes(word) >= 2
             or _CLASS_QUOTE_RE.search(word)):
         return _bracket_prefix_hit(word)
@@ -1737,12 +1749,16 @@ def _count_classes(s, stop=2):
             if s[j] == chr(92) and j + 1 < n:
                 j += 2
                 continue
+            # Same terminator-abandonment bug as _squeeze_span_classes, same fix: an
+            # unterminated `[:`/`[.`/`[=` is an ordinary member here too, not a reason to
+            # give up on the class. Without this, `<stem>[^[[=].py` counted zero classes,
+            # which routed it past the multi-class fallback and every other guard below --
+            # a fail-OPEN miss, not just an under-count.
             if s[j] == "[" and j + 1 < n and s[j + 1] in ":.=":
                 k = s.find(s[j + 1] + "]", j + 2)
-                if k < 0:
-                    break
-                j = k + 2
-                continue
+                if k >= 0:
+                    j = k + 2
+                    continue
             j += 1
         if j >= n or s[j] != "]":
             break

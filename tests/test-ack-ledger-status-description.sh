@@ -154,6 +154,10 @@ for desc in \
   'Review did not finish' \
   'Review started: failed to complete' \
   'Review started - failed to complete' \
+  'Review started,could not complete' \
+  'Review started:was not completed' \
+  'Review rate:limited' \
+  'Review rate—limited' \
   'Review started,failed to complete' \
   'Review did not get completed' \
   "Review didn't get started" \

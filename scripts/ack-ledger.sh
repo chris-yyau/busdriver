@@ -422,27 +422,208 @@ _body_is_rate_limit_notice() {
 # `success` on this channel means "the run terminated", NOT "the code was reviewed".
 # Only descriptions that AFFIRMATIVELY report non-performance are demoted here.
 #
-# RESIDUAL, deliberate: an EMPTY description still acks. Absence of a message is not
-# evidence the review did not happen, and blocking on it would invent an over-block
-# class no observation supports. This patch closes the demonstrated fail-open and
-# nothing wider.
-# Every alternative is a PHRASE that affirmatively reports non-performance. Bare
-# topic words (`quota`, `capacity`, `skipped`) are deliberately NOT alternatives:
-# they also occur in descriptions of reviews that DID run — "Review completed
-# within quota", "Capacity analysis completed", "Review completed; generated files
-# skipped" — and matching those would demote a genuine ack, turning a fail-open
-# into an equally wrong over-block. Each is pinned as a positive case in
-# tests/test-ack-ledger-status-description.sh.
-_STATUS_NONREVIEW_RE='rate.?limited|rate.?limit (exceeded|reached|hit)|review limit reached|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|couldn.t start|could not start|cannot start|unable to (start|review)|review not started|review skipped|skipping review'
+# THE CONTRACT, and its deliberate residual. A status description is free English,
+# so no classifier can be complete; what this one guarantees is a CLOSED list of
+# families:
+#
+#   * capacity/quota tokens naming the reviewer's own budget (rate limited, quota
+#     exceeded, out of quota, at/over capacity, review limit reached);
+#   * the review as subject, with any run of the closed auxiliary/modal set, over
+#     the verbs skipped / aborted / cancelled, a negated (not|never) or yet-to or
+#     unable-to / not-able-to or failed-to start|complete|finish, "review timed out", and the
+#     bare "review failed";
+#   * the review as OBJECT of a denial ("could not start this review") — where the
+#     object must END the clause, so "failed to complete the review summary" is
+#     about the summary and still acks;
+#   * a SUBJECTLESS denial standing clause-initially, which elides its subject and
+#     so inherits the description's topic ("Review started; failed to complete").
+#
+# Anything outside those families ACKS — including an EMPTY description, and
+# including some novel phrasing of non-performance nobody has posted yet. That is
+# the same doctrine both ways: absence of a recognized statement is not evidence
+# the review did not happen, and inventing an over-block class no observation
+# supports would trade one wrong answer for another. `Review failed` is the one
+# ambiguous case resolved toward demotion — on a channel where `success` means only
+# "the run terminated", a description that reports failure is not proof HEAD was
+# reviewed, and a visible stall beats a silent fail-open.
+#
+# OUTSIDE the contract, by construction and after measurement:
+#
+#   * a QUALIFIED subject or object beyond a single article — "The code review
+#     started", "could not complete the full automated security review". One more
+#     qualifier word is always available, so no threshold is defensible;
+#   * a denial introduced by a colon, dash or comma anywhere but the START of the
+#     description — "The review started: failed to complete". A description that
+#     OPENS with the review is covered; telling the review's own introducer from
+#     another subject's mid-string ("artifacts for review: failed to complete")
+#     needs the same unbounded qualifier count;
+#   * a clause that DENIES and then RECOVERS — "failed to complete after retry but
+#     later completed" demotes on its first half. The adjunct that may follow a
+#     subjectless denial is not required to end the clause, and requiring it to
+#     would drop "Could not start due to quota", a real non-review;
+#   * a NEGATED budget claim, which still demotes — "Review completed; not rate
+#     limited" over-blocks. Deliberate: every normalization that removed the
+#     over-block introduced a fail-OPEN instead.
+#
+# Those three were each implemented and then REMOVED after review found that each
+# fix opened a defect in the opposite direction: widening the qualifier run
+# swallowed foreign subjects, narrowing it missed real ones, and deleting negated
+# phrases swallowed the verdict they qualified. A status description is free
+# English; a regex over it has no fixed point. Widening this classifier is
+# therefore not automatically an improvement — a change here must show it closes an
+# OBSERVED payload without opening the mirror-image defect, and must land with both
+# fixtures.
+#
+# So: this guard closes the demonstrated fail-open (#709, "Review rate limited")
+# and its structural neighbours, and NOTHING WIDER. A newly observed phrasing is a
+# new case with a new fixture — not evidence this classifier was wrong.
+# Two rules keep this bounded instead of an endless phrase list — each earlier
+# round closed one grammatical form and review found the next.
+#
+# 1. THE SUBJECT DECIDES THE SCOPE, CLAUSE BY CLAUSE. Alternatives that name the
+#    review itself, and the capacity/quota tokens that name the reviewer's own
+#    budget, are matched against the WHOLE description (_STATUS_NONREVIEW_RE): a
+#    trailing clause cannot spoof them, and narrowing would only lose evidence —
+#    "Unable to proceed, review was not started" and "Review unavailable, rate
+#    limit exceeded" are non-reviews however they are punctuated.
+#
+#    Denials with NO subject at all (_STATUS_NONREVIEW_LEAD_RE — bare "couldn't
+#    start", "failed to complete", "yet to be completed") are matched CLAUSE-
+#    INITIALLY, against every clause. A subjectless denial elides its subject and
+#    therefore inherits the description's topic, which is the review: "Review
+#    started; failed to complete" is a failed review wherever the phrase sits. But
+#    a denial that carries its OWN subject is about that subject, not the review —
+#    "Review completed; preview can't start" and "Review completed; generated files
+#    failed to complete" are COMPLETED reviews and must still ack. The clause-
+#    initial anchor is exactly that distinction, and it needs no list of foreign
+#    subjects: anything other than the review supplies its own noun, which pushes
+#    the denial off the start of its clause. The subjectless verb must also END its
+#    clause, because a foreign topic can arrive as the OBJECT instead of the
+#    subject — "unable to complete the reviewer profile update" is about the
+#    profile update, while a bare "failed to complete" has nothing left to be
+#    about except the review. What may follow it is a CLOSED set of adjunct
+#    prepositions ("due to quota", "because of ...", "after ..."): an adjunct
+#    explains the denial, an object replaces its topic.
+#
+#    Clause separators are `;` `.` `!` `?` and `,` — punctuation that ENDS a
+#    clause. Colons and dashes are NOT separators: they INTRODUCE a clause whose
+#    subject sits before them ("preview rendering: failed to complete"), so
+#    splitting there would strip the very subject this pass reads. They are
+#    absorbed as a subject prefix instead, and only when the subject they follow
+#    is the review itself — so "Review: not started" and "Review started - failed
+#    to complete" are read as verdicts about the review, while the
+#    reviewer-profile forms are not.
+#
+#    The asymmetry is deliberate and fail-CLOSED: a budget token appearing only in
+#    a trailing clause demotes. Over-blocking stalls a merge visibly and the
+#    operator can act; under-blocking is the #709 fail-open itself.
+#
+# 2. NON-PERFORMANCE IS STRUCTURAL, NOT LEXICAL. Rather than enumerating
+#    "was skipped" / "has not started" / "couldn't be completed" one phrasing at a
+#    time, the `review ...` alternatives allow a CLOSED set of auxiliary and modal
+#    words between the subject and the verb, and the negated family REQUIRES an
+#    explicit `not` before a CLOSED verb pair (start / complete — a review that
+#    neither started nor finished has not reviewed HEAD). That covers passive,
+#    modal and negated forms uniformly while a bare "Review started" stays a
+#    progress report and acks. The negation token is `not|never`; neither is a
+#    member of the auxiliary set, because negation is mandatory where it is meant
+#    and admitting it everywhere would demote the affirmation "Review was not
+#    skipped".
+#
+# Bare topic words (`quota`, `capacity`, `skipped`) are still NOT alternatives —
+# they occur in descriptions of reviews that DID run ("Review completed within
+# quota"), and matching those trades the fail-open for an equally wrong over-block.
+# Each is pinned as a positive case in tests/test-ack-ledger-status-description.sh.
+#
+# Contractions and the fused `cannot` are expanded before matching (see
+# _status_desc_is_non_review), so only the spelled-out form appears here.
+#
+# Every `review ...` alternative is prefixed with (^|[^[:alnum:]_]) so it cannot
+# match `review` inside a longer word: "preview was skipped" must not demote. The
+# terminal verbs carry the mirror-image suffix ([^[:alnum:]_]|$) for the same
+# reason: without it "not complete" matches inside "was not completely clean",
+# which reports a review that DID run. POSIX bracket form rather than \< or \b so
+# it behaves identically under GNU grep (CI) and BSD grep (macOS).
+_STATUS_NONREVIEW_RE='rate.?limited|rate.?limit (exceeded|reached|hit)|quota (exceeded|reached)|out of quota|insufficient quota|at capacity|over capacity|(^|[^[:alnum:]_])review limit reached|skipping review([^[:alnum:]_]|$)|unable to review([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (skipped|aborted|cancelled|canceled)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* timed out([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (unable|not able) to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)([^[:alnum:]_]|$)|(^review( *[-:—–]+)?|[^[:alnum:]_]review)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* failed([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)* (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|unable to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|failed to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|yet to( be)? (start(ed)?|complet(e|ed)|finish(ed)?)( this| the| a| an)? review([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
+
+_STATUS_NONREVIEW_LEAD_RE='( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)([[:space:][:punct:]]*$| (due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
 
 _status_desc_is_non_review() {
-  local rc
+  local rc desc clauses
   [[ -n "$1" ]] || return 1
-  printf '%s' "$1" | grep -qiE "$_STATUS_NONREVIEW_RE"; rc=$?
+  # Expand contractions FIRST so the classifier enumerates one form per phrase
+  # instead of one per grammatical variant: "hasn't started", "wasn't started"
+  # and "didn't start" all normalize onto the spelled-out alternatives below.
+  # Both the ASCII apostrophe and the typographic one bots actually emit are
+  # handled. Enumerating contractions in the regex instead is how a phrase list
+  # grows without ever becoming complete.
+  # Lowercase FIRST: the contraction rewrite must fire on "HASN'T" too, and `sed`'s
+  # case-insensitive flag is not portable across GNU and BSD. grep is already -i.
+  # `cannot` is one fused word, so the ` not` the classifier expects is not there;
+  # split it like the irregulars below.
+  # Irregular contractions FIRST: a generic n't -> " not" rewrite corrupts them
+  # ("can't" -> "ca not", "won't" -> "wo not"), which matches nothing and silently
+  # re-opens the fail-open. Input is already lowercased, so lowercase forms suffice.
+  # A NEGATED budget claim ("not rate limited", "no longer at capacity") still
+  # demotes. That is a deliberate over-block, kept because every attempt to remove
+  # it was worse: deleting the negated phrase before matching swallows the verdict
+  # in "Review was not completed because rate limited", and an empty result after
+  # deletion is indistinguishable from a broken pipeline. An over-block stalls a
+  # merge visibly; those replacements are fail-OPENs. Pinned as a negative case.
+  # Whitespace is squeezed LAST: every alternative below separates its words with
+  # exactly one space, so "Review  was  not  started" would otherwise ack — a whole
+  # class of spacing variants closed by one normalization instead of one more
+  # phrase.
+  # `|| desc=""` keeps the pipeline's status from being discarded (SC2312) and
+  # feeds the fail-CLOSED branch below.
+  desc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed "s/cannot/can not/g;
+           s/can't/can not/g; s/can’t/can not/g;
+           s/won't/will not/g; s/won’t/will not/g;
+           s/shan't/shall not/g; s/shan’t/shall not/g;
+           s/n't/ not/g; s/n’t/ not/g;
+           s/[[:space:]][[:space:]]*/ /g;
+           s/^ //; s/ $//") || desc=""
+  if [[ -z "$desc" ]]; then
+    # Non-empty input normalized to nothing => the pipeline failed. We cannot
+    # prove the status is a real verdict; fail CLOSED like the grep-error branch.
+    return 0
+  fi
+  # Pass 1 — anchored alternatives, WHOLE description.
+  printf '%s' "$desc" | grep -qiE "$_STATUS_NONREVIEW_RE"; rc=$?
   [[ "$rc" -eq 0 ]] && return 0
-  [[ "$rc" -eq 1 ]] && return 1
   # grep itself failed (rc>=2). We cannot prove the status is a real verdict, and
   # this sits on a merge gate — fail CLOSED, matching the file's invariant.
+  [[ "$rc" -ne 1 ]] && return 0
+  # Pass 2 — subjectless denials, CLAUSE-INITIAL in any clause. Split on the clause
+  # separators with parameter expansion (no subprocess, and `sed` cannot portably
+  # emit a newline across GNU and BSD), then let grep's `^` do the clause-initial
+  # test one clause per line.
+  # Each clause is emitted with a LEADING SPACE so the auxiliary run in the regex
+  # (whose members carry their own leading space) can match a clause that opens
+  # with a modal — "couldn't start" normalizes to "could not start".
+  clauses=" ${desc//;/$'\n' }"
+  clauses="${clauses//./$'\n' }"
+  clauses="${clauses//!/$'\n' }"
+  clauses="${clauses//\?/$'\n' }"
+  # Colons, dashes and commas are NOT separators: they introduce a clause whose
+  # subject sits before them ("preview rendering: failed to complete"), and every
+  # attempt to tell "the review's own colon" from another subject's turned into a
+  # word-counting contest with no stable answer. They are simply not classified —
+  # see the contract above.
+  printf '%s' "$clauses" | grep -qiE "^ *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  [[ "$rc" -ne 1 ]] && return 0
+  # Pass 3 — a denial introduced by a colon, dash or comma, but ONLY when the
+  # description OPENS with the review: "Review started: failed to complete" is the
+  # review's own failure. The same shape mid-string ("artifacts for review: failed
+  # to complete") belongs to whatever noun precedes it, and telling those apart
+  # anywhere else needs an unbounded qualifier count — see the contract. The prefix
+  # may not cross another introducer, so in "Review completed: preview rendering -
+  # failed to complete" the failure still belongs to the rendering.
+  printf '%s' "$desc" | grep -qiE "^review[^;.!?:,—–-]*[-:,—–] *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  [[ "$rc" -eq 1 ]] && return 1
   return 0
 }
 

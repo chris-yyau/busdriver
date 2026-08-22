@@ -398,22 +398,9 @@ This is the PR security/bugs backstop artifact. It is written ONLY by --run-back
 This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, inline on an actual Codex PASS — there is no manual writer subcommand (that would let a PASS be forged without a review). Re-run the PR review to (re)produce it:
   LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"" ;;
     esac
-    # #638/#516 — the block above fires on a REMOVAL too, and answering an attempt to
-    # disarm a bypass with instructions for arming one is how the loop-binding
-    # workaround got invented in the first place. Name the audited drain for the
-    # markers whose removal makes the next gate STRICTER; the ones whose removal
-    # loosens a gate (the lease ledger, the audit log, design-review-needed.local) get
-    # no hint, because for those the block is the point.
-    DRAIN_HINT=""
-    case "$MARKER_TARGET" in
-        skip-litmus.local|skip-design-review.local|litmus-passed.local|pr-review-passed.local|pr-codex-lead.local.json|pr-backstop-verdict.local.json)
-            DRAIN_HINT="
-If you are trying to REMOVE a spent marker rather than write one, use the audited drain — it unlinks exactly that one file and records the release in $STATE_DIR/bypass-log.jsonl:
-  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/scripts/design-clear.sh\" --skip $MARKER_TARGET" ;;
-    esac
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
-Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}${DRAIN_HINT}
+Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
     exit 0
 fi

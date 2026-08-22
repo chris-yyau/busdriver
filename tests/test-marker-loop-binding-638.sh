@@ -192,6 +192,7 @@ rm -f "$TMP/.claude/litmus-passed.local"
 # state dir — so the drain must refuse to traverse it rather than unlink an allowlisted
 # basename in another tree while stamping an audit event that names this one.
 LINKED="$(mktemp -d)" || exit 2
+trap 'rm -rf "$TMP" "$LINKED"' EXIT   # widen the existing trap now that LINKED exists
 git -C "$LINKED" init -q
 git -C "$LINKED" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m init
 mkdir -p "$LINKED/elsewhere"
@@ -220,38 +221,27 @@ else
     no 'design-token listing still works' "exit=$CODE out=$OUT"
 fi
 
+# Only status 4 means the state dir could not be opened without following a symlink.
+# Any OTHER probe failure must say so: reporting it as a symlink refusal sends the
+# operator after a symlink that isn't there. Forced here with a python3 stub that
+# exits with an unmapped status.
+mkdir -p "$TMP/stub"
+printf '#!/bin/sh\nexit 9\n' > "$TMP/stub/python3"
+chmod +x "$TMP/stub/python3"
+: >"$TMP/.claude/skip-design-review.local"
+OUT="$( cd "$TMP" && PATH="$TMP/stub:$PATH" bash "$DRAIN" --skip skip-design-review.local --yes 2>&1 )"; CODE=$?
+if [ "$CODE" -ne 0 ] && printf '%s' "$OUT" | grep -q 'failed unexpectedly'; then
+    ok 'an unexpected probe failure is not misreported as a symlink refusal'
+else
+    no 'an unexpected probe failure is not misreported as a symlink refusal' "exit=$CODE out=$OUT"
+fi
+rm -rf "$TMP/stub"
+
 OUT="$(drain --skip skip-litmus.local --all-for-doc)"; CODE=$?
 if [ "$CODE" -eq 2 ]; then
     ok 'refuses --skip together with --all-for-doc'
 else
     no 'refuses --skip together with --all-for-doc' "exit=$CODE out=$OUT"
-fi
-
-# The block message is the only thing an agent sees when the guard fires. Answering a
-# REMOVAL with instructions for ARMING a bypass is how the loop workaround got invented,
-# so pin that the drain is named for the drainable markers — and only for those.
-GATE="$ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
-gate_reason() { # <command> -> the block reason text
-    python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2]}))' \
-        "$1" "$TMP" 2>/dev/null \
-        | bash "$GATE" 2>/dev/null \
-        | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("reason", ""))
-except Exception:
-    print("")' 2>/dev/null
-}
-
-if gate_reason 'rm -f .claude/skip-litmus.local' | grep -q -- '--skip skip-litmus.local'; then
-    ok 'the block message names the drain for a drainable marker'
-else
-    no 'the block message names the drain' "reason=$(gate_reason 'rm -f .claude/skip-litmus.local')"
-fi
-
-if gate_reason 'rm -f .claude/bypass-log.jsonl' | grep -q -- '--skip'; then
-    no 'no drain hint for the audit log' 'the message offered a drain that would be refused'
-else
-    ok 'no drain hint for a marker whose removal erases the trail'
 fi
 
 printf '\n════ marker-loop-binding-638: %d passed, %d failed ════\n' "$PASS" "$FAIL"

@@ -242,7 +242,8 @@ if [ "$SKIP_MODE" -eq 1 ]; then
     fi
     SKIP_PATH="$SELF_ROOT/$STATE_DIR/$SELECTOR"
     skip_probe   # sets nothing; exit code classifies (see the helper above)
-    case $? in
+    _PROBE_STATUS=$?
+    case "$_PROBE_STATUS" in
         0) : ;;
         2) printf '%s is not armed. Nothing to drain.\n' "$SELECTOR"; exit 1 ;;
         3) printf 'design-clear: %s is not a regular file (symlink, dir, or device) -\n' "$SELECTOR" >&2
@@ -250,7 +251,12 @@ if [ "$SKIP_MODE" -eq 1 ]; then
            exit 2 ;;
         6) printf 'design-clear: %s/ changed under us mid-check - refusing.\n' "$STATE_DIR" >&2
            exit 2 ;;
-        *) printf 'design-clear: cannot open %s/ without following a symlink - refusing.\n' "$STATE_DIR" >&2
+        4) printf 'design-clear: cannot open %s/ without following a symlink - refusing.\n' "$STATE_DIR" >&2
+           exit 2 ;;
+        # Only status 4 is the symlink refusal. Any OTHER status is a probe failure
+        # (a helper import error, an unhandled exception, command-not-found) and
+        # reporting it as a symlink refusal sends the operator after the wrong fix.
+        *) printf 'design-clear: skip_probe failed unexpectedly (status %s) for %s - refusing as a precaution.\n' "$_PROBE_STATUS" "$SELECTOR" >&2
            exit 2 ;;
     esac
     DOC="$SKIP_PATH"

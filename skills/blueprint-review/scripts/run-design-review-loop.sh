@@ -122,6 +122,28 @@ _bp_droid_rescue() {
     return 2
   fi
   raw=$(get_review_file "${slot}-droid-raw.txt")
+  # Carry over any findings #714's salvage recovered for this slot. Without
+  # this the rescue's own artifact replaces them wholesale and the very
+  # findings the salvage exists to preserve are deleted a few lines before
+  # the arbiter reads them. They keep their own `.reviewer` tag through the
+  # droid retag below, so the two voices stay distinguishable.
+  #
+  # Read from the salvage's out-of-band sidecar, NEVER from the artifact. The
+  # exit-0 path writes model-authored JSON through verbatim, so any in-artifact
+  # provenance — an `.issues[].reviewer` tag, a `metadata.salvaged_status` —
+  # is forgeable by the payload: a reviewer exiting 0 with a parseable
+  # NON-verdict could stamp it and ride issues that passed no completeness
+  # check into the rescued artifact, where before #714 the droid artifact
+  # simply replaced them. The sidecar is written only by the salvage, only
+  # after its check, and its round key is rejected below when stale.
+  # (Codex + the litmus reviewer, PR #738.)
+  local _prev_issues='[]'
+  if [[ -f "${out}.salvaged" ]]; then
+    _prev_issues=$(jq -c --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+      'if .run_id==$rid and .iteration==$iter then [(.issues // [])[] | select(.reviewer != null)] else [] end' \
+      "${out}.salvaged" 2>/dev/null || echo '[]')
+  fi
+  [[ -n "$_prev_issues" ]] || _prev_issues='[]'
   log_warning "  ${slot} failed at runtime → retrying once via droid"
   execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?
   if [[ "$droid_exit" -ne 0 ]]; then
@@ -139,7 +161,10 @@ _bp_droid_rescue() {
     rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1
   fi
   if jq --arg from "$slot" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" --arg hash "$SPEC_HASH" \
-       '.reviewer_id="droid" | .reviewer="droid" | (.issues = ((.issues // []) | map(.reviewer="droid")))
+        --argjson prev "$_prev_issues" \
+       '.reviewer_id="droid" | .reviewer="droid"
+        | (.issues = (((.issues // []) | map(.reviewer="droid")) + $prev))
+        | .metadata.carried_salvaged_issues=($prev|length)
         | .metadata.runtime_escalated_from=$from | .metadata.run_id=$rid
         | .metadata.iteration=$iter | .metadata.spec_hash=$hash' \
        "${out}.pending" > "${out}.tagged" 2>/dev/null; then
@@ -148,6 +173,82 @@ _bp_droid_rescue() {
   fi
   rm -f "${out}.pending" "${out}.tagged"
   log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
+}
+
+# Issue #714: recover a complete verdict from a reviewer that exited non-zero.
+# A CLI can print its whole review and then die on shutdown; the exit-0 branch
+# below was the ONLY place the extractor ran, so a raw file holding a full
+# schema-valid FAIL with 7 substantive findings became an ERROR slot and the
+# findings never reached arbitration.
+#
+# Recovers CONTENT, never COVERAGE. The artifact stays `status: ERROR` with its
+# `error` field intact, so `derive_coverage` still reports the slot
+# runtime-failed and the droid rescue still treats it as rescuable — exactly as
+# before this function existed. What changes is that the reviewer's issues now
+# ride along into the arbiter's context instead of being deleted.
+#
+# That split is the whole safety argument, and it is not cosmetic. This is the
+# first site that runs the extractor over a transcript whose reviewer is KNOWN
+# to have failed, which inverts the extractor's own safety property: on an
+# exit-0 transcript the genuine verdict prints last and wins, while on a failed
+# one the genuine verdict is exactly what may be absent. The extractor has a
+# documented, deliberately-unfixed hole where a verdict-shaped object quoted
+# inside an unpinned command echo is promoted (see
+# `test_an_unpinned_echo_still_promotes_its_quoted_pass_preexisting` in
+# lib/test_extract_review_json.py), and `_execute_codex` re-emits the WHOLE
+# captured transcript — command output included — so a reviewed design document
+# that embeds an example verdict can put one there. If a salvaged object could
+# fulfil a coverage slot, that document would be authorizing its own gate: three
+# apparently-fulfilled lenses and a passing arbiter would grant the marker while
+# a reviewer never returned a verdict. Because the slot stays ERROR, the worst a
+# forged payload can do is add issues to the arbiter's context — content the
+# arbiter already reads straight out of the document, pushing toward blocking,
+# never toward a marker.
+#
+# ONE bounded attempt, fail-closed: the same extractor `_bp_droid_rescue` uses,
+# the same complete PASS/FAIL + issues[] check. Attribution is overwritten from
+# the RESOLVED cli, never trusted from the payload (the shared prompt schema
+# only shows `agy|codex|grok`, so a droid reviewer self-labels `codex` — #714),
+# and run_id/iteration/spec_hash/duration are injected as on the exit-0 path.
+# `runtime_escalated_from` is DELETED: `derive_coverage` reads it as "a droid
+# rescue ran", and nothing was dispatched here.
+_bp_salvage_nonzero_verdict() {
+  local slot="$1" out="$2" raw="$3" cli="$4" rc="$5" duration="${6:-0}" _x_err=""
+  [[ -s "$raw" ]] || return 1
+  if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
+    rm -f "${out}.pending"
+    log_warning "  ${slot}: exit $rc and ${_x_err:-extraction failed} — keeping error entry"; return 1
+  fi
+  if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
+    rm -f "${out}.pending"
+    log_warning "  ${slot}: exit $rc and no complete verdict in raw output — keeping error entry"; return 1
+  fi
+  if jq --arg cli "$cli" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+        --arg hash "$SPEC_HASH" --argjson rc "$rc" --argjson dur "$duration" \
+       '.metadata.salvaged_status = .status
+        | .status = "ERROR"
+        | .error = "CLI exited non-zero (exit \($rc)) — verdict salvaged from raw output for arbitration; slot NOT counted as coverage (#714)"
+        | .reviewer_id=$cli | .reviewer=$cli | (.issues = ((.issues // []) | map(.reviewer=$cli)))
+        | del(.metadata.runtime_escalated_from)
+        | .metadata.run_id=$rid | .metadata.iteration=$iter | .metadata.spec_hash=$hash
+        | .metadata.review_duration_ms=$dur | .metadata.salvaged_exit_code=$rc' \
+       "${out}.pending" > "${out}.tagged" 2>/dev/null && mv "${out}.tagged" "$out"; then
+    rm -f "${out}.pending"
+    # Out-of-band carry-over record for `_bp_droid_rescue`. NOT a field in the
+    # artifact: the exit-0 path writes model-authored JSON through verbatim, so
+    # any in-artifact marker is forgeable by the payload — a parseable
+    # NON-verdict could stamp its own provenance and ride unvalidated issues
+    # into the rescued artifact. This file is written only here, only after the
+    # completeness check, and is keyed to the round so a leftover from an
+    # earlier run or iteration cannot authorize a carry-over either.
+    jq -n --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+          --argjson issues "$(jq -c '.issues // []' "$out" 2>/dev/null || echo '[]')" \
+          '{run_id:$rid, iteration:$iter, issues:$issues}' > "${out}.salvaged" 2>/dev/null \
+      || rm -f "${out}.salvaged"
+    log_warning "  ${slot}: CLI exited $rc but printed a complete verdict — findings salvaged for arbitration (slot still counts as failed, #714)"; return 0
+  fi
+  rm -f "${out}.pending" "${out}.tagged"
+  log_warning "  ${slot}: exit $rc and retag failed — keeping error entry"; return 1
 }
 
 # Generate a short run ID for artifact isolation
@@ -691,6 +792,16 @@ with open(pending, "w") as f:
         else
           create_error_json "agy" "Output was not valid JSON: ${_x_err:-no detail}" > "$AGY_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "agy" "$AGY_OUTPUT_FILE" "$AGY_RAW_FILE" \
+             "$REVIEWER_1_CLI" "$REVIEWER_EXIT" "$(( $(millis) - AGY_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.
@@ -753,6 +864,16 @@ with open(pending, "w") as f:
         else
           create_error_json "codex" "Output was not valid JSON: ${_x_err:-no detail}" > "$CODEX_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "codex" "$CODEX_OUTPUT_FILE" "$CODEX_RAW_FILE" \
+             "$REVIEWER_2_CLI" "$REVIEWER_EXIT" "$(( $(millis) - CODEX_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.
@@ -811,6 +932,16 @@ with open(pending, "w") as f:
         else
           create_error_json "grok" "Output was not valid JSON: ${_x_err:-no detail}" > "$GROK_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "grok" "$GROK_OUTPUT_FILE" "$GROK_RAW_FILE" \
+             "$REVIEWER_3_CLI" "$REVIEWER_EXIT" "$(( $(millis) - GROK_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.

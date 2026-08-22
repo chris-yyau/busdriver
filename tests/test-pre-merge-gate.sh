@@ -109,6 +109,9 @@ exit 0
 STUB
 chmod +x "$GH_STUBDIR/gh"
 export PATH="$GH_STUBDIR:$PATH"
+# Inherited GH_STUB_DIFF would make every `gh pr diff` report a gate-file
+# change, so earlier no-marker cases would take the bootstrap allow path.
+unset GH_STUB_DIFF
 
 # Write a marker in the current `<PR_NUMBER> <HEAD_SHA>` contract (#505).
 # Second arg overrides the SHA (to simulate a marker written for another commit).
@@ -336,10 +339,10 @@ TOTAL=$((TOTAL + 1))
 SKIP_EC=0
 SKIP_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null) && SKIP_EC=0 || SKIP_EC=$?
 SKIP_RECORDS=$(grep -c '"event":"skip-pr-grind-claimed"' "$ISO_LOG" 2>/dev/null) || SKIP_RECORDS=0
-SKIP_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
+SKIP_LINE=$(grep '"event":"skip-pr-grind-claimed"' "$ISO_LOG" 2>/dev/null || true)
 if [[ "$SKIP_RECORDS" -eq 1 ]] \
    && [[ "$SKIP_EC" -eq 0 ]] \
-   && printf '%s' "$SKIP_LINE" | grep -q '"pr":"31"' \
+   && printf '%s' "$SKIP_LINE" | grep -q '"pr":"31"}' \
    && ! printf '%s' "$SKIP_OUT" | grep -q '"block"'; then
     printf "  PASS  logs skip-pr-grind-claimed with PR on an authorized skip-path merge (#719)\n"
     PASS=$((PASS + 1))
@@ -356,11 +359,11 @@ BOOT_EC=0
 BOOT_OUT=$(GH_STUB_DIFF="hooks/gate-scripts/pre-merge-gate.sh" \
     BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null) && BOOT_EC=0 || BOOT_EC=$?
 BOOT_RECORDS=$(grep -c '"event":"bootstrap-merge"' "$ISO_LOG" 2>/dev/null) || BOOT_RECORDS=0
-BOOT_LINE=$(cat "$ISO_LOG" 2>/dev/null || true)
+BOOT_LINE=$(grep '"event":"bootstrap-merge"' "$ISO_LOG" 2>/dev/null || true)
 if [[ "$BOOT_RECORDS" -eq 1 ]] \
    && [[ "$BOOT_EC" -eq 0 ]] \
-   && printf '%s' "$BOOT_LINE" | grep -q '"pr":"31"' \
-   && printf '%s' "$BOOT_LINE" | grep -q '"gate_files":1' \
+   && printf '%s' "$BOOT_LINE" | grep -q '"pr":"31","' \
+   && printf '%s' "$BOOT_LINE" | grep -q '"gate_files":1}' \
    && ! printf '%s' "$BOOT_OUT" | grep -q '"block"'; then
     printf "  PASS  logs bootstrap-merge with PR + gate_files on an authorized bootstrap merge (#719)\n"
     PASS=$((PASS + 1))

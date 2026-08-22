@@ -30,7 +30,7 @@ pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-for f in "$ORCH" "$WRITING_PLANS" "$SDD" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
+for f in "$ORCH" "$WRITING_PLANS" "$SDD" "$SDD_REVIEWER" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
   [[ -f "$f" ]] || { echo "FAIL missing required file: $f"; exit 1; }
 done
 

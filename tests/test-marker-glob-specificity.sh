@@ -179,11 +179,17 @@ EOF
 cd $LIB && python3 $lenfloor" "length-floor wildcard: $lenfloor -> BLOCK"
 done
 
-for residual in '*' '**' '***'; do
-    assert_ok "cat <<'EOF'
+# That last sentence came true, from the other direction. #639 recovers the segmentation
+# the apostrophe used to cost, so `python3 *` now arrives as a real invocation with a glob
+# OPERAND and the untargeted `_glob_helper` answers it — command-position gating, reached
+# without widening the release rule. Measured on the pre-#639 classifier: the identical
+# command WITHOUT the apostrophe already blocked, so this is parity, not a new refusal. The
+# release rule itself is still pinned by section A, where the text really is structureless.
+for closed in '*' '**' '***'; do
+    assert_block "cat <<'EOF'
 it isn't
 EOF
-cd $LIB && python3 $residual" "documented residual: $residual behind an unparseable command -> allowed"
+cd $LIB && python3 $closed" "#639 closed: $closed behind a quoted heredoc -> BLOCK"
 done
 
 # ...and the boundary of that residual, which a third draft got wrong: taking the

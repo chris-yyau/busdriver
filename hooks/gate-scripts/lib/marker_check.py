@@ -2235,6 +2235,128 @@ def _abandoned_scan_probe(text):
                  for h in [_glob_helper_targeted(w)] if h), None)
 
 
+# A QUOTED heredoc opener -- `<<'D'`, `<<"D"`, `<<\D`, and the `<<-` spellings of each.
+# KEEP IN STEP WITH gitcmd_detect._HEREDOC_QUOTED, which carries the reasoning for both
+# guards: `(?<!<)` keeps a here-STRING out (`<<<` has its own path, #643), and the trailing
+# lookahead requires the delimiter token to END here, so a delimiter assembled from several
+# quoting runs (`<<'EO'F`) is not half-matched onto the wrong terminator. Copied rather than
+# imported: this file runs under `python3 -I`, where the script directory is off sys.path
+# and a sibling import raises ModuleNotFoundError -- which this gate reports as
+# BLOCK_CLASSIFIER_ERROR on EVERY Bash call. Spelled through _SQ/_DQ because no code here
+# carries a literal quote; the sibling's `[^\']` is the same class.
+_HEREDOC_QUOTED = re.compile(
+    r"(?<!<)<<-?[ \t]*(?:"
+    + _SQ + r"([^" + _SQ + r"]*)" + _SQ + r"|"     # <<'D'
+    + _DQ + r"([^" + _DQ + r"]*)" + _DQ + r"|"     # <<"D"
+    + r"\\(\w+))(?=[\s;|&<>)]|$)")                 # <<\D
+
+
+# A quote WEDGED BETWEEN TWO WORD CHARACTERS, which is the apostrophe of ordinary prose:
+# `it's`, `the library's`. Deleting one cannot change where a word begins or ends, because
+# by construction no whitespace is adjacent to it -- it can only JOIN two word characters,
+# which is what the shell itself does to `a'b'c`. Every OTHER quote is left alone.
+_PROSE_QUOTE = re.compile(r"(?<=\w)[" + _SQ + _DQ + r"](?=\w)")
+
+# ANY heredoc redirect operator, quoted delimiter or not, `<<<` excluded. Used only to
+# count how many share the opener's line -- see the ownership guard below.
+_HEREDOC_OP = re.compile(r"(?<!<)<<-?(?!<)")
+
+
+def _squeeze_quoted_heredocs(cmd):
+    """Drop the PROSE apostrophes from every quoted heredoc BODY.
+
+    The outer shell does no quote processing at all inside `<<'DELIM'` -- an apostrophe
+    there is a letter, not an opener. The segmenter models the body as shell source anyway
+    (which is what lets a body that RUNS something still be walked), so the apostrophe reads
+    as an unterminated quote, the whole command comes back unparseable, and the caller falls
+    to the structureless probe -- which then finds a helper NAME in ordinary prose and blocks
+    a command that invokes nothing (#639).
+
+    Three choices here are load-bearing. Each was measured; each has a fixture.
+
+    EXACTLY ONE quote character in the body, and it must be WEDGED between two word
+    characters. That is the ONLY deletion that is boundary-safe, and the bound is not
+    cosmetic -- two wider drafts were refuted by codex on this change, each verified against
+    HEAD:
+
+      - delete every quote: `python3 "/tmp/path with space/<helper>"` becomes three words,
+        the script operand reads as `/tmp/path`, and the helper is demoted to an argument.
+      - delete every WEDGED quote: a wedged pair still quotes the whitespace BETWEEN it, so
+        `sh -c X'x=1 python3 <helper> Z'Y` -- one word to bash, an executed payload -- comes
+        apart the same way.
+
+    A LONE quote delimits nothing: there is no run for its removal to disturb, and being
+    wedged means no whitespace sits beside it either, so no word can split and no command
+    word can move. Anything more is undecidable from text -- three prose apostrophes and
+    that `sh -c` payload are the SAME SHAPE (all wedged, whitespace between them), which is
+    the wall the parked #639 design hit from the other side.
+
+    RESIDUAL, honest and measured: only an ODD number of quotes reaches here at all (an even
+    number pairs up and the command already parses), so this fixes the reported N=1 body and
+    leaves N=3, 5, ... over-blocking. Fail-CLOSED, and not the reported shape.
+
+    NEVER the BACKSLASH. `_norm_for_scan` rejoins a backslash-newline continuation, so
+    deleting backslashes FIRST splits the name the shell assembles across that continuation
+    into two commands and it is never seen. Also raised by codex, also verified against HEAD.
+
+    SQUEEZED, not EXCISED. #639 proposed dropping the body when the consumer is not an
+    interpreter. Four drafts of that predicate were each refuted by measurement --
+    `cat(){ bash /dev/stdin; }; cat <<'EOF'` runs its body, and ANY name can be a shell
+    function, so "positively proven non-executing data sink" is not decidable from text.
+    Squeezing needs no such predicate: the body is still segmented and walked, whoever
+    consumes it.
+
+    EXACTLY ONE quoted heredoc in the whole command, which is why this is a single pass and
+    not a loop. Deleting a quote shifts the parity of the ENTIRE command, so a SECOND
+    heredoc's prose apostrophe -- correctly left in place, because that body was not
+    squeezed -- stops being odd-one-out and pairs with a third across the live shell between
+    them, hiding it as quoted data. Measured: five heredocs carrying one apostrophe each,
+    with a real invocation between bodies 2 and 3; `bash -n` valid, HEAD blocking, and both
+    the looping draft AND a stop-after-the-first-squeeze draft returning OK. Raised by codex
+    on this change and reproduced before fixing. One heredoc has no such interaction: the
+    opener's own two quotes balance, so removing the body's lone quote leaves every other
+    quote in the command paired exactly as it already was.
+
+    Called ONLY on the retry path below, never on a command that already parsed. Every other
+    exit is a refusal, and refusing is free -- the command stays unparseable and the caller
+    probes it exactly as it does today.
+    """
+    # Openers are matched against the COMMENT-DEFUSED copy, which blanks the quotes inside
+    # a comment byte-for-byte -- so offsets still index `cmd`, while `# <<'FAKE'` no longer
+    # looks like syntax. Every `return cmd` below is a refusal: the command stays
+    # unparseable and the caller probes it exactly as it does today.
+    scan = _defuse_comments(cmd)
+    ms = list(_HEREDOC_QUOTED.finditer(scan))
+    if len(ms) != 1:
+        return cmd
+    m = ms[0]
+    # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the
+    # fail-CLOSED direction -- an opener this cannot vouch for is left alone.
+    if any(scan[:m.start()].count(_q) % 2 for _q in (_SQ, _DQ)):
+        return cmd
+    nl = scan.find("\n", m.end())
+    if nl == -1:
+        return cmd
+    # The matched opener must be the ONLY heredoc on its line, or it does not own the text
+    # that follows: bash hands the first body to the FIRST operator, so `3<<U 4<<'N'` gives
+    # it to the UNQUOTED `U` while this matched `N`. The count is over ALL heredoc operators,
+    # quoted or not -- `_HEREDOC_QUOTED` cannot see `<<U` at all, which is exactly how the
+    # mis-assignment slips through. Raised by codex on this change.
+    if len(_HEREDOC_OP.findall(scan[scan.rfind("\n", 0, m.start()) + 1:nl])) != 1:
+        return cmd
+    tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
+    delim = re.escape(next(g for g in m.groups() if g is not None))
+    term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)
+    if not term:
+        return cmd
+    body = cmd[nl + 1:term.start()]
+    # EXACTLY ONE quote character in the body -- see the docstring. The sub then fires only
+    # if it is also WEDGED; an unwedged lone quote leaves the body untouched.
+    if sum(body.count(_q) for _q in (_SQ, _DQ)) != 1:
+        return cmd
+    return cmd[:nl + 1] + _PROSE_QUOTE.sub("", body) + cmd[term.start():]
+
+
 def _helper_invoked(cmd, _depth=0, _full=None):
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
@@ -2336,6 +2458,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         if _hit:
             return _hit
     _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    if not ok:
+        # RETRY, once, with the quoting dropped from every quoted heredoc body. The body of
+        # a `<<'DELIM'` is literal to the outer shell, so an apostrophe in prose there is
+        # the segmenter's own limitation rather than a broken command -- and abandoning to
+        # the structureless probe over it blocks `cat > notes.md <<'EOF'` whose body merely
+        # NAMES a helper, which is a command operators write repeatedly (#639).
+        # Recovering the structure is what fixes it: the walk below then reads that name as
+        # the operand it is, exactly as it already does for the identical command without
+        # the apostrophe. A body that RUNS a helper still blocks -- the name reaches the
+        # walk as a COMMAND WORD, which is the same evidence the parseable spelling uses.
+        # Only reached when the plain parse FAILED, so no command that parses today changes.
+        _sq = _squeeze_quoted_heredocs(cmd)
+        if _sq != cmd:
+            _pairs, ok = _split_with_ops(_norm_for_scan(_sq))
+            if ok:
+                # Both, or the walk reads one command and the whole-command answers below
+                # read another: `_whole` is what the unresolvable-operand and marker tails
+                # search, and it carries the same body.
+                cmd, _whole = _sq, _squeeze_quoted_heredocs(_whole)
     # `)#` -- the comment defuser could not tell whether that paren delimited a command and
     # said so instead of guessing. Unresolved is the fail-CLOSED case, the same as an
     # unparseable command below, so the squeezed probe answers it.

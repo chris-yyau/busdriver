@@ -597,6 +597,39 @@ assert_ok 'gh pr create --body "see **[my link](http://example.com/x)** for deta
 assert_ok 'gh pr create --body "the [a b] case, [z-a] ranges and a - [ ] checklist"' \
     "#708/#573: bracketed prose with spaces in a PR body -> allowed"
 
+# 8-9. Two reader defects found in review. BOTH are invisible end to end -- the union of
+# readings and the fail-CLOSED fallbacks mask them, so an `assert_block`/`assert_ok` row
+# passes identically with and without the fix and pins NOTHING. Verified: the reversed-range
+# spelling blocks either way. So each is pinned where it is actually observable, at the
+# reader, with one assertion per mechanism.
+assert_unit() { # <python-expr-returning-bool> <label>
+    if python3 -c "
+import importlib.util, shlex, sys
+spec = importlib.util.spec_from_file_location('mc', '$CLASSIFIER')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+sys.exit(0 if ($1) else 1)
+" < /dev/null 2>/dev/null; then
+        ok "$2"
+    else
+        no "$2" "reader-level invariant does not hold"
+    fi
+}
+
+# A REVERSED span matches nothing on its own, but the shell keeps parsing the REST of the
+# class -- `[a-zw-v]` still reaches the helper's `t` through the leading `a-z`. Returning the
+# empty set on the reversed span DISCARDED every member an earlier span had already
+# collected, which is the fail-OPEN direction (fewer members = fewer blocks). Raised by
+# cursor in review.
+assert_unit "len(m._resolve_members('a-zw-v')) > 0" \
+    "#708: a reversed span must not discard members an earlier span collected"
+
+# `\"` and `\\` are the ONLY escapes shlex honours inside a double-quoted word. Reading a
+# backslash before any other character as an escape made `_dequote_lex` disagree with the
+# lexer it is checked against, and a disagreement drops the raw pass for the WHOLE segment.
+# Raised by cursor and codex both.
+assert_unit "m._dequote_lex('\"a\\\\\"b\"') == shlex.split('\"a\\\\\"b\"')[0]" \
+    "#708: _dequote_lex must resolve a double-quote escape exactly as shlex does"
+
 echo "── F. what EXECUTES must BLOCK (property, #708) ──"
 # The discipline the sections above are written to, made mechanical. Every row here is a
 # command that is actually RUN in a throwaway directory holding a STUB helper: if the shell

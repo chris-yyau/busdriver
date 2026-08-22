@@ -589,12 +589,19 @@ def _resolve_members(body, literal_hyphen=False):
                 out |= {ch for ch in _HELPER_ALPHABET if ord(lo) <= ord(ch) <= ord(hi)}
                 i += 3
                 continue
-            # REVERSED: under the syntax reading the shell expands the word nowhere at all,
-            # so the class matches nothing. Reading the endpoints as two ordinary members
-            # instead said `[u-t]` could reach the helper's `t` and blocked a command bash
-            # does not expand -- which is why that reading is the OTHER variant rather than
-            # this one's fallback. Codex in review.
-            return set()
+            # REVERSED: this span alone matches nothing under the syntax reading, but the
+            # shell keeps parsing the REST of the class rather than abandoning the whole
+            # bracket expression -- `[a-zw-v]` still matches the helper's `t` via the
+            # leading `a-z`, and `[q-p5]` still matches the literal `5` that follows,
+            # both verified running bash. `return set()` here wiped `out`, discarding
+            # every member a PRIOR span in this same class had already collected -- a
+            # fail-OPEN miss (a command bash expands is read as OK) that Cursor found in
+            # review. Skip just this span, keep what's already collected, and continue.
+            # Reading the endpoints as two ordinary members instead said `[u-t]` could
+            # reach the helper's `t` and blocked a command bash does not expand -- which
+            # is why that reading is the OTHER variant rather than this one's fallback.
+            i += 3
+            continue
         out.add(c)
         i += 1
     out = {ch for ch in out if not ch.isspace()}
@@ -1627,6 +1634,19 @@ def _dequote_lex(word):
     while i < n:
         ch = word[i]
         if q:
+            # Inside a double quote, a backslash escapes only a quote or itself --
+            # `shlex` (what the raw/lexed comparison is checked against) leaves a
+            # backslash before any OTHER character, including `$` and a backtick,
+            # untouched and literal. Without this, `\"` inside a double-quoted word
+            # was read as an ordinary character, so the very next `"` closed the
+            # quote early -- splitting `"quoted \"value\""` into extra tokens the
+            # raw pass never sees, which false-triggers the whole-segment
+            # raw_dropped fallback. Cursor/Codex in review.
+            if (q == chr(34) and ch == chr(92) and i + 1 < n
+                    and word[i + 1] in (chr(34), chr(92))):
+                out += word[i + 1]
+                i += 2
+                continue
             if ch == q:
                 q = ""
             else:

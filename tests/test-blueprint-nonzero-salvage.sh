@@ -82,10 +82,10 @@ sed 's/"FAIL"/"PASS"/' "$TMP/valid-raw.txt" > "$TMP/pass-raw.txt"
 head -c 260 "$TMP/valid-raw.txt" > "$TMP/broken-raw.txt"
 
 # Run the extracted reviewer-1 block against one raw fixture. $1=fixture,
-# $2=exit code the fake reviewer returns. Leaves the slot artifact at
-# $TMP/agy.json.
+# $2=exit code the fake reviewer returns, $3=the RESOLVED reviewer CLI for the
+# slot (default droid). Leaves the slot artifact at $TMP/agy.json.
 run_block() {
-  local fixture="$1" rc="$2"
+  local fixture="$1" rc="$2" cli="${3:-droid}"
   rm -f "$TMP/agy.json" "$TMP/agy-raw.txt" "$TMP/clock"
   (
     set +u
@@ -101,7 +101,7 @@ run_block() {
     execute_review() { cat "$fixture"; return "$rc"; }
     AGY_AVAILABLE=true
     AGY_OUTPUT_FILE="$TMP/agy.json"
-    REVIEWER_1_CLI=droid
+    REVIEWER_1_CLI="$cli"
     FULL_PROMPT="design spec"
     RUN_ID=r-cur; CURRENT_ITERATION=3; SPEC_HASH=h-cur
     SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"
@@ -190,8 +190,11 @@ _bp_rescue=$(sed -n '/^_bp_droid_rescue()/,/^}/p' "$BPLOOP")
 if [[ -z "$_bp_rescue" ]]; then
   bad "could not extract _bp_droid_rescue from $BPLOOP (renamed? carry-over unverified)"
 else
-  run_block "$TMP/valid-raw.txt" 7    # leaves a salvaged codex-tagged issue in agy.json
-  (
+  # Resolved CLI is codex here, NOT droid, so the two voices are separable:
+  # a regression that retagged carried issues to droid would be invisible if
+  # they had already been droid-tagged by the salvage.
+  run_block "$TMP/valid-raw.txt" 7 codex
+  _rescue_agy() { (
     set +u
     log_info() { :; }; log_warning() { :; }
     get_review_file() { echo "$TMP/$1"; }
@@ -200,12 +203,34 @@ else
     SCRIPT_DIR="$PWD/skills/blueprint-review/scripts"
     eval "$_bp_rescue"
     _bp_droid_rescue agy "$TMP/agy.json" codex
-  ) >/dev/null 2>&1
+  ) >/dev/null 2>&1; }
+  _rescue_agy
   [[ "$(j '.metadata.carried_salvaged_issues')" == "2" ]] \
     && [[ "$(j '.issues | length')" == "3" ]] \
-    && [[ "$(j '[.issues[] | select(.description=="unbounded retry")] | length')" == "1" ]] \
-    && ok  "the rescue's verdict is added to the salvaged findings, not substituted for them" \
-    || bad "the rescue's verdict is added to the salvaged findings (carried=$(j '.metadata.carried_salvaged_issues') total=$(j '.issues | length'))"
+    && [[ "$(j '[.issues[] | select(.reviewer=="codex")] | length')" == "2" ]] \
+    && [[ "$(j '[.issues[] | select(.reviewer=="droid")] | length')" == "1" ]] \
+    && ok  "the rescue's verdict is added to the salvaged findings, each keeping its own reviewer tag" \
+    || bad "the rescue's verdict is added to the salvaged findings (carried=$(j '.metadata.carried_salvaged_issues') codex=$(j '[.issues[]|select(.reviewer=="codex")]|length') droid=$(j '[.issues[]|select(.reviewer=="droid")]|length'))"
+
+  # Carry-over provenance is out-of-band. A reviewer that exits 0 with a
+  # parseable NON-verdict has that object written through verbatim by the
+  # exit-0 branch, so it can author BOTH `.issues[].reviewer` AND a
+  # `metadata.salvaged_status` of its own — neither may authorize a carry-over,
+  # because neither passed the completeness check. (Codex + litmus, PR #738.)
+  rm -f "$TMP/agy.json.salvaged"
+  printf '{"status":"ERROR","issues":[{"section":"S","description":"unvalidated","reviewer":"codex"}],"metadata":{"salvaged_status":"FAIL"}}\n' > "$TMP/agy.json"
+  _rescue_agy
+  [[ "$(j '.metadata.carried_salvaged_issues')" == "0" && "$(j '.issues | length')" == "1" ]] \
+    && ok  "a payload-authored salvage marker cannot carry unvalidated issues into the rescue" \
+    || bad "a payload-authored salvage marker cannot carry unvalidated issues (carried=$(j '.metadata.carried_salvaged_issues') total=$(j '.issues | length'))"
+
+  # A sidecar left behind by an earlier round is not authorization either.
+  run_block "$TMP/valid-raw.txt" 7 codex
+  jq '.iteration = 1' "$TMP/agy.json.salvaged" > "$TMP/stale.salvaged" && mv "$TMP/stale.salvaged" "$TMP/agy.json.salvaged"
+  _rescue_agy
+  [[ "$(j '.metadata.carried_salvaged_issues')" == "0" ]] \
+    && ok  "a sidecar from a different round is rejected, not replayed" \
+    || bad "a sidecar from a different round is rejected (carried=$(j '.metadata.carried_salvaged_issues'))"
 fi
 
 echo ""

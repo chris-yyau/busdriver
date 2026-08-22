@@ -127,8 +127,22 @@ _bp_droid_rescue() {
   # findings the salvage exists to preserve are deleted a few lines before
   # the arbiter reads them. They keep their own `.reviewer` tag through the
   # droid retag below, so the two voices stay distinguishable.
+  #
+  # Read from the salvage's out-of-band sidecar, NEVER from the artifact. The
+  # exit-0 path writes model-authored JSON through verbatim, so any in-artifact
+  # provenance — an `.issues[].reviewer` tag, a `metadata.salvaged_status` —
+  # is forgeable by the payload: a reviewer exiting 0 with a parseable
+  # NON-verdict could stamp it and ride issues that passed no completeness
+  # check into the rescued artifact, where before #714 the droid artifact
+  # simply replaced them. The sidecar is written only by the salvage, only
+  # after its check, and its round key is rejected below when stale.
+  # (Codex + the litmus reviewer, PR #738.)
   local _prev_issues='[]'
-  [[ -f "$out" ]] && _prev_issues=$(jq -c '[(.issues // [])[] | select(.reviewer != null)]' "$out" 2>/dev/null || echo '[]')
+  if [[ -f "${out}.salvaged" ]]; then
+    _prev_issues=$(jq -c --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+      'if .run_id==$rid and .iteration==$iter then [(.issues // [])[] | select(.reviewer != null)] else [] end' \
+      "${out}.salvaged" 2>/dev/null || echo '[]')
+  fi
   [[ -n "$_prev_issues" ]] || _prev_issues='[]'
   log_warning "  ${slot} failed at runtime → retrying once via droid"
   execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?
@@ -220,6 +234,17 @@ _bp_salvage_nonzero_verdict() {
         | .metadata.review_duration_ms=$dur | .metadata.salvaged_exit_code=$rc' \
        "${out}.pending" > "${out}.tagged" 2>/dev/null && mv "${out}.tagged" "$out"; then
     rm -f "${out}.pending"
+    # Out-of-band carry-over record for `_bp_droid_rescue`. NOT a field in the
+    # artifact: the exit-0 path writes model-authored JSON through verbatim, so
+    # any in-artifact marker is forgeable by the payload — a parseable
+    # NON-verdict could stamp its own provenance and ride unvalidated issues
+    # into the rescued artifact. This file is written only here, only after the
+    # completeness check, and is keyed to the round so a leftover from an
+    # earlier run or iteration cannot authorize a carry-over either.
+    jq -n --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+          --argjson issues "$(jq -c '.issues // []' "$out" 2>/dev/null || echo '[]')" \
+          '{run_id:$rid, iteration:$iter, issues:$issues}' > "${out}.salvaged" 2>/dev/null \
+      || rm -f "${out}.salvaged"
     log_warning "  ${slot}: CLI exited $rc but printed a complete verdict — findings salvaged for arbitration (slot still counts as failed, #714)"; return 0
   fi
   rm -f "${out}.pending" "${out}.tagged"

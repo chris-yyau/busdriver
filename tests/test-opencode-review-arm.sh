@@ -1030,6 +1030,22 @@ else
   pass "banner predicate fails closed on injected sed error"
 fi
 rm -rf "$_sd_stub"
+# Fail-closed, awk side (litmus round-6 finding): if awk and grep BOTH fail,
+# pipefail surfaces grep's rightmost status ("no match" = 1), which would
+# mask the awk error as banner-only. Inject an awk stub that exits 2 — the
+# predicate must still keep the output.
+_awk_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541awk.XXXXXX")" || exit 1
+printf '#!/bin/sh\nexit 2\n' > "$_awk_stub/awk"
+chmod +x "$_awk_stub/awk"
+if PATH="$_awk_stub:/usr/bin:/bin" _oc_output_is_banner_only <<'EOF'
+substantive output must survive an awk error
+EOF
+then
+  fail "banner predicate: awk error (status 2) classified as banner-only (fail-open truncation)"
+else
+  pass "banner predicate fails closed on injected awk error"
+fi
+rm -rf "$_awk_stub"
 # Fail-closed, grep side: a grep execution error (status 2) must NOT be
 # classified as banner-only — explicit status handling keeps the output
 # (litmus round-5 finding). Inject a grep stub that always exits 2.
@@ -1108,6 +1124,20 @@ if (
     printf '%s\n' "$line" | _oc_output_is_banner_only \
       && { echo "  ✗ preservation: '$line' classified as banner-only"; ok=0; }
   done
+  # PR-review combination: a valid banner followed by a banner-shaped
+  # substantive line must stay substantive — only the FIRST non-blank line
+  # is the real banner (opencode prints exactly one).
+  printf '> busdriver-review · kimi-k3\n> busdriver-review · PASS\n' | _oc_output_is_banner_only \
+    && { echo "  ✗ preservation: banner + banner-shaped verdict classified banner-only"; ok=0; }
+  # The same combination through the eval'd dispatch block: byte-identical.
+  _combo="$(mktemp "${TMPDIR:-/tmp}/oc541combo.XXXXXX")" || exit 1
+  printf '> busdriver-review · kimi-k3\n> busdriver-review · PASS\n' > "$_combo"
+  _before=$(wc -c < "$_combo" | tr -d ' ')
+  ( # shellcheck disable=SC2034  # outfile is consumed by the evaluated block, not this shell
+    outfile="$_combo"; eval "$OC_BLOCK" )
+  _after=$(wc -c < "$_combo" | tr -d ' ')
+  rm -f "$_combo"
+  [[ "$_after" -eq "$_before" ]] || { echo "  ✗ preservation: combo truncated through dispatch block ($_before → $_after bytes)"; ok=0; }
   exit $((1 - ok))
 ); then
   pass "preservation: non-banner lines stay substantive"

@@ -344,19 +344,31 @@ fi
 # the fail-closed two-step (sed into a variable first, so a processing error
 # like malformed UTF-8 returns "not banner-only" instead of being inverted
 # into a truncation), the no-`-q` rule (grep -c drains the stream; grep -q
-# (grep -c emits only a count — discarded via >/dev/null — never review text
-# on the caller's stdout), the whole-line banner anchor, and the EXPLICIT
-# status classification (0 = substantive → not banner-only; 1 = banner-only;
-# any other status = processing error → not banner-only, fail closed).
-# (grep -c emits only a count, captured into a variable — never review text
-# on the caller's stdout), the whole-line banner anchor, and the EXPLICIT
-# status classification (0 = substantive → not banner-only; 1 = banner-only;
-# any other status = processing error → not banner-only, fail closed).
+# would SIGPIPE the upstream awk on larger streams), the silent rule (the
+# stream is consumed inside the condition and grep's count is discarded —
+# never review text on the caller's stdout), the whole-line banner anchor
+# applied to the FIRST non-blank line only (opencode prints exactly one
+# banner line; a second banner-shaped line stays substantive), and the
+# EXPLICIT status classification (0 = substantive → not banner-only; 1 =
+# banner-only; any other status = processing error → not banner-only, fail
+# closed). The status is captured immediately after the pipeline — bash
+# resets $? to 1 inside an elif condition, so a `$?` check there would match
+# every failure status and re-open the fail-open hole.
 if ! type _oc_output_is_banner_only &>/dev/null; then
   _oc_output_is_banner_only() {
-    local stripped rc
+    local stripped rest rc
     stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
-    printf '%s' "$stripped" | grep -c -v -e '^[[:space:]]*$' -e '^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$' >/dev/null 2>&1
+    # awk runs into a VARIABLE first, its status checked separately: if awk
+    # and grep BOTH fail, pipefail surfaces grep's (rightmost) status — a
+    # clean "no match" (1) — masking the awk error as banner-only (litmus
+    # round-6 finding). The `|| return 1` makes any awk failure mean "not
+    # banner-only".
+    rest=$(printf '%s' "$stripped" | awk '
+      /^[[:space:]]*$/ { print; next }
+      !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
+      { seen=1; print }
+    ') || return 1
+    printf '%s' "$rest" | grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
     rc=$?
     if [[ "$rc" -eq 1 ]]; then
       return 0

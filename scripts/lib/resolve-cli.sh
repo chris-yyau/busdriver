@@ -1580,25 +1580,37 @@ _is_bare_transient_notice() {
 # valid UTF-8"), and a negated pipeline would invert that processing failure
 # into "banner-only" — erasing a substantive review (litmus round-3 finding).
 # The `|| return 1` makes any sed failure mean "not banner-only" (keep the
-# output). (c) The matched lines are never printed — `grep -c` emits only a
-# count, captured into a variable, so no review text reaches the caller's
-# stdout (litmus round-2 finding; the predicate runs in an `if` condition
-# whose stdout is the CALLER's). (d) The banner exemption is anchored to the
-# WHOLE line — `> busdriver-review · <model>` is a complete line (one token
-# after the middot) — so a Markdown quote that merely BEGINS like the banner
-# ("> busdriver-review · final verdict …") stays substantive (litmus round-4
-# finding). (e) grep's status is classified EXPLICITLY, never negated: 0 =
-# substantive lines exist → not banner-only; 1 = no substantive lines →
-# banner-only; any other status (execution/processing error) → NOT banner-only
-# (fail closed — a classifier error must never erase a review; litmus
-# round-5 finding). The status is captured IMMEDIATELY after the pipeline
-# (`rc=$?`) — bash resets $? to 1 inside an elif condition, so
-# `elif [[ "$?" -eq 1 ]]` would match ANY failure status and re-open the
-# fail-open hole (verified empirically on bash 5.x).
+# output). (c) No review text reaches the caller's stdout — the stream is
+# consumed by awk/grep inside the condition, and grep's count is discarded
+# via >/dev/null (litmus round-2 finding; the predicate runs in an `if`
+# condition whose stdout is the CALLER's). (d) The banner exemption is
+# anchored to the WHOLE line and applies to the FIRST non-blank line only:
+# opencode prints exactly one banner line, at the very start — so a capture
+# of a real banner followed by a second banner-SHAPED substantive line
+# ("> busdriver-review · PASS") stays substantive (litmus round-4 + PR-mode
+# findings). The awk step blanks that first banner line; `grep -c -v` then
+# classifies everything else (blank-only exemption). (e) grep's status is
+# classified EXPLICITLY, never negated: 0 = substantive lines exist → not
+# banner-only; 1 = no substantive lines → banner-only; any other status
+# (execution/processing error, in grep OR awk) → NOT banner-only (fail
+# closed — a classifier error must never erase a review; litmus round-5
+# finding). The status is captured IMMEDIATELY after the pipeline (`rc=$?`)
+# — bash resets $? to 1 inside an elif condition, so a `$?` check there
+# would match ANY failure status and re-open the fail-open hole (verified
+# empirically on bash 5.x).
 _oc_output_is_banner_only() {
-  local stripped rc
+  local stripped rest rc
   stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
-  printf '%s' "$stripped" | grep -c -v -e '^[[:space:]]*$' -e '^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$' >/dev/null 2>&1
+  # awk runs into a VARIABLE first, its status checked separately: if awk and
+  # grep BOTH fail, pipefail surfaces grep's (rightmost) status — a clean
+  # "no match" (1) — masking the awk error as banner-only (litmus round-6
+  # finding). The `|| return 1` makes any awk failure mean "not banner-only".
+  rest=$(printf '%s' "$stripped" | awk '
+    /^[[:space:]]*$/ { print; next }
+    !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
+    { seen=1; print }
+  ') || return 1
+  printf '%s' "$rest" | grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
   rc=$?
   if [[ "$rc" -eq 1 ]]; then
     return 0

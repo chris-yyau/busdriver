@@ -2295,6 +2295,13 @@ def _squeeze_quoted_heredocs(cmd):
     number pairs up and the command already parses), so this fixes the reported N=1 body and
     leaves N=3, 5, ... over-blocking. Fail-CLOSED, and not the reported shape.
 
+    RESIDUAL, same direction: "logical line" means backslash-newline only. Bash also
+    continues a command after `|`, `&&`, an open group and a multiline string, and after any
+    of those the body starts further down than this walks -- so that line's own text is read
+    as body, its quotes lift the count above one, and the command is REFUSED. An over-block,
+    never a bypass. Modelling the rest of that grammar is the shell parser this file has
+    repeatedly declined to become; see the parked #639 design for where that road ends.
+
     NEVER the BACKSLASH. `_norm_for_scan` rejoins a backslash-newline continuation, so
     deleting backslashes FIRST splits the name the shell assembles across that continuation
     into two commands and it is never seen. Also raised by codex, also verified against HEAD.
@@ -2335,7 +2342,12 @@ def _squeeze_quoted_heredocs(cmd):
     # and reopened the parity bypass below. Raised by codex in the PR pass. Counting every
     # operator also subsumes the per-line ownership question: one operator in the command is
     # necessarily the only one on its line, so `3<<U 4<<'N'` is refused here.
-    if len(ms) != 1 or len(_HEREDOC_OP.findall(scan)) != 1:
+    # Counted over a continuation-JOINED copy: bash removes a backslash-newline before it
+    # tokenizes, so `<\<D` is a real `<<D` operator that the raw text does not spell. Joining
+    # only ever finds MORE operators, so it can only refuse more. Raised by codex; measured as
+    # no divergence on its own (both classifiers already allow that shape), closed anyway
+    # because the count is what the parity guarantee below rests on.
+    if len(ms) != 1 or len(_HEREDOC_OP.findall(scan.replace(chr(92) + "\n", ""))) != 1:
         return cmd
     m = ms[0]
     # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the

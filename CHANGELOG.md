@@ -1,3 +1,10 @@
+## [1.110.5](https://github.com/chris-yyau/busdriver/compare/v1.110.4...v1.110.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **systematic-debugging:** stop mandating TDD ordering on bug-fix route ([#657](https://github.com/chris-yyau/busdriver/issues/657)) ([#732](https://github.com/chris-yyau/busdriver/issues/732)) ([04dc302](https://github.com/chris-yyau/busdriver/commit/04dc302f33511dd87a3cc8cb54c87e0672ef1ff1))
+
 ## [1.110.4](https://github.com/chris-yyau/busdriver/compare/v1.110.3...v1.110.4) (2026-08-22)
 
 

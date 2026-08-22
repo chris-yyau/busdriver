@@ -2342,12 +2342,12 @@ def _squeeze_quoted_heredocs(cmd):
     # and reopened the parity bypass below. Raised by codex in the PR pass. Counting every
     # operator also subsumes the per-line ownership question: one operator in the command is
     # necessarily the only one on its line, so `3<<U 4<<'N'` is refused here.
-    # Counted over a continuation-JOINED copy: bash removes a backslash-newline before it
-    # tokenizes, so `<\<D` is a real `<<D` operator that the raw text does not spell. Joining
-    # only ever finds MORE operators, so it can only refuse more. Raised by codex; measured as
-    # no divergence on its own (both classifiers already allow that shape), closed anyway
-    # because the count is what the parity guarantee below rests on.
-    if len(ms) != 1 or len(_HEREDOC_OP.findall(scan.replace(chr(92) + "\n", ""))) != 1:
+    # The operator count runs AFTER the body is located, below -- inside the body a `<<` is
+    # prose, not an operator, and counting it there refused every command whose body merely
+    # writes one. "The library's <helper> documents x << 1." stayed blocked while the same
+    # sentence without the `<<` was fixed: this branch re-breaking its own bug. Raised by
+    # codex and reproduced.
+    if len(ms) != 1:
         return cmd
     m = ms[0]
     # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the
@@ -2380,6 +2380,18 @@ def _squeeze_quoted_heredocs(cmd):
     delim = re.escape(next(g for g in m.groups() if g is not None))
     term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)
     if not term:
+        return cmd
+    # ONE heredoc in the command, counted OUTSIDE the body now that the body is known --
+    # everything between the opener's line and the terminator is data, where `<<` is prose.
+    # Counted as OPERATORS rather than as `_HEREDOC_QUOTED` matches, because that pattern
+    # deliberately refuses a delimiter assembled from several quoting runs (`<<'E'2`) and
+    # cannot see an unquoted `<<U` at all, so counting only its own matches let two further
+    # heredocs hide beside the one it matched and reopened the parity bypass. Over a
+    # continuation-JOINED copy, since bash removes a backslash-newline before it tokenizes
+    # and `<\<D` is a real operator the raw text never spells. Each of these three was a
+    # separate codex finding; joining and operator-counting only ever refuse MORE.
+    outside = (scan[:nl + 1] + scan[term.start():]).replace(chr(92) + "\n", "")
+    if len(_HEREDOC_OP.findall(outside)) != 1:
         return cmd
     body = cmd[nl + 1:term.start()]
     # EXACTLY ONE quote character in the body -- see the docstring. The sub then fires only

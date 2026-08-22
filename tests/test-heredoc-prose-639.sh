@@ -28,28 +28,31 @@
 #   F  the lone quote must be WEDGED — an unwedged one opens a spaced path, and deleting it
 #                                      splits the path out of the script operand
 #   G  a benign CONTINUATION is fine — refusing every continuation was tried and re-blocked
-#                                      ordinary prose, so H is a second BUG-side case
-#   I  the body starts after the      — a continuation carrying BALANCED quotes would
-#      LOGICAL line                     otherwise pull them into the body and lift H's
-#                                       count above one, refusing an ordinary command
-#   J  ...and only an ODD backslash    — with `\\` the first escapes the second and the
-#      run continues                    newline still ends the line
+#                                      ordinary prose, so G is a BUG-side case
 #   H  ONE heredoc per command       — deleting a quote shifts the parity of the WHOLE
 #                                      command, so other bodies' apostrophes pair across the
 #                                      live shell between them. Counted as OPERATORS, not as
-#                                      matches: `<<'E'2` is assembled from two quoting runs
-#                                      and the opener pattern refuses it, so counting only
-#                                      matches let two more heredocs hide beside the one
-#                                      matched.
+#                                      `_HEREDOC_QUOTED` matches: `<<'E'2` is assembled from
+#                                      two quoting runs and that pattern refuses it, so
+#                                      counting matches let two more heredocs hide
+#   I  the body starts after the     — a continuation carrying BALANCED quotes would
+#      LOGICAL line                    otherwise pull them into the body and lift H's count
+#                                      above one, refusing an ordinary command
+#   J  ...and only an ODD backslash  — with `\\` the first escapes the second and the
+#      run continues                   newline still ends the line
+#   K  H is counted OUTSIDE the body — inside it a `<<` is prose, and counting it there
+#                                      refused every body that merely writes one: this
+#                                      branch re-breaking its own bug
 #
 # B..F and H all BLOCK on the pre-fix classifier too. That is the point: they are controls,
-# not coverage, and only A, G, I and J may change verdict. B and C also assert that the body is
-# still read as shell source, so a change that stopped scanning heredocs fails them.
+# not coverage, and only A, G, I, J and K may change verdict. B and C also assert that the
+# body is still read as shell source, so a change that stopped scanning heredocs fails them.
 #
 # Each is bitten by a mutation the others survive — verified, not assumed. The set was
 # trimmed to exactly that: a plain-invocation case, a spaced-quoted-path case, a
-# two-heredocs-on-one-line case, a continuation-joined case, and a three-simple-heredocs case were dropped once measured to be strict subsets of the survivors, as was a delete-vs-escape
-# case the narrowed squeeze made unbiteable.
+# two-heredocs-on-one-line case, a continuation-joined case and a three-simple-heredocs case
+# were all dropped once measured to be strict subsets of the survivors, as was a
+# delete-vs-escape case the narrowed squeeze made unbiteable.
 #
 # C is also why the guard COUNTS quotes instead of judging them: `library's prose` plus that
 # `sh -c` payload is the same shape as three ordinary prose apostrophes — all wedged, all
@@ -174,6 +177,12 @@ assert_ok "$QCONT" "I. a continuation carrying BALANCED quotes -> allowed"
 printf -v DBS 'cat > /tmp/c.md <<%sEOF%s %s%s\nThe library%ss %s builds records.\nEOF' \
     "$Q" "$Q" "$BS" "$BS" "$Q" "$HELPER"
 assert_ok "$DBS" "J. a DOUBLE backslash ending the opener line -> allowed"
+
+# K. Inside the body a `<<` is PROSE, not an operator. Counting operators over the whole
+# command refused every body that merely writes one — this branch re-breaking its own bug.
+assert_ok "cat > /tmp/c.md <<'EOF'
+The library${Q}s ${HELPER} documents x << 1.
+EOF" "K. a body whose prose contains << -> allowed"
 
 echo
 if [[ $FAIL -eq 0 ]]; then

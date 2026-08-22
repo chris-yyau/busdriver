@@ -19,6 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH="$ROOT/skills/orchestrator/SKILL.md"
 WRITING_PLANS="$ROOT/skills/writing-plans/SKILL.md"
 SDD="$ROOT/skills/subagent-driven-development/SKILL.md"
+SDD_REVIEWER="$ROOT/skills/subagent-driven-development/task-reviewer-prompt.md"
 GUIDE="$ROOT/agents/tdd-guide.md"
 TDD_SKILL="$ROOT/skills/test-driven-development/SKILL.md"
 TDD_WORKFLOW="$ROOT/skills/tdd-workflow/SKILL.md"
@@ -330,6 +331,20 @@ if [[ -n "$SDD_INTEGRATION" ]] \
   ok "subagent-driven-development Integration section scopes strict TDD to explicit request"
 else
   bad "subagent-driven-development Integration section no longer scopes TDD to explicit request (#653)"
+fi
+
+if grep -qF 'reported results with TDD evidence for exactly this code' "$SDD_REVIEWER"; then
+  bad "task-reviewer-prompt unconditionally assumes TDD evidence (#653)"
+else
+  ok "task-reviewer-prompt does not unconditionally assume TDD evidence"
+fi
+
+if grep -q 'TDD was required' "$SDD_REVIEWER" \
+  && grep -q 'do not treat missing' "$SDD_REVIEWER" \
+  && grep -q 'TDD evidence as a defect when TDD was not required' "$SDD_REVIEWER"; then
+  ok "task-reviewer-prompt scopes TDD evidence to when TDD was required"
+else
+  bad "task-reviewer-prompt lost conditional TDD evidence wording (#653)"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------

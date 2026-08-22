@@ -63,9 +63,11 @@ Subagent (general-purpose):
 
     ## Tests
 
-    The implementer already ran the tests and reported results with TDD
-    evidence for exactly this code. Do not re-run the suite to confirm their
-    report. Run a test only when reading the code raises a specific doubt
+    The implementer already ran the tests and reported results for exactly
+    this code. If TDD was required for this task (`/tdd` or a direct ask),
+    their report should include RED/GREEN evidence — do not treat missing
+    TDD evidence as a defect when TDD was not required. Do not re-run the
+    suite to confirm their report. Run a test only when reading the code raises a specific doubt
     that no existing run answers — and then a focused test, never a
     package-wide suite, race detector run, or repeated/high-count loop. If
     heavy validation seems warranted, recommend it in your report instead of

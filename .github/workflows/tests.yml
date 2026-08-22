@@ -277,6 +277,7 @@ jobs:
       - name: Coverage — blueprint-review extract_review_json
         run: |
           pytest -q skills/blueprint-review/scripts/lib/test_extract_review_json.py \
+            skills/blueprint-review/scripts/lib/test_extract_review_json_log_echo.py \
             --cov=skills/blueprint-review/scripts/lib \
             --cov-report=xml:coverage-extract-review-json.xml
       - name: Coverage — litmus parse_narrative

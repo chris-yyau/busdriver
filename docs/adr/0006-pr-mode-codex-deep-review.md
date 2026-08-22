@@ -112,10 +112,10 @@ risk is a lazy dispatch, not a hostile actor with repo shell access.
   agent's stdout under restricted tools) and full write-vector protection.
 - Observed PR escapes (bugs/security issues that reach `main`) rise → use the benchmark JSONL evidence
   to re-introduce a gating reviewer voice.
-> **2026-06-27 update:** opencode support has been removed; this section is historical/moot.
 
-- The `opencode/` litmus mirror's PR-mode docs are stale-until-port; a full mirror update is deferred
-  to the opencode port task.
+> **2026-06-27 update:** Closed, not deferred. OpenCode host-harness support was
+> removed in #251, so there is no `opencode/` litmus mirror and no port task.
+> `opencode` remains only an optional review CLI (auditor / Mechanism Witness).
 
 <!-- design-reviewed: PASS -->
 <!-- design-review-coverage: FULL 3/3 -->

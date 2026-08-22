@@ -701,22 +701,32 @@ fi
 # a newline, and silently falling back on such a path would file the record in
 # the disposable linked worktree — exactly the failure this block prevents. With
 # -z there is no quoting, so every valid path is handled.
-_MAIN_WT=""
-while IFS= read -r -d '' _wt_field; do
-    case "$_wt_field" in
-        "worktree "*) _MAIN_WT="${_wt_field#worktree }"; break ;;
-    esac
-done < <(git -C "$PWD" worktree list --porcelain -z 2>/dev/null || true)
-if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
-    _MAIN_WT=""                      # separate-git-dir: that was the git dir
+#
+# --skip is a DIFFERENT case: the marker `skip_probe` clears lives in THIS
+# worktree's $SELF_ROOT/$STATE_DIR (not behind the shared git-common-dir token
+# the main-worktree anchoring above exists for), so anchoring its audit log to
+# the main worktree instead would file the record somewhere other than the
+# worktree the marker was actually cleared from. Use $SELF_ROOT directly.
+if [ "$SKIP_MODE" -eq 1 ]; then
+    ROOT_DIR="$SELF_ROOT"
+else
+    _MAIN_WT=""
+    while IFS= read -r -d '' _wt_field; do
+        case "$_wt_field" in
+            "worktree "*) _MAIN_WT="${_wt_field#worktree }"; break ;;
+        esac
+    done < <(git -C "$PWD" worktree list --porcelain -z 2>/dev/null || true)
+    if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
+        _MAIN_WT=""                      # separate-git-dir: that was the git dir
+    fi
+    [ -n "$_MAIN_WT" ] || _MAIN_WT="$SELF_ROOT"
+    ROOT_DIR="$_MAIN_WT"
 fi
-[ -n "$_MAIN_WT" ] || _MAIN_WT="$SELF_ROOT"
-if [ -z "$_MAIN_WT" ] || [ ! -d "$_MAIN_WT" ]; then
+if [ -z "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR" ]; then
     echo "design-clear: cannot resolve the canonical repo root for the audit log." >&2
     echo "Refusing to clear rather than file the record somewhere unmonitored." >&2
     exit 2
 fi
-ROOT_DIR="$_MAIN_WT"
 LOG="$ROOT_DIR/$STATE_DIR/bypass-log.jsonl"
 HEAD_SHA="$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)"
 

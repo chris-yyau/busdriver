@@ -243,6 +243,34 @@ else
 fi
 rm -rf "$LINKED"
 
+# --skip clears the marker in THIS worktree, so its audit record must land in THIS
+# worktree too. The design-token path deliberately anchors to the MAIN worktree (that
+# token lives behind the shared git-common-dir); using that anchor here filed the
+# record in a different tree from the marker it describes.
+WTMAIN="$(mktemp -d)" || exit 2
+git -C "$WTMAIN" init -q
+git -C "$WTMAIN" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m init
+WTLINK="$WTMAIN.linked"
+git -C "$WTMAIN" worktree add -q -b wt-audit "$WTLINK" >/dev/null 2>&1
+if [ -d "$WTLINK" ]; then
+    mkdir -p "$WTLINK/.claude"
+    : >"$WTLINK/.claude/skip-litmus.local"
+    ( cd "$WTLINK" && bash "$DRAIN" --skip skip-litmus.local --yes ) >/dev/null 2>&1
+    if [ ! -e "$WTLINK/.claude/skip-litmus.local" ] \
+       && grep -q '"event": *"skip-marker-cleared"' "$WTLINK/.claude/bypass-log.jsonl" 2>/dev/null \
+       && ! grep -q '"event": *"skip-marker-cleared"' "$WTMAIN/.claude/bypass-log.jsonl" 2>/dev/null; then
+        ok 'the skip audit record lands in the worktree the marker was cleared from'
+    else
+        no 'the skip audit record lands in the worktree the marker was cleared from' \
+            "linked=$(cat "$WTLINK/.claude/bypass-log.jsonl" 2>&1 | tail -1) main=$(cat "$WTMAIN/.claude/bypass-log.jsonl" 2>&1 | tail -1)"
+    fi
+    git -C "$WTMAIN" worktree remove --force "$WTLINK" >/dev/null 2>&1
+else
+    no 'the skip audit record lands in the worktree the marker was cleared from' \
+        'could not create a linked worktree fixture'
+fi
+rm -rf "$WTMAIN" "$WTLINK"
+
 OUT="$(drain --skip)"; CODE=$?
 if [ "$CODE" -ne 0 ] && printf '%s' "$OUT" | grep -q 'Never drainable'; then
     ok 'bare --skip lists both sets and changes nothing'

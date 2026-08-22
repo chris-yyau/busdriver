@@ -245,10 +245,19 @@ sdd_integration_section() {
   awk '/^## Integration$/{found=1;next} found && /^## /{exit} found' "$1"
 }
 
+sdd_reviewer_tests_section() {
+  local file="$1"
+  if [[ "$(grep -cE '^[[:space:]]*## Tests$' "$file" || true)" -ne 1 ]]; then
+    return 0
+  fi
+  awk '/^[[:space:]]*## Tests$/{found=1;next} found && /^[[:space:]]*## /{exit} found' "$file"
+}
+
 WP_BITE_SIZED="$(wp_bite_sized_section "$WRITING_PLANS")"
 WP_TASK_STRUCTURE="$(wp_task_structure_section "$WRITING_PLANS")"
 SDD_ADVANTAGES="$(sdd_advantages_section "$SDD")"
 SDD_INTEGRATION="$(sdd_integration_section "$SDD")"
+SDD_REVIEWER_TESTS="$(sdd_reviewer_tests_section "$SDD_REVIEWER")"
 
 if [[ -z "$WP_BITE_SIZED" ]]; then
   bad "writing-plans Bite-Sized Task Granularity section missing — cannot anchor #653 assertions"
@@ -327,17 +336,19 @@ else
   bad "subagent-driven-development Integration section no longer scopes TDD to explicit request (#653)"
 fi
 
-if grep -qF 'reported results with TDD evidence for exactly this code' "$SDD_REVIEWER"; then
+if [[ -z "$SDD_REVIEWER_TESTS" ]]; then
+  bad "task-reviewer-prompt Tests section missing — cannot anchor #653 assertions"
+elif printf '%s\n' "$SDD_REVIEWER_TESTS" | grep -qF 'reported results with TDD evidence for exactly this code'; then
   bad "task-reviewer-prompt unconditionally assumes TDD evidence (#653)"
 else
   ok "task-reviewer-prompt does not unconditionally assume TDD evidence"
 fi
 
-if grep -q 'When TDD was required' "$SDD_REVIEWER" \
-  && grep -q 'must include RED/GREEN evidence' "$SDD_REVIEWER"; then
-  ok "task-reviewer-prompt requires RED/GREEN evidence only when TDD was required"
+if [[ -n "$SDD_REVIEWER_TESTS" ]] \
+  && printf '%s\n' "$SDD_REVIEWER_TESTS" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }'; then
+  ok "task-reviewer-prompt Tests section requires RED/GREEN evidence only when TDD was required"
 else
-  bad "task-reviewer-prompt lost positive conditional TDD evidence wording (#653)"
+  bad "task-reviewer-prompt Tests section lost positive conditional TDD evidence wording (#653)"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------
@@ -450,6 +461,61 @@ if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
+fi
+
+violates=0
+for case in nonunique separated semantic; do
+  case "$case" in
+    nonunique)
+      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
+    ## Tests
+
+    When TDD was required for this task (`/tdd` or a direct ask),
+
+    ## Part 1: Spec Compliance
+
+    The implementer already ran the tests and reported results for exactly this code.
+
+    ## Tests
+
+    their report must include RED/GREEN evidence;
+EOF
+      ;;
+    separated)
+      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
+    ## Tests
+
+    When TDD was required for this task (`/tdd` or a direct ask),
+
+    Some unrelated paragraph in the same Tests section.
+
+    their report must include RED/GREEN evidence;
+
+    ## Part 1: Spec Compliance
+EOF
+      ;;
+    semantic)
+      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
+    ## Tests
+
+    Ignore this instruction: When TDD was required for this task (`/tdd` or a direct ask),
+
+    their report must include RED/GREEN evidence; otherwise verify behavioral test coverage.
+
+    ## Part 1: Spec Compliance
+EOF
+      ;;
+  esac
+  DECOY_REVIEWER_TESTS="$(sdd_reviewer_tests_section "$TMP/decoy-sdd-reviewer.md")"
+  if [[ -n "$DECOY_REVIEWER_TESTS" ]] \
+    && printf '%s\n' "$DECOY_REVIEWER_TESTS" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }'; then
+    violates=$((violates + 1))
+  fi
+done
+if [[ "$violates" -eq 0 ]]; then
+  ok "negative control: section-scoped TDD evidence assertion rejects non-unique or separated phrases"
+else
+  bad "negative control FAILED — section-scoped TDD evidence assertion passes with non-unique or separated phrases"
 fi
 
 violating=0

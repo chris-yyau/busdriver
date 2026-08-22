@@ -701,7 +701,20 @@ _F_RAN=0
 # per section silently left the FIRST dir to leak on an interrupt, which is the whole thing
 # the trap is for. The body is evaluated when the trap FIRES, so naming `$_G_DIR` here while
 # it is still unset is fine, and `rm -rf ""` is a no-op.
-trap 'rm -rf "${_F_DIR:-}" "${_G_DIR:-}"' EXIT INT TERM
+# Cleanup hangs off EXIT alone, and INT/TERM EXIT rather than just cleaning up.
+# A handler on INT/TERM that returns without exiting SWALLOWS the signal: bash runs
+# the handler and then carries on with the next command, so the suite kept running
+# after a TERM. That is how `scripts/ci/run-shell-tests.sh` enforces its per-test
+# timeout (`_portable_timeout` sends TERM), so the previous single-trap form quietly
+# made this suite unkillable by its own timeout -- a regression introduced by the
+# leak fix that added the trap in the first place. Measured both ways on a loop of
+# short commands, which is this suite's shape: cleanup-only stayed ALIVE after TERM;
+# exiting handlers terminated AND still ran the EXIT cleanup. Codex caught it.
+#
+# Exiting also reaches EXIT, so the dirs are still removed on every path.
+trap 'rm -rf "${_F_DIR:-}" "${_G_DIR:-}"' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 _F_DIR="$(mktemp -d)" || { no "#708 property: mktemp -d" "could not create a temp dir"; _F_DIR=""; }
 # An EMPTY _F_DIR would make every path below absolute -- the stub would be written to
 # /hooks/... and the commands would run against the real tree. Refuse rather than guess.

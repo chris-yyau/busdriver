@@ -2327,7 +2327,15 @@ def _squeeze_quoted_heredocs(cmd):
     # unparseable and the caller probes it exactly as it does today.
     scan = _defuse_comments(cmd)
     ms = list(_HEREDOC_QUOTED.finditer(scan))
-    if len(ms) != 1:
+    # ONE heredoc in the whole command, counted BOTH ways: exactly one quoted delimiter this
+    # can read, and exactly one heredoc operator of any spelling. The second count is what
+    # makes the first sound -- `_HEREDOC_QUOTED` deliberately refuses a delimiter assembled
+    # from several quoting runs (`<<'E'2`), and an unquoted `<<U` it cannot see at all, so
+    # counting only its own matches let two further heredocs hide beside the one it matched
+    # and reopened the parity bypass below. Raised by codex in the PR pass. Counting every
+    # operator also subsumes the per-line ownership question: one operator in the command is
+    # necessarily the only one on its line, so `3<<U 4<<'N'` is refused here.
+    if len(ms) != 1 or len(_HEREDOC_OP.findall(scan)) != 1:
         return cmd
     m = ms[0]
     # An opener inside a STRING is not syntax either. Crude and per-alphabet, which is the
@@ -2337,28 +2345,13 @@ def _squeeze_quoted_heredocs(cmd):
     nl = scan.find("\n", m.end())
     if nl == -1:
         return cmd
-    # The matched opener must be the ONLY heredoc on its line, or it does not own the text
-    # that follows: bash hands the first body to the FIRST operator, so `3<<U 4<<'N'` gives
-    # it to the UNQUOTED `U` while this matched `N`. The count is over ALL heredoc operators,
-    # quoted or not -- `_HEREDOC_QUOTED` cannot see `<<U` at all, which is exactly how the
-    # mis-assignment slips through. Raised by codex on this change.
-    # ...and "line" means the LOGICAL one. Bash removes a backslash-newline before it reads
-    # redirections, so `3<<U \<newline> 4<<'N'` is ONE line carrying two heredocs while a
-    # physical-line count sees one -- the same mis-assignment wearing a continuation, raised
-    # by codex in the PR pass after the same-line spelling was already closed. Extending is
-    # what a blanket refusal on any continuation got wrong: that also refused an ordinary
-    # single-heredoc command whose opener line simply continues, which is the very
-    # false-positive class this change exists to remove. Extending also fixes where the BODY
-    # starts -- after the logical line, not after the first newline.
-    line_start = scan.rfind("\n", 0, m.start()) + 1
-    while line_start >= 2 and scan[line_start - 2] == chr(92):
-        line_start = scan.rfind("\n", 0, line_start - 1) + 1
-    while nl > 0 and scan[nl - 1] == chr(92):
-        nl = scan.find("\n", nl + 1)
-        if nl == -1:
-            return cmd
-    if len(_HEREDOC_OP.findall(scan[line_start:nl])) != 1:
-        return cmd
+    # NO logical-line extension here, deliberately. A continued opener line does push the
+    # real body down, and two drafts chased that: refusing every continuation (which
+    # re-blocked ordinary prose) and then walking the backslash runs. Once the count above
+    # became one heredoc OPERATOR in the whole command, neither could be made to change a
+    # verdict -- there is no second operator left for a continuation to hide, and a body that
+    # starts one line early still carries the same lone apostrophe. An unfireable guard
+    # certifies safety it never checks, so it is gone rather than kept for symmetry.
     tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
     delim = re.escape(next(g for g in m.groups() if g is not None))
     term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)

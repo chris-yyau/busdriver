@@ -17,6 +17,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ORCH="$ROOT/skills/orchestrator/SKILL.md"
+WRITING_PLANS="$ROOT/skills/writing-plans/SKILL.md"
+SDD="$ROOT/skills/subagent-driven-development/SKILL.md"
 GUIDE="$ROOT/agents/tdd-guide.md"
 TDD_SKILL="$ROOT/skills/test-driven-development/SKILL.md"
 TDD_WORKFLOW="$ROOT/skills/tdd-workflow/SKILL.md"
@@ -27,7 +29,7 @@ pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-for f in "$ORCH" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
+for f in "$ORCH" "$WRITING_PLANS" "$SDD" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
   [[ -f "$f" ]] || { echo "FAIL missing required file: $f"; exit 1; }
 done
 
@@ -211,6 +213,94 @@ else
   bad "systematic-debugging Phase 4 lost the regression-check requirement (ADR 0038 / #657)"
 fi
 
+# --- writing-plans / subagent-driven-development must not re-mandate TDD ordering (#653) ----
+# Pins the exact retired mandates and positive Phase-4 contract from issue #653.
+# No prose-equivalence classifier: variant detection has no bounded completeness
+# guarantee and produced false positives in PR #732 review.
+
+wp_bite_sized_section() {
+  awk '/^## Bite-Sized Task Granularity$/{found=1;next} found && /^## /{exit} found' "$1"
+}
+
+wp_task_structure_section() {
+  awk '/^## Task Structure$/{found=1;next} found && /^## /{exit} found' "$1"
+}
+
+sdd_advantages_section() {
+  awk '/^## Advantages$/{found=1;next} found && /^## /{exit} found' "$1"
+}
+
+sdd_integration_section() {
+  awk '/^## Integration$/{found=1;next} found && /^## /{exit} found' "$1"
+}
+
+WP_BITE_SIZED="$(wp_bite_sized_section "$WRITING_PLANS")"
+WP_TASK_STRUCTURE="$(wp_task_structure_section "$WRITING_PLANS")"
+SDD_ADVANTAGES="$(sdd_advantages_section "$SDD")"
+SDD_INTEGRATION="$(sdd_integration_section "$SDD")"
+
+if [[ -z "$WP_BITE_SIZED" ]]; then
+  bad "writing-plans Bite-Sized Task Granularity section missing — cannot anchor #653 assertions"
+elif printf '%s\n' "$WP_BITE_SIZED" | grep -qF '"Write the failing test" - step'; then
+  bad "writing-plans restored unconditional bite-sized 'Write the failing test' step (#653)"
+else
+  ok "writing-plans has no unconditional bite-sized test-first step"
+fi
+
+if [[ -z "$WP_TASK_STRUCTURE" ]]; then
+  bad "writing-plans Task Structure section missing — cannot anchor #653 assertions"
+elif printf '%s\n' "$WP_TASK_STRUCTURE" | grep -qF '**Step 1: Write the failing test**'; then
+  bad "writing-plans task template restored unconditional test-first Step 1 (#653)"
+else
+  ok "writing-plans task template does not mandate test-first Step 1"
+fi
+
+if [[ -n "$WP_BITE_SIZED" ]] && printf '%s\n' "$WP_BITE_SIZED" | grep -q 'Ordering is not mandated'; then
+  ok "writing-plans Bite-Sized section states ordering is not mandated"
+else
+  bad "writing-plans Bite-Sized section lost 'Ordering is not mandated' (#653)"
+fi
+
+if [[ -n "$WP_BITE_SIZED" ]] && printf '%s\n' "$WP_BITE_SIZED" | grep -q 'behavioral changes ship with tests'; then
+  ok "writing-plans Bite-Sized section still requires behavioral changes to ship with tests"
+else
+  bad "writing-plans Bite-Sized section lost the behavioral-changes ship-with-tests requirement (#653)"
+fi
+
+if [[ -n "$WP_BITE_SIZED" ]] \
+  && printf '%s\n' "$WP_BITE_SIZED" | grep -q 'explicitly requested' \
+  && printf '%s\n' "$WP_BITE_SIZED" | grep -q '/tdd'; then
+  ok "writing-plans Bite-Sized section scopes strict TDD to explicit request"
+else
+  bad "writing-plans Bite-Sized section no longer scopes TDD to explicit request (#653)"
+fi
+
+if grep -qF 'Subagents follow TDD for each task' "$SDD"; then
+  bad "subagent-driven-development restored 'Subagents follow TDD for each task' (#653)"
+else
+  ok "subagent-driven-development has no unconditional per-task TDD mandate"
+fi
+
+if grep -qF 'Subagents follow TDD naturally' "$SDD"; then
+  bad "subagent-driven-development restored 'Subagents follow TDD naturally' (#653)"
+else
+  ok "subagent-driven-development does not claim subagents follow TDD naturally"
+fi
+
+if [[ -n "$SDD_ADVANTAGES" ]] && printf '%s\n' "$SDD_ADVANTAGES" | grep -q 'Ordering is not mandated'; then
+  ok "subagent-driven-development Advantages section states ordering is not mandated"
+else
+  bad "subagent-driven-development Advantages section lost 'Ordering is not mandated' (#653)"
+fi
+
+if [[ -n "$SDD_INTEGRATION" ]] \
+  && printf '%s\n' "$SDD_INTEGRATION" | grep -q 'explicitly requested' \
+  && printf '%s\n' "$SDD_INTEGRATION" | grep -q '/tdd'; then
+  ok "subagent-driven-development Integration section scopes strict TDD to explicit request"
+else
+  bad "subagent-driven-development Integration section no longer scopes TDD to explicit request (#653)"
+fi
+
 # --- What ADR 0038 deliberately did NOT change --------------------------------------
 
 # The opt-in route. ADR 0038 keeps strict TDD fully available; only the default moved.
@@ -321,6 +411,13 @@ if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
+fi
+
+printf '%s\n' '- [ ] **Step 1: Write the failing test**' > "$TMP/violating-wp-template.md"
+if grep -qF '**Step 1: Write the failing test**' "$TMP/violating-wp-template.md"; then
+  ok "negative control: the writing-plans Step 1 assertion fires on a violating template"
+else
+  bad "negative control FAILED — the writing-plans Step 1 assertion cannot detect a violation"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

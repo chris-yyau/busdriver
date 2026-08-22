@@ -224,6 +224,12 @@ if [[ "$_BD_RESOLVE_CLI_SOURCED" != 1 ]]; then
   # — silently reviewing-model-priced every read is worse than a loud stop.
   _BD_AGY_READ_MODEL=""
   resolve_agy_read_model() { _BD_AGY_READ_MODEL=""; }
+  # Empty is the NORMAL value for the prose lane, not a refusal signal (unlike
+  # agy-read above): it means "pass no --model", i.e. agy's own configured
+  # model. So a missing library degrades this lane to exactly its documented
+  # default rather than aborting.
+  _BD_WRITING_PROSE_MODEL=""
+  resolve_writing_prose_model() { _BD_WRITING_PROSE_MODEL=""; }
 fi
 # The grok preflight lives in resolve-cli.sh, and this file deliberately
 # tolerates that library being absent. Each helper is shimmed on ITS OWN name,
@@ -366,6 +372,13 @@ PROMPT=""
 # block is repo-controlled (#325 / ADR 0016), which is exactly why an ambient
 # value must never reach a provenance field. Only the desugar below sets it.
 REPORT_CLI_NAME=""
+# Set only by the `agy-prose` desugar below. Same two readers as the read-lane
+# flag: it adds `--mode plan` to agy's argv and exempts the lane from the droid
+# escalation. Deliberately NOT the same variable as `_AGY_READ_LANE` — that one
+# also drags in the read lane's model key, its refuse-on-empty abort, and its
+# audit identity, none of which belong to this lane.
+_AGY_PROSE_LANE=""
+
 # Set only by the `agy-read` desugar below. Carries the LANE IDENTITY that the
 # desugar would otherwise erase (it rewrites CLI to plain "agy"), and is read in
 # two places: it adds `--mode plan` to agy's argv, and it exempts the lane from
@@ -390,7 +403,7 @@ while [[ $# -gt 0 ]]; do
 dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, opencode, or pi CLI
 
 FLAGS:
-  --cli     codex|agy|agy-read|droid|grok|opencode|pi|both|all|auto  (default: auto)
+  --cli     codex|agy|agy-read|agy-prose|droid|grok|opencode|pi|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 600)
   --model   model override          (optional)
@@ -552,8 +565,276 @@ if [[ "$CLI" == "auto" ]]; then
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-read" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-read|droid|grok|opencode|pi|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "agy-read" && "$CLI" != "agy-prose" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "pi" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|agy-read|agy-prose|droid|grok|opencode|pi|both|all|auto." >&2; exit 1
+fi
+
+# ── `agy-prose` — the agy PROSE-DRAFTING lane ───────────────────
+# Desugars to the ordinary agy arm, mirroring `agy-read` below, with the same
+# three pins and for the same reasons:
+#   readonly mode  → `agy --sandbox` (never --dangerously-skip-permissions)
+#   $MODEL         → `.writing_prose.model`, but UNSET IS NORMAL here (see
+#                    resolve_writing_prose_model) — no shipped default, no abort
+#   --mode plan    → the lane's write boundary (added in the agy arm below)
+#
+# Why a lane and not a route with a fallback chain: a route escalates a failed
+# dispatch to droid, which ships the brief — and whatever source material was
+# pasted into it — to a DIFFERENT third party than the operator chose, silently.
+# For prose that is the whole confidentiality decision being overridden after
+# the fact. This lane is exempt from that escalation, exactly like `pi`,
+# `opencode` and `agy-read`. It fails instead, which is the correct outcome.
+#
+# CALIBRATE the write boundary: `--mode plan` is agy's OWN mode, not a kernel
+# sandbox. It is write-blocked in every probe run, not write-PROOF. Reach for
+# `pi` if you need an enforced boundary rather than a well-behaved one.
+#
+# RESIDUALS — deliberately NOT closed here, because they are properties of this
+# dispatcher shared by every lane, and closing them piecemeal in one lane buys
+# nothing while the larger hole stays open. Named so nobody reads the guards
+# above as a complete boundary:
+#   * `agy` is invoked as a BARE command word, resolved through the ambient,
+#     repo-injectable PATH. PATH is not pinned because agy normally lives outside
+#     the system paths (~/.local/bin). An attacker who controls PATH therefore
+#     owns the transport regardless of how carefully mktemp/git are resolved
+#     above — those are hardened for consistency, not because they are the
+#     boundary.
+#   * `$HOME/.claude` (logs) and `~/.gemini` (agy's own plan state) are not
+#     proven to lie outside the checkout. A home directory that IS a worktree, or
+#     a state dir symlinked into one, still receives writes.
+# Both apply equally to `agy-read`, `pi` and the reviewer slots. The lane's own
+# claim is narrower and is what the guards above actually enforce: it does not
+# write to the repository through $TMPDIR, and it does not silently change which
+# third party receives your prose.
+if [[ "$CLI" == "agy-prose" ]]; then
+    # Preserve the REQUESTED lane name for reporting before CLI is overwritten,
+    # same rationale as agy-read: the lanes differ in model and in which third
+    # party receives content, so an audit entry saying plain "agy" cannot tell
+    # which lane sent it.
+    REPORT_CLI_NAME="agy-prose"
+    CLI="agy"
+    _AGY_PROSE_LANE=1
+    # Validate BEFORE normalising, so an invalid --mode is reported rather than
+    # silently swallowed by an unconditional MODE="readonly".
+    if [[ "$MODE" == "auto" ]]; then
+        echo "Error: --cli agy-prose is the prose lane; --mode auto is not accepted. Use --cli agy --mode auto for a writing agy dispatch." >&2; exit 1
+    elif [[ "$MODE" != "readonly" ]]; then
+        echo "Error: Invalid --mode '$MODE'. --cli agy-prose accepts only readonly." >&2; exit 1
+    fi
+    MODE="readonly"
+    # $HOME must be password-DB-derived, not inherited — the identical
+    # requirement to the agy READ lane below, for identical reasons. An
+    # inherited $HOME is repo-injectable (a checkout's `.claude/settings.json`
+    # can set it), and it selects BOTH `.writing_prose.model` — i.e. WHICH THIRD
+    # PARTY the brief is shipped to — and agy's own ~/.gemini config, auth, and
+    # persisted plan state, which this lane necessarily writes because
+    # `--mode plan` stores its plan artifact there.
+    # shellcheck disable=SC2310  # same `! fn` condition shape as the agy-read
+    # derivation below; the else-branch IS the failure handler.
+    if ! _agyp_user="$(/usr/bin/id -un 2>/dev/null)" \
+       || ! _bd_valid_username "$_agyp_user" \
+       || ! _agyp_home="$(eval echo "~${_agyp_user}" 2>/dev/null)" \
+       || [[ -z "$_agyp_home" || "$_agyp_home" != /* || ! -d "$_agyp_home" ]]; then
+        echo "Error: could not derive a trusted \$HOME for the agy prose lane. Refusing rather than letting an inherited \$HOME select agy's config and ~/.gemini state (and the busdriver.json that names the provider your prose is sent to)." >&2; exit 1
+    fi
+    export HOME="$_agyp_home"
+    # LOG_DIR/LOG_FILE were computed from the INHERITED $HOME far above (see
+    # their assignment near the top of this file), so pinning $HOME here is too
+    # late for them on its own. A repo-controlled $HOME would otherwise put
+    # `$STATE_DIR/homunculus` inside the checkout — and the failure path
+    # archives up to 64KB of the OUTPUT there, i.e. the prose itself. Recompute
+    # both against the trusted home.
+    # $STATE_DIR is PINNED to `.claude` here, not reused: BUSDRIVER_STATE_DIR is
+    # repo-injectable, and no shape-check makes an injectable value safe when the
+    # checkout normally lives UNDER the trusted home — `src/project/.drafts`
+    # resolves straight back inside the repository. Same reasoning, verbatim, as
+    # the state-dir pin in _bd_read_auditor_model.
+    LOG_DIR="$_agyp_home/.claude/homunculus"
+    LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
+    # $TMPDIR is repo-injectable for the SAME reason $HOME is, and it is not
+    # cosmetic here: OUT_DIR is `${TMPDIR:-/tmp}`, so the DRAFT ITSELF is written
+    # there. A checkout that points $TMPDIR at itself would collect every draft
+    # inside the repository — precisely the write this lane says does not happen,
+    # and a path by which prose could reach a commit. Refuse rather than write.
+    #
+    # Deliberately a CONTAINMENT check, not a reassignment to /tmp: on macOS the
+    # inherited per-user $TMPDIR is mode-700 under /var/folders, so forcing the
+    # world-readable /tmp would trade a write-location bug for a confidentiality
+    # regression. Keep the operator's temp dir; reject only one that is inside
+    # the tree being written in.
+    # No "unusable $TMPDIR" branch here on purpose: a nonexistent or non-directory
+    # $TMPDIR already aborts the script further up (verified — both shapes exit 1
+    # before this point), so such a branch could never execute, and a guard that
+    # cannot fire certifies a check it never ran. Only the reachable case is
+    # guarded.
+    # Compare against the REPO ROOT, not $PWD. Dispatching from `/repo/docs`
+    # with TMPDIR=/repo/.drafts is still a write into the repository, and a
+    # CWD-only test waves it through. Fall back to $PWD only when this is not a
+    # git checkout, where $PWD is the best containment boundary available.
+    umask 077
+    # `|| _agyp_tmp_real=""` is REQUIRED under `set -e`: a nonexistent or
+    # non-directory $TMPDIR makes the `cd` fail, and an unguarded assignment
+    # kills the dispatch at exit 128 with NO message — which is exactly the
+    # silent failure this branch exists to replace.
+    _agyp_tmp_real=""
+    _agyp_tmp_real="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || _agyp_tmp_real=""
+    if [[ -z "$_agyp_tmp_real" ]]; then
+        echo "Error: \$TMPDIR ('${TMPDIR:-/tmp}') is not a usable directory. Refusing rather than guessing where your prose is written." >&2; exit 1
+    fi
+    # The git lookup runs with GIT_* SCRUBBED and a system-only PATH. Both are
+    # repo-injectable, and an unscrubbed lookup is worse than none: with
+    # GIT_WORK_TREE=/tmp, `rev-parse --show-toplevel` cheerfully reports /tmp,
+    # the containment test passes, and the draft lands in the checkout — the
+    # attacker chooses the boundary they are being measured against.
+    # `env -i`, NOT a -u list. An enumerated denylist is the wrong shape here:
+    # it silently misses whatever it does not name, and git honours far more than
+    # the obvious five — GIT_TRACE, GIT_TRACE2, GIT_TRACE2_EVENT and friends take
+    # a PATH and make `rev-parse` WRITE a trace file there, so a repo-set trace
+    # variable turns this very containment check into the repository write it
+    # exists to prevent. Wiping the environment is the only shape that cannot be
+    # out-enumerated; it also clears the exported-function table (functions ARE
+    # environment variables), so git's own name cannot be shadowed.
+    # `|| _agyp_root=""` is REQUIRED, not defensive noise: this script runs under
+    # `set -e`, and outside a git checkout `rev-parse` exits non-zero, killing the
+    # whole dispatch at exit 128 with no message — which would break exactly the
+    # standalone prose tasks (an email, a paragraph) this lane exists for, and
+    # would make the $PWD fallback below unreachable dead code.
+    _agyp_root=""
+    _agyp_root="$(/usr/bin/env -i \
+        PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+        HOME="$_agyp_home" \
+        git rev-parse --show-toplevel 2>/dev/null)" || _agyp_root=""
+    _agyp_cwd_real="$(pwd -P)"
+    # If git could not answer — not installed, `safe.directory` refusal, damaged
+    # metadata — do NOT silently degrade to a $PWD-only check: that is precisely
+    # the `<root>/docs` + TMPDIR=`<root>/.drafts` case this boundary exists for,
+    # and an attacker who can break the git lookup would get the weaker check for
+    # free. Fall back to walking up for a `.git` entry, which needs no external
+    # command and cannot be redirected by GIT_* or PATH.
+    # Walk to the OUTERMOST enclosing repository, not the nearest. `git
+    # rev-parse` reports the innermost, so inside a submodule or a nested
+    # checkout the superproject sits ABOVE it — and a $TMPDIR pointing into that
+    # superproject is outside both the submodule root and $PWD, slipping through
+    # while still writing prose into a repository. Keep walking, keep the last
+    # match. Needs no external command, so GIT_* and PATH cannot redirect it.
+    _agyp_walk="$_agyp_cwd_real"
+    while [[ -n "$_agyp_walk" && "$_agyp_walk" != "/" ]]; do
+        [[ -e "$_agyp_walk/.git" ]] && _agyp_root="$_agyp_walk"
+        _agyp_walk="${_agyp_walk%/*}"
+    done
+    # Check BOTH boundaries, never the git root alone. $PWD is derived from the
+    # kernel and cannot be redirected by the repo, so it holds even if the git
+    # lookup is defeated or unavailable; the root only WIDENS coverage (a
+    # dispatch from `<root>/docs` with TMPDIR=`<root>/.drafts`).
+    _agyp_root_real="$(cd "${_agyp_root:-$_agyp_cwd_real}" 2>/dev/null && pwd -P)"
+    [[ -n "$_agyp_root_real" ]] || _agyp_root_real="$_agyp_cwd_real"
+    if [[ "$_agyp_tmp_real" == "$_agyp_root_real" || "$_agyp_tmp_real" == "$_agyp_root_real"/* \
+       || "$_agyp_tmp_real" == "$_agyp_cwd_real" || "$_agyp_tmp_real" == "$_agyp_cwd_real"/* ]]; then
+        echo "Error: \$TMPDIR ('$_agyp_tmp_real') is inside the repository ('$_agyp_root_real'). Drafts are written to \$TMPDIR, so this would leave prose in the repository. Unset \$TMPDIR or point it outside the checkout." >&2; exit 1
+    fi
+    # Re-point $TMPDIR at a PRIVATE per-run directory. OUT_DIR is derived from
+    # $TMPDIR far below, and the draft filename is
+    # `dispatch-agy-prose-<time>-<pid>.txt` — predictable enough that on a shared
+    # $TMPDIR (unset, or `/tmp`) another user can pre-create that path, or a
+    # symlink at it, and either read the prose or redirect the write onto a file
+    # the operator can clobber. `umask 077` alone does not close that: it governs
+    # the mode of a file CREATED here, not who got to the name first.
+    #
+    # `mktemp -d` gives an unpredictable name at mode 0700, so there is nothing to
+    # pre-create and nothing for another user to traverse. Created UNDER the
+    # caller's $TMPDIR, so it inherits the containment decision just made rather
+    # than reopening it. Left in place on exit like every other dispatch output —
+    # this lane preserves its artifacts deliberately.
+    # The 0700 mode protects the directory's CONTENTS, not its ENTRY in the
+    # parent: anyone who can write the parent can rename our directory away and
+    # substitute their own holding the predictable output filename.
+    #
+    # An earlier revision accepted "ours (-O) OR sticky (-k)". That is unsound in
+    # both directions — an ATTACKER-owned sticky directory still lets its owner
+    # rename our entry, and an operator-owned but group/world-writable directory
+    # lets any co-writer do it. Sticky is not a substitute for exclusive write
+    # access; it only stops non-owners deleting each OTHER's entries.
+    #
+    # So require BOTH: the parent is ours, AND no one else can write it. One
+    # rule, no OR to erode. `-O` is a bash builtin; the permission digits come
+    # from the shell's own `stat`-free `[[ -w ]]`-adjacent tests via a subshell-
+    # free ls-free check on the mode bits, done with builtins only so no extra
+    # PATH-resolved command word is introduced.
+    #
+    # Consequence to know: a root-owned sticky /tmp (the Linux default when
+    # $TMPDIR is unset) is REFUSED, deliberately. For a lane carrying prose the
+    # operator may not want co-tenants reading, "point $TMPDIR somewhere private"
+    # is the correct instruction, not a bug. macOS's per-user $TMPDIR passes.
+    _agyp_mode=""
+    _agyp_mode="$(/usr/bin/stat -f '%Lp' "$_agyp_tmp_real" 2>/dev/null \
+        || /usr/bin/stat -c '%a' "$_agyp_tmp_real" 2>/dev/null)" || _agyp_mode=""
+    if [[ ! -O "$_agyp_tmp_real" || -z "$_agyp_mode" || "${_agyp_mode: -2}" != "00" ]]; then
+        echo "Error: \$TMPDIR ('$_agyp_tmp_real') must be a directory you own with no group/other write access — otherwise another user can substitute the directory your prose is written into. Point \$TMPDIR at a private directory (e.g. mkdir -m 700 ~/.prose-tmp)." >&2; exit 1
+    fi
+    _agyp_outdir=""
+    # Absolute /usr/bin/mktemp, not a bare command word — PATH is repo-injectable,
+    # and this file already resolves mktemp absolutely for PROMPT_FILE. Calibrate
+    # what that buys: `agy` itself is still invoked as a bare word through the
+    # same PATH (see the residuals note in the lane header), so this closes one
+    # hole inside a larger one rather than making the lane PATH-proof.
+    _agyp_outdir="$(/usr/bin/mktemp -d "${_agyp_tmp_real}/busdriver-prose-XXXXXX")" || _agyp_outdir=""
+    if [[ -z "$_agyp_outdir" || ! -d "$_agyp_outdir" ]]; then
+        echo "Error: could not create a private output directory under '$_agyp_tmp_real'. Refusing rather than writing your prose to a predictable, shared path." >&2; exit 1
+    fi
+    export TMPDIR="$_agyp_outdir"
+    # An explicit --model still wins; the config is the default, not a clamp.
+    # Empty stays empty on purpose — see resolve_writing_prose_model.
+    if [[ -z "$MODEL" ]]; then
+        # Mixed-version tolerance. The stub far above is installed only when the
+        # library was not sourced AT ALL; an OLDER but sourceable resolve-cli.sh
+        # (a stale BUSDRIVER_PLUGIN_ROOT) sources fine yet has no
+        # resolve_writing_prose_model — and a bare call would then resolve to an
+        # ambient PATH executable of that name, or die with command-not-found,
+        # instead of taking this lane's documented empty-model default.
+        # `declare -F` accepts functions only.
+        if ! declare -F resolve_writing_prose_model >/dev/null 2>&1; then
+            resolve_writing_prose_model() { _BD_WRITING_PROSE_MODEL=""; }
+        fi
+        HOME="$_agyp_home" resolve_writing_prose_model
+        MODEL="$_BD_WRITING_PROSE_MODEL"
+        # ABSENT and INVALID must not look alike. Both resolve empty above — an
+        # unset key, and a value the `bare` grammar rejected (a `provider/id`
+        # pasted from the pi config, a typo). Empty is this lane's NORMAL "use
+        # agy's own model", so without this the operator's pin silently does not
+        # apply and the prose runs on a model they did not pick.
+        #
+        # The presence probe goes through the SAME hardened reader (`env -i`,
+        # absolute parser paths). An earlier revision used `_read_config_value`
+        # for this and that was the wrong trade: it selects `jq`/`python3` off the
+        # ambient, repo-injectable PATH as bare command words, introducing a
+        # code-execution surface to protect a provider selection.
+        if [[ -z "$MODEL" ]] && declare -F resolve_writing_prose_raw >/dev/null 2>&1; then
+            HOME="$_agyp_home" resolve_writing_prose_raw
+            if [[ -n "$_BD_WRITING_PROSE_RAW" ]]; then
+                echo "Error: .writing_prose.model is set to '$_BD_WRITING_PROSE_RAW', which is not a valid bare agy model id (no 'provider/' prefix; \`agy models\` enumerates ids). Refusing rather than silently dispatching your prose on a model you did not choose. Fix or remove the key." >&2; exit 1
+            fi
+        fi
+        # Residual, stated so the guard above is not read as total: a present but
+        # NON-STRING value (number, bool) is dropped by both readers' string
+        # filters and so still looks absent. The fallback in that case remains
+        # agy's own configured model — the operator's own choice, never one an
+        # attacker selected, since the rejected value is precisely the one that
+        # never gets used.
+        # An earlier revision added one via `_read_config_value` and it was the
+        # wrong trade: that reader selects `jq`/`python3` off the ambient,
+        # repo-injectable PATH and resolves them as bare command words, so the
+        # check meant to protect the provider selection introduced a fresh
+        # code-execution surface — a weaker reader layered on top of the hardened
+        # one (`_bd_read_auditor_model`, which uses `env -i` and absolute binary
+        # paths) purely to improve an error message.
+        #
+        # What is actually lost by not checking: a MALFORMED `.writing_prose.model`
+        # is rejected by the `bare` grammar, resolves empty, and the dispatch runs
+        # on agy's OWN configured model. That is a surprise, not a breach — the
+        # fallback is the operator's own agy configuration, never a value an
+        # attacker chose, because the rejected value is precisely the one that
+        # never gets used. Silent-substitution risk is nil; the cost is a pin that
+        # quietly does not apply. `agy models` lists valid bare ids.
+    fi
 fi
 
 # ── `agy-read` — the agy READ lane ──────────────────────────────
@@ -985,7 +1266,7 @@ dispatch_one() {
             # it must never reach a reviewer, which stops producing findings
             # under plan mode.
             local _agy_lane=(--add-dir "$PWD")
-            if [[ -n "$_AGY_READ_LANE" ]]; then
+            if [[ -n "$_AGY_READ_LANE" || -n "$_AGY_PROSE_LANE" ]]; then
                 _agy_lane+=(--mode plan)
             fi
             # `--add-dir "$PWD"` IS LOAD-BEARING. Without it agy does not scope
@@ -2366,6 +2647,7 @@ CHILD
        && [[ "$name" != "pi" ]] \
        && [[ "${_grok_refused:-0}" != "1" ]] \
        && [[ -z "$_AGY_READ_LANE" ]] \
+       && [[ -z "$_AGY_PROSE_LANE" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
        && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
@@ -2605,7 +2887,7 @@ else
     # reintroduces an ambient or computed source. Anything unrecognized falls
     # back to $CLI, which the --cli validator has already restricted to the enum.
     case "$REPORT_NAME" in
-        codex|agy|agy-read|droid|grok|opencode|pi) ;;
+        codex|agy|agy-read|agy-prose|droid|grok|opencode|pi) ;;
         *) REPORT_NAME="$CLI" ;;
     esac
     OUTFILE="${OUT_DIR}/dispatch-${REPORT_NAME}-${STAMP}.txt"

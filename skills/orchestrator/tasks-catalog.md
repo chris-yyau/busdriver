@@ -51,7 +51,8 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `prompt-optimizer` skill or `/prompt-optimize` (advisory) |
-| **Content** | articles, newsletters, blogs | `article-writing` (vault) / `content-engine` (vault) / `crosspost` (vault) / `x-api` (vault). Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
+| **Content** | articles, newsletters, blogs | `busdriver:writing-prose` to draft (humanizer pass included) / `article-writing` (vault) / `content-engine` (vault) / `crosspost` (vault) / `x-api` (vault) |
+| **Draft Prose** | write a post, draft an essay, write the copy, rewrite this section, help me word this, write a README intro | `busdriver:writing-prose` (drafts via the write-blocked `agy-prose` dispatch lane, then runs `busdriver:humanizer` over the draft). For de-slopping text you ALREADY have, use `busdriver:humanizer` directly instead |
 | **Humanize Writing** | remove AI tone, sounds AI-written, de-slop text, make it sound human | `busdriver:humanizer` (detect+fix AI-writing tells: em-dash overuse, rule of three, inflated symbolism, vague attributions, filler) |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` (vault) |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` (vault) / `investor-outreach` (vault) / `market-research` (vault) |

@@ -1,3 +1,10 @@
+# [1.110.0](https://github.com/chris-yyau/busdriver/compare/v1.109.14...v1.110.0) (2026-08-22)
+
+
+### Features
+
+* **skills:** writing-prose skill on a write-blocked agy-prose dispatch lane ([#720](https://github.com/chris-yyau/busdriver/issues/720)) ([3ee8da4](https://github.com/chris-yyau/busdriver/commit/3ee8da43eb7260f081526410b2c9221dcfd3ec05))
+
 ## [1.109.14](https://github.com/chris-yyau/busdriver/compare/v1.109.13...v1.109.14) (2026-08-21)
 
 

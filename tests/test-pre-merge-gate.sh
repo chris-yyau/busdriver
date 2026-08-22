@@ -82,6 +82,11 @@ for n in (names or ["shellcheck"]):
 PY
   exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "diff" ]; then
+  # #719: GH_STUB_DIFF names a changed gate file; unset keeps today's empty diff.
+  [ -n "${GH_STUB_DIFF:-}" ] && printf '%s\n' "$GH_STUB_DIFF"
+  exit 0
+fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
   # Only two projections are exercised: headRefOid by the pre-merge gate, and
   # `--json state` by post-merge-confirm-bypass.sh's authoritative merge-state
@@ -104,6 +109,9 @@ exit 0
 STUB
 chmod +x "$GH_STUBDIR/gh"
 export PATH="$GH_STUBDIR:$PATH"
+# Inherited GH_STUB_DIFF would make every `gh pr diff` report a gate-file
+# change, so earlier no-marker cases would take the bootstrap allow path.
+unset GH_STUB_DIFF
 
 # Write a marker in the current `<PR_NUMBER> <HEAD_SHA>` contract (#505).
 # Second arg overrides the SHA (to simulate a marker written for another commit).
@@ -320,6 +328,50 @@ rm -rf "$ISO_STATE" "$ISO_STATE-real"
 # addendum at the top of this file) — recreate it so the write_marker calls
 # below don't fail against a directory the symlink arm just removed.
 mkdir -p "$MARKER_DIR"
+
+# 2a-skip. #719: skip allow path must leave a skip-pr-grind-claimed record.
+rm -f "$ISO_STATE/pr-grind-clean.local" "$ISO_STATE/.merge-bypass-pending.local" "$ISO_LOG"
+touch "$ISO_STATE/skip-pr-grind.local"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$ISO_STATE/skip-pr-grind.local" 2>/dev/null \
+    || touch -d "2 minutes ago" "$ISO_STATE/skip-pr-grind.local" 2>/dev/null \
+    || true
+TOTAL=$((TOTAL + 1))
+SKIP_EC=0
+SKIP_OUT=$(BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null) && SKIP_EC=0 || SKIP_EC=$?
+SKIP_RECORDS=$(grep -c '"event":"skip-pr-grind-claimed"' "$ISO_LOG" 2>/dev/null) || SKIP_RECORDS=0
+SKIP_LINE=$(grep '"event":"skip-pr-grind-claimed"' "$ISO_LOG" 2>/dev/null || true)
+if [[ "$SKIP_RECORDS" -eq 1 ]] \
+   && [[ "$SKIP_EC" -eq 0 ]] \
+   && printf '%s' "$SKIP_LINE" | grep -q '"pr":"31"}' \
+   && ! printf '%s' "$SKIP_OUT" | grep -q '"block"'; then
+    printf "  PASS  logs skip-pr-grind-claimed with PR on an authorized skip-path merge (#719)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  logs skip-pr-grind-claimed with PR on an authorized skip-path merge (#719) (got: %s)\n" "$SKIP_LINE"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$ISO_STATE/skip-pr-grind.local" "$ISO_STATE/.merge-bypass-pending.local" "$ISO_LOG"
+
+# 2a-boot. #719: bootstrap allow path must leave a bootstrap-merge record.
+# GH_STUB_DIFF names one hooks/gate-scripts/ file; the existing pr-checks stub already passes.
+TOTAL=$((TOTAL + 1))
+BOOT_EC=0
+BOOT_OUT=$(GH_STUB_DIFF="hooks/gate-scripts/pre-merge-gate.sh" \
+    BUSDRIVER_STATE_DIR="$ISO_STATE" bash "$GATE_SCRIPT" <<<"$MERGE_INPUT" 2>/dev/null) && BOOT_EC=0 || BOOT_EC=$?
+BOOT_RECORDS=$(grep -c '"event":"bootstrap-merge"' "$ISO_LOG" 2>/dev/null) || BOOT_RECORDS=0
+BOOT_LINE=$(grep '"event":"bootstrap-merge"' "$ISO_LOG" 2>/dev/null || true)
+if [[ "$BOOT_RECORDS" -eq 1 ]] \
+   && [[ "$BOOT_EC" -eq 0 ]] \
+   && printf '%s' "$BOOT_LINE" | grep -q '"pr":"31","' \
+   && printf '%s' "$BOOT_LINE" | grep -q '"gate_files":1}' \
+   && ! printf '%s' "$BOOT_OUT" | grep -q '"block"'; then
+    printf "  PASS  logs bootstrap-merge with PR + gate_files on an authorized bootstrap merge (#719)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  logs bootstrap-merge with PR + gate_files on an authorized bootstrap merge (#719) (got: %s)\n" "$BOOT_LINE"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$ISO_LOG" "$ISO_STATE/skip-pr-grind.local" "$ISO_STATE/.merge-bypass-pending.local"
 
 # ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
 # Regression: a marker written when the grind converged stayed valid for 2h, so a

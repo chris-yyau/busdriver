@@ -166,67 +166,28 @@ else
 fi
 
 # --- systematic-debugging must not re-mandate TDD via bug-fix auto-routing (#657) ----
+# Pins the exact retired mandate and positive Phase-4 contract from issue #657.
+# No prose-equivalence classifier: variant detection has no bounded completeness
+# guarantee and produced false positives in PR #732 review.
 
 phase4_implementation_section() {
   awk '/^### Phase 4: Implementation/,/^## Red Flags/' "$1"
 }
-# Reject equivalent unconditional failing-test-before-fix mandates, not only the
-# legacy phrase ADR 0038 removed. Scoped to Phase 4; flattened so wrapped lines
-# are caught. Uses explicit forbidden substrings plus conditional/negation carve-outs
-# so advisory and explicit-/tdd-scoped wording does not false-positive.
-has_unconditional_failing_test_mandate() {
-  local phase4 flattened lower before p
-  phase4="$(phase4_implementation_section "$1")"
-  [[ -z "$phase4" ]] && return 1
-  if printf '%s\n' "$phase4" | grep -q 'MUST have before fixing'; then
-    return 0
-  fi
-  flattened="$(printf '%s\n' "$phase4" | tr '\n' ' ')"
-  flattened="$(printf '%s' "$flattened" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
-  lower="$(printf '%s' "$flattened" | tr '[:upper:]' '[:lower:]')"
-  for p in \
-    'a failing test is required before' \
-    'failing test is required before' \
-    'must have a failing test before' \
-    'must write a failing test before'; do
-    [[ "$lower" != *"$p"* ]] && continue
-    before="${lower%%"$p"*}"
-    if [[ ${#before} -gt 80 ]]; then
-      before="${before: -80}"
-    fi
-    case "$before" in
-      *"explicitly requested"*|*"when doing tdd"*) continue ;;
-    esac
-    return 0
-  done
-  return 1
-}
-phase4_requires_ordering_not_mandated() {
-  local phase4
-  phase4="$(phase4_implementation_section "$1")"
-  [[ -n "$phase4" ]] && printf '%s\n' "$phase4" | grep -q 'Ordering is not mandated'
-}
-phase4_requires_nontrivial_regression_check() {
-  local phase4
-  phase4="$(phase4_implementation_section "$1")"
-  [[ -n "$phase4" ]] \
-    && printf '%s\n' "$phase4" | grep -q 'nontrivial fixes' \
-    && printf '%s\n' "$phase4" | grep -q 'reproducible check'
-}
 
-if has_unconditional_failing_test_mandate "$SYSDBG"; then
-  bad "systematic-debugging restored unconditional failing-test-before-fix mandate (ADR 0038 / #657)"
+SYSDBG_PHASE4="$(phase4_implementation_section "$SYSDBG")"
+if [[ -z "$SYSDBG_PHASE4" ]]; then
+  bad "systematic-debugging Phase 4 section missing — cannot anchor #657 assertions"
+elif printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'MUST have before fixing'; then
+  bad "systematic-debugging restored unconditional 'MUST have before fixing' (ADR 0038 / #657)"
 else
   ok "systematic-debugging has no unconditional failing-test-before-fix mandate"
 fi
 
-if phase4_requires_ordering_not_mandated "$SYSDBG"; then
+if printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'Ordering is not mandated'; then
   ok "systematic-debugging Phase 4 states ordering is not mandated"
 else
   bad "systematic-debugging Phase 4 lost 'Ordering is not mandated' (ADR 0038 / #657)"
 fi
-
-SYSDBG_PHASE4="$(phase4_implementation_section "$SYSDBG")"
 
 if [[ -n "$SYSDBG_PHASE4" ]] \
   && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'explicitly requested' \
@@ -242,7 +203,9 @@ else
   bad "systematic-debugging lost the root-cause Iron Law"
 fi
 
-if phase4_requires_nontrivial_regression_check "$SYSDBG"; then
+if [[ -n "$SYSDBG_PHASE4" ]] \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'nontrivial fixes' \
+  && printf '%s\n' "$SYSDBG_PHASE4" | grep -q 'reproducible check'; then
   ok "systematic-debugging Phase 4 still requires a regression check for nontrivial fixes"
 else
   bad "systematic-debugging Phase 4 lost the regression-check requirement (ADR 0038 / #657)"
@@ -358,80 +321,6 @@ if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
-fi
-
-# --- systematic-debugging #657 guards: prove each can fail on a violating fixture ----
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - A failing test is required before applying the fix' \
-  '## Red Flags' \
-  > "$TMP/violating-sysdbg-mandate.md"
-if has_unconditional_failing_test_mandate "$TMP/violating-sysdbg-mandate.md"; then
-  ok "negative control: failing-test mandate assertion fires on a violating fixture"
-else
-  bad "negative control FAILED — failing-test mandate assertion cannot detect a violation"
-fi
-
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - A failing test before the fix is advisory, not required' \
-  '## Red Flags' \
-  > "$TMP/compliant-sysdbg-advisory.md"
-if has_unconditional_failing_test_mandate "$TMP/compliant-sysdbg-advisory.md"; then
-  bad "negative control FAILED — mandate assertion fires on advisory not-required wording"
-else
-  ok "negative control: mandate assertion accepts advisory not-required wording"
-fi
-
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - A failing test is not required before fixing' \
-  '## Red Flags' \
-  > "$TMP/compliant-sysdbg-not-required.md"
-if has_unconditional_failing_test_mandate "$TMP/compliant-sysdbg-not-required.md"; then
-  bad "negative control FAILED — mandate assertion fires on negated not-required wording"
-else
-  ok "negative control: mandate assertion accepts negated not-required wording"
-fi
-
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - A failing test is required' \
-  '     before applying the fix' \
-  '## Red Flags' \
-  > "$TMP/violating-sysdbg-mandate-wrapped.md"
-if has_unconditional_failing_test_mandate "$TMP/violating-sysdbg-mandate-wrapped.md"; then
-  ok "negative control: failing-test mandate assertion fires on wrapped mandate text"
-else
-  bad "negative control FAILED — mandate assertion misses a wrapped mandate"
-fi
-
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - Fix the root cause' \
-  '## Red Flags' \
-  > "$TMP/violating-sysdbg-ordering.md"
-if phase4_requires_ordering_not_mandated "$TMP/violating-sysdbg-ordering.md"; then
-  bad "negative control FAILED — ordering-not-mandated assertion passes on a fixture missing the phrase"
-else
-  ok "negative control: ordering-not-mandated assertion fails on a violating fixture"
-fi
-
-printf '%s\n' \
-  '### Phase 4: Implementation' \
-  '1. **Add a Regression Check**' \
-  '   - Ship the fix once it looks right' \
-  '## Red Flags' \
-  > "$TMP/violating-sysdbg-regression.md"
-if phase4_requires_nontrivial_regression_check "$TMP/violating-sysdbg-regression.md"; then
-  bad "negative control FAILED — regression-check assertion passes on a fixture missing the requirement"
-else
-  ok "negative control: regression-check assertion fails on a violating fixture"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

@@ -12,7 +12,7 @@ Keep in step with lib/cmdword.py -- the same rules exist in both.
 """
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import fnmatch, json, posixpath, re, shlex
+import fnmatch, json, posixpath, re, shlex, string
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -243,9 +243,148 @@ _UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(]")   # `(` is extglob: ba+(s)h expand
 # helper nowhere (#640). It is asked ALONGSIDE the whitespace split, never instead of it:
 # an operator character is legal INSIDE a bracket expression, so this cuts `lease_slo[;t].py`
 # in half and on its own would have traded one bypass for another (raised by codex on #640).
-# Neither split is a tokenizer or claims to be; the union only ever yields more candidate
-# patterns to test, so it can add a block and never remove one.
+# No split or variant here is a tokenizer or claims to be; the probe only ever yields more
+# candidate patterns to test, so it can add a block and never remove one.
 _OPERATOR_SPLIT_RE = re.compile(r"[\s;&|()<>]+")
+# A VARIANT of the text for the same probe -- not a third split -- and the one that answers a
+# SPACE inside the bracket expression (#708). Both splits above treat whitespace as a word
+# boundary, so `lease_slo[\ t].py` -- a class whose members are a space and a `t` -- reaches
+# fnmatch as two half-patterns and matches the helper nowhere, while the shell globs the whole
+# word onto it. A whitespace inside a class is a MEMBER, so DELETING it leaves `[t]`, a pattern
+# the existing splits already handle, and the class still matches the helper because the `t`
+# survives.
+#
+# READ THIS BEFORE "FIXING" IT TO BE QUOTE-AWARE. Two quote-aware drafts were written and both
+# were broken by codex in review: a quote-ADJACENCY boundary misses a space sitting inside a
+# quoted run but next to neither quote, and a stateful left-to-right scanner is poisoned by any
+# quote the shell never opened -- an apostrophe in a heredoc body or a comment -- while a
+# scanner that resynchronises per line loses a run that legitimately spans one. Every one of
+# those spellings was measured RUNNING the helper. The quoting is a hard question and this
+# variant does not ask it: whatever the quoting, the whitespace that makes the class match is
+# between a `[` and a `]`, so deleting it there closes all of them at once.
+#
+# Finding the `]` is the whole of the remaining difficulty, and a lazy `[^]]*` gets it
+# wrong in two ways codex raised in review, both measured RUNNING the helper: a `]` is a
+# literal MEMBER when it comes first (`[]...]`, and after a leading `!` or `^`), it is a
+# member again when BACKSLASHED anywhere, and the `]` closing a POSIX class
+# (`[[:space:]...]`) does not close the enclosing one. So the
+# scan below follows the shell's own bracket grammar. It also visits each character a
+# bounded number of times, where the regex rescanned the suffix from every `[` and so
+# went quadratic on a run of unclosed brackets -- measured at 0.08s for 32k of them, well
+# inside the gate's budget, but linear costs nothing to have.
+#
+# This is NOT the bracket-ATOMIC word boundary, which reopens #573 and was measured doing so.
+# That draft made the class a unit and JOINED it to its neighbours, turning a bold markdown
+# link in a PR body into one pattern matching every string that ends in a class member -- the
+# helper name ends in `y`, and `my` supplies it. Deleting a member joins nothing: the
+# whitespace OUTSIDE the class still separates words exactly as before, so that same PR body
+# still splits where it always did and still matches the helper nowhere. Verified against
+# #573's verbatim report, which section A of tests/test-marker-glob-specificity.sh pins.
+# Both of those readings now happen in _class_members, which resolves a class to the
+# characters it can match rather than rewriting it with a regex; the two regexes that
+# used to sit here went with it.
+# What each POSIX class stands for, spelled as members fnmatch can read. Deleting the
+# sub-expression outright was the first attempt and it was wrong in the other direction:
+# `[[:alpha:] ]` matches the helper ON the alpha member, so removing it left `[]`, which
+# matches nothing. Raised by codex in review. The ranges are narrowed to the characters a
+# helper name can hold, so this widens the pattern no further than it has to; an unknown
+# or non-portable class name falls back to all of them, which is the fail-CLOSED side.
+_POSIX_MEMBERS = {
+    "alpha": set(string.ascii_letters),
+    "alnum": set(string.ascii_letters + string.digits),
+    "lower": set(string.ascii_lowercase),
+    "upper": set(string.ascii_uppercase),
+    "digit": set(string.digits),
+    "xdigit": set(string.hexdigits),
+    "word": set(string.ascii_letters + string.digits + "_"),
+    "space": set(string.whitespace),
+    "blank": set(" \t"),
+    "punct": set(string.punctuation),
+    "print": set(string.printable),
+    "graph": set(string.printable) - set(string.whitespace),
+}
+# How many `]` to try as the terminator of one class, and how many distinct rewrites to
+# hand back. Both are BUDGETS, and the residual they leave is stated in _class_variants:
+# this probe is the last-resort scan for text nothing could parse, not a shell. Each
+# extra reading is another whole pass plus its shell variants, so the cap is what keeps
+# an adversarial command from buying unbounded work.
+_CLOSE_CANDIDATES = 32
+_CLASS_VARIANT_CAP = 160
+_CLASS_DEEP_MAX_LEN = 4096
+_CLASS_DEEP_MAX_CLOSERS = 64
+# Bracket-bearing WORDS the full reading family may be spent on. Length and closer count
+# bound how big the text is; this bounds the thing that actually MULTIPLIES, because the
+# family is spent per word and every variant yields its own words again. Without it the cost
+# peaked just UNDER the other two bounds -- 20 bracket words in front of a deep class sat at
+# 62 closers, missed the closer bound by two, and took 4.18s against a hook registered with a
+# 5s timeout, which on expiry is killed with NO decision on stdout and reads as allow. The
+# extremes were already fast; the hole was the shape that stayed just inside every bound.
+#
+# COUNTED THE WAY THE SCAN SPLITS, which is on operators as well as whitespace. Counting
+# `text.split()` alone made `v0=[a0];v1=[a1];...` a single word while the scan below still
+# handed every one of those decoys its own deep reading -- 20 of them measured 16.65s, three
+# times the timeout it was added to respect. A budget has to be spent in the same unit the
+# work is done in; codex found the mismatch the round after the bound went in.
+_CLASS_DEEP_MAX_WORDS = 4
+# The longest class BODY that is resolved rather than refused. Bounds the one dimension the
+# three above do not: they measure the TEXT, and this measures a single class inside it.
+# Comfortably past any real bracket expression -- the helper names are 13 characters and the
+# widest legitimate class in the fixtures is a POSIX name -- so this refuses only bodies built
+# to be expensive. See _class_members for why refusing widens instead of narrowing.
+_CLASS_BODY_MAX = 256
+# Total BYTES of text the full reading family may be spent on across ONE command. The three
+# bounds above measure a single string, and every one of them is satisfied by a word that is
+# individually affordable -- so a command can simply repeat it. `_glob_helper` is asked per
+# WORD at the structured call sites, where the word-count term is vacuously 1, and the number
+# of those calls is bounded only by the token budget: ten segments each holding one 4KB
+# bracket word measured 21.96s against a hook registered with a 5s timeout, where a killed
+# hook emits no decision and the caller reads ALLOW. Measured after the budget: the same
+# ten segments cost 1.50s and the figure no longer moves with the segment count, which
+# is the property that matters -- an attacker cannot buy more by repeating.
+#
+# Running out is not a miss: _deep_affordable then answers False for every later word, which
+# drops it to the base reading AND routes it through _bracket_prefix_hit, exactly as the
+# size bounds do. Charged in bytes because a pass over the text is what the depth buys.
+_DEEP_MAX_BYTES = 2048
+_deep_budget = [0]
+# Quote characters, replaced by a barrier that cannot take part in class syntax. See
+# _class_members for why the quotes are read BOTH as removed and as barriers.
+_QUOTE_BARRIER = re.compile("['" + chr(34) + "]")
+# A quote INSIDE a bracket expression. Every reading in _class_variants rewrites a class it
+# can delimit, and a quote in the body is exactly the case where the delimiting itself is in
+# question: `[[:digit:"]"]` is not the POSIX digit class, because the quoted `]` stops `:]`
+# from closing the sub-expression -- so the body is a plain member list holding `t`, and bash
+# expands it onto the helper. The span walk cannot see that: it looks for `:]` in text the
+# quoting has not been removed from, does not find it, and abandons the class. Removing the
+# quotes first turns the same word back INTO the digit class, which matches nothing. Neither
+# reading is the shell's, and the shell's needs quoting the walk no longer has.
+#
+# So a class body carrying a quote is not settled here at all -- _glob_helper answers it
+# through _bracket_prefix_hit, on the same grounds as a multi-class word. `[^]]*` cannot
+# cross a `]`, so this asks about the BODY and not about quotes elsewhere in the word:
+# `grep '[[:alpha:] ]'` quotes the whole argument and is untouched.
+# The shortest literal stem that counts as evidence on its own. Below it, see the note in
+# _bracket_prefix_hit: a one-character prefix names a helper about as specifically as a bare
+# wildcard does, which is the objection #573 was filed over.
+_STEM_MIN_EVIDENCE = 3
+# Ceiling on the class count that feeds the evidence sum. The sum only has to clear
+# _STEM_MIN_EVIDENCE, so counting further buys nothing and a payload full of brackets should
+# not be able to buy work with them.
+_CLASS_COUNT_MAX = 8
+# Characters shlex(punctuation_chars=True) breaks out as tokens of their own, so the
+# quote-preserving splitter above agrees with it about where words end.
+_PUNCT_TOKENS = frozenset("();<>|&")
+# The lexer's whitespace, which is NOT str.isspace(): a vertical tab, a form feed, a NBSP or
+# an ideographic space is whitespace to Python and an ordinary character to shlex. Splitting
+# on the wider set made the two disagree over any argument containing one, which dropped the
+# raw pass for the whole segment -- a decoy argument away from a bypass.
+_LEX_WHITESPACE = frozenset(" \t\r\n")
+# What can make the whitespace after a `[` a MEMBER rather than a separator, and so make
+# two runs one shell word. A quote is the #708 spelling; a BACKSLASH does it just as well
+# (`[x\\]\\ y\\ l]<tail>`), and leaving the escape out was an incompleteness on the
+# fail-open side even though that shape happens to block through another reading.
+_JOINS_WORDS_RE = re.compile("['" + chr(34) + chr(92) + chr(92) + "]")
+_CLASS_QUOTE_RE = re.compile(r"\[[^]]*['" + chr(34) + "]")
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
 # brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
 # walk sees has already lost some of that syntax, so testing for the UNRESOLVED
@@ -274,6 +413,557 @@ _INDIRECT_EMBEDDED = re.compile(r"(?:^|[\s;&|/=])" + _INDIRECT_VERBS_RE + r"(?:\
 # Non-greedy so the flag cluster is consumed but the verb is not -- a greedy strip eats
 # the verb along with the flag and matches nothing.
 _INDIRECT_ATTACHED = re.compile(r"^-[A-Za-z]*?" + _INDIRECT_VERBS_RE + r"(?:\s|$)")
+
+
+# WHERE THIS PARSER IS TESTED, because the interactions below -- quotes, escapes, ranges,
+# POSIX sub-expressions, which `[` opens and which `]` closes, and the search budgets -- are
+# too combinatorial for example rows to cover on their own, and codex said so in review.
+# tests/test-marker-glob-specificity.sh section F is a PROPERTY test rather than a fixture
+# list: it generates class spellings, RUNS each one in a temp directory holding a stub helper,
+# and requires every spelling the shell actually expanded onto that stub to be one this file
+# blocks. A command that runs while the classifier allows it is the bug #708 reported, so the
+# property is the bug's own negation. Section E carries the hand-picked shapes that discipline
+# turned up, each row labelled with the draft it falsified, and tests/test-impl-gate-scope-519.sh
+# seeds 3,000 payloads through the same execute-then-classify pairing.
+
+
+def _class_members(body, negated, literal_hyphen=False):
+    """The characters a bracket expression's BODY can match, narrowed to _HELPER_ALPHABET.
+
+    Resolving the members is what makes this exact in BOTH directions, and both directions
+    were review findings. Deleting the whitespace (#708) is right when the space is a MEMBER
+    and wrong when it is a RANGE ENDPOINT -- `[<space>-u]` covers the helper's `t` and `[-u]`
+    covers nothing. Widening the whole class to `?` fixed that and broke the other way, since
+    `[a-b]` and `[[:digit:]]` then "matched" a helper they cannot reach. Both raised by codex.
+
+    So nothing is guessed: ranges are expanded, POSIX classes are expanded, quotes are
+    dropped as the syntax they are, and whitespace is dropped as a member no filename holds.
+    Narrowing to the helper alphabet keeps the result small and is why an unresolvable class
+    can still say "matches nothing" instead of "matches anything".
+    """
+    # A bound on the BODY, which is the one dimension _deep_affordable does not measure.
+    # Cost is quadratic in body length -- the terminator search hands the whole intervening
+    # span to this function once per candidate, across the whole combination space -- so a
+    # SINGLE class body can be expensive while sitting inside every other budget: 4,084 bytes
+    # with five closers and one bracket word measured 6.68s against a hook registered with a
+    # 5s timeout, where a killed hook emits no decision and the caller reads ALLOW. That is
+    # the same shape _CLASS_DEEP_MAX_WORDS was added for, reached through body length.
+    #
+    # Refusing to resolve widens to the WHOLE alphabet rather than narrowing to nothing, and
+    # the difference is the whole point: an unresolved class must match a helper character,
+    # not fail to. Returning here also lands BEFORE the negation below -- a negated over-long
+    # class would otherwise compute `_HELPER_ALPHABET - _HELPER_ALPHABET` and match nothing,
+    # which is the fail-OPEN side of exactly this decision.
+    if len(body) > _CLASS_BODY_MAX:
+        return set(_HELPER_ALPHABET)
+    # TWO readings of the quotes, unioned, because neither one is right on its own and the
+    # quoting that would decide it is gone by the time a pattern is matched.
+    #
+    #   - REMOVED, as the shell removes them before globbing. A range needs its `-` beside
+    #     its endpoints, so `[' '-u]` is the range space..u -- which covers the helper's `t`
+    #     -- and reading the quotes as three separate members missed it entirely.
+    #   - BARRIERS, because a quoted character cannot take part in the SYNTAX around it.
+    #     `[[:digit:"]"]` looks like the POSIX digit class and is not one: the quoted `]`
+    #     stops `:]` from closing the sub-expression, so the body is a plain member list that
+    #     includes `t`, and bash expands it onto the helper. Removing the quotes first turns
+    #     it back into the digit class and matches nothing.
+    #
+    # Each reading is a real spelling that RUNS, codex found them one round apart, and the
+    # union is what lets both be true without choosing. Unioning is safe for the same reason
+    # every other reading here is added rather than substituted: it can only widen. The
+    # barrier character is one no helper name holds, so it drops out with the alphabet.
+    r1 = _resolve_members(body.replace("'", "").replace(chr(34), ""), literal_hyphen)
+    r2 = _resolve_members(_QUOTE_BARRIER.sub(chr(1), body), literal_hyphen)
+    if negated:
+        # negate EACH reading and union the results. Negating the union instead intersects
+        # the complements, which is NARROWER -- the fail-open direction.
+        return (_HELPER_ALPHABET - r1) | (_HELPER_ALPHABET - r2)
+    return r1 | r2
+
+
+def _span_endpoint(body, p):
+    """The single character a range endpoint at `p` denotes, and where it ends.
+
+    An endpoint is not always one character of TEXT, which is the whole trouble. Quote
+    removal leaves an escaped member behind (`[\\ -u]` reaches the matcher as `[ -u]`), and
+    POSIX spells a collating element `[.a.]` and an equivalence class `[=a=]` -- and the
+    shell accepts every one of those on either side of a `-`. Reading them only as
+    standalone MEMBERS is what let `[\\ -u]` and `[[.a.]-[.z.]]` expand onto the helper
+    while this file answered OK; codex found them one round apart.
+
+    Returns (None, p) when `p` does not begin a single-character endpoint -- an unbalanced
+    subexpression, a multi-character collating element, a `]` or a `-` -- so every caller
+    can simply skip the span rather than guess at one.
+    """
+    n = len(body)
+    if p >= n:
+        return None, p
+    if body[p] == chr(92) and p + 1 < n:
+        return body[p + 1], p + 2
+    if body[p] == "[" and p + 1 < n and body[p + 1] in ".=":
+        k = body.find(body[p + 1] + "]", p + 2)
+        if k >= 0 and k - (p + 2) == 1:
+            return body[p + 2], k + 2
+        return None, p
+    if body[p] in "]-":
+        return None, p
+    return body[p], p + 1
+
+
+def _resolve_members(body, literal_hyphen=False):
+    """One reading of a class body, as the set of helper characters it can match."""
+    out, i, n = set(), 0, len(body)
+    while i < n:
+        c = body[i]
+        if literal_hyphen and c == "-":
+            # the hyphen itself is the member under this reading
+            out.add(c)
+            i += 1
+            continue
+        if c == chr(92) and i + 1 < n:   # an escaped member
+            esc = body[i + 1]
+            out.add(esc)
+            # ...and it may ALSO be a range ENDPOINT. Quote removal happens BEFORE globbing,
+            # so `[\ -u]` reaches the matcher as `[ -u]` -- a span from space to `u` that
+            # covers the helper's `t`. Reading the escape only as an isolated member saw
+            # {space, -, u} and missed the span entirely:
+            # `eval 'python3 <lib>/<stem>[\ -u].py'` RAN while this answered OK. #708's own
+            # family -- the reported bug was a quoted space in a class, this is an escaped
+            # one acting as an endpoint. ADDED rather than substituted, like every other
+            # reading here, so it can only widen.
+            if not literal_hyphen and i + 2 < n and body[i + 2] == "-":
+                hi, _ = _span_endpoint(body, i + 3)
+                if hi is not None and ord(esc) <= ord(hi):
+                    out |= {ch for ch in _HELPER_ALPHABET
+                            if ord(esc) <= ord(ch) <= ord(hi)}
+            i += 2
+            continue
+        if c == "[" and i + 1 < n and body[i + 1] in ":.=":
+            k = body.find(body[i + 1] + "]", i + 2)
+            if k < 0:
+                i += 1
+                continue
+            name = body[i + 2:k]
+            if body[i + 1] == ":":
+                out |= _POSIX_MEMBERS.get(name, _HELPER_ALPHABET)
+            else:
+                out |= set(name)
+                # `[[.a.]-[.z.]]` is a RANGE whose endpoints happen to be spelled as
+                # collating elements, and the shell reads it as one -- it expanded onto the
+                # helper's `t` while only `a` and `z` were recorded here. A named class
+                # (`[:alpha:]`) is not an endpoint, so only `.` and `=` qualify.
+                if (not literal_hyphen and len(name) == 1
+                        and k + 2 < n and body[k + 2] == "-"):
+                    hi, _ = _span_endpoint(body, k + 3)
+                    if hi is not None and ord(name) <= ord(hi):
+                        out |= {ch for ch in _HELPER_ALPHABET
+                                if ord(name) <= ord(ch) <= ord(hi)}
+            i = k + 2
+            continue
+        if (not literal_hyphen and i + 2 < n and body[i + 1] == "-"
+                and body[i + 2] not in ("]",)):
+            lo, hi = c, body[i + 2]
+            # The upper endpoint can be escaped too (`[a-\u]`), and quote removal drops that
+            # backslash exactly as it drops the lower one's -- so the span may also run to
+            # the character BEHIND the escape. ADDED as a second span, not substituted for
+            # the first: reading the backslash itself as the endpoint is what this line
+            # already did, and re-pointing it LOST members -- ` -\ ` spans space..backslash,
+            # which covers `.`. A differential over 7,385 bodies caught that, which is the
+            # whole reason readings here are only ever added. Advancement is left alone, so
+            # the escaped character is simply re-scanned as an ordinary member.
+            hi2, e2 = _span_endpoint(body, i + 2)
+            if hi2 is not None and hi2 != hi and ord(lo) <= ord(hi2):
+                out |= {ch for ch in _HELPER_ALPHABET
+                        if ord(lo) <= ord(ch) <= ord(hi2)}
+                if ord(lo) > ord(hi):
+                    # The PLAIN reading is reversed -- in `[a-[.z.]]` the `[` that starts
+                    # the collating element sorts below `a` -- and the reversed answer
+                    # below is `set()`, the empty class. Falling into it would DISCARD the
+                    # span just added, which is how this spelling still ran the helper
+                    # after the endpoint reader already resolved it correctly. The
+                    # subexpression reading is a real span the shell honours, so take it
+                    # and step past the endpoint it ends at.
+                    i = e2
+                    continue
+            if ord(lo) <= ord(hi):
+                out |= {ch for ch in _HELPER_ALPHABET if ord(lo) <= ord(ch) <= ord(hi)}
+                i += 3
+                continue
+            # REVERSED: this span alone matches nothing under the syntax reading, but the
+            # shell keeps parsing the REST of the class rather than abandoning the whole
+            # bracket expression -- `[a-zw-v]` still matches the helper's `t` via the
+            # leading `a-z`, and `[q-p5]` still matches the literal `5` that follows,
+            # both verified running bash. `return set()` here wiped `out`, discarding
+            # every member a PRIOR span in this same class had already collected -- a
+            # fail-OPEN miss (a command bash expands is read as OK) that Cursor found in
+            # review. Skip just this span, keep what's already collected, and continue.
+            # Reading the endpoints as two ordinary members instead said `[u-t]` could
+            # reach the helper's `t` and blocked a command bash does not expand -- which
+            # is why that reading is the OTHER variant rather than this one's fallback.
+            #
+            # SKIP THE WHOLE ENDPOINT, not a fixed 3 characters. `hi2`/`e2` above already
+            # answered how far this endpoint's OWN spelling runs -- 2 for an escape
+            # (`\t`), 5+ for a collating or equivalence element (`[.t.]`) -- and reaching
+            # here with `hi2 is not None` means that answer is still valid; only the
+            # comparison against `lo` decided this span was reversed, not the endpoint's
+            # length. A fixed `+= 3` left the escape/collating element's OWN trailing
+            # characters (`t` in `\t`, or `.t.]` in `[.t.]`) unconsumed, so the next loop
+            # pass read them as ordinary MEMBERS -- widening `out` with characters that
+            # were never a member on their own, which is the fail-OPEN direction one
+            # level up: `_class_members` negates this SET, so a wrongly-added member
+            # narrows what a negated class `[!...]` is read as reaching. Cursor found this
+            # negated on a class ending `-\t]` reading `t` as reached in the POSITIVE
+            # class and therefore NOT reached once negated, though bash's own `[!...]`
+            # still matches `t` (the reversed span matches nothing either way). Falling
+            # back to `i + 3` only when `hi2` is None (a bare `-` right after the first,
+            # which `_span_endpoint` cannot resolve) preserves the original single-character
+            # advance for every case that was already correct.
+            i = e2 if hi2 is not None else i + 3
+            continue
+        out.add(c)
+        i += 1
+    out = {ch for ch in out if not ch.isspace()}
+    return out & _HELPER_ALPHABET
+
+
+def _squeeze_one_class(cls, literal_bang=False, literal_hyphen=False):
+    """One bracket expression, rewritten as the members it can actually match.
+
+    fnmatch and the shell do not read a class the same way -- a POSIX sub-expression is
+    literal text to fnmatch, only `!` negates for it, and a `]` member has to come first --
+    and on top of that #708's whitespace has to go. Rather than patch each disagreement,
+    _class_members resolves the class to a SET and this rebuilds it in the one spelling
+    fnmatch always reads correctly. See _class_members for why that is exact both ways.
+
+    A class that can match nothing in a helper name is rewritten to a character no helper
+    name contains, so the pattern stops matching rather than becoming a wildcard.
+    """
+    if len(cls) < 2 or cls[0] != "[" or cls[-1] != "]":
+        return cls
+    body = cls[1:-1]
+    # `!`, `^` and `-` are class SYNTAX or ordinary MEMBERS depending on whether the shell
+    # saw them quoted -- and by the time a class reaches here, the shell-variant it came from
+    # has already removed the quoting that said which. `['!'t]`, `[\!t]` and `[u'-'t]` all
+    # expand onto the helper while their unquoted twins `[!t]` and `[u-t]` expand nowhere,
+    # and the two are the same characters by then. Codex found each of those in turn.
+    #
+    # So both readings are asked rather than one being guessed -- and they are asked
+    # INDEPENDENTLY, because the two questions are independent: `['!'a-z]` has a literal `!`
+    # AND a genuine `a-z` range, so a single flag covering both answered neither (the plain
+    # reading negated the range, the literal one dissolved it). Codex caught that conflation.
+    # See _class_variants.
+    #
+    # ACCEPTED OVER-BLOCK, named rather than discovered later: the literal reading also says
+    # `[!t]` and `[u-t]` could reach a helper, so those now block although no shell expands
+    # them. It is the same trade the #640 rows record, bounded the same way -- it costs only
+    # operands already spelling out a helper's own stem -- and it is the fail-CLOSED side of
+    # a question the text genuinely cannot answer.
+    negated = body[:1] in ("!", "^") and not literal_bang
+    if negated:
+        body = body[1:]
+    members = _class_members(body, negated, literal_hyphen)
+    if not members:
+        return chr(0)
+    ordered = "".join(sorted(members))
+    return "[" + ordered + "]"
+
+
+def _deep_affordable(s):
+    """Can the full reading family be spent on `s` without risking the hook's 5s timeout?
+
+    Defined ONCE and asked by everything that needs it. It used to be written out separately
+    at each site, and they drifted: _glob_helper never asked at all, so a structured operand
+    padded past _CLASS_DEEP_MAX_LEN silently dropped to the base reading and reported a clean
+    miss -- the same exhaustion-is-not-a-miss bug as _bracket_prefix_hit's, reappearing at a
+    caller that could not see the budget. Codex found it. A shared predicate is the fix that
+    keeps it from coming back a third time.
+
+    Four terms, each measured rather than guessed, and each catching a shape the others let
+    through: total SIZE, closer COUNT, how many bracket-bearing WORDS the family would be
+    spent on -- counted the way the scan splits, on operators as well as whitespace -- and
+    what is LEFT of the per-command byte budget.
+
+    That last one is the only one that is not a property of `s`, and it is here because the
+    other three are not: they ask whether ONE string is affordable, and a command can repeat
+    an affordable string. At the structured call sites the question is asked per WORD, where
+    the word term is vacuously 1, so nothing bounded the total until the budget did.
+    """
+    if _deep_budget[0] < len(s):
+        return False
+    if len(s) > _CLASS_DEEP_MAX_LEN or s.count("]") > _CLASS_DEEP_MAX_CLOSERS:
+        return False
+    return sum(1 for w in _OPERATOR_SPLIT_RE.split(s)
+               if "[" in w) <= _CLASS_DEEP_MAX_WORDS
+
+
+def _class_variants(s, deep=None):
+    """`s` rewritten so fnmatch reads its bracket expressions the way the shell does -- in
+    every reading that unquoted text does not settle. Deduped, and never including `s`.
+
+    FOUR questions about a class are undecidable here, and they all have the same root:
+    quote removal happens BEFORE globbing, so by the time a pattern is matched the quoting
+    that made a character literal is gone. A `]` the quoting kept (`["x] "t]`) is a member,
+    a stray `[` in a comment or in prose is no opener at all, and neither can be recognised
+    from the text that survives. Each question is answered BOTH ways rather than guessed:
+
+      - which `[` OPENS the class: the leftmost one, or the one NEAREST the terminator. A
+        stray `[` -- in an assignment, in a comment, in prose -- is no opener at all, and a
+        leftmost-only reading lets it swallow the real class. Pairing each `]` with the
+        nearest `[` before it settles that however many strays there are.
+      - which `]` CLOSES it: the one the grammar finds, or one of the next
+        _CLOSE_CANDIDATES along. Quote removal happens BEFORE globbing, so a `]` the quoting
+        makes literal (`[\"x] \"t]`) is a member the shell keeps and the grammar cannot see
+        as one -- and a later class can follow in the same word (`[\"x] \"o][t]`).
+      - spans confined to a line, or free to cross newlines. A quoted run may legitimately
+        cross one; a stray `[` on an unrelated line must not reach across.
+      - whether the terminator search may step over a `[`. Quote removal runs BEFORE
+        globbing, so a quoted opener is a literal MEMBER of the class it sits in and is
+        indistinguishable here from one that opens a new class. `["x][o"]` is the first
+        and `[a][t]` is the second. See _skip_closers.
+
+    EXHAUSTION IS NOT A MISS. The budgets here bound how much SEARCHING is done, and they
+    used to bound the answer with it: a class carrying more than _CLOSE_CANDIDATES quoted `]`
+    members, or text past _CLASS_DEEP_MAX_LEN or _CLASS_DEEP_MAX_CLOSERS, ran out of readings
+    and reported no helper for a command the shell expands straight onto one. Codex raised it
+    at confidence 100 and it was reproduced RUNNING. Callers now answer an exhausted search
+    through _bracket_prefix_hit instead, which needs no terminator at all -- read it for why a
+    word's literal stem is a sound superset of every reading this search would have found.
+    Measured after that change: the whole family blocks, 10 through 80 quoted members, and
+    the padded shapes get FASTER because the fallback answers without the search.
+
+    So the budget now buys only time, which is what it was for -- it stops an adversary
+    buying unbounded work from a gate with a 5s allowance. Measured at 0.07s for 8,000
+    alternating `[x]` against 0.12s at HEAD, and 0.14s for the 800 `[a]` words in 3.2KB that
+    an earlier draft spent 9.1s on; an unbounded draft took 6.1s.
+
+    Note the depth is spent PER CLASS, not once for the whole string: _extend_to_useful picks
+    each class's terminator locally, so two classes in one operand can take different ones.
+    Choosing once globally was an earlier design and it left exactly that shape open.
+
+    The bound is NAMED and measured rather than tuned until the last reviewer ran out of
+    ideas, because every finite search has an outside and pretending otherwise is how this
+    ended up rewritten five times. What is left outside is no longer the SIZE of a class --
+    that is answered by the fallback above -- but PROVENANCE: quote removal happens before
+    globbing, so after it a `!`, `^`, `-` or `]` is genuinely ambiguous between syntax and
+    member, and a spelling that exploits that reads differently here without ever exhausting
+    anything. That residual is accepted. This is the LAST-RESORT probe for text nothing could
+    parse, it is defence in depth, and the helpers have been safe by construction since #519.
+
+    AND A QUOTE INSIDE THE BODY puts the delimiting itself in question, which is prior to
+    every reading below -- see _CLASS_QUOTE_RE. Those words are not read here either.
+
+    ALL FOUR ARE CHOSEN PER WORD, which is only the same as per class while the word holds
+    ONE class. With two, the choices are coupled and no single combination reads both -- the
+    first class may need the crossing terminator while the next needs the default, or one may
+    quote the `!` that the next uses to negate. A cross product over classes is the honest
+    model and a budgeted one would just move the edge, so a multi-class word is not settled
+    here at all: _glob_helper answers it through _bracket_prefix_hit, which needs no reading.
+    See _count_classes. Codex found all three couplings in one round, each measured running.
+
+    None of the four has to be right on its own. The probe blocks if ANY reading matches,
+    which is the same monotonicity the splits have: a variant only ever adds a candidate
+    pattern, so this can add a block and never remove one. That is also what makes a reading
+    safe to ADD and dangerous to CHANGE -- the quoted-opener case had to become a dimension
+    rather than a loosening, because `close` counts closers and crossing changed where every
+    index LANDS, which silently removed the reading that caught two classes each needing
+    their own terminator. Every combination here exists because the one before it was
+    measured RUNNING the helper -- the stray opener, the quoted `]`, the class spanning a
+    newline and the quoted `[` all came out of review or the generator.
+    """
+    # `deep` spends the terminator search, and it is spent ONLY where it is affordable.
+    # Each candidate is a whole pass over the text, so asking all of them once per candidate
+    # WORD is what made this expensive: profiled at 40,005 calls and 1.9M passes -- 6.1s --
+    # on 8,000 alternating `[x]` piped to a shell, against 0.12s at HEAD. Codex raised the
+    # cost in review. Callers that already hold one extracted word pass deep=False: the
+    # ambiguity the search exists for is WHERE THE TEXT SPLITS, which a whole word has
+    # already settled. Left to itself the depth is chosen by size, and the base reading
+    # always runs -- what a large input loses is extra terminators, never the scan.
+    if "[" not in s or "]" not in s:
+        return []
+    if deep is None:
+        deep = _deep_affordable(s)
+    if deep:
+        # Charged where the work is actually done, so the same word cannot be paid for twice
+        # by the predicate being asked about it twice -- and re-checked here, because the
+        # budget is the one term in _deep_affordable that is not a property of `s`. An
+        # EXPLICIT deep= never consults it: the abandoned-scan probe settles the question
+        # once for a whole family of variants, so without this the family would charge
+        # without ever checking. Refusing costs nothing that matters -- it drops to the base
+        # reading AND routes through _bracket_prefix_hit, the same fail-CLOSED answer every
+        # other exhausted bound gives.
+        if _deep_budget[0] < len(s):
+            deep = False
+        else:
+            _deep_budget[0] -= len(s)
+    out = []
+    for perline in (False, True) if deep else (False,):
+        for nearest in (False, True) if deep else (False,):
+            for close in range(_CLOSE_CANDIDATES if deep else 1):
+                for cross in (False, True) if deep else (False,):
+                    for bang in (False, True):
+                        for hyphen in (False, True):
+                            v = _squeeze_bracket_ws(
+                                s, close, perline, nearest,
+                                lambda c, b=bang, h=hyphen: _squeeze_one_class(c, b, h),
+                                cross)
+                            if v != s and v not in out:
+                                out.append(v)
+                                if len(out) >= _CLASS_VARIANT_CAP:
+                                    return out
+    return out
+
+
+def _squeeze_bracket_ws(s, close=0, perline=False, nearest=False, rewrite=None,
+                        cross=False):
+    """`s` with every bracket expression put through _squeeze_one_class.
+
+    See _class_variants for what `close`, `perline` and `nearest` decide, why every answer
+    is asked, and what the budget leaves behind. An unterminated `[` ends the scan: there is
+    no class, so there is nothing to rewrite.
+    """
+    span = _nearest_span_classes if nearest else _squeeze_span_classes
+    rewrite = rewrite or _squeeze_one_class
+    if not perline:
+        return span(s, close, rewrite, cross)
+    return "".join(span(line, close, rewrite, cross) for line in s.splitlines(True))
+
+
+def _extend_to_useful(s, a, j, rewrite):
+    """Push the terminator past `]` members the QUOTING made literal -- per class, locally.
+
+    A class is extended only while it resolves to NOTHING a helper name contains, which is
+    what a prematurely-cut class looks like: `[\"x]` holds only `x`, and no guarded helper
+    has one. `[\"x] o\"]` holds `o`, so the extension stops there. Deciding this per class
+    rather than by one global choice is what lets two classes in the same operand take
+    DIFFERENT terminators -- `[\"x] o\"][\"x] y] t\"]` needs exactly that, and codex used it
+    against every version that chose once for the whole string.
+
+    It never crosses a `[`, and unlike _skip_closers it must not. This extension is the
+    DEFAULT terminator for every class in the operand -- it is not one reading among several,
+    so widening it REPLACES a reading rather than adding one. Measured: crossing here made
+    `<stem>["x] o"]["x] y] t"]`, two classes each needing a different terminator, stop
+    blocking, because the first class swallowed the second's opener and neither landed. The
+    quoted-opener case that motivates crossing is answered in _skip_closers instead, where it
+    IS one reading among several and can only add.
+    """
+    for _ in range(_CLOSE_CANDIDATES):
+        if rewrite(s[a:j + 1]) != chr(0):
+            return j
+        nxt = s.find("]", j + 1)
+        if nxt < 0 or "[" in s[j + 1:nxt]:
+            return j
+        j = nxt
+    return j
+
+
+def _skip_closers(s, j, close, cross=False):
+    """`close` further `]` along from `j`, as far as there are. `cross` steps over a `[`.
+
+    The jump exists for a `]` the QUOTING made a member. Whether it may pass an OPENER is
+    the thing that cannot be decided here, so it is asked both ways rather than answered:
+
+      - not crossing reads `<stem>[a][t].py` as the two classes bash sees. Bash cannot put
+        two characters in one position, so it expands to nothing and this must not block.
+      - crossing reads `<stem>["x][o"]t.py` as the ONE class bash sees, whose members
+        include a literal `[` -- quote removal runs before globbing, so by the time a pattern
+        is matched a quoted opener and a real one are the same character. Bash expands that
+        onto the helper. Codex reproduced it running.
+
+    Both are real spellings and neither reading covers the other, which is why this is a
+    DIMENSION and not a fix. Making it one was the second attempt: dropping the refusal
+    outright looked additive and was not, because `close` counts closers and crossing changes
+    where every index LANDS -- the reading that caught two classes each needing their own
+    terminator stopped being reachable at all, and its regression row caught that.
+    """
+    for _ in range(close):
+        nxt = s.find("]", j + 1)
+        if nxt < 0 or (not cross and "[" in s[j + 1:nxt]):
+            break
+        j = nxt
+    return j
+
+
+def _nearest_span_classes(s, close, rewrite, cross=False):
+    """_squeeze_span_classes, but each `]` is paired with the NEAREST `[` before it.
+
+    The reading that survives a stray opener: `X='[' python3 <helper>[' 't].py` puts a `[`
+    in an assignment, and pairing from the left hands the whole line to it. Measured running
+    the helper; codex in review.
+    """
+    out, i, n = [], 0, len(s)
+    while i < n:
+        j = s.find("]", i)
+        if j < 0:
+            break
+        # Neither end may be a POSIX / collating sub-expression's own bracket: `[:digit:]`
+        # inside `[[:digit:]]` is a MEMBER LIST, not a class, and pairing its brackets read
+        # the digits as the class -- which blocked `<helper-stem>[[:digit:]].py`, an operand
+        # that cannot expand onto a helper at all. Codex raised the false positive in review.
+        while 0 < j < len(s) and s[j - 1] in ":.=" and s.rfind("[", i, j) >= 0 \
+                and s[s.rfind("[", i, j) + 1:s.rfind("[", i, j) + 2] in ":.=":
+            nxt = s.find("]", j + 1)
+            if nxt < 0:
+                break
+            j = nxt
+        j = _skip_closers(s, j, close, cross)
+        a = s.rfind("[", i, j)
+        while a >= 0 and s[a + 1:a + 2] in ":.=":
+            a = s.rfind("[", i, a)
+        if a < 0:
+            # No opener for this `]`, so it is ordinary text -- and it has to be EMITTED.
+            # Dropping it rewrote `junk]<helper>[a].py` into `<helper>?.py` and blocked an
+            # operand whose literal prefix is what stopped it naming the helper. Codex in
+            # review; a deletion here invents matches rather than finding them.
+            out.append(s[i:j + 1])
+            i = j + 1
+            continue
+        out.append(s[i:a])
+        out.append(rewrite(s[a:j + 1]))
+        i = j + 1
+    out.append(s[i:])
+    return "".join(out)
+
+
+def _squeeze_span_classes(s, close, rewrite, cross=False):
+    """One span of _squeeze_bracket_ws -- the whole text, or a single line of it."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        a = s.find("[", i)
+        if a < 0:
+            break
+        j = a + 1
+        if j < n and s[j] in "!^":          # a negated class
+            j += 1
+        if j < n and s[j] == "]":           # a `]` FIRST is a member, not the terminator
+            j += 1
+        while j < n and s[j] != "]":
+            # A BACKSLASHED character is a member, `]` included -- only a bare one closes the
+            # class. Measured running the helper before this line existed; codex in review.
+            if s[j] == chr(92) and j + 1 < n:
+                j += 2
+                continue
+            # [:alpha:] [.x.] [=x=] -- the inner `]` belongs to the sub-expression. NO
+            # closer at all is not an abandoned class: bash reads an unterminated
+            # `[:`/`[.`/`[=` as ordinary members and keeps scanning for the class's own
+            # `]`, which is what _resolve_members already does for the class BODY -- this
+            # boundary scan was abandoning the whole class instead, reporting no class at
+            # all for `<stem>[^[[=].py`, which bash expands onto the helper. Codex found it
+            # running.
+            if s[j] == "[" and j + 1 < n and s[j + 1] in ":.=":
+                k = s.find(s[j + 1] + "]", j + 2)
+                if k >= 0:
+                    j = k + 2
+                    continue
+            j += 1
+        if j >= n or s[j] != "]":
+            break
+        j = _extend_to_useful(s, a, j, rewrite)
+        j = _skip_closers(s, j, close, cross)
+        out.append(s[i:a])
+        out.append(rewrite(s[a:j + 1]))
+        i = j + 1
+    out.append(s[i:])
+    return "".join(out)
 
 
 def _dequote(w):
@@ -405,6 +1095,35 @@ def _first_word(words):
 _REDIR_PREFIX_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 
 
+def _strip_redirs_kept(toks):
+    """Indices of `toks` that `_strip_redirs` would KEEP, in order.
+
+    Split out so a caller holding a SECOND list that lines up positionally with `toks` --
+    the raw, still-quoted spelling of the same tokens -- can filter it identically instead
+    of re-deciding redirect-ness against its own text. Re-deciding is what broke: `_is_redir`
+    reads a token by VALUE, and a raw token still carries its quote marks (`'">"'`) where the
+    dequoted one does not (`>`), so a quoted redirect-looking argument reads as an operator on
+    one list and an ordinary word on the other -- not a genuine disagreement about which
+    tokens survive, just two different spellings of the same decision answering differently.
+    Deciding ONCE, on the dequoted list where `_is_redir` is meant to be asked, and applying
+    the same indices to the raw list keeps both filtered lists the same length by
+    construction. Codex found the asymmetry: `python3 safe[a].py ">" ignored
+    'lease_slo["x"]t.py'` diverged in length here, which dropped the raw pass and fell through
+    to the whole-segment `_bracket_prefix_hit` fallback, BLOCKing on an unrelated later
+    argument that only mentions the helper's shape.
+    """
+    out, skip = [], False
+    for i, t in enumerate(toks):
+        if skip:
+            skip = False
+            continue
+        if _is_redir(t):
+            skip = True          # the following token is this redirect TARGET, not a verb
+            continue
+        out.append(i)
+    return out
+
+
 def _strip_redirs(toks):
     """Drop redirect operators AND the operand each one consumes.
 
@@ -417,16 +1136,8 @@ def _strip_redirs(toks):
 
     A leading file descriptor (`2` in `2>&1`) stays, and is already _skippable.
     """
-    out, skip = [], False
-    for t in toks:
-        if skip:
-            skip = False
-            continue
-        if _is_redir(t):
-            skip = True          # the following token is this redirect TARGET, not a verb
-            continue
-        out.append(t)
-    return out
+    kept = _strip_redirs_kept(toks)
+    return [toks[i] for i in kept]
 
 
 def _starts_with_wrapper(words):
@@ -734,6 +1445,12 @@ def _norm_for_scan(cmd):
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
 
+# Every character any guarded helper name contains. A class is only ever asked whether it
+# can reach one of THOSE, so resolving its members against this stays small and exact --
+# and a class that reaches none of them can be said to match nothing, which is what keeps
+# `[a-b]` and `[[:digit:]]` from being read as evidence.
+_HELPER_ALPHABET = set("".join(_MUTATING_HELPERS))
+
 # Bound the WIDTH of the helper scan. KEEP IN STEP WITH cmdword._MAX_SCAN_TOKENS, which
 # carries the full reasoning. The short version: the -c scan is O(tokens^2) because it
 # refuses the per-flag arity table, and this hook is registered with a 5s timeout that on
@@ -834,22 +1551,364 @@ def _module_helper(mod):
     return stem + ".py" if stem in _MUTATING_MODULES else None
 
 
-def _glob_helper(word):
+def _glob_helper(word, deep=None):
     """The helper FILE a GLOB operand can expand to, or None.
 
     The shell resolves `lease_slo?.py` against the filesystem, so the question is not
     whether the literal spelling names a helper -- it never does -- but whether the
     PATTERN can. Asking that directly beats searching the command text for a helper
     stem, which a single wildcard in the middle of the name defeats.
+
+    Asked of the word as written AND of its class-squeezed form (#708), because fnmatch and
+    the shell do not read a bracket expression the same way: a whitespace MEMBER is legal to
+    the shell and splits nothing here, but `[[:alpha:]t]` is a POSIX class to the shell and
+    a run of literal characters to fnmatch, so the pattern the operand really stands for
+    matched nowhere. _squeeze_bracket_ws is what reconciles the two. Asked here rather than
+    only in _abandoned_scan_probe because the STRUCTURED walk reaches this with a whole
+    operand -- a heredoc payload the parser could read, say -- and never goes near the probe.
+    Found by generating class spellings and EXECUTING each one, after codex had raised the
+    same disagreement twice from the probe side.
     """
-    try:
-        pat = re.compile(fnmatch.translate(_bn(word)))
-    except (re.error, TypeError):
-        return _MUTATING_HELPERS[0]      # unparseable pattern: fail closed
-    return next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
+    seen = set()
+    # Resolved BEFORE _class_variants can charge the deep budget, and reused below instead
+    # of asked again afterward. Asking again re-tests the SAME word's length against the
+    # budget the call just DEBITED for it, so a word that was affordable -- and got the full
+    # deep search it paid for -- can price itself out of its own answer once the charge
+    # lands, over-blocking a precise miss like `<stem>[a].py`. Cursor and Codex both raised
+    # this from the same post-charge recheck in review.
+    was_affordable = deep if deep is not None else _deep_affordable(word)
+    variants = _class_variants(word, deep)
+    for cand in [_bn(word)] + [_bn(v) for v in variants]:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        try:
+            pat = re.compile(fnmatch.translate(cand))
+        except (re.error, TypeError):
+            return _MUTATING_HELPERS[0]      # unparseable pattern: fail closed
+        hit = next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
+        if hit:
+            return hit
+    # A search that hit a budget has not cleared this word -- see _bracket_prefix_hit.
+    #
+    # An EXPLICIT deep=False is not a budget: a caller passing it has settled the split
+    # itself, and treating that as exhaustion would answer every probe word through the
+    # fallback and start over-blocking the precise cases (`<stem>[a].py`) this change works to
+    # keep. An INTERNAL one is, which is the case codex found -- a structured operand padded
+    # past _CLASS_DEEP_MAX_LEN with quotes the shell removes drops to the base reading, and
+    # the base reading stops at the first quoted `]`. Verified at the function: the padded
+    # word returned None where the same word unpadded returned the helper.
+    if (len(variants) >= _CLASS_VARIANT_CAP
+            or word.count("]") > _CLOSE_CANDIDATES
+            or (deep is None and not was_affordable)
+            or _count_classes(word) >= 2
+            or _CLASS_QUOTE_RE.search(word)):
+        return _bracket_prefix_hit(word)
+    return None
 
 
-def _glob_helper_targeted(word):
+# Quote removal happens BEFORE globbing, so these characters are syntax the shell has
+# already dropped by the time a pattern is matched. A stem read with them still in it is a
+# stem the shell never sees: `lease_\\s\\l` and `lease_"sl"` both reach the filesystem as
+# `lease_sl`. Codex found the escaped spelling walking straight through the fallback below.
+_STEM_SYNTAX = {ord(c): None for c in "'" + chr(34) + chr(92)}
+
+
+def _raw_words(text):
+    """`text` split into shell WORDS with the quoting left in.
+
+    Same word boundaries the posix lexer finds -- quoted whitespace joins, a backslash
+    joins -- but the quotes and escapes survive, which is the whole point: they are what
+    decides a bracket class, and the lexer that resolves the operand has already thrown them
+    away. shlex cannot do this: asked for non-posix mode it keeps the quotes but stops
+    treating quoted whitespace as part of the word, so `["x] y] l"x]<tail>` came back as four
+    tokens where the shell sees one, and no pairing was possible at all.
+    """
+    out, cur, q, started = [], "", "", False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if q:
+            # Inside DOUBLE quotes a backslash still escapes, which is how the lexer reads
+            # it; inside single quotes nothing does. Missing this made the splitter disagree
+            # with the lexer on `"a\\b"` and `"a\"b"` -- and a disagreement DROPPED the
+            # raw pass, which was a bypass rather than a lost refinement. See below.
+            if ch == chr(92) and q == chr(34) and i + 1 < n:
+                cur += ch + text[i + 1]
+                i += 2
+                continue
+            cur += ch
+            if ch == q:
+                q = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            q, cur, started = ch, cur + ch, True
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            cur, started = cur + ch + text[i + 1], True
+            i += 2
+            continue
+        if ch in _PUNCT_TOKENS:
+            if started:
+                out.append(cur)
+            cur, started = "", False
+            j = i
+            while j < n and text[j] in _PUNCT_TOKENS:
+                j += 1
+            out.append(text[i:j])
+            i = j
+            continue
+        if ch in _LEX_WHITESPACE:
+            if started:
+                out.append(cur)
+            cur, started = "", False
+            i += 1
+            continue
+        cur, started = cur + ch, True
+        i += 1
+    if started:
+        out.append(cur)
+    return out
+
+
+def _dequote_lex(word):
+    """`word` with its quoting resolved, the way the LEXER resolves it.
+
+    Named apart from the older _dequote above, which only strips quote CHARACTERS and is
+    what the indirection scan and the probe's dequoted reading are written against. Defining
+    a second `_dequote` shadowed that one and silently re-pointed three unrelated call sites
+    at these stricter semantics.
+    """
+    out, q, i, n = "", "", 0, len(word)
+    while i < n:
+        ch = word[i]
+        if q:
+            # Inside a double quote, a backslash escapes only a quote or itself --
+            # `shlex` (what the raw/lexed comparison is checked against) leaves a
+            # backslash before any OTHER character, including `$` and a backtick,
+            # untouched and literal. Without this, `\"` inside a double-quoted word
+            # was read as an ordinary character, so the very next `"` closed the
+            # quote early -- splitting `"quoted \"value\""` into extra tokens the
+            # raw pass never sees, which false-triggers the whole-segment
+            # raw_dropped fallback. Cursor/Codex in review.
+            if (q == chr(34) and ch == chr(92) and i + 1 < n
+                    and word[i + 1] in (chr(34), chr(92))):
+                out += word[i + 1]
+                i += 2
+                continue
+            if ch == q:
+                q = ""
+            else:
+                out += ch
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            q = ch
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            out += word[i + 1]
+            i += 2
+            continue
+        out += ch
+        i += 1
+    return out
+
+
+def _count_classes(s, stop=2):
+    """How many bracket expressions the GRAMMAR finds in `s`, counting no further than `stop`.
+
+    Asked for ONE thing: whether a word holds more than one class. Every reading dimension in
+    _class_variants -- which `]` closes, whether to cross a `[`, `!` as negator, `-` as range
+    -- is chosen ONCE PER WORD, and that is only equivalent to choosing per class while there
+    IS one class. With two, the readings are coupled: codex expanded `lea["x][s"]e_[s][l]ot.py`
+    onto the helper, where the first class needs the crossing reading and the two after it need
+    the default, and did the same for `!` and for `-` with one class quoting the operator and
+    the next using it. Enumerating per class instead is a cross product, and a budgeted cross
+    product would only move the edge, so a multi-class word is treated as what it is -- not
+    settled by these readings -- and answered by _bracket_prefix_hit, which needs no reading
+    at all. Both directions were measured running.
+
+    It follows the same grammar the span walkers do, which is why it must count CLASSES rather
+    than `[` characters: `[[:digit:]]` holds two openers and is one class, and counting
+    characters would have blocked it -- a row this suite pins as allowed.
+    """
+    n, i, count = len(s), 0, 0
+    while i < n:
+        a = s.find("[", i)
+        if a < 0:
+            break
+        j = a + 1
+        if j < n and s[j] in "!^":
+            j += 1
+        if j < n and s[j] == "]":
+            j += 1
+        while j < n and s[j] != "]":
+            if s[j] == chr(92) and j + 1 < n:
+                j += 2
+                continue
+            # Same terminator-abandonment bug as _squeeze_span_classes, same fix: an
+            # unterminated `[:`/`[.`/`[=` is an ordinary member here too, not a reason to
+            # give up on the class. Without this, `<stem>[^[[=].py` counted zero classes,
+            # which routed it past the multi-class fallback and every other guard below --
+            # a fail-OPEN miss, not just an under-count.
+            if s[j] == "[" and j + 1 < n and s[j + 1] in ":.=":
+                k = s.find(s[j + 1] + "]", j + 2)
+                if k >= 0:
+                    j = k + 2
+                    continue
+            j += 1
+        if j >= n or s[j] != "]":
+            break
+        count += 1
+        if count >= stop:
+            return count
+        i = j + 1
+    return count
+
+
+def _bracket_prefix_hit(text):
+    """The helper a bracketed word could reach under ANY reading of its class, or None.
+
+    Reached ONLY where the terminator search was ABANDONED rather than finished -- the
+    budgets in _class_variants. This file already settles what an abandoned scan means, at
+    _HELPER_MAX_TOKENS: a scan that ran out has not found "no helper", it has found nothing
+    at all, and nothing at all is the fail-CLOSED case. The class search was the one budget
+    still reporting exhaustion as a clean miss, so a class carrying more quoted `]` members
+    than _CLOSE_CANDIDATES bought an allow. Raised by codex at confidence 100.
+
+    The answer is an over-approximation rather than a wider search, because widening only
+    moves the same edge further out. A bracket expression matches EXACTLY ONE character and
+    everything past the opener is then arbitrary, so whatever the class turns out to mean,
+    the word can only expand to something starting with the LITERAL text before its first
+    `[`. Asking that literal + `*` is therefore a superset of every reading the abandoned
+    search would have produced -- sound by construction, and it needs no terminator at all.
+
+    ONLY THE FIRST `[` of each path SEGMENT is asked, and that is what makes this O(n)
+    rather than a budgeted search that could fail open again. Within one anchor, a later
+    class yields a LONGER prefix, and a longer prefix at the same anchor is a NARROWER
+    pattern -- `a*` already covers `a[x]b*` -- so the first one subsumes every other. The
+    same argument covers an escaped `\\[` that is no opener at all: reading it as one
+    shortens the prefix, and shorter at this anchor is wider. There is therefore no candidate
+    budget here to exhaust. An earlier draft capped the candidates and codex broke it in one
+    round, by parking 64 harmless bracket words in front of the real one -- the identical
+    fail-open this function exists to close, one level up.
+
+    SEGMENT, not run, because `/` MOVES THE ANCHOR. A helper is matched on its basename, so
+    the prefix that matters is the one beginning after the last separator -- and a class in a
+    DIRECTORY component supplies a first `[` that answers about a different anchor entirely.
+    Asking only the run's first bracket read `hooks/gate-script[s]/lib/<helper-glob>` as a
+    question about `gate-script*` and never asked about the basename at all, which codex
+    found in the round after the cap came out. Every segment is asked instead of just the
+    last, which also covers a `/` that quoting put INSIDE a class: whichever way the shell
+    reads that, one of the segments carries the real anchor.
+
+    What it costs is precision, in the one direction that is safe to lose it: the fallback
+    blocks any exhausted word whose literal stem already spells the front of a helper name.
+    That is the same bounded over-block the rest of this change accepts, and it cannot reach
+    ordinary prose, which does not spell one.
+
+    The #573 release rule is kept: a candidate of nothing but `*` matches every string that
+    exists, so it is evidence of nothing and is let go. Everything else is decided by HOW MUCH
+    LITERAL the word supplies, from both ends -- see the note at the test itself.
+
+    That release applies to EVERY caller, and deliberately so -- an earlier draft scoped it
+    to the structureless ones and the scoping is gone. What makes it safe without scoping is
+    that it is no longer a judgement about context: reaching it needs the stem, the tail and
+    the class count together to total less than _STEM_MIN_EVIDENCE, which leaves a word too
+    short to spell a helper name whoever is asking. The version that DID need scoping was the
+    one that released on an empty stem alone, and it was a hole at the structured sites
+    exactly as a reviewer said; it is not what this code does now.
+
+    Runs are taken BOTH ways the probe takes them, on whitespace and on shell operators,
+    because `foo;<helper-glob>` is one whitespace run and two commands.
+
+    IT ANSWERS ABOUT A WORD, NOT ABOUT A COMMAND. Whether the word is being RUN is decided
+    by the callers, which is the only place it can be decided honestly: _helper_invoked knows
+    what is in command position, and this function is looking at structureless text. Asking
+    the question here -- "does an interpreter stand in front of it?" -- was tried and is what
+    the note at the evidence test describes; keeping the two separate is the fix.
+    """
+    # The literal tail of the WHOLE text, not just of one run. A class holding quoted
+    # whitespace spans runs -- that is #708 itself -- so the `[` and the helper tail land in
+    # different ones and neither is evidence alone: `eval 'python3 ["x] y] ... l"x]<tail>'`
+    # leaves the opener in the first run and `<tail>` in the last. Under every reading the
+    # class ends at SOME `]`, so the text after the LAST one is literal, and it is cut at the
+    # next whitespace so a whole PR body cannot be swept in behind one bracket.
+    _e = text.rfind("]")
+    gtail = ""
+    if _e >= 0:
+        gtail = text[_e + 1:].split(None, 1)[0] if text[_e + 1:].split(None, 1) else ""
+        gtail = gtail.translate(_STEM_SYNTAX)
+    seen = set()
+    for runs in (text.split(), _OPERATOR_SPLIT_RE.split(text)):
+        for run in runs:
+            if "[" not in run:
+                continue
+            for seg in run.split("/"):
+                k = seg.find("[")
+                if k < 0:
+                    continue
+                # The literal TAIL as well as the literal stem. Whatever the class turns out
+                # to mean it cannot extend past the LAST `]` in the segment, so the text
+                # after it is literal under every reading -- the same argument as the stem,
+                # run from the other end. Taking both is what let the context heuristic go.
+                e = seg.rfind("]")
+                stem = seg[:k].translate(_STEM_SYNTAX)
+                tail = seg[e + 1:].translate(_STEM_SYNTAX) if e > k else ""
+                # A CLASS is evidence as well as a literal, because each one stands for
+                # exactly ONE character and so pins a LENGTH. `l[e][a][s][e][_][s][l][o][.]
+                # [p]y` supplies two literal characters and eleven classes, and it is the
+                # eleven that make `l*y` a statement about a thirteen-character name rather
+                # than about anything starting with `l` -- #573 settled that a run of `?`
+                # the length of a helper name IS evidence, for the same reason. Counting
+                # only the literals released this word, and bash expands it onto the helper;
+                # codex measured it. Prose stays released because a bracket or two with
+                # nothing literal around it still totals less than the threshold, and an
+                # all-`*` candidate is let go regardless.
+                _n = _count_classes(seg, _CLASS_COUNT_MAX)
+                # TOO LITTLE LITERAL TO BE EVIDENCE is the objection #573 was reported
+                # for, and it has to be answered here too. `awk '{ a[$1 " " $2]++ }'` offers
+                # the stem `a` and no tail at all, and `a*` names a helper about as
+                # specifically as a bare wildcard does -- a false block on ordinary array
+                # indexing, caught by the over-block matrix. A markdown link offers no stem
+                # and the tail `(url)`, which is plenty of literal and matches no helper.
+                #
+                # An EARLIER draft asked instead whether an interpreter stood in front of the
+                # word, and that was a releasing test computed from raw text -- so every way
+                # of hiding the interpreter was a bypass, and codex found four in one round
+                # (a redirect, a flag operand, a quote-obfuscated name, `${IFS}`) and three
+                # more in the next. A releasing predicate that cannot be computed reliably
+                # fails OPEN by construction. This one reads only the word itself.
+                # `gtail` comes from the far end of the TEXT, so pairing it with this run's
+                # stem is only legitimate when the two could be one shell word -- which needs
+                # quoted whitespace inside the class. Without that test it invented helper
+                # names out of unrelated prose, joining `lease_s` from one word to `lot.py`
+                # from another five words later; codex measured that on a heredoc this file
+                # used to allow. A quote in the class region is the evidence that the
+                # whitespace after it may be a MEMBER rather than a separator, which is #708
+                # itself; absent it, the run stands alone and only its own tail counts.
+                _joins = bool(_JOINS_WORDS_RE.search(seg[k:]))
+                for lit in ((tail, gtail) if _joins else (tail,)):
+                    if len(stem) + len(lit) + _n < _STEM_MIN_EVIDENCE:
+                        continue
+                    cand = stem + "*" + lit
+                    if cand in seen or all(c == "*" for c in cand):
+                        continue
+                    seen.add(cand)
+                    try:
+                        pat = re.compile(fnmatch.translate(cand))
+                    except (re.error, TypeError):
+                        return _MUTATING_HELPERS[0]   # unparseable pattern: fail closed
+                    hit = next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
+                    if hit:
+                        return hit
+    return None
+
+
+def _glob_helper_targeted(word, deep=None):
     """The helper this glob names SPECIFICALLY, or None -- _glob_helper minus the
     patterns that spell nothing at all.
 
@@ -919,7 +1978,7 @@ def _glob_helper_targeted(word):
     # whose discarded directory is a literal naming the folder both helpers live in.
     if word and all(c == "*" for c in word):
         return None
-    return _glob_helper(word)
+    return _glob_helper(word, deep)
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
@@ -2217,6 +3276,14 @@ def _abandoned_scan_probe(text):
     `lease_slo[;t].py` -- a pattern that DID block -- and the swap would have been a wash.
     Testing the union is what makes this monotone. Both raised by codex on #640.
 
+    And ask both splits a SECOND time, of a VARIANT of the text with the whitespace deleted
+    from inside every bracket expression (#708). Whitespace is the only word boundary those
+    two splits know, so a space that is a MEMBER of a bracket class cuts a pattern the shell
+    globs onto the helper in half. Deleting the member leaves a class they already handle,
+    and it joins nothing, so it is not the bracket-atomic boundary that reopens #573 -- see
+    _class_members, which also lists the quote-aware drafts this replaced and how each broke.
+    The probe stays monotone because a variant, like a split, only ever adds candidates.
+
     ACCEPTED OVER-BLOCK, and it is the ticket's own trade rather than a new cost: a payload
     that merely QUOTES a globbed helper name as data -- `echo "printf '%s' 'lease_slo?.py'" | sh`,
     which only prints it -- now blocks. Nothing static can tell print from run once the text
@@ -2229,10 +3296,44 @@ def _abandoned_scan_probe(text):
     hit = _names_helper(text)
     if hit:
         return hit
-    return next((h for v in _shell_variants(text)
-                 for w in v.split() + _OPERATOR_SPLIT_RE.split(v)
-                 if any(c in w for c in "*?[")
-                 for h in [_glob_helper_targeted(w)] if h), None)
+    # One decision for the whole scan, not one per candidate: a short command gets the full
+    # reading family on every word it yields, while a payload built to be expensive gets the
+    # base reading only. Deciding it here keeps the cost tied to what arrived rather than to
+    # how many words fell out of it. Raised by codex in review -- twice, and the second time
+    # is why LENGTH alone is not the measure: 800 `[a]` words fit in 3.2KB and still cost 9.1s,
+    # because the depth is spent per bracketed word. Bracket DENSITY is the term that catches
+    # that shape, so all three bounds are applied.
+    #
+    # Dropping to the base reading is now a loss of PRECISION rather than of coverage, which
+    # is what makes the third bound affordable enough to set this low: since exhaustion began
+    # answering through _bracket_prefix_hit, a scan that declines the deep reading still
+    # blocks, it just blocks on a wider pattern. Before that it would have been a bypass, and
+    # tightening the bound would have opened one.
+    _deep = _deep_affordable(text)
+    # Words off the ORIGINAL text get the full reading family; words off a text that has
+    # ALREADY been reconciled do not. Re-running the terminator search on those was pure
+    # duplication -- the class in a derived word has been rewritten to the one spelling
+    # fnmatch reads correctly, so there is nothing left for a second search to find -- and it
+    # multiplied the cost by the variant count. Measured: two bracket words carrying eight
+    # quoted `]` each cost 3.98s of the hook's 5s budget, and the probe runs TWICE (dequoted
+    # and raw), which is how codex clocked 5.42s and no decision at all. The same shapes now
+    # measure well under a second. Codex suggested this in the first round; it took until the
+    # word bound was in place to see that it was the multiplier, not the bound.
+    families = ([(v, _deep) for v in _shell_variants(text)]
+                + [(x, False) for v in _class_variants(text) for x in _shell_variants(v)])
+    hit = next((h for v, d in families
+                for w in v.split() + _OPERATOR_SPLIT_RE.split(v)
+                if any(c in w for c in "*?[")
+                for h in [_glob_helper_targeted(w, d)] if h), None)
+    if hit:
+        return hit
+    # The whole-text search carries the same budgets as the per-word one, and it is the one
+    # an adversary actually spends: quoting puts whitespace INSIDE a class, so reassembling
+    # the word is what the terminator search is for, and exhausting it used to answer
+    # "no helper" for a command the shell expands straight onto one.
+    if not _deep or text.count("]") > _CLOSE_CANDIDATES:
+        return _bracket_prefix_hit(text)
+    return None
 
 
 def _helper_invoked(cmd, _depth=0, _full=None):
@@ -2260,6 +3361,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     _whole = cmd if _full is None else _full
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _deep_budget[0] = _DEEP_MAX_BYTES
         _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)
@@ -2332,7 +3434,13 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # GLOB characters, so an indirect receiver carrying a globbed helper name
         # (`eval "$A"` fed `lease_slo[t].py`) is caught. The substring test saw no literal
         # name and allowed it -- and this guard is UNCONDITIONAL, so that was a live hole.
-        _hit = _abandoned_scan_probe(_dq)
+        # ...and the RAW command too, which is not the same question since #708. `_dq` has
+        # already deleted the quoting, so a class whose whitespace the quoting was holding
+        # -- `eval "python3 <lib>/lease_slo[' 't].py"`, which every one of bash, sh, zsh, dash and
+        # ksh runs -- arrived here as a bare space the whitespace split had already cut in
+        # two. Asked as well as, never instead of: the dequoted copy is what joins a name
+        # split across adjacent quoted runs, and this is a union like the splits it feeds.
+        _hit = _abandoned_scan_probe(_dq) or _abandoned_scan_probe(cmd)
         if _hit:
             return _hit
     _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
@@ -2389,6 +3497,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             lex.whitespace_split = True
             lex.commenters = ""
             toks = list(lex)
+            # The SAME words with their quoting intact. Quote removal is what decides a
+            # bracket class -- `<stem>[[:digit:"]"].py` dequotes to the POSIX digit class,
+            # which matches nothing, while bash reads the quoted `]` as a MEMBER, making the
+            # body a plain list that holds `t` and expanding it onto the helper. So the
+            # dequoted token cannot answer, and the raw one can. Two earlier drafts asked
+            # this OUTSIDE the walk -- once of the whole command, once as soon as an
+            # interpreter appeared -- and both broke the read/mention contract, reporting
+            # `echo '<helper-glob>'` and then `python3 safe.py '<helper-glob>'` as
+            # invocations. Carrying the raw spelling INTO the walk means command position is
+            # decided once, by the code that already does it, instead of guessed twice.
+            # Verified rather than assumed: the pairing counts only if every raw word
+            # dequotes to exactly the token the lexer produced, in order. A splitter that
+            # disagreed with the lexer would otherwise pair the wrong words silently, which
+            # is worse than not pairing at all -- so a mismatch drops the raw pass entirely
+            # and nothing is claimed from it.
+            raw_toks = _raw_words(segtext)
+            raw_dropped = [_dequote_lex(_r) for _r in raw_toks] != toks
+            if raw_dropped:
+                raw_toks = []
         except ValueError:
             # Unbalanced quoting inside ONE segment: same reasoning and same probe as the
             # segmenter above -- squeezed, so a globbed helper name is still caught.
@@ -2420,7 +3547,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # word and hides the interpreter behind it. Two different failures, one on each
         # side, which is why the choice is conditional rather than either one alone.
         _wrapped = _starts_with_wrapper(toks)
-        _scan_toks = toks if _wrapped else _strip_redirs(toks)
+        _kept = None if _wrapped else _strip_redirs_kept(toks)
+        _scan_toks = toks if _wrapped else [toks[i] for i in _kept]
+        # The raw list put through the SAME indices _strip_redirs_kept chose from the
+        # DEQUOTED list, not re-stripped independently -- so index i means the same token
+        # in both by construction. Re-stripping independently was the first attempt, and
+        # it is not a mapping at all: _is_redir reads a token by VALUE, and a raw token
+        # still carries its quote marks where the dequoted one does not, so a quoted
+        # redirect-looking argument (`">"`) answers _is_redir differently on each list --
+        # not a genuine disagreement, just the same decision asked twice in two spellings.
+        # `python3 safe[a].py ">" ignored 'lease_slo["x"]t.py'` diverged in length here,
+        # which dropped the raw pass and fell to the whole-segment `_bracket_prefix_hit`
+        # fallback, BLOCKing on a later argument that only mentions the helper's shape.
+        # Codex found it. `raw_toks` is only ever [] (already dropped above) or the same
+        # length as `toks` by the time this runs, so `_kept`'s indices are valid for both.
+        if not raw_toks:
+            _raw_scan = None
+            raw_dropped = True
+        else:
+            _raw_scan = raw_toks if _wrapped else [raw_toks[i] for i in _kept]
         _tokp, _strp = _exec_payloads(_scan_toks)
         for _p in _tokp:
             # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
@@ -2485,7 +3630,17 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 # where the helper is only an argument and stdin is empty. Accepted:
                 # `python3 -` is an execution context, not a mention, and enumerating
                 # the empty-stdin spellings is the allowlist this file keeps deleting.
-                hit = _glob_helper(w) or _names_helper(_whole)
+                # A DROPPED pairing is not a clean pass. The raw spelling is the only
+                # thing that can answer a quoted `]` inside a class, so losing it silently
+                # left the very shape it was added for allowed -- and it was one decoy
+                # argument away, since any disagreement anywhere in the segment drops the
+                # whole list. Same rule as every other abandoned scan in this file: what it
+                # could not read, it must not report as absent.
+                _raw_w = _raw_scan[j] if _raw_scan is not None else w
+                hit = (_glob_helper(w)
+                       or (_raw_w != w and _glob_helper(_raw_w))
+                       or (raw_dropped and _bracket_prefix_hit(segtext))
+                       or _names_helper(_whole))
                 if hit:
                     return hit
                 break

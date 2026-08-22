@@ -1,3 +1,10 @@
+## [1.110.6](https://github.com/chris-yyau/busdriver/compare/v1.110.5...v1.110.6) (2026-08-22)
+
+
+### Bug Fixes
+
+* **gates:** bind for/select loop variables in marker_check ([#638](https://github.com/chris-yyau/busdriver/issues/638)) ([#728](https://github.com/chris-yyau/busdriver/issues/728)) ([0ba72cc](https://github.com/chris-yyau/busdriver/commit/0ba72cc131027e03aa2a9ccd2e46f6c00df8b3ff)), closes [516/#539](https://github.com/chris-yyau/busdriver/issues/539) [#643](https://github.com/chris-yyau/busdriver/issues/643)
+
 ## [1.110.5](https://github.com/chris-yyau/busdriver/compare/v1.110.4...v1.110.5) (2026-08-22)
 
 

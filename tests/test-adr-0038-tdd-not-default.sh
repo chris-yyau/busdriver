@@ -226,6 +226,18 @@ has_mandated_wp_step1_ordering() {
   printf '%s\n' "$1" | grep -qE '\*\*Step 1: (Write the failing test|Write minimal implementation)\*\*'
 }
 
+has_separate_ordered_impl_test_checkboxes() {
+  local section impl_line test_line
+  section="$1"
+  if ! printf '%s\n' "$section" | grep -q '\*\*Implement the behavior\*\*' \
+    || ! printf '%s\n' "$section" | grep -q '\*\*Add or update tests\*\*'; then
+    return 1
+  fi
+  impl_line=$(printf '%s\n' "$section" | grep -n '\*\*Implement the behavior\*\*' | head -1 | cut -d: -f1)
+  test_line=$(printf '%s\n' "$section" | grep -n '\*\*Add or update tests\*\*' | head -1 | cut -d: -f1)
+  [[ -n "$impl_line" && -n "$test_line" && "$impl_line" -lt "$test_line" ]]
+}
+
 wp_bite_sized_section() {
   awk '/^## Bite-Sized Task Granularity$/{found=1;next} found && /^## /{exit} found' "$1"
 }
@@ -255,14 +267,23 @@ if [[ -z "$WP_TASK_STRUCTURE" ]]; then
   bad "writing-plans Task Structure section missing — cannot anchor #653 assertions"
 elif has_mandated_wp_step1_ordering "$WP_TASK_STRUCTURE"; then
   bad "writing-plans task template restored mandated Step 1 ordering (#653)"
+elif has_separate_ordered_impl_test_checkboxes "$WP_TASK_STRUCTURE"; then
+  bad "writing-plans task template restored implementation-before-test checkbox ordering (#653)"
 else
-  ok "writing-plans task template does not mandate Step 1 ordering"
+  ok "writing-plans task template does not mandate Step 1 or checkbox ordering"
 fi
 
 if [[ -n "$WP_TASK_STRUCTURE" ]] && printf '%s\n' "$WP_TASK_STRUCTURE" | grep -q 'either order'; then
   ok "writing-plans task template states implementation and tests may be done in either order"
 else
   bad "writing-plans task template lost order-neutral wording (#653)"
+fi
+
+if [[ -n "$WP_TASK_STRUCTURE" ]] \
+  && printf '%s\n' "$WP_TASK_STRUCTURE" | grep -q 'Implement the behavior with tests'; then
+  ok "writing-plans task template combines implementation and tests in one flexible step"
+else
+  bad "writing-plans task template lost combined impl+tests step (#653)"
 fi
 
 if [[ -n "$WP_BITE_SIZED" ]] && printf '%s\n' "$WP_BITE_SIZED" | grep -q 'Ordering is not mandated'; then
@@ -421,6 +442,16 @@ if [[ "$(count_tests_bullets "$TMP/decoy-orch.md")" -ne 1 ]]; then
   ok "negative control: the uniqueness check rejects a decoy second 'Tests' bullet"
 else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
+fi
+
+printf '%s\n' \
+  '- [ ] **Implement the behavior**' \
+  '- [ ] **Add or update tests**' \
+  > "$TMP/violating-wp-checkbox-order.md"
+if has_separate_ordered_impl_test_checkboxes "$(cat "$TMP/violating-wp-checkbox-order.md")"; then
+  ok "negative control: the checkbox-ordering assertion fires on a violating template"
+else
+  bad "negative control FAILED — the checkbox-ordering assertion cannot detect a violation"
 fi
 
 printf '%s\n' '- [ ] **Step 1: Write the failing test**' > "$TMP/violating-wp-template.md"

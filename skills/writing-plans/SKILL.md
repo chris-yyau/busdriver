@@ -96,16 +96,12 @@ Typical task shape (ordering flexible):
 
 **Tests:** behavioral changes ship with tests. **Ordering is not mandated** (ADR 0038). Implementation and tests may be done in either order unless TDD was explicitly requested (`/tdd` or direct ask) for **this task** — then use failing test → verify fail → implementation → verify pass → commit.
 
-- [ ] **Implement the behavior**
+- [ ] **Implement the behavior with tests** (order flexible unless TDD was explicitly requested)
 
 ```python
 def function(input):
     return expected
-```
 
-- [ ] **Add or update tests**
-
-```python
 def test_specific_behavior():
     result = function(input)
     assert result == expected

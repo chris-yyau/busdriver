@@ -2317,7 +2317,14 @@ def _squeeze_quoted_heredocs(cmd):
     hide. The masking is not luck -- the body's one-quote rule, the operator count taken
     outside the body, and comment defusing each independently refuse these shapes.
 
-    Left as a DOCUMENTED GAP IN THE MODEL rather than a closed hole: the reasoning that a
+    RESIDUAL, measured and left: the operator count reads `<<` as an operator wherever it
+    appears outside the body, including inside a STRING -- `echo "x << y"; cat <<'EOF' ...`
+    counts two and refuses. An over-block, and the same family as the in-body `<<` already
+    excluded above; separating them needs quote provenance this scan does not keep, and
+    adding a second quote state machine to loosen a fail-CLOSED answer is the trade every
+    fail-open in this change came from. Reported and reproduced; not chased.
+
+        Left as a DOCUMENTED GAP IN THE MODEL rather than a closed hole: the reasoning that a
     non-backslash continuation moves the real body is correct, and a future change that
     relaxes any of those three guards could make it reachable. What is not warranted is
     modelling the rest of bash's continuation grammar to close a path nobody has been able to

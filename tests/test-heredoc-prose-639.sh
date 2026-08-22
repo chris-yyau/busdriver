@@ -99,10 +99,14 @@ assert_ok() { # <command> <label>
 assert_block() { # <command> <label>
     local got
     got="$(verdict "$1")"
-    if [[ "$got" == BLOCK_* ]]; then
+    # The SPECIFIC guard verdicts, not any BLOCK_*. A bare prefix test also accepts
+    # BLOCK_CLASSIFIER_ERROR, so a crash introduced by a future parser change would let every
+    # control here pass while the guard it protects never ran. Raised by the PR reviewer.
+    if [[ "$got" == BLOCK_MARKER_SCRIPT\|* || "$got" == BLOCK_MARKER\|* \
+          || "$got" == BLOCK_MARKER_UNPARSED\|* ]]; then
         ok "$2"
     else
-        no "$2" "got=${got:-<empty>} — the helper guard regressed to allow"
+        no "$2" "got=${got:-<empty>} — expected a marker/helper block, not this"
     fi
 }
 

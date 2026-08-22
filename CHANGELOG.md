@@ -1,3 +1,10 @@
+## [1.110.4](https://github.com/chris-yyau/busdriver/compare/v1.110.3...v1.110.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** treat banner-only opencode output as an empty verdict ([#541](https://github.com/chris-yyau/busdriver/issues/541)) ([#734](https://github.com/chris-yyau/busdriver/issues/734)) ([749ada8](https://github.com/chris-yyau/busdriver/commit/749ada8b480101bc1ce8033b39750f6635bc8a87))
+
 ## [1.110.3](https://github.com/chris-yyau/busdriver/compare/v1.110.2...v1.110.3) (2026-08-22)
 
 

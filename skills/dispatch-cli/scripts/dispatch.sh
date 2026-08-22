@@ -337,6 +337,45 @@ if ! type _is_bare_transient_notice_file &>/dev/null; then
     _is_hard_transient_signal < "$f"
   }
 fi
+# #541: True (0) when stdin is ONLY opencode's unconditional agent banner
+# ("> busdriver-review · <model>", ANSI escapes stripped first) plus blank
+# lines — i.e. an EMPTY VERDICT, not output. Canonical copy lives in
+# scripts/lib/resolve-cli.sh; keep the pattern identical there — including
+# the fail-closed two-step (sed into a variable first, so a processing error
+# like malformed UTF-8 returns "not banner-only" instead of being inverted
+# into a truncation), the no-`-q` rule (grep -c drains the stream; grep -q
+# would SIGPIPE the upstream awk on larger streams), the silent rule (the
+# stream is consumed inside the condition and grep's count is discarded —
+# never review text on the caller's stdout), the whole-line banner anchor
+# applied to the FIRST non-blank line only (opencode prints exactly one
+# banner line; a second banner-shaped line stays substantive), and the
+# EXPLICIT status classification (0 = substantive → not banner-only; 1 =
+# banner-only; any other status = processing error → not banner-only, fail
+# closed). The status is captured immediately after the pipeline — bash
+# resets $? to 1 inside an elif condition, so a `$?` check there would match
+# every failure status and re-open the fail-open hole.
+if ! type _oc_output_is_banner_only &>/dev/null; then
+  _oc_output_is_banner_only() {
+    local stripped rest rc
+    stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
+    # awk runs into a VARIABLE first, its status checked separately: if awk
+    # and grep BOTH fail, pipefail surfaces grep's (rightmost) status — a
+    # clean "no match" (1) — masking the awk error as banner-only (litmus
+    # round-6 finding). The `|| return 1` makes any awk failure mean "not
+    # banner-only".
+    rest=$(printf '%s' "$stripped" | awk '
+      /^[[:space:]]*$/ { print; next }
+      !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
+      { seen=1; print }
+    ') || return 1
+    printf '%s' "$rest" | grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
+    rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+      return 0
+    fi
+    return 1
+  }
+fi
 
 LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
@@ -1635,6 +1674,20 @@ dispatch_one() {
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
                     -m "${MODEL:-$_BD_AUDITOR_MODEL}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                # #541: opencode prints "> busdriver-review · <model>" plus
+                # blank lines UNCONDITIONALLY — healthy runs included — so
+                # _is_bare_transient_notice_file's size floor saw 32 bytes and
+                # a content-free run was reported as success with no retry.
+                # Normalize AT THE SOURCE instead of widening that shared
+                # classifier: banner-only output truncates to byte-empty and
+                # the existing guard / retry loop / council's MECHANISM_FAILED
+                # render all work untouched; substantive output keeps every
+                # byte. Canonical predicate: resolve-cli.sh (fallback copy
+                # above); resolve-cli.sh's _run_review_with_retries carries the
+                # sibling variable-based normalization for the same exposure.
+                if _oc_output_is_banner_only < "$outfile"; then
+                    : > "$outfile"
+                fi
                 # The subshell's EXIT/TERM/INT trap owns write-back + cleanup
                 # (the sandbox var lives only inside the subshell).
                 fi

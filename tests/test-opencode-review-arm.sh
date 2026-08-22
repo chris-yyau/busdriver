@@ -1004,6 +1004,8 @@ _oc_norm_case "$FIX" "setup-bail reason survives normalization" -1
 # multibyte locale, and a negated pipeline would invert that processing error
 # into "banner-only" and truncate the review (litmus round-3 finding). The
 # classifier treats processing failure as "not banner-only".
+printf '\n> busdriver-review · kimi-k3\n\n\xff\xfePONG\n' > "$FIX"
+_oc_norm_case "$FIX" "malformed UTF-8 healthy output survives (fail-closed)" -1
 # A Markdown blockquote that QUOTES the banner plus a verdict is substantive
 # prose — the exemption must match THE literal banner line (whole line, one
 # token after the middot), not any line that merely begins like one (litmus
@@ -1011,20 +1013,30 @@ _oc_norm_case "$FIX" "setup-bail reason survives normalization" -1
 printf '> busdriver-review · final verdict: no issues found\n' > "$FIX"
 _oc_norm_case "$FIX" "banner-quoting verdict survives (whole-line anchor)" -1
 rm -f "$FIX"
-rm -f "$FIX"
-rm -f "$FIX"
-# Fail-closed: a processing error (unreadable input) must NOT be inverted into
-# "banner-only" — that would truncate the review. Direct predicate check
-# (deterministic on any platform; sed cannot read a missing file).
-if _oc_output_is_banner_only < /nonexistent/bd-541-missing-input 2>/dev/null; then
-  fail "banner predicate: processing failure classified as banner-only (fail-open truncation)"
+# Fail-closed, sed side (deterministic on any platform/locale): inject a sed
+# stub that exits 2. The malformed-UTF-8 fixture only makes sed fail in a
+# multibyte locale — under C, sed accepts the bytes and cannot bite the
+# `|| return 1` guard — so this stub is the locale-independent bite (litmus
+# commit-mode finding).
+_sd_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541sed.XXXXXX")" || exit 1
+printf '#!/bin/sh\nexit 2\n' > "$_sd_stub/sed"
+chmod +x "$_sd_stub/sed"
+if PATH="$_sd_stub:/usr/bin:/bin" _oc_output_is_banner_only <<'EOF'
+substantive output must survive a sed error
+EOF
+then
+  fail "banner predicate: sed error (status 2) classified as banner-only (fail-open truncation)"
 else
-  pass "banner predicate fails closed on unreadable input"
+  pass "banner predicate fails closed on injected sed error"
 fi
+rm -rf "$_sd_stub"
 # Fail-closed, grep side: a grep execution error (status 2) must NOT be
 # classified as banner-only — explicit status handling keeps the output
 # (litmus round-5 finding). Inject a grep stub that always exits 2.
-_grp_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541grep.XXXXXX")"
+# (The malformed-UTF-8 fixture above is the sed-side real-world coverage; a
+# missing-input redirect would fail before the predicate executes, so it
+# cannot exercise the predicate and is deliberately not used.)
+_grp_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541grep.XXXXXX")" || exit 1
 printf '#!/bin/sh\nexit 2\n' > "$_grp_stub/grep"
 chmod +x "$_grp_stub/grep"
 if PATH="$_grp_stub:/usr/bin:/bin" _oc_output_is_banner_only <<'EOF'
@@ -1045,6 +1057,62 @@ if grep -q 'if _oc_output_is_banner_only < "\$outfile"' "$DP" \
   pass "dispatch.sh: arm wired to _oc_output_is_banner_only + fallback copy present"
 else
   fail "dispatch.sh: arm/fallback wiring for _oc_output_is_banner_only missing"
+fi
+# The fallback copy in dispatch.sh is behaviorally exercised too: the
+# fixtures above source resolve-cli.sh (canonical), so a divergent fallback
+# would pass them. This defines the fallback in isolation (canonical unset)
+# and asserts the same three classifications (litmus PR-mode finding).
+OC_FALLBACK="$(awk '/# #541: True/{f=1} f{print} f&&/^fi$/{exit}' "$DP")"
+if (
+  set -uo pipefail
+  unset -f _oc_output_is_banner_only 2>/dev/null || true
+  eval "$OC_FALLBACK"
+  # Sed failure must be exercised DETERMINISTICALLY (a stub exiting 2): the
+  # malformed-UTF-8 fixture only fails under a multibyte locale — under C,
+  # sed accepts the bytes and the guard removal would go unpunished.
+  _fsd_stub="$(mktemp -d "${TMPDIR:-/tmp}/oc541fsed.XXXXXX")" || exit 1
+  printf '#!/bin/sh\nexit 2\n' > "$_fsd_stub/sed"
+  chmod +x "$_fsd_stub/sed"
+  ok=1
+  printf '\n> busdriver-review · kimi-k3\n\n' | _oc_output_is_banner_only || ok=0
+  printf '\n> busdriver-review · kimi-k3\n\nPONG\n' | _oc_output_is_banner_only && ok=0
+  if PATH="$_fsd_stub:/usr/bin:/bin" _oc_output_is_banner_only <<'EOF'
+substantive output must survive a sed error
+EOF
+  then ok=0; fi
+  rm -rf "$_fsd_stub"
+  exit $((1 - ok))
+); then
+  pass "dispatch.sh fallback copy classifies banner-only / substantive / sed-error identically"
+else
+  fail "dispatch.sh fallback copy diverges from canonical classification"
+fi
+# Preservation invariant (litmus PR-mode finding): every input OUTSIDE the
+# exact blank/banner grammar stays substantive — the classifier must never
+# eat prose. Representative non-banner lines, each asserted not banner-only.
+if (
+  set -uo pipefail
+  ok=1
+  for line in \
+    'PONG' \
+    '> busdriver-review · kimi-k3 with trailing verdict prose' \
+    '> busdriver-review · final verdict: no issues found' \
+    '> busdriver-review kimi-k3 (no middot)' \
+    '·' \
+    '> other-agent · kimi-k3' \
+    '## heading' \
+    '- list item' \
+    '{"status":"pass","issues":[]}' \
+    '    > busdriver-review · kimi-k3' \
+  ; do
+    printf '%s\n' "$line" | _oc_output_is_banner_only \
+      && { echo "  ✗ preservation: '$line' classified as banner-only"; ok=0; }
+  done
+  exit $((1 - ok))
+); then
+  pass "preservation: non-banner lines stay substantive"
+else
+  fail "preservation: a non-banner line was classified as banner-only"
 fi
 # ── 11b. resolve-cli.sh variable-based site ───────────────────────
 # Run the REAL retry wrapper with a stub "opencode" that prints ONLY the banner

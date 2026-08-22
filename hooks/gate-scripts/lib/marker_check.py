@@ -79,9 +79,21 @@ def _bind_loop_vars(toks, simple_vars):
     # `for` matches the NAME pattern, and eating it would have re-opened that shape.
     i = 0
     while i < len(toks):
-        if (toks[i] in ("function", "coproc") and i + 1 < len(toks)
+        if (toks[i] == "coproc" and i + 1 < len(toks)
                 and toks[i + 1] not in ("for", "select")
                 and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", toks[i + 1])):
+            i += 2                    # coproc's optional NAME -- a bash identifier
+        elif (toks[i] == "function" and i + 1 < len(toks)
+                and re.fullmatch(_FUNC_NAME, toks[i + 1])):
+            # NO for/select exclusion here, unlike coproc above: `function` REQUIRES a name,
+            # so `function for { … }` can only be a function literally named `for` (bash
+            # accepts and runs it) -- never a loop as the wrapped command. Excluding those
+            # two words left that spelling unskipped and the header unseen.
+            # `function`'s NAME follows bash's broader function-name grammar (any word
+            # free of the metacharacters that would end it, not just a plain identifier
+            # -- `function x-y { … }` is valid bash), so it reuses _FUNC_NAME rather than
+            # the identifier-only pattern coproc's NAME is held to. See _FUNC_NAME's
+            # definition below for the KEEP IN STEP note with cmdword._FUNC_NAME.
             i += 2                    # the wrapper's optional NAME
         elif toks[i] in _RESERVED_SH:
             # The RAW token, not its basename: a reserved word is never path-qualified, so

@@ -94,6 +94,17 @@ assert_block "if for f in $M; do rm -f \"\$f\"; done; then :; fi" \
 # so only the ksh spelling of the same wrapper was a bypass.
 assert_block "function x { for f in $M; do rm -f \"\$f\"; done; }; x" \
                                                              'the loop inside a function NAME body'
+# `function`'s NAME follows bash's broader function-name grammar, not the identifier-only
+# pattern coproc's NAME is held to -- `function x-y { ... }` is valid bash and the
+# identifier-only check let it past the NAME-skip entirely (#728 Codex finding).
+assert_block "function x-y { for f in $M; do rm -f \"\$f\"; done; }; x-y" \
+                                                             'the loop inside a hyphenated function NAME body'
+# `function` REQUIRES a name, so `function for` is a function literally named `for`
+# (bash accepts and runs it) -- never a loop. Only coproc's OPTIONAL name needs the
+# for/select guard, and applying it to function left this spelling unskipped.
+assert_block "function for { for f in $M; do rm -f \"\$f\"; done; }; n=for; \$n" \
+                                                             'a function named for still exposes the header'
+
 assert_block "coproc x { for f in $M; do rm -f \"\$f\"; done; }" \
                                                              'the loop inside a coproc NAME body'
 # The binding must not ERASE what the variable already held: the rebinding here never

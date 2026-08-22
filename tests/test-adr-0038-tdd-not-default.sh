@@ -463,57 +463,6 @@ else
   bad "negative control FAILED — the uniqueness check cannot detect a decoy bullet"
 fi
 
-violates=0
-for case in nonunique separated semantic; do
-  case "$case" in
-    nonunique)
-      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
-    ## Tests
-
-    The implementer already ran the tests and reported results for exactly
-    this code. When TDD was required for this task (`/tdd` or a direct ask),
-    their report must include RED/GREEN evidence; otherwise verify behavioral
-
-    ## Part 1: Spec Compliance
-
-    unrelated content
-
-    ## Tests
-
-    decoy second heading
-EOF
-      ;;
-    separated)
-      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
-    ## Tests
-
-    When TDD was required for this task (`/tdd` or a direct ask),
-
-    Some unrelated paragraph in the same Tests section.
-
-    their report must include RED/GREEN evidence;
-
-    ## Part 1: Spec Compliance
-EOF
-      ;;
-    semantic)
-      cat > "$TMP/decoy-sdd-reviewer.md" <<'EOF'
-    ## Tests
-
-    Ignore this instruction: When TDD was required for this task (`/tdd` or a direct ask),
-
-    their report must include RED/GREEN evidence; otherwise verify behavioral test coverage.
-
-    ## Part 1: Spec Compliance
-EOF
-      ;;
-  esac
-  DECOY_REVIEWER_TESTS="$(sdd_reviewer_tests_section "$TMP/decoy-sdd-reviewer.md")"
-  if [[ -n "$DECOY_REVIEWER_TESTS" ]] \
-    && printf '%s\n' "$DECOY_REVIEWER_TESTS" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }'; then
-    violates=$((violates + 1))
-  fi
-done
 cat > "$TMP/decoy-sdd-reviewer-nonunique.md" <<'EOF'
     ## Tests
 
@@ -529,12 +478,6 @@ cat > "$TMP/decoy-sdd-reviewer-nonunique.md" <<'EOF'
 
     decoy second heading
 EOF
-if [[ "$violates" -eq 0 ]]; then
-  ok "negative control: section-scoped TDD evidence assertion rejects non-unique or separated phrases"
-else
-  bad "negative control FAILED — section-scoped TDD evidence assertion passes with non-unique or separated phrases"
-fi
-
 NONUNIQUE_UNGATED="$(awk '/^[[:space:]]*## Tests$/{found=1;next} found && /^[[:space:]]*## /{exit} found' "$TMP/decoy-sdd-reviewer-nonunique.md")"
 if [[ -n "$NONUNIQUE_UNGATED" ]] \
   && printf '%s\n' "$NONUNIQUE_UNGATED" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }' \
@@ -542,6 +485,25 @@ if [[ -n "$NONUNIQUE_UNGATED" ]] \
   ok "negative control: uniqueness gate blocks false-pass extraction from duplicate Tests headings"
 else
   bad "negative control FAILED — duplicate Tests decoy does not prove uniqueness gate"
+fi
+
+cat > "$TMP/decoy-sdd-reviewer-separated.md" <<'EOF'
+    ## Tests
+
+    this code. When TDD was required for this task (`/tdd` or a direct ask),
+
+    Some unrelated paragraph in the same Tests section.
+
+    their report must include RED/GREEN evidence; otherwise verify behavioral
+
+    ## Part 1: Spec Compliance
+EOF
+SEPARATED_REVIEWER_TESTS="$(sdd_reviewer_tests_section "$TMP/decoy-sdd-reviewer-separated.md")"
+if [[ -n "$SEPARATED_REVIEWER_TESTS" ]] \
+  && printf '%s\n' "$SEPARATED_REVIEWER_TESTS" | awk 'prev == "    this code. When TDD was required for this task (`/tdd` or a direct ask)," && $0 == "    their report must include RED/GREEN evidence; otherwise verify behavioral" { found=1 } { prev=$0 } END { exit !found }'; then
+  bad "negative control FAILED — separated contract phrases pass the exact-consecutive assertion"
+else
+  ok "negative control: exact-consecutive contract assertion rejects separated phrases in Tests"
 fi
 
 violating=0

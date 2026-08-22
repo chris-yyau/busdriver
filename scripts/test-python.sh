@@ -53,7 +53,8 @@ run_suite "agent-self-evaluation" \
 
 run_suite "blueprint-review/extract_review_json" \
   uv run --quiet --with 'pytest==9.0.3' \
-    pytest skills/blueprint-review/scripts/lib/test_extract_review_json.py -q
+    pytest skills/blueprint-review/scripts/lib/test_extract_review_json.py \
+      skills/blueprint-review/scripts/lib/test_extract_review_json_log_echo.py -q
 
 run_suite "litmus/parse_narrative" \
   uv run --quiet --with 'pytest==9.0.3' \

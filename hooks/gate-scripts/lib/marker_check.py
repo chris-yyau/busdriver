@@ -47,6 +47,73 @@ def _match_marker(tok, markers, simple_vars):
     return None
 
 
+def _bind_loop_vars(toks, simple_vars):
+    # `for NAME in W...` / `select NAME in W...` bind NAME to each word of the list in
+    # turn, so a marker named in the HEADER reaches a dangerous position in the BODY as
+    # "$NAME" -- `for f in <marker>; do rm -f "$f"; done` (#638). The body is a separate
+    # simple command and simple_vars persists across them, so recording the binding here
+    # is all that the delete AND the redirect/tee/indirect-verb forge paths need; neither
+    # `for` nor the header itself is a dangerous position, which is why _RESERVED_SH is
+    # left alone.
+    #
+    # Space-JOINED, not concatenated: _match_marker substring-matches, and a separator
+    # stops two adjacent list words assembling a basename that neither of them contains.
+    #
+    # LITERAL list words only, deliberately. A name the shell assembles at RUNTIME -- a
+    # glob (`for f in .claude/*.local`), a positional parameter (`set -- <marker>`), a
+    # function argument, `${f%x}`, a command substitution -- is the ADR 0006
+    # runtime-name-synthesis residual already documented in _writes_marker: the value
+    # never appears in the command text, so no static scan can see it, and anything able
+    # to do it can `python3 -c` the write directly. The shape closed here is the ORDINARY
+    # loop an agent writes without meaning to bypass anything, which is what #638 hit.
+    # Leading RESERVED words are skipped with the list this module already keeps for
+    # exactly that ("reserved words that PRECEDE a command"): `! for …`, `{ for …; }` and
+    # `if for …; then` are the same literal loop with a prefix, and matching only toks[0]
+    # let all three past. `function NAME {` is skipped too: it is the ksh spelling of
+    # `NAME() {`, which already skips because `)` and `{` are reserved, so leaving it out
+    # made one of two spellings of the SAME wrapper a bypass. `coproc NAME` is the only
+    # other construct in the language that puts a NAME between a keyword and a compound
+    # command, and `coproc` alone was already reserved -- so its optional NAME is the last
+    # member of this family, not the next of infinitely many. The `for`/`select` guard
+    # keeps the UNNAMED `coproc for f in …` (a loop AS the coprocess command) recognized:
+    # `for` matches the NAME pattern, and eating it would have re-opened that shape.
+    i = 0
+    while i < len(toks):
+        if (toks[i] == "coproc" and i + 1 < len(toks)
+                and toks[i + 1] not in ("for", "select")
+                and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", toks[i + 1])):
+            i += 2                    # coproc's optional NAME -- a bash identifier
+        elif (toks[i] == "function" and i + 1 < len(toks)
+                and re.fullmatch(_FUNC_NAME, toks[i + 1])):
+            # NO for/select exclusion here, unlike coproc above: `function` REQUIRES a name,
+            # so `function for { … }` can only be a function literally named `for` (bash
+            # accepts and runs it) -- never a loop as the wrapped command. Excluding those
+            # two words left that spelling unskipped and the header unseen.
+            # `function`'s NAME follows bash's broader function-name grammar (any word
+            # free of the metacharacters that would end it, not just a plain identifier
+            # -- `function x-y { … }` is valid bash), so it reuses _FUNC_NAME rather than
+            # the identifier-only pattern coproc's NAME is held to. See _FUNC_NAME's
+            # definition below for the KEEP IN STEP note with cmdword._FUNC_NAME.
+            i += 2                    # the wrapper's optional NAME
+        elif toks[i] in _RESERVED_SH:
+            # The RAW token, not its basename: a reserved word is never path-qualified, so
+            # `_bn` made an ordinary external command named `/tmp/if` read as shell syntax
+            # and over-blocked a command that establishes no loop binding at all.
+            i += 1
+        else:
+            break
+    if (len(toks) > i + 3 and toks[i] in ("for", "select") and toks[i + 2] == "in"
+            and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", toks[i + 1])):
+        # APPEND, never overwrite: the loop body is a separate segment, so a destructive
+        # write would ERASE a marker the variable already held and open a shape the plain
+        # assignment path used to catch -- `f=<marker>; (for f in safe; do :; done);
+        # rm -f "$f"`, where the subshell rebinding does not reach the parent at all.
+        # Keeping both values over-approximates in the fail-CLOSED direction.
+        name = toks[i + 1]
+        prev = simple_vars.get(name, "")
+        simple_vars[name] = (prev + " " + " ".join(toks[i + 3:])).strip()
+
+
 def _is_redir(t):
     # A redirect operator token: pure punctuation that includes < or > (so >, >>,
     # <, <<, <<<, >|, >&, <&, <> all qualify). Bare ; | & ( ) are NOT redirects:
@@ -1201,6 +1268,9 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
         if flags is not None:
             flags["unparseable"] = True
         return next((mf for mf in markers if _bn(mf) in segtext), None)
+    # A loop binding a plain NAME=VALUE walk cannot see (#638), recorded before the token
+    # walk so the body segment that follows resolves "$NAME" through simple_vars.
+    _bind_loop_vars(toks, simple_vars)
     seg = []
     seg_words = []   # command-position candidates: redirect operators/targets excluded
     seg_has_cmd = False
@@ -1431,6 +1501,44 @@ def _norm_for_scan(cmd):
     norm = norm.replace(chr(92) + chr(10), "")
     # Comments are defused BEFORE the newlines that end them become separators.
     norm = _defuse_comments(norm)
+    # `for NAME` / `select NAME` may place a real (unescaped) newline before `in` --
+    # `for f\nin <marker>; do rm -f "$f"; done` is accepted by bash exactly like the
+    # single-line form, and the newline-to-separator rule below would otherwise split it
+    # into a bare `for f` plus `in ...`, hiding the header from _bind_loop_vars and
+    # un-blocking the marker-delete-via-loop-variable shape #638 closed.
+    #
+    # The NAME may be QUOTED or ESCAPED -- for 'f', for "f", for \\f, for f'' all
+    # dequote to the same variable and bash accepts each. Only this regex was narrower
+    # than the binder behind it: on a SINGLE line all four already blocked, because
+    # shlex dequotes before _bind_loop_vars sees the token. So the class tolerates those
+    # bytes and nothing else changes -- this regex only decides WHETHER to rejoin the
+    # header; extracting the name stays with shlex, so no dequoting is modelled here.
+    # What may follow `in` is an ALLOW-list, not a deny-list. `\b` matched between `n`
+    # and `=`, so `in=<marker>`, `in+=<marker>` and `in[0]=<marker>` were all read as
+    # loop headers; rejoining then deleted the newline BEFORE them -- a real command
+    # separator -- which hid the assignment and turned a marker write from BLOCK into
+    # OK. Excluding characters one at a time just moves the hole (`=` -> `+=` -> `[`),
+    # so this states the only things that can follow the KEYWORD instead: whitespace,
+    # a `;` (the empty-list `for f in; do …`), or end of input. Anything else means the
+    # token is not `in` and nothing is rejoined.
+    # A COMMENT may sit in the gap too -- `for f # note<newline>in <marker>; …` and
+    # `for f<newline># note<newline>in <marker>; …` are both valid bash, so the gap
+    # accepts an optional `#...` on each line it spans. Without that the header split
+    # again and the same delete walked through.
+    #
+    # Ordered AFTER _defuse_comments, deliberately. Run BEFORE it, this rejoin also
+    # matches a `for NAME` sitting inside a comment and deletes the newline that ENDS
+    # that comment -- `for x # for f<newline>in a; do touch <marker>; done` folded the
+    # whole command onto the comment line, so defusing then swallowed the real write
+    # and the classifier returned OK. Note what defusing does and does NOT do: it
+    # BLANKS the separators inside a comment and keeps every other byte, so the
+    # `for`/`in` words in a comment DO still reach this regex. Running after it is
+    # what makes rejoining them harmless -- the comment's extent is already fixed, so
+    # folding the line can no longer pull live code into it.
+    norm = re.sub(r"\b(for|select)"
+                  r"([ \t]+[A-Za-z_'\"\\][A-Za-z0-9_'\"\\]*)"
+                  r"(?:[ \t]*(?:#[^\n]*)?\n)+[ \t]*(in)(?=[ \t;\n]|$)",
+                  r"\1\2 \3", norm)
     norm = norm.replace("\n", " ; ")
     # Bash ANSI-C ($...) and locale quoting: shlex does not model the leading $, so
     # strip that prefix and let the quote tokenize to the literal path. (Escape

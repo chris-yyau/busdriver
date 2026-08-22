@@ -3380,7 +3380,15 @@ def _dq_heredoc_unescape(text):
     i, n = 0, len(text)
     while i < n:
         ch = text[i]
-        if ch == chr(92) and i + 1 < n and text[i + 1] in ("$", "`", _DQ, chr(92), "\n"):
+        if ch == chr(92) and i + 1 < n and text[i + 1] == "\n":
+            # LINE CONTINUATION, not an escape: inside double quotes bash removes the
+            # backslash AND the newline, so `<<"E\<newline>OF"` is terminated by `EOF`.
+            # Decoding it to a bare newline (the first draft) left the terminator
+            # unmatchable, so recovery bailed and the #639 prose block persisted for that
+            # spelling. Raised by codex on the PR; `bash -n` accepts the command.
+            i += 2
+            continue
+        if ch == chr(92) and i + 1 < n and text[i + 1] in ("$", "`", _DQ, chr(92)):
             out.append(text[i + 1])
             i += 2
             continue
@@ -3545,7 +3553,11 @@ def _squeeze_quoted_heredocs(cmd):
     if m.group(2) is not None:
         raw_delim = _dq_heredoc_unescape(raw_delim)
     delim = re.escape(raw_delim)
-    term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)
+    # `\r?$`, because this searches the RAW command while `_norm_for_scan` (applied later,
+    # to the squeezed result) is what folds CRLF to LF. On a CRLF command the terminator
+    # line is `EOF\r`, `^EOF$` never matches, recovery bails, and the #639 prose block
+    # persists for the identical command in Windows line endings. Raised by CodeRabbit.
+    term = re.compile("^" + tabs + delim + r"\r?$", re.M).search(scan, nl + 1)
     if not term:
         return cmd
     # ONE heredoc in the command, counted OUTSIDE the body now that the body is known --

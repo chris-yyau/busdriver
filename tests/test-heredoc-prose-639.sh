@@ -196,6 +196,21 @@ printf -v DOCHD 'cat > /tmp/c.md <<%sEOF%s\nThe library%ss %s documents <<%sEND 
     "$Q" "$Q" "$Q" "$HELPER" "$BS"
 assert_ok "$DOCHD" "L. a body documenting a heredoc opener -> allowed"
 
+# M. CRLF line endings. The terminator search runs on the RAW command, while
+# `_norm_for_scan` (which folds CRLF) is applied later to the squeezed result — so the
+# terminator line is `EOF\r` and an unanchored `^EOF$` never matches, leaving the #639
+# block in place for the identical command in Windows line endings.
+printf -v CRLF 'cat > /tmp/c.md <<%sEOF%s\r\nThe library%ss %s builds records.\r\nEOF\r\n' \
+    "$Q" "$Q" "$Q" "$HELPER"
+assert_ok "$CRLF" "M. a CRLF-terminated prose body -> allowed"
+
+# N. A backslash-newline inside a DOUBLE-QUOTED delimiter is a line continuation: bash
+# removes both characters, so `<<"E\<newline>OF"` terminates on `EOF`. Decoding it to a
+# bare newline leaves the terminator unmatchable and the block persists.
+printf -v BSNL 'cat > /tmp/c.md <<%sE%s\nOF%s\nThe library%ss %s builds records.\nEOF\n' \
+    '"' "$BS" '"' "$Q" "$HELPER"
+assert_ok "$BSNL" "N. a backslash-newline in a double-quoted delimiter -> allowed"
+
 echo
 if [[ $FAIL -eq 0 ]]; then
     printf 'test-heredoc-prose-639.sh: %d passed, %d failed\n' "$PASS" "$FAIL"

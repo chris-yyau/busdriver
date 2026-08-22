@@ -74,7 +74,7 @@ trap cleanup EXIT
 
 mk_codex_ok()   { printf '#!/usr/bin/env bash\necho CODEX_OK\n'                        > "$STUB/codex"; chmod +x "$STUB/codex"; }
 mk_codex_fail() { printf '#!/usr/bin/env bash\necho "BOOM_DIAGNOSTIC"\nexit 3\n'       > "$STUB/codex"; chmod +x "$STUB/codex"; }
-mk_codex_sleep(){ printf '#!/usr/bin/env bash\nsleep 60\n'                              > "$STUB/codex"; chmod +x "$STUB/codex"; }
+mk_codex_sleep(){ printf '#!/usr/bin/env bash\nexec sleep 60\n'                              > "$STUB/codex"; chmod +x "$STUB/codex"; }
 
 BASE_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 banner() { PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" "$RUN_BASH" "$DISPATCH" "$@" 2>&1 | head -1; }

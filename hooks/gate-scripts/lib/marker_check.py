@@ -600,7 +600,25 @@ def _resolve_members(body, literal_hyphen=False):
             # Reading the endpoints as two ordinary members instead said `[u-t]` could
             # reach the helper's `t` and blocked a command bash does not expand -- which
             # is why that reading is the OTHER variant rather than this one's fallback.
-            i += 3
+            #
+            # SKIP THE WHOLE ENDPOINT, not a fixed 3 characters. `hi2`/`e2` above already
+            # answered how far this endpoint's OWN spelling runs -- 2 for an escape
+            # (`\t`), 5+ for a collating or equivalence element (`[.t.]`) -- and reaching
+            # here with `hi2 is not None` means that answer is still valid; only the
+            # comparison against `lo` decided this span was reversed, not the endpoint's
+            # length. A fixed `+= 3` left the escape/collating element's OWN trailing
+            # characters (`t` in `\t`, or `.t.]` in `[.t.]`) unconsumed, so the next loop
+            # pass read them as ordinary MEMBERS -- widening `out` with characters that
+            # were never a member on their own, which is the fail-OPEN direction one
+            # level up: `_class_members` negates this SET, so a wrongly-added member
+            # narrows what a negated class `[!...]` is read as reaching. Cursor found this
+            # negated on a class ending `-\t]` reading `t` as reached in the POSITIVE
+            # class and therefore NOT reached once negated, though bash's own `[!...]`
+            # still matches `t` (the reversed span matches nothing either way). Falling
+            # back to `i + 3` only when `hi2` is None (a bare `-` right after the first,
+            # which `_span_endpoint` cannot resolve) preserves the original single-character
+            # advance for every case that was already correct.
+            i = e2 if hi2 is not None else i + 3
             continue
         out.add(c)
         i += 1
@@ -1072,6 +1090,35 @@ def _first_word(words):
 _REDIR_PREFIX_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 
 
+def _strip_redirs_kept(toks):
+    """Indices of `toks` that `_strip_redirs` would KEEP, in order.
+
+    Split out so a caller holding a SECOND list that lines up positionally with `toks` --
+    the raw, still-quoted spelling of the same tokens -- can filter it identically instead
+    of re-deciding redirect-ness against its own text. Re-deciding is what broke: `_is_redir`
+    reads a token by VALUE, and a raw token still carries its quote marks (`'">"'`) where the
+    dequoted one does not (`>`), so a quoted redirect-looking argument reads as an operator on
+    one list and an ordinary word on the other -- not a genuine disagreement about which
+    tokens survive, just two different spellings of the same decision answering differently.
+    Deciding ONCE, on the dequoted list where `_is_redir` is meant to be asked, and applying
+    the same indices to the raw list keeps both filtered lists the same length by
+    construction. Codex found the asymmetry: `python3 safe[a].py ">" ignored
+    'lease_slo["x"]t.py'` diverged in length here, which dropped the raw pass and fell through
+    to the whole-segment `_bracket_prefix_hit` fallback, BLOCKing on an unrelated later
+    argument that only mentions the helper's shape.
+    """
+    out, skip = [], False
+    for i, t in enumerate(toks):
+        if skip:
+            skip = False
+            continue
+        if _is_redir(t):
+            skip = True          # the following token is this redirect TARGET, not a verb
+            continue
+        out.append(i)
+    return out
+
+
 def _strip_redirs(toks):
     """Drop redirect operators AND the operand each one consumes.
 
@@ -1084,16 +1131,8 @@ def _strip_redirs(toks):
 
     A leading file descriptor (`2` in `2>&1`) stays, and is already _skippable.
     """
-    out, skip = [], False
-    for t in toks:
-        if skip:
-            skip = False
-            continue
-        if _is_redir(t):
-            skip = True          # the following token is this redirect TARGET, not a verb
-            continue
-        out.append(t)
-    return out
+    kept = _strip_redirs_kept(toks)
+    return [toks[i] for i in kept]
 
 
 def _starts_with_wrapper(words):
@@ -3492,18 +3531,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # word and hides the interpreter behind it. Two different failures, one on each
         # side, which is why the choice is conditional rather than either one alone.
         _wrapped = _starts_with_wrapper(toks)
-        _scan_toks = toks if _wrapped else _strip_redirs(toks)
-        # The raw list put through the SAME filtering, so index i means the same token in
-        # both. Matching them by VALUE was the first attempt and it is not a mapping at all:
-        # it ignored backslash escapes (`lease_s\lo[...]` dequotes to a value the raw token
-        # never equals) and it collapsed duplicates, so `python3 -W <safe spelling> <the same
-        # word quoted>` handed back the earlier, harmless one. Codex found both. Length is
-        # checked because the two lexers can disagree on a pathological segment; when they
-        # do, the raw pass is simply skipped and nothing is claimed from it.
-        _raw_scan = raw_toks if _wrapped else _strip_redirs(raw_toks)
-        if not raw_toks or len(_raw_scan) != len(_scan_toks):
+        _kept = None if _wrapped else _strip_redirs_kept(toks)
+        _scan_toks = toks if _wrapped else [toks[i] for i in _kept]
+        # The raw list put through the SAME indices _strip_redirs_kept chose from the
+        # DEQUOTED list, not re-stripped independently -- so index i means the same token
+        # in both by construction. Re-stripping independently was the first attempt, and
+        # it is not a mapping at all: _is_redir reads a token by VALUE, and a raw token
+        # still carries its quote marks where the dequoted one does not, so a quoted
+        # redirect-looking argument (`">"`) answers _is_redir differently on each list --
+        # not a genuine disagreement, just the same decision asked twice in two spellings.
+        # `python3 safe[a].py ">" ignored 'lease_slo["x"]t.py'` diverged in length here,
+        # which dropped the raw pass and fell to the whole-segment `_bracket_prefix_hit`
+        # fallback, BLOCKing on a later argument that only mentions the helper's shape.
+        # Codex found it. `raw_toks` is only ever [] (already dropped above) or the same
+        # length as `toks` by the time this runs, so `_kept`'s indices are valid for both.
+        if not raw_toks:
             _raw_scan = None
             raw_dropped = True
+        else:
+            _raw_scan = raw_toks if _wrapped else [raw_toks[i] for i in _kept]
         _tokp, _strp = _exec_payloads(_scan_toks)
         for _p in _tokp:
             # shlex.quote per token, NOT a bare join. A bare join loses the boundary a

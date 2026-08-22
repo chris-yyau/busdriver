@@ -630,6 +630,30 @@ assert_unit "len(m._resolve_members('a-zw-v')) > 0" \
 assert_unit "m._dequote_lex('\"a\\\\\"b\"') == shlex.split('\"a\\\\\"b\"')[0]" \
     "#708: _dequote_lex must resolve a double-quote escape exactly as shlex does"
 
+# 10. A round-2 reader defect: the reversed-span fallback (`_resolve_members`) skipped a
+# FIXED 3 characters past a reversed range's `lo-` prefix, even when the endpoint it had
+# just resolved (`_span_endpoint`) was an escape (`\t`, 2 chars) or a collating/equivalence
+# element (`[.t.]`, 5+ chars). The endpoint's own trailing characters were left for the next
+# loop pass to read as ordinary MEMBERS -- widening the POSITIVE reading with a character
+# that was never a member on its own. `_class_members` negates that reading for a `[!...]`
+# class, so the wrongly-added member narrowed what the negated class was read as reaching --
+# real bash's own `[!z-\ta]` still matches `t` (the reversed span matches nothing either
+# way; verified running bash), but the pre-fix reader excluded `t` from the negated set.
+# Raised by cursor in review.
+assert_unit "'t' in m._class_members('z-\\\\ta', True)" \
+    "#708 round 2: a reversed span's escaped upper endpoint must not leak into the negated reading"
+
+# 11. A round-2 finding, directly observable end to end (no masking): the raw pass for a
+# segment is dropped whenever `_strip_redirs` disagreed between the dequoted token list and
+# the raw one -- but a quoted redirect-looking argument (`">"`) answers `_is_redir`
+# differently on EACH list by construction (the raw spelling still carries its quote marks,
+# the dequoted one does not), which is not a genuine pairing break. Dropping the raw pass
+# fell through to the whole-segment `_bracket_prefix_hit` fallback, which BLOCKed on a LATER
+# argument that only mentions the helper's shape -- the script actually executed is a
+# different, harmless file. Raised by codex in review.
+assert_ok "python3 $LIB/safe[a].py \">\" ignored 'lease_slo[\"x\"]t.py'" \
+    "#708 round 2: a quoted redirect-looking argument must not drop the raw pass -> allowed"
+
 echo "── F. what EXECUTES must BLOCK (property, #708) ──"
 # The discipline the sections above are written to, made mechanical. Every row here is a
 # command that is actually RUN in a throwaway directory holding a STUB helper: if the shell

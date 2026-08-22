@@ -778,6 +778,44 @@ def _norm_for_scan(cmd):
     norm = norm.replace(chr(92) + chr(10), "")
     # Comments are defused BEFORE the newlines that end them become separators.
     norm = _defuse_comments(norm)
+    # `for NAME` / `select NAME` may place a real (unescaped) newline before `in` --
+    # `for f\nin <marker>; do rm -f "$f"; done` is accepted by bash exactly like the
+    # single-line form, and the newline-to-separator rule below would otherwise split it
+    # into a bare `for f` plus `in ...`, hiding the header from _bind_loop_vars and
+    # un-blocking the marker-delete-via-loop-variable shape #638 closed.
+    #
+    # The NAME may be QUOTED or ESCAPED -- for 'f', for "f", for \\f, for f'' all
+    # dequote to the same variable and bash accepts each. Only this regex was narrower
+    # than the binder behind it: on a SINGLE line all four already blocked, because
+    # shlex dequotes before _bind_loop_vars sees the token. So the class tolerates those
+    # bytes and nothing else changes -- this regex only decides WHETHER to rejoin the
+    # header; extracting the name stays with shlex, so no dequoting is modelled here.
+    # What may follow `in` is an ALLOW-list, not a deny-list. `\b` matched between `n`
+    # and `=`, so `in=<marker>`, `in+=<marker>` and `in[0]=<marker>` were all read as
+    # loop headers; rejoining then deleted the newline BEFORE them -- a real command
+    # separator -- which hid the assignment and turned a marker write from BLOCK into
+    # OK. Excluding characters one at a time just moves the hole (`=` -> `+=` -> `[`),
+    # so this states the only things that can follow the KEYWORD instead: whitespace,
+    # a `;` (the empty-list `for f in; do …`), or end of input. Anything else means the
+    # token is not `in` and nothing is rejoined.
+    # A COMMENT may sit in the gap too -- `for f # note<newline>in <marker>; …` and
+    # `for f<newline># note<newline>in <marker>; …` are both valid bash, so the gap
+    # accepts an optional `#...` on each line it spans. Without that the header split
+    # again and the same delete walked through.
+    #
+    # Ordered AFTER _defuse_comments, deliberately. Run BEFORE it, this rejoin also
+    # matches a `for NAME` sitting inside a comment and deletes the newline that ENDS
+    # that comment -- `for x # for f<newline>in a; do touch <marker>; done` folded the
+    # whole command onto the comment line, so defusing then swallowed the real write
+    # and the classifier returned OK. Note what defusing does and does NOT do: it
+    # BLANKS the separators inside a comment and keeps every other byte, so the
+    # `for`/`in` words in a comment DO still reach this regex. Running after it is
+    # what makes rejoining them harmless -- the comment's extent is already fixed, so
+    # folding the line can no longer pull live code into it.
+    norm = re.sub(r"\b(for|select)"
+                  r"([ \t]+[A-Za-z_'\"\\][A-Za-z0-9_'\"\\]*)"
+                  r"(?:[ \t]*(?:#[^\n]*)?\n)+[ \t]*(in)(?=[ \t;\n]|$)",
+                  r"\1\2 \3", norm)
     norm = norm.replace("\n", " ; ")
     # Bash ANSI-C ($...) and locale quoting: shlex does not model the leading $, so
     # strip that prefix and let the quote tokenize to the literal path. (Escape

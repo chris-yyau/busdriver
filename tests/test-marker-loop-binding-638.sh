@@ -78,6 +78,10 @@ assert_block "for f in $M
 do
 rm -f \"\$f\"
 done"                                                        'the same loop spelled across newlines'
+# The newline can also split the header itself, BEFORE `in` -- valid bash, and
+# distinct from the case above (which splits after the list, not before it).
+assert_block "for f
+in $M; do rm -f \"\$f\"; done"                              'the header split across a newline before "in"'
 assert_block "for f in a.txt $M b.txt; do rm -f \"\$f\"; done" \
                                                              'a marker among ordinary words in the list'
 
@@ -96,6 +100,28 @@ assert_block "coproc x { for f in $M; do rm -f \"\$f\"; done; }" \
 # reaches the parent shell, so "$f" is still the marker at the delete.
 assert_block "f=$M; (for f in safe; do :; done); rm -f \"\$f\"" \
                                                              'a loop must not shadow an existing marker binding'
+
+# A quoted NAME dequotes to the same variable and bash accepts it. The single-line
+# spelling always blocked (shlex dequotes first); the split header must match.
+assert_block "for 'f'
+in $M; do rm -f \"\$f\"; done"                             'a quoted loop variable in a split header'
+
+# `in=` is an ASSIGNMENT, not a loop header. Rejoining across it would delete a real
+# command separator and hide the write that follows.
+assert_block "echo for f
+in=.claude/pr-review-passed.local
+rm -f \"\$in\""                                            'in= is an assignment, not a loop header'
+
+# A comment may sit between NAME and `in` -- valid bash, and the delete goes through
+# the LOOP BINDING (rm -f "$f"), so this bites the binding itself, not a literal name.
+assert_block "for f # note
+in $M; do rm -f \"\$f\"; done"                             'a comment between NAME and in does not split the header'
+
+# The header rejoin above must run AFTER comments are defused. Before them it also
+# matched a `for NAME` inside a COMMENT and deleted the newline that ENDS it, folding
+# the real command onto the comment line so the write vanished with the comment.
+assert_block "for x # for f
+in a; do touch $M; done"                                     'a comment cannot bridge the loop-header rejoin'
 
 echo "── B. reads and ordinary loops stay allowed ──"
 

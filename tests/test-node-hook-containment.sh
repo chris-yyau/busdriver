@@ -108,45 +108,195 @@ discover_exit2() {
     } | sort -u
 }
 
+# ── Structural registration index — the ONE hooks.json reader both nets share ───
+# A LINE IS NOT A REGISTRATION. The nets below used to grep hooks.json line-wise, which is
+# wrong in both directions: a JSON formatter may put `"command"` and its value on separate
+# lines (the blocking tail then never appears on the hook's line, so the registration is
+# invisible), and two registrations may share one line (one registration's `|| exit 2` is
+# then attributed to the other's hook). So parse the document ONCE, structurally, and
+# evaluate every command string on its own. Both the registration-blocking net and the
+# deny-hook containment lookup read this index — the parse lives in exactly one place.
+#
+# Emits one record per (command, hook it names):  `<basename> <blocking> <contained>`
+#   blocking  1 = the registration declares the hook a gate (a `|| exit 2` tail), OR the
+#                 command matches no canonical shape at all.
+#   contained 1 = the registration is the canonical `env -i … bash "<wrapper>"` launch and
+#                 hands THIS hook to the wrapper as its script argument.
+# Plus one `!unrecognized\t<command>` line per command matching no shape, which guard #3a
+# below turns into a failure — see the shape allowlist for why that is the whole design.
+# python3 is already a hard dependency of this repo's gate tooling
+# (scripts/relevant-check-status.sh fails CLOSED without it) — no new dependency.
+registration_index() {
+    python3 - "$HOOKS_JSON" <<'PY'
+import json, re, sys
+
+doc_path = sys.argv[1]
+
+# ── Canonical registration shapes ─────────────────────────────────────────────────────
+# What this file needs of each registration is small — is it blocking, is it contained,
+# which hook does it name — and what it must never do is get any of the three WRONG.
+# Deciding them by parsing arbitrary shell does not converge: quoting, expansion,
+# redirection, nested interpreters, comments and heredocs each give a command a meaning
+# that differs from its text, and every one of those is a way for an uncontained blocking
+# hook to read as safe. So the parser is gone. A registration is matched WHOLE against the
+# handful of shapes this repo actually uses; anything else is `!unrecognized`, which the
+# suite fails on while still emitting its hooks as blocking-and-uncontained.
+#
+# That inverts the burden for good: a novel command shape can no longer slip through
+# quietly, it can only stop the suite until a human classifies it. Adding a genuinely new
+# shape means adding it here — deliberately, in review — which is exactly the human
+# authority KNOWN_EXIT2 and KNOWN_DENY already encode for the hooks themselves.
+ROOT = r'\$\{CLAUDE_PLUGIN_ROOT\}'
+EVENT = r'"[a-z0-9:._-]+"'
+SCRIPT = r'"scripts/hooks/([A-Za-z0-9._-]+\.js)"'
+PROFILES = r'"[a-z,]+"'
+# Assignments carried into a sanitized-GATE launch. Those gates name no node hook, so this
+# run is only ever "recognized as not our business"; the node shape below pins its own.
+ASSIGN = r'(?:[A-Z_][A-Z0-9_]*(?:="[^"]*"|=[A-Za-z0-9_:/.,-]+)[ \t]+)*'
+
+# The one shape that may claim containment: env -i, the pinned PATH, only the assignments
+# the wrapper contract re-imports, and sanitized-node.sh as bash's double-quoted operand.
+NODE_GATE = re.compile(
+    r'/usr/bin/env -i PATH=/usr/bin:/bin (?:HOME="\$HOME" )?'
+    r'CLAUDE_PLUGIN_ROOT="' + ROOT + r'" CLAUDE_HOOK_EVENT_NAME="\$CLAUDE_HOOK_EVENT_NAME" '
+    r'bash "' + ROOT + r'/hooks/gate-scripts/lib/sanitized-node\.sh" '
+    r'(?:--fail-open )?' + EVENT + ' ' + SCRIPT + ' ' + PROFILES + r' \|\| exit (0|2)'
+)
+SHELL_GATE = re.compile(
+    r'/usr/bin/env -i PATH=/usr/bin:/bin ' + ASSIGN +
+    r'bash "' + ROOT + r'/hooks/gate-scripts/lib/sanitized-gate\.sh" [A-Za-z0-9._-]+\.sh'
+)
+RUNNER = re.compile(
+    r'node "' + ROOT + r'/scripts/hooks/run-with-flags\.js" ' + EVENT + ' ' + SCRIPT
+    + ' ' + PROFILES
+)
+BARE_NODE = re.compile(r'node "' + ROOT + r'/scripts/hooks/([A-Za-z0-9._-]+\.js)"')
+SHELL_RUNNER = re.compile(
+    r'bash "' + ROOT + r'/scripts/hooks/run-with-flags-shell\.sh" ' + EVENT
+    + r' "[A-Za-z0-9._/-]+" ' + PROFILES
+)
+PLAIN_BASH = re.compile(r'bash "' + ROOT + r'/(?:hooks/gate-scripts|scripts/hooks)/[A-Za-z0-9._/-]+\.sh"')
+# The session-start launcher nests a whole script in a quoted `bash -lc` payload. There is
+# no shape to write for it that is not just the script, so it is pinned verbatim: any edit
+# to it becomes an unrecognized registration and gets re-reviewed.
+SESSION_START = (
+    'bash -lc \'input=$(cat); root="${CLAUDE_PLUGIN_ROOT}"; if [ -n "$root" ] && '
+    '[ -f "$root/scripts/hooks/run-with-flags.js" ]; then printf "%s" "$input" | '
+    'node "$root/scripts/hooks/run-with-flags.js" "session:start" '
+    '"scripts/hooks/session-start.js" "minimal,standard,strict"; exit $?; fi; '
+    'printf "%s" "$input"; exit 0\''
+)
+HOOK = re.compile(r"scripts/hooks/([A-Za-z0-9._-]+\.js)")
+
+
+def classify(cmd):
+    """Yield (hook, blocking, contained) for one registration, or None when unrecognized."""
+    matched = NODE_GATE.fullmatch(cmd)
+    if matched:
+        return [(matched.group(1), 1 if matched.group(2) == "2" else 0, 1)]
+    matched = RUNNER.fullmatch(cmd) or BARE_NODE.fullmatch(cmd)
+    if matched:
+        return [(matched.group(1), 0, 0)]
+    if cmd == SESSION_START:
+        return [("run-with-flags.js", 0, 0), ("session-start.js", 0, 0)]
+    if (SHELL_GATE.fullmatch(cmd) or SHELL_RUNNER.fullmatch(cmd)
+            or PLAIN_BASH.fullmatch(cmd)):
+        return []
+    return None
+
+
+def commands(node):
+    if isinstance(node, dict):
+        cmd = node.get("command")
+        if isinstance(cmd, str):
+            yield cmd
+        for value in node.values():
+            for found in commands(value):
+                yield found
+    elif isinstance(node, list):
+        for value in node:
+            for found in commands(value):
+                yield found
+
+
+try:
+    with open(doc_path) as fh:
+        doc = json.load(fh)
+except Exception as exc:                      # unreadable/malformed → fail CLOSED (rc 1)
+    sys.stderr.write("registration_index: %s\n" % exc)
+    sys.exit(1)
+
+for cmd in commands(doc):
+    records = classify(cmd)
+    if records is None:
+        # Unrecognized: report it, and meanwhile treat every hook it names the only safe
+        # way — blocking (so it must be classified) and uncontained (so it must be wrapped).
+        print("!unrecognized\t%s" % " ".join(cmd.split()))
+        records = [(name, 1, 0) for name in dict.fromkeys(HOOK.findall(cmd))]
+    for name, blocking, contained in records:
+        print("%s %d %d" % (name, blocking, contained))
+
+PY
+}
+
 # The SECOND net (#629): hooks.json declares blocking-ness directly. Any registration
 # carrying `|| exit 2` (or `--fail-closed`, should a registration ever pass it — today the
 # wrapper appends that token itself) names a blocking gate whatever its script returns,
 # including one that blocks purely through `permissionDecision: "deny"` and is invisible to
-# the source grep above. Extraction is deliberately UNFILTERED: non-node registrations drop
-# out on their own (no scripts/hooks/*.js token), and a future fail-closed registration
+# the source grep above. Selection is deliberately UNFILTERED: non-node registrations drop
+# out on their own (they name no scripts/hooks/*.js), and a future fail-closed registration
 # routed through run-with-flags.js should surface loudly rather than be silently excused.
 #
 # This net covers the FAIL-CLOSED-registration half of #629. A deny-capable hook whose
 # registration is NOT fail-closed still blocks (`--fail-open` governs a LAUNCH failure,
 # never a successful deny) — guard 3c below is the half that covers it.
-discover_registered_blocking() {
-    grep -E '"command":.*(--fail-closed|\|\| exit 2)' "$HOOKS_JSON" 2>/dev/null \
-      | grep -oE 'scripts/hooks/[A-Za-z0-9._-]+\.js' | sed 's|.*/||' | sort -u
+discover_registered_blocking() {   # <index>
+    awk '$1 != "!unrecognized" && $2 == 1 { print $1 }' <<< "$1" | sort -u
 }
 
 # Union of both nets, as basenames.
-discover_blocking() {
+discover_blocking() {   # <index>
     # Capture first (SC2312): a pipeline feed would mask each discoverer's rc.
     local _src _reg
-    _src="$(discover_exit2)"; _reg="$(discover_registered_blocking)"
+    _src="$(discover_exit2)"; _reg="$(discover_registered_blocking "$1")"
     { sed 's|.*/||' <<< "$_src"; printf '%s\n' "$_reg"; } | sed '/^$/d' | sort -u
 }
 
 # Blocking hooks wired into hooks.json but absent from KNOWN_EXIT2.
-unclassified_blocking() {
-    local out="" b _discovered
+unclassified_blocking() {   # <index>
+    local out="" b _discovered _idx="$1"
     # Capture first (SC2312): a process-substitution feed would mask discover_blocking's rc.
-    _discovered="$(discover_blocking)"
+    _discovered="$(discover_blocking "$_idx")"
     while IFS= read -r b; do
         [[ -z "$b" ]] && continue
-        # Only care about hooks actually wired into hooks.json.
-        grep -q "scripts/hooks/$b" "$HOOKS_JSON" || continue
+        # Only care about hooks actually wired into hooks.json — structurally, not by line.
+        grep -qE "^$b " <<< "$_idx" || continue
         in_list "$b" "${KNOWN_EXIT2[@]}" || out+="$b "
     done <<< "$_discovered"
     printf '%s' "$out"
 }
 
-unclassified="$(unclassified_blocking)"
+# Read the document ONCE, at top level so a parse failure can abort for real (an `exit`
+# inside a command substitution would only end the subshell and read as an empty, green net).
+REG_INDEX="$(registration_index)" \
+  || { printf '  FAIL %s\n' "hooks.json parsed structurally (see stderr)"; exit 1; }
+
+# ── 3a. Every registration matches a canonical shape (#629) ────────────────────
+# The index reports a command it cannot classify rather than guessing at it. That report is
+# the reason the shape allowlist is safe to be narrow: an unrecognized registration stops
+# the suite instead of being quietly assumed harmless, and its hooks are meanwhile treated
+# as blocking-and-uncontained. Widening the allowlist is a deliberate, reviewed act.
+_unrecognized="$(grep '^!unrecognized' <<< "$REG_INDEX" | cut -f2-)"
+if [[ -z "$_unrecognized" ]]; then
+    assert 0 "every hooks.json registration matches a canonical launch shape"
+else
+    printf '  ↳ unrecognized registration(s):\n'
+    printf '      %s\n' "$_unrecognized"
+    printf '  ↳ ADD the shape to the allowlist in registration_index (deliberately, in review)\n'
+    assert 1 "every hooks.json registration matches a canonical launch shape"
+fi
+
+unclassified="$(unclassified_blocking "$REG_INDEX")"
 if [[ -z "$unclassified" ]]; then
     assert 0 "no unclassified blocking node hooks (all are CONTAINED or ACCEPTED RESIDUAL)"
 else
@@ -162,6 +312,12 @@ fi
 # with a fail-closed `|| exit 2` registration and absent from KNOWN_EXIT2. The second assert
 # is the negative control — it pins that the SOURCE grep misses it, so a pass on the first
 # can only come from the registration net.
+#
+# The ONE fixture also carries the layouts a line-oriented reader gets wrong, so structural
+# per-registration isolation is proven rather than asserted: `"command"` split from its
+# value across lines, a tab and non-canonical spacing around the fail-closed tail, and a
+# decoy hook sharing its LINE with an unrelated blocking registration — the decoy must NOT
+# be classified as blocking, which is precisely what the old line grep got wrong.
 _fix="$(mktemp -d)"
 # Fail CLOSED on a mktemp failure: an empty $_fix would write the fixture to /hooks and
 # /scripts/hooks and leave the EXIT trap unable to clean up.
@@ -177,18 +333,23 @@ module.exports = () => ({
 });
 JS
 cat > "$_fix/hooks/hooks.json" <<'JSON'
-{ "hooks": { "PreToolUse": [ { "matcher": "Edit|Write", "hooks": [ {
-  "type": "command",
-  "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-deny-gate.js\" || exit 2"
-} ] } ] } }
+{ "hooks": { "PreToolUse": [ { "matcher": "Edit|Write", "hooks": [
+  { "type": "command",
+    "command":
+      "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-deny-gate.js\" ||\texit  2" },
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-decoy.js\"" }, { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/unrelated.sh\" || exit 2" }
+] } ] } }
 JSON
 # Subshells so the fixture paths can never leak into the guards below.
-_fixture_unclassified="$( HOOKS_JSON="$_fix/hooks/hooks.json"; HOOKS_DIR="$_fix/scripts/hooks"; unclassified_blocking )"
+_fixture_index="$( HOOKS_JSON="$_fix/hooks/hooks.json"; registration_index )"
+_fixture_unclassified="$( HOOKS_JSON="$_fix/hooks/hooks.json"; HOOKS_DIR="$_fix/scripts/hooks"; unclassified_blocking "$_fixture_index" )"
 _fixture_src_only="$( HOOKS_DIR="$_fix/scripts/hooks"; discover_exit2 )"
 _m1="registration-only permissionDecision gate is discovered and flagged unclassified"
 _m2="↳ control: the source grep alone does NOT see it (the registration net is what fired)"
+_m3="↳ structural isolation: split key/value + tab-spaced tail found, shared-line decoy not blamed"
 if [[ "$_fixture_unclassified" == *"synthetic-deny-gate.js"* ]]; then assert 0 "$_m1"; else assert 1 "$_m1"; fi
 if [[ -z "$_fixture_src_only" ]]; then assert 0 "$_m2"; else assert 1 "$_m2"; fi
+if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3"; else assert 1 "$_m3"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook
@@ -205,28 +366,57 @@ discover_deny_capable() {
       | sed 's|.*/||' | sort -u
 }
 # Capture first (SC2312): a process-substitution feed would mask discover_deny_capable's rc.
+# The `${KNOWN_DENY[@]+…}` guard keeps an emptied list from tripping `set -u` on bash 3.2
+# (macOS default), exactly as RESIDUAL above does.
 _deny_grep="$(discover_deny_capable)"
 # UNION with the human list, so a deny that stops being greppable stays guarded.
-_deny="$( { printf '%s\n' "$_deny_grep"; printf '%s\n' "${KNOWN_DENY[@]}"; } | sed '/^$/d' | sort -u )"
+_deny="$( { printf '%s\n' "$_deny_grep"; printf '%s\n' ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"}; } \
+          | sed '/^$/d' | sort -u )"
 while IFS= read -r _dh; do
     [[ -z "$_dh" ]] && continue
-    # Only care about hooks actually wired into hooks.json.
-    grep -q "scripts/hooks/$_dh" "$HOOKS_JSON" || continue
-    _regs="$(grep "scripts/hooks/$_dh" "$HOOKS_JSON")"
+    # Only care about hooks actually wired into hooks.json — read from the structural
+    # index, so a split-line or shared-line registration is judged on its own command.
+    _regs="$(awk -v h="$_dh" '$1 == h { print $3 }' <<< "$REG_INDEX")"
+    if [[ -z "$_regs" ]]; then
+        # Not wired at all is fine. NAMED in hooks.json yet resolving to no registration is
+        # not: a dynamically-built path (`scripts/hooks/${HOOK_NAME:-the-gate.js}`) runs the
+        # hook while producing no record, and silently skipping it would retire the guard.
+        grep -q "$_dh" "$HOOKS_JSON" || continue
+        assert 1 "$_dh (deny-capable): named in hooks.json but no registration resolves to it"
+        continue
+    fi
     _lines=0; _bad=0
-    while IFS= read -r _line; do
-        [[ -z "$_line" ]] && continue
+    while IFS= read -r _contained; do
+        [[ -z "$_contained" ]] && continue
         _lines=$((_lines+1))
-        grep -qE '"command":[[:space:]]*"/usr/bin/env -i ' <<<"$_line" || _bad=1
-        grep -q "$WRAPPER_REF" <<<"$_line" || _bad=1
+        [[ "$_contained" == "1" ]] || _bad=1
     done <<< "$_regs"
     _dm="$_dh (deny-capable): every registration launches via /usr/bin/env -i + sanitized-node.sh"
     if [[ "$_lines" -ge 1 && "$_bad" -eq 0 ]]; then assert 0 "$_dm"; else assert 1 "$_dm"; fi
 done <<< "$_deny"
 
+# KNOWN_DENY is an AUTHORITY, not decoration. Containment alone is not enough: a NEW
+# greppable deny gate could satisfy 3c while never being listed, and the day its deny
+# literal moves behind a constant it drops out of the grep with nothing left pinning it —
+# the net silently shrinks and no assertion fails. So a wired, source-discovered deny hook
+# that nobody added to the list is an unclassified failure, mirroring guard #3.
+_deny_unlisted=""
+while IFS= read -r _dh; do
+    [[ -z "$_dh" ]] && continue
+    grep -qE "^$_dh " <<< "$REG_INDEX" || continue
+    in_list "$_dh" ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"} || _deny_unlisted+="$_dh "
+done <<< "$_deny_grep"
+if [[ -z "$_deny_unlisted" ]]; then
+    assert 0 "every discovered deny-capable hook is recorded in KNOWN_DENY"
+else
+    printf '  ↳ unlisted deny-capable: %s\n' "$_deny_unlisted"
+    printf '  ↳ ADD each to KNOWN_DENY (it is what still pins the hook once the literal moves)\n'
+    assert 1 "every discovered deny-capable hook is recorded in KNOWN_DENY"
+fi
+
 # Sanity, mirroring guard #4: the deny grep must still see every listed hook, so a refactor
 # that hides the literal is caught here instead of silently shrinking the net.
-for _dh in "${KNOWN_DENY[@]}"; do
+for _dh in ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"}; do
     _dm="deny grep still detects $_dh"
     if grep -q "^$_dh\$" <<<"$_deny_grep"; then assert 0 "$_dm"; else assert 1 "$_dm"; fi
 done

@@ -153,6 +153,25 @@ if declare -F resolve_writing_prose_model >/dev/null; then
     fail "absent key produced '$_BD_WRITING_PROSE_MODEL' — a default crept in"
   fi
 
+  # A non-empty INVALID string (e.g. a provider/model id pasted from the pi
+  # config) must leave the validated model empty — the `bare` grammar rejects
+  # a `/` — while the presence probe still reports the raw value, which is
+  # what lets dispatch.sh (resolve-cli.sh:810-813) tell "absent" from
+  # "present but rejected" and refuse instead of silently falling back to
+  # agy's default model.
+  if declare -F resolve_writing_prose_raw >/dev/null; then
+    printf '{"writing_prose":{"model":"provider/model"}}' > "$_tmph/.claude/busdriver.json"
+    HOME="$_tmph" resolve_writing_prose_model
+    HOME="$_tmph" resolve_writing_prose_raw
+    if [[ -z "$_BD_WRITING_PROSE_MODEL" && "$_BD_WRITING_PROSE_RAW" == "provider/model" ]]; then
+      pass "invalid non-empty model rejected by the grammar but preserved by the presence probe"
+    else
+      fail "invalid model handling broken (model='$_BD_WRITING_PROSE_MODEL', raw='$_BD_WRITING_PROSE_RAW') — dispatch.sh could silently fall back to agy's default model"
+    fi
+  else
+    fail "resolve_writing_prose_raw not defined after sourcing $RESOLVE"
+  fi
+
   rm -rf "$_tmph"
 else
   fail "resolve_writing_prose_model not defined after sourcing $RESOLVE"

@@ -3363,6 +3363,32 @@ _PROSE_QUOTE = re.compile(r"(?<=\w)[" + _SQ + _DQ + r"](?=\w)")
 _HEREDOC_OP = re.compile(r"(?<!<)<<-?(?!<)")
 
 
+def _dq_heredoc_unescape(text):
+    """`text` -- the raw capture of a `<<"D"` delimiter -- with bash's own quote
+    removal applied, so the actual TERMINATOR line can be found.
+
+    Inside double quotes a backslash keeps its meaning only before `$`, a backtick,
+    `"`, another backslash, or a newline -- everywhere else it is a literal,
+    unremoved backslash. `<<"E\\$OF"` is closed by the line spelled `E$OF`, not by
+    the raw capture `E\\$OF`; searching for the raw spelling either misses the real
+    terminator (an over-block, the safe direction) or -- if that raw spelling also
+    happens to occur earlier, inside the body -- stops the body short of where bash
+    actually ends it, so a live command past that point reads as heredoc data and
+    is never walked. Codex in review.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == chr(92) and i + 1 < n and text[i + 1] in ("$", "`", _DQ, chr(92), "\n"):
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _squeeze_quoted_heredocs(cmd):
     """Drop the PROSE apostrophes from every quoted heredoc BODY.
 
@@ -3512,7 +3538,13 @@ def _squeeze_quoted_heredocs(cmd):
         if nl == -1:
             return cmd
     tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
-    delim = re.escape(next(g for g in m.groups() if g is not None))
+    raw_delim = next(g for g in m.groups() if g is not None)
+    # Only the DOUBLE-quoted spelling needs decoding: `<<'D'` performs no quote
+    # removal at all, and the backslash spelling's own backslash is consumed by
+    # the pattern, not captured -- group(2) is the sole raw-vs-actual mismatch.
+    if m.group(2) is not None:
+        raw_delim = _dq_heredoc_unescape(raw_delim)
+    delim = re.escape(raw_delim)
     term = re.compile("^" + tabs + delim + "$", re.M).search(scan, nl + 1)
     if not term:
         return cmd

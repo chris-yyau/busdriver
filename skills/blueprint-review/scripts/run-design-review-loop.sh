@@ -150,6 +150,50 @@ _bp_droid_rescue() {
   log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
 }
 
+# Issue #714: salvage a complete verdict from a reviewer that exited non-zero.
+# A CLI can print its whole review and then die on shutdown (cleanup error, a
+# broken pipe, an oversized session log); the exit-0 branch below is the ONLY
+# place the extractor used to run, so the raw file kept a full schema-valid
+# FAIL with 7 findings while the slot became ERROR / runtime-failed and the
+# findings never reached arbitration.
+#
+# ONE bounded attempt, fail-closed: the same extractor and the same PASS/FAIL +
+# issues[] check `_bp_droid_rescue` already uses. Anything short of a complete
+# current-round verdict returns non-zero and the caller keeps its ERROR entry.
+#
+# Attribution is overwritten from the RESOLVED cli, never trusted from the
+# payload — the shared prompt schema only shows `agy|codex|grok`, so a droid
+# reviewer self-labels `codex` (#714) — and run_id/iteration/spec_hash are
+# injected exactly as the exit-0 path does, so the freshness contract and
+# `derive_coverage` see an ordinary fresh artifact.
+#
+# NOT a droid rescue: nothing is dispatched, no prompt leaves the machine, and
+# `runtime_escalated_from` stays unset. This runs for a grok slot too — parsing
+# grok's own output is not the cross-provider forward that PR #704 closed.
+_bp_salvage_nonzero_verdict() {
+  local slot="$1" out="$2" raw="$3" cli="$4" rc="$5" duration="${6:-0}" _x_err=""
+  [[ -s "$raw" ]] || return 1
+  if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
+    rm -f "${out}.pending"
+    log_warning "  ${slot}: exit $rc and ${_x_err:-extraction failed} — keeping error entry"; return 1
+  fi
+  if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
+    rm -f "${out}.pending"
+    log_warning "  ${slot}: exit $rc and no complete verdict in raw output — keeping error entry"; return 1
+  fi
+  if jq --arg cli "$cli" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" \
+        --arg hash "$SPEC_HASH" --argjson rc "$rc" --argjson dur "$duration" \
+       '.reviewer_id=$cli | .reviewer=$cli | (.issues = ((.issues // []) | map(.reviewer=$cli)))
+        | .metadata.run_id=$rid | .metadata.iteration=$iter | .metadata.spec_hash=$hash
+        | .metadata.review_duration_ms=$dur | .metadata.salvaged_exit_code=$rc' \
+       "${out}.pending" > "${out}.tagged" 2>/dev/null && mv "${out}.tagged" "$out"; then
+    rm -f "${out}.pending"
+    log_warning "  ${slot}: CLI exited $rc but printed a complete verdict — salvaged (#714)"; return 0
+  fi
+  rm -f "${out}.pending" "${out}.tagged"
+  log_warning "  ${slot}: exit $rc and retag failed — keeping error entry"; return 1
+}
+
 # Generate a short run ID for artifact isolation
 generate_run_id() {
   local input
@@ -691,6 +735,16 @@ with open(pending, "w") as f:
         else
           create_error_json "agy" "Output was not valid JSON: ${_x_err:-no detail}" > "$AGY_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "agy" "$AGY_OUTPUT_FILE" "$AGY_RAW_FILE" \
+             "$REVIEWER_1_CLI" "$REVIEWER_EXIT" "$(( $(millis) - AGY_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.
@@ -753,6 +807,16 @@ with open(pending, "w") as f:
         else
           create_error_json "codex" "Output was not valid JSON: ${_x_err:-no detail}" > "$CODEX_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "codex" "$CODEX_OUTPUT_FILE" "$CODEX_RAW_FILE" \
+             "$REVIEWER_2_CLI" "$REVIEWER_EXIT" "$(( $(millis) - CODEX_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.
@@ -811,6 +875,16 @@ with open(pending, "w") as f:
         else
           create_error_json "grok" "Output was not valid JSON: ${_x_err:-no detail}" > "$GROK_OUTPUT_FILE"
         fi
+      # #714: ANY non-zero exit may still have printed a complete verdict —
+      # exit 3 included. `_execute_codex` re-emits the captured CLI output on
+      # stderr and THEN returns 3, and this block captures 2>&1, so the codex
+      # reviewer's lost verdict arrives here rather than on the ordinary path.
+      # One bounded, fail-closed salvage attempt ahead of both error branches.
+      # Probed as a condition on purpose (SC2310): a failed salvage must fall
+      # through to the error branches, never abort the subshell under `set -e`.
+      elif _bp_salvage_nonzero_verdict "grok" "$GROK_OUTPUT_FILE" "$GROK_RAW_FILE" \
+             "$REVIEWER_3_CLI" "$REVIEWER_EXIT" "$(( $(millis) - GROK_START ))"; then
+        :
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.

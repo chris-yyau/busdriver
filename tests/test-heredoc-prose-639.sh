@@ -33,12 +33,19 @@
 #                                      `3<<U 4<<'N'` hands it to the unquoted `U`
 #   H  the lone quote must be WEDGED — an unwedged one opens a spaced path, and deleting it
 #                                      splits the path out of the script operand
+#   I  "line" means the LOGICAL line — bash removes backslash-newline before reading
+#                                      redirections, so a continuation hides G's second
+#                                      heredoc from a physical-line count
+#   J  ...extended, not REFUSED       — a blanket refusal on any continuation re-introduced
+#                                      the very false positive this change removes, so J is
+#                                      a second BUG-side case: one heredoc, opener line
+#                                      continues, still allowed
 #
-# B..H all BLOCK on the pre-fix classifier too. That is the point: they are controls, not
-# coverage, and only A may change verdict. B and C also assert that the body is still read
-# as shell source, so a change that simply stopped scanning heredocs fails them.
+# B..I all BLOCK on the pre-fix classifier too. That is the point: they are controls, not
+# coverage, and only A and J may change verdict. B and C also assert that the body is
+# still read as shell source, so a change that stopped scanning heredocs fails them.
 #
-# Each of the eight is bitten by a mutation the other seven survive — verified, not assumed.
+# Each of the ten is bitten by a mutation the other nine survive — verified, not assumed.
 # The set was trimmed to exactly that: a plain-invocation case and a spaced-quoted-path case
 # were dropped once measured to be strict subsets of the survivors, as was a
 # delete-vs-escape case the narrowed squeeze made unbiteable.
@@ -154,6 +161,20 @@ N" "G. two heredocs on one line, the quoted one not owning the body -> BLOCK"
 assert_block "sh <<'EOF'
 python3 \"/tmp/path with space/${HELPER} --seize
 EOF" "H. a lone UNWEDGED quote opening a spaced path -> BLOCK"
+
+# I. ...and "line" must mean the LOGICAL line. Bash removes the backslash-newline before it
+# reads redirections, so this is G's two-heredocs-one-line wearing a continuation.
+# shellcheck disable=SC2016  # the $(...) is literal payload text handed to the classifier
+printf -v CONTHD 'bash -c %ssh -c "$(cat /dev/fd/3)"%s 3<<U %s\n 4<<%sN%s\npython3 %s%sx\nU\nplain\nN' \
+    "$Q" "$Q" "$BS" "$Q" "$Q" "$HELPER" "$Q"
+assert_block "$CONTHD" "I. two heredocs joined by a CONTINUATION -> BLOCK"
+
+# J. ...but only because a SECOND heredoc hides on that logical line. One heredoc whose
+# opener line merely continues is the ordinary case A shape and must still be allowed —
+# refusing every continuation outright was tried and re-introduced the false positive.
+printf -v BENIGN 'cat > /tmp/c.md <<%sEOF%s %s\n  2>/dev/null\nThe library%ss %s builds records.\nEOF' \
+    "$Q" "$Q" "$BS" "$Q" "$HELPER"
+assert_ok "$BENIGN" "J. ONE heredoc whose opener line continues -> allowed"
 
 echo
 if [[ $FAIL -eq 0 ]]; then

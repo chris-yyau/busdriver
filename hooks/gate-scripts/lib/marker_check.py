@@ -2342,7 +2342,22 @@ def _squeeze_quoted_heredocs(cmd):
     # it to the UNQUOTED `U` while this matched `N`. The count is over ALL heredoc operators,
     # quoted or not -- `_HEREDOC_QUOTED` cannot see `<<U` at all, which is exactly how the
     # mis-assignment slips through. Raised by codex on this change.
-    if len(_HEREDOC_OP.findall(scan[scan.rfind("\n", 0, m.start()) + 1:nl])) != 1:
+    # ...and "line" means the LOGICAL one. Bash removes a backslash-newline before it reads
+    # redirections, so `3<<U \<newline> 4<<'N'` is ONE line carrying two heredocs while a
+    # physical-line count sees one -- the same mis-assignment wearing a continuation, raised
+    # by codex in the PR pass after the same-line spelling was already closed. Extending is
+    # what a blanket refusal on any continuation got wrong: that also refused an ordinary
+    # single-heredoc command whose opener line simply continues, which is the very
+    # false-positive class this change exists to remove. Extending also fixes where the BODY
+    # starts -- after the logical line, not after the first newline.
+    line_start = scan.rfind("\n", 0, m.start()) + 1
+    while line_start >= 2 and scan[line_start - 2] == chr(92):
+        line_start = scan.rfind("\n", 0, line_start - 1) + 1
+    while nl > 0 and scan[nl - 1] == chr(92):
+        nl = scan.find("\n", nl + 1)
+        if nl == -1:
+            return cmd
+    if len(_HEREDOC_OP.findall(scan[line_start:nl])) != 1:
         return cmd
     tabs = "\t*" if scan[m.start():m.start() + 3].startswith("<<-") else ""
     delim = re.escape(next(g for g in m.groups() if g is not None))

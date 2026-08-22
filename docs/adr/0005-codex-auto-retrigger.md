@@ -293,20 +293,10 @@ so that route needed new plumbing to reproduce a signal the index already carrie
 
 ## Out of scope (follow-up)
 
-> **2026-06-27 update:** opencode support has been removed; this section is historical/moot.
-
-- **opencode mirror wiring.** pr-grind is one of the four features mirrored to the
-  `opencode/` subtree, and that mirror carries the identical
-  Codex-stale-on-unchanged-HEAD wait-round dead-end. Wiring the opencode pr-grind
-  SKILL/agent to invoke `$BUSDRIVER_PLUGIN_ROOT/scripts/codex-retrigger.sh` under
-  the same guard is **deferred to a follow-up PR**, consistent with the project
-  convention that `opencode/` is a downstream mirror edited only when the task is
-  explicitly the opencode port (the four features were themselves ported in a
-  dedicated PR #207), and that `opencode/` is stripped from the `claude-release`
-  distribution so Claude Code users never see it. The root helper is harness-neutral
-  and already reachable via `$BUSDRIVER_PLUGIN_ROOT` (the bridge model — opencode
-  skills call root `scripts/*.sh`, not duplicates), so the follow-up is wiring-only:
-  add the guarded call to the two opencode mirror files.
+> **2026-06-27 update:** Closed, not deferred. OpenCode host-harness support was
+> removed in #251, so there is no `opencode/` mirror to wire and the port must not
+> be restored. `opencode` remains only an optional review CLI (auditor / Mechanism
+> Witness).
 
 ## Revisit trigger
 

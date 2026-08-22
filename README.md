@@ -70,6 +70,8 @@ From brainstorming and planning to domain patterns, deployment workflows, supply
 
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — the host harness (required)
 
+OpenCode is **not** a supported host harness — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as an optional review backend for the auditor / Mechanism Witness roles via `busdriver.json`.
+
 ### Review CLI (configurable)
 
 Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:

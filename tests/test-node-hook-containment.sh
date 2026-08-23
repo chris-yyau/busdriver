@@ -175,9 +175,13 @@ RUNNER = re.compile(
     + ' ' + PROFILES
 )
 BARE_NODE = re.compile(r'node "' + ROOT + r'/scripts/hooks/([A-Za-z0-9._-]+\.js)"')
+# Its payload operand is normally a shell hook, but the shape does not forbid a node one —
+# so capture it and index any `scripts/hooks/*.js` it names rather than assuming the runner
+# is never our business. A node hook registered this way would otherwise be absent from the
+# index entirely, which reads as "not wired" to every guard below.
 SHELL_RUNNER = re.compile(
     r'bash "' + ROOT + r'/scripts/hooks/run-with-flags-shell\.sh" ' + EVENT
-    + r' "[A-Za-z0-9._/-]+" ' + PROFILES
+    + r' "([A-Za-z0-9._/-]+)" ' + PROFILES
 )
 PLAIN_BASH = re.compile(r'bash "' + ROOT + r'/(?:hooks/gate-scripts|scripts/hooks)/[A-Za-z0-9._/-]+\.sh"')
 # The session-start launcher nests a whole script in a quoted `bash -lc` payload. There is
@@ -190,7 +194,9 @@ SESSION_START = (
     '"scripts/hooks/session-start.js" "minimal,standard,strict"; exit $?; fi; '
     'printf "%s" "$input"; exit 0\''
 )
-HOOK = re.compile(r"scripts/hooks/([A-Za-z0-9._-]+\.js)")
+# Case-INSENSITIVE: this filesystem is case-insensitive, so `scripts/hooks/GATE.JS`
+# executes `gate.js`. A spelling that runs the hook must not be a spelling that hides it.
+HOOK = re.compile(r"scripts/hooks/([A-Za-z0-9._-]+\.js)", re.IGNORECASE)
 
 
 def classify(cmd):
@@ -203,8 +209,19 @@ def classify(cmd):
         return [(matched.group(1), 0, 0)]
     if cmd == SESSION_START:
         return [("run-with-flags.js", 0, 0), ("session-start.js", 0, 0)]
-    if (SHELL_GATE.fullmatch(cmd) or SHELL_RUNNER.fullmatch(cmd)
-            or PLAIN_BASH.fullmatch(cmd)):
+    matched = SHELL_RUNNER.fullmatch(cmd)
+    if matched:
+        operand = matched.group(1)
+        named = HOOK.fullmatch(operand)
+        if named:
+            return [(named.group(1), 0, 0)]
+        if operand.lower().endswith(".js"):
+            # A node hook by a path spelling this file does not index (`scripts/hooks/./x.js`)
+            # must not read as "recognized, nothing to see" — that is the unwired-by-accident
+            # hole again. Report it unrecognized instead.
+            return None
+        return []
+    if SHELL_GATE.fullmatch(cmd) or PLAIN_BASH.fullmatch(cmd):
         return []
     return None
 
@@ -230,6 +247,15 @@ except Exception as exc:                      # unreadable/malformed → fail CL
     sys.stderr.write("registration_index: %s\n" % exc)
     sys.exit(1)
 
+mentioned = set()
+for cmd in commands(doc):
+    # Every hook basename named ANYWHERE in a DECODED command, case-folded. The wiring
+    # check downstream needs "is this hook referenced at all", and asking that of the raw
+    # file text answers the wrong question twice over: a `\u0047ATE.js` escape is invisible
+    # to it, and this filesystem is case-insensitive, so `GATE.js` executes `gate.js`.
+    for name in HOOK.findall(cmd):
+        mentioned.add(name.lower())
+
 for cmd in commands(doc):
     records = classify(cmd)
     if records is None:
@@ -239,6 +265,9 @@ for cmd in commands(doc):
         records = [(name, 1, 0) for name in dict.fromkeys(HOOK.findall(cmd))]
     for name, blocking, contained in records:
         print("%s %d %d" % (name, blocking, contained))
+
+for name in sorted(mentioned):
+    print("!named %s" % name)
 
 PY
 }
@@ -255,7 +284,7 @@ PY
 # registration is NOT fail-closed still blocks (`--fail-open` governs a LAUNCH failure,
 # never a successful deny) — guard 3c below is the half that covers it.
 discover_registered_blocking() {   # <index>
-    awk '$1 != "!unrecognized" && $2 == 1 { print $1 }' <<< "$1" | sort -u
+    awk '$1 !~ /^!/ && $2 == 1 { print $1 }' <<< "$1" | sort -u
 }
 
 # Union of both nets, as basenames.
@@ -391,7 +420,8 @@ while IFS= read -r _dh; do
         # Not wired at all is fine. NAMED in hooks.json yet resolving to no registration is
         # not: a dynamically-built path (`scripts/hooks/${HOOK_NAME:-the-gate.js}`) runs the
         # hook while producing no record, and silently skipping it would retire the guard.
-        grep -q "$_dh" "$HOOKS_JSON" || continue
+        # Asked of the DECODED commands, case-folded — see the `!named` note in the index.
+        grep -qx "!named $(tr '[:upper:]' '[:lower:]' <<< "$_dh")" <<< "$REG_INDEX" || continue
         assert 1 "$_dh (deny-capable): named in hooks.json but no registration resolves to it"
         continue
     fi

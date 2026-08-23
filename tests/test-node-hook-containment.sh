@@ -160,7 +160,16 @@ SHELL_RUNNER = re.compile(
     r'bash "' + ROOT + r'/scripts/hooks/run-with-flags-shell\.sh" ' + EVENT
     + r' "([A-Za-z0-9._/-]+)" ' + PROFILES
 )
-PLAIN_BASH = re.compile(r'bash "' + ROOT + r'/(?:hooks/gate-scripts|scripts/hooks)/[A-Za-z0-9._/-]+\.sh"')
+# The two plain shell launchers this repo registers, pinned VERBATIM rather than described
+# by a pattern. A pattern here would pre-approve every future `.sh` launcher under those
+# directories — including one that dispatches a deny-capable or exit-2 JS hook, which would
+# then be classified as "recognized, nothing to see" and never reach a containment check.
+# That is precisely the silent approval the unrecognized-shape contract exists to prevent,
+# so a new launcher must fail the suite until a human classifies it, like any novel shape.
+PLAIN_BASH = (
+    'bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/load-orchestrator.sh"',
+    'bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/go-post-edit.sh"',
+)
 # The session-start launcher nests a whole script in a quoted `bash -lc` payload. There is
 # no shape to write for it that is not just the script, so it is pinned verbatim: any edit
 # to it becomes an unrecognized registration and gets re-reviewed.
@@ -206,7 +215,7 @@ def classify(cmd):
             # hole again. Report it unrecognized instead.
             return None
         return []
-    if SHELL_GATE.fullmatch(cmd) or PLAIN_BASH.fullmatch(cmd):
+    if SHELL_GATE.fullmatch(cmd) or cmd in PLAIN_BASH:
         return []
     return None
 
@@ -421,7 +430,8 @@ cat > "$_fix/hooks/hooks.json" <<'JSON'
   { "type": "command",
     "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:synthetic\" \"scripts/hooks/synthetic-canonical-gate.js\" \"strict\" || exit 2" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/CASE.GATE.js\"" },
-  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synXgate.js\"" }
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synXgate.js\"" },
+  { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/novel-launcher.sh\"" }
 ] } ] } }
 JSON
 # Subshells so the fixture paths can never leak into the guards below.
@@ -442,8 +452,12 @@ if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3
 if grep -qx "synthetic-canonical-gate.js 1 1 closed" <<< "$_fixture_index"; then assert 0 "$_m4"; else assert 1 "$_m4"; fi
 _m6="↳ a registration differing only in CASE is recognised as this hook's own"
 _m7="↳ a basename is matched literally — its dots do not wildcard onto another record"
+_m8="↳ a novel plain bash launcher is unrecognized, not silently approved"
 if [[ "$_fixture_unclassified" == *"case.gate.js"* ]]; then assert 0 "$_m6"; else assert 1 "$_m6"; fi
 if [[ "$_fixture_unclassified" != *"syn.gate.js"* ]]; then assert 0 "$_m7"; else assert 1 "$_m7"; fi
+# The two live launchers stay recognized (the real tree's guard 3a is green); a THIRD one,
+# free to dispatch any blocking hook it likes, must not inherit that approval.
+if grep -q '^!unrecognized.*novel-launcher\.sh' <<< "$_fixture_index"; then assert 0 "$_m8"; else assert 1 "$_m8"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook

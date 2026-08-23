@@ -48,7 +48,9 @@ _LOCK_WAIT = 0.05
 # else can shadow the import.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from audit_append import append_at, open_state_dir, state_dir_unchanged  # noqa: E402  (path fix above)
+import audit_append
+from audit_append import open_state_dir, state_dir_unchanged  # noqa: E402  (path fix above)
+from audit_append import WROTE, DID_NOT_WRITE, UNKNOWN  # noqa: E402
 
 LEASE_DIRNAME = ".skip-design-review-lease.d"
 # The skip file name is a CONSTANT, not an argument. Accepting any slash-free name let a
@@ -63,7 +65,9 @@ OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED = 0, 1, 2, 3, 4
 
 
 def _log_use(sfd, slot, max_uses):
-    """Append the bypass-telemetry event for ONE granted use. True only when durable.
+    """Append the bypass-telemetry event for ONE granted use.
+
+    Returns audit_append.WROTE, DID_NOT_WRITE, or UNKNOWN — see append_at (#549).
 
     Written at the ALREADY-VALIDATED state dir fd, never by pathname. The slot was created
     through sfd; resolving the repo-controlled path a second time meant a rename between
@@ -91,7 +95,7 @@ def _log_use(sfd, slot, max_uses):
         "lease_slot": slot,
         "lease_max": max_uses,
     }, separators=(",", ":"))
-    return append_at(sfd, rec)
+    return audit_append.append_at(sfd, rec)
 
 
 POISON_SUFFIX = ".poison"
@@ -122,6 +126,25 @@ def _poison(lfd, sfd, mtime):
     except OSError:
         return False
     return True
+
+
+def _release_slot(lfd, prefix, n):
+    """Return a just-created slot after a DID_NOT_WRITE audit append.
+
+    Returns True only when the slot directory is durably gone from the ledger.
+    """
+    try:
+        os.rmdir("%s%d" % (prefix, n), dir_fd=lfd)
+        os.fsync(lfd)
+    except OSError:
+        return False
+    return True
+
+
+def _seal_lease(lfd, sfd, mtime, st):
+    """Seal a lease after UNKNOWN or an unreturnable slot — poison, then disarm."""
+    _poison(lfd, sfd, mtime)
+    _disarm(sfd, st)
 
 
 def _open_locked_ledger(sfd):
@@ -357,13 +380,19 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
             # spent, instead of leaving the Bash invocation detector as the only
             # thing standing between a caller and the protected log.
             #
-            # FAIL-CLOSED, and the slot stays SPENT. An unlogged use is not a
-            # sanctioned bypass -- the docs promise every use is recorded, so the
-            # promise is enforced rather than merely stated. Keeping the slot can
-            # only make the lease shorter, never longer.
-            if not _log_use(sfd, n, max_uses):
-                return (ERROR, 0)
-            return (OK, n)
+            # FAIL-CLOSED. An unlogged use is not a sanctioned bypass — ADR 0031
+            # promises every use is recorded, so the promise is enforced rather than
+            # merely stated. On DID_NOT_WRITE the slot is RETURNED so the budget is
+            # not silently shortened; on UNKNOWN the slot stays spent and the lease is
+            # sealed so the log and ledger cannot disagree (#549).
+            log_result = _log_use(sfd, n, max_uses)
+            if log_result == WROTE:
+                return (OK, n)
+            if log_result == DID_NOT_WRITE:
+                if _release_slot(lfd, prefix, n):
+                    return (ERROR, 0)
+            _seal_lease(lfd, sfd, mtime, st)
+            return (ERROR, 0)
         # Every slot exists. Distinguish exhausted from unwritable by re-counting,
         # so a permissions failure is never reported as a spent budget.
         try:
@@ -522,6 +551,52 @@ def _demo():
 
             assert claim("../outside", 3, 30, 3600, _ns(NOW))[0] == ERROR
             assert claim("/tmp/outside", 3, 30, 3600, _ns(NOW))[0] == ERROR
+
+            # #549: append_at is three-valued. Refund the slot only on DID_NOT_WRITE;
+            # seal on UNKNOWN so a log line never outlives its slot.
+            _real_append = audit_append.append_at
+
+            def _mtime_ns(t, where=".claude"):
+                arm(t, where)
+                return os.stat(os.path.join(where, SKIP_NAME)).st_mtime_ns
+
+            def _slots_for_mtime(mtime_ns):
+                prefix = str(mtime_ns) + "."
+                return [n for n in os.listdir(os.path.join(".claude", LEASE_DIRNAME))
+                        if n.startswith(prefix) and not n.endswith(POISON_SUFFIX)]
+
+            # DID_NOT_WRITE — slot returned, budget preserved, no audit line.
+            audit_append.append_at = lambda dfd, rec: DID_NOT_WRITE
+            m6000 = _mtime_ns(6000)
+            log_before = 0
+            logpath = os.path.join(".claude", "bypass-log.jsonl")
+            if os.path.exists(logpath):
+                log_before = len(open(logpath).read().splitlines())
+            assert claim(".claude", 3, 30, 3600, _ns(6000 + 120)) == (ERROR, 0)
+            assert _slots_for_mtime(m6000) == [], _slots_for_mtime(m6000)
+            log_after = len(open(logpath).read().splitlines()) if os.path.exists(logpath) else 0
+            assert log_after == log_before
+            audit_append.append_at = _real_append
+            m6000 = _mtime_ns(6000)
+            assert claim(".claude", 3, 30, 3600, _ns(6000 + 120)) == (OK, 1)
+
+            # UNKNOWN — slot stays spent, lease sealed, no retry on the same mtime.
+            audit_append.append_at = lambda dfd, rec: UNKNOWN
+            m6100 = _mtime_ns(6100)
+            assert claim(".claude", 3, 30, 3600, _ns(6100 + 120)) == (ERROR, 0)
+            assert _slots_for_mtime(m6100) == [str(m6100) + ".1"]
+            assert os.path.exists(os.path.join(".claude", LEASE_DIRNAME,
+                                               str(m6100) + POISON_SUFFIX))
+            assert not os.path.exists(skip)
+            _mtime_ns(6100)
+            assert claim(".claude", 3, 30, 3600, _ns(6100 + 120))[0] == EXHAUSTED
+
+            # WROTE — normal durable path (covered above; one explicit re-check).
+            audit_append.append_at = _real_append
+            _mtime_ns(6200)
+            assert claim(".claude", 3, 30, 3600, _ns(6200 + 120)) == (OK, 1)
+            log = open(os.path.join(".claude", "bypass-log.jsonl")).read().splitlines()
+            assert any('"event":"skip-review-consumed"' in ln for ln in log), log
 
         finally:
             os.chdir(cwd)

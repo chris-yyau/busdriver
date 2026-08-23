@@ -38,6 +38,10 @@ import time
 _LOCK_TRIES = 10
 _LOCK_WAIT = 0.05
 
+# Three-valued append outcome (#549). Callers that refund a lease slot may do so ONLY
+# on DID_NOT_WRITE; UNKNOWN means a record may already be in the log.
+WROTE, DID_NOT_WRITE, UNKNOWN = 1, 0, -1
+
 
 def open_state_dir(state_dir):
     """Open <cwd>/<state_dir> as a dir fd, creating components, with NO symlink or
@@ -104,7 +108,8 @@ def append(state_dir, record_line):
     try:
         # The dir the record landed in must still BE the named state dir -- see
         # state_dir_unchanged for why that check belongs at this level and stops here.
-        return append_at(dfd, record_line) and state_dir_unchanged(dfd, state_dir)
+        return (append_at(dfd, record_line) == WROTE
+                and state_dir_unchanged(dfd, state_dir))
     finally:
         os.close(dfd)
 
@@ -160,6 +165,11 @@ def _still_the_named_log(fd, dfd):
 def append_at(dfd, record_line):
     """append() against an ALREADY-VALIDATED state dir fd. Does not close dfd.
 
+    Returns WROTE, DID_NOT_WRITE, or UNKNOWN. DID_NOT_WRITE means no complete record
+    reached the log; UNKNOWN means a record may have been written but durability or
+    ledger identity could not be confirmed — callers must not refund a lease slot on
+    UNKNOWN (#549).
+
     Callers that have opened the state dir once should use this rather than resolving the
     repo-controlled path a second time. lease_slot creates the slot at its own validated
     fd; if it then logged by pathname, a rename or replacement between the two could put
@@ -173,10 +183,10 @@ def append_at(dfd, record_line):
                      os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
                      0o644, dir_fd=dfd)
     except OSError:
-        return False              # symlinked log, or unwritable
+        return DID_NOT_WRITE     # symlinked log, or unwritable
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return False          # fifo/device posing as the log
+            return DID_NOT_WRITE  # fifo/device posing as the log
         # BOUNDED lock. A blocking flock has no deadline, and this runs inside a
         # PreToolUse hook with a 5s budget — a hook that times out emits no block
         # and therefore fails OPEN, so any process holding this advisory lock could
@@ -189,13 +199,17 @@ def append_at(dfd, record_line):
             except OSError:
                 time.sleep(_LOCK_WAIT)
         else:
-            return False
+            return DID_NOT_WRITE
         size = os.fstat(fd).st_size
         if size and os.pread(fd, 1, size - 1) != b"\n":
-            return False          # pre-existing torn line — refuse, never repair
+            return DID_NOT_WRITE   # pre-existing torn line — refuse, never repair
         data = (record_line + "\n").encode()
-        if os.write(fd, data) != len(data):
-            return False          # short write (storage exhausted)
+        try:
+            written = os.write(fd, data)
+        except OSError:
+            return DID_NOT_WRITE
+        if written != len(data):
+            return DID_NOT_WRITE   # short write (storage exhausted)
         # The lock above is ADVISORY, and the plain `>>` appenders elsewhere in the gate
         # do not take it, so the newline check and the write are not one atomic step: an
         # unlocked writer can land a partial line in between and our record concatenates
@@ -204,8 +218,11 @@ def append_at(dfd, record_line):
         # newline. Detection, not repair: the record stands, but the caller is told the
         # ledger did not accept it, so a lease is never granted against a torn log.
         if not _landed_on_its_own_line(fd, data):
-            return False
-        os.fsync(fd)
+            return UNKNOWN
+        try:
+            os.fsync(fd)
+        except OSError:
+            return UNKNOWN
         # ...and the directory entry. fsync of a file persists its CONTENTS, never
         # its name, so a freshly created log could vanish on a crash and leave a
         # granted lease with no record. design-clear.sh fsyncs the parent for the
@@ -213,12 +230,14 @@ def append_at(dfd, record_line):
         try:
             os.fsync(dfd)
         except OSError:
-            return False
+            return UNKNOWN
         # LAST, so the window it cannot see is as small as it can be made: the record is
         # durable, but only in the inode our fd holds. If the NAME now points somewhere
         # else, the ledger a reader opens has no such record and the lease must not be
         # granted on the strength of it.
-        return _still_the_named_log(fd, dfd)
+        if not _still_the_named_log(fd, dfd):
+            return UNKNOWN
+        return WROTE
     finally:
         os.close(fd)
 

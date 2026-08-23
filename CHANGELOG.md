@@ -1,3 +1,10 @@
+## [1.110.10](https://github.com/chris-yyau/busdriver/compare/v1.110.9...v1.110.10) (2026-08-23)
+
+
+### Bug Fixes
+
+* **careful-guard:** gate rm scan on command position, honor quote provenance ([#585](https://github.com/chris-yyau/busdriver/issues/585)) ([#741](https://github.com/chris-yyau/busdriver/issues/741)) ([aa507cd](https://github.com/chris-yyau/busdriver/commit/aa507cde4fb79079e35eee5a3fb0ecaf4f98a71a))
+
 ## [1.110.9](https://github.com/chris-yyau/busdriver/compare/v1.110.8...v1.110.9) (2026-08-23)
 
 

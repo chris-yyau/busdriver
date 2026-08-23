@@ -162,6 +162,15 @@ resolve_head_push_date_with_fallback_gate() {
   HEAD_PUSH_DATE=""
   HEAD_PUSH_CHECKS_FALLBACK_OK=0
   HEAD_PUSH_CREATE_DATE=""
+  # Cross-repo (fork) PRs short-circuit BEFORE the fetch: these are the BASE repo's
+  # events, which can never witness a branch living in the fork, so nothing in that
+  # response can inform this decision. Ordering it after the fetch would let a
+  # transient base-repo failure or rate-limit stale every fork PR — reinstating the
+  # #271-class fail-close the exemption exists to prevent. No floor either (see below).
+  if [[ "$cross_repo" == "1" ]]; then
+    HEAD_PUSH_CHECKS_FALLBACK_OK=1
+    return 0
+  fi
   if ! _fetch_head_push_events_page "$owner" "$repo"; then
     return 0
   fi
@@ -175,13 +184,7 @@ resolve_head_push_date_with_fallback_gate() {
   eligible=$(head_push_checks_fallback_eligible_from_events_json "$events_json" "$branch" "$cross_repo")
   if [[ "$eligible" == "1" ]]; then
     HEAD_PUSH_CHECKS_FALLBACK_OK=1
-    # Cross-repo PRs take NO floor: these are the BASE repo's events, and a same-NAMED
-    # base branch would supply an unrelated CreateEvent that discards the fork's valid
-    # anchor — the #271-class fail-close re-entered through the floor. Left empty so
-    # apply_head_checks_floor no-ops, exactly as for any branch with no CreateEvent.
-    if [[ "$cross_repo" != "1" ]]; then
-      HEAD_PUSH_CREATE_DATE=$(head_push_create_date_from_events_json "$events_json" "$branch")
-    fi
+    HEAD_PUSH_CREATE_DATE=$(head_push_create_date_from_events_json "$events_json" "$branch")
   fi
   return 0
 }

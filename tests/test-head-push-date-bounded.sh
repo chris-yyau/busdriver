@@ -2,8 +2,10 @@
 # test-head-push-date-bounded.sh — #624 bounded HEAD_PUSH_DATE probe regression.
 #
 # Shared mechanism: scripts/lib/head-push-date.sh (single-page events fetch, no
-# --paginate). Missing PushEvent in the bounded window → empty HEAD_PUSH_DATE →
-# existing SHA-bound earliest check-suite fallback; never committer date (#189).
+# --paginate). Missing PushEvent in the bounded window → empty HEAD_PUSH_DATE, and
+# the SHA-bound earliest check-suite fallback is then permitted ONLY for a qualifying
+# lifetime-scoped branch CreateEvent, or for a cross-repository (fork) PR whose branch
+# the base repo's feed can never witness. Never the committer date (#189).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -212,6 +214,24 @@ resolve_head_push_date_with_fallback_gate owner repo "$FULL_SHA" "$BRANCH" 1
 unset GH_MOCK_EVENTS_FILE
 check "cross-repo → fallback eligible" "1" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
 check "cross-repo → NO floor from base-repo events" "" "${HEAD_PUSH_CREATE_DATE:-}"
+unset HEAD_PUSH_DATE HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
+
+# --- Fork exemption must not depend on the base-repo events request succeeding ---
+# The base feed is irrelevant to a fork PR, so a failed/rate-limited fetch of it must
+# not decide the fork's freshness. If the exemption ran only AFTER a successful fetch,
+# a transient base-repo API failure would stale every fork PR — the same #271-class
+# fail-close the exemption exists to prevent.
+_orig_fetch_fn=$(declare -f _fetch_head_push_events_page)
+# shellcheck disable=SC2034  # stub mirrors the real helper's output-global contract
+_fetch_head_push_events_page() { HEAD_PUSH_EVENTS_JSON=""; return 1; }
+unset HEAD_PUSH_DATE HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
+resolve_head_push_date_with_fallback_gate owner repo "$FULL_SHA" "$BRANCH" 1
+check "cross-repo + FAILED events fetch → fallback still eligible" "1" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
+check "cross-repo + FAILED events fetch → still no floor" "" "${HEAD_PUSH_CREATE_DATE:-}"
+unset HEAD_PUSH_DATE HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
+resolve_head_push_date_with_fallback_gate owner repo "$FULL_SHA" "$BRANCH" 0
+check "same-repo + FAILED events fetch → fail-CLOSED" "0" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
+eval "$_orig_fetch_fn"
 unset HEAD_PUSH_DATE HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
 
 # --- fetch-pr-state.sh uses shared resolver (outside-window fixture) ---

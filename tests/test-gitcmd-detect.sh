@@ -1681,6 +1681,160 @@ for _c in ('echo bash -c "git commit"',
            '[ -f x ] -c "git commit"',
            "printf '%s' 'X=$(x)' bash -c 'git commit'"):
     check(f"torn-nested- {_c!r}", g.git_commit(_c)[0], False)
+# #589: a QUOTED glob-shaped word that resolves to NO interpreter is not the sh
+# stand-in. Both halves are required, and neither is about position -- see
+# _fallback_interpreter_name. QUOTED, because bash performs no pathname
+# expansion inside quotes, so the word can only name a file literally called
+# `*.py`; the raw spelling comes from _raw_tokens, and an unavailable or
+# unaligned raw stream narrows nothing (fail CLOSED). UNRESOLVED, because a glob
+# that DOES fnmatch an interpreter still reaches a shell, so it stays
+# fail-closed in command position and everywhere else.
+check("589- torn printf operand '*.py' is not a shell",
+      g.git_commit("X=$(printf x y) printf '%s' '*.py' -c 'git commit -m x'")[0],
+      False)
+check("589+ glob-shaped command word still names a shell",
+      g.git_commit('/bin/ba?h -c "git commit -m x"')[0], True)
+check("589+ quoted glob-shaped command pathname stays fail-closed",
+      g.git_commit("'./b*sh' -c 'git commit -m x'")[0], True)
+# EVERY interpreter, not just bash. A glob that RESOLVES must survive the #589
+# narrowing, and the one that made this sweep necessary is `sh` itself: a `?`
+# form of `sh` fnmatches the real `sh`, so _interpreter_name returns the same
+# string it uses for the unresolved stand-in. A name-equality test could not
+# tell them apart and silently dropped `/bin/?h -c 'git commit -m x'`, which
+# runs. Generated per interpreter so a newly added shell cannot miss coverage.
+for _i in sorted(g._INTERPRETERS):
+    _forms = ['/bin/' + _i[0] + '?' + _i[2:] if len(_i) > 2 else '/bin/' + _i[0] + '?',
+              '/bin/' + _i[0] + '*',                      # star, not just `?`
+              '/bin/*' + _i[-1],                          # leading star
+              # BRACKET CLASS -- fnmatch has no POSIX classes, so this matches
+              # NOTHING here while bash expands it to the real binary and runs
+              # it. The suppression must not fire on a bracket for exactly that
+              # reason; see _fallback_interpreter_name.
+              '/bin/' + _i[0] + '[[:alpha:]]' + _i[2:] if len(_i) > 2
+              else '/bin/' + _i[0] + '[[:alpha:]]',
+              # `bash -O nocaseglob` expands this to the real binary; fnmatchcase
+              # refuses it, so the resolution test must be case-insensitive.
+              '/bin/' + (_i[0] + '?' + _i[2:] if len(_i) > 2
+                         else _i[0] + '?').upper()]
+    for _g in _forms:
+        check(f"589+ glob {_g!r} stays fail-closed ({_i})",
+              g.git_commit(f"{_g} -c 'git commit -m x'")[0], True)
+# A bracket that resolves to nothing under fnmatch is still refused, even when
+# the word names no interpreter at all -- the class could expand to one.
+# QUOTE PROVENANCE is what separates #589's data from a real glob, and it is the
+# half `tok` alone cannot supply (shlex strips quotes). Quoted: bash performs no
+# pathname expansion, so the word can only name a file literally called `*.py`.
+# UNQUOTED: the glob expands to whatever is on disk, so a `shell.py` symlink to
+# bash really does run the commit -- fail-CLOSED, both in command position and
+# as an operand.
+check("589+ UNQUOTED glob command word stays fail-closed",
+      g.git_commit("X=$(printf x y) ./*.py -c 'git commit -m x'")[0], True)
+check("589+ UNQUOTED glob operand stays fail-closed",
+      g.git_commit("X=$(printf x y) printf %s ./*.py -c 'git commit -m x'")[0], True)
+check("589- double-quoted glob operand is not a shell",
+      g.git_commit('X=$(printf x y) printf %s "*.py" -c \'git commit -m x\'')[0],
+      False)
+# THE FAIL-OPEN BOUNDARY: the narrowing consumes quote provenance, so it is only
+# ever as safe as `_raw_tokens`. That helper returns None when the raw and posix
+# token streams do not align 1:1 -- adjacent-quote concatenation, a bare suffix
+# on a quoted word, an empty-quote splice -- and _quoted_literal(None) is False,
+# so the scan narrows NOTHING and the glob is promoted as before. Every row below
+# is TORN (an aligned, non-torn segment never reaches the fallback at all, so it
+# would test nothing) and every row must stay DETECTED.
+for _c in ("X=$(printf x y) printf %s '*'\".py\" -c 'git commit -m x'",
+           "X=$(printf x y) printf %s '*'.py -c 'git commit -m x'",
+           "X=$(printf x y) printf %s ''*.py -c 'git commit -m x'"):
+    check(f"589+ unaligned raw stream narrows nothing {_c[24:44]!r}",
+          g.git_commit(_c)[0], True)
+# An ESCAPED glob is a literal to bash too, but the raw spelling carries no
+# quote, so it is not narrowed. Over-block, which is the safe direction; pinned
+# so a future "improvement" that reads the escape has to face this row.
+check("589+ escaped glob is not a quoted literal (over-block)",
+      g.git_commit("X=$(printf x y) printf %s \\*.py -c 'git commit -m x'")[0],
+      True)
+# The provenance helper itself, at the boundary values the rows above depend on.
+check("_quoted_literal(None) is False (fail-closed)", g._quoted_literal(None), False)
+check("_quoted_literal single-quoted", g._quoted_literal("'*.py'"), True)
+check("_quoted_literal double-quoted", g._quoted_literal('"*.py"'), True)
+check("_quoted_literal concatenated is False", g._quoted_literal("'*'\".py\""), False)
+check("_quoted_literal bare is False", g._quoted_literal('*.py'), False)
+# PROPERTY SWEEP: quoting x concatenation x escaping x alignment.
+#
+# The invariant, stated once: the #589 narrowing fires IF AND ONLY IF the raw
+# token stream aligns 1:1 with the posix one AND this token's own raw spelling
+# is a single fully-quoted word. A bare glob, an escape, a concatenation, or a
+# splice that breaks alignment must all leave the token fail-CLOSED.
+#
+# Expectations are HAND-WRITTEN from bash semantics, NOT derived from
+# `_raw_tokens`/`_quoted_literal`. Deriving them from the production helpers is
+# a tautology: a helper that wrongly accepted an unquoted or unaligned spelling
+# would move the expectation and the verdict together, and the regression would
+# still pass. The oracle below is the independent half of the test.
+#
+# `narrowed` is True only where bash itself performs no pathname expansion on a
+# SINGLE whole word: one quote pair around the entire token. Concatenation,
+# a bare suffix, an empty-quote splice and a backslash escape are all False --
+# some are literals to bash too, but the scan cannot prove it from one aligned
+# raw token, so the only safe answer is fail-CLOSED.
+_SPELLINGS = (
+    ("*.py",           False),   # bare glob -- really expands
+    ("'*.py'",         True),    # single-quoted whole word
+    ('"*.py"',         True),    # double-quoted whole word
+    ("'*'\".py\"",     False),   # adjacent-quote concatenation
+    ("'*'.py",         False),   # quoted prefix, bare suffix
+    ("''*.py",         False),   # empty-quote splice
+    ("\\*.py",         False),   # backslash escape
+    ("'*.'py",         False),   # quoted prefix, bare tail
+    ('"*"\'.py\'',     False),   # mixed-quote concatenation
+)
+for _sp, _narrowed in _SPELLINGS:
+    # OPERAND position: assert the full biconditional against the oracle.
+    _seg = f"X=$(printf x y) printf %s {_sp} -c 'git commit -m x'"
+    check(f"589 prop operand {_sp!r} -> {'narrowed' if _narrowed else 'fail-closed'}",
+          g.git_commit(_seg)[0], not _narrowed)
+    # COMMAND position: assert only the fail-CLOSED half. A fully-quoted glob AS
+    # the command word is the residual exclusion (see ADR 0045 Consequences), and
+    # pinning it would pin a fail-open as expected -- so that combination is
+    # deliberately left unasserted rather than fossilised.
+    if not _narrowed:
+        _cseg = f"X=$(printf x y) {_sp} -c 'git commit -m x'"
+        check(f"589 prop cmd-word {_sp!r} stays fail-closed",
+              g.git_commit(_cseg)[0], True)
+    # Cross-check the PROVENANCE HELPERS against the same independent oracle, so
+    # a helper that drifts is caught here rather than silently agreeing with a
+    # derived expectation. This is an equality between two independently-obtained
+    # values, not a restatement of one of them.
+    _rawtoks = g._raw_tokens(_seg)
+    _idx = next((_i for _i, _t in enumerate(g.toks_once(_seg))
+                 if any(_c in _t for _c in '*?')), None)
+    check(f"589 prov {_sp!r} raw/posix alignment + quote verdict",
+          bool(_rawtoks is not None and _idx is not None
+               and g._quoted_literal(_rawtoks[_idx])),
+          _narrowed)
+check("589+ bracket-class operand stays fail-closed",
+      g.git_commit("X=$(printf x y) printf '%s' '[[:alpha:]]*' -c 'git commit -m x'")[0],
+      True)
+# The interpreter that a POSITIONAL narrowing would have suppressed. `./+` is
+# unreadable as a command word, so the walk cannot vouch for it and the scan
+# runs; if `./+` is a dispatcher (`exec "$@"`) the commit really does run. The
+# branch that gated the scan on the walk's index returned False here. Fail-CLOSED
+# is the only answer an unreadable command word can have.
+check("589+ interpreter behind an unreadable command word stays fail-closed",
+      g.git_commit("./+ bash -c 'git commit -m x'")[0], True)
+# ACCEPTED-CURRENT, not a desired result. `bash` here is a printf ARGUMENT and
+# nothing commits -- but after a tear the debris has destroyed argv position, so
+# this is token-for-token indistinguishable from the `X=$(printf x y) bash -c
+# '<s>'` row above, which DOES commit. Separating them needs the `$(`-span
+# rebuild this file reverted after five verified bypasses. Pre-existing on main;
+# costs a visible stall, never a bypass.
+#
+# RETIREMENT CONDITION: this row may flip to False only when every
+# `torn-nested+` row above still returns True under the same change. Narrowing
+# by command-word position does NOT qualify -- it fails six of them (measured).
+# See docs/adr/0045-torn-assignment-any-position-recovery.md.
+check("torn-nested~ (accepted-current) interpreter-named operand after a tear",
+      g.git_commit("X=$(printf x y) printf '%s' bash -c 'git commit -m x'")[0],
+      True)
 # `.` (source) is a real command name with no word character, like `:` and `[`
 # above. Misclassifying it as unreadable sent `. /dev/null bash -c 'git
 # commit'` into the any-position fallback scan, which extracted `bash -c

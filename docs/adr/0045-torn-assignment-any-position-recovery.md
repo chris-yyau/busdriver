@@ -111,8 +111,16 @@ rounds, each a real fail-open:
 The generated sweep in `tests/` covers five glob forms per member of
 `_INTERPRETERS` — trailing `?`, trailing `*`, leading `*`, a POSIX bracket
 class, and an uppercase `nocaseglob` form — so a newly added shell cannot miss
-coverage, and none of the four bypasses above can return silently. The quoted /
-unquoted pair is pinned separately, in both command and operand position.
+coverage, and none of the four bypasses above can return silently.
+
+Quote provenance is pinned asymmetrically, and deliberately so: the **unquoted**
+glob is pinned fail-CLOSED in *both* command and operand position, while the
+**quoted** glob is pinned narrowed only as an **operand**. The quoted glob in
+command position is exactly the residual exclusion described under Consequences,
+so pinning it would be pinning a fail-open as expected — see the note there on
+why that case carries no test. The raw/POSIX alignment boundary that decides
+whether provenance is trusted at all is pinned separately, since a `None` raw
+stream must narrow nothing.
 
 **The generalisable lesson:** all four were the same mistake — treating a
 *negative* static result as proof of absence, when the static matcher is

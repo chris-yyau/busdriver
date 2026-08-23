@@ -1758,6 +1758,59 @@ check("_quoted_literal single-quoted", g._quoted_literal("'*.py'"), True)
 check("_quoted_literal double-quoted", g._quoted_literal('"*.py"'), True)
 check("_quoted_literal concatenated is False", g._quoted_literal("'*'\".py\""), False)
 check("_quoted_literal bare is False", g._quoted_literal('*.py'), False)
+# PROPERTY SWEEP: quoting x concatenation x escaping x alignment.
+#
+# The invariant, stated once: the #589 narrowing fires IF AND ONLY IF the raw
+# token stream aligns 1:1 with the posix one AND this token's own raw spelling
+# is a single fully-quoted word. A bare glob, an escape, a concatenation, or a
+# splice that breaks alignment must all leave the token fail-CLOSED.
+#
+# Expectations are HAND-WRITTEN from bash semantics, NOT derived from
+# `_raw_tokens`/`_quoted_literal`. Deriving them from the production helpers is
+# a tautology: a helper that wrongly accepted an unquoted or unaligned spelling
+# would move the expectation and the verdict together, and the regression would
+# still pass. The oracle below is the independent half of the test.
+#
+# `narrowed` is True only where bash itself performs no pathname expansion on a
+# SINGLE whole word: one quote pair around the entire token. Concatenation,
+# a bare suffix, an empty-quote splice and a backslash escape are all False --
+# some are literals to bash too, but the scan cannot prove it from one aligned
+# raw token, so the only safe answer is fail-CLOSED.
+_SPELLINGS = (
+    ("*.py",           False),   # bare glob -- really expands
+    ("'*.py'",         True),    # single-quoted whole word
+    ('"*.py"',         True),    # double-quoted whole word
+    ("'*'\".py\"",     False),   # adjacent-quote concatenation
+    ("'*'.py",         False),   # quoted prefix, bare suffix
+    ("''*.py",         False),   # empty-quote splice
+    ("\\*.py",         False),   # backslash escape
+    ("'*.'py",         False),   # quoted prefix, bare tail
+    ('"*"\'.py\'',     False),   # mixed-quote concatenation
+)
+for _sp, _narrowed in _SPELLINGS:
+    # OPERAND position: assert the full biconditional against the oracle.
+    _seg = f"X=$(printf x y) printf %s {_sp} -c 'git commit -m x'"
+    check(f"589 prop operand {_sp!r} -> {'narrowed' if _narrowed else 'fail-closed'}",
+          g.git_commit(_seg)[0], not _narrowed)
+    # COMMAND position: assert only the fail-CLOSED half. A fully-quoted glob AS
+    # the command word is the residual exclusion (see ADR 0045 Consequences), and
+    # pinning it would pin a fail-open as expected -- so that combination is
+    # deliberately left unasserted rather than fossilised.
+    if not _narrowed:
+        _cseg = f"X=$(printf x y) {_sp} -c 'git commit -m x'"
+        check(f"589 prop cmd-word {_sp!r} stays fail-closed",
+              g.git_commit(_cseg)[0], True)
+    # Cross-check the PROVENANCE HELPERS against the same independent oracle, so
+    # a helper that drifts is caught here rather than silently agreeing with a
+    # derived expectation. This is an equality between two independently-obtained
+    # values, not a restatement of one of them.
+    _rawtoks = g._raw_tokens(_seg)
+    _idx = next((_i for _i, _t in enumerate(g.toks_once(_seg))
+                 if any(_c in _t for _c in '*?')), None)
+    check(f"589 prov {_sp!r} raw/posix alignment + quote verdict",
+          bool(_rawtoks is not None and _idx is not None
+               and g._quoted_literal(_rawtoks[_idx])),
+          _narrowed)
 check("589+ bracket-class operand stays fail-closed",
       g.git_commit("X=$(printf x y) printf '%s' '[[:alpha:]]*' -c 'git commit -m x'")[0],
       True)

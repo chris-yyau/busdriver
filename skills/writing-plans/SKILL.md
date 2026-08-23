@@ -7,7 +7,7 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. behavioral changes ship with tests — ordering is not mandated (`/tdd` on demand, ADR 0038). Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
@@ -48,12 +48,15 @@ This structure informs the task decomposition. Each task should produce self-con
 
 ## Bite-Sized Task Granularity
 
-**Each step is one action (2-5 minutes):**
-- "Write the failing test" - step
-- "Run it to make sure it fails" - step
-- "Implement the minimal code to make the test pass" - step
-- "Run the tests and make sure they pass" - step
-- "Commit" - step
+**Each step is one action (2-5 minutes).** behavioral changes ship with tests. **Ordering is not mandated** (ADR 0038) — RED → GREEN → REFACTOR is on demand via `/tdd`, not a plan default.
+
+Typical task shape (ordering flexible):
+- "Implement or change the code" — step
+- "Add or update tests" — step
+- "Run the tests and make sure they pass" — step
+- "Commit" — step
+
+**When TDD is explicitly requested** (`/tdd` or direct ask): write failing test → verify fail → minimal implementation → verify pass → commit.
 
 ## Plan Document Header
 
@@ -91,32 +94,29 @@ This structure informs the task decomposition. Each task should produce self-con
 
 (Interfaces make cross-task dependencies explicit so a worker implementing Task N — possibly in a fresh subagent with no memory of Task 1 — knows the exact signatures it can rely on and must expose. Omit only for a single-task plan.)
 
-- [ ] **Step 1: Write the failing test**
+**Tests:** behavioral changes ship with tests. **Ordering is not mandated** (ADR 0038). Implementation and tests may be done in either order unless TDD was explicitly requested (`/tdd` or direct ask) for **this task** — then use failing test → verify fail → implementation → verify pass → commit.
+
+- [ ] **Implement the behavior with tests** (order flexible unless TDD was explicitly requested)
 
 ```python
+# src/path/file.py
+def function(input):
+    return expected
+```
+
+```python
+# tests/path/test.py
 def test_specific_behavior():
     result = function(input)
     assert result == expected
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/path/test.py::test_name -v`
-Expected: FAIL with "function not defined"
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-def function(input):
-    return expected
-```
-
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Run tests and verify pass**
 
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Commit**
 
 ```bash
 git add tests/path/test.py src/path/file.py
@@ -138,7 +138,7 @@ Every step must contain the actual content an engineer needs. These are **plan f
 - Exact file paths always
 - Complete code in every step — if a step changes code, show the code
 - Exact commands with expected output
-- DRY, YAGNI, TDD, frequent commits
+- DRY, YAGNI, tests for behavioral changes (ordering not mandated — `/tdd` on demand, ADR 0038), frequent commits
 
 ## Plan Sanity Check
 

@@ -1,3 +1,10 @@
+## [1.110.8](https://github.com/chris-yyau/busdriver/compare/v1.110.7...v1.110.8) (2026-08-23)
+
+
+### Bug Fixes
+
+* **skills:** align planned pipeline with ADR 0038 test ordering ([#653](https://github.com/chris-yyau/busdriver/issues/653)) ([#736](https://github.com/chris-yyau/busdriver/issues/736)) ([f35704c](https://github.com/chris-yyau/busdriver/commit/f35704c910c66fe8688b4dd3d3207d435297bc15))
+
 ## [1.110.7](https://github.com/chris-yyau/busdriver/compare/v1.110.6...v1.110.7) (2026-08-22)
 
 

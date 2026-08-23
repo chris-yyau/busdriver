@@ -64,19 +64,23 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
 # HEAD_PUSH_DATE: push event timestamp — the SOLE Tier-F +1 freshness anchor.
-# --paginate + slurp (jq -rs) so the PushEvent for HEAD is found even when it lands
-# on a later events page; without pagination a HEAD push beyond the first page yields
-# empty. Best-effort; exports empty on failure or no match, in which case Tier F fails
+# Bounded to one events page (#624); PushEvent not in window → empty → Tier F fails
 # CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
 # HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
-# Branch filter prevents anchoring on a PushEvent from a different branch that
-# shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
-PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
-_ref="refs/heads/${PR_BRANCH:-}"
-HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+# ONE gh pr view for both fields — this runs on a hot polling path.
+# Fork PRs: $OWNER/$REPO is the BASE repo, whose events feed can never witness a branch
+# living in the fork, so the #624 CreateEvent gate is not applicable there — without this
+# every fork PR would stale forever (#271-class). Unknown ⇒ 0 (strict same-repo path).
+PR_VIEW_JSON=$(gh pr view "$PR" --json headRefName,isCrossRepository 2>/dev/null || echo '{}')
+PR_BRANCH=$(printf '%s' "$PR_VIEW_JSON" | jq -r '.headRefName // empty' 2>/dev/null || echo "")
+PR_CROSS_REPO=$(printf '%s' "$PR_VIEW_JSON" | jq -r 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
+HEAD_PUSH_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib/head-push-date.sh"
+# shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
+[ -f "$HEAD_PUSH_LIB" ] && . "$HEAD_PUSH_LIB"
+HEAD_PUSH_CHECKS_FALLBACK_OK=0
+resolve_head_push_date_with_fallback_gate "$OWNER" "$REPO" "$HEAD_FULL_SHA" "$PR_BRANCH" "${PR_CROSS_REPO:-0}"
+HEAD_PUSH_DATE="${HEAD_PUSH_DATE:-}"
 # HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
 # (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
 # the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
@@ -97,10 +101,20 @@ HEAD_CHECKS_DATE=""
 # backdated suite and accept a stale 👍 / resolved thread as fresh. When PR_BRANCH is empty
 # (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
 # to this PR — fail closed to stale rather than risk a backdated ack. Deliberate, not dead code.
-if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
-  HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
+if [ -z "$HEAD_PUSH_DATE" ] && [ "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}" = "1" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
+  SUITES_JSON=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null || echo "")
+  HEAD_CHECKS_DATE=$(printf '%s' "$SUITES_JSON" \
     | jq -rs --arg sha "$HEAD_FULL_SHA" \
       '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
+  # Drop a suite predating this branch's creation (#624 R2). Shared helpers so the three
+  # consumers cannot drift; no-op when either date is empty (e.g. a fork PR).
+  apply_head_checks_floor
+  # ...but do not lose a VALID post-creation suite with it (#743 Codex P2): re-select the
+  # earliest suite AT/AFTER the floor from the same response.
+  if [ -z "$HEAD_CHECKS_DATE" ] && [ -n "${HEAD_PUSH_CREATE_DATE:-}" ]; then
+    HEAD_CHECKS_DATE=$(head_checks_date_after_floor_from_suites_json \
+      "$SUITES_JSON" "$HEAD_FULL_SHA" "$HEAD_PUSH_CREATE_DATE")
+  fi
 fi
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 in

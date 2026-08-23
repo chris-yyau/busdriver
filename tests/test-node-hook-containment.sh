@@ -64,8 +64,11 @@ in_list() {  # in_list <needle> <list...>
 # behind a constant or a helper call is genuinely undetectable by grep — that gap is
 # WHY the explicit KNOWN_EXIT2 list is the real guard and guard #4 pins the trio.
 discover_exit2() {
-    { grep -lE 'process\.exit\([[:space:]]*2|exitCode[[:space:]]*[:=][[:space:]]*2' "$HOOKS_DIR"/*.js 2>/dev/null
-      grep -lE '\?[[:space:]]*0[[:space:]]*:[[:space:]]*2' "$HOOKS_DIR"/*.js 2>/dev/null
+    # `*.[jJ][sS]`, not `*.js`: bash matches the pattern itself case-sensitively, so on the
+    # case-insensitive filesystem this repo runs on a `CaseExit.JS` hook is a real, loadable
+    # module that a plain `*.js` glob never sees.
+    { grep -lE 'process\.exit\([[:space:]]*2|exitCode[[:space:]]*[:=][[:space:]]*2' "$HOOKS_DIR"/*.[jJ][sS] 2>/dev/null
+      grep -lE '\?[[:space:]]*0[[:space:]]*:[[:space:]]*2' "$HOOKS_DIR"/*.[jJ][sS] 2>/dev/null
     } | sort -u
 }
 
@@ -278,7 +281,10 @@ unclassified_blocking() {   # <index>
     while IFS= read -r b; do
         [[ -z "$b" ]] && continue
         # Only care about hooks actually wired into hooks.json — structurally, not by line.
-        grep -qE "^$b " <<< "$_idx" || continue
+        # Case-folded: a registration naming `caseexit.js` runs a source file committed as
+        # `CaseExit.js` here, and a case-sensitive compare would fail to associate the two
+        # and skip the hook entirely.
+        grep -qiE "^$b " <<< "$_idx" || continue
         in_list "$b" "${KNOWN_EXIT2[@]}" || out+="$b "
     done <<< "$_discovered"
     printf '%s' "$out"
@@ -443,7 +449,7 @@ discover_deny_capable() {
     # decision — does not. A decision built with no literal at all (a constant from
     # another module) remains beyond any grep, which is why KNOWN_DENY is the authority.
     python3 - "$HOOKS_DIR" <<'PY'
-import glob, os, re, sys
+import os, re, sys
 
 # Two stdout block shapes, and they are separate mechanisms rather than spellings of one:
 # `permissionDecision: "deny"` is the PreToolUse form, and a top-level `decision: "block"`
@@ -456,7 +462,17 @@ import glob, os, re, sys
 # would be the same spelling game one level down.
 DECISION = re.compile(r"\bpermissionDecision\b|\bdecision\b")
 DENY = re.compile(r"""(['"`])(?:deny|block)\1""")
-for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.js"))):
+# Enumerate rather than glob: `glob("*.js")` matches its pattern case-sensitively, so a
+# `CaseDeny.JS` hook — perfectly loadable here — would never be scanned.
+try:
+    entries = sorted(os.listdir(sys.argv[1]))
+except OSError:
+    entries = []
+
+for name in entries:
+    if not name.lower().endswith(".js"):
+        continue
+    path = os.path.join(sys.argv[1], name)
     try:
         with open(path, errors="replace") as handle:
             body = handle.read()
@@ -482,7 +498,7 @@ while IFS= read -r _dh; do
     [[ -z "$_dh" ]] && continue
     # Only care about hooks actually wired into hooks.json — read from the structural
     # index, so a split-line or shared-line registration is judged on its own command.
-    _regs="$(awk -v h="$_dh" '$1 == h { print $3 }' <<< "$REG_INDEX")"
+    _regs="$(awk -v h="$_dh" 'tolower($1) == tolower(h) { print $3 }' <<< "$REG_INDEX")"
     if [[ -z "$_regs" ]]; then
         # Not wired at all is fine. NAMED in hooks.json yet resolving to no registration is
         # not: a dynamically-built path (`scripts/hooks/${HOOK_NAME:-the-gate.js}`) runs the
@@ -510,7 +526,10 @@ done <<< "$_deny"
 _deny_unlisted=""
 while IFS= read -r _dh; do
     [[ -z "$_dh" ]] && continue
-    grep -qE "^$_dh " <<< "$REG_INDEX" || continue
+    # Case-folded, exactly as the containment lookup above is — otherwise a `CaseDeny.JS`
+    # registered as `casedeny.js` clears containment here and then silently escapes the
+    # KNOWN_DENY requirement, which is the authority the containment net rests on.
+    grep -qiE "^$_dh " <<< "$REG_INDEX" || continue
     in_list "$_dh" ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"} || _deny_unlisted+="$_dh "
 done <<< "$_deny_grep"
 if [[ -z "$_deny_unlisted" ]]; then

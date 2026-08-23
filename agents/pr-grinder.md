@@ -677,10 +677,16 @@ HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commi
 # fails CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
 PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+# Fork PRs: $OWNER/$REPO is the BASE repo, whose events feed can never witness a branch
+# living in the fork, so the #624 CreateEvent gate is not applicable there — without this
+# every fork PR would stale forever (#271-class). Unknown ⇒ 0 (strict same-repo path).
+PR_CROSS_REPO=$(gh pr view "$PR_NUMBER" --json isCrossRepository --jq 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
 HEAD_PUSH_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib/head-push-date.sh"
 # shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
 [ -f "$HEAD_PUSH_LIB" ] && . "$HEAD_PUSH_LIB"
-HEAD_PUSH_DATE=$(resolve_head_push_date "$OWNER" "$REPO" "$HEAD_FULL_SHA" "$PR_BRANCH")
+HEAD_PUSH_CHECKS_FALLBACK_OK=0
+resolve_head_push_date_with_fallback_gate "$OWNER" "$REPO" "$HEAD_FULL_SHA" "$PR_BRANCH" "${PR_CROSS_REPO:-0}"
+HEAD_PUSH_DATE="${HEAD_PUSH_DATE:-}"
 # HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
 # (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
 # the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
@@ -702,10 +708,13 @@ HEAD_CHECKS_DATE=""
 # (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
 # to this PR — fail closed to stale (one extra wait-round / codex-retrigger) rather than
 # risk a backdated ack. The guard is deliberate, not dead code.
-if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
+if [ -z "$HEAD_PUSH_DATE" ] && [ "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}" = "1" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
   HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
     | jq -rs --arg sha "$HEAD_FULL_SHA" \
       '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
+  # Drop a suite predating this branch's creation (#624 R2). Shared helper so the three
+  # consumers cannot drift; no-op when either date is empty (e.g. a fork PR).
+  apply_head_checks_floor
 fi
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical

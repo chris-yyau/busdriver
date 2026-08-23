@@ -119,10 +119,14 @@ _fetch_pr_state() {
     # (Cubic P2: branch-agnostic payload.head match can pick up the wrong PushEvent
     # if two branches share the same tip SHA; filtering by payload.ref = refs/heads/<branch>
     # eliminates the ambiguity).
-    local _full_sha _sha _pr_json _pr_branch
-    _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName 2>/dev/null) || true
+    local _full_sha _sha _pr_json _pr_branch _pr_cross_repo
+    _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || true
     _full_sha=$(printf '%s' "$_pr_json" | jq -r '.headRefOid // empty' 2>/dev/null) || true
     _pr_branch=$(printf '%s' "$_pr_json" | jq -r '.headRefName // empty' 2>/dev/null) || true
+    # Fork PRs: owner/name above are the BASE repo, whose events feed can never witness
+    # a branch living in the fork. Fail-closing them would stale every fork PR forever
+    # (#271-class). Unknown/unparseable ⇒ 0, i.e. the STRICT same-repo path.
+    _pr_cross_repo=$(printf '%s' "$_pr_json" | jq -r 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
     _sha=$(printf '%s' "$_full_sha" | cut -c1-8)
     if [[ -n "$_sha" ]]; then
         HEAD_SHA="$_sha"
@@ -141,7 +145,9 @@ _fetch_pr_state() {
         # must NOT trip FETCH_OK. Match on the full OID since payload.head is 40-char.
         # Branch filter prevents picking up a PushEvent from a different branch that
         # shares the same tip SHA. Shared resolver: scripts/lib/head-push-date.sh.
-        HEAD_PUSH_DATE=$(resolve_head_push_date "$owner" "$name" "$_full_sha" "$_pr_branch")
+        HEAD_PUSH_CHECKS_FALLBACK_OK=0
+        resolve_head_push_date_with_fallback_gate "$owner" "$name" "$_full_sha" "$_pr_branch" "$_pr_cross_repo"
+        HEAD_PUSH_DATE="${HEAD_PUSH_DATE:-}"
         # BRANCH+SHA-bound fallback freshness anchor (#269): HEAD_PUSH_DATE (PushEvent) is
         # preferred, but it is empty for a brand-new branch whose FIRST push CREATED the ref
         # (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
@@ -170,7 +176,7 @@ _fetch_pr_state() {
         # deleted/fork branch) we cannot confirm the suite belongs to this PR — fail
         # closed to stale (one extra wait-round / codex-retrigger) rather than risk a
         # backdated ack. The guard is deliberate, not dead code.
-        if [[ -z "$HEAD_PUSH_DATE" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
+        if [[ -z "$HEAD_PUSH_DATE" && "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}" = "1" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
             # shellcheck disable=SC2312  # gh failure is intentionally masked → best-effort (|| echo "")
@@ -178,6 +184,9 @@ _fetch_pr_state() {
                 | jq -rs --arg sha "$_full_sha" \
                     '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
                 2>/dev/null || echo "")
+            # Drop a suite predating this branch's creation (#624 R2). Shared helper so
+            # the three consumers cannot drift; no-op when either date is empty.
+            apply_head_checks_floor
         fi
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
@@ -207,7 +216,8 @@ _fetch_pr_state() {
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
     # can read these without the caller needing a separate export step.
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_PUSH_CHECKS_FALLBACK_OK \
+        HEAD_PUSH_CREATE_DATE HEAD_SHA HEAD_FULL_SHA
 
     return 0
 }

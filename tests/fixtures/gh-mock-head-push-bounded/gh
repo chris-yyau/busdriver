@@ -12,6 +12,16 @@ case "$*" in
             echo '[]'
         fi
         ;;
+    *api*check-suites*)
+        # Without this the call fell through to the default `{}`, so any test that
+        # exercises HEAD_PUSH_CHECKS_FALLBACK_OK=1 end-to-end would silently see no
+        # suites and pass for the wrong reason (CodeRabbit, PR #743).
+        if [ -n "${GH_MOCK_CHECK_SUITES_FILE:-}" ] && [ -f "${GH_MOCK_CHECK_SUITES_FILE}" ]; then
+            cat "${GH_MOCK_CHECK_SUITES_FILE}"
+        else
+            echo '{"check_suites":[]}'
+        fi
+        ;;
     *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
     *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
     *api*pulls*reviews*)         echo '[]' ;;
@@ -20,6 +30,6 @@ case "$*" in
     *api*statuses*)              echo '[]' ;;
     *api*issues*reactions*)      echo '[]' ;;
     *api*commits*--jq*)         echo '2024-01-01T00:00:00Z' ;;
-    *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch"}' ;;
+    *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch","isCrossRepository":false}' ;;
     *)                           echo '{}' ;;
 esac

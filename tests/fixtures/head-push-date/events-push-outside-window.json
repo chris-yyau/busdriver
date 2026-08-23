@@ -1,5 +1,5 @@
 [
   {"type":"WatchEvent","created_at":"2026-08-20T00:00:00Z","payload":{}},
   {"type":"PushEvent","created_at":"2026-08-19T00:00:00Z","payload":{"head":"0000000000000000000000000000000000000001","ref":"refs/heads/other-branch"}},
-  {"type":"CreateEvent","created_at":"2026-08-18T00:00:00Z","payload":{}}
+  {"type":"CreateEvent","created_at":"2026-08-18T00:00:00Z","payload":{"ref":"other-branch","ref_type":"branch"}}
 ]

@@ -216,6 +216,42 @@ check "cross-repo → fallback eligible" "1" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}
 check "cross-repo → NO floor from base-repo events" "" "${HEAD_PUSH_CREATE_DATE:-}"
 unset HEAD_PUSH_DATE HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
 
+# --- Floor must not discard a VALID post-creation suite (#743 Codex P2) ---
+# The #271 selector picks the EARLIEST suite for the SHA. If that one predates branch
+# creation, blanking the scalar throws away a later, perfectly valid suite and stales a
+# legitimate new branch. Filter the whole set against the floor, then take the earliest
+# ELIGIBLE one. The #271 jq filter itself stays byte-identical (its test awk-extracts it
+# and runs it with only --arg sha), so this is a second, separate expression.
+suites_mixed='{"check_suites":[
+  {"head_sha":"'"$FULL_SHA"'","created_at":"2026-08-10T09:00:00Z"},
+  {"head_sha":"'"$FULL_SHA"'","created_at":"2026-08-10T11:00:05Z"},
+  {"head_sha":"'"$FULL_SHA"'","created_at":"2026-08-10T12:00:00Z"},
+  {"head_sha":"0000000000000000000000000000000000000009","created_at":"2026-08-10T11:00:01Z"}
+]}'
+got=$(head_checks_date_after_floor_from_suites_json "$suites_mixed" "$FULL_SHA" "2026-08-10T11:00:00Z")
+check "floor retry → earliest suite AT/AFTER branch creation" "2026-08-10T11:00:05Z" "$got"
+# Boundary: a suite stamped in the SAME second as branch creation is eligible (`>=`),
+# matching apply_head_checks_floor's strict `<` where equal also survives.
+suites_at_floor='{"check_suites":[
+  {"head_sha":"'"$FULL_SHA"'","created_at":"2026-08-10T11:00:00Z"},
+  {"head_sha":"'"$FULL_SHA"'","created_at":"2026-08-10T12:00:00Z"}
+]}'
+got=$(head_checks_date_after_floor_from_suites_json "$suites_at_floor" "$FULL_SHA" "2026-08-10T11:00:00Z")
+check "floor retry → suite exactly AT creation is eligible (>=, not >)" "2026-08-10T11:00:00Z" "$got"
+got=$(head_checks_date_after_floor_from_suites_json "$suites_mixed" "$FULL_SHA" "2026-08-10T13:00:00Z")
+check "floor retry → empty when every suite predates creation" "" "$got"
+got=$(head_checks_date_after_floor_from_suites_json "$suites_mixed" "$FULL_SHA" "")
+check "floor retry → empty floor yields empty (caller keeps fail-closed)" "" "$got"
+
+# Drift guard: every consumer must perform the floor retry, not just blank the scalar.
+missing=""
+for f in "$REPO_ROOT/scripts/fetch-pr-state.sh" \
+         "$REPO_ROOT/agents/pr-grinder.md" \
+         "$REPO_ROOT/skills/pr-grind/references/completion.md"; do
+  grep -q 'head_checks_date_after_floor_from_suites_json' "$f" || missing="$missing $(basename "$f")"
+done
+check "all three consumers perform the floor retry" "" "$missing"
+
 # --- Fork exemption must not depend on the base-repo events request succeeding ---
 # The base feed is irrelevant to a fork PR, so a failed/rate-limited fetch of it must
 # not decide the fork's freshness. If the exemption ran only AFTER a successful fetch,

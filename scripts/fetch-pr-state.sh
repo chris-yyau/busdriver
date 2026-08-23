@@ -119,7 +119,7 @@ _fetch_pr_state() {
     # (Cubic P2: branch-agnostic payload.head match can pick up the wrong PushEvent
     # if two branches share the same tip SHA; filtering by payload.ref = refs/heads/<branch>
     # eliminates the ambiguity).
-    local _full_sha _sha _pr_json _pr_branch _pr_cross_repo
+    local _full_sha _sha _pr_json _pr_branch _pr_cross_repo _suites_json
     _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || true
     _full_sha=$(printf '%s' "$_pr_json" | jq -r '.headRefOid // empty' 2>/dev/null) || true
     _pr_branch=$(printf '%s' "$_pr_json" | jq -r '.headRefName // empty' 2>/dev/null) || true
@@ -180,13 +180,20 @@ _fetch_pr_state() {
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
             # shellcheck disable=SC2312  # gh failure is intentionally masked → best-effort (|| echo "")
-            HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null \
+            _suites_json=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null || echo "")
+            HEAD_CHECKS_DATE=$(printf '%s' "$_suites_json" \
                 | jq -rs --arg sha "$_full_sha" \
                     '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
                 2>/dev/null || echo "")
-            # Drop a suite predating this branch's creation (#624 R2). Shared helper so
+            # Drop a suite predating this branch's creation (#624 R2). Shared helpers so
             # the three consumers cannot drift; no-op when either date is empty.
             apply_head_checks_floor
+            # ...but do not lose a VALID post-creation suite with it (#743 Codex P2):
+            # re-select the earliest suite AT/AFTER the floor from the same response.
+            if [[ -z "$HEAD_CHECKS_DATE" && -n "${HEAD_PUSH_CREATE_DATE:-}" ]]; then
+                HEAD_CHECKS_DATE=$(head_checks_date_after_floor_from_suites_json \
+                    "$_suites_json" "$_full_sha" "$HEAD_PUSH_CREATE_DATE")
+            fi
         fi
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty

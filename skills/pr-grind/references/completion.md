@@ -68,11 +68,13 @@ HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commi
 # CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
 # HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
-PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+# ONE gh pr view for both fields — this runs on a hot polling path.
 # Fork PRs: $OWNER/$REPO is the BASE repo, whose events feed can never witness a branch
 # living in the fork, so the #624 CreateEvent gate is not applicable there — without this
 # every fork PR would stale forever (#271-class). Unknown ⇒ 0 (strict same-repo path).
-PR_CROSS_REPO=$(gh pr view "$PR" --json isCrossRepository --jq 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
+PR_VIEW_JSON=$(gh pr view "$PR" --json headRefName,isCrossRepository 2>/dev/null || echo '{}')
+PR_BRANCH=$(printf '%s' "$PR_VIEW_JSON" | jq -r '.headRefName // empty' 2>/dev/null || echo "")
+PR_CROSS_REPO=$(printf '%s' "$PR_VIEW_JSON" | jq -r 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
 HEAD_PUSH_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib/head-push-date.sh"
 # shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
 [ -f "$HEAD_PUSH_LIB" ] && . "$HEAD_PUSH_LIB"
@@ -100,12 +102,19 @@ HEAD_CHECKS_DATE=""
 # (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
 # to this PR — fail closed to stale rather than risk a backdated ack. Deliberate, not dead code.
 if [ -z "$HEAD_PUSH_DATE" ] && [ "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}" = "1" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
-  HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
+  SUITES_JSON=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null || echo "")
+  HEAD_CHECKS_DATE=$(printf '%s' "$SUITES_JSON" \
     | jq -rs --arg sha "$HEAD_FULL_SHA" \
       '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
-  # Drop a suite predating this branch's creation (#624 R2). Shared helper so the three
+  # Drop a suite predating this branch's creation (#624 R2). Shared helpers so the three
   # consumers cannot drift; no-op when either date is empty (e.g. a fork PR).
   apply_head_checks_floor
+  # ...but do not lose a VALID post-creation suite with it (#743 Codex P2): re-select the
+  # earliest suite AT/AFTER the floor from the same response.
+  if [ -z "$HEAD_CHECKS_DATE" ] && [ -n "${HEAD_PUSH_CREATE_DATE:-}" ]; then
+    HEAD_CHECKS_DATE=$(head_checks_date_after_floor_from_suites_json \
+      "$SUITES_JSON" "$HEAD_FULL_SHA" "$HEAD_PUSH_CREATE_DATE")
+  fi
 fi
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 in

@@ -70,6 +70,27 @@ head_push_create_date_from_events_json() {
     "$HEAD_PUSH_CREATE_DATE_JQ_FILTER" 2>/dev/null || echo ""
 }
 
+# Earliest check suite for $sha created AT or AFTER the branch-creation floor.
+# Companion to apply_head_checks_floor: that one can only BLANK the already-selected
+# scalar, which throws away a valid later suite and stales a legitimate new branch
+# (#743 Codex P2). This re-selects from the full set instead.
+#
+# This is a SEPARATE expression from the #271 selector on purpose — that one must stay
+# byte-identical because tests/test-check-suite-anchor-271.sh awk-extracts it and runs
+# it with only `--arg sha`. Like #271 it does NOT filter on head_branch.
+# Empty floor ⇒ empty result: the caller stays fail-closed rather than silently
+# reverting to an unfloored pick.
+# shellcheck disable=SC2016  # jq filter literal, not shell expansion
+HEAD_CHECKS_AFTER_FLOOR_JQ_FILTER='[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "" and . >= $floor)) | sort | .[0] // empty'
+
+# $1 = check-suites JSON, $2 = full 40-char OID, $3 = floor (branch CreateEvent date)
+head_checks_date_after_floor_from_suites_json() {
+  local suites_json="$1" full_sha="$2" floor="${3:-}"
+  [[ -z "$floor" ]] && { echo ""; return 0; }
+  printf '%s' "$suites_json" | jq -rs --arg sha "$full_sha" --arg floor "$floor" \
+    "$HEAD_CHECKS_AFTER_FLOOR_JQ_FILTER" 2>/dev/null || echo ""
+}
+
 # Discard a check-suite anchor that predates this branch's creation (#624 R2).
 # The #271 check-suite jq filter is SHA-bound only and picks the EARLIEST suite, so a
 # deleted-and-recreated branch can select a suite from its previous lifetime — older

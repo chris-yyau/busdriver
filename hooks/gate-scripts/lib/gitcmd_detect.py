@@ -2123,6 +2123,11 @@ def _shell_payloads(cmd):
         if not _first_reading or not _READABLE_NAME.match(_first_reading[0]) \
                 or _torn_assignment(toks_once(seg), upto):
             toks = toks_once(seg)
+            # When the walk produced a suffix, only that index can name the
+            # command word; operands (quoted glob literals included) are not
+            # interpreters. Unknown suffix → scan every token (fail-closed).
+            command_index = (len(toks) - len(_first_reading)
+                             if _first_reading else None)
             first_interp = first_eval = -1
             canon = {}
             for k, tok in enumerate(toks):
@@ -2145,7 +2150,18 @@ def _shell_payloads(cmd):
                 if _ASSIGN_TOK_RE.match(tok) or (
                         _ENV_ASSIGN_TOK_RE.match(tok) and not _unreadable_word(tok)):
                     continue
-                name = _interpreter_name(tok)
+                if command_index is not None and k != command_index:
+                    if _torn_assignment(toks, upto):
+                        # Debris owns command_index; literals may still name
+                        # an interpreter, but operands are not glob stand-ins.
+                        if _norm_cmd_word(tok) in _INTERPRETERS:
+                            name = _norm_cmd_word(tok)
+                        else:
+                            continue
+                    else:
+                        continue
+                else:
+                    name = _interpreter_name(tok)
                 if name is not None and first_interp < 0:
                     first_interp, canon[k] = k, name
                 # BOTH, not elif. An unreadable word resolves to the `sh`

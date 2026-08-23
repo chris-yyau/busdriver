@@ -1681,6 +1681,15 @@ for _c in ('echo bash -c "git commit"',
            '[ -f x ] -c "git commit"',
            "printf '%s' 'X=$(x)' bash -c 'git commit'"):
     check(f"torn-nested- {_c!r}", g.git_commit(_c)[0], False)
+# #589: a quoted glob-shaped OPERAND must not be promoted to the sh stand-in
+# when the command-word index is known; the command word itself stays fail-closed.
+check("589- torn printf operand '*.py' is not a shell",
+      g.git_commit("X=$(printf x y) printf '%s' '*.py' -c 'git commit -m x'")[0],
+      False)
+check("589+ glob-shaped command word still names a shell",
+      g.git_commit('/bin/ba?h -c "git commit -m x"')[0], True)
+check("589+ quoted glob-shaped command pathname stays fail-closed",
+      g.git_commit("'./b*sh' -c 'git commit -m x'")[0], True)
 # `.` (source) is a real command name with no word character, like `:` and `[`
 # above. Misclassifying it as unreadable sent `. /dev/null bash -c 'git
 # commit'` into the any-position fallback scan, which extracted `bash -c

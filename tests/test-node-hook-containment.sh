@@ -430,6 +430,10 @@ printf 'process.exit(2);\n' > "$_fix/scripts/hooks/syn.gate.js"
 # tail, and neither `exitCode: 2` nor `? 0 : 2` appears in the file.
 printf 'module.exports = (c) => ({ exitCode: c.shouldBlock ? 2 : 0 });\n' \
     > "$_fix/scripts/hooks/synthetic-ternary-gate.js"
+# Blocks by making the operator confirm. Same boundary as a deny, and equally suppressible
+# from an inherited env, so the deny net has to see it.
+printf "module.exports = () => ({ permissionDecision: 'ask' });\n" \
+    > "$_fix/scripts/hooks/synthetic-ask-gate.js"
 cat > "$_fix/hooks/hooks.json" <<'JSON'
 { "hooks": { "PreToolUse": [ { "matcher": "Edit|Write", "hooks": [
   { "type": "command",
@@ -441,6 +445,7 @@ cat > "$_fix/hooks/hooks.json" <<'JSON'
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/CASE.GATE.js\"" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synXgate.js\"" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-ternary-gate.js\"" },
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-ask-gate.js\"" },
   { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/novel-launcher.sh\"" }
 ] } ] } }
 JSON
@@ -510,8 +515,13 @@ import os, re, sys
 # The key is matched as a bare IDENTIFIER, with no `:` required, because object shorthand
 # (`const decision = "block"; return { decision };`) never writes one — requiring the colon
 # would be the same spelling game one level down.
+#
+# `ask` counts alongside `deny`/`block`. It is a different answer but the same boundary:
+# an `ask` hook makes the tool call wait for the operator, so suppressing it through an
+# inherited ECC_HOOK_PROFILE / ECC_DISABLED_HOOKS auto-ALLOWS what a human was meant to
+# confirm. That is exactly the containment failure this net exists to catch.
 DECISION = re.compile(r"\bpermissionDecision\b|\bdecision\b")
-DENY = re.compile(r"""(['"`])(?:deny|block)\1""")
+DENY = re.compile(r"""(['"`])(?:deny|block|ask)\1""")
 # Enumerate rather than glob: `glob("*.js")` matches its pattern case-sensitively, so a
 # `CaseDeny.JS` hook — perfectly loadable here — would never be scanned.
 try:
@@ -537,6 +547,8 @@ PY
 _m5="↳ a deny decision split across lines is still discovered (whole-file scan)"
 _fixture_deny="$( HOOKS_DIR="$_fix/scripts/hooks"; discover_deny_capable )"
 if grep -qx "synthetic-deny-gate.js" <<< "$_fixture_deny"; then assert 0 "$_m5"; else assert 1 "$_m5"; fi
+_m11="↳ a permissionDecision 'ask' gate is deny-net material too (same confirmation boundary)"
+if grep -qx "synthetic-ask-gate.js" <<< "$_fixture_deny"; then assert 0 "$_m11"; else assert 1 "$_m11"; fi
 # Capture first (SC2312): a process-substitution feed would mask discover_deny_capable's rc.
 # The `${KNOWN_DENY[@]+…}` guard keeps an emptied list from tripping `set -u` on bash 3.2
 # (macOS default), exactly as RESIDUAL above does.

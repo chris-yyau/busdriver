@@ -52,6 +52,11 @@
 #   A marker is written ONLY after a CONFIRMED successful post, so a transient
 #   `gh` failure is retried on the next wait-round WITHOUT spending an attempt or
 #   starting a cooldown (still bounded by `--max-wait`).
+#   AMENDED (#677): that release is no longer unconditional. While a `gh pr comment`
+#   call is IN FLIGHT the outcome is indeterminate — GitHub may already have accepted
+#   the comment — so a signal there KEEPS the claim rather than freeing a slot whose
+#   nudge landed. Every other exit still releases, a KNOWN failure included, so the
+#   retry semantics above are unchanged. See the trap block below.
 #
 # Opt-out:  PR_GRIND_CODEX_RETRIGGER=0           (default ON; any non-"0" => on)
 # Phrase:   PR_GRIND_CODEX_RETRIGGER_PHRASE      (default "@codex review"; for
@@ -318,12 +323,30 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 #    claim-FAILURE path below we DISARM first, so a normal "already claimed" skip
 #    never deletes the owner's marker.
 # All three are disarmed after a confirmed post (below), at which point the marker is
-# the durable record that this attempt was spent. SIGKILL (kill -9) is the single
+# the durable record that this attempt was spent.
+#
+# #677 — RELEASE ONLY WHILE THE OUTCOME IS KNOWN. Unconditional release was correct
+# only up to the moment `gh pr comment` is invoked. From then until its rc is read the
+# outcome is INDETERMINATE: GitHub may already have accepted the comment. A signal in
+# that window used to free the slot for a nudge that HAD landed, so the next round
+# re-posted it. `POST_OUTCOME_UNKNOWN` gates the release on exactly that window and no
+# more — it is raised per `gh` invocation and cleared the moment that rc is read. So a
+# signal WHILE a call is in flight keeps the claim, while every other exit releases it
+# as before: pre-attempt (a claim with no post behind it must not spend an attempt),
+# between the two bounded retries, and after a known failure. That trades a possibly-wasted attempt out of
+# MAX_ATTEMPTS for a possibly-duplicated comment — the right direction since the budget
+# is 3 (#673), and a duplicate `@codex review` is idempotent (ADR 0005 Consequences).
+# The retained marker is empty (the forensic write never ran) — the same residue shape
+# as the SIGKILL case, which the slot scan (existence + mtime) and the GC glob already
+# tolerate.
+#
+# SIGKILL (kill -9) is the single
 # uncoverable case — see ADR 0005 Known limitations; it now costs one attempt out of
 # MAX_ATTEMPTS rather than the PR's only nudge (#673), so a later round still recovers
 # on its own. Recover immediately by removing the marker or pushing a commit.
-trap 'rm -f "$MARKER" 2>/dev/null' EXIT
-trap 'rm -f "$MARKER" 2>/dev/null; exit 130' INT TERM
+POST_OUTCOME_UNKNOWN=0
+trap '[ "$POST_OUTCOME_UNKNOWN" = 1 ] || rm -f "$MARKER" 2>/dev/null' EXIT
+trap '[ "$POST_OUTCOME_UNKNOWN" = 1 ] || rm -f "$MARKER" 2>/dev/null; exit 130' INT TERM
 if ! ( set -o noclobber; : > "$MARKER" ) 2>/dev/null; then
     trap - EXIT INT TERM   # not ours — disarm so we never delete the owner's marker
     echo "ℹ️  codex-retrigger: another run already claimed attempt $ATTEMPT for PR #$PR @ $HEAD8; skipping." >&2
@@ -344,17 +367,31 @@ chmod 600 "$MARKER" 2>/dev/null || true
 # across-round nudge budget. Two different loops; do not conflate them.)
 post_rc=0
 for _try in 1 2; do
+    # #677: the indeterminate window is EXACTLY "a gh call is in flight" — from the
+    # invocation until its rc is read. Raised per try and cleared as soon as that rc is
+    # known, so neither the success test nor the backoff between tries is covered: try
+    # 1's non-zero rc is a KNOWN failure, and a signal after it must release exactly as
+    # a signal before the loop would (fail-SAFE: a failed post spends no attempt).
+    POST_OUTCOME_UNKNOWN=1
     if [ -n "$REPO" ]; then
         gh pr comment "$PR" -R "$REPO" --body "$PHRASE" >/dev/null 2>&1
     else
         gh pr comment "$PR" --body "$PHRASE" >/dev/null 2>&1
     fi
     post_rc=$?
+    # Cleared on the FIRST command after the rc is read, before the success test, so a
+    # known failure releases. The one remaining command boundary — between the read and
+    # this line — is irreducible: a bash trap fires only BETWEEN commands, and `$?`
+    # cannot be read and acted on atomically. It fails in the SAFE direction (retain
+    # costs one attempt out of MAX_ATTEMPTS, recoverable next round; release costs a
+    # duplicate comment for a nudge that may have landed).
+    [ "$post_rc" -eq 0 ] || POST_OUTCOME_UNKNOWN=0
     [ "$post_rc" -eq 0 ] && break
     [ "$_try" -lt 2 ] && sleep 1
 done
 
 if [ "$post_rc" -ne 0 ]; then
+    # POST_OUTCOME_UNKNOWN is already 0 here — the loop clears it as each rc is read.
     # Fail-SAFE: after the bounded retries still failed, the EXIT trap releases the
     # claim so the NEXT wait-round (if any) retries. Never propagate the failure — a
     # failed re-trigger must not stale the gate.

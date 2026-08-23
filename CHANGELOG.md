@@ -1,3 +1,10 @@
+## [1.110.11](https://github.com/chris-yyau/busdriver/compare/v1.110.10...v1.110.11) (2026-08-23)
+
+
+### Bug Fixes
+
+* **lease:** return skip slots only when audit append definitely did not write ([#549](https://github.com/chris-yyau/busdriver/issues/549)) ([#744](https://github.com/chris-yyau/busdriver/issues/744)) ([af79942](https://github.com/chris-yyau/busdriver/commit/af79942e3ca71aa3c51bee6b3a929fad760558eb))
+
 ## [1.110.10](https://github.com/chris-yyau/busdriver/compare/v1.110.9...v1.110.10) (2026-08-23)
 
 

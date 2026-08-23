@@ -20,6 +20,7 @@ ORCH="$ROOT/skills/orchestrator/SKILL.md"
 WRITING_PLANS="$ROOT/skills/writing-plans/SKILL.md"
 SDD="$ROOT/skills/subagent-driven-development/SKILL.md"
 SDD_REVIEWER="$ROOT/skills/subagent-driven-development/task-reviewer-prompt.md"
+SDD_IMPLEMENTER="$ROOT/skills/subagent-driven-development/implementer-prompt.md"
 GUIDE="$ROOT/agents/tdd-guide.md"
 TDD_SKILL="$ROOT/skills/test-driven-development/SKILL.md"
 TDD_WORKFLOW="$ROOT/skills/tdd-workflow/SKILL.md"
@@ -30,7 +31,7 @@ pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf 'FAIL %s\n' "$1"; fail=$((fail+1)); }
 
-for f in "$ORCH" "$WRITING_PLANS" "$SDD" "$SDD_REVIEWER" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
+for f in "$ORCH" "$WRITING_PLANS" "$SDD" "$SDD_REVIEWER" "$SDD_IMPLEMENTER" "$GUIDE" "$TDD_SKILL" "$TDD_WORKFLOW" "$SYSDBG" "$ADR"; do
   [[ -f "$f" ]] || { echo "FAIL missing required file: $f"; exit 1; }
 done
 
@@ -349,6 +350,21 @@ if [[ -n "$SDD_REVIEWER_TESTS" ]] \
   ok "task-reviewer-prompt Tests section requires RED/GREEN evidence only when TDD was required"
 else
   bad "task-reviewer-prompt Tests section lost positive conditional TDD evidence wording (#653)"
+fi
+
+if grep -q 'Implement exactly what the task specifies with tests' "$SDD_IMPLEMENTER" \
+  && grep -q 'either order is allowed unless TDD was explicitly requested' "$SDD_IMPLEMENTER" \
+  && grep -q '/tdd' "$SDD_IMPLEMENTER"; then
+  ok "implementer-prompt combines implementation and tests in one order-neutral step"
+else
+  bad "implementer-prompt lost combined order-neutral implementation and tests step (#653)"
+fi
+
+if grep -qF '1. Implement exactly what the task specifies' "$SDD_IMPLEMENTER" \
+  && grep -qF '2. Write tests (following TDD if task says to)' "$SDD_IMPLEMENTER"; then
+  bad "implementer-prompt restored separate numbered implement-then-test steps (#653)"
+else
+  ok "implementer-prompt has no separate numbered implement-then-test steps"
 fi
 
 # --- What ADR 0038 deliberately did NOT change --------------------------------------

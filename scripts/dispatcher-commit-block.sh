@@ -539,7 +539,14 @@ _dispatcher_signal_exit() {
         # Snapshot liveness BEFORE signalling: afterwards every child looks dead, and
         # "was there anything to lose" is the question the no-group branch below needs
         # answered.
-        _dispatcher_pid_alive "$LITMUS_CHILD_PID" && _child_was_alive=1
+        # Deliberately `kill -0`, NOT _dispatcher_pid_alive. This snapshot does not ask
+        # "can we reap the child" — it asks "was there a tree that could still be
+        # writing", which is what the no-group branch below decides the lock on. A
+        # zombie child is exactly the dangerous answer there: the child is gone, so its
+        # descendants are orphaned AND unreachable without a group, yet may still be
+        # writing litmus-state.md. Zombie-awareness is only sound for the reap decision;
+        # applying it here would drop the lock on that case and fail OPEN.
+        kill -0 "$LITMUS_CHILD_PID" 2>/dev/null && _child_was_alive=1
         # Signal the whole group when we actually HAVE one. LITMUS_CHILD_PGID is set
         # only after confirming `set -m` gave the child its own group — assuming it did
         # is how both the kill and the liveness poll become silent no-ops: `kill -0

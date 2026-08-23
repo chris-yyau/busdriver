@@ -2120,8 +2120,9 @@ def _shell_payloads(cmd):
         # payload was missed - the fail-OPEN this bound exists to avoid.
         upto = (len(toks_once(seg)) - len(_first_reading) + 1
                 if _first_reading else None)
+        torn = _torn_assignment(toks_once(seg), upto)
         if not _first_reading or not _READABLE_NAME.match(_first_reading[0]) \
-                or _torn_assignment(toks_once(seg), upto):
+                or torn:
             toks = toks_once(seg)
             # When the walk produced a suffix, only that index can name the
             # command word; operands (quoted glob literals included) are not
@@ -2150,17 +2151,23 @@ def _shell_payloads(cmd):
                 if _ASSIGN_TOK_RE.match(tok) or (
                         _ENV_ASSIGN_TOK_RE.match(tok) and not _unreadable_word(tok)):
                     continue
+                name = None
                 if command_index is not None and k != command_index:
-                    if _torn_assignment(toks, upto):
-                        # Debris owns command_index; literals may still name
-                        # an interpreter, but operands are not glob stand-ins.
+                    if torn:
+                        # Debris owns command_index; literals and resolved
+                        # globs may still name an interpreter, but unresolved
+                        # glob operands are not sh stand-ins.
                         if _norm_cmd_word(tok) in _INTERPRETERS:
                             name = _norm_cmd_word(tok)
                         else:
-                            continue
-                    else:
+                            name = _interpreter_name(tok)
+                            if name == 'sh' and any(ch in _norm_cmd_word(tok)
+                                                    for ch in '*?['):
+                                continue
+                    elif any(ch in _norm_cmd_word(_first_reading[0])
+                             for ch in '*?['):
                         continue
-                else:
+                if name is None:
                     name = _interpreter_name(tok)
                 if name is not None and first_interp < 0:
                     first_interp, canon[k] = k, name

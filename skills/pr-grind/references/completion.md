@@ -64,19 +64,15 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
 # HEAD_PUSH_DATE: push event timestamp — the SOLE Tier-F +1 freshness anchor.
-# --paginate + slurp (jq -rs) so the PushEvent for HEAD is found even when it lands
-# on a later events page; without pagination a HEAD push beyond the first page yields
-# empty. Best-effort; exports empty on failure or no match, in which case Tier F fails
+# Bounded to one events page (#624); PushEvent not in window → empty → Tier F fails
 # CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
 # HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
-# Branch filter prevents anchoring on a PushEvent from a different branch that
-# shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
 PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
-_ref="refs/heads/${PR_BRANCH:-}"
-HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+HEAD_PUSH_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib/head-push-date.sh"
+# shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
+[ -f "$HEAD_PUSH_LIB" ] && . "$HEAD_PUSH_LIB"
+HEAD_PUSH_DATE=$(resolve_head_push_date "$OWNER" "$REPO" "$HEAD_FULL_SHA" "$PR_BRANCH")
 # HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
 # (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
 # the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then

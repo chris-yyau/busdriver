@@ -57,6 +57,10 @@
 # Fail-CLOSED: any subcommand failure → FETCH_OK=0; remaining vars stay at
 # their pre-call values (empty if first invocation).
 
+_fetch_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
+. "$_fetch_lib_dir/lib/head-push-date.sh"
+
 _fetch_pr_state() {
     local pr_number="${1:-}"
     if [[ -z "$pr_number" ]]; then
@@ -132,17 +136,12 @@ _fetch_pr_state() {
         # so a fetch failure must NOT trip FETCH_OK (that would stale every bot over an
         # unread value). Best-effort; empty on failure.
         HEAD_COMMITTED_DATE=$(gh api "repos/$owner/$name/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
-        # HEAD_PUSH_DATE is best-effort (events API caps at ~300 events / ~90 days);
-        # an empty result makes Tier F fail CLOSED to stale (no committer fallback,
-        # #189) and must NOT trip FETCH_OK. --paginate + slurp so a HEAD push on a later events
-        # page is still found; match on the full OID since payload.head is 40-char.
-        # Branch filter (payload.ref == refs/heads/<branch>) prevents picking up a
-        # PushEvent from a different branch that happens to share the same tip SHA.
-        local _ref="refs/heads/${_pr_branch:-}"
-        HEAD_PUSH_DATE=$(gh api --paginate "repos/$owner/$name/events?per_page=100" 2>/dev/null \
-            | jq -rs --arg head "$_full_sha" --arg ref "$_ref" \
-                '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' \
-                2>/dev/null || echo "")
+        # HEAD_PUSH_DATE is best-effort; bounded to one events page (#624). An empty
+        # result makes Tier F fail CLOSED to stale (no committer fallback, #189) and
+        # must NOT trip FETCH_OK. Match on the full OID since payload.head is 40-char.
+        # Branch filter prevents picking up a PushEvent from a different branch that
+        # shares the same tip SHA. Shared resolver: scripts/lib/head-push-date.sh.
+        HEAD_PUSH_DATE=$(resolve_head_push_date "$owner" "$name" "$_full_sha" "$_pr_branch")
         # BRANCH+SHA-bound fallback freshness anchor (#269): HEAD_PUSH_DATE (PushEvent) is
         # preferred, but it is empty for a brand-new branch whose FIRST push CREATED the ref
         # (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then

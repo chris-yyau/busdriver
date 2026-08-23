@@ -673,23 +673,14 @@ ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/reaction
 # resolved-thread path both anchor on HEAD_PUSH_DATE alone).
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
 # HEAD_PUSH_DATE: push event timestamp for HEAD_SHA — the SOLE Tier-F +1 freshness
-# anchor. Fetched from the repo events API (best-effort; events older than ~300 per
-# repo or ~90 days may not be available). --paginate +
-# slurp (jq -rs) so the PushEvent for HEAD is found even when it lands on a later
-# events page — without pagination a HEAD push beyond the first page yields an
-# empty result. On failure or no match, exports empty string, in which case Tier F
-# fails CLOSED to stale (no committer fallback — the committer date is backdatable,
-# #189).
+# anchor. Bounded to one events page (#624); PushEvent not in window → empty → Tier F
+# fails CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
-# Branch filter prevents anchoring on a PushEvent from a different branch that
-# shares the same tip SHA (e.g., a release branch pushed after Codex already
-# 👍'd this PR, which would flip Codex to `stale` with no new reaction expected).
-# fetch-pr-state.sh uses the same guard; keep in sync.
 PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
-_ref="refs/heads/${PR_BRANCH:-}"
-HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+HEAD_PUSH_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib/head-push-date.sh"
+# shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
+[ -f "$HEAD_PUSH_LIB" ] && . "$HEAD_PUSH_LIB"
+HEAD_PUSH_DATE=$(resolve_head_push_date "$OWNER" "$REPO" "$HEAD_FULL_SHA" "$PR_BRANCH")
 # HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
 # (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
 # the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then

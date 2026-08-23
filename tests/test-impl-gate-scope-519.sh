@@ -1738,24 +1738,14 @@ rm -f "$WORK/.claude/.skip-design-review-lease.d"
 # recorded; a silent `|| true` would turn an audited hatch into an unaudited one, so
 # the promise is enforced rather than merely stated (same rule design-clear.sh applies).
 arm_skip 120
+before_unlog="$(lease_uses)"
 mv "$WORK/.claude/bypass-log.jsonl" "$WORK/.claude/bypass-log.bak" 2>/dev/null || true
 mkdir -p "$WORK/.claude/bypass-log.jsonl"    # a directory: the append cannot succeed
 check "an unloggable lease use refuses the bypass (fail-closed)" block "$(write_decision)"
+after_unlog="$(lease_uses)"
+if [[ "$before_unlog" = "$after_unlog" ]]; then ok "an unloggable lease use returns its slot (ADR 0031)"
+else no "an unloggable lease use returns its slot (ADR 0031)" "$before_unlog -> $after_unlog"; fi
 rmdir "$WORK/.claude/bypass-log.jsonl" 2>/dev/null || true
-# NOT asserted here: that the refused use also RETURNS its slot. ADR 0031 promises it
-# ("a use whose audit append fails is refused and its slot returned") and the code does
-# not do it -- a real prose/behaviour divergence, found by codex during PR #548 and
-# deliberately left open rather than fixed here. Three successive attempts at the fix
-# each uncovered the next failure rung (an unsynced rmdir, a failed rmdir, a failed
-# disarm), and the last review round showed the remaining one is not a durability
-# question at all: `append_at` can return false AFTER writing a complete
-# `skip-review-consumed` record, so returning the slot then would leave the audit log
-# claiming a use that no slot backs -- and post-commit-consume-marker.sh treats a recent
-# such event as proof a bypass was sanctioned. Getting that right needs append_at to
-# distinguish "definitely did not write" from "may have written", which is a contract
-# change to the audit appender, not a patch here. The gate stays fail-CLOSED either way
-# (the use is refused); what is wrong is only the budget accounting. Tracked as a
-# follow-up.
 
 # A SYMLINKED log must refuse too. A plain `>>` follows symlinks, so pointing the log
 # at /dev/null would make the append "succeed" while retaining nothing — the check

@@ -52,9 +52,16 @@ KNOWN_EXIT2=("${CONTAINED[@]}" ${RESIDUAL[@]+"${RESIDUAL[@]}"})
 # fail-closedness: gateguard-fact-force.js is `--fail-open … || exit 0` per #616.
 KNOWN_DENY=(gateguard-fact-force.js)
 
+# Membership in the two authority lists. Case-FOLDED, and folded HERE rather than at each
+# call site because both lists answer the same question: discovery preserves the source
+# spelling, so a hook committed as `CaseExit.JS` and listed as `caseexit.js` is one file on
+# this case-insensitive filesystem, and an exact compare would report a classified hook as
+# unclassified. Comparison stays a literal string equality, never a pattern.
 in_list() {  # in_list <needle> <list...>
-    local n="$1"; shift
-    local x; for x in "$@"; do [[ "$x" == "$n" ]] && return 0; done; return 1
+    local n x
+    n="$(tr '[:upper:]' '[:lower:]' <<< "$1")"; shift
+    for x in "$@"; do [[ "$(tr '[:upper:]' '[:lower:]' <<< "$x")" == "$n" ]] && return 0; done
+    return 1
 }
 
 # ── 3. Discovery: any registered node hook that exits 2 must be classified ──────
@@ -562,7 +569,14 @@ fi
 # that hides the literal is caught here instead of silently shrinking the net.
 for _dh in ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"}; do
     _dm="deny grep still detects $_dh"
-    if grep -q "^$_dh\$" <<<"$_deny_grep"; then assert 0 "$_dm"; else assert 1 "$_dm"; fi
+    # Literal and case-folded for the same reason as in_list: the listed spelling and the
+    # discovered one can differ by case and still be the same file.
+    if tr '[:upper:]' '[:lower:]' <<< "$_deny_grep" \
+         | grep -Fqx "$(tr '[:upper:]' '[:lower:]' <<< "$_dh")"; then
+        assert 0 "$_dm"
+    else
+        assert 1 "$_dm"
+    fi
 done
 
 # ── 4. Sanity: the discovery grep actually still finds the CONTAINED trio ───────
@@ -570,7 +584,10 @@ done
 # which would silently weaken guard #3.)
 found="$(discover_exit2)"
 for h in "${CONTAINED[@]}"; do
-    if grep -q "/$h\$" <<<"$found"; then
+    # Basenames, case-folded and literal — same reason as in_list: `$found` carries the
+    # SOURCE spelling, which may differ in case from the listed one and still be one file.
+    if sed 's|.*/||' <<<"$found" | tr '[:upper:]' '[:lower:]' \
+         | grep -Fqx "$(tr '[:upper:]' '[:lower:]' <<< "$h")"; then
         assert 0 "discovery grep still detects $h"
     else
         assert 1 "discovery grep still detects $h"

@@ -1,3 +1,10 @@
+## [1.110.13](https://github.com/chris-yyau/busdriver/compare/v1.110.12...v1.110.13) (2026-08-23)
+
+
+### Bug Fixes
+
+* **pr-grind:** bound HEAD_PUSH_DATE events fetch to one page ([#624](https://github.com/chris-yyau/busdriver/issues/624)) ([#743](https://github.com/chris-yyau/busdriver/issues/743)) ([9763781](https://github.com/chris-yyau/busdriver/commit/976378163d6359e429b689e87ad15e186e24b1e1)), closes [#269](https://github.com/chris-yyau/busdriver/issues/269) [#271-class](https://github.com/chris-yyau/busdriver/issues/271-class) [269/#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271)
+
 ## [1.110.12](https://github.com/chris-yyau/busdriver/compare/v1.110.11...v1.110.12) (2026-08-23)
 
 

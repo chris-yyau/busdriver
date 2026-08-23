@@ -281,10 +281,12 @@ unclassified_blocking() {   # <index>
     while IFS= read -r b; do
         [[ -z "$b" ]] && continue
         # Only care about hooks actually wired into hooks.json — structurally, not by line.
-        # Case-folded: a registration naming `caseexit.js` runs a source file committed as
-        # `CaseExit.js` here, and a case-sensitive compare would fail to associate the two
-        # and skip the hook entirely.
-        grep -qiE "^$b " <<< "$_idx" || continue
+        # Case-folded because a registration naming `caseexit.js` runs a source file
+        # committed as `CaseExit.js` here, and LITERAL because a basename is data, not a
+        # pattern: interpolated into a regex, its `.` characters become wildcards and the
+        # hook is matched against records that are not its own. Field equality is both.
+        awk -v hook="$b" 'tolower($1) == tolower(hook) { wired = 1 } END { exit !wired }' \
+            <<< "$_idx" || continue
         in_list "$b" "${KNOWN_EXIT2[@]}" || out+="$b "
     done <<< "$_discovered"
     printf '%s' "$out"
@@ -311,7 +313,7 @@ REG_INDEX="$(registration_index)" \
 # the other nets were fixed for: compacting the document onto one line let an unrelated
 # bare-node registration sharing that line satisfy a contained hook's lookup.
 for h in "${CONTAINED[@]}"; do
-    _recs="$(awk -v hook="$h" '$1 == hook { print ($2 == 1 && $3 == 1 && $4 == "closed") ? "ok" : "bad" }' <<< "$REG_INDEX")"
+    _recs="$(awk -v hook="$h" 'tolower($1) == tolower(hook) { print ($2 == 1 && $3 == 1 && $4 == "closed") ? "ok" : "bad" }' <<< "$REG_INDEX")"
     _found=0; _bad=0
     while IFS= read -r _rec; do
         [[ -z "$_rec" ]] && continue
@@ -329,7 +331,7 @@ done
 # The same index, asked the complementary question: any record for the hook that is not
 # contained is a launch outside the wrapper, whatever shape it wears.
 for h in "${CONTAINED[@]}"; do
-    if awk -v hook="$h" '$1 == hook && $3 != 1 { bare = 1 } END { exit !bare }' <<< "$REG_INDEX"; then
+    if awk -v hook="$h" 'tolower($1) == tolower(hook) && $3 != 1 { bare = 1 } END { exit !bare }' <<< "$REG_INDEX"; then
         assert 1 "$h has NO bare 'node run-with-flags.js' registration"
     else
         assert 0 "$h has NO bare 'node run-with-flags.js' registration"
@@ -396,6 +398,13 @@ module.exports = () => ({
   exitCode: 0,
 });
 JS
+# Two controls for how a discovered basename is matched against the index, both riding this
+# same fixture. `case.gate.js` is registered under a different CASE and must be recognised
+# as wired; `syn.gate.js` is registered as `synXgate.js` and must NOT be — under regex
+# interpolation its dots would wildcard-match that record and the hook would be treated as
+# wired when it is not.
+printf 'process.exit(2);\n' > "$_fix/scripts/hooks/case.gate.js"
+printf 'process.exit(2);\n' > "$_fix/scripts/hooks/syn.gate.js"
 cat > "$_fix/hooks/hooks.json" <<'JSON'
 { "hooks": { "PreToolUse": [ { "matcher": "Edit|Write", "hooks": [
   { "type": "command",
@@ -403,7 +412,9 @@ cat > "$_fix/hooks/hooks.json" <<'JSON'
       "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-deny-gate.js\" ||\texit  2" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-decoy.js\"" }, { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/unrelated.sh\" || exit 2" },
   { "type": "command",
-    "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:synthetic\" \"scripts/hooks/synthetic-canonical-gate.js\" \"strict\" || exit 2" }
+    "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:synthetic\" \"scripts/hooks/synthetic-canonical-gate.js\" \"strict\" || exit 2" },
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/CASE.GATE.js\"" },
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synXgate.js\"" }
 ] } ] } }
 JSON
 # Subshells so the fixture paths can never leak into the guards below.
@@ -415,11 +426,17 @@ _m2="↳ control: the source grep alone does NOT see it (the registration net is
 _m3="↳ structural isolation: split key/value + tab-spaced tail found, shared-line decoy not blamed"
 _m4="↳ a canonical fail-closed registration is classified by the RULE, not the unrecognized fallback"
 if [[ "$_fixture_unclassified" == *"synthetic-deny-gate.js"* ]]; then assert 0 "$_m1"; else assert 1 "$_m1"; fi
-if [[ -z "$_fixture_src_only" ]]; then assert 0 "$_m2"; else assert 1 "$_m2"; fi
+# Absence of THIS hook, not emptiness of the scan: the fixture also carries two exit-2
+# source files as lookup controls, and the claim here is only ever about this gate.
+if [[ "$_fixture_src_only" != *"synthetic-deny-gate.js"* ]]; then assert 0 "$_m2"; else assert 1 "$_m2"; fi
 if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3"; else assert 1 "$_m3"; fi
 # `1 1` = blocking AND contained, which only the canonical NODE_GATE shape can produce;
 # the `!unrecognized` fallback can only ever emit `1 0`.
 if grep -qx "synthetic-canonical-gate.js 1 1 closed" <<< "$_fixture_index"; then assert 0 "$_m4"; else assert 1 "$_m4"; fi
+_m6="↳ a registration differing only in CASE is recognised as this hook's own"
+_m7="↳ a basename is matched literally — its dots do not wildcard onto another record"
+if [[ "$_fixture_unclassified" == *"case.gate.js"* ]]; then assert 0 "$_m6"; else assert 1 "$_m6"; fi
+if [[ "$_fixture_unclassified" != *"syn.gate.js"* ]]; then assert 0 "$_m7"; else assert 1 "$_m7"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook
@@ -504,7 +521,7 @@ while IFS= read -r _dh; do
         # not: a dynamically-built path (`scripts/hooks/${HOOK_NAME:-the-gate.js}`) runs the
         # hook while producing no record, and silently skipping it would retire the guard.
         # Asked of the DECODED commands, case-folded — see the `!named` note in the index.
-        grep -qx "!named $(tr '[:upper:]' '[:lower:]' <<< "$_dh")" <<< "$REG_INDEX" || continue
+        grep -Fqx "!named $(tr '[:upper:]' '[:lower:]' <<< "$_dh")" <<< "$REG_INDEX" || continue
         assert 1 "$_dh (deny-capable): named in hooks.json but no registration resolves to it"
         continue
     fi
@@ -526,10 +543,11 @@ done <<< "$_deny"
 _deny_unlisted=""
 while IFS= read -r _dh; do
     [[ -z "$_dh" ]] && continue
-    # Case-folded, exactly as the containment lookup above is — otherwise a `CaseDeny.JS`
+    # Case-folded AND literal, exactly as the two lookups above — otherwise a `CaseDeny.JS`
     # registered as `casedeny.js` clears containment here and then silently escapes the
     # KNOWN_DENY requirement, which is the authority the containment net rests on.
-    grep -qiE "^$_dh " <<< "$REG_INDEX" || continue
+    awk -v hook="$_dh" 'tolower($1) == tolower(hook) { wired = 1 } END { exit !wired }' \
+        <<< "$REG_INDEX" || continue
     in_list "$_dh" ${KNOWN_DENY[@]+"${KNOWN_DENY[@]}"} || _deny_unlisted+="$_dh "
 done <<< "$_deny_grep"
 if [[ -z "$_deny_unlisted" ]]; then

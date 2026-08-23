@@ -208,8 +208,10 @@ def append_at(dfd, record_line):
             written = os.write(fd, data)
         except OSError:
             return DID_NOT_WRITE
+        if written == 0:
+            return DID_NOT_WRITE
         if written != len(data):
-            return DID_NOT_WRITE   # short write (storage exhausted)
+            return UNKNOWN     # a partial record may already be in the log
         # The lock above is ADVISORY, and the plain `>>` appenders elsewhere in the gate
         # do not take it, so the newline check and the write are not one atomic step: an
         # unlocked writer can land a partial line in between and our record concatenates

@@ -1,3 +1,10 @@
+## [1.110.9](https://github.com/chris-yyau/busdriver/compare/v1.110.8...v1.110.9) (2026-08-23)
+
+
+### Bug Fixes
+
+* **codex-retrigger:** keep the claim while a nudge post is in flight ([#677](https://github.com/chris-yyau/busdriver/issues/677)) ([#739](https://github.com/chris-yyau/busdriver/issues/739)) ([4f526e7](https://github.com/chris-yyau/busdriver/commit/4f526e7682d07fdd0aec2deb35d7c4ffeb56ef5f))
+
 ## [1.110.8](https://github.com/chris-yyau/busdriver/compare/v1.110.7...v1.110.8) (2026-08-23)
 
 

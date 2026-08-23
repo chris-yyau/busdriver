@@ -430,13 +430,22 @@ discover_deny_capable() {
     # sees neither half as a deny — the hook then bypasses KNOWN_DENY, `env -i` and the
     # wrapper checks entirely. `\s` spans the newline.
     #
-    # The value's quote is CAPTURED and must close with the same character, so `'deny'`,
-    # `"deny"` and a `` `deny` `` template literal all match while a mismatched pair —
-    # which is not valid JS and does not produce a deny decision — does not.
+    # Requiring the value to sit IMMEDIATELY after the colon was still a spelling game — a
+    # hook can compute it (`permissionDecision: cond ? 'allow' : 'deny'`), read it from a
+    # variable, or return it from a call, and each of those denies just as effectively. So
+    # the two halves are looked for independently: the file names `permissionDecision`, AND
+    # it contains a quoted `deny` literal somewhere. That over-matches rather than
+    # under-matches, which is the right direction here — a false hit costs one human
+    # classification, a miss costs an uncontained gate. The value's quote is CAPTURED and
+    # must close with the same character, so `'deny'`, `"deny"` and a `` `deny` ``
+    # template literal all count while a mismatched pair — not valid JS, and not a deny
+    # decision — does not. A deny built with no literal at all (a constant from another
+    # module) remains beyond any grep, which is why KNOWN_DENY is the authority.
     python3 - "$HOOKS_DIR" <<'PY'
 import glob, os, re, sys
 
-DENY = re.compile(r"""(?:['"`]?permissionDecision['"`]?)\s*:\s*(['"`])deny\1""")
+DECISION = re.compile(r"permissionDecision")
+DENY = re.compile(r"""(['"`])deny\1""")
 for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.js"))):
     try:
         with open(path, errors="replace") as handle:
@@ -444,7 +453,7 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.js"))):
     except OSError:          # unreadable file: report it rather than pass it over
         print(os.path.basename(path))
         continue
-    if DENY.search(body):
+    if DECISION.search(body) and DENY.search(body):
         print(os.path.basename(path))
 PY
 }

@@ -163,6 +163,7 @@ import sys
 # repo-controlled gitcmd_detect.py or shadowed stdlib cannot run in the guard.
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import fnmatch
+import functools
 import re
 import shlex
 # _all_chunks is private but deliberately reused: it expands $(...), backticks
@@ -1216,6 +1217,45 @@ SQL_NAME_RE = re.compile(r"\b(%s)\b" % "|".join(
 QUOTING = re.compile(r"[\"\x27\\]")
 
 
+@functools.lru_cache(maxsize=256)
+def _raw_split(seg):
+    """posix=False tokens for a segment, or None when it does not parse.
+
+    Cached: _closer_is_syntax asks once per closer token, and re-splitting the
+    whole segment each time made both command-position walks quadratic.
+    """
+    try:
+        return tuple(shlex.split(_fold_ansi_c(seg), posix=False))
+    except ValueError:
+        return None
+
+
+def _closer_is_syntax(seg, toks, j, tok):
+    """True unless the RAW spelling shows the trailing closer was QUOTED.
+
+    posix shlex erases quoting first, so a `)` that was DATA reads as the
+    closer of a case pattern and reopens command position - which is how
+    `echo "foo)" truncate` warned. posix=False is the one place that
+    provenance survives. Anything that does not align token-for-token - a
+    parse failure, or a case body reinserted into toks - is UNKNOWN: answer
+    True and keep the fail-closed reopen. ACCEPTED OVER-WARN: posix=False does
+    not rejoin adjacent quoted fragments, so `echo "foo)"SQSQ truncate` counts
+    one token more and reopens. That is the safe direction and what HEAD did.
+    """
+    raw = _raw_split(seg)
+    if raw is None:
+        return True
+    if len(raw) != len(toks):
+        return True
+    if not raw[j].endswith(tok[-1]):
+        return False
+    # ODD run of backslashes only. `x\)` escapes the paren, but `x\\)` is a
+    # literal backslash followed by a REAL case delimiter - and reading both as
+    # escaped let `case "x\\" in x\\) rm -rf /etc;; esac` run unseen.
+    lead = raw[j][:-1]
+    return (len(lead) - len(lead.rstrip("\\"))) % 2 == 0
+
+
 def _command_word_in(chunks, names, unreadable=True):
     """True iff any name runs as a COMMAND WORD.
 
@@ -1354,7 +1394,8 @@ def _command_word_in(chunks, names, unreadable=True):
                 if (cmd_pos and (word == "esac" or word in CONTROL)) \
                         or (_reads_as(tok, DISPATCH)
                             and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0)) \
-                        or tok in ("(", ")", "{", "}", ";;"):
+                        or (tok in ("(", ")", "{", "}", ";;")
+                            and _closer_is_syntax(seg, toks, j, tok)):
                     cmd_pos = True
                     continue
                 if _whole_substitution(tok):
@@ -1381,7 +1422,8 @@ def _command_word_in(chunks, names, unreadable=True):
                         and not tok.startswith("-") \
                         and not _assign_prefix(tok, word):
                     return True
-                if tok.endswith(("{", ";;", ")")):
+                if tok.endswith(("{", ";;", ")")) \
+                        and _closer_is_syntax(seg, toks, j, tok):
                     cmd_pos = True       # `f(){ psql ...`, `x) psql ...`
                     continue
                 if _assign_prefix(tok, word):
@@ -1734,7 +1776,16 @@ def has_truncate(chunks):
                 # and then falling through to consume the command slot. That is
                 # how `( truncate -s 0 f )` escaped: a REGRESSION against the
                 # bare-word rule this file replaced, which caught it as text.
-                if tok in ("(", ")", "{", "}", ";;"):
+                # QUOTE PROVENANCE, same as the endswith closer branch below:
+                # posix shlex has already erased quoting here, so a quoted
+                # bare `)`/`{`/`}`/`;;` reads identically to the real
+                # delimiter and reopened command position on DATA -
+                # `echo "}" truncate -s 0 f` warned on the quoted brace.
+                # _closer_is_syntax reads the RAW (posix=False) spelling to
+                # tell the two apart, exactly as the sibling branch in
+                # _command_word_in already does.
+                if tok in ("(", ")", "{", "}", ";;") \
+                        and _closer_is_syntax(seg, toks, j, tok):
                     cmd_pos = True
                     continue
                 # A trailing `)` closes a construct UNLESS the token is a
@@ -1778,7 +1829,8 @@ def has_truncate(chunks):
                         and not tok.startswith("-") \
                         and not _assign_prefix(tok, word):
                     return True
-                if tok.endswith(("{", ";;", ")")):
+                if tok.endswith(("{", ";;", ")")) \
+                        and _closer_is_syntax(seg, toks, j, tok):
                     cmd_pos = True
                     continue
                 if _assign_prefix(tok, word):
@@ -1858,7 +1910,30 @@ def unsafe(chunks, truncated):
     if truncated:
         return True
     for chunk in chunks:
+        # #585: the loop below reads EVERY token as a candidate command word,
+        # so a glob OPERAND fnmatched rm and `grep SQ*SQ -r src` prompted. Gate
+        # each segment on the same command-POSITION walk the truncate and
+        # client scanners use - it keeps `/bin/*`, wrappers and dispatch.
+        # PER SEGMENT, not per chunk: a chunk gate only proves an rm runs
+        # SOMEWHERE, so `rm build; grep rm -rf src` admitted the whole chunk
+        # and the grep operand was then read as a recursive rm.
+        # DEFAULT unreadable=True, deliberately: a gate in front of a
+        # fail-closed loop must never be the stricter of the two, so an
+        # unresolvable command word admits the segment and lets the loop decide.
+        prev_gate_seg = None
         for seg_idx, (_op, seg) in enumerate(split_segments(chunk)):
+            # ...but split_segments cuts at the `&` of a SEPARATED redirection,
+            # so this segment can OPEN with the orphaned operand and hide the
+            # real command word one token in - `>& out.log rm -rf /etc` read
+            # out.log as the command word and skipped the rm. Admit it on that
+            # signal and let the loop below decide: same fail-open direction
+            # the unreadable default takes.
+            gate_ok = (_command_word_in([seg], RM_SET)
+                       or (prev_gate_seg is not None
+                           and _ends_in_redirect(prev_gate_seg)))
+            prev_gate_seg = seg
+            if not gate_ok:
+                continue
             try:
                 toks = shlex.split(_fold_ansi_c(seg), posix=True)
             except ValueError:
@@ -1876,16 +1951,11 @@ def unsafe(chunks, truncated):
                 # candidate COMMAND word, and `/bin/r?` reaches the real binary
                 # while spelling a name in no set.
                 #
-                # KNOWN over-warn, tracked as issue #585: this loop reads EVERY
-                # token as a candidate command word, unlike the cmd_pos-gated
-                # caller above, so a glob OPERAND is read as a command name too.
-                # `grep SQ*SQ -r src` prompts, because `*` fnmatches `rm` and a
-                # recursive flag sits in the same argv. Do not "fix" it by
-                # dropping pure-wildcard tokens: `/bin/*` reduces to the same
-                # bare `*` and IS a real command word, so that trade buys a
-                # false negative. The fix is command-position gating, which
-                # belongs in its own change - this is an over-warn on an
-                # advisory guard, the safe direction.
+                # This loop still reads every token as a candidate, which is
+                # why the segment gate above is what settled #585. Do NOT
+                # instead drop pure-wildcard tokens here: `/bin/*` reduces to
+                # the same bare `*` and IS a real command word, so that trade
+                # buys a false negative.
                 if not _matches_tok(tok, RM_SET) \
                         and not any(_matches_tok(f, RM_SET)
                                     for f in _brace_forms(tok)):

@@ -1690,6 +1690,9 @@ check("589+ glob-shaped command word still names a shell",
       g.git_commit('/bin/ba?h -c "git commit -m x"')[0], True)
 check("589+ quoted glob-shaped command pathname stays fail-closed",
       g.git_commit("'./b*sh' -c 'git commit -m x'")[0], True)
+check("589- non-torn unreadable operand '$x' is not a shell",
+      g.git_commit("env -i printf '%s' g$'++' '$x' -c 'git commit -m x'")[0],
+      False)
 # `.` (source) is a real command name with no word character, like `:` and `[`
 # above. Misclassifying it as unreadable sent `. /dev/null bash -c 'git
 # commit'` into the any-position fallback scan, which extracted `bash -c

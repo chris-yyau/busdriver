@@ -32,12 +32,11 @@ Subagent (general-purpose):
     ## Your Job
 
     Once you're clear on requirements:
-    1. Implement exactly what the task specifies
-    2. Write tests (following TDD if task says to)
-    3. Verify implementation works
-    4. Commit your work
-    5. Self-review (see below)
-    6. Report back
+    1. Implement exactly what the task specifies with tests; either order is allowed unless TDD was explicitly requested (`/tdd` or direct ask)
+    2. Verify implementation works
+    3. Commit your work
+    4. Self-review (see below)
+    5. Report back
 
     Work from: [directory]
 

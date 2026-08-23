@@ -1167,6 +1167,30 @@ check "assignment whose value is a path" ask   'X=/tmp truncate -s 0 audit.log'
 check "path-valued assignment, client"   ask   'PATH=/usr/bin psql -c "TRUNCATE users"'
 check "path-valued assignment, benign"   allow 'PATH=/usr/bin git log'
 
+# #585: a token names a command only at COMMAND POSITION, and a closer that was
+# QUOTED is data, not syntax. posix shlex erases the quotes before either walk
+# sees the token, so the raw spelling has to settle the second half.
+echo "--- #585: command position and quote provenance ---"
+check "glob operand is not a command"    allow 'grep "*" -r src'
+check "quoted paren does not reopen"     allow 'echo "foo)" truncate'
+check "unquoted glob at command position" ask  '/bin/* -rf /etc'
+# shellcheck disable=SC2016  # the substitution IS the fixture
+check "paren closed by a substitution"   ask   'trun$(x=")")cate -s 0 f'
+# An EVEN run of backslashes leaves the `)` unescaped, so the pattern really
+# does close and the body really does run. Reading `\\)` as escaped was a
+# fail-OPEN on a destructive rm.
+check "even backslash run still closes"  ask   'case "x\\" in x\\) rm -rf /etc;; esac'
+# An UNPARSEABLE segment (an unmatched quote inside a comment) must still reach
+# the rm scanner. The #585 gate and the loop it guards share the same
+# whitespace-split fallback, so the gate can never be the stricter of the two.
+check "unparseable comment, rm"          ask   "rm -rf /etc # '"
+check "unparseable comment, wrapped rm"  ask   "sudo rm -rf /etc # '"
+# split_segments cuts at the `&` of a SEPARATED redirection, orphaning its
+# operand at the head of the next segment. Only a whole-chunk walk rejoins it;
+# gating per segment read `out.log` as the command word and skipped the rm.
+check "separated redirect, then rm"      ask   '>& out.log rm -rf /etc'
+check "separated fd redirect, then rm"   ask   '2>& 1 rm -rf /etc'
+
 # The enumerated cases above each pin ONE shape. They do not exercise the shapes
 # in COMBINATION, and combination is where this parser actually failed: the
 # wrapper-payload gap survived hand-picked cases because no single case put a

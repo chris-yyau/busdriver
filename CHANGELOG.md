@@ -1,3 +1,10 @@
+## [1.110.14](https://github.com/chris-yyau/busdriver/compare/v1.110.13...v1.110.14) (2026-08-23)
+
+
+### Bug Fixes
+
+* **gitcmd_detect:** narrow the [#589](https://github.com/chris-yyau/busdriver/issues/589) glob rule to quoted literals ([#589](https://github.com/chris-yyau/busdriver/issues/589)) ([#749](https://github.com/chris-yyau/busdriver/issues/749)) ([419f60e](https://github.com/chris-yyau/busdriver/commit/419f60ebd63a82d6dcdf1ba253947136ddd3bb51))
+
 ## [1.110.13](https://github.com/chris-yyau/busdriver/compare/v1.110.12...v1.110.13) (2026-08-23)
 
 

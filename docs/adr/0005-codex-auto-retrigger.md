@@ -164,11 +164,20 @@ above) is the caller's, because those signals live in the caller's context.
   a signal there released the claim for a nudge GitHub had already accepted — the
   next round then re-posted it, so a landed nudge cost nothing against the budget and
   the PR could collect MAX+1 comments. A `POST_OUTCOME_UNKNOWN` flag now gates the
-  release on exactly that window and no wider: it is raised per `gh` invocation and
-  cleared the moment that call's rc is read. A signal while a call is IN FLIGHT keeps
-  the claim; every other exit releases as before — pre-attempt (a claim with no post
-  behind it must not spend an attempt), between the two bounded transport retries, and
-  after a KNOWN failure (the fail-SAFE retry semantics above are untouched). This trades a
+  release. Its two transitions are not symmetric, so state them separately: it is
+  **raised** immediately before each `gh` invocation and stays raised through a
+  SUCCESSFUL post — the success path then disarms the traps outright, which is what
+  makes a landed nudge durable — and it is **cleared** only on a KNOWN non-zero rc.
+  A signal while a call is in flight therefore keeps the claim; every other exit
+  releases as before — pre-attempt (a claim with no post behind it must not spend an
+  attempt), between the two bounded transport retries, and after a known failure (the
+  fail-SAFE retry semantics above are untouched). Two one-command-wide boundaries
+  remain and cannot be closed in shell (a trap fires only *between* commands): the
+  gap between raising the flag and invoking `gh`, and the gap between reading `$?`
+  and clearing it. Both cost at most one attempt out of `MAX_ATTEMPTS`, recoverable
+  on a later round; the alternative on either side is re-posting a nudge GitHub may
+  already have accepted. The argv is built once before the retry loop specifically so
+  the first of those gaps is one command rather than three. This trades a
   possibly-wasted attempt for a possibly-duplicated comment, which is the right
   direction now that the budget is 3 rather than 1 (#673) and Codex de-dupes anyway
   — see Consequences. Pinned by case 19 of `tests/test-codex-retrigger.sh`, which

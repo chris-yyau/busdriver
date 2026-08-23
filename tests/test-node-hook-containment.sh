@@ -77,11 +77,17 @@ discover_exit2() {
 # evaluate every command string on its own. Both the registration-blocking net and the
 # deny-hook containment lookup read this index — the parse lives in exactly one place.
 #
-# Emits one record per (command, hook it names):  `<basename> <blocking> <contained>`
+# Emits one record per (command, hook it names):
+#     `<basename> <blocking> <contained> <disposition>`
 #   blocking  1 = the registration declares the hook a gate (a `|| exit 2` tail), OR the
 #                 command matches no canonical shape at all.
 #   contained 1 = the registration is the canonical `env -i … bash "<wrapper>"` launch and
 #                 hands THIS hook to the wrapper as its script argument.
+#   disposition   the wrapper's own fail disposition — `open` under `--fail-open`, else
+#                 `closed`; `-` where no wrapper is involved. It is a separate field because
+#                 it can CONTRADICT the tail: `--fail-open … || exit 2` reads as blocking,
+#                 but the wrapper resolves a launch failure to exit 0 and the tail never
+#                 fires. See guard 1.
 # Plus one `!unrecognized\t<command>` line per command matching no shape, which guard #3a
 # below turns into a failure — see the shape allowlist for why that is the whole design.
 # python3 is already a hard dependency of this repo's gate tooling
@@ -124,7 +130,7 @@ NODE_GATE = re.compile(
     # `--fail-closed` registration leaves four operands, trips the wrapper's arity check and
     # is force-blocked on every invocation. Accepting it here would have this file approve a
     # registration the wrapper itself rejects; as an unrecognized shape it fails loudly.
-    r'(?:--fail-open )?' + EVENT + ' ' + SCRIPT + ' ' + PROFILES + r' \|\| exit (0|2)'
+    r'(?:(--fail-open) )?' + EVENT + ' ' + SCRIPT + ' ' + PROFILES + r' \|\| exit (0|2)'
 )
 SHELL_GATE = re.compile(
     r'/usr/bin/env -i PATH=/usr/bin:/bin ' + ASSIGN +
@@ -160,21 +166,29 @@ HOOK = re.compile(r"scripts/hooks/([A-Za-z0-9._-]+\.js)", re.IGNORECASE)
 
 
 def classify(cmd):
-    """Yield (hook, blocking, contained) for one registration, or None when unrecognized."""
+    """Yield (hook, blocking, contained, disposition) per registration, None if unrecognized.
+
+    The DISPOSITION is the wrapper's, and it decides whether the `|| exit 2` tail means
+    anything: under `--fail-open` the wrapper converts a missing runtime, a missing runner
+    and every other launch failure to exit 0, so the outer tail never runs and the action is
+    allowed. `1 1` alone therefore does not describe a fail-closed gate — the two halves can
+    contradict each other, and only a record carrying both settles it.
+    """
     matched = NODE_GATE.fullmatch(cmd)
     if matched:
-        return [(matched.group(1), 1 if matched.group(2) == "2" else 0, 1)]
+        disposition = "open" if matched.group(1) == "--fail-open" else "closed"
+        return [(matched.group(2), 1 if matched.group(3) == "2" else 0, 1, disposition)]
     matched = RUNNER.fullmatch(cmd) or BARE_NODE.fullmatch(cmd)
     if matched:
-        return [(matched.group(1), 0, 0)]
+        return [(matched.group(1), 0, 0, "-")]
     if cmd == SESSION_START:
-        return [("run-with-flags.js", 0, 0), ("session-start.js", 0, 0)]
+        return [("run-with-flags.js", 0, 0, "-"), ("session-start.js", 0, 0, "-")]
     matched = SHELL_RUNNER.fullmatch(cmd)
     if matched:
         operand = matched.group(1)
         named = HOOK.fullmatch(operand)
         if named:
-            return [(named.group(1), 0, 0)]
+            return [(named.group(1), 0, 0, "-")]
         if operand.lower().endswith(".js"):
             # A node hook by a path spelling this file does not index (`scripts/hooks/./x.js`)
             # must not read as "recognized, nothing to see" — that is the unwired-by-accident
@@ -222,9 +236,9 @@ for cmd in commands(doc):
         # Unrecognized: report it, and meanwhile treat every hook it names the only safe
         # way — blocking (so it must be classified) and uncontained (so it must be wrapped).
         print("!unrecognized\t%s" % " ".join(cmd.split()))
-        records = [(name, 1, 0) for name in dict.fromkeys(HOOK.findall(cmd))]
-    for name, blocking, contained in records:
-        print("%s %d %d" % (name, blocking, contained))
+        records = [(name, 1, 0, "-") for name in dict.fromkeys(HOOK.findall(cmd))]
+    for name, blocking, contained, disposition in records:
+        print("%s %d %d %s" % (name, blocking, contained, disposition))
 
 for name in sorted(mentioned):
     print("!named %s" % name)
@@ -281,19 +295,21 @@ REG_INDEX="$(registration_index)" \
 # — AND carry the fail-closed `|| exit 2` tail. That tail matters on its own: if bash cannot
 # launch the wrapper (bad CLAUDE_PLUGIN_ROOT, missing file, ENOEXEC) the command exits
 # 1/126/127 BEFORE the wrapper's internal fail-closed runs, a non-2 exit the harness treats
-# as non-blocking. In index terms those two properties are one record: `<hook> 1 1`.
+# as non-blocking — UNLESS the wrapper itself is fail-open, in which case it swallows that
+# launch failure as exit 0 and the tail never runs, so the disposition must be `closed` too.
+# In index terms: `<hook> 1 1 closed`.
 #
 # Read from the structural index, like every other guard here — these two used to grep
 # physical LINES, which made "one structural reader" untrue and carried exactly the defect
 # the other nets were fixed for: compacting the document onto one line let an unrelated
 # bare-node registration sharing that line satisfy a contained hook's lookup.
 for h in "${CONTAINED[@]}"; do
-    _recs="$(awk -v hook="$h" '$1 == hook { print $2 $3 }' <<< "$REG_INDEX")"
+    _recs="$(awk -v hook="$h" '$1 == hook { print ($2 == 1 && $3 == 1 && $4 == "closed") ? "ok" : "bad" }' <<< "$REG_INDEX")"
     _found=0; _bad=0
     while IFS= read -r _rec; do
         [[ -z "$_rec" ]] && continue
         _found=$((_found+1))
-        [[ "$_rec" == "11" ]] || _bad=1
+        [[ "$_rec" == "ok" ]] || _bad=1
     done <<< "$_recs"
     if [[ "$_found" -ge 1 && "$_bad" -eq 0 ]]; then
         assert 0 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
@@ -396,7 +412,7 @@ if [[ -z "$_fixture_src_only" ]]; then assert 0 "$_m2"; else assert 1 "$_m2"; fi
 if [[ "$_fixture_unclassified" != *"synthetic-decoy.js"* ]]; then assert 0 "$_m3"; else assert 1 "$_m3"; fi
 # `1 1` = blocking AND contained, which only the canonical NODE_GATE shape can produce;
 # the `!unrecognized` fallback can only ever emit `1 0`.
-if grep -qx "synthetic-canonical-gate.js 1 1" <<< "$_fixture_index"; then assert 0 "$_m4"; else assert 1 "$_m4"; fi
+if grep -qx "synthetic-canonical-gate.js 1 1 closed" <<< "$_fixture_index"; then assert 0 "$_m4"; else assert 1 "$_m4"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook

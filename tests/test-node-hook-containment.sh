@@ -67,16 +67,20 @@ in_list() {  # in_list <needle> <list...>
 # ── 3. Discovery: any registered node hook that exits 2 must be classified ──────
 # HEURISTIC net, not the authority (the KNOWN_EXIT2 list is). Tolerant of whitespace
 # so `process.exit( 2 )`, `exitCode: 2`, and `exitCode = 2` all match, plus the
-# fail-closed ternary `? 0 : 2` (mcp-health-check). A hook that hides its exit-2
-# behind a constant or a helper call is genuinely undetectable by grep — that gap is
-# WHY the explicit KNOWN_EXIT2 list is the real guard and guard #4 pins the trio.
+# fail-closed ternary in either branch order (`? 0 : 2`, mcp-health-check). A hook that
+# hides its exit-2 behind a constant or a helper call is genuinely undetectable by grep —
+# that gap is WHY the explicit KNOWN_EXIT2 list is the real guard and guard #4 pins the trio.
 discover_exit2() {
     # `*.[jJ][sS]`, not `*.js`: bash matches the pattern itself case-sensitively, so on the
     # case-insensitive filesystem this repo runs on a `CaseExit.JS` hook is a real, loadable
     # module that a plain `*.js` glob never sees.
     { grep -lE 'process\.exit\([[:space:]]*2|exitCode[[:space:]]*[:=][[:space:]]*2' "$HOOKS_DIR"/*.[jJ][sS] 2>/dev/null
-      grep -lE '\?[[:space:]]*0[[:space:]]*:[[:space:]]*2' "$HOOKS_DIR"/*.[jJ][sS] 2>/dev/null
-    } | sort -u
+      # Both branch orders of the fail-closed ternary: `? 0 : 2` and the reversed `? 2 : …`.
+      grep -lE '\?[[:space:]]*0[[:space:]]*:[[:space:]]*2|\?[[:space:]]*2[[:space:]]*:' "$HOOKS_DIR"/*.[jJ][sS] 2>/dev/null
+      # run-with-flags.js is shared runner infrastructure, not a gate hook: its exit-2 paths
+      # all require an argv `--fail-closed`. Its registration disposition is decided by the
+      # structural index, so this source heuristic has nothing to say about it.
+    } | grep -iv '/run-with-flags\.js$' | sort -u
 }
 
 # ── Structural registration index — the ONE hooks.json reader both nets share ───
@@ -421,6 +425,11 @@ JS
 # wired when it is not.
 printf 'process.exit(2);\n' > "$_fix/scripts/hooks/case.gate.js"
 printf 'process.exit(2);\n' > "$_fix/scripts/hooks/syn.gate.js"
+# Exits 2 with the ternary spelled the other way round — the 2 on the TRUE branch. Only the
+# reversed arm of the source grep can see it: its registration below carries no blocking
+# tail, and neither `exitCode: 2` nor `? 0 : 2` appears in the file.
+printf 'module.exports = (c) => ({ exitCode: c.shouldBlock ? 2 : 0 });\n' \
+    > "$_fix/scripts/hooks/synthetic-ternary-gate.js"
 cat > "$_fix/hooks/hooks.json" <<'JSON'
 { "hooks": { "PreToolUse": [ { "matcher": "Edit|Write", "hooks": [
   { "type": "command",
@@ -431,6 +440,7 @@ cat > "$_fix/hooks/hooks.json" <<'JSON'
     "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:synthetic\" \"scripts/hooks/synthetic-canonical-gate.js\" \"strict\" || exit 2" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/CASE.GATE.js\"" },
   { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synXgate.js\"" },
+  { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/synthetic-ternary-gate.js\"" },
   { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/novel-launcher.sh\"" }
 ] } ] } }
 JSON
@@ -458,6 +468,8 @@ if [[ "$_fixture_unclassified" != *"syn.gate.js"* ]]; then assert 0 "$_m7"; else
 # The two live launchers stay recognized (the real tree's guard 3a is green); a THIRD one,
 # free to dispatch any blocking hook it likes, must not inherit that approval.
 if grep -q '^!unrecognized.*novel-launcher\.sh' <<< "$_fixture_index"; then assert 0 "$_m8"; else assert 1 "$_m8"; fi
+_m9="↳ an exit-2 ternary with the 2 on the TRUE branch is discovered and flagged unclassified"
+if [[ "$_fixture_unclassified" == *"synthetic-ternary-gate.js"* ]]; then assert 0 "$_m9"; else assert 1 "$_m9"; fi
 
 # ── 3c. Deny-capable node hooks must be CONTAINED (#629) ───────────────────────
 # The third discovery class. `permissionDecision: "deny"` blocks the tool call from a hook

@@ -44,7 +44,8 @@ RESIDUAL=()
 # The full known exit-2 universe = CONTAINED ∪ RESIDUAL. The `${RESIDUAL[@]+…}`
 # guard keeps an empty RESIDUAL from tripping `set -u` on bash 3.2 (macOS default).
 KNOWN_EXIT2=("${CONTAINED[@]}" ${RESIDUAL[@]+"${RESIDUAL[@]}"})
-# DENY-CAPABLE: hooks that block via `permissionDecision: "deny"` rather than exit 2.
+# DENY-CAPABLE: hooks that block through their stdout decision — `permissionDecision:
+# "deny"` or a top-level `decision: "block"` — rather than by exiting 2.
 # Human authority, exactly like KNOWN_EXIT2 and for the same reason — the guard-3c grep
 # cannot see a deny moved into a constant, a helper, or onto its own line, so this list is
 # what actually pins those hooks. Membership demands CONTAINMENT (env -i + wrapper), NOT
@@ -433,19 +434,28 @@ discover_deny_capable() {
     # Requiring the value to sit IMMEDIATELY after the colon was still a spelling game — a
     # hook can compute it (`permissionDecision: cond ? 'allow' : 'deny'`), read it from a
     # variable, or return it from a call, and each of those denies just as effectively. So
-    # the two halves are looked for independently: the file names `permissionDecision`, AND
-    # it contains a quoted `deny` literal somewhere. That over-matches rather than
+    # the two halves are looked for independently: the file names a decision key, AND it
+    # contains a quoted blocking literal somewhere. That over-matches rather than
     # under-matches, which is the right direction here — a false hit costs one human
     # classification, a miss costs an uncontained gate. The value's quote is CAPTURED and
     # must close with the same character, so `'deny'`, `"deny"` and a `` `deny` ``
-    # template literal all count while a mismatched pair — not valid JS, and not a deny
-    # decision — does not. A deny built with no literal at all (a constant from another
-    # module) remains beyond any grep, which is why KNOWN_DENY is the authority.
+    # template literal all count while a mismatched pair — not valid JS, and not a
+    # decision — does not. A decision built with no literal at all (a constant from
+    # another module) remains beyond any grep, which is why KNOWN_DENY is the authority.
     python3 - "$HOOKS_DIR" <<'PY'
 import glob, os, re, sys
 
-DECISION = re.compile(r"permissionDecision")
-DENY = re.compile(r"""(['"`])deny\1""")
+# Two stdout block shapes, and they are separate mechanisms rather than spellings of one:
+# `permissionDecision: "deny"` is the PreToolUse form, and a top-level `decision: "block"`
+# is the older one the harness honours just as well — sanitized-node.sh emits exactly that
+# on its own fail-closed path (guard 5 below asserts so). Either pairing means the file can
+# block from a successful run, which is what containment has to cover.
+#
+# The key is matched as a bare IDENTIFIER, with no `:` required, because object shorthand
+# (`const decision = "block"; return { decision };`) never writes one — requiring the colon
+# would be the same spelling game one level down.
+DECISION = re.compile(r"\bpermissionDecision\b|\bdecision\b")
+DENY = re.compile(r"""(['"`])(?:deny|block)\1""")
 for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.js"))):
     try:
         with open(path, errors="replace") as handle:

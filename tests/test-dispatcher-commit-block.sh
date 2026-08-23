@@ -27,6 +27,8 @@ write_default_plugin_root() {
 
     ln -s "$REPO_ROOT/scripts/lib/bail-envelope.sh" "$plugin_root/scripts/lib/bail-envelope.sh"
     ln -s "$REPO_ROOT/scripts/lib/staged-diff-hash.sh" "$plugin_root/scripts/lib/staged-diff-hash.sh"
+    ln -s "$REPO_ROOT/scripts/lib/dispatcher-proc-state.sh" \
+        "$plugin_root/scripts/lib/dispatcher-proc-state.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
     # Real exclusion logic — dispatcher sources this to re-verify excluded-only
     # PASS-EXCLUDED markers (#278).

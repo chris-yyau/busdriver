@@ -184,6 +184,16 @@
         "description": "Doc file warning: warn about non-standard documentation files"
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:read:size-advisory\" \"scripts/hooks/pre-read-size-advisory.js\" \"standard,strict\""
+          }
+        ],
+        "description": "Advisory: surface file line count before wholesale Read over ~200 lines"
+      },
+      {
         "matcher": "Edit|Write",
         "hooks": [
           {

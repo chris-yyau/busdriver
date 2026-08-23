@@ -158,6 +158,30 @@ above) is the caller's, because those signals live in the caller's context.
   an INT/TERM signal — so the fail-SAFE retry-next-round semantics are preserved.
   The trap is disarmed the instant the post is confirmed (SIGKILL is the sole
   uncoverable case — see Known limitations).
+  *(Amended 2026-08-23, #677 — the release is no longer unconditional. "Any exit
+  before a confirmed post" was too wide by exactly one window: from the moment
+  `gh pr comment` is invoked until its rc is read, the outcome is INDETERMINATE, and
+  a signal there released the claim for a nudge GitHub had already accepted — the
+  next round then re-posted it, so a landed nudge cost nothing against the budget and
+  the PR could collect MAX+1 comments. A `POST_OUTCOME_UNKNOWN` flag now gates the
+  release. Its two transitions are not symmetric, so state them separately: it is
+  **raised** immediately before each `gh` invocation and stays raised through a
+  SUCCESSFUL post — the success path then disarms the traps outright, which is what
+  makes a landed nudge durable — and it is **cleared** only on a KNOWN non-zero rc.
+  A signal while a call is in flight therefore keeps the claim; every other exit
+  releases as before — pre-attempt (a claim with no post behind it must not spend an
+  attempt), between the two bounded transport retries, and after a known failure (the
+  fail-SAFE retry semantics above are untouched). Two one-command-wide boundaries
+  remain and cannot be closed in shell (a trap fires only *between* commands): the
+  gap between raising the flag and invoking `gh`, and the gap between reading `$?`
+  and clearing it. Both cost at most one attempt out of `MAX_ATTEMPTS`, recoverable
+  on a later round; the alternative on either side is re-posting a nudge GitHub may
+  already have accepted. The argv is built once before the retry loop specifically so
+  the first of those gaps is one command rather than three. This trades a
+  possibly-wasted attempt for a possibly-duplicated comment, which is the right
+  direction now that the budget is 3 rather than 1 (#673) and Codex de-dupes anyway
+  — see Consequences. Pinned by case 19 of `tests/test-codex-retrigger.sh`, which
+  drives the window deterministically from the `gh` stub rather than by timing.)*
 - **Fail-SAFE** — the helper returns 0 on every operational path (opt-out, bad
   input, marker present, `gh` missing, post failure); a failed re-trigger must
   never stale the gate, and call sites also append `|| true`. The marker is written
@@ -281,6 +305,13 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   window between claim and confirmation is the one uncoverable case — it leaves an
   empty marker that suppresses re-trigger for that one HEAD. Recover by removing the
   marker or pushing a new commit (new HEAD → new marker). Bounded and rare.
+  *(Amended 2026-08-23, #677 — an INT/TERM arriving once the post attempt has begun
+  now deliberately leaves the SAME empty marker, rather than releasing the claim.
+  The residue shape is therefore no longer SIGKILL-only, and the recovery is
+  identical. It is not a defect: the alternative was re-posting a nudge that had
+  already landed. Note the marker is empty because the forensic-content write never
+  ran — nothing reads that content; the slot scan reads existence and mtime, and
+  `codex-retrigger-gc.sh` globs by name.)*
 - **Marker accumulation.** Each (PR, HEAD) writes a gitignored
   `.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local` marker with no automatic
   cleanup; on a busy repo with many force-pushes these accumulate. Impact is

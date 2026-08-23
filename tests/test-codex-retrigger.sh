@@ -31,6 +31,8 @@ mk() { local d; d=$(mktemp -d); TMP_DIRS+=("$d"); printf '%s' "$d"; }
 # STUB_GH_FAIL=1  → every `pr comment` fails (exit 1).
 # STUB_GH_FAIL_ONCE=1 → only the FIRST `pr comment` fails, later ones succeed
 #   (a single transient) — proves the bounded in-process retry recovers (#398).
+# STUB_GH_SIGNAL_AFTER_POST=1 → the comment IS accepted, then SIGTERM is sent to the
+#   caller before it can read this process's exit code — the #677 window.
 make_gh_stub() {
   local bindir="$1"
   cat > "$bindir/gh" <<'STUB'
@@ -48,6 +50,9 @@ if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
      && [ "$(grep -c 'pr comment' "${GH_CALLLOG}" 2>/dev/null)" -le 1 ]; then
     exit 1
   fi
+  # #677: GitHub has accepted the comment. Signal the caller NOW, so the signal is
+  # already pending in it before this process exits — i.e. before it can read our rc.
+  [ "${STUB_GH_SIGNAL_AFTER_POST:-0}" = "1" ] && kill -TERM "$PPID" 2>/dev/null
   exit 0
 fi
 exit 0
@@ -408,6 +413,35 @@ else
   else
     fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
   fi
+fi
+
+# --- 19. #677 — A SIGNAL IN THE OUTCOME-INDETERMINATE WINDOW MUST NOT RELEASE THE
+#         CLAIM. The claim is released by `trap ... EXIT INT TERM`, and before this
+#         fix that release was unconditional right up to the post-confirmed disarm.
+#         So a TERM arriving after GitHub accepted the comment but before the rc was
+#         inspected freed the slot for a nudge that HAD landed — and the next round
+#         re-posted it (duplicate `@codex review`).
+#
+#         DETERMINISTIC, NOT TIMED. The stub `kill -TERM "$PPID"` is synchronous, so
+#         the signal is pending in the script before `gh` exits; bash defers a trapped
+#         signal until the foreground child completes, so the handler runs somewhere
+#         between gh's return and the confirm-disarm. The assertion does not depend on
+#         WHERE in that span it lands — anywhere in it reproduces the defect. No sleep,
+#         no polling, no retry loop.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+# `|| true` — the signalled run exits 130 (the INT/TERM handler); this file runs
+# under `set -e`, so an unguarded non-zero here would abort the suite silently.
+run_rt STUB_GH_SIGNAL_AFTER_POST=1 PR_GRIND_CODEX_RETRIGGER_MAX=3 || true
+signalled_marker=$([ -e "$STATE/$(marker_n 1)" ] && echo yes || echo no)
+# Drain the rest of the budget (cooldown disabled, so only the markers hold it back).
+# The landed nudge must COUNT: 3 comments total, slot 1 never reclaimed. Released, it
+# would not count — the next round refills slot 1, re-posting the nudge GitHub already
+# accepted, and the PR ends up with 4 `@codex review` comments on a budget of 3.
+for _i in 1 2 3 4; do run_rt PR_GRIND_CODEX_RETRIGGER_COOLDOWN=0 PR_GRIND_CODEX_RETRIGGER_MAX=3; done
+if [ "$signalled_marker" = yes ] && [ "$(posts_in "$CALLLOG")" = 3 ]; then
+  ok "#677 signal-during-post: claim retained while outcome indeterminate → landed nudge spends its attempt (3 posts, not 4)"
+else
+  fail "#677 signal-during-post: marker-after-signal=$signalled_marker (expected yes) posts=$(posts_in "$CALLLOG") (expected 3 — a 4th means the released slot re-posted a nudge GitHub already accepted)"
 fi
 
 echo "Results: $passed passed, $failed failed"

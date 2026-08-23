@@ -805,6 +805,21 @@ check "function body"                    ask  'f(){ truncate -s 0 audit.log; }; 
 check "subshell group"                   ask  '( truncate -s 0 audit.log )'
 check "nested subshell"                  ask  '( ( truncate -s 0 audit.log ) )'
 check "subshell after a cd"              ask  '(cd /tmp; truncate -s 0 audit.log)'
+
+echo "--- a QUOTED standalone closer is DATA, not syntax (must be silent) ---"
+# posix shlex erases quoting before the exact-match closer branch sees the
+# token, so a quoted bare ")", "{", "}" or ";;" read identically to the real
+# delimiter and reopened command position on an OPERAND — `echo "}" truncate
+# -s 0 f` warned on the quoted brace exactly as an unquoted one would.
+# _closer_is_syntax reads the RAW (posix=False) spelling to tell them apart;
+# this branch must consult it exactly as the sibling endswith-closer branch
+# already does.
+check "quoted close paren is data"       allow 'echo ")" truncate -s 0 f'
+check "quoted brace is data"             allow 'echo "}" truncate -s 0 f'
+check "quoted case terminator is data"   allow 'echo ";;" truncate -s 0 f'
+# ...but the SAME bare tokens, unquoted, must still reopen the slot.
+check "unquoted close paren still warns" ask   'echo ) truncate -s 0 f'
+check "unquoted brace still warns"       ask   'echo } truncate -s 0 f'
 check "brace group, spaced"              ask  '{ truncate -s 0 audit.log; }'
 # bash allows a LEADING paren on a case pattern, so `(x)` is parenthesis-
 # balanced and a balance test misreads it as a command substitution.
@@ -835,11 +850,14 @@ check "literal paren inside a substitution" ask 'case "(" in $(echo${IFS}'"'"'('
 check "pattern that opens with a substitution" ask 'case "x(" in $(echo${IFS}x)\() truncate -s 0 audit.log;; esac'
 # shellcheck disable=SC2016
 check "case pattern with a substitution" ask 'case x in x$(true)) truncate -s 0 audit.log;; esac'
-# ACCEPTED OVER-WARN: shlex strips quote provenance, so a quoted `(` operand is
-# indistinguishable from grouping punctuation. Warning is the safe direction —
-# same trade as the wrapped-grep case pinned above.
+# Once the exact-match closer branch started consulting _closer_is_syntax
+# (RAW posix=False provenance) for its whole tuple, not only the trailing-
+# closer branch below it, a quoted `(` operand became DISTINGUISHABLE from
+# real grouping punctuation the same way a quoted `)`/`{`/`}`/`;;` already
+# is. `echo` genuinely just prints two operands here; truncate never reaches
+# command position, so this is no longer an accepted over-warn.
 # shellcheck disable=SC2016
-check "quoted paren operand over-warns"  ask  'echo "(" truncate'
+check "quoted paren operand is data"     allow 'echo "(" truncate'
 check "macos caffeinate launcher"        ask  'caffeinate truncate -s 0 audit.log'
 check "coproc launcher"                  ask  'coproc truncate -s 0 audit.log'
 
@@ -1190,6 +1208,23 @@ check "unparseable comment, wrapped rm"  ask   "sudo rm -rf /etc # '"
 # gating per segment read `out.log` as the command word and skipped the rm.
 check "separated redirect, then rm"      ask   '>& out.log rm -rf /etc'
 check "separated fd redirect, then rm"   ask   '2>& 1 rm -rf /etc'
+# STANDALONE punctuation is checked for provenance too. That branch runs ahead
+# of the trailing-closer one, so a quoted `}` used as DATA reopened the slot and
+# read the next word as a command. The construct forms must keep reopening.
+check "quoted brace is an operand"       allow 'echo "}" rm -rf /etc'
+check "quoted paren is an operand"       allow 'echo ")" rm -rf /etc'
+check "subshell group still reopens"     ask   '( rm -rf /etc )'
+check "brace group still reopens"        ask   '{ rm -rf /etc; }'
+# The gate is PER SEGMENT. A chunk-wide gate only proved an rm ran somewhere,
+# so a later segment mentioning the name as an OPERAND was still scanned and
+# its neighbours read as that rm argv.
+check "rm in one segment only"           allow 'rm build; grep rm -rf src'
+check "...and a real one still warns"    ask   'rm -rf /etc; grep rm src'
+# PINNED over-warn, unchanged from before this gate existed: a dangling
+# redirect admits the next segment, so a redirect TARGET that happens to be
+# named rm is still scanned as a command word. The admission is what keeps a
+# genuinely orphaned command word visible, and warning is the safe direction.
+check "redirect target named rm"         ask   '>& rm grep -rf /etc'
 
 # The enumerated cases above each pin ONE shape. They do not exercise the shapes
 # in COMBINATION, and combination is where this parser actually failed: the

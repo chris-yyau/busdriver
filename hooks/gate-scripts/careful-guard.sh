@@ -1394,7 +1394,8 @@ def _command_word_in(chunks, names, unreadable=True):
                 if (cmd_pos and (word == "esac" or word in CONTROL)) \
                         or (_reads_as(tok, DISPATCH)
                             and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0)) \
-                        or tok in ("(", ")", "{", "}", ";;"):
+                        or (tok in ("(", ")", "{", "}", ";;")
+                            and _closer_is_syntax(seg, toks, j, tok)):
                     cmd_pos = True
                     continue
                 if _whole_substitution(tok):
@@ -1775,7 +1776,16 @@ def has_truncate(chunks):
                 # and then falling through to consume the command slot. That is
                 # how `( truncate -s 0 f )` escaped: a REGRESSION against the
                 # bare-word rule this file replaced, which caught it as text.
-                if tok in ("(", ")", "{", "}", ";;"):
+                # QUOTE PROVENANCE, same as the endswith closer branch below:
+                # posix shlex has already erased quoting here, so a quoted
+                # bare `)`/`{`/`}`/`;;` reads identically to the real
+                # delimiter and reopened command position on DATA -
+                # `echo "}" truncate -s 0 f` warned on the quoted brace.
+                # _closer_is_syntax reads the RAW (posix=False) spelling to
+                # tell the two apart, exactly as the sibling branch in
+                # _command_word_in already does.
+                if tok in ("(", ")", "{", "}", ";;") \
+                        and _closer_is_syntax(seg, toks, j, tok):
                     cmd_pos = True
                     continue
                 # A trailing `)` closes a construct UNLESS the token is a
@@ -1902,18 +1912,28 @@ def unsafe(chunks, truncated):
     for chunk in chunks:
         # #585: the loop below reads EVERY token as a candidate command word,
         # so a glob OPERAND fnmatched rm and `grep SQ*SQ -r src` prompted. Gate
-        # on the same command-POSITION walk the truncate and client scanners
-        # use - it keeps `/bin/*`, wrappers and dispatch.
-        # The whole CHUNK, never one segment: _command_word_in carries
-        # prev_seg across segments to rejoin a separated redirection operand,
-        # and handing it a lone segment discards that - `>& out.log rm -rf
-        # /etc` then read out.log as the command word and skipped the rm.
+        # each segment on the same command-POSITION walk the truncate and
+        # client scanners use - it keeps `/bin/*`, wrappers and dispatch.
+        # PER SEGMENT, not per chunk: a chunk gate only proves an rm runs
+        # SOMEWHERE, so `rm build; grep rm -rf src` admitted the whole chunk
+        # and the grep operand was then read as a recursive rm.
         # DEFAULT unreadable=True, deliberately: a gate in front of a
         # fail-closed loop must never be the stricter of the two, so an
-        # unresolvable command word admits the chunk and lets the loop decide.
-        if not _command_word_in([chunk], RM_SET):
-            continue
+        # unresolvable command word admits the segment and lets the loop decide.
+        prev_gate_seg = None
         for seg_idx, (_op, seg) in enumerate(split_segments(chunk)):
+            # ...but split_segments cuts at the `&` of a SEPARATED redirection,
+            # so this segment can OPEN with the orphaned operand and hide the
+            # real command word one token in - `>& out.log rm -rf /etc` read
+            # out.log as the command word and skipped the rm. Admit it on that
+            # signal and let the loop below decide: same fail-open direction
+            # the unreadable default takes.
+            gate_ok = (_command_word_in([seg], RM_SET)
+                       or (prev_gate_seg is not None
+                           and _ends_in_redirect(prev_gate_seg)))
+            prev_gate_seg = seg
+            if not gate_ok:
+                continue
             try:
                 toks = shlex.split(_fold_ansi_c(seg), posix=True)
             except ValueError:

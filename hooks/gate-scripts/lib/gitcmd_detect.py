@@ -1975,6 +1975,26 @@ def toks_once(seg, _cache={}):  # noqa: B006 - deliberate per-scan memo, see bel
         _cache[seg] = got
     return got
 
+_FALLBACK_INTERPRETER_SKIP = object()
+
+
+def _fallback_interpreter_name(tok, *, k, command_index, torn, first_word):
+    if command_index is None or k == command_index:
+        return None
+    if torn:
+        # Debris owns command_index; literals and resolved
+        # globs may still name an interpreter, but unresolved
+        # glob operands are not sh stand-ins.
+        if _norm_cmd_word(tok) in _INTERPRETERS:
+            return _norm_cmd_word(tok)
+        name = _interpreter_name(tok)
+        if name == 'sh' and any(ch in _norm_cmd_word(tok) for ch in '*?['):
+            return _FALLBACK_INTERPRETER_SKIP
+        return name
+    if any(ch in _norm_cmd_word(first_word) for ch in '*?['):
+        return _FALLBACK_INTERPRETER_SKIP
+    return None
+
 
 def _shell_payloads(cmd):
     """Strings an interpreter/eval will itself execute — `bash -c '<s>'`,
@@ -2151,22 +2171,12 @@ def _shell_payloads(cmd):
                 if _ASSIGN_TOK_RE.match(tok) or (
                         _ENV_ASSIGN_TOK_RE.match(tok) and not _unreadable_word(tok)):
                     continue
-                name = None
-                if command_index is not None and k != command_index:
-                    if torn:
-                        # Debris owns command_index; literals and resolved
-                        # globs may still name an interpreter, but unresolved
-                        # glob operands are not sh stand-ins.
-                        if _norm_cmd_word(tok) in _INTERPRETERS:
-                            name = _norm_cmd_word(tok)
-                        else:
-                            name = _interpreter_name(tok)
-                            if name == 'sh' and any(ch in _norm_cmd_word(tok)
-                                                    for ch in '*?['):
-                                continue
-                    elif any(ch in _norm_cmd_word(_first_reading[0])
-                             for ch in '*?['):
-                        continue
+                fallback = _fallback_interpreter_name(
+                    tok, k=k, command_index=command_index, torn=torn,
+                    first_word=_first_reading[0] if _first_reading else '')
+                if fallback is _FALLBACK_INTERPRETER_SKIP:
+                    continue
+                name = fallback
                 if name is None:
                     name = _interpreter_name(tok)
                 if name is not None and first_interp < 0:

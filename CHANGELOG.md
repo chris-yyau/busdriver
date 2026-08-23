@@ -1,3 +1,10 @@
+## [1.110.12](https://github.com/chris-yyau/busdriver/compare/v1.110.11...v1.110.12) (2026-08-23)
+
+
+### Bug Fixes
+
+* **dispatcher:** treat zombie children as dead without group enumeration ([#582](https://github.com/chris-yyau/busdriver/issues/582)) ([#746](https://github.com/chris-yyau/busdriver/issues/746)) ([1fe6667](https://github.com/chris-yyau/busdriver/commit/1fe66675559a223eb11ebf4617d9d4729e3a3d66))
+
 ## [1.110.11](https://github.com/chris-yyau/busdriver/compare/v1.110.10...v1.110.11) (2026-08-23)
 
 

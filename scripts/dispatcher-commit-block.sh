@@ -95,6 +95,10 @@ SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 . "$SCRIPT_LIB/staged-diff-hash.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source staged-diff-hash.sh"
 
+# shellcheck source=/dev/null
+. "$SCRIPT_LIB/dispatcher-proc-state.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source dispatcher-proc-state.sh"
+
 FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
 ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
@@ -493,11 +497,33 @@ run_locked_child() {
     LITMUS_CHILD_PID=""
     return "$rc"
 }
-# Poll a target (a pid, or "-pgid" for a whole group) until nothing answers. Returns 1
-# if it is still alive after $2 tenth-of-a-second ticks.
+# Poll a direct child until it exits or becomes a zombie we can reap. Uses wait only
+# once the child is provably not running — blocking wait on a TERM-ignoring child would
+# wedge the lock forever.
+_dispatcher_await_child_dead() {
+    local _limit="$1" _i=0
+    while [ -n "${LITMUS_CHILD_PID:-}" ]; do
+        if ! _dispatcher_pid_alive "$LITMUS_CHILD_PID"; then
+            wait "$LITMUS_CHILD_PID" 2>/dev/null || true
+            return 0
+        fi
+        _i=$((_i + 1))
+        [ "$_i" -ge "$_limit" ] && return 1
+        sleep 0.1
+    done
+    return 0
+}
+
+# Poll a process-group target ("-pgid") until the kernel reports it gone. Reap the
+# known direct child once it is exited/zombie so zombie-only groups can drain.
+# Returns 1 if the group still exists after $2 tenth-of-a-second ticks.
 _dispatcher_await_dead() {
     local _target="$1" _limit="$2" _i=0
     while kill -0 "$_target" 2>/dev/null; do
+        if [ -n "${LITMUS_CHILD_PID:-}" ] && ! _dispatcher_pid_alive "$LITMUS_CHILD_PID"; then
+            wait "$LITMUS_CHILD_PID" 2>/dev/null || true
+            LITMUS_CHILD_PID=""
+        fi
         _i=$((_i + 1))
         [ "$_i" -ge "$_limit" ] && return 1
         sleep 0.1
@@ -513,6 +539,13 @@ _dispatcher_signal_exit() {
         # Snapshot liveness BEFORE signalling: afterwards every child looks dead, and
         # "was there anything to lose" is the question the no-group branch below needs
         # answered.
+        # Deliberately `kill -0`, NOT _dispatcher_pid_alive. This snapshot does not ask
+        # "can we reap the child" — it asks "was there a tree that could still be
+        # writing", which is what the no-group branch below decides the lock on. A
+        # zombie child is exactly the dangerous answer there: the child is gone, so its
+        # descendants are orphaned AND unreachable without a group, yet may still be
+        # writing litmus-state.md. Zombie-awareness is only sound for the reap decision;
+        # applying it here would drop the lock on that case and fail OPEN.
         kill -0 "$LITMUS_CHILD_PID" 2>/dev/null && _child_was_alive=1
         # Signal the whole group when we actually HAVE one. LITMUS_CHILD_PGID is set
         # only after confirming `set -m` gave the child its own group — assuming it did
@@ -524,15 +557,22 @@ _dispatcher_signal_exit() {
             _target="$LITMUS_CHILD_PID"
         fi
         kill -TERM "$_target" 2>/dev/null || true
-        if ! _dispatcher_await_dead "$_target" 20; then
-            # kill(2) only QUEUES a signal; a descendant can still be completing a
-            # state-file write, which is exactly what the lock excludes.
+        if [ -n "$LITMUS_CHILD_PGID" ]; then
+            if ! _dispatcher_await_dead "$_target" 20; then
+                # kill(2) only QUEUES a signal; a descendant can still be completing a
+                # state-file write, which is exactly what the lock excludes.
+                kill -KILL "$_target" 2>/dev/null || true
+                if ! _dispatcher_await_dead "$_target" 50; then
+                    # Unkillable (uninterruptible sleep, or a pid we cannot signal). We
+                    # cannot prove nothing is writing, so do NOT drop the lock: an orphan a
+                    # human removes is the fail-CLOSED outcome, and the block message
+                    # already names that remedy.
+                    LITMUS_LOCK_UNSAFE_TO_RELEASE=1
+                fi
+            fi
+        elif ! _dispatcher_await_child_dead 20; then
             kill -KILL "$_target" 2>/dev/null || true
-            if ! _dispatcher_await_dead "$_target" 50; then
-                # Unkillable (uninterruptible sleep, or a pid we cannot signal). We
-                # cannot prove nothing is writing, so do NOT drop the lock: an orphan a
-                # human removes is the fail-CLOSED outcome, and the block message
-                # already names that remedy.
+            if ! _dispatcher_await_child_dead 50; then
                 LITMUS_LOCK_UNSAFE_TO_RELEASE=1
             fi
         fi
@@ -549,10 +589,11 @@ _dispatcher_signal_exit() {
             # turning a successful round into a wedge.
             LITMUS_LOCK_UNSAFE_TO_RELEASE=1
         fi
-        # Reap ONLY once it is provably gone. `wait` on a live TERM-ignoring child
-        # blocks forever, and the dispatcher would then hold the lock indefinitely —
-        # a worse failure than the race this handler exists to prevent.
-        if ! kill -0 "$LITMUS_CHILD_PID" 2>/dev/null; then
+        # Reap ONLY once it is provably gone (exited or zombie). `wait` on a live
+        # TERM-ignoring child blocks forever, and the dispatcher would then hold the
+        # lock indefinitely — a worse failure than the race this handler exists to
+        # prevent.
+        if [ -n "$LITMUS_CHILD_PID" ] && ! _dispatcher_pid_alive "$LITMUS_CHILD_PID"; then
             wait "$LITMUS_CHILD_PID" 2>/dev/null || true
         fi
     fi

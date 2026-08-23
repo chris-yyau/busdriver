@@ -24,7 +24,6 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOKS_JSON="$REPO_ROOT/hooks/hooks.json"
 HOOKS_DIR="$REPO_ROOT/scripts/hooks"
-WRAPPER_REF='lib/sanitized-node.sh'
 PASS=0
 FAIL=0
 assert() {  # assert <rc:0/1> <message>
@@ -56,45 +55,6 @@ in_list() {  # in_list <needle> <list...>
     local n="$1"; shift
     local x; for x in "$@"; do [[ "$x" == "$n" ]] && return 0; done; return 1
 }
-
-# ── 1. Every CONTAINED hook's hooks.json registration routes through the wrapper ─
-# EVERY registration line that names the hook must (a) begin its command with
-# `/usr/bin/env -i` (anchored at the "command": prefix, so env -i is the actual launch
-# token — not a stray arg/comment) AND (b) name the wrapper. Per-line, so a duplicate
-# registration that splits wrapper and env -i across lines, or one wrapped + one bare
-# line, is caught. `env -i` is what wipes ECC_HOOK_PROFILE / ECC_DISABLED_HOOKS (the
-# wrapper rebuilds PATH but does NOT itself clear those flags), so dropping it silently
-# restores the bypass this task closes.
-for h in "${CONTAINED[@]}"; do
-    _regs="$(grep "scripts/hooks/$h" "$HOOKS_JSON")"
-    _lines=0; _bad=0
-    while IFS= read -r _line; do
-        [[ -z "$_line" ]] && continue
-        _lines=$((_lines+1))
-        grep -qE '"command":[[:space:]]*"/usr/bin/env -i ' <<<"$_line" || _bad=1
-        grep -q "$WRAPPER_REF" <<<"$_line" || _bad=1
-        # Registration-level fail-CLOSED: if bash can't launch the wrapper (bad
-        # CLAUDE_PLUGIN_ROOT, missing wrapper, ENOEXEC) the outer command exits
-        # 1/126/127 BEFORE the wrapper's internal fail-closed runs — a non-2 exit the
-        # harness treats as non-blocking (fail-OPEN). The trailing `|| exit 2` converts
-        # any such launch failure to a block.
-        grep -q '|| exit 2' <<<"$_line" || _bad=1
-    done <<< "$_regs"
-    if [[ "$_lines" -ge 1 && "$_bad" -eq 0 ]]; then
-        assert 0 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
-    else
-        assert 1 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
-    fi
-done
-
-# ── 2. No CONTAINED hook has a bare (un-wrapped) `node run-with-flags.js` line ──
-for h in "${CONTAINED[@]}"; do
-    if grep "scripts/hooks/$h" "$HOOKS_JSON" | grep -qE '"command":[[:space:]]*"node '; then
-        assert 1 "$h has NO bare 'node run-with-flags.js' registration"
-    else
-        assert 0 "$h has NO bare 'node run-with-flags.js' registration"
-    fi
-done
 
 # ── 3. Discovery: any registered node hook that exits 2 must be classified ──────
 # HEURISTIC net, not the authority (the KNOWN_EXIT2 list is). Tolerant of whitespace
@@ -314,6 +274,45 @@ unclassified_blocking() {   # <index>
 REG_INDEX="$(registration_index)" \
   || { printf '  FAIL %s\n' "hooks.json parsed structurally (see stderr)"; exit 1; }
 
+# ── 1. Every CONTAINED hook's registration routes through the wrapper ───────────
+# EVERY registration naming the hook must be the canonical wrapped launch — `/usr/bin/env
+# -i` (which is what wipes ECC_HOOK_PROFILE / ECC_DISABLED_HOOKS; the wrapper rebuilds PATH
+# but does NOT itself clear those flags) handing sanitized-node.sh this hook as its script
+# — AND carry the fail-closed `|| exit 2` tail. That tail matters on its own: if bash cannot
+# launch the wrapper (bad CLAUDE_PLUGIN_ROOT, missing file, ENOEXEC) the command exits
+# 1/126/127 BEFORE the wrapper's internal fail-closed runs, a non-2 exit the harness treats
+# as non-blocking. In index terms those two properties are one record: `<hook> 1 1`.
+#
+# Read from the structural index, like every other guard here — these two used to grep
+# physical LINES, which made "one structural reader" untrue and carried exactly the defect
+# the other nets were fixed for: compacting the document onto one line let an unrelated
+# bare-node registration sharing that line satisfy a contained hook's lookup.
+for h in "${CONTAINED[@]}"; do
+    _recs="$(awk -v hook="$h" '$1 == hook { print $2 $3 }' <<< "$REG_INDEX")"
+    _found=0; _bad=0
+    while IFS= read -r _rec; do
+        [[ -z "$_rec" ]] && continue
+        _found=$((_found+1))
+        [[ "$_rec" == "11" ]] || _bad=1
+    done <<< "$_recs"
+    if [[ "$_found" -ge 1 && "$_bad" -eq 0 ]]; then
+        assert 0 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
+    else
+        assert 1 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
+    fi
+done
+
+# ── 2. No CONTAINED hook has a bare (un-wrapped) registration ──────────────────
+# The same index, asked the complementary question: any record for the hook that is not
+# contained is a launch outside the wrapper, whatever shape it wears.
+for h in "${CONTAINED[@]}"; do
+    if awk -v hook="$h" '$1 == hook && $3 != 1 { bare = 1 } END { exit !bare }' <<< "$REG_INDEX"; then
+        assert 1 "$h has NO bare 'node run-with-flags.js' registration"
+    else
+        assert 0 "$h has NO bare 'node run-with-flags.js' registration"
+    fi
+done
+
 # ── 3a. Every registration matches a canonical shape (#629) ────────────────────
 # The index reports a command it cannot classify rather than guessing at it. That report is
 # the reason the shape allowlist is safe to be narrow: an unrecognized registration stops
@@ -358,10 +357,19 @@ _fix="$(mktemp -d)"
 trap 'rm -rf "$_fix"' EXIT
 mkdir -p "$_fix/hooks" "$_fix/scripts/hooks"
 cat > "$_fix/scripts/hooks/synthetic-deny-gate.js" <<'JS'
-// Blocks via permissionDecision with exitCode 0 — never exits 2, so the source grep
+// Blocks via permissionDecision with exitCode 0 — never exits 2, so the exit-2 grep
 // cannot see it. Only the registration below declares it blocking.
+//
+// The decision is deliberately spelled across LINES, the way a formatter wraps a long
+// object literal: a line-oriented deny scan sees neither half and the hook drops out of
+// the deny net silently. Guard 3b asserts below that it is still found.
 module.exports = () => ({
-  stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny' } }),
+  stdout: JSON.stringify({
+    hookSpecificOutput: {
+      permissionDecision:
+        'deny',
+    },
+  }),
   exitCode: 0,
 });
 JS
@@ -401,9 +409,33 @@ if grep -qx "synthetic-canonical-gate.js 1 1" <<< "$_fixture_index"; then assert
 # caveat as the exit-2 grep: a deny hidden behind a constant is not greppable, which is why
 # the explicit lists stay the human authority.
 discover_deny_capable() {
-    grep -lE "permissionDecision['\"\`]?[[:space:]]*:[[:space:]]*['\"\`]deny" "$HOOKS_DIR"/*.js 2>/dev/null \
-      | sed 's|.*/||' | sort -u
+    # WHOLE-FILE, not line-by-line. `permissionDecision:` and its value routinely land on
+    # separate lines once a formatter wraps a long object literal, and a line-oriented grep
+    # sees neither half as a deny — the hook then bypasses KNOWN_DENY, `env -i` and the
+    # wrapper checks entirely. `\s` spans the newline.
+    #
+    # The value's quote is CAPTURED and must close with the same character, so `'deny'`,
+    # `"deny"` and a `` `deny` `` template literal all match while a mismatched pair —
+    # which is not valid JS and does not produce a deny decision — does not.
+    python3 - "$HOOKS_DIR" <<'PY'
+import glob, os, re, sys
+
+DENY = re.compile(r"""(?:['"`]?permissionDecision['"`]?)\s*:\s*(['"`])deny\1""")
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.js"))):
+    try:
+        with open(path, errors="replace") as handle:
+            body = handle.read()
+    except OSError:          # unreadable file: report it rather than pass it over
+        print(os.path.basename(path))
+        continue
+    if DENY.search(body):
+        print(os.path.basename(path))
+PY
 }
+
+_m5="↳ a deny decision split across lines is still discovered (whole-file scan)"
+_fixture_deny="$( HOOKS_DIR="$_fix/scripts/hooks"; discover_deny_capable )"
+if grep -qx "synthetic-deny-gate.js" <<< "$_fixture_deny"; then assert 0 "$_m5"; else assert 1 "$_m5"; fi
 # Capture first (SC2312): a process-substitution feed would mask discover_deny_capable's rc.
 # The `${KNOWN_DENY[@]+…}` guard keeps an emptied list from tripping `set -u` on bash 3.2
 # (macOS default), exactly as RESIDUAL above does.

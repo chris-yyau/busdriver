@@ -1681,11 +1681,14 @@ for _c in ('echo bash -c "git commit"',
            '[ -f x ] -c "git commit"',
            "printf '%s' 'X=$(x)' bash -c 'git commit'"):
     check(f"torn-nested- {_c!r}", g.git_commit(_c)[0], False)
-# #589: a glob-shaped word that resolves to NO interpreter is not the sh
-# stand-in. The narrowing is on resolution, not on position and not on quoting
-# (shlex strips quotes before the scan sees the token) -- see
-# _fallback_interpreter_name. A glob that DOES fnmatch an interpreter still
-# resolves, so the command word stays fail-closed.
+# #589: a QUOTED glob-shaped word that resolves to NO interpreter is not the sh
+# stand-in. Both halves are required, and neither is about position -- see
+# _fallback_interpreter_name. QUOTED, because bash performs no pathname
+# expansion inside quotes, so the word can only name a file literally called
+# `*.py`; the raw spelling comes from _raw_tokens, and an unavailable or
+# unaligned raw stream narrows nothing (fail CLOSED). UNRESOLVED, because a glob
+# that DOES fnmatch an interpreter still reaches a shell, so it stays
+# fail-closed in command position and everywhere else.
 check("589- torn printf operand '*.py' is not a shell",
       g.git_commit("X=$(printf x y) printf '%s' '*.py' -c 'git commit -m x'")[0],
       False)
@@ -1731,6 +1734,30 @@ check("589+ UNQUOTED glob operand stays fail-closed",
 check("589- double-quoted glob operand is not a shell",
       g.git_commit('X=$(printf x y) printf %s "*.py" -c \'git commit -m x\'')[0],
       False)
+# THE FAIL-OPEN BOUNDARY: the narrowing consumes quote provenance, so it is only
+# ever as safe as `_raw_tokens`. That helper returns None when the raw and posix
+# token streams do not align 1:1 -- adjacent-quote concatenation, a bare suffix
+# on a quoted word, an empty-quote splice -- and _quoted_literal(None) is False,
+# so the scan narrows NOTHING and the glob is promoted as before. Every row below
+# is TORN (an aligned, non-torn segment never reaches the fallback at all, so it
+# would test nothing) and every row must stay DETECTED.
+for _c in ("X=$(printf x y) printf %s '*'\".py\" -c 'git commit -m x'",
+           "X=$(printf x y) printf %s '*'.py -c 'git commit -m x'",
+           "X=$(printf x y) printf %s ''*.py -c 'git commit -m x'"):
+    check(f"589+ unaligned raw stream narrows nothing {_c[24:44]!r}",
+          g.git_commit(_c)[0], True)
+# An ESCAPED glob is a literal to bash too, but the raw spelling carries no
+# quote, so it is not narrowed. Over-block, which is the safe direction; pinned
+# so a future "improvement" that reads the escape has to face this row.
+check("589+ escaped glob is not a quoted literal (over-block)",
+      g.git_commit("X=$(printf x y) printf %s \\*.py -c 'git commit -m x'")[0],
+      True)
+# The provenance helper itself, at the boundary values the rows above depend on.
+check("_quoted_literal(None) is False (fail-closed)", g._quoted_literal(None), False)
+check("_quoted_literal single-quoted", g._quoted_literal("'*.py'"), True)
+check("_quoted_literal double-quoted", g._quoted_literal('"*.py"'), True)
+check("_quoted_literal concatenated is False", g._quoted_literal("'*'\".py\""), False)
+check("_quoted_literal bare is False", g._quoted_literal('*.py'), False)
 check("589+ bracket-class operand stays fail-closed",
       g.git_commit("X=$(printf x y) printf '%s' '[[:alpha:]]*' -c 'git commit -m x'")[0],
       True)

@@ -13,7 +13,12 @@ case "$*" in
         # FETCH_OK must stay 1 because the value is no longer consumed).
         if [ "${GH_MOCK_FAIL_COMMITTER_DATE:-0}" = "1" ]; then exit 1; fi
         echo '2024-01-01T00:00:00Z' ;;
-    *api*events*)                echo '[[]]' ;;
+    *api*events*)
+        if [ -n "${GH_MOCK_EVENTS_FILE:-}" ] && [ -f "${GH_MOCK_EVENTS_FILE}" ]; then
+            cat "${GH_MOCK_EVENTS_FILE}"
+        else
+            echo '[]'
+        fi ;;
     *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch"}' ;;
     *)                           echo '{}' ;;
 esac

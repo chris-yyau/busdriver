@@ -522,7 +522,14 @@ while IFS= read -r _dh; do
     [[ -z "$_dh" ]] && continue
     # Only care about hooks actually wired into hooks.json — read from the structural
     # index, so a split-line or shared-line registration is judged on its own command.
-    _regs="$(awk -v h="$_dh" 'tolower($1) == tolower(h) { print $3 }' <<< "$REG_INDEX")"
+    # `ok` demands containment AND that the tail agrees with the wrapper's disposition.
+    # Reading containment alone accepts a registration whose two halves contradict each
+    # other — `|| exit 0` under the CLOSED default has the wrapper emit a blocking decision
+    # for a missing runtime while the tail says allow, and the reverse (`|| exit 2` under
+    # `--fail-open`) has the wrapper swallow that failure so the tail never runs. Either
+    # way the registration does not do what it appears to; `blocking` is 1 exactly when the
+    # tail is `exit 2`, so the two must agree.
+    _regs="$(awk -v h="$_dh" 'tolower($1) == tolower(h) { print ($3 == 1 && (($2 == 1) == ($4 == "closed"))) ? "ok" : "bad" }' <<< "$REG_INDEX")"
     if [[ -z "$_regs" ]]; then
         # Not wired at all is fine. NAMED in hooks.json yet resolving to no registration is
         # not: a dynamically-built path (`scripts/hooks/${HOOK_NAME:-the-gate.js}`) runs the
@@ -533,12 +540,12 @@ while IFS= read -r _dh; do
         continue
     fi
     _lines=0; _bad=0
-    while IFS= read -r _contained; do
-        [[ -z "$_contained" ]] && continue
+    while IFS= read -r _verdict; do
+        [[ -z "$_verdict" ]] && continue
         _lines=$((_lines+1))
-        [[ "$_contained" == "1" ]] || _bad=1
+        [[ "$_verdict" == "ok" ]] || _bad=1
     done <<< "$_regs"
-    _dm="$_dh (deny-capable): every registration launches via /usr/bin/env -i + sanitized-node.sh"
+    _dm="$_dh (deny-capable): every registration launches via /usr/bin/env -i + sanitized-node.sh, tail agreeing with its disposition"
     if [[ "$_lines" -ge 1 && "$_bad" -eq 0 ]]; then assert 0 "$_dm"; else assert 1 "$_dm"; fi
 done <<< "$_deny"
 

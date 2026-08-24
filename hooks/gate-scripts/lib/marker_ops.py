@@ -366,19 +366,31 @@ def _read_token_body(tok):
     return body, None
 
 
+def _token_dir_names(marker_dir):
+    """List token filenames, or None on a hard list failure of an EXISTING dir.
+
+    An absent dir (ENOENT) is zero tokens — return []. A dangling symlink at
+    marker_dir is anomalous marker state (tampering) — fail-CLOSED (None).
+    Split out of _classify_tokens purely to reduce its branch count
+    (CodeScene "Complex Method", #675); behavior unchanged."""
+    try:
+        return os.listdir(marker_dir)
+    except FileNotFoundError:
+        # A genuinely absent dir is zero tokens (fine). A DANGLING symlink at
+        # marker_dir also raises FileNotFoundError but is anomalous marker state
+        # (tampering) — fail-CLOSED, never "empty".
+        return None if os.path.lexists(marker_dir) else []
+    except OSError:
+        return None  # existing dir we cannot list -> cannot build the set
+
+
 def _classify_tokens(marker_dir, em):
     """Existence-keyed scan of the token directory. Returns False on a hard
     list failure of an EXISTING dir (=> exit 2); True otherwise. An absent dir
     (ENOENT) is zero tokens, not an error."""
-    try:
-        names = os.listdir(marker_dir)
-    except FileNotFoundError:
-        # A genuinely absent dir is zero tokens (fine). A DANGLING symlink at
-        # marker_dir also raises FileNotFoundError but is anomalous marker state
-        # (tampering) — fail-CLOSED (exit 2), never "empty".
-        return not os.path.lexists(marker_dir)
-    except OSError:
-        return False  # existing dir we cannot list -> cannot build the set
+    names = _token_dir_names(marker_dir)
+    if names is None:
+        return False
     deferred = []
     for name in names:
         tok = os.path.join(marker_dir, name)
@@ -471,6 +483,31 @@ def _norm_legacy_doc_path(doc):
     return p
 
 
+def _legacy_entry_pending(root, marker_path, entry, em):
+    """Classify one legacy `- ` list entry. Returns True if the legacy budget
+    overflowed (caller must stop opening further docs).
+
+    ALWAYS binds doc_path — absolute entry taken verbatim, relative joined to
+    the owning worktree root. Binding is what makes design-clear.sh's
+    all-or-nothing same-doc refusal reachable; an empty doc_path would reopen
+    the Codex bypass (PR #670). Split out of _classify_legacy purely to reduce
+    its nested complexity depth (CodeScene, #675); behavior unchanged."""
+    doc = entry if entry.startswith("/") else os.path.join(root, entry)
+    reviewed = False
+    try:
+        with open(doc, "r", errors="surrogateescape") as dfh:
+            reviewed = _doc_reviewed(dfh.read())
+    except OSError:
+        reviewed = False  # absent / unreadable doc -> pending (fail-closed)
+    if reviewed:
+        return False
+    em.add("legacy", marker_path, _norm_legacy_doc_path(doc), "legacy-pending")
+    # Nothing further can be emitted for this kind past overflow, and every
+    # remaining line still costs an open() of the doc it names. The overflow
+    # record already tells consumers the set is incomplete (#671).
+    return em.overflowed("legacy")
+
+
 def _classify_legacy(roots, state_dir, em):
     """Bounded per-worktree-root legacy union (PASS-keyed). No subtree walk."""
     for root in roots:
@@ -492,37 +529,8 @@ def _classify_legacy(roots, state_dir, em):
             entry = line[2:].strip()
             if not entry:
                 continue
-            doc = entry if entry.startswith("/") else os.path.join(root, entry)
-            reviewed = False
-            try:
-                with open(doc, "r", errors="surrogateescape") as dfh:
-                    reviewed = _doc_reviewed(dfh.read())
-            except OSError:
-                reviewed = False  # absent / unreadable doc -> pending (fail-closed)
-            if not reviewed:
-                # ALWAYS bind the doc_path. `doc` is absolute either way by this
-                # point -- taken verbatim when the entry was absolute, joined
-                # with its owning worktree root when it was relative -- and a
-                # relative entry names a real document just as much as an
-                # absolute one does.
-                #
-                # The old `os.path.isabs(doc)` guard was indeed dead (CodeRabbit,
-                # PR #670), but the fix is to DROP it, not to re-key it on
-                # `entry.startswith("/")`. Re-keying leaves a relative entry with
-                # an EMPTY doc_path, which reopens Codex's bypass through another
-                # door: design-clear.sh matches the anomaly by doc_path, so an
-                # unbound legacy record can never match, and --all-for-doc would
-                # release every token for that document while its legacy marker
-                # stayed armed. Binding is what makes the all-or-nothing refusal
-                # reachable; it grants no new power, since a legacy marker is
-                # refused as a blanket wipe regardless of how it is spelled.
-                em.add("legacy", m, _norm_legacy_doc_path(doc), "legacy-pending")
-                if em.overflowed("legacy"):
-                    # Nothing further can be emitted for this kind, and every
-                    # remaining line still costs an open() of the doc it names.
-                    # The overflow record already tells consumers the set is
-                    # incomplete, which is all they can act on (#671).
-                    return
+            if _legacy_entry_pending(root, m, entry, em):
+                return
 
 
 def cmd_classify(argv):

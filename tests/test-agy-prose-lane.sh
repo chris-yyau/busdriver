@@ -73,7 +73,7 @@ else
   fail "--mode plan is NOT applied — the lane is write-capable despite its docs"
 fi
 
-if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi\) ;;$' "$DISPATCH"; then
+if grep -qE '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi-read\) ;;$' "$DISPATCH"; then
   pass "agy-prose is in the REPORT_NAME provenance vocabulary"
 else
   fail "agy-prose missing from the provenance whitelist — audit trail would say plain 'agy'"

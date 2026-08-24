@@ -3,7 +3,9 @@
 **Status:** Accepted (2026-08-17); amended 2026-08-18 by #686 — `--add-dir
 "$PWD"` is no longer lane-only (see "Scope note" below).
 **Supersedes:** nothing. **Amends:** ADR 0034 (pi in-tree read lane) — pi is
-retained and unchanged, but is no longer the lane an agent reaches for first.
+retained, but is no longer the lane an agent reaches for first. (Its route and
+config key were later renamed to `pi-read` / `.pi_read.model`, and its shipped
+model default removed; see ADR 0034.)
 
 ## Context
 
@@ -180,11 +182,6 @@ Three findings, each of which changed the implementation:
 - **New confidentiality footnote:** plan mode persists its plan artifact under
   `~/.gemini/antigravity-cli/brain/<id>/`, so the prompt and any repo content it
   quoted land on disk outside the repo.
-- **pi stays.** `--cli pi`, `.pi.model` and ADR 0034 are unchanged. It remains
-  the lane for when you want stronger write/tool containment (a jail, a
-  projected credential, a `--tools read` allowlist) or a non-Google provider —
-  not for confined reads, which neither lane has: pi's read tool also accepts
-  absolute paths outside the tree.
 - The model-id staleness invariant in `tests/test-auditor-model-config.sh` now
   sweeps `gemini-*` and allows `BUSDRIVER_AGY_READ_MODEL_DEFAULT` — three
   configurable keys, one invariant. It caught a real leak on its first run.

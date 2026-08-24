@@ -36,9 +36,9 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
 | **Repo tracing / "how does X work"** | **`agy-read`** | **Reads the working tree and returns a cited summary — see below** |
-| Repo tracing, containment-first | `pi` | Same job, stronger confinement (jail + `--tools read`), slower — see below |
+| Repo tracing, containment-first | `pi-read` | Same job, stronger confinement (jail + `--tools read`), slower — see below |
 | High-stakes decisions | `both` | Codex + Agy consensus |
-| Maximum coverage | `all` | All available CLIs in parallel (up to 6; `grok`, `opencode` and `pi` are skipped in `auto` mode) |
+| Maximum coverage | `all` | All available CLIs in parallel (up to 6; `grok`, `opencode` and `pi-read` are skipped in `auto` mode) |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ### `agy-read` — the default in-tree read lane
@@ -58,7 +58,7 @@ Measured 2026-08-17: cited answers in 10–15s.
 { "agy_read": { "model": "gemini-3.7-flash-medium" } }
 ```
 
-`agy models` enumerates ids. Same trust rules as `.pi.model` (USER config only,
+`agy models` enumerates ids. Same trust rules as `.pi_read.model` (USER config only,
 no env override, password-DB-derived `$HOME`). **This key is scoped to
 `--cli agy-read`.** Plain `--cli agy` passes no `--model`, so the
 `blueprint-review.reviewer_1` and `council.pragmatist` slots keep agy's own
@@ -78,7 +78,7 @@ tree is a different lane, and it does not get to wear this name.
 `--mode plan` is the strongest boundary agy exposes — but it is the agent's own
 mode, not a kernel sandbox. Read it as *write-blocked in every probe run*, not
 write-**proof**. When you need an enforced boundary rather than a well-behaved
-one, use `pi` (jail + `--tools read`). Note also that plan mode still writes its
+one, use `pi-read` (jail + `--tools read`). Note also that plan mode still writes its
 plan artifact into `~/.gemini/antigravity-cli/brain/<id>/`, so the prompt and any
 repo content it quoted persist on disk outside the repo.
 
@@ -87,10 +87,10 @@ can, including gitignored ones by absolute path (it demonstrably reaches outside
 the tree — it wrote to `/tmp` when it could write). Everything it reads is
 transmitted to Google. Gate on **who wrote the content**, not on where it sits.
 
-### `pi` — the write/tool-containment-first read lane
+### `pi-read` — the write/tool-containment-first read lane
 
 Every other read-only lane is confined to an empty directory so the checkout
-cannot redefine the reviewer. `pi` is the exception: it runs **in the working
+cannot redefine the reviewer. `pi-read` is the exception: it runs **in the working
 tree**, because tracing real code is the point. Use it to answer "how does X
 work", map a subsystem, or triage a diff — then verify the `file:line` citations
 it returns rather than reading the files yourself. That is the whole saving:
@@ -99,20 +99,20 @@ reading is ~86% of a Claude session's token consumption.
 Containment moves to the toolset instead of the directory: a positive allowlist
 (`--tools read`) plus six project-config kill switches, plus the jail's
 projected credential. It is read-only by construction — `--mode` is ignored
-and `pi` is skipped in `--cli all --mode auto`. That is stronger write/tool
+and `pi-read` is skipped in `--cli all --mode auto`. That is stronger write/tool
 containment and provider isolation than the directory-scoped lanes get, but it
 is **not** read confinement: pi's read tool accepts absolute paths too, so
 assume it can read anything the user account can, same as agy-read.
 
 ```bash
-skills/dispatch-cli/scripts/dispatch.sh --cli pi \
+skills/dispatch-cli/scripts/dispatch.sh --cli pi-read \
   --prompt "trace how the pr-grind dispatcher decides fix vs wait round"
 ```
 
 **Model** — set once in `~/.claude/busdriver.json`:
 
 ```json
-{ "pi": { "model": "<provider>/<model-id>" } }
+{ "pi_read": { "model": "<provider>/<model-id>" } }
 ```
 
 Same trust rules as `.auditor.model` (USER config only, no env override): the
@@ -133,7 +133,7 @@ served, and `/etc/passwd` discloses your real home, making `~/.ssh/id_rsa` and
 at a checkout you would not run.**
 
 A failed pi never escalates to droid (unlike other voices): you chose the
-provider at `.pi.model`, so a silent re-send elsewhere would defeat that choice.
+provider at `.pi_read.model`, so a silent re-send elsewhere would defeat that choice.
 
 Rationale, the residual, and the removed-as-vacuous injection test:
 `docs/adr/0034-pi-in-tree-read-lane.md`.
@@ -156,7 +156,7 @@ Rationale, the residual, and the removed-as-vacuous injection test:
 | codex | `-s read-only` | ⚠️  **unverified** — measured writing files anyway on codex-cli 0.147.0. See below |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
-| pi | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
+| pi-read | `--tools read` (positive allowlist) + 6 project-config kill switches + projected private `$HOME` | ⚠️  **no** — writes are blocked, **reads are not confined**. See below |
 | grok | `--sandbox busdriver-review` (custom kernel profile) + `--deny Bash(*)/Edit/MCPTool(*)` + vendor hook switches | ✅ yes — reads kernel-confined to CWD; **requires one-time operator setup, see below** |
 
 **grok requires `~/.grok/sandbox.toml` — the lane refuses to dispatch without it.**
@@ -419,7 +419,7 @@ absorbs that reading, so route by size rather than by ceremony:
 | Question | Route |
 |----------|-------|
 | You can name the region up front **and** it is under ~200 lines | Read it directly — a dispatch is slower than reading 40 lines, and the ~2.5k-token floor below eats the win. |
-| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi` when you want stronger write/tool containment or a non-Google provider). Then `Read` only the `file:line` ranges it cites. |
+| **Everything else** — larger than that, or a trace you cannot scope up front: "how does X work?", "where is Y handled?", "what breaks if I change Z?" | **`agy-read` first** (or `pi-read` when you want stronger write/tool containment or a non-Google provider). Then `Read` only the `file:line` ranges it cites. |
 
 Both conditions must hold to stay local, and **file count is not one of them** —
 what matters is whether you can point at the lines before you start, and how many
@@ -533,7 +533,7 @@ it is not a failed attempt, and the two carry different consequences:
 
 | Invocation | A skipped voice means |
 |------------|----------------------|
-| `--cli pi` (explicit) | **Failure**, exit non-zero — the voice you asked for is the whole request |
+| `--cli pi-read` (explicit) | **Failure**, exit non-zero — the voice you asked for is the whole request |
 | `--cli all` (batch) | **Not a failure** — the voice drops out, the batch succeeds on the others |
 | `--cli all`, every voice skipped | **Failure**, exit non-zero — nothing ran, and nothing must never read as success |
 
@@ -541,7 +541,7 @@ A voice that genuinely ran and failed still fails the batch, exactly as before.
 `skipped` is recorded verbatim in the dispatch log, so an audit distinguishes
 "never attempted" from "attempted and failed".
 
-Only the pi arm can currently produce a `skipped`; the status itself is shared by
+Only the pi-read arm can currently produce a `skipped`; the status itself is shared by
 every CLI.
 
 If a dispatch fails, check:

@@ -68,15 +68,15 @@ DEFAULT=""
 SHIM_DEFAULT="$(grep -E 'resolve_auditor_model\(\) \{ _BD_AUDITOR_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
 eq "$SHIM_DEFAULT" "" "dispatch.sh shim resolves the auditor to empty (no default)"
 
-# pi's shim mirrors the auditor's: same library-missing fallback pattern, same
-# drift risk between dispatch.sh's shim literal and the LIB constant. The
-# golden-grep leak sweep below exempts PI_MODEL_DEFAULT/resolve_pi_model() from
-# the "one place a model name lives" invariant on the assumption this asserts
-# they stay in sync — without this, a silent divergence would still pass green.
-PI_DEFAULT="$(grep -E '^BUSDRIVER_PI_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
-[[ -n "$PI_DEFAULT" ]] && ok "pi default constant present → $PI_DEFAULT" || fail "no BUSDRIVER_PI_MODEL_DEFAULT in $LIB"
-PI_SHIM_DEFAULT="$(grep -E 'resolve_pi_model\(\) \{ _BD_PI_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
-eq "$PI_SHIM_DEFAULT" "$PI_DEFAULT" "dispatch.sh pi shim default matches BUSDRIVER_PI_MODEL_DEFAULT"
+# Pi's dispatch-side library-missing fallback must fail closed: without the
+# trusted resolver it cannot validate which provider may receive repo source.
+if grep -qE '^BUSDRIVER_PI_READ_MODEL_DEFAULT=' "$LIB"; then
+  fail "BUSDRIVER_PI_READ_MODEL_DEFAULT is back in $LIB — the pi-read lane must ship no default model"
+else
+  ok "no shipped pi-read default constant in $LIB"
+fi
+PI_SHIM_DEFAULT="$(grep -E 'resolve_pi_read_model\(\) \{ _BD_PI_READ_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
+eq "$PI_SHIM_DEFAULT" "" "dispatch.sh pi shim fails closed when the trusted resolver is missing"
 
 eq "$(resolve '')"                                        "$DEFAULT"        "no config → empty (voice skipped)"
 eq "$(resolve '{}')"                                      "$DEFAULT"        "empty config → empty (voice skipped)"
@@ -147,8 +147,21 @@ NOJQ="$(mktemp -d)/rc.sh"
 sed 's|for b in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq /bin/jq; do|for b in /nonexistent/jq; do|' "$LIB" > "$NOJQ"
 printf '%s' '{"auditor":{"model":"zenmux/deepseek/deepseek-v4-pro"}}' > "$FAKE_HOME/.claude/busdriver.json"
 got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$NOJQ" )"
-rm -rf "$(dirname "$NOJQ")"
 eq "$got" "zenmux/deepseek/deepseek-v4-pro" "python3 fallback honours the config when jq is absent"
+
+# Same harness over the three pi-read arms (pi_read, pi_read_raw, pi_legacy_raw).
+# With jq present a wrong `pykey` is never consulted, so only this pass can see one.
+# Residual, deliberately: a wrong `jqf` makes jq return empty — exactly the condition
+# that triggers the python fallback — so a correct `pykey` rescues it here too. That
+# needs a jq-present/python-less host, which this harness does not simulate.
+printf '%s' '{"pi":{"model":"opencode-go/legacy"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s|%s" "$_BD_PI_READ_MODEL" "$_BD_PI_READ_MIGRATION_REQUIRED"' "$NOJQ" )"
+eq "$got" "|1" "no-jq: legacy-only still refuses (pi_legacy_raw pykey honoured)"
+
+printf '%s' '{"pi":{"model":"opencode-go/legacy"},"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
+got="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s|%s" "$_BD_PI_READ_MODEL" "$_BD_PI_READ_MIGRATION_REQUIRED"' "$NOJQ" )"
+eq "$got" "opencode-go/glm-5.2|0" "no-jq: .pi_read.model resolves (pi_read + pi_read_raw pykeys honoured)"
+rm -rf "$(dirname "$NOJQ")"
 
 # Captured, not piped: `grep -q` exits on first match and would SIGPIPE the
 # producer, which `pipefail` then reports as a failed pipeline.
@@ -394,8 +407,8 @@ done
 # actively lying about what ran. Allowed: the default constant, dispatch.sh's
 # library-missing shim, and the config example next to it. docs/adr + CHANGELOG
 # are historical records and are not swept.
-# The same rule now also covers the pi read lane's `.pi.model`
-# (PI_MODEL_DEFAULT + its library-missing shim) and the agy read lane's
+# The same rule now also covers the pi read lane's `.pi_read.model`
+# (PI_READ_MODEL_DEFAULT + its library-missing shim) and the agy read lane's
 # `.agy_read.model` (AGY_READ_MODEL_DEFAULT): three configurable model keys, one
 # invariant — an id may appear at its default constant and nowhere else, so
 # rationale comments say "the shipped default" instead of naming a model and
@@ -420,9 +433,11 @@ done
 # constant VALUES instead, read live from $LIB, so a rename or a default bump
 # that isn't mirrored in the two doc examples below still gets caught.)
 agy_read_default="$(grep -oE 'BUSDRIVER_AGY_READ_MODEL_DEFAULT="[^"]*"' "$LIB" | head -1 | sed -E 's/^[^"]*"([^"]*)"$/\1/')"
-pi_default="$(grep -oE 'BUSDRIVER_PI_MODEL_DEFAULT="[^"]*"' "$LIB" | head -1 | sed -E 's/^[^"]*"([^"]*)"$/\1/')"
+# No pi-read alternative: that constant is deleted, so the lookup would be a bare
+# assignment from a non-matching grep — which aborts this file under `set -euo
+# pipefail` before the sweep runs.
 esc_regex() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\/]/\\&/g'; }
-model_value_allow="\"model\":[[:space:]]*\"($(esc_regex "${agy_read_default:-__none__}")|$(esc_regex "${pi_default:-__none__}"))\""
+model_value_allow="\"model\":[[:space:]]*\"($(esc_regex "${agy_read_default:-__none__}"))\""
 
 leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
            "$ROOT/skills/council/SKILL.md" \
@@ -434,7 +449,7 @@ leaks="$(grep -rIn -iE 'kimi|opencode-go|moonshotai|gemini[- ][0-9]' \
            "$ROOT/tests/test-agy-read-lane.sh" \
            "$ROOT/commands/ultimate-council.md" \
            "$LIB" 2>/dev/null \
-         | grep -vE "AUDITOR_MODEL_DEFAULT|resolve_auditor_model\\(\\)|\"auditor\": \\{ \"model\"|PI_MODEL_DEFAULT|resolve_pi_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model|$model_value_allow" || true)"
+         | grep -vE "AUDITOR_MODEL_DEFAULT|resolve_auditor_model\\(\\)|\"auditor\": \\{ \"model\"|PI_READ_MODEL_DEFAULT|resolve_pi_read_model\\(\\)|AGY_READ_MODEL_DEFAULT|resolve_agy_read_model\\(\\)|check_model|$model_value_allow" || true)"
 if [[ -z "$leaks" ]]; then
   ok "no model name in live prose/logs (only the default constant names one)"
 else

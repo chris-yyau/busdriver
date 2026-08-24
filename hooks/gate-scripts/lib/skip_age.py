@@ -1,8 +1,12 @@
 """Atomic skip-litmus.local age/provenance checks via dir-fd + fstat (#622).
 
+The 30-second minimum age is an anti-self-bypass for the agent harness (which is
+blocked from creating skip-litmus.local by pre-implementation-gate). Operator
+consent via a user-created skip file after 30s is an intentional, audited escape
+hatch — same contract as pre-commit-gate.sh.
+
 Exit 0 = too young / invalid provenance (caller should block).
 Exit 1 = age checks passed.
-Exit 2 = internal error (caller should block — fail-closed).
 """
 
 import os

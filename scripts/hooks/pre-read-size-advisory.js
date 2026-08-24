@@ -27,6 +27,17 @@
  * trust root. The fd is immutable after open. Platforms without an fd-to-path
  * primitive stay silent (fail-open); any failure of the fd probe also stays
  * silent.
+ *
+ * Residual (documented, non-disclosing): the probe verifies the OPENED fd's
+ * current kernel path against the captured root, but the fd reports its
+ * CURRENT pathname, not where openSync() resolved it. A concurrent writer
+ * with workspace-tree access can, with syscall-timed renames, make the probe
+ * read an inode it moved under the root for the check and back out for the
+ * scan. Pure Node offers no per-component no-follow open (openat), so the
+ * open-time resolution cannot be proven post-hoc. Disclosure is nil (the
+ * advisory is generic; scanned content is never emitted), the probe stays
+ * bounded (≤ 1 MiB) and isFile-gated, and this writer class was accepted
+ * with Council Option A for the probe itself.
  */
 
 'use strict';
@@ -120,8 +131,8 @@ function fdRealPath(fd) {
     }
     if (process.platform === 'linux') {
       // No " (deleted)" stripping: that suffix is a legitimate filename, and
-      // an unlinked file keeps its real path prefix — the descendant check
-      // still applies, and scanning a dead fd reads zero bytes.
+      // an unlinked descriptor still reads its (now-orphaned) content, so the
+      // descendant check must run on the real path prefix it reports.
       return fs.readlinkSync(`/proc/self/fd/${fd}`);
     }
     return null;
@@ -170,11 +181,11 @@ function countLines(openPath, cwdReal, rootStat) {
     // that were never read).
     const current = fs.fstatSync(fd);
 
-    // Observed newlines are authoritative: the scan READ them.
-    if (window.lines > THRESHOLD) return window.lines;
     // An early EOF means the window was not fully scanned (the file shrank
     // mid-scan): the window is not NUL-complete, so nothing can be classified.
     if (window.offset < windowEnd) return null;
+    // The window is complete; observed newlines are authoritative.
+    if (window.lines > THRESHOLD) return window.lines;
     // The window was fully scanned; bytes beyond it are outside the probe's
     // NUL scope, so a continuing line or further bytes VERIFY a threshold+1st
     // line.

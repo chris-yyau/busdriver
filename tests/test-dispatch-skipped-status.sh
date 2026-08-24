@@ -96,11 +96,11 @@ else
 # ── 1. Single-CLI: an explicitly requested voice that cannot run is a FAILURE.
 #      The whole request was for that voice; there is nothing left to succeed.
 O="$TMP/single.out"
-PATH="$BASE_PATH" "$RUN_BASH" "$DISPATCH" --cli pi --model noproviderprefix --prompt p >"$O" 2>&1
+PATH="$BASE_PATH" "$RUN_BASH" "$DISPATCH" --cli pi-read --model noproviderprefix --prompt p >"$O" 2>&1
 rc=$?
-{ [[ "$rc" -ne 0 ]] && grep -q "pi → skipped" "$O"; } \
-  && ok "explicit --cli pi that cannot run → status skipped, exit nonzero" \
-  || bad "explicit --cli pi → skipped + nonzero (rc=$rc, out=[$(tr -d '\n' <"$O" | tail -c 200)])"
+{ [[ "$rc" -ne 0 ]] && grep -q "pi-read → skipped" "$O"; } \
+  && ok "explicit --cli pi-read that cannot run → status skipped, exit nonzero" \
+  || bad "explicit --cli pi-read → skipped + nonzero (rc=$rc, out=[$(tr -d '\n' <"$O" | tail -c 200)])"
 
 # ── 2. Batch: one skipped voice must NOT fail the batch for the others.
 #      This is the reported bug (#594).
@@ -110,7 +110,7 @@ if pi_selectable; then
   PATH="$BASE_PATH" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
     "$RUN_BASH" "$DISPATCH" --cli all --model noproviderprefix --timeout 20 --prompt p >"$O" 2>&1
   rc=$?
-  { [[ "$rc" -eq 0 ]] && grep -q CODEX_OK "$O" && grep -qi "PI  *(skipped" "$O"; } \
+  { [[ "$rc" -eq 0 ]] && grep -q CODEX_OK "$O" && grep -qi "PI-READ  *(skipped" "$O"; } \
     && ok "--cli all: skipped pi does not fail a batch another voice completed" \
     || bad "--cli all: skipped pi failed the batch (rc=$rc, out=[$(tr -d '\n' <"$O" | tail -c 300)])"
 

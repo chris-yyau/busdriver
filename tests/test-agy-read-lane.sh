@@ -98,22 +98,17 @@ check_model 'true' "$agy_default" \
   'boolean config value degrades to the default (jq/python parity)'
 
 # ── 4. pi's grammar is unchanged (no cross-contamination) ───────
-printf '{"pi":{"model":"bare-no-slash"}}\n' > "$tmp_home/.claude/busdriver.json"
+printf '{"pi_read":{"model":"bare-no-slash"}}\n' > "$tmp_home/.claude/busdriver.json"
 got="$(
   # shellcheck disable=SC1090
   source "$RESOLVE" >/dev/null 2>&1
-  HOME="$tmp_home" resolve_pi_model 2>/dev/null
-  printf '%s' "$_BD_PI_MODEL"
+  HOME="$tmp_home" resolve_pi_read_model 2>/dev/null
+  printf '%s' "$_BD_PI_READ_MODEL"
 )"
-pi_default_line=""
-if ! pi_default_line="$(grep -oE '^BUSDRIVER_PI_MODEL_DEFAULT="[^"]+"' "$RESOLVE")"; then
-  pi_default_line=""
-fi
-pi_default="${pi_default_line#*\"}"; pi_default="${pi_default%\"}"
-if [[ -z "$pi_default" ]]; then
-  fail "could not read BUSDRIVER_PI_MODEL_DEFAULT from resolve-cli.sh"
-elif [[ "$got" == "$pi_default" ]]; then
-  pass "pi still requires provider/model (bare id degrades to its default)"
+# pi-read ships no default, so a rejected bare id resolves EMPTY. That still proves
+# the grammar did not leak: agy-read accepts bare ids, pi-read must not.
+if [[ -z "$got" ]]; then
+  pass "pi still requires provider/model (bare id resolves empty, no default)"
 else
   fail "pi grammar leaked the bare shape (got '$got')"
 fi
@@ -234,7 +229,7 @@ rm -rf "$er_cwd" "$er_stub"
 
 # ── 7. the read lane never escalates to droid ───────────────────
 # The desugar rewrites CLI to plain "agy", so \$name is "agy" in the fallback
-# guard and the opencode/pi exemptions do not cover this lane. Without its own
+# guard and the pi exemption does not cover this lane. Without its own
 # clause a failed agy-read ships the prompt — and the repo content quoted in it —
 # to droid, i.e. a DIFFERENT third party than the one the operator selected at
 # .agy_read.model. Plain --cli agy must still escalate.
@@ -264,7 +259,7 @@ line_of() { grep -nE "$1" "$DISPATCH" | head -1 | cut -d: -f1; }
 l_init="$(line_of '^REPORT_CLI_NAME=""$')"
 l_capture="$(line_of '^[[:space:]]+REPORT_CLI_NAME="agy-read"$')"
 l_assign="$(line_of '^[[:space:]]+REPORT_NAME="\$\{REPORT_CLI_NAME:-\$CLI\}"$')"
-l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi\) ;;$')"
+l_whitelist="$(line_of '^[[:space:]]+codex\|agy\|agy-read\|agy-prose\|droid\|grok\|opencode\|pi-read\) ;;$')"
 l_outfile="$(line_of 'OUTFILE="\$\{OUT_DIR\}/dispatch-\$\{REPORT_NAME\}-\$\{STAMP\}\.txt"')"
 l_log="$(line_of 'log_event "\$REPORT_NAME"')"
 l_console="$(line_of 'echo "\$\{REPORT_NAME\} →')"

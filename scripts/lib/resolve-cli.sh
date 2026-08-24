@@ -308,7 +308,9 @@ default="$1"
 # tests/test-auditor-model-config.sh), or the prose goes stale next to it.
 case "$2" in
   auditor)  jqf='.auditor.model | select(type=="string") // empty';  pykey='auditor';  shape='slash' ;;
-  pi)       jqf='.pi.model | select(type=="string") // empty';       pykey='pi';       shape='slash' ;;
+  pi_read)  jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='slash' ;;
+  pi_read_raw) jqf='.pi_read.model | select(type=="string") // empty'; pykey='pi_read'; shape='any' ;;
+  pi_legacy_raw) jqf='.pi.model | select(type=="string") // empty'; pykey='pi'; shape='any' ;;
   agy_read) jqf='.agy_read.model | select(type=="string") // empty'; pykey='agy_read'; shape='bare'  ;;
   writing_prose) jqf='.writing_prose.model | select(type=="string") // empty'; pykey='writing_prose'; shape='bare' ;;
   # PRESENCE probe for the prose lane. Same hardened child, same enum-of-literals
@@ -354,8 +356,10 @@ fi
 # (https://v2.opencode.ai/docs/models) define references as `provider/model`
 # with an optional `#variant` (e.g. `openai/gpt-5.2#high`), and rejecting the
 # `#` silently dropped a valid user-selected reasoning/token variant. A bad
-# value degrades to the default with a loud note rather than killing an
-# AUXILIARY voice on a typo.
+# value degrades to the CALLER-SUPPLIED default with a loud note rather than
+# killing the voice on a typo. Callers that pass an EMPTY default — the auditor
+# and pi-read both do — therefore resolve empty and skip, which is the intended
+# outcome: no shipped default means no provider is selected that nobody chose.
 if [[ "$shape" == 'any' ]]; then
   # PRESENCE probe: report the value as read, with NO grammar check, so the
   # caller can distinguish an absent key from one whose value the grammar
@@ -394,8 +398,8 @@ CHILD
 # whichever provider we picked. That dispatch does not "work by default", it
 # fails at the provider, so the honest unconfigured outcome is no auditor at
 # all. Deleting the constant also ends the drift class for THIS key: there is no
-# longer an auditor model id in-tree to go stale. (Other ids remain and are
-# unaffected — the `.pi.model` default below, and the config example above.)
+# longer an auditor model id in-tree to go stale. (The `.pi_read.model` default
+# below is gone for the same reason; the config example above remains.)
 #
 # Consequence to know: a MALFORMED `.auditor.model` now also yields empty, so a
 # typo skips the voice instead of degrading to a default. The loud stderr note
@@ -409,12 +413,13 @@ CHILD
 _BD_AUDITOR_MODEL=""
 resolve_auditor_model() {
   _BD_AUDITOR_MODEL="$(_bd_read_auditor_model "$HOME" "")"
-  # Explicit success: the assignment is now the last statement, so without this
-  # the reader's exit status would become the function's, and a call under
-  # `set -e` would abort the whole lane. A failed read is not fatal here — it
-  # yields an empty model, and the dispatch-site guard turns that into a skipped
-  # advisory voice. (The old body ended with a `[[ -n ]] ||` fallback, which
-  # returned 0 incidentally; that prop went out with the default.)
+  # Normalises the function's exit status where `set -e` is suspended: the
+  # assignment is now the last statement, so without this the reader's status
+  # would become the function's. NOT protection against a failed read — under
+  # `set -e` a failed command substitution exits AT the assignment, so this line
+  # would never run. Kept as cheap insurance if the reader ever becomes fallible.
+  # (The old body ended with a `[[ -n ]] ||` fallback, which returned 0
+  # incidentally; that prop went out with the default.)
   return 0
 }
 
@@ -843,9 +848,12 @@ _bd_oc_lane_cleanup() {
   return "$_rc"
 }
 
-# ── Pi (repo-reading exploration lane) model ────────────────────
+# ── Pi read lane model ──────────────────────────────────────────
 #
-#   ~/.claude/busdriver.json  →  { "pi": { "model": "<provider>/<model-id>" } }
+# Operator migration is an intentional hard cut: legacy `.pi.model` is not
+# read, aliased, or used as a fallback. Configure `.pi_read.model` explicitly.
+#
+#   ~/.claude/busdriver.json  →  { "pi_read": { "model": "<provider>/<model-id>" } }
 #
 # ONE key carries provider AND model: `pi --model provider/id` is pi's own
 # documented reference form (verified — a single --model flag carrying both
@@ -859,20 +867,34 @@ _bd_oc_lane_cleanup() {
 # pass a password-DB-derived $HOME (a repo-injectable $HOME would let a reviewed
 # fork choose where its own contents are sent).
 #
-# OPERATOR CAVEAT (deliberate, chosen by the operator): the shipped default
-# requires its provider workspace's China-hosting opt-in. Without that opt-in
-# the provider returns HTTP 403 `RegionError` and the voice produces no output.
-# That is why the pi arm surfaces the child's stderr into the transcript rather
-# than swallowing it — a 403 must read as a diagnosable provider error, not a
-# silent dead voice. Operators without the opt-in set a different `.pi.model`;
-# `pi --list-models` enumerates the alternatives, and
+# NO shipped default, deliberately — an unset or invalid `.pi_read.model` resolves
+# empty and the lane skips, rather than silently selecting a provider nobody chose.
+#
+# A *configured* model may still be region-gated: some providers return HTTP 403
+# `RegionError` without their workspace opt-in, and the voice then produces no
+# output. That is why the pi arm surfaces the child's stderr into the transcript
+# rather than swallowing it — a 403 must read as a diagnosable provider error, not
+# a silent dead voice. `pi --list-models` enumerates the alternatives, and
 # `pi auth check --provider <name>` confirms one is reachable before use.
-BUSDRIVER_PI_MODEL_DEFAULT="opencode-go/deepseek-v4-flash"
 
-_BD_PI_MODEL=""
-resolve_pi_model() {
-  _BD_PI_MODEL="$(_bd_read_auditor_model "$HOME" "$BUSDRIVER_PI_MODEL_DEFAULT" pi)"
-  [[ -n "$_BD_PI_MODEL" ]] || _BD_PI_MODEL="$BUSDRIVER_PI_MODEL_DEFAULT"
+_BD_PI_READ_MODEL=""
+_BD_PI_READ_MIGRATION_REQUIRED=0
+resolve_pi_read_model() {
+  local _new_raw _legacy_raw
+  _new_raw="$(_bd_read_auditor_model "$HOME" "" pi_read_raw)"
+  _legacy_raw="$(_bd_read_auditor_model "$HOME" "" pi_legacy_raw)"
+  _BD_PI_READ_MIGRATION_REQUIRED=0
+  if [[ -z "$_new_raw" && -n "$_legacy_raw" ]]; then
+    _BD_PI_READ_MODEL=""
+    _BD_PI_READ_MIGRATION_REQUIRED=1
+    echo "busdriver: legacy .pi.model is no longer read; move the provider/model value to .pi_read.model before using the pi-read lane." >&2
+    return 0
+  fi
+  _BD_PI_READ_MODEL="$(_bd_read_auditor_model "$HOME" "" pi_read)"
+  # Normalises the function's exit status where `set -e` is suspended. NOT
+  # protection against a failed read: under `set -e` a failed command
+  # substitution exits AT the assignment, so this line would never run.
+  return 0
 }
 
 # ── agy READ-lane model ─────────────────────────────────────────
@@ -882,7 +904,7 @@ resolve_pi_model() {
 # wants a cheap fast model per dispatch, the reviewer slot must not silently get
 # downgraded to it.
 #
-# Same trust rules as `.pi.model` (USER config only, no env override, no project
+# Same trust rules as `.pi_read.model` (USER config only, no env override, no project
 # config, password-DB-derived $HOME): the value names the third party this
 # repo's source is shipped to. `agy models` enumerates ids.
 BUSDRIVER_AGY_READ_MODEL_DEFAULT="gemini-3.7-flash-medium"
@@ -898,7 +920,7 @@ resolve_agy_read_model() {
 # `--cli agy-read`. Plain `--cli agy` (blueprint-review reviewer_1 and friends)
 # is unaffected and keeps agy's own configured model.
 #
-# Same trust rules as `.pi.model` / `.agy_read.model` (USER config only, no env
+# Same trust rules as `.pi_read.model` / `.agy_read.model` (USER config only, no env
 # override, no project config, password-DB-derived $HOME): the value names the
 # third party your prose — and anything quoted into the brief — is shipped to.
 # `agy models` enumerates ids; the value is BARE (no `provider/` segment).

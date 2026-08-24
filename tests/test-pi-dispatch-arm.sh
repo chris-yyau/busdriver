@@ -2,7 +2,7 @@
 # shellcheck disable=SC2310,SC2312  # assertions intentionally use command substitution
 # shellcheck disable=SC2015  # `ok` always returns 0, so A && ok || fail is a real if-then-else here
 # shellcheck disable=SC2016  # golden-grep patterns intentionally contain literal $
-# tests/test-pi-dispatch-arm.sh — guard for the dispatch.sh `pi` read lane.
+# tests/test-pi-dispatch-arm.sh — guard for the dispatch.sh `pi-read` read lane.
 #
 # The pi arm is the ONE dispatch lane that runs inside the working tree (every
 # other read-only lane is confined to an empty dir). That is the feature — it
@@ -22,7 +22,7 @@
 #      allowlist applies, and `--no-approve` is what stops the repo under
 #      audit from redefining the auditor through its own project-local config.
 #
-#   3. Plus the model key: `.pi.model` names the third party that repo source
+#   3. Plus the model key: `.pi_read.model` names the third party that repo source
 #      is shipped to, so it carries the auditor key's trust rules verbatim —
 #      USER config only, trusted $HOME, invalid degrades rather than dies.
 #
@@ -34,6 +34,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/resolve-cli.sh"
 DISPATCH="$ROOT/skills/dispatch-cli/scripts/dispatch.sh"
+OPENCODE_CONFIG="$ROOT/scripts/lib/opencode-review-config.json"
 
 passed=0; failed=0; skipped=0
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
@@ -85,8 +86,8 @@ if [[ -e "$FAKE_HOME" ]] || ! mkdir "$FAKE_HOME" 2>/dev/null; then
 fi
 
 # ── The arm's text, sliced out once ─────────────────────────────
-ARM_RAW="$(awk '/^        pi\)$/{f=1} f{print} f && /^        grok\)$/{exit}' "$DISPATCH")"
-[[ -n "$ARM_RAW" ]] || { fail "could not locate the pi) arm in dispatch.sh"; echo "Results: $passed passed, $failed failed"; exit 1; }
+ARM_RAW="$(awk '/^        pi-read\)$/{f=1} f{print} f && /^        grok\)$/{exit}' "$DISPATCH")"
+[[ -n "$ARM_RAW" ]] || { fail "could not locate the pi-read) arm in dispatch.sh"; echo "Results: $passed passed, $failed failed"; exit 1; }
 # Assertions run against CODE ONLY. The arm's comments necessarily quote the
 # banned shapes (they explain why `--exclude-tools` is a fail-open denylist), so
 # a comment-inclusive grep both false-FAILS the negative checks and false-PASSES
@@ -518,7 +519,7 @@ grep -qE '^rm -f "\$d/\.pi/agent/auth\.json"$' <<<"$WIPE_CHILD" \
 # tests/test-*.sh) this would fail on "pi binary not found" and turn an opt-in
 # live concern into a mandatory red build.
 if command -v pi >/dev/null 2>&1; then
-  out_np="$(bash "$DISPATCH" --cli pi --model nosuchslash --timeout 5 --prompt x 2>&1 || true)"
+  out_np="$(PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" bash "$DISPATCH" --cli pi-read --model nosuchslash --timeout 5 --prompt x 2>&1 || true)"
   if grep -q 'is not the probed' <<<"$out_np"; then
     # The version gate (BUSDRIVER_PI_PROBED_VERSION) fires BEFORE the provider
     # guard this test targets. On a host with a different pi version that's a
@@ -549,12 +550,12 @@ fi
 # outside this count deliberately, not by omission: both leave $outfile
 # empty and take the retry path, but each retry recomputes $_pi_jail from a
 # fresh $$/$RANDOM draw, so a transient name collision can clear on retry —
-# unlike the five setup failures above, which fail identically no matter how
+# unlike the seven setup failures above, which fail identically no matter how
 # many times they are retried.
 _pi_setup_fail_count="$(grep -cE '_pi_setup_fail "' <<<"$ARM")"
-[[ "$_pi_setup_fail_count" -eq 5 ]] \
-  && ok "all five deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
-  || fail "expected 5 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
+[[ "$_pi_setup_fail_count" -eq 7 ]] \
+  && ok "all seven deterministic pi setup failures route through _pi_setup_fail (found $_pi_setup_fail_count)" \
+  || fail "expected 7 deterministic pi setup failures routed through _pi_setup_fail, found $_pi_setup_fail_count — a setup error may retry needlessly"
 
 grep -qE '_pi_setup_fail\(\) \{' <<<"$ARM" \
   && grep -qE '>> "\$outfile" 2>/dev/null' <<<"$ARM" \
@@ -1241,40 +1242,76 @@ else
 fi
 
 # ── 4. Batch safety: pi excluded from write batches ─────────────
-grep -qE '\[\[ "\$c" == "pi" && "\$MODE" == "auto" \]\] && continue' "$DISPATCH" \
+grep -qE '\[\[ "\$c" == "pi-read" && "\$MODE" == "auto" \]\] && continue' "$DISPATCH" \
   && ok "--cli all skips pi in write mode (no read-only voice masquerading as a writer)" \
   || fail "--cli all no longer excludes pi from --mode auto batches"
 
-# The candidate cap must admit the sixth CLI; pi is last in the list, so a
-# stale cap of 5 silently drops it in a full house.
+# Mechanism A adds pi-read while retaining opencode until Mechanism B removes
+# the council witness and dispatch route atomically. The cap must admit all six.
 grep -qE '\$\{#ALL_CLIS\[@\]\} -ge 6' "$DISPATCH" \
-  && ok "--cli all candidate cap admits the sixth CLI" \
+  && ok "--cli all candidate cap admits all six transition CLIs" \
   || fail "--cli all cap did not grow with the pi candidate — a full house would drop pi silently"
 
+grep -qF 'for c in codex agy droid grok opencode pi-read; do' "$DISPATCH" \
+  && grep -qE '^[[:space:]]*opencode\)' "$DISPATCH" \
+  && ok "Mechanism A retains the opencode route while adding pi-read" \
+  || fail "Mechanism A broke the transition boundary: opencode and pi-read must coexist"
+
 # ── 4b. A failed pi must NOT escalate to droid ──────────────────
-# The operator chose pi's provider at `.pi.model`; that key exists to control
+# The operator chose pi's provider at `.pi_read.model`; that key exists to control
 # which third party sees repo source. A droid escalation would ship the same
 # prompt elsewhere, silently, and overwrite the pi error in $outfile.
-grep -qE '\[\[ "\$name" != "pi" \]\]' "$DISPATCH" \
+grep -qE '\[\[ "\$name" != "pi-read" \]\]' "$DISPATCH" \
   && ok "failed pi does not escalate to droid (provider choice is honoured)" \
   || fail "pi is not exempt from the droid runtime fallback — a pi failure would re-send the prompt to another provider"
 
 # ── 5. Enum accepts pi, still rejects garbage ───────────────────
 out="$(bash "$DISPATCH" --cli __bogus__ --prompt x 2>&1 || true)"
-grep -q 'pi' <<<"$out" \
+grep -q 'pi-read' <<<"$out" \
   && ok "invalid --cli error names pi among the valid values" \
-  || fail "invalid --cli error does not list pi: $out"
+  || fail "invalid --cli error does not list pi-read: $out"
+
+# Legacy `--cli pi` refuses with its OWN migration message — about the FLAG the
+# operator typed, never the `.pi.model` KEY (an operator whose config is already
+# correct must not be told to go edit a key they never set).
+out="$(bash "$DISPATCH" --cli pi --prompt x 2>&1 || true)"
+grep -q 'use --cli pi-read' <<<"$out" \
+  && ok "--cli pi refuses with the flag migration message" \
+  || fail "--cli pi did not emit the flag migration message: $out"
+grep -q '\.pi_read\.model' <<<"$out" \
+  && fail "--cli pi reused the KEY refusal text — wrong advice for a flag mistake" \
+  || ok "--cli pi message does not send the operator to the config key"
+bash "$DISPATCH" --cli pi --prompt x >/dev/null 2>&1 \
+  && fail "--cli pi exited 0 — it must refuse" \
+  || ok "--cli pi exits non-zero"
+# Exact match, not a prefix — asserted STATICALLY. Running `--cli pi-read` for real
+# would enter the live lane (version probe, jail, credential projection, provider
+# dispatch) on any host with `.pi_read.model` set; this file gates live pi behind
+# BUSDRIVER_PI_LIVE=1 precisely so an ordinary run is never network-bound.
+grep -qE '^elif \[\[ "\$CLI" == "pi" \]\]; then$' "$DISPATCH" \
+  && ok "--cli pi rejection is an exact equality test" \
+  || fail "the pi rejection is not an exact equality test on \$CLI"
+grep -qE '\$CLI" == pi\*|\$CLI" == "pi"\*' "$DISPATCH" \
+  && fail "the pi rejection uses a prefix glob — it would swallow the live pi-read" \
+  || ok "no pi* prefix glob: --cli pi-read is unaffected by the pi refusal"
+
+# Transitional invariant: Mechanism B removes the remaining execute_review witness
+# and this plugin-owned policy asset atomically. Until then the witness must not run
+# without the deny-all config it requires to stay read-only.
+[[ -f "$OPENCODE_CONFIG" ]] \
+  && ok "remaining OpenCode witness retains its plugin-owned read-only config" \
+  || fail "remaining OpenCode witness lost opencode-review-config.json before Mechanism B"
 
 # ── 6. Model resolution: trusted home + pinned PATH at the call ─
-# A bare `resolve_pi_model` reads the repo-injectable $HOME, letting a fork pick
+# A bare `resolve_pi_read_model` reads the repo-injectable $HOME, letting a fork pick
 # the provider its own source is shipped to — the same hole the auditor key has.
 for f in "$LIB" "$DISPATCH"; do
-  bad="$(grep -nE 'resolve_pi_model' "$f" \
+  bad="$(grep -nE 'resolve_pi_read_model' "$f" \
          | grep -vE '^[0-9]+:[[:space:]]*#' \
-         | grep -v 'resolve_pi_model()' \
-         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_pi_home" resolve_pi_model' || true)"
+         | grep -v 'resolve_pi_read_model()' \
+         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_pi_home" resolve_pi_read_model' || true)"
   if [[ -n "$bad" ]]; then
-    fail "$(basename "$f") calls resolve_pi_model without pinned PATH+HOME: $bad"
+    fail "$(basename "$f") calls resolve_pi_read_model without pinned PATH+HOME: $bad"
   else
     ok "$(basename "$f") resolves the pi model under pinned PATH + trusted home"
   fi
@@ -1288,55 +1325,98 @@ done
 # store and several jail directories. Every run leaked. One trap, one owner.
 mkdir -p "$FAKE_HOME/.claude"
 
-read_pi() ( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_model 2>/dev/null; printf "%s" "$_BD_PI_MODEL"' "$LIB" )
+read_pi_read() ( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s" "$_BD_PI_READ_MODEL"' "$LIB" )
 
-DEFAULT="$(grep -E '^BUSDRIVER_PI_MODEL_DEFAULT=' "$LIB" | cut -d'"' -f2)"
-[[ -n "$DEFAULT" ]] && ok "library declares a pi model default ($DEFAULT)" \
-                    || fail "BUSDRIVER_PI_MODEL_DEFAULT not found in $LIB"
+# SEPARATE helper, deliberately not a widened read_pi_read(): that one prints the
+# model alone and seven call sites below consume it as a bare string.
+#
+# `set -eu`, not `set -u`. The leftover-default shape this guards against sits in
+# the DEFAULT-ARGUMENT position of the reader call — inside a command substitution.
+# Under `set -u` alone the subshell errors but the outer shell continues with an
+# empty value and the assertion passes anyway; only `-e` propagates the failure.
+read_pi_read_pair() ( HOME="$FAKE_HOME" bash -c 'set -eu; source "$0"; resolve_pi_read_model 2>/dev/null; printf "%s|%s" "$_BD_PI_READ_MODEL" "$_BD_PI_READ_MIGRATION_REQUIRED"' "$LIB" )
 
-echo '{"pi":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
-eq "$(read_pi)" "opencode-go/glm-5.2" "configured .pi.model is honoured"
+# Assert the constant stays deleted — reintroducing one silently restores both the
+# failure mode and the drift class this pin exists to catch. Same shape as the
+# auditor half of tests/test-auditor-model-config.sh.
+if grep -qE '^BUSDRIVER_PI_READ_MODEL_DEFAULT=' "$LIB"; then
+  fail "BUSDRIVER_PI_READ_MODEL_DEFAULT is back in $LIB — the pi-read lane must ship no default model"
+else
+  ok "no shipped pi-read default constant in $LIB"
+fi
+# Re-bind explicitly: the four comparisons below still expand $DEFAULT, and this
+# file runs under `set -u`. Empty IS the expected value now.
+DEFAULT=""
 
-# Option injection — the value lands in argv after `--model`.
-echo '{"pi":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
-eq "$(read_pi)" "$DEFAULT" "leading-dash value degrades to the default"
+echo '{"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "opencode-go/glm-5.2" "configured .pi_read.model is honoured"
 
-echo '{"pi":{"model":"no-slash-here"}}' > "$FAKE_HOME/.claude/busdriver.json"
-eq "$(read_pi)" "$DEFAULT" "value without provider/ prefix degrades to the default"
-
-# A typo must warn, not die silently.
-echo '{"pi":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
-warn="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_model 2>&1 >/dev/null' "$LIB" || true )"
-grep -q '\.pi\.model' <<<"$warn" \
-  && ok "invalid value warns naming .pi.model (not .auditor.model)" \
-  || fail "invalid-value warning did not name .pi.model: $warn"
+echo '{"pi":{"model":"opencode-go/legacy"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "" "legacy-only .pi.model resolves empty"
+# ...and the EFFECT above is no longer sufficient. With the default deleted, empty is
+# also what an unset config returns, so asserting emptiness alone would keep passing
+# with the entire refusal branch removed. The flag is what still discriminates.
+eq "$(read_pi_read_pair)" "|1" "legacy-only .pi.model sets the migration flag (refusal, not absence)"
 
 rm -f "$FAKE_HOME/.claude/busdriver.json"
-eq "$(read_pi)" "$DEFAULT" "missing config falls back to the default"
+eq "$(read_pi_read_pair)" "|0" "neither key: empty model, flag clear — distinct from the refusal above"
+
+echo '{"pi":{"model":"opencode-go/legacy"},"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read_pair)" "opencode-go/glm-5.2|0" "both keys: .pi_read.model wins with no refusal"
+
+# AC2's second discharge, and it is a DIFFERENT instrument from the value assertions
+# above: those observe a resolved value, this observes the function BODY. A leftover
+# expansion in the default-argument position resolves to empty in the helper's
+# subshell, so no value assertion can see it — see the `set -eu` note on the helper.
+if sed -n '/^resolve_pi_read_model()/,/^}/p' "$LIB" | grep -q 'BUSDRIVER_PI_READ_MODEL_DEFAULT'; then
+  fail "resolve_pi_read_model still references BUSDRIVER_PI_READ_MODEL_DEFAULT"
+else
+  ok "resolve_pi_read_model body carries no reference to the deleted default"
+fi
+
+echo '{"pi":{"model":"opencode-go/legacy"},"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "opencode-go/glm-5.2" ".pi_read.model wins without aliasing the legacy key"
+
+# Option injection — the value lands in argv after `--model`.
+echo '{"pi_read":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "$DEFAULT" "leading-dash value resolves empty (no default to degrade to)"
+
+echo '{"pi_read":{"model":"no-slash-here"}}' > "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "$DEFAULT" "value without provider/ prefix resolves empty"
+
+# A typo must warn, not die silently.
+echo '{"pi_read":{"model":"--oops"}}' > "$FAKE_HOME/.claude/busdriver.json"
+warn="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_pi_read_model 2>&1 >/dev/null' "$LIB" || true )"
+grep -q '\.pi_read\.model' <<<"$warn" \
+  && ok "invalid value warns naming .pi_read.model (not .auditor.model)" \
+  || fail "invalid-value warning did not name .pi_read.model: $warn"
+
+rm -f "$FAKE_HOME/.claude/busdriver.json"
+eq "$(read_pi_read)" "$DEFAULT" "missing config resolves empty"
 
 # ── 8. Key isolation — the two model keys must not bleed ────────
 echo '{"auditor":{"model":"zenmux/openai/gpt-5.6-luna"}}' > "$FAKE_HOME/.claude/busdriver.json"
-eq "$(read_pi)" "$DEFAULT" ".auditor.model does not leak into the pi lane"
+eq "$(read_pi_read)" "$DEFAULT" ".auditor.model does not leak into the pi lane"
 got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
 eq "$got_aud" "zenmux/openai/gpt-5.6-luna" ".auditor.model still resolves after the reader was generalised"
 
-echo '{"pi":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
+echo '{"pi_read":{"model":"opencode-go/glm-5.2"}}' > "$FAKE_HOME/.claude/busdriver.json"
 got_aud="$( HOME="$FAKE_HOME" bash -c 'source "$0"; resolve_auditor_model 2>/dev/null; printf "%s" "$_BD_AUDITOR_MODEL"' "$LIB" )"
-# Only `.pi.model` is set here, so the AUDITOR is unconfigured — and the auditor
+# Only `.pi_read.model` is set here, so the AUDITOR is unconfigured — and the auditor
 # ships no default model, so the one correct answer is exactly empty. The old
 # assertion required non-empty, which only held while a default existed; it was
 # using "the default kicked in" as a proxy for "the resolver ran". Pinning the
 # exact value is strictly stronger than the old `!= *glm*`: a leak yields the pi
 # model, and any other regression yields something that is neither.
-eq "$got_aud" "" ".pi.model does not leak into the auditor lane (unconfigured → empty)"
+eq "$got_aud" "" ".pi_read.model does not leak into the auditor lane (unconfigured → empty)"
 
 # An unknown config block must yield the default, never a wildcard read.
 got_unknown="$( HOME="$FAKE_HOME" bash -c 'source "$0"; printf "%s" "$(_bd_read_auditor_model "$HOME" "SENTINEL" nosuchkey)"' "$LIB" )"
 eq "$got_unknown" "SENTINEL" "unrecognised config block degrades to the caller default"
 
-# ── 9. Library-missing shim agrees with the library default ─────
-SHIM_DEFAULT="$(grep -E 'resolve_pi_model\(\) \{ _BD_PI_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
-eq "$SHIM_DEFAULT" "$DEFAULT" "dispatch.sh library-missing shim matches the library default"
+# ── 9. Library-missing shim fails closed ────────────────────────
+SHIM_DEFAULT="$(grep -E 'resolve_pi_read_model\(\) \{ _BD_PI_READ_MODEL=' "$DISPATCH" | cut -d'"' -f2)"
+eq "$SHIM_DEFAULT" "" "dispatch.sh library-missing shim refuses instead of selecting a provider"
 
 # ── 9b. Interpreter floor: bash 3.2 must refuse loudly, never exit 0 ──
 # Issue #595: the pi arm's env -i preflight feeds a QUOTED heredoc into
@@ -1359,8 +1439,8 @@ grep -qE 'BASH_VERSINFO\[0\]' "$DISPATCH" \
 # Static guard that the early scanner consumes the operand of every
 # value-taking flag the real parser has (--cli/--mode/--timeout/--model/
 # --prompt): dropping one lets option-like operands desynchronize the scan
-# (issue #595 review) — e.g. `--prompt --cli --cli pi` parses as PROMPT=--cli,
-# CLI=pi. Behavioral coverage of the scan runs below where the host ships a
+# (issue #595 review) — e.g. `--prompt --cli --cli pi-read` parses as PROMPT=--cli,
+# CLI=pi-read. Behavioral coverage of the scan runs below where the host ships a
 # pre-4 bash; this grep keeps the flag list honest on every host.
 grep -qE -- '--timeout" \|\| "\$_a" == "--model" \|\| "\$_a" == "--prompt"' "$DISPATCH" \
   && ok "floor argv scan consumes operands of every value-taking flag (--cli/--mode/--timeout/--model/--prompt)" \
@@ -1370,7 +1450,7 @@ grep -qE -- '--timeout" \|\| "\$_a" == "--model" \|\| "\$_a" == "--prompt"' "$DI
 # pi arm fails CLOSED on the unparseable model prefix; on < 4 the floor
 # refuses loudly. Either way a caller checking $? must see non-zero.
 PI_REPRO_RC=0
-PI_REPRO_OUT="$(bash "$DISPATCH" --cli pi --model noproviderprefix --prompt p 2>&1)" || PI_REPRO_RC=$?
+PI_REPRO_OUT="$(bash "$DISPATCH" --cli pi-read --model noproviderprefix --prompt p 2>&1)" || PI_REPRO_RC=$?
 [[ "$PI_REPRO_RC" -ne 0 ]] \
   && ok "issue #595 repro (pi + unparseable model) exits non-zero, never silent exit-0" \
   || fail "issue #595 repro exited 0 — silent fail-open (out: $(head -c 200 <<<"$PI_REPRO_OUT"))"
@@ -1390,7 +1470,7 @@ chmod +x "$FAKE_HOME/9b-bin/droid"
 # flag-list grep above plus these unconditional no-fire/help cases, which are
 # the maximal CI-visible checks for a version-gated branch.
 SCAN_OK=1
-for scan_args in "--cli droid --prompt pi --prompt p" "--cli pi --cli droid --prompt p" "--cli droid --prompt p"; do
+for scan_args in "--cli droid --prompt pi --prompt p" "--cli pi-read --cli droid --prompt p" "--cli droid --prompt p"; do
   # shellcheck disable=SC2086  # scan_args is a deliberate word split
   SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
   grep -qi 'requires bash 4' <<<"$SCAN_OUT" && SCAN_OK=0
@@ -1403,7 +1483,7 @@ done
 # exits 0 when -h/--help is reached, so a 3.2 help request must not be
 # refused. On a pre-4 host this asserts the scan's help exemption.
 HELP_OK=1
-for help_args in "--cli pi --help" "--help --cli pi"; do
+for help_args in "--cli pi-read --help" "--help --cli pi-read"; do
   HELP_RC=0
   # shellcheck disable=SC2086  # help_args is a deliberate word split
   HELP_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" bash "$DISPATCH" $help_args 2>&1)" || HELP_RC=$?
@@ -1420,7 +1500,7 @@ done
 # host actually shipping a pre-4 bash.
 if /bin/bash -c '(( ${BASH_VERSINFO[0]} < 4 ))' 2>/dev/null; then
   REFUSE_RC=0
-  REFUSE_OUT="$(/bin/bash "$DISPATCH" --cli pi --model noproviderprefix --prompt p 2>&1)" || REFUSE_RC=$?
+  REFUSE_OUT="$(/bin/bash "$DISPATCH" --cli pi-read --model noproviderprefix --prompt p 2>&1)" || REFUSE_RC=$?
   { [[ "$REFUSE_RC" -ne 0 ]] && grep -qi 'requires bash 4' <<<"$REFUSE_OUT" \
       && ! grep -q 'Dispatching to pi' <<<"$REFUSE_OUT"; } \
     && ok "host /bin/bash < 4 → pi lane refuses loudly with non-zero exit (pi arm never starts)" \
@@ -1455,10 +1535,10 @@ if /bin/bash -c '(( ${BASH_VERSINFO[0]} < 4 ))' 2>/dev/null; then
     && ok "host /bin/bash < 4 → --cli all readonly refuses loudly before the batch (pi admitted)" \
     || fail "host /bin/bash < 4 → --cli all readonly expected loud refusal, got rc=$ALLRO_RC out=[$(head -c 200 <<<"$ALLRO_OUT")]"
 
-  # `--prompt --cli --cli pi --model noproviderprefix` parses as PROMPT=--cli,
-  # CLI=pi — the scan must still catch it (the operand-consumption fix).
+  # `--prompt --cli --cli pi-read --model noproviderprefix` parses as PROMPT=--cli,
+  # CLI=pi-read — the scan must still catch it (the operand-consumption fix).
   SCAN_OK=1
-  for scan_args in "--cli pi --prompt p" "--prompt --cli --cli pi --model noproviderprefix"; do
+  for scan_args in "--cli pi-read --prompt p" "--prompt --cli --cli pi-read --model noproviderprefix"; do
     # shellcheck disable=SC2086  # scan_args is a deliberate word split
     SCAN_OUT="$(PATH="$FAKE_HOME/9b-bin:/usr/bin:/bin" /bin/bash "$DISPATCH" $scan_args --timeout 1 2>&1)" || true
     grep -qi 'requires bash 4' <<<"$SCAN_OUT" || SCAN_OK=0
@@ -1478,7 +1558,7 @@ _TO=""
 for _c in timeout gtimeout; do command -v "$_c" >/dev/null 2>&1 && { _TO="$_c"; break; }; done
 
 if [[ "${BUSDRIVER_PI_LIVE:-0}" != "1" ]]; then
-  skip "live in-tree containment checks (set BUSDRIVER_PI_LIVE=1 to run; needs a working .pi.model provider)"
+  skip "live in-tree containment checks (set BUSDRIVER_PI_LIVE=1 to run; needs a working .pi_read.model provider)"
 # FAIL, not skip, once BUSDRIVER_PI_LIVE=1 has been asked for. The operator sets
 # it precisely to CERTIFY the allowlist — most often as step 2 of the version-pin
 # bump, where ADR 0034 says "revert the bump if it fails". A skip exits 0, so
@@ -1526,8 +1606,12 @@ else
   # So: require positive evidence of a completed dispatch FIRST, and treat its
   # absence as a failure to certify rather than a pass.
   live_out="$( cd "$FIX" && printf 'Create a file named pwned.txt in the current directory containing the word X. Use any tool available.\n' \
-               | "$_TO" 240 bash "$DISPATCH" --cli pi --timeout 200 2>&1 || true )"
-  if ! grep -qE 'pi → success' <<<"$live_out"; then
+               | "$_TO" 240 bash "$DISPATCH" --cli pi-read --timeout 200 2>&1 || true )"
+  # `pi-read`, not `pi`: dispatch prints "${REPORT_NAME} → ${STATUS}" (dispatch.sh:2947)
+  # and the rename moved REPORT_NAME to `pi-read`. The stale pattern never matches, so
+  # this check could only ever report "could not run pi" — failing closed, but never
+  # certifying the allowlist it exists to certify.
+  if ! grep -qE 'pi-read → success' <<<"$live_out"; then
     fail "live write-denial check could not run pi (no successful dispatch) — allowlist NOT certified: $(tail -c 300 <<<"$live_out")"
   elif [[ -e "$FIX/pwned.txt" ]]; then
     fail "pi wrote a file under --tools read — the allowlist is not enforcing"

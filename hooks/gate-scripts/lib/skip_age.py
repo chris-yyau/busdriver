@@ -1,9 +1,11 @@
 """Atomic skip-litmus.local age/provenance checks via dir-fd + fstat (#622).
 
-The 30-second minimum age is an anti-self-bypass for the agent harness (which is
-blocked from creating skip-litmus.local by pre-implementation-gate). Operator
-consent via a user-created skip file after 30s is an intentional, audited escape
-hatch — same contract as pre-commit-gate.sh.
+The 30-second minimum age is an anti-self-bypass for the agent harness: the
+dispatcher blocks cooperative agents from creating skip-litmus.local via Bash
+(marker_check.py; see ADR 0006). A user-created skip file in a real terminal
+after 30s is an intentional, audited escape hatch — same contract as
+pre-commit-gate.sh. Native Git hooks cannot distinguish terminal provenance;
+they enforce age/provenance and single-use consumption instead.
 
 Exit 0 = too young / invalid provenance (caller should block).
 Exit 1 = age checks passed.

@@ -96,11 +96,12 @@ TMP_SKNONE_OVERFLOW=$(mktemp -d)
 TMP_SKNONE_FUTURE=$(mktemp -d)
 TMP_SKNONE_LONG=$(mktemp -d)
 TMP_SKNONE_BOUND=$(mktemp -d)
+TMP_REPO_MARKER=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -450,6 +451,28 @@ if [[ "$SKNONE_BOUND_RC" -ne 0 ]]; then
     assert "SKIPPED-NONE older than 3600s blocked" "block" "block"
 else
     assert "SKIPPED-NONE older than 3600s blocked" "block" "allow(rc=$SKNONE_BOUND_RC)"
+fi
+
+echo "── committed litmus-passed.local marker blocked ─"
+setup_repo "$TMP_REPO_MARKER"
+install_hook "$TMP_REPO_MARKER" "$HOOKS"
+mkdir -p "$TMP_REPO_MARKER/.claude"
+printf '.claude/*.local\n' >"$TMP_REPO_MARKER/.gitignore"
+git -C "$TMP_REPO_MARKER" add .gitignore
+git -C "$TMP_REPO_MARKER" commit -q -m "gitignore" --no-verify
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' \
+    >"$TMP_REPO_MARKER/.claude/litmus-passed.local"
+git -C "$TMP_REPO_MARKER" add -f .claude/litmus-passed.local
+git -C "$TMP_REPO_MARKER" commit -q -m "sneak marker" --no-verify
+set +e
+git -C "$TMP_REPO_MARKER" merge topic --no-edit 2>"$LOGDIR/repo-marker.err"
+REPO_MARKER_RC=$?
+set -e
+REPO_MARKER_HEAD=$(git -C "$TMP_REPO_MARKER" log -1 --format=%s 2>/dev/null || true)
+if [[ "$REPO_MARKER_RC" -ne 0 && "$REPO_MARKER_HEAD" == "sneak marker" ]]; then
+    assert "committed marker blocked" "block" "block"
+else
+    assert "committed marker blocked" "block" "allow(rc=$REPO_MARKER_RC head=$REPO_MARKER_HEAD)"
 fi
 
 echo ""

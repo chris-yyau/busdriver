@@ -43,6 +43,7 @@ function countLines(filePath) {
       const toRead = Math.min(READ_CHUNK, stat.size - offset);
       const read = fs.readSync(fd, buffer, 0, toRead, offset);
       if (read <= 0) break;
+      if (buffer.subarray(0, read).includes(0)) return null;
 
       for (let i = 0; i < read; i++) {
         if (buffer[i] === 0x0a) lines++;
@@ -79,8 +80,8 @@ function run(inputOrRaw, _options = {}) {
     return { exitCode: 0 };
   }
 
-  const { file_path: filePath, limit } = input?.tool_input || {};
-  if (limit || !filePath || !isSafePath(filePath)) {
+  const { file_path: filePath, offset, limit } = input?.tool_input || {};
+  if (offset !== undefined || limit !== undefined || !filePath || !isSafePath(filePath)) {
     return { exitCode: 0 };
   }
 
@@ -92,7 +93,7 @@ function run(inputOrRaw, _options = {}) {
   return {
     exitCode: 0,
     additionalContext: [
-      `[Hook] ${filePath} is ${lines} lines - over the ~200-line self-read threshold.`,
+      `[Hook] The requested file is ${lines} lines - over the ~200-line self-read threshold.`,
       '[Hook] 1) Do you need all of it? Narrow with offset/limit - free, no dispatch floor.',
       '[Hook] 2) Otherwise route to pi. Both trust gates are yours to judge, not this hook\'s.',
     ],

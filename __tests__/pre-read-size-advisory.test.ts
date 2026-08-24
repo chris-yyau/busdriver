@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, truncateSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, truncateSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -127,7 +127,7 @@ describe('pre-read-size-advisory', () => {
     expect(buildPreToolUseAdditionalContext(result.additionalContext)).toContain('additionalContext')
   })
 
-  it('stops scanning once the threshold is exceeded (bounded work)', () => {
+  it('scans at most the work-budget window (bounded work)', () => {
     const hugeTail = join(dir, 'huge-tail.txt')
     writeFileSync(hugeTail, `${'line\n'.repeat(THRESHOLD + 5)}${'a'.repeat(2 * 1024 * 1024)}`)
     let bytesRequested = 0
@@ -140,7 +140,36 @@ describe('pre-read-size-advisory', () => {
     const text = additionalContextOf(run(payload(hugeTail)))
     expect(text).toContain('exceeds the ~200-line self-read threshold')
     expect(bytesRequested).toBeGreaterThan(0)
-    expect(bytesRequested).toBeLessThan(2 * 1024 * 1024)
+    expect(bytesRequested).toBeLessThanOrEqual(1024 * 1024)
+  })
+
+  it('stays silent when a NUL appears in a later chunk of the window (binary)', () => {
+    const lateNul = join(dir, 'late-nul.bin')
+    const head = Buffer.from('line\n'.repeat(THRESHOLD + 5))
+    const pad = Buffer.alloc(70 * 1024, 0x61)
+    const nul = Buffer.from([0x00])
+    writeFileSync(lateNul, Buffer.concat([head, pad, nul]))
+
+    expect(additionalContextOf(run(payload(lateNul)))).toBe('')
+  })
+
+  it('stays silent when the path is swapped after open (descriptor identity)', () => {
+    const target = join(dir, 'swap-target.txt')
+    const swapped = join(dir, 'swap-me.txt')
+    writeFileSync(target, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    const swappedReal = fs.realpathSync(swapped)
+    const originalOpen = fs.openSync.bind(fs)
+    vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
+      const fd = (originalOpen as (...a: unknown[]) => number)(...args)
+      if (String(args[0]) === swappedReal) {
+        rmSync(swapped, { force: true })
+        symlinkSync(target, swapped)
+      }
+      return fd
+    })
+
+    expect(additionalContextOf(run(payload(swapped)))).toBe('')
   })
 
   it('stops at the work budget for newline-sparse files (bounded work)', () => {

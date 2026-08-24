@@ -53,46 +53,52 @@ function resolveContained(filePath, cwd) {
   }
 }
 
+// Scan up to <end> bytes of <fd> (the bounded window), counting newlines and
+// tracking the last byte. Returns null when a NUL (binary marker) appears
+// anywhere in the window — the window is scanned COMPLETELY so a later-chunk
+// NUL is still detected before any over-threshold classification.
+function scanWindow(fd, size, end, buffer) {
+  let lines = 0;
+  let lastByte = 0;
+  let offset = 0;
+  while (offset < end) {
+    const toRead = Math.min(READ_CHUNK, size - offset);
+    const read = fs.readSync(fd, buffer, 0, toRead, offset);
+    if (read <= 0) break;
+    if (buffer.subarray(0, read).includes(0)) return null;
+    for (let i = 0; i < read; i++) {
+      if (buffer[i] === 0x0a) lines++;
+      lastByte = buffer[i];
+    }
+    offset += read;
+  }
+  return { lines, lastByte, offset };
+}
+
 function countLines(filePath) {
   let fd;
   try {
     fd = fs.openSync(filePath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
+    // TOCTOU closure: the path may have been swapped for a symlink between the
+    // containment check and this open. The held fd must be the same file the
+    // contained path resolves to NOW, or stay silent.
+    const pathStat = fs.statSync(filePath);
+    if (pathStat.dev !== stat.dev || pathStat.ino !== stat.ino) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
 
     const buffer = Buffer.alloc(READ_CHUNK);
-    let lines = 0;
-    let lastByte = 0;
-    let offset = 0;
-    // Fixed work budget independent of newline count: a newline-sparse file
-    // must not be read in full. Budget exhausted with the count still unknown
-    // → silent (fail-open: the advisory only fires on a VERIFIED over-threshold).
-    const scanEnd = Math.min(stat.size, MAX_WORK_BYTES);
+    // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
+    // scanned (the bounded probe). Budget exhausted with the count still
+    // unknown → silent; the advisory only fires on a VERIFIED over-threshold.
+    const window = scanWindow(fd, stat.size, Math.min(stat.size, MAX_WORK_BYTES), buffer);
+    if (window === null) return null;
 
-    while (offset < scanEnd) {
-      const toRead = Math.min(READ_CHUNK, stat.size - offset);
-      const read = fs.readSync(fd, buffer, 0, toRead, offset);
-      if (read <= 0) break;
-      if (buffer.subarray(0, read).includes(0)) return null;
-
-      for (let i = 0; i < read; i++) {
-        if (buffer[i] === 0x0a) {
-          lines++;
-          if (lines > THRESHOLD) return lines;
-        }
-        lastByte = buffer[i];
-      }
-      offset += read;
-    }
-
-    if (offset < stat.size) {
-      // Budget exhausted before EOF: line count unknown → stay silent.
-      return null;
-    }
-    if (lastByte !== 0x0a) lines++;
-    return lines;
+    if (window.lines > THRESHOLD) return window.lines;
+    if (window.offset < stat.size) return null;
+    return window.lastByte !== 0x0a ? window.lines + 1 : window.lines;
   } catch {
     return null;
   } finally {

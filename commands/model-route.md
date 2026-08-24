@@ -19,9 +19,7 @@ recommendation — see `docs/adr/0046-opus-only-claude-work-routes.md`.
 - `codex`: unchanged, review/gate only.
 
 A `fable` route must name a concrete read-only dispatch form: a frontmatter-pinned agent
-(whose `tools:` is enforced by `scripts/ci/validate-model-routes.js`) or an explicit
-read-only `allowedTools` list. A bare `Agent(model="fable")` inherits full tooling and is
-never the recommendation.
+(whose `tools:` is enforced by `scripts/ci/validate-model-routes.js`) or an explicit read-only `--tools` list (which limits which tools *exist* in the session; `--allowedTools` alone only auto-approves and leaves Bash/Write/Edit available). A bare `Agent(model="fable")` inherits full tooling and is never the recommendation.
 
 The four live Fable dispatches (blueprint-review arbiter, council Mythos Witness,
 orchestrator advisor fallback, ultimate-council) are grandfathered exceptions that
@@ -32,7 +30,8 @@ predate this policy and are outside this command's domain.
 - the route (`opus`, `fable`, or `codex`)
 - why the task qualifies for it
 - for a `fable` route: confirmation of **all three** conjuncts above, plus the read-only
-  dispatch form
+  dispatch form — and it must be a confining one (`--tools`), not merely an
+  auto-approving `--allowedTools`
 
 There is no fallback model and no budget flag: under this policy there is nothing to fall
 back to, and `effort:` is the cost dial.

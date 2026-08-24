@@ -151,6 +151,16 @@ describe('fable allowlist and capability check', () => {
     expect(validateModelRoutes({ rootDir: root })).toHaveLength(1)
   })
 
+  it('rejects duplicate tools/effort keys on a fable candidate', () => {
+    for (const dup of ['tools: ["Read"]\ntools: ["Bash"]', 'effort: high\neffort: max']) {
+      fs.rmSync(root, { recursive: true, force: true })
+      fs.mkdirSync(root, { recursive: true })
+      const rel = agent('agents/oracle.md', `name: oracle\nmodel: fable\ntools: ["Read"]\neffort: high\n${dup}`)
+      const errors = validateModelRoutes({ rootDir: root, fableAllowed: [rel] })
+      expect(errors.join('\n')).toContain('duplicate')
+    }
+  })
+
   it('parseTools rejects tokens with residual quotes or brackets', () => {
     expect(parseTools('[Read, Grep]')).toEqual(['Read', 'Grep'])
     expect(parseTools('["Read"]')).toEqual(['Read'])

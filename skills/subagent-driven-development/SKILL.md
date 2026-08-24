@@ -106,8 +106,10 @@ reaching for a weaker model.
 `fable` is permitted only for a plan/spec/advisory subagent that mutates no
 product code and needs no write tools — and only via an explicitly read-only
 dispatch (a pinned agent file whose `tools:` is enforced by
-`scripts/ci/validate-model-routes.js`, or an explicit read-only `allowedTools`
-list). A bare `Agent(model="fable")` inherits full tooling and is never it.
+`scripts/ci/validate-model-routes.js`, or an explicit read-only `--tools` list —
+`--allowedTools` only auto-approves and leaves Bash/Write/Edit available, so it
+confines nothing). A bare `Agent(model="fable")` inherits full tooling and is
+never it.
 Codex routing is unchanged.
 
 **Always specify the model explicitly when dispatching a subagent.** An

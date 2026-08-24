@@ -2,11 +2,14 @@
 /**
  * Read size advisory (PreToolUse - Read)
  *
- * Fail-open advisory: when a wholesale Read targets a file over ~200 lines,
- * surface that it exceeds the self-read threshold and narrowing-first
- * guidance. Silent when limit/offset is set, under threshold, outside the
- * workspace root, or on any error. Never blocks, never reads file content
- * into context.
+ * Fail-open advisory: when a wholesale Read targets a file verifiably over
+ * ~200 lines within the bounded probe, surface that it exceeds the self-read
+ * threshold and narrowing-first guidance. The probe is bounded (file cap
+ * 50 MiB; at most the first 1 MiB scanned) and the threshold must be VERIFIED
+ * within the scanned window — files that are larger than the cap, or whose
+ * first window does not itself prove the threshold, stay silent. Silent when
+ * limit/offset is set, under threshold, outside the workspace root, or on any
+ * error. Never blocks, never reads file content into context.
  *
  * Intentional residual (issue #626, Council Option A): this decision-time
  * advisory intentionally performs a BOUNDED probe (open + scan, <= 1 MiB,
@@ -14,12 +17,21 @@
  * disclosing only a coarse existence/regularity/over-threshold predicate about
  * the model-named path. Do NOT deploy where pre-permission probing is
  * unacceptable; hook privilege MUST remain <= model privilege.
+ *
+ * Containment is descriptor-anchored: after opening, the kernel's own answer
+ * for what path the opened fd names (via the system lsof, F_GETPATH-derived)
+ * must resolve inside the payload cwd. The fd is immutable after open, so no
+ * pathname state — final component, intermediate component, or ABA restore —
+ * can be raced against it. Pure-Node fd-to-path primitives do not exist on
+ * macOS (realpath/readlink of /dev/fd/N both fail), hence the trusted system
+ * binary; on any lsof failure the hook stays silent (fail-open).
  */
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { buildPreToolUseAdditionalContext } = require('./pretooluse-visible-output');
 const { assertWithinTrustedRoot } = require('../lib/path-safety.js');
 
@@ -61,7 +73,13 @@ function scanWindow(fd, end, buffer) {
   let lines = 0;
   let lastByte = 0;
   let offset = 0;
-  while (offset < end) {
+  // At most one chunk per window position bounds the syscall count even under
+  // pathological short reads (readSync returning 1 byte would otherwise loop
+  // up to ~1M times). An iteration-capped scan has not seen the whole window,
+  // so it cannot classify: the caller treats a short offset as unverified.
+  const maxChunks = Math.ceil(end / READ_CHUNK);
+  let chunks = 0;
+  while (offset < end && chunks < maxChunks) {
     const toRead = Math.min(READ_CHUNK, end - offset);
     const read = fs.readSync(fd, buffer, 0, toRead, offset);
     if (read <= 0) break;
@@ -71,24 +89,50 @@ function scanWindow(fd, end, buffer) {
       lastByte = buffer[i];
     }
     offset += read;
+    chunks++;
+  }
+  if (offset < end && chunks >= maxChunks) {
+    return null;
   }
   return { lines, lastByte, offset };
 }
 
-function countLines(openPath, snapshot) {
+// Kernel-derived path of an open descriptor (lsof -Fn emits n<path>). The fd
+// number is the hook's own; lsof is a trusted macOS system binary at an
+// absolute path. Any failure → null (fail-open: stay silent).
+function fdRealPath(fd) {
+  try {
+    const out = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (out.status !== 0) return null;
+    let fdPath = null;
+    for (const line of (out.stdout || '').split('\n')) {
+      if (line.startsWith('n')) fdPath = line.slice(1);
+    }
+    return fdPath;
+  } catch {
+    return null;
+  }
+}
+
+function countLines(openPath, cwd) {
   let fd;
   try {
     // O_NOFOLLOW defends the final component against symlink swaps. The
-    // load-bearing check is the descriptor identity below: the opened fd must
-    // BE the file snapshotted before containment, so an intermediate-component
-    // swap, a final-component swap, or an ABA restore all end silent. No
-    // pathname is re-resolved after open — there is no check to race.
+    // load-bearing check is the descriptor-anchored containment below: the
+    // kernel's path for the OPENED fd must resolve inside the workspace root.
+    // The fd is immutable after open — no swap (final component, intermediate
+    // component, or ABA restore) can change what the fd IS, and no pathname is
+    // re-resolved to decide containment.
     fd = fs.openSync(openPath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
-    if (stat.dev !== snapshot.dev || stat.ino !== snapshot.ino) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
+    const fdPath = fdRealPath(fd);
+    if (fdPath === null || resolveContained(fdPath, cwd) === null) return null;
 
     const buffer = Buffer.alloc(READ_CHUNK);
     // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
@@ -132,23 +176,12 @@ function run(inputOrRaw, _options = {}) {
   }
 
   const cwd = input?.cwd || process.cwd();
-  // Snapshot the identity the model's path names BEFORE containment: the
-  // opened descriptor must later BE this file. Captured once, the snapshot
-  // cannot be ABA-restored — no swap can make an outside descriptor match it.
-  let snapshot;
-  try {
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- the resolve only canonicalizes a model-supplied path against the payload cwd for a metadata-only stat; the snapshot is never emitted, resolveContained() still enforces the realpath containment boundary before any open, and the opened descriptor must equal this snapshot.
-    const s = fs.statSync(path.resolve(cwd, filePath));
-    snapshot = { dev: s.dev, ino: s.ino };
-  } catch {
-    return { exitCode: 0 };
-  }
   const resolved = resolveContained(filePath, cwd);
   if (resolved === null) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved, snapshot);
+  const lines = countLines(resolved, cwd);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }

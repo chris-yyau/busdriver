@@ -224,6 +224,21 @@ describe('pre-read-size-advisory', () => {
     expect(bytesRequested).toBeLessThanOrEqual(1024 * 1024)
   })
 
+  it('bounds syscalls under pathological short reads (bounded work)', () => {
+    const shortReads = join(dir, 'short-reads.bin')
+    writeFileSync(shortReads, 'a'.repeat(1024 * 1024))
+    let calls = 0
+    const originalRead = fs.readSync.bind(fs)
+    vi.spyOn(fs, 'readSync').mockImplementation((...args: unknown[]) => {
+      calls++
+      const len = Math.min(4, args[2] as number)
+      return (originalRead as (...a: unknown[]) => number)(args[0] as number, args[1] as Buffer, 0, len, args[3] as number)
+    })
+
+    expect(additionalContextOf(run(payload(shortReads)))).toBe('')
+    expect(calls).toBeLessThanOrEqual(Math.ceil((1024 * 1024) / (64 * 1024)) + 2)
+  })
+
   it('stays silent for files over the scan cap without reading them', () => {
     const oversized = join(dir, 'oversized.bin')
     writeFileSync(oversized, '')

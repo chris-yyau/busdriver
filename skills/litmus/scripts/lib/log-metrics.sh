@@ -25,9 +25,8 @@ log_review_metrics() {
 
   mkdir -p "$(dirname "$METRICS_FILE")"
 
-  # Extract severity breakdown — litmus schema uses lowercase: high/medium/low (no critical)
-  local sev_critical sev_high sev_medium sev_low
-  sev_critical=0
+  # Extract severity breakdown — litmus schema uses lowercase: high/medium/low
+  local sev_high sev_medium sev_low
   sev_high=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "high")] | length' 2>/dev/null || echo 0)
   sev_medium=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "medium")] | length' 2>/dev/null || echo 0)
   sev_low=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "low")] | length' 2>/dev/null || echo 0)
@@ -60,13 +59,12 @@ log_review_metrics() {
     --argjson iteration "$iteration" \
     --arg mode "$mode" \
     --arg cli "$cli" \
-    --argjson sev_c "$sev_critical" \
     --argjson sev_h "$sev_high" \
     --argjson sev_m "$sev_medium" \
     --argjson sev_l "$sev_low" \
     --arg commit "$commit_sha" \
     --arg branch "$branch_name" \
     --argjson diff_lines "${diff_lines:-0}" \
-    -c '{ts:$ts,status:$status,issues:$issues,iteration:$iteration,mode:$mode,cli:$cli,severity:{critical:$sev_c,high:$sev_h,medium:$sev_m,low:$sev_l},commit:$commit,branch:$branch,diff_lines:$diff_lines}' \
+    -c '{ts:$ts,status:$status,issues:$issues,iteration:$iteration,mode:$mode,cli:$cli,severity:{high:$sev_h,medium:$sev_m,low:$sev_l},commit:$commit,branch:$branch,diff_lines:$diff_lines}' \
     >> "$METRICS_FILE" 2>/dev/null || true
 }

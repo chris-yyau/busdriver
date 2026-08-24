@@ -7,6 +7,7 @@ attacker-controlled symlinks out of the repository.
 """
 
 import datetime
+import errno
 import json
 import os
 import stat
@@ -62,8 +63,10 @@ def _is_regular(dfd, name):
 def _unlink_if_exists(dfd, name):
     try:
         st = os.lstat(name, dir_fd=dfd)
-    except OSError:
-        return True
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return True
+        return False
     if not stat.S_ISREG(st.st_mode):
         return False
     try:
@@ -86,6 +89,8 @@ def _write_claim_body(dfd, state_dir, claim_head, marker_content, staged_tree):
     body = "\n".join([claim_head, marker_content, staged_tree]) + "\n"
     data = body.encode("utf-8")
     existing = _read_claim(dfd)
+    if existing is False:
+        return False
     if existing is not None:
         if existing != (claim_head, marker_content, staged_tree):
             _unlink_marker(dfd)
@@ -246,19 +251,25 @@ def _head_matches_claim(repo, claim_head, staged_tree):
 
 
 def _read_claim(dfd):
-    if not _is_regular(dfd, PENDING):
-        return None
+    try:
+        st = os.lstat(PENDING, dir_fd=dfd)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
     try:
         fd = os.open(PENDING, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
     except OSError:
-        return None
+        return False
     try:
         raw = os.read(fd, 65536)
     finally:
         os.close(fd)
     lines = raw.decode("utf-8", errors="replace").splitlines()
     if len(lines) < 3:
-        return None
+        return False
     return lines[0], lines[1], lines[2]
 
 
@@ -313,6 +324,8 @@ def consume_if_pending(repo, state_dir, gate_name):
             return False
         try:
             claim = _read_claim(dfd)
+            if claim is False:
+                return False
             if claim is None:
                 return True
             claim_head, claim_marker, staged_tree = claim

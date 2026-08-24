@@ -2046,14 +2046,25 @@ def _fallback_interpreter_name(tok, raw=None):
     """
     name = _interpreter_name(tok)
     word = _norm_cmd_word(tok)
-    if (name is not None and _quoted_literal(raw)
-            and word not in _INTERPRETERS
-            and re.search(r'[*?]', word)
-            and not re.search(r'[\[$`{(\\]', tok)
-            and not any(fnmatch.fnmatchcase(i.lower(), word.lower())
-                        for i in _INTERPRETERS)):
-        return None
-    return name
+    if name is None:
+        return name
+    if not _quoted_literal(raw):
+        # Unquoted `./*.py` really globs and reaches a shell when expansion catches one.
+        return name
+    if word in _INTERPRETERS:
+        # A literal interpreter name is not a glob.
+        return name
+    if not re.search(r'[*?]', word):
+        # Only `*` and `?` are where fnmatch and bash agree.
+        return name
+    if re.search(r'[\[$`{(\\]', tok):
+        # fnmatch has no POSIX bracket classes; `$`, backtick, brace, paren, and
+        # backslash all resolve before globbing.
+        return name
+    if any(fnmatch.fnmatchcase(i.lower(), word.lower()) for i in _INTERPRETERS):
+        # A resolving glob still names a shell; `bash -O nocaseglob` expands `/bin/B?SH`.
+        return name
+    return None
 
 
 def _shell_payloads(cmd):

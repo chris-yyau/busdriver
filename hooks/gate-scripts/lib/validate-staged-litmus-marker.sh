@@ -108,24 +108,13 @@ gate_validate_staged_litmus_marker() {
 
     if [[ -f "$repo_dir/$state_dir/skip-litmus.local" ]] \
        && ! gate_skip_file_repo_controlled "$repo_dir" "$state_dir/skip-litmus.local"; then
-        local file_age=999 _mtime claim_head
-        _mtime=$(stat -f %m "$repo_dir/$state_dir/skip-litmus.local" 2>/dev/null) \
-            || _mtime=$(stat -c %Y "$repo_dir/$state_dir/skip-litmus.local" 2>/dev/null) \
-            || _mtime=""
-        if [[ -n "$_mtime" ]]; then
-            file_age=$(( $(date +%s) - _mtime ))
-        fi
-        if [[ "$file_age" -lt 30 ]]; then
-            local wait_secs=$(( 30 - file_age ))
-            GATE_VALIDATE_REASON="BLOCKED: skip-litmus.local is only ${file_age}s old (must be ≥30s to prevent self-bypass).
-
-If the USER just created this file: wait ${wait_secs} more seconds, then retry.
-If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus instead."
-            return 1
-        fi
+        local claim_head
         claim_head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo unknown)
         if ! gate_merge_pending_invoke "$repo_dir" "$state_dir" skip "pre-merge-commit" "$claim_head" "SKIPPED-OPERATOR"; then
-            GATE_VALIDATE_REASON="Could not persist the one-use merge claim."
+            GATE_VALIDATE_REASON="BLOCKED: skip-litmus.local is too new, has invalid provenance, or could not be consumed (must be ≥30s old to prevent self-bypass).
+
+If the USER just created this file: wait at least 30 seconds, then retry.
+If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus instead."
             return 1
         fi
         return 0
@@ -152,6 +141,26 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         if gate_skip_file_repo_controlled "$repo_dir" "$state_dir/litmus-passed.local"; then
             gate_marker_unlink "$repo_dir" "$state_dir"
             GATE_VALIDATE_REASON="SKIPPED-NONE marker cannot be repository-controlled (committed or index-staged). Run /litmus."
+            return 1
+        fi
+        local skipped_epoch skipped_age now_epoch
+        skipped_epoch=${marker_content#SKIPPED-NONE-}
+        if [[ ! "$skipped_epoch" =~ ^[0-9]{1,10}$ ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="SKIPPED-NONE marker has an invalid epoch. Run /litmus."
+            return 1
+        fi
+        now_epoch=$(date +%s)
+        skipped_epoch=$((10#$skipped_epoch))
+        if [[ "$skipped_epoch" -gt "$now_epoch" ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="SKIPPED-NONE marker has a future epoch. Run /litmus."
+            return 1
+        fi
+        skipped_age=$(( now_epoch - skipped_epoch ))
+        if [[ "$skipped_age" -gt 3600 ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="SKIPPED-NONE marker is stale (over 1h old). Run /litmus."
             return 1
         fi
         if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content"; then

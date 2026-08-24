@@ -302,6 +302,25 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
     return 1                                                                # unborn repo → honor
 }
 
+# Returns 0 when skip-litmus.local is too young or has suspicious provenance.
+# Returns 1 when age checks pass. FAIL-CLOSED on errors. Uses skip_age.py for a
+# single fstat snapshot via dir-fd + O_NOFOLLOW (closes TOCTOU between checks).
+gate_skip_litmus_too_young() {   # <repo_root> <repo_relative_path>
+    local root="$1" rel="$2" lib rc
+    [[ -z "$root" ]] && return 0
+    case "$rel" in */skip-litmus.local|skip-litmus.local) ;; *) return 0 ;; esac
+    lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/skip_age.py"
+    if [[ ! -f "$lib" ]]; then
+        return 0
+    fi
+    rc=0
+    (cd "$root" && python3 -I -S "$lib" "$(dirname "$rel")" 2>/dev/null) || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+        return 1
+    fi
+    return 0
+}
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Task 2 — worktree-safe design-review marker (immutable per-arming tokens).
 # Replaces the single CWD-relative `design-review-needed.local.md` with a

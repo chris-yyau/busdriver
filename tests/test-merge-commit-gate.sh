@@ -89,11 +89,18 @@ TMP_CLAIM=$(mktemp -d)
 TMP_ABORT=$(mktemp -d)
 TMP_SPOOF=$(mktemp -d)
 TMP_BASHENV=$(mktemp -d)
+TMP_SKIP_AGE=$(mktemp -d)
+TMP_SKNONE_STALE=$(mktemp -d)
+TMP_SKNONE_CONTENT=$(mktemp -d)
+TMP_SKNONE_OVERFLOW=$(mktemp -d)
+TMP_SKNONE_FUTURE=$(mktemp -d)
+TMP_SKNONE_LONG=$(mktemp -d)
+TMP_SKNONE_BOUND=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -324,6 +331,125 @@ if [[ "$BASHENV_RC" -ne 0 && "$BASHENV_HEAD" == "mainline" ]]; then
     assert "hostile BASH_ENV blocked" "block" "block"
 else
     assert "hostile BASH_ENV blocked" "block" "allow(rc=$BASHENV_RC head=$BASHENV_HEAD err=$BASHENV_ERR)"
+fi
+
+echo "── fresh skip-litmus.local blocked (< 30s) ─"
+setup_repo "$TMP_SKIP_AGE"
+install_hook "$TMP_SKIP_AGE" "$HOOKS"
+mkdir -p "$TMP_SKIP_AGE/.claude"
+printf 'skip\n' >"$TMP_SKIP_AGE/.claude/skip-litmus.local"
+set +e
+git -C "$TMP_SKIP_AGE" merge topic --no-edit 2>"$LOGDIR/skip-age.err"
+SKIP_AGE_RC=$?
+set -e
+SKIP_AGE_HEAD=$(git -C "$TMP_SKIP_AGE" log -1 --format=%s 2>/dev/null || true)
+if [[ "$SKIP_AGE_RC" -ne 0 && "$SKIP_AGE_HEAD" == "mainline" ]]; then
+    assert "fresh skip file blocked" "block" "block"
+else
+    assert "fresh skip file blocked" "block" "allow(rc=$SKIP_AGE_RC head=$SKIP_AGE_HEAD)"
+fi
+
+echo "── stale SKIPPED-NONE marker blocked ─"
+setup_repo "$TMP_SKNONE_STALE"
+install_hook "$TMP_SKNONE_STALE" "$HOOKS"
+mkdir -p "$TMP_SKNONE_STALE/.claude"
+git -C "$TMP_SKNONE_STALE" merge --no-commit topic >/dev/null 2>&1
+printf 'SKIPPED-NONE-1\n' >"$TMP_SKNONE_STALE/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_STALE" commit -q -m "finish merge" 2>"$LOGDIR/sknone-stale.err"
+SKNONE_STALE_RC=$?
+set -e
+SKNONE_STALE_MARKER=absent
+[[ -f "$TMP_SKNONE_STALE/.claude/litmus-passed.local" ]] && SKNONE_STALE_MARKER=present
+if [[ "$SKNONE_STALE_RC" -ne 0 && "$SKNONE_STALE_MARKER" == "absent" ]]; then
+    assert "stale SKIPPED-NONE blocked" "block" "block"
+else
+    assert "stale SKIPPED-NONE blocked" "block" "allow(rc=$SKNONE_STALE_RC marker=$SKNONE_STALE_MARKER)"
+fi
+
+echo "── fresh SKIPPED-NONE allows merge with staged content (NONE opt-out) ─"
+setup_repo "$TMP_SKNONE_CONTENT"
+install_hook "$TMP_SKNONE_CONTENT" "$HOOKS"
+mkdir -p "$TMP_SKNONE_CONTENT/.claude"
+git -C "$TMP_SKNONE_CONTENT" merge --no-commit topic >/dev/null 2>&1
+SKNONE_EPOCH=$(date +%s)
+printf 'SKIPPED-NONE-%s\n' "$SKNONE_EPOCH" >"$TMP_SKNONE_CONTENT/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_CONTENT" commit -q -m "finish merge" 2>"$LOGDIR/sknone-content.err"
+SKNONE_CONTENT_RC=$?
+set -e
+if [[ "$SKNONE_CONTENT_RC" -eq 0 ]]; then
+    assert "fresh SKIPPED-NONE allows merge with content" "allow" "allow"
+else
+    assert "fresh SKIPPED-NONE allows merge with content" "allow" "block(rc=$SKNONE_CONTENT_RC)"
+fi
+
+echo "── overflow SKIPPED-NONE epoch blocked ─"
+setup_repo "$TMP_SKNONE_OVERFLOW"
+install_hook "$TMP_SKNONE_OVERFLOW" "$HOOKS"
+mkdir -p "$TMP_SKNONE_OVERFLOW/.claude"
+git -C "$TMP_SKNONE_OVERFLOW" merge --no-commit topic >/dev/null 2>&1
+printf 'SKIPPED-NONE-9999999999\n' >"$TMP_SKNONE_OVERFLOW/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_OVERFLOW" commit -q -m "finish merge" 2>"$LOGDIR/sknone-overflow.err"
+SKNONE_OVERFLOW_RC=$?
+set -e
+SKNONE_OVERFLOW_MARKER=absent
+[[ -f "$TMP_SKNONE_OVERFLOW/.claude/litmus-passed.local" ]] && SKNONE_OVERFLOW_MARKER=present
+if [[ "$SKNONE_OVERFLOW_RC" -ne 0 && "$SKNONE_OVERFLOW_MARKER" == "absent" ]]; then
+    assert "overflow SKIPPED-NONE epoch blocked" "block" "block"
+else
+    assert "overflow SKIPPED-NONE epoch blocked" "block" "allow(rc=$SKNONE_OVERFLOW_RC marker=$SKNONE_OVERFLOW_MARKER)"
+fi
+
+echo "── future SKIPPED-NONE epoch blocked ─"
+setup_repo "$TMP_SKNONE_FUTURE"
+install_hook "$TMP_SKNONE_FUTURE" "$HOOKS"
+mkdir -p "$TMP_SKNONE_FUTURE/.claude"
+git -C "$TMP_SKNONE_FUTURE" merge --no-commit topic >/dev/null 2>&1
+SKNONE_FUTURE_EPOCH=$(( $(date +%s) + 3600 ))
+printf 'SKIPPED-NONE-%s\n' "$SKNONE_FUTURE_EPOCH" >"$TMP_SKNONE_FUTURE/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_FUTURE" commit -q -m "finish merge" 2>"$LOGDIR/sknone-future.err"
+SKNONE_FUTURE_RC=$?
+set -e
+if [[ "$SKNONE_FUTURE_RC" -ne 0 ]]; then
+    assert "future SKIPPED-NONE epoch blocked" "block" "block"
+else
+    assert "future SKIPPED-NONE epoch blocked" "block" "allow(rc=$SKNONE_FUTURE_RC)"
+fi
+
+echo "── overlong SKIPPED-NONE epoch blocked ─"
+setup_repo "$TMP_SKNONE_LONG"
+install_hook "$TMP_SKNONE_LONG" "$HOOKS"
+mkdir -p "$TMP_SKNONE_LONG/.claude"
+git -C "$TMP_SKNONE_LONG" merge --no-commit topic >/dev/null 2>&1
+printf 'SKIPPED-NONE-12345678901\n' >"$TMP_SKNONE_LONG/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_LONG" commit -q -m "finish merge" 2>"$LOGDIR/sknone-long.err"
+SKNONE_LONG_RC=$?
+set -e
+if [[ "$SKNONE_LONG_RC" -ne 0 ]]; then
+    assert "overlong SKIPPED-NONE epoch blocked" "block" "block"
+else
+    assert "overlong SKIPPED-NONE epoch blocked" "block" "allow(rc=$SKNONE_LONG_RC)"
+fi
+
+echo "── SKIPPED-NONE at 3600s freshness boundary blocked ─"
+setup_repo "$TMP_SKNONE_BOUND"
+install_hook "$TMP_SKNONE_BOUND" "$HOOKS"
+mkdir -p "$TMP_SKNONE_BOUND/.claude"
+git -C "$TMP_SKNONE_BOUND" merge --no-commit topic >/dev/null 2>&1
+SKNONE_BOUND_EPOCH=$(( $(date +%s) - 3601 ))
+printf 'SKIPPED-NONE-%s\n' "$SKNONE_BOUND_EPOCH" >"$TMP_SKNONE_BOUND/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SKNONE_BOUND" commit -q -m "finish merge" 2>"$LOGDIR/sknone-bound.err"
+SKNONE_BOUND_RC=$?
+set -e
+if [[ "$SKNONE_BOUND_RC" -ne 0 ]]; then
+    assert "SKIPPED-NONE older than 3600s blocked" "block" "block"
+else
+    assert "SKIPPED-NONE older than 3600s blocked" "block" "allow(rc=$SKNONE_BOUND_RC)"
 fi
 
 echo ""

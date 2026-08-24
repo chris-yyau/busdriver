@@ -95,6 +95,23 @@ rm -f "$TMP4/.git/objects/${SUBTREE:0:2}/${SUBTREE:2}"    # delete the .claude s
 gate_skip_file_repo_controlled "$TMP4" "$REL"; assert $? "corrupt nested .claude subtree fails closed (root tree intact)"
 rm -rf "$TMP4"
 
+# Skip age: fresh file is too young; after 31s it is honored.
+TMP5="$(mktemp -d)"
+G5="git -C $TMP5 -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c init.defaultBranch=main"
+$G5 init -q .
+mkdir -p "$TMP5/.claude"
+printf 'skip\n' > "$TMP5/.claude/skip-litmus.local"
+gate_skip_litmus_too_young "$TMP5" "$REL"; assert $? "fresh skip file is too young"
+sleep 31
+! gate_skip_litmus_too_young "$TMP5" "$REL"; assert $? "aged single-link skip file is not too young"
+printf 'old\n' > "$TMP5/old-skip.txt"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '2 minutes ago' '+%Y%m%d%H%M.%S')" \
+    "$TMP5/old-skip.txt" 2>/dev/null || true
+rm -f "$TMP5/.claude/skip-litmus.local"
+ln "$TMP5/old-skip.txt" "$TMP5/.claude/skip-litmus.local"
+gate_skip_litmus_too_young "$TMP5" "$REL"; assert $? "hardlinked aged skip file is too young"
+rm -rf "$TMP5"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

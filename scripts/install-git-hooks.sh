@@ -13,7 +13,8 @@
 #
 # Resolves hooks via `git rev-parse --git-path hooks` (worktree-safe) and honors
 # core.hooksPath. Refuses to overwrite a non-Busdriver hook without --force.
-# Claude hooks orchestrate; Git enforces (#622).
+# Native hooks are not invoked when Git suppresses hooks (--no-verify, alternate
+# core.hooksPath). Agent-layer PreToolUse gates block those paths where applicable.
 
 set -euo pipefail
 unset BASH_ENV ENV

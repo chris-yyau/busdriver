@@ -213,7 +213,11 @@ PROMPT
     return
   fi
 
-  timeout_seconds="${ECC_OBSERVER_TIMEOUT_SECONDS:-120}"
+  # 600s (was 120): the observer runs on opus per ADR 0046, and max_turns floors at 20
+  # below — 20 turns x ~17s measured per turn is already past a 300s budget before any
+  # Read/Write work. Still a runaway bound, not a completion guarantee: a worst-case
+  # 100-turn batch can still be truncated (see ADR 0046's named residual).
+  timeout_seconds="${ECC_OBSERVER_TIMEOUT_SECONDS:-600}"
   # Auto-scale max_turns proportional to analysis batch size when not explicitly set.
   # The old hardcoded default of 20 is insufficient for the 500-line MAX_ANALYSIS_LINES
   # default: Claude hits --max-turns before it can write all discovered instinct files.
@@ -248,11 +252,13 @@ PROMPT
   # Pass prompt via -p flag instead of stdin redirect for Windows compatibility (#842).
   # prompt_content is already loaded in-memory so this no longer depends on the
   # mktemp absolute path continuing to resolve after cwd changes (#1296).
-  # Model is configurable via ECC_OBSERVER_MODEL (defaults to haiku for cost efficiency);
-  # e.g. ECC_OBSERVER_MODEL=opus for higher-quality instinct extraction. Heavier models are
-  # slower — consider raising ECC_OBSERVER_TIMEOUT_SECONDS (default 120s) so the watchdog
-  # doesn't kill the analysis mid-run.
-  ECC_SKIP_OBSERVE=1 ECC_HOOK_PROFILE=minimal claude --model "${ECC_OBSERVER_MODEL:-haiku}" --max-turns "$max_turns" --print \
+  # Model defaults to opus per ADR 0046 (Opus-only Claude work routes). ECC_OBSERVER_MODEL
+  # remains an operator override, outside that policy's enforcement; raise
+  # ECC_OBSERVER_TIMEOUT_SECONDS (default 600s) with it if you pick a slower model.
+  # CLAUDE_HOMUNCULUS_INTERNAL=1 marks this as an internal observer session so
+  # load-orchestrator.sh's SessionStart hook exits early instead of loading the full
+  # orchestrator context into it (that guard read the variable but nothing ever set it).
+  ECC_SKIP_OBSERVE=1 ECC_HOOK_PROFILE=minimal CLAUDE_HOMUNCULUS_INTERNAL=1 claude --model "${ECC_OBSERVER_MODEL:-opus}" --max-turns "$max_turns" --print \
     --allowedTools "Read,Write" \
     -p "$prompt_content" >> "$LOG_FILE" 2>&1 &
   claude_pid=$!

@@ -1,7 +1,7 @@
 ---
 name: silent-failure-hunter
 description: Review code for silent failures, swallowed errors, bad fallbacks, and missing error propagation. Use PROACTIVELY when reviewing error-handling paths — empty catch blocks, swallowed exceptions, silent fallbacks, ignored return codes, or errors that never reach the caller.
-model: sonnet
+model: opus
 effort: high
 tools: [Read, Grep, Glob, Bash]
 ---

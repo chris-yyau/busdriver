@@ -2,7 +2,7 @@
 name: harness-optimizer
 description: Analyze and improve the local agent harness configuration for reliability, cost, and throughput. Use when agent configs, hooks, model routing, or subagent definitions need tuning — flaky or looping agents, high token spend, or slow multi-agent runs.
 tools: ["Read", "Grep", "Glob", "Bash", "Edit"]
-model: sonnet
+model: opus
 effort: medium
 color: teal
 ---

@@ -77,13 +77,13 @@ claude -p "Create a conventional commit for all staged changes. Use 'feat: add O
 
 **With model routing:**
 ```bash
-# Research with Opus (deep reasoning)
+# Research
 claude -p --model opus "Analyze the codebase architecture and write a plan for adding caching..."
 
-# Implement with Sonnet (fast, capable)
-claude -p "Implement the caching layer according to the plan in docs/caching-plan.md..."
+# Implement
+claude -p --model opus "Implement the caching layer according to the plan in docs/caching-plan.md..."
 
-# Review with Opus (thorough)
+# Review
 claude -p --model opus "Review all changes for security issues, race conditions, and edge cases..."
 ```
 
@@ -98,10 +98,10 @@ rm .claude-context.md
 **With `--allowedTools` restrictions:**
 ```bash
 # Read-only analysis pass
-claude -p --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
+claude -p --model opus --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
 
 # Write-only implementation pass
-claude -p --allowedTools "Read,Write,Edit,Bash" "Implement the fixes from security-audit.md..."
+claude -p --model opus --allowedTools "Read,Write,Edit,Bash" "Implement the fixes from security-audit.md..."
 ```
 
 ---
@@ -457,11 +457,11 @@ Each stage runs in its own agent process with its own context window:
 
 | Stage | Model | Purpose |
 |-------|-------|---------|
-| Research | Sonnet | Read codebase + RFC, produce context doc |
+| Research | Opus | Read codebase + RFC, produce context doc |
 | Plan | Opus | Design implementation steps |
 | Implement | Codex | Write code following the plan |
-| Test | Sonnet | Run build + test suite |
-| PRD Review | Sonnet | Spec compliance check |
+| Test | Opus | Run build + test suite |
+| PRD Review | Opus | Spec compliance check |
 | Code Review | Opus | Quality + security check |
 | Review Fix | Codex | Address review issues |
 | Final Review | Opus | Quality gate (large tier only) |
@@ -570,12 +570,9 @@ These patterns compose well:
 
 3. **Any loop + Verification** — Use ECC's `/verify` command or `verification-loop` skill as a gate before commits.
 
-4. **Ralphinho's tiered approach in simpler loops** — Even in a sequential pipeline, you can route simple tasks to Haiku and complex tasks to Opus:
+4. **Ralphinho's stage separation in simpler loops** — Even in a sequential pipeline, keep each stage in its own process with its own context window. Claude work runs on `opus` (ADR 0046); `effort:` is the cost dial, not the model:
    ```bash
-   # Simple formatting fix
-   claude -p --model haiku "Fix the import ordering in src/utils.ts"
-
-   # Complex architectural change
+   claude -p --model opus "Fix the import ordering in src/utils.ts"
    claude -p --model opus "Refactor the auth module to use the strategy pattern"
    ```
 

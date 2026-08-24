@@ -35,9 +35,9 @@ class ScenarioRun:
 
 def run_scenario(
     scenario: Scenario,
-    model: str = "sonnet",
+    model: str = "opus",
     max_turns: int = 30,
-    timeout: int = 300,
+    timeout: int = 900,  # opus per ADR 0046 — was 300s for up to 30 turns
 ) -> ScenarioRun:
     """Execute a scenario and extract tool calls from stream-json output."""
     if model not in ALLOWED_MODELS:

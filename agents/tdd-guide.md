@@ -2,7 +2,7 @@
 name: tdd-guide
 description: Test-Driven Development specialist enforcing write-tests-first methodology. Use when TDD is explicitly requested — via `/tdd`, `/go-test`, `/rust-test`, `/react-test`, or a direct ask. Not a Phase 4 default (ADR 0038). Ensures 80%+ test coverage.
 tools: ["Read", "Write", "Edit", "Bash", "Grep"]
-model: sonnet
+model: opus
 effort: medium
 ---
 

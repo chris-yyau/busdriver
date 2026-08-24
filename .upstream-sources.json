@@ -3,12 +3,13 @@
   "upstreams": {
     "superpowers": {
       "repo": "obra/superpowers",
-      "ref": "main"
+      "ref": "main",
+      "note": "skills/subagent-driven-development carries a local Model Selection divergence per ADR 0046 (Opus-only Claude work routes): upstream routes subagents to the cheapest capable tier, this repo pins opus for every Claude role. Never sync that section or the [MODEL] placeholders in implementer-prompt.md / task-reviewer-prompt.md back."
     },
     "ecc": {
       "repo": "affaan-m/everything-claude-code",
       "ref": "main",
-      "note": "agents/*.md carry local `effort:` frontmatter per ADR 0009 (per-agent reasoning-effort cost tiers). Upstream ECC has no such lines, so an effort-line diff vs upstream is permanent local policy \u2014 NEVER sync a removal. tests/test-agent-effort-tiers.sh enforces presence."
+      "note": "agents/*.md carry local `effort:` frontmatter per ADR 0009 (per-agent reasoning-effort cost tiers). Upstream ECC has no such lines, so an effort-line diff vs upstream is permanent local policy \u2014 NEVER sync a removal. tests/test-agent-effort-tiers.sh enforces presence. agents/*.md ALSO carry a local `model:` value per ADR 0046 (Opus-only Claude work routes). Unlike `effort:` this is a field upstream DOES ship, with weaker values \u2014 so the rule is a VALUE OVERRIDE: never sync a model-value change back to a non-opus tier. scripts/ci/validate-model-routes.js enforces it."
     },
     "mattpocock": {
       "repo": "mattpocock/skills",
@@ -621,7 +622,7 @@
     {
       "path": "commands/evolve.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "commands/evolve.md"
     },
     {
@@ -752,7 +753,7 @@
     {
       "path": "commands/model-route.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "commands/model-route.md"
     },
     {
@@ -1109,7 +1110,7 @@
     {
       "path": "scripts/ci/validate-agents.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/ci/validate-agents.js"
     },
     {
@@ -1404,7 +1405,7 @@
     {
       "path": "scripts/lib/agent-compress.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/lib/agent-compress.js"
     },
     {
@@ -1764,7 +1765,7 @@
     {
       "path": "scripts/lib/llm-summary.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/lib/llm-summary.js"
     },
     {
@@ -4530,7 +4531,7 @@
     {
       "path": "skills/agentic-engineering/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/agentic-engineering/SKILL.md"
     },
     {
@@ -4953,19 +4954,19 @@
     {
       "path": "skills/continuous-learning-v2/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/SKILL.md"
     },
     {
       "path": "skills/continuous-learning-v2/agents/observer-loop.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/agents/observer-loop.sh"
     },
     {
       "path": "skills/continuous-learning-v2/agents/observer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/agents/observer.md"
     },
     {
@@ -5885,7 +5886,7 @@
     {
       "path": "skills/prompt-optimizer/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/prompt-optimizer/SKILL.md"
     },
     {
@@ -6118,7 +6119,7 @@
     {
       "path": "skills/skill-comply/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/SKILL.md"
     },
     {
@@ -6172,13 +6173,13 @@
     {
       "path": "skills/skill-comply/scripts/classifier.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/classifier.py"
     },
     {
       "path": "skills/skill-comply/scripts/grader.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/grader.py"
     },
     {
@@ -6196,25 +6197,25 @@
     {
       "path": "skills/skill-comply/scripts/run.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/run.py"
     },
     {
       "path": "skills/skill-comply/scripts/runner.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/runner.py"
     },
     {
       "path": "skills/skill-comply/scripts/scenario_generator.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/scenario_generator.py"
     },
     {
       "path": "skills/skill-comply/scripts/spec_generator.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/skill-comply/scripts/spec_generator.py"
     },
     {
@@ -6292,13 +6293,13 @@
     {
       "path": "skills/subagent-driven-development/SKILL.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/subagent-driven-development/SKILL.md"
     },
     {
       "path": "skills/subagent-driven-development/implementer-prompt.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/subagent-driven-development/implementer-prompt.md"
     },
     {
@@ -7735,7 +7736,7 @@
     {
       "path": "skills/subagent-driven-development/task-reviewer-prompt.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/subagent-driven-development/task-reviewer-prompt.md"
     },
     {
@@ -7942,6 +7943,46 @@
     },
     {
       "path": "skills/orchestrator/session-brief.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "scripts/ci/validate-model-routes.js",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "__tests__/validate-model-routes.test.ts",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "docs/adr/0046-opus-only-claude-work-routes.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "scripts/ci/validate-all.js",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/pr-grind/references/completion.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "tests/test-pr-grinder-skill-read-scope.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "tests/test-agent-effort-tiers.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "agents/pr-grinder.md",
       "source": "local",
       "status": "local"
     }

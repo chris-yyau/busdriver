@@ -73,8 +73,7 @@ Subagent (general-purpose):
 
     **How to escalate:** Report back with status BLOCKED or NEEDS_CONTEXT. Describe
     specifically what you're stuck on, what you've tried, and what kind of help you need.
-    The controller can provide more context, raise the task's effort,
-    or break the task into smaller pieces.
+    The controller can provide more context or break the task into smaller pieces.
 
     ## Before Reporting Back: Self-Review
 

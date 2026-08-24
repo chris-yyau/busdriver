@@ -105,21 +105,24 @@ function scanWindow(fd, end, buffer) {
 function fdRealPath(fd) {
   try {
     if (process.platform === 'darwin') {
-      const out = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], {
+      // -F0n: NUL-delimited fields — a path containing a newline stays inside
+      // one field, so a forged "n<trusted-prefix>" fragment cannot be parsed
+      // as a second path field.
+      const out = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-F0n'], {
         encoding: 'utf8',
         timeout: 2000,
       });
       if (out.status !== 0) return null;
-      let fdPath = null;
-      for (const line of (out.stdout || '').split('\n')) {
-        if (line.startsWith('n')) fdPath = line.slice(1);
+      for (const field of (out.stdout || '').split('\0')) {
+        if (field.startsWith('n')) return field.slice(1);
       }
-      return fdPath;
+      return null;
     }
     if (process.platform === 'linux') {
-      let fdPath = fs.readlinkSync(`/proc/self/fd/${fd}`);
-      if (fdPath.endsWith(' (deleted)')) fdPath = fdPath.slice(0, -' (deleted)'.length);
-      return fdPath;
+      // No " (deleted)" stripping: that suffix is a legitimate filename, and
+      // an unlinked file keeps its real path prefix — the descendant check
+      // still applies, and scanning a dead fd reads zero bytes.
+      return fs.readlinkSync(`/proc/self/fd/${fd}`);
     }
     return null;
   } catch {
@@ -141,7 +144,7 @@ function countLines(openPath, cwdReal, rootStat) {
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
     const fdPath = fdRealPath(fd);
-        if (fdPath === null) return null;
+    if (fdPath === null) return null;
     // The root's DIRECTORY identity must be unchanged since capture: a
     // rename-and-replace of the root pathname is rejected here, and an ABA
     // restore moves the fd's file out of the root string (the kernel path
@@ -159,23 +162,26 @@ function countLines(openPath, cwdReal, rootStat) {
     // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
     // scanned (the bounded probe). Budget exhausted with the count still
     // unknown → silent; the advisory only fires on a VERIFIED over-threshold.
-    const window = scanWindow(fd, Math.min(stat.size, MAX_WORK_BYTES), buffer);
-        if (window === null) return null;
-    // Re-stat after the scan: a concurrent truncation makes the pre-read
-    // stat.size stale, and the 201-proof below must reason about the file's
-    // CURRENT size (a scan that hit the new EOF proves nothing beyond it).
+    const windowEnd = Math.min(stat.size, MAX_WORK_BYTES);
+    const window = scanWindow(fd, windowEnd, buffer);
+    if (window === null) return null;
+    // Re-stat after the scan: size changes mid-scan must not feed the
+    // classification (a concurrent truncation could otherwise "prove" lines
+    // that were never read).
     const current = fs.fstatSync(fd);
 
-        if (window.lines > THRESHOLD) return window.lines;
-    // A fully-scanned window with exactly THRESHOLD newlines still VERIFIES a
-    // THRESHOLD+1st line when the scan ended mid-line or more bytes follow the
-    // window: any byte after the last newline (or a continuing line) means a
-    // further line exists. Beyond-window bytes are outside the bounded probe's
-    // NUL scope, so this cannot misfire on window-unseen binary markers.
-        if (window.lines === THRESHOLD && (window.lastByte !== 0x0a || window.offset < current.size)) {
+    // Observed newlines are authoritative: the scan READ them.
+    if (window.lines > THRESHOLD) return window.lines;
+    // An early EOF means the window was not fully scanned (the file shrank
+    // mid-scan): the window is not NUL-complete, so nothing can be classified.
+    if (window.offset < windowEnd) return null;
+    // The window was fully scanned; bytes beyond it are outside the probe's
+    // NUL scope, so a continuing line or further bytes VERIFY a threshold+1st
+    // line.
+    if (window.lines === THRESHOLD && (window.lastByte !== 0x0a || window.offset < current.size)) {
       return THRESHOLD + 1;
     }
-        if (window.offset < current.size) return null;
+    if (window.offset < current.size) return null;
     return window.lastByte !== 0x0a ? window.lines + 1 : window.lines;
   } catch {
     return null;

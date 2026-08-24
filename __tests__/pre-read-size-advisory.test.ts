@@ -98,25 +98,47 @@ describe('pre-read-size-advisory', () => {
  
      expect(additionalContextOf(run(payload(swapped)))).toBe('')
    })
-  it('stays silent when an intermediate directory is swapped to an out-of-root symlink (TOCTOU)', () => {
-    const sub = join(dir, 'sub')
-    const nested = join(sub, 'nested.txt')
-    const outsideNested = join(otherDir, 'nested.txt')
-    mkdirSync(sub)
-    writeFileSync(nested, `${'line\n'.repeat(THRESHOLD + 10)}`)
-    writeFileSync(outsideNested, `${'line\n'.repeat(THRESHOLD + 10)}`)
-    const nestedReal = fs.realpathSync(nested)
-    const originalOpen = fs.openSync.bind(fs)
-    vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
-      if (String(args[0]) === nestedReal) {
-        rmSync(sub, { recursive: true, force: true })
-        symlinkSync(otherDir, sub)
-      }
-      return (originalOpen as (...a: unknown[]) => number)(...args)
-    })
+    it('stays silent when an intermediate directory is swapped to an out-of-root symlink (TOCTOU)', () => {
+     const sub = join(dir, 'sub')
+     const nested = join(sub, 'nested.txt')
+     const outsideNested = join(otherDir, 'nested.txt')
+     mkdirSync(sub)
+     writeFileSync(nested, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     writeFileSync(outsideNested, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     const nestedReal = fs.realpathSync(nested)
+     const originalOpen = fs.openSync.bind(fs)
+     vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
+       if (String(args[0]) === nestedReal) {
+         rmSync(sub, { recursive: true, force: true })
+         symlinkSync(otherDir, sub)
+       }
+       return (originalOpen as (...a: unknown[]) => number)(...args)
+     })
+ 
+     expect(additionalContextOf(run(payload(nested)))).toBe('')
+   })
 
-    expect(additionalContextOf(run(payload(nested)))).toBe('')
-  })
+  it('stays silent when the outside target name embeds a newline plus an n-prefixed fragment (fd framing)', () => {
+     const weirdDir = join(otherDir, `weird\nn${dir}`)
+     const weirdFile = join(weirdDir, 'x.txt')
+     mkdirSync(weirdDir, { recursive: true })
+     writeFileSync(weirdFile, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     const sub = join(dir, 'sub-frame')
+     const nested = join(sub, 'nested.txt')
+     mkdirSync(sub)
+     writeFileSync(nested, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     const nestedReal = fs.realpathSync(nested)
+     const originalOpen = fs.openSync.bind(fs)
+     vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
+       if (String(args[0]) === nestedReal) {
+         rmSync(sub, { recursive: true, force: true })
+         symlinkSync(weirdDir, sub)
+       }
+       return (originalOpen as (...a: unknown[]) => number)(...args)
+     })
+ 
+     expect(additionalContextOf(run(payload(nested)))).toBe('')
+   })
 
   it('stays silent under threshold, with offset/limit, missing path, malformed, missing, unreadable, unsafe paths, and binary files', () => {
     expect(additionalContextOf(run(payload(smallFile)))).toBe('')

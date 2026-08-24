@@ -79,11 +79,22 @@ assert "SKILL.md fallback blocking parse uses high/medium" \
 assert_not "SKILL.md fallback blocking parse has no CRITICAL/HIGH/MEDIUM prose" \
   grep -q 'CRITICAL/HIGH/MEDIUM' <<<"$fallback_block"
 
+report_has_dashboard_labels() {
+  grep -q 'HIGH:' "$REPORT" && grep -q 'MEDIUM:' "$REPORT" && grep -q 'LOW:' "$REPORT"
+}
+
 assert_not "litmus-metrics-report does not aggregate severity.critical" \
   grep -q 'severity\.critical' "$REPORT"
 
 assert "litmus-metrics-report dashboard labels include HIGH/MEDIUM/LOW" \
-  grep -q 'HIGH:' "$REPORT" && grep -q 'MEDIUM:' "$REPORT" && grep -q 'LOW:' "$REPORT"
+  report_has_dashboard_labels
+
+missing_medium_label() {
+  grep -q 'HIGH:' "$REPORT" && ! grep -q 'MEDIUM:' "$REPORT" && grep -q 'LOW:' "$REPORT"
+}
+
+assert_not "dashboard label helper fails closed when MEDIUM label absent" \
+  missing_medium_label
 
 assert_not "litmus-metrics-report dashboard has no CRITICAL label" \
   grep -q 'CRITICAL:' "$REPORT"

@@ -1,3 +1,10 @@
+# [1.111.0](https://github.com/chris-yyau/busdriver/compare/v1.110.14...v1.111.0) (2026-08-24)
+
+
+### Features
+
+* **dispatch-cli:** land pi-read rename and delete the shipped model default ([#755](https://github.com/chris-yyau/busdriver/issues/755)) ([2ca9675](https://github.com/chris-yyau/busdriver/commit/2ca967545c90ec1c775e618c2a8e0314829ba59f))
+
 ## [1.110.14](https://github.com/chris-yyau/busdriver/compare/v1.110.13...v1.110.14) (2026-08-23)
 
 

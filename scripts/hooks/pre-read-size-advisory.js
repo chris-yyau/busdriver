@@ -19,12 +19,12 @@
  * unacceptable; hook privilege MUST remain <= model privilege.
  *
  * Containment is descriptor-anchored: after opening, the kernel's own answer
- * for what path the opened fd names (via the system lsof, F_GETPATH-derived)
- * must resolve inside the payload cwd. The fd is immutable after open, so no
- * pathname state — final component, intermediate component, or ABA restore —
- * can be raced against it. Pure-Node fd-to-path primitives do not exist on
- * macOS (realpath/readlink of /dev/fd/N both fail), hence the trusted system
- * binary; on any lsof failure the hook stays silent (fail-open).
+ * for what path the opened fd names (macOS: system lsof, F_GETPATH-derived;
+ * Linux: /proc/self/fd readlink) is compared as a STRING against the canonical
+ * payload cwd — never re-resolved, so no pathname state — final component,
+ * intermediate component, or ABA restore — can be raced against the fd. The fd
+ * is immutable after open. Platforms without an fd-to-path primitive stay
+ * silent (fail-open); any failure of the fd probe also stays silent.
  */
 
 'use strict';
@@ -102,16 +102,24 @@ function scanWindow(fd, end, buffer) {
 // absolute path. Any failure → null (fail-open: stay silent).
 function fdRealPath(fd) {
   try {
-    const out = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], {
-      encoding: 'utf8',
-      timeout: 2000,
-    });
-    if (out.status !== 0) return null;
-    let fdPath = null;
-    for (const line of (out.stdout || '').split('\n')) {
-      if (line.startsWith('n')) fdPath = line.slice(1);
+    if (process.platform === 'darwin') {
+      const out = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], {
+        encoding: 'utf8',
+        timeout: 2000,
+      });
+      if (out.status !== 0) return null;
+      let fdPath = null;
+      for (const line of (out.stdout || '').split('\n')) {
+        if (line.startsWith('n')) fdPath = line.slice(1);
+      }
+      return fdPath;
     }
-    return fdPath;
+    if (process.platform === 'linux') {
+      let fdPath = fs.readlinkSync(`/proc/self/fd/${fd}`);
+      if (fdPath.endsWith(' (deleted)')) fdPath = fdPath.slice(0, -' (deleted)'.length);
+      return fdPath;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -122,17 +130,18 @@ function countLines(openPath, cwd) {
   try {
     // O_NOFOLLOW defends the final component against symlink swaps. The
     // load-bearing check is the descriptor-anchored containment below: the
-    // kernel's path for the OPENED fd must resolve inside the workspace root.
-    // The fd is immutable after open — no swap (final component, intermediate
-    // component, or ABA restore) can change what the fd IS, and no pathname is
-    // re-resolved to decide containment.
+    // kernel's canonical path for the OPENED fd must be a string descendant of
+    // the canonical payload cwd. The fd is immutable after open, and the
+    // kernel's path is not re-resolved — a pathname swap cannot re-anchor it.
     fd = fs.openSync(openPath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
     const fdPath = fdRealPath(fd);
-    if (fdPath === null || resolveContained(fdPath, cwd) === null) return null;
+    if (fdPath === null) return null;
+    const cwdReal = fs.realpathSync(cwd);
+    if (fdPath !== cwdReal && !fdPath.startsWith(cwdReal + path.sep)) return null;
 
     const buffer = Buffer.alloc(READ_CHUNK);
     // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
@@ -142,6 +151,14 @@ function countLines(openPath, cwd) {
     if (window === null) return null;
 
     if (window.lines > THRESHOLD) return window.lines;
+    // A fully-scanned window with exactly THRESHOLD newlines still VERIFIES a
+    // THRESHOLD+1st line when the scan ended mid-line or more bytes follow the
+    // window: any byte after the last newline (or a continuing line) means a
+    // further line exists. Beyond-window bytes are outside the bounded probe's
+    // NUL scope, so this cannot misfire on window-unseen binary markers.
+    if (window.lines === THRESHOLD && (window.lastByte !== 0x0a || window.offset < stat.size)) {
+      return THRESHOLD + 1;
+    }
     if (window.offset < stat.size) return null;
     return window.lastByte !== 0x0a ? window.lines + 1 : window.lines;
   } catch {

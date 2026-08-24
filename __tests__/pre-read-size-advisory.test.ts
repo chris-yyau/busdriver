@@ -145,13 +145,20 @@ describe('pre-read-size-advisory', () => {
     expect(additionalContextOf(run(malformed))).toBe('')
   })
 
-  it('counts the final line when the file has no trailing newline', () => {
-    const noTrailingNewline = join(dir, 'no-trailing.txt')
-    writeFileSync(noTrailingNewline, `${'line\n'.repeat(THRESHOLD)}final-line`)
-    const text = additionalContextOf(run(payload(noTrailingNewline)))
-    assertPathNeverAppears(text, noTrailingNewline)
-    expect(text).toContain('exceeds the ~200-line self-read threshold')
-  })
+    it('counts the final line when the file has no trailing newline', () => {
+     const noTrailingNewline = join(dir, 'no-trailing.txt')
+     writeFileSync(noTrailingNewline, `${'line\n'.repeat(THRESHOLD)}final-line`)
+     const text = additionalContextOf(run(payload(noTrailingNewline)))
+     assertPathNeverAppears(text, noTrailingNewline)
+     expect(text).toContain('exceeds the ~200-line self-read threshold')
+   })
+
+  it('advises when the window proves a threshold+1 line continuing beyond it', () => {
+     const continuing = join(dir, 'continuing.txt')
+     writeFileSync(continuing, `${'line\n'.repeat(THRESHOLD)}${'a'.repeat(1024 * 1024)}`)
+     const text = additionalContextOf(run(payload(continuing)))
+     expect(text).toContain('exceeds the ~200-line self-read threshold')
+   })
 
   it('advises when file exceeds threshold with narrowing-first ordering', () => {
     const result = run(payload(largeFile))

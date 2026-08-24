@@ -79,6 +79,9 @@ assert "SKILL.md fallback blocking parse is fail-closed on non-low severities" \
 assert "SKILL.md fallback blocking parse treats unrecognized severities as blocking" \
   grep -q 'Unrecognized or out-of-enum severities count as blocking' <<<"$fallback_block"
 
+assert "SKILL.md fallback blocking parse treats unparseable output as FAIL" \
+  grep -q 'not a JSON array of issues, treat as FAIL' <<<"$fallback_block"
+
 assert_not "SKILL.md fallback blocking parse has no CRITICAL/HIGH/MEDIUM prose" \
   grep -q 'CRITICAL/HIGH/MEDIUM' <<<"$fallback_block"
 

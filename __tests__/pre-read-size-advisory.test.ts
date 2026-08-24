@@ -238,8 +238,8 @@ describe('pre-read-size-advisory', () => {
     const originalRead = fs.readSync.bind(fs)
     vi.spyOn(fs, 'readSync').mockImplementation((...args: unknown[]) => {
       calls++
-      const len = Math.min(4, args[2] as number)
-      return (originalRead as (...a: unknown[]) => number)(args[0] as number, args[1] as Buffer, 0, len, args[3] as number)
+      const len = Math.min(4, args[3] as number)
+      return (originalRead as (...a: unknown[]) => number)(args[0] as number, args[1] as Buffer, args[2] as number, len, args[4] as number)
     })
 
     expect(additionalContextOf(run(payload(shortReads)))).toBe('')

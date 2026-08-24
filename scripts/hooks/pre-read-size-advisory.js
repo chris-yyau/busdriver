@@ -21,10 +21,12 @@
  * Containment is descriptor-anchored: after opening, the kernel's own answer
  * for what path the opened fd names (macOS: system lsof, F_GETPATH-derived;
  * Linux: /proc/self/fd readlink) is compared as a STRING against the canonical
- * payload cwd — never re-resolved, so no pathname state — final component,
- * intermediate component, or ABA restore — can be raced against the fd. The fd
- * is immutable after open. Platforms without an fd-to-path primitive stay
- * silent (fail-open); any failure of the fd probe also stays silent.
+ * payload cwd — both captured at hook start, before any open, and never
+ * re-resolved — so no pathname state — final component, intermediate
+ * component, root swap, or ABA restore — can be raced against the fd or its
+ * trust root. The fd is immutable after open. Platforms without an fd-to-path
+ * primitive stay silent (fail-open); any failure of the fd probe also stays
+ * silent.
  */
 
 'use strict';
@@ -125,7 +127,7 @@ function fdRealPath(fd) {
   }
 }
 
-function countLines(openPath, cwd) {
+function countLines(openPath, cwdReal) {
   let fd;
   try {
     // O_NOFOLLOW defends the final component against symlink swaps. The
@@ -140,8 +142,11 @@ function countLines(openPath, cwd) {
     if (stat.size > MAX_SCAN_BYTES) return null;
     const fdPath = fdRealPath(fd);
     if (fdPath === null) return null;
-    const cwdReal = fs.realpathSync(cwd);
-    if (fdPath !== cwdReal && !fdPath.startsWith(cwdReal + path.sep)) return null;
+    // String-descendant test against the root captured at hook start. The root
+    // '/' case must not become '//' (a bare-prefix comparison would reject
+    // every descendant and silently disable the advisory).
+    const isDescendant = fdPath === cwdReal || (fdPath.startsWith(cwdReal) && (cwdReal === path.sep || fdPath[cwdReal.length] === path.sep));
+    if (!isDescendant) return null;
 
     const buffer = Buffer.alloc(READ_CHUNK);
     // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
@@ -193,12 +198,21 @@ function run(inputOrRaw, _options = {}) {
   }
 
   const cwd = input?.cwd || process.cwd();
+  // Canonicalize the trust root ONCE, before any containment or open: the
+  // opened fd's kernel path is compared against THIS fixed string, so a swap
+  // of cwd's own components after this point cannot re-anchor the check.
+  let cwdReal;
+  try {
+    cwdReal = fs.realpathSync(cwd);
+  } catch {
+    return { exitCode: 0 };
+  }
   const resolved = resolveContained(filePath, cwd);
   if (resolved === null) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved, cwd);
+  const lines = countLines(resolved, cwdReal);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }

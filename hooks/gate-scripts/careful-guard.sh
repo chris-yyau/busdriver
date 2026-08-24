@@ -1256,13 +1256,13 @@ def _closer_is_syntax(seg, toks, j, tok):
     return (len(lead) - len(lead.rstrip("\\"))) % 2 == 0
 
 
-def _command_word_in(chunks, names, unreadable=True):
-    """True iff any name runs as a COMMAND WORD.
+def _iter_command_word_hits(chunks, names, unreadable=True):
+    """Yield (toks, j) for each command-word hit; j is None when unreadable.
 
     Mirrors the has_truncate walk deliberately - a simplified copy missed
     separated redirection operands, wrapper option arguments, and case bodies,
     so `<<< q psql`, `sudo -u postgres psql` and a psql inside a case arm all
-    went unseen.
+    went unseen. Boolean callers consume this via `_command_word_in`.
     """
     for chunk in chunks:
         prev_seg = None
@@ -1271,15 +1271,6 @@ def _command_word_in(chunks, names, unreadable=True):
                 toks = shlex.split(_fold_ansi_c(seg), posix=True)
             except ValueError:
                 toks = seg.split()
-            # split_segments cuts at `&`, which SPLITS the separated `>& file`
-            # and `2>& 1` redirection forms: the operand then lands at the head
-            # of the next segment and consumes the command slot, so the real
-            # command word reads as an argument. If the previous segment ended
-            # on a redirection operator, this segment opens with its operand.
-            # ANY operator, not just `&`. What carries the operand is the
-            # DANGLING redirection at the end of the previous segment, never the
-            # character that happened to split there: `>| file cmd` splits on the
-            # `|` of the clobber operator, leaving the same orphaned target.
             carry_operand = (prev_seg is not None
                              and _ends_in_redirect(prev_seg))
             prev_seg = seg
@@ -1287,47 +1278,28 @@ def _command_word_in(chunks, names, unreadable=True):
             skip_next = carry_operand
             case_state = None
             seg_cmd = None
-            # The FIRST command word of the segment, never overwritten. A
-            # dispatcher stays the dispatcher for its whole argv, but seg_cmd
-            # follows the most RECENT command word - so `-exec` reopened the
-            # slot, the command it ran took seg_cmd, and a SECOND `-exec` in
-            # the same find no longer saw a find in front of it.
             seg_head = None
             for j, tok in enumerate(toks):
                 if skip_next:
                     skip_next = False
-                    # ...but a redirection operand never swallows a
-                    # DISPATCH flag. shlex has erased the quoting, so a
-                    # quoted `>` used as DATA - `find . -name SQ>SQ` -
-                    # reads as the operator, and letting its operand eat
-                    # the `-exec` behind it hid the command find then
-                    # ran. A redirection target genuinely spelled -exec
-                    # is not a shape worth keeping quiet for.
                     if tok not in DISPATCH:
                         continue
                 word_raw = tok.lstrip("({")
                 word = _cmd_word(tok)
-                # Brace forms come from the RAW token: _cmd_word strips a
-                # leading `{`, which is the OPENER of `{psql,psql}`.
                 if cmd_pos and (_matches_tok(tok, names)
                                 or any(_matches_tok(f, names)
                                        for f in _brace_forms(tok))):
-                    return True
-                # An UNREADABLE command word hides the name: `C=psql; "$C" -c`,
-                # `$(printf psql) -c` and the backtick spelling all run a client
-                # this walk cannot resolve. Fail CLOSED on it rather than
-                # resolving the value - see the has_sql_client docstring.
-                # Normalised the same way the exact match above is: an attached
-                # subshell (`("$C" -c ...)`) otherwise reads as unreadable-free.
-                # ANYWHERE in the word, not just at its start: `${IFS}` field-
-                # splits `psql${IFS}-c${IFS}...` into the client and its
-                # arguments, and shlex hands that over as one token whose first
-                # characters spell a name that is not in the set. An assignment
-                # PREFIX is exempt - `T=$(mktemp -d) cmd` is not a command word.
-                if unreadable and cmd_pos \
+                    yield (toks, j)
+                # elif: a token that MATCHED is not unreadable. `$PWD/rm` is
+                # located at this index like `/bin/rm` is, and pairing the hit
+                # with a None kept the all-token fallback running beside it —
+                # `$PWD/rm build rm -rf` warned where `/bin/rm build rm -rf`
+                # cleared. The None yield is for a command word this walk could
+                # NOT place, which is the case this branch still covers.
+                elif unreadable and cmd_pos \
                         and not ASSIGN_PREFIX.match(word_raw) \
                         and ("$" in word_raw or "`" in word_raw):
-                    return True
+                    yield (toks, None)
                 if word == "case" and cmd_pos:
                     case_state = "subject"
                     cmd_pos = False
@@ -1340,57 +1312,24 @@ def _command_word_in(chunks, names, unreadable=True):
                         case_state = "pattern"
                     continue
                 if case_state == "pattern":
-                    # Bash does not require whitespace after the `)`, so the
-                    # body can begin inside this very token: `x)psql -c ...`.
-                    # The delimiter is the first paren OUTSIDE a
-                    # substitution - see _pattern_rest for why neither the
-                    # first nor the last one on its own is right.
                     rest = _pattern_rest(tok)
                     if rest is not None:
-                        # ACCEPTED OVER-WARN, raised three times in review
-                        # and declined three times: state is NOT carried to the
-                        # next `;;`, so a later spaced pattern (`truncate )
-                        # echo no`) reads as a command word and warns. A
-                        # `;;`-aware state machine was written to answer it and
-                        # reverted UNUSED - split_segments has already consumed
-                        # the `;;`, so the code could never fire, and a rule
-                        # that cannot fire is worse than none. Fixing it
-                        # properly means carrying state ACROSS segments, which
-                        # loses a truncate in a multi-command case BODY: a
-                        # fail-OPEN traded for an over-warn. Pinned in the
-                        # truncate-context suite.
                         case_state = None
                         cmd_pos = True
                         if rest:
-                            # Hand the body back to the NORMAL walk rather than
-                            # judging it here: it can be a prefix, an assignment,
-                            # a wrapper with its own arguments, a redirection.
-                            # Re-deciding all of that inline is where every
-                            # spelling of `x)FOO=bar psql` slipped through.
                             toks.insert(j + 1, rest)
                     continue
                 if _is_redirect(tok):
                     skip_next = (DYN_FD_NAME.sub("", tok).lstrip("0123456789")
                                  in BARE_REDIRECT)
                     continue
-                # Only AT command position: past it, `then`/`esac` are ordinary
-                # operands (`echo truncate then psql`) and reopening the slot on
-                # them is the very false-positive class this walk removes.
-                # DISPATCH is the exception - `-exec` reopens by definition, and
-                # it only ever appears inside find, whose own name has already
-                # consumed the slot - so it is scoped to that dispatcher instead.
-                # ...or the segment OPENS with the flag. split_segments cuts
-                # at `;`, which is exactly how a find action ENDS, so a second
-                # action begins a segment of its own with no `find` in front
-                # of it. The selection is then unreadable, which _find_selects
-                # answers by refusing - the same inversion, one level up.
                 if _reads_as(tok, DISPATCH) \
                         and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0):
-                    # `-exec {}` runs the file that was FOUND, so the pattern
-                    # that selected it is what names the command.
                     if _exec_placeholder(toks, j) \
                             and _find_selects(toks, names, j):
-                        return True
+                        yield (toks, None)
+                        cmd_pos = True
+                        continue
                 if (cmd_pos and (word == "esac" or word in CONTROL)) \
                         or (_reads_as(tok, DISPATCH)
                             and (_matches_tok(seg_head or chr(0), DISPATCHERS) or j == 0)) \
@@ -1400,91 +1339,50 @@ def _command_word_in(chunks, names, unreadable=True):
                     continue
                 if _whole_substitution(tok):
                     continue
-                # A token made of NOTHING but expansions vanishes when they are
-                # empty, so it never held command position at all: with no
-                # positional parameters `$@ truncate ...` simply runs truncate.
-                # Consuming the slot for it read the real command word as an
-                # operand. Preserving the slot is also the safe direction when
-                # the expansion is NOT empty - the word is unreadable either way.
                 if cmd_pos and not word and _expansion_only(tok):
                     continue
-                # A command word TORN across a substitution cannot be read at
-                # all - its halves are in different tokens - so refuse it here
-                # rather than teach EXPANSION the nested-substitution grammar.
-                # An ASSIGNMENT is exempt: `T=$(mktemp -d)` tears in exactly the
-                # same place, holds no command slot, and is the safe-artifact
-                # binding this guard goes out of its way to stay quiet about.
-                # ...and so is an OPTION: a backtick has no distinct closing
-                # character, so the TAIL of a torn one (`-d` plus a backtick)
-                # looks exactly like its head, and an option was never going to
-                # be the command word in the first place.
                 if cmd_pos and _torn_substitution(tok) \
                         and not tok.startswith("-") \
                         and not _assign_prefix(tok, word):
-                    return True
+                    yield (toks, None)
                 if tok.endswith(("{", ";;", ")")) \
                         and _closer_is_syntax(seg, toks, j, tok):
-                    cmd_pos = True       # `f(){ psql ...`, `x) psql ...`
+                    cmd_pos = True
                     continue
                 if _assign_prefix(tok, word):
                     continue
                 if cmd_pos and _matches_tok(tok, WRAPPERS):
-                    # Same reasoning as has_truncate: once a wrapper holds the
-                    # slot, its option ARGUMENTS make the real command word
-                    # unlocatable, so any later token counts.
-                    # A later token can also CARRY a command string rather than
-                    # be one: `watch "psql -c ..."` is ONE token after shlex, so
-                    # an exact-token match reads the payload as an operand. Same
-                    # recursion has_truncate uses; it terminates because a token
-                    # without whitespace never re-enters.
                     for k, t in enumerate(toks[j + 1:], j + 1):
-                        # A wrapper does not hide a DISPATCHER. `env find ...
-                        # -exec {} ...` still runs the file find selected, and
-                        # scanning the wrapper tail token by token lost the
-                        # dispatcher semantics entirely - the placeholder read
-                        # as an ordinary operand.
                         if _reads_as(t, DISPATCH) \
                                 and _exec_placeholder(toks, k) \
                                 and _find_selects(toks, names, k):
-                            return True
-                        # An ASSIGNMENT is data even here. _cmd_word takes a
-                        # BASENAME, so `env TOOL=/usr/bin/psql echo ok` reads as
-                        # the client itself unless the prefix is recognised
-                        # first - the same contract the main walk keeps.
+                            yield (toks, None)
                         if ASSIGN_PREFIX.match(t.lstrip("({")):
                             pass
                         elif _matches_tok(t, names) \
                                 or any(_matches_tok(f, names)
                                        for f in _brace_forms(t)):
-                            return True
-                        if _has_payload(t) \
-                                and _command_word_in([t], names, unreadable):
-                            return True
-                        # A wrapper OPTION can carry an executable VALUE:
-                        # `ssh -o ProxyCommand=...` runs it through a shell,
-                        # while the token reads as an assignment prefix.
-                        # A PAYLOAD is required, so an ordinary environment
-                        # assignment stays data: `env NOTE=psql echo ok` sets a
-                        # variable and runs echo, and reading its value as a
-                        # command made every mention of a name a warning.
-                        if "=" in t and _has_payload(t) and _command_word_in(
-                                [t.split("=", 1)[1]], names, unreadable):
-                            return True
-                        # ...and an EXEC-VALUED option needs no payload at all:
-                        # its value IS the command word by definition.
+                            yield (toks, k)
+                        if _has_payload(t):
+                            yield from _iter_command_word_hits([t], names, unreadable)
+                        if "=" in t and _has_payload(t):
+                            yield from _iter_command_word_hits(
+                                [t.split("=", 1)[1]], names, unreadable)
                         if any(t.startswith(o + "=") for o in EXEC_VALUE_OPTS) \
                                 and _matches_tok(t.split("=", 1)[1], names):
-                            return True
+                            yield (toks, None)
                     break
                 if cmd_pos:
                     seg_cmd = word
                     if seg_head is None:
-                        # The RAW token, so the dispatcher test reads it with
-                        # the same rejoin the destructive names get: an empty
-                        # expansion in `f${EMPTY}ind` left seg_head as `f`, and
-                        # the `-exec` behind it was never treated as a dispatch.
                         seg_head = tok
                 cmd_pos = False
+
+
+def _command_word_in(chunks, names, unreadable=True):
+    """True iff any name runs as a COMMAND WORD."""
+    for _toks, _j in _iter_command_word_hits(chunks, names, unreadable):
+        return True
     return False
 
 
@@ -1896,6 +1794,112 @@ def has_truncate(chunks):
     return False
 
 
+
+def _rm_prefix_is_inert(toks, start, end_idx):
+    """True if the rm argv read only up to end_idx would already clear.
+
+    Read by the canonical walker, not a second hand-rolled option parser: a
+    private one missed `--r` and read `-${R}f` instead of refusing it, so the
+    two readings disagreed about the same tokens.
+    """
+    prefix = [(toks[start], toks[start])] \
+        + [(_strip_expansions(t) or t, t) for t in toks[start + 1:end_idx]]
+    recursive, targets = recursive_targets(prefix)
+    return not recursive and all(is_safe(t) for t in targets)
+
+
+def _rm_suffix_is_only_flags(toks, operand_idx):
+    """True if nothing after the operand rm at operand_idx is an rm OPERAND.
+
+    A real shell hands rm the whole argv, so flags trailing an operand still
+    apply to it: truncating `rm build rm -rf /etc` at the operand `rm` hides
+    `-rf /etc` from recursive_targets (Litmus #745).
+
+    A leading dash is not enough to call a token an option: past the `--`
+    TERMINATOR every token is an operand however it is spelled, so
+    `rm build rm -rf -- -ordinary` deletes a file called `-ordinary`.
+
+    An option carrying an expansion is refused rather than read, the same
+    inversion recursive_targets applies: `rm build rm -${R}f` must not
+    truncate PAST a flag whose letters this scan cannot see.
+    """
+    rest = toks[operand_idx + 1:]
+    for n, t in enumerate(rest):
+        if any(ch in t for ch in "$" + chr(96)):
+            return False
+        tok = _strip_expansions(t) or t
+        if tok == "--":
+            return n == len(rest) - 1
+        if not (len(tok) > 1 and tok.startswith("-")):
+            return False
+    return True
+
+
+def _rm_argv_end(toks, start, cmd_indexes):
+    """Slice end before a later rm-spelling operand, not a command word.
+
+    Only when the tokens the cut DROPS cannot change the verdict — a real
+    shell hands rm the whole argv, so anything past the operand still applies
+    to what precedes it (Litmus #745). Both halves have to hold:
+
+    - the retained prefix is already inert, or `rm /etc rm -rf` reads as the
+      harmless `rm /etc` while the shell recursively deletes `/etc`;
+    - nothing but flags trails the operand, or `rm build rm -rf /etc` reads as
+      `rm build` and never sees the `/etc` it would delete.
+
+    The FIRST such operand decides and the walk stops either way. Continuing
+    to a later spelling would let `rm build rm /etc rm -rf` truncate at the
+    second one and hide the `-rf /etc` it was meant to catch.
+    """
+    end = len(toks)
+    for k in range(start + 1, len(toks)):
+        if k in cmd_indexes:
+            continue
+        # A LITERAL bare `rm`, not every token _matches_tok would call one.
+        # That test reads a BASENAME and honours globs, so it also claims
+        # `/etc/rm`, `../rm` and `/etc/r?` — real paths a shell recursively
+        # deletes, not the command name echoed into operand position that this
+        # cut exists to forgive (Litmus #745). An expansion is refused for the
+        # same reason it is at option position: `${P}rm` strips to `rm` and
+        # expands to `/etc/rm`, and the two are indistinguishable from here.
+        # Everything else stays a target and is read.
+        if toks[k] in RM_SET:
+            if _rm_prefix_is_inert(toks, start, k) \
+                    and _rm_suffix_is_only_flags(toks, k):
+                end = k
+            break
+    return end
+
+
+def _unsafe_rm_argv(toks, i, cmd_indexes=frozenset()):
+    """True iff the rm argv starting at index i is an unsafe recursive delete."""
+    end = _rm_argv_end(toks, i, cmd_indexes)
+    tok = toks[i]
+    fields = [f for f in _expansion_fields(tok) if f]
+    raw_rest = toks[i + 1:end]
+    stripped_rest = [_strip_expansions(t) or t for t in raw_rest]
+    if len(fields) > 1:
+        argv = [(f, f) for f in fields] \
+            + list(zip(stripped_rest, raw_rest))
+    else:
+        argv = [(toks[i], toks[i])] \
+            + list(zip(stripped_rest, raw_rest))
+    recursive, targets = recursive_targets(argv)
+    return recursive and (not targets
+                          or any(not is_safe(t) for t in targets))
+
+
+def _unsafe_scan_all_rm_tokens(toks):
+    """All-token scan for unlocated command-word hits (j is None)."""
+    for i, tok in enumerate(toks):
+        if not _matches_tok(tok, RM_SET) \
+                and not any(_matches_tok(f, RM_SET)
+                            for f in _brace_forms(tok)):
+            continue
+        if _unsafe_rm_argv(toks, i):
+            return True
+    return False
+
 def unsafe(chunks, truncated):
     # Takes the ALREADY-EXPANDED chunks: chunks_and_truncation is documented
     # below as potentially exponential and shares the 3s alarm with everything
@@ -1910,89 +1914,42 @@ def unsafe(chunks, truncated):
     if truncated:
         return True
     for chunk in chunks:
-        # #585: the loop below reads EVERY token as a candidate command word,
-        # so a glob OPERAND fnmatched rm and `grep SQ*SQ -r src` prompted. Gate
-        # each segment on the same command-POSITION walk the truncate and
-        # client scanners use - it keeps `/bin/*`, wrappers and dispatch.
-        # PER SEGMENT, not per chunk: a chunk gate only proves an rm runs
-        # SOMEWHERE, so `rm build; grep rm -rf src` admitted the whole chunk
-        # and the grep operand was then read as a recursive rm.
-        # DEFAULT unreadable=True, deliberately: a gate in front of a
-        # fail-closed loop must never be the stricter of the two, so an
-        # unresolvable command word admits the segment and lets the loop decide.
-        prev_gate_seg = None
-        for seg_idx, (_op, seg) in enumerate(split_segments(chunk)):
-            # ...but split_segments cuts at the `&` of a SEPARATED redirection,
-            # so this segment can OPEN with the orphaned operand and hide the
-            # real command word one token in - `>& out.log rm -rf /etc` read
-            # out.log as the command word and skipped the rm. Admit it on that
-            # signal and let the loop below decide: same fail-open direction
-            # the unreadable default takes.
-            gate_ok = (_command_word_in([seg], RM_SET)
-                       or (prev_gate_seg is not None
-                           and _ends_in_redirect(prev_gate_seg)))
-            prev_gate_seg = seg
-            if not gate_ok:
-                continue
-            try:
-                toks = shlex.split(_fold_ansi_c(seg), posix=True)
-            except ValueError:
-                toks = seg.split()
-            for i, tok in enumerate(toks):
-                # basename match so `env rm`, `sudo rm` and /bin/rm all count;
-                # lstrip the shell grouping punctuation `(`/`{` so a grouped
-                # command like `(rm -rf /etc)` still exposes its command word.
-                # lower() because a case-insensitive filesystem (macOS default)
-                # runs `RM` as /bin/rm — matches CMD_LOWER + the grep fallback.
-                # _spells, not an inline basename: an EMPTY expansion splits the
-                # name into halves that rejoin when it expands to nothing, and a
-                # basename comparison read `r${EMPTY}m` as a word in no set.
-                # _matches_tok, not _spells: at this point the token is a
-                # candidate COMMAND word, and `/bin/r?` reaches the real binary
-                # while spelling a name in no set.
-                #
-                # This loop still reads every token as a candidate, which is
-                # why the segment gate above is what settled #585. Do NOT
-                # instead drop pure-wildcard tokens here: `/bin/*` reduces to
-                # the same bare `*` and IS a real command word, so that trade
-                # buys a false negative.
-                if not _matches_tok(tok, RM_SET) \
-                        and not any(_matches_tok(f, RM_SET)
-                                    for f in _brace_forms(tok)):
+        # #745: iterate command-word INDEXES from the shared walk, not every
+        # later rm-spelling operand. #585 chunk-level walk (prev_seg carry
+        # for separated redirections) is preserved inside
+        # _iter_command_word_hits([chunk], RM_SET). An unlocated hit (j is
+        # None) keeps the prior all-token scan on that segment token list.
+        fallback_done = set()
+        hits = list(_iter_command_word_hits([chunk], RM_SET))
+        # PER TOKEN LIST. `j` numbers the tokens of ITS OWN segment, so one flat
+        # set let a command index from one segment claim whatever sat at that
+        # position in another: `A=1 B=2 rm -rf build; rm build rm -rf` warned
+        # because index 2 was a command word in the first segment.
+        cmd_indexes = {}
+        for toks, j in hits:
+            if j is not None:
+                cmd_indexes.setdefault(id(toks), set()).add(j)
+        # NOT narrowed for a WRAPPER TAIL, and the review finding asking for
+        # that is declined. The tail yields every later rm spelling, so
+        # `sudo rm build rm -rf` warns where the bare `rm build rm -rf` now
+        # clears. That asymmetry is pre-existing — HEAD warns on both, so this
+        # change neither introduced nor widened it — and it is the deliberate
+        # trade recorded beside WRAPPERS: once a wrapper holds the command
+        # slot this walk cannot tell WHICH later token is the command, so any
+        # of them counts. The truncate and SQL scanners read the same tail
+        # through this generator, so narrowing it here would loosen all three
+        # on a shape #745 never pinned, in the direction a guard must not move.
+        for toks, j in hits:
+            if j is None:
+                key = id(toks)
+                if key in fallback_done:
                     continue
-                # An expansion supplies the field separators, so a token can
-                # carry the WHOLE argv: `${IFS}rm${IFS}-rf${IFS}/etc` is one
-                # token here and `-rf` never reached recursive_targets.
-                fields = [f for f in _expansion_fields(tok) if f]
-                # ...and every OPTION token too. `rm $(true)-rf /etc` reads as
-                # a recursive delete once the substitution vanishes, and leaving
-                # the rest raw meant the flag never registered. But only the
-                # STRIPPED spelling decides option-vs-operand here — the RAW
-                # spelling still travels alongside it into recursive_targets,
-                # which hands the raw form back for anything it classifies as
-                # a target. Collapsing an operand to its stripped form erased
-                # a genuine `$VAR` prefix before is_safe() ever saw
-                # it, so `${P}out` cleared as the always-relative-safe `out`
-                # instead of the unexpanded, unproven path it actually is.
-                raw_rest = toks[i + 1:]
-                stripped_rest = [_strip_expansions(t) or t for t in raw_rest]
-                if len(fields) > 1:
-                    # tok itself only exists post-expansion (the whole argv
-                    # rode in on one substitution) - there is no "raw" form of
-                    # a field to preserve, so structural and raw are the same.
-                    argv = [(f, f) for f in fields] \
-                        + list(zip(stripped_rest, raw_rest))
-                else:
-                    argv = [(toks[i], toks[i])] \
-                        + list(zip(stripped_rest, raw_rest))
-                recursive, targets = recursive_targets(argv)
-                # A recursive rm with NO visible literal target takes its targets
-                # from elsewhere (xargs/stdin, "$@", a glob, a variable), e.g.
-                # `... | xargs rm -rf` — we cannot prove those are safe artifacts,
-                # so warn. Otherwise warn iff any listed target is non-safe.
-                if recursive and (not targets
-                                  or any(not is_safe(t) for t in targets)):
+                fallback_done.add(key)
+                if _unsafe_scan_all_rm_tokens(list(toks)):
                     return True
+                continue
+            if _unsafe_rm_argv(toks, j, cmd_indexes.get(id(toks), frozenset())):
+                return True
     return False
 
 

@@ -476,9 +476,9 @@ When `run-review-loop.sh` exits with code 3, external review paths were exhauste
 3. Dispatch the `code-reviewer` agent via the Agent tool with the prompt as context. **The agent prompt MUST include:**
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"high|medium|low\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
-4. Parse the agent's JSON output for high/medium issues
+4. Parse the agent's JSON output for blocking issues: any issue whose severity is not exactly `low` blocks (compare case-insensitively). Unrecognized or out-of-enum severities count as blocking.
 5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
-6. If high/medium issues: report FAIL with issues, fix and re-run
+6. If blocking issues: report FAIL with issues, fix and re-run
 7. Clean up: remove the temp prompt file and the handoff path file
 
 ## Enhanced Review Features

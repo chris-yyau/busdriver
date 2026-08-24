@@ -73,8 +73,11 @@ assert "SKILL.md fallback JSON format uses high|medium|low" \
 assert_not "SKILL.md fallback JSON format has no CRITICAL|HIGH|MEDIUM|LOW" \
   grep -q 'CRITICAL|HIGH|MEDIUM|LOW' <<<"$fallback_block"
 
-assert "SKILL.md fallback blocking parse uses high/medium" \
-  grep -q 'high/medium' <<<"$fallback_block"
+assert "SKILL.md fallback blocking parse is fail-closed on non-low severities" \
+  grep -q 'not exactly `low`' <<<"$fallback_block"
+
+assert "SKILL.md fallback blocking parse treats unrecognized severities as blocking" \
+  grep -q 'Unrecognized or out-of-enum severities count as blocking' <<<"$fallback_block"
 
 assert_not "SKILL.md fallback blocking parse has no CRITICAL/HIGH/MEDIUM prose" \
   grep -q 'CRITICAL/HIGH/MEDIUM' <<<"$fallback_block"

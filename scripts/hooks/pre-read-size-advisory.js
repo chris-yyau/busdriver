@@ -75,18 +75,18 @@ function scanWindow(fd, end, buffer) {
   return { lines, lastByte, offset };
 }
 
-function countLines(openPath) {
+function countLines(openPath, snapshot) {
   let fd;
   try {
-    // O_NOFOLLOW: refuse to open through ANY symlink, so the fd can only be a
-    // regular file AT the contained pathname. resolveContained() in run()
-    // validated the target before open; a symlink swap at any point (pre-open,
-    // ABA, post-open) makes this open fail → silent. No pathname is
-    // re-resolved after open, so there is no pathname check an attacker can
-    // race against the fd's identity.
+    // O_NOFOLLOW defends the final component against symlink swaps. The
+    // load-bearing check is the descriptor identity below: the opened fd must
+    // BE the file snapshotted before containment, so an intermediate-component
+    // swap, a final-component swap, or an ABA restore all end silent. No
+    // pathname is re-resolved after open — there is no check to race.
     fd = fs.openSync(openPath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
+    if (stat.dev !== snapshot.dev || stat.ino !== snapshot.ino) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
 
@@ -132,12 +132,23 @@ function run(inputOrRaw, _options = {}) {
   }
 
   const cwd = input?.cwd || process.cwd();
+  // Snapshot the identity the model's path names BEFORE containment: the
+  // opened descriptor must later BE this file. Captured once, the snapshot
+  // cannot be ABA-restored — no swap can make an outside descriptor match it.
+  let snapshot;
+  try {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- the resolve only canonicalizes a model-supplied path against the payload cwd for a metadata-only stat; the snapshot is never emitted, resolveContained() still enforces the realpath containment boundary before any open, and the opened descriptor must equal this snapshot.
+    const s = fs.statSync(path.resolve(cwd, filePath));
+    snapshot = { dev: s.dev, ino: s.ino };
+  } catch {
+    return { exitCode: 0 };
+  }
   const resolved = resolveContained(filePath, cwd);
   if (resolved === null) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved);
+  const lines = countLines(resolved, snapshot);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }

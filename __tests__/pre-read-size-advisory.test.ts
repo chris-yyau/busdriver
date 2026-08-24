@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, truncateSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, truncateSync, symlinkSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -81,22 +81,41 @@ describe('pre-read-size-advisory', () => {
     expect(parsed.tool_input.file_path).toBe(largeFile)
   })
 
-  it('stays silent when the path is swapped to an out-of-root file before open (TOCTOU)', () => {
-    const outside = join(otherDir, 'outside-target.txt')
-    const swapped = join(dir, 'swap-preopen.txt')
-    writeFileSync(outside, `${'line\n'.repeat(THRESHOLD + 10)}`)
-    writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD + 10)}`)
-    const swappedReal = fs.realpathSync(swapped)
+     it('stays silent when the path is swapped to an out-of-root file before open (TOCTOU)', () => {
+     const outside = join(otherDir, 'outside-target.txt')
+     const swapped = join(dir, 'swap-preopen.txt')
+     writeFileSync(outside, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD + 10)}`)
+     const swappedReal = fs.realpathSync(swapped)
+     const originalOpen = fs.openSync.bind(fs)
+     vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
+       if (String(args[0]) === swappedReal) {
+         rmSync(swapped, { force: true })
+         symlinkSync(outside, swapped)
+       }
+       return (originalOpen as (...a: unknown[]) => number)(...args)
+     })
+ 
+     expect(additionalContextOf(run(payload(swapped)))).toBe('')
+   })
+  it('stays silent when an intermediate directory is swapped to an out-of-root symlink (TOCTOU)', () => {
+    const sub = join(dir, 'sub')
+    const nested = join(sub, 'nested.txt')
+    const outsideNested = join(otherDir, 'nested.txt')
+    mkdirSync(sub)
+    writeFileSync(nested, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    writeFileSync(outsideNested, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    const nestedReal = fs.realpathSync(nested)
     const originalOpen = fs.openSync.bind(fs)
     vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
-      if (String(args[0]) === swappedReal) {
-        rmSync(swapped, { force: true })
-        symlinkSync(outside, swapped)
+      if (String(args[0]) === nestedReal) {
+        rmSync(sub, { recursive: true, force: true })
+        symlinkSync(otherDir, sub)
       }
       return (originalOpen as (...a: unknown[]) => number)(...args)
     })
 
-    expect(additionalContextOf(run(payload(swapped)))).toBe('')
+    expect(additionalContextOf(run(payload(nested)))).toBe('')
   })
 
   it('stays silent under threshold, with offset/limit, missing path, malformed, missing, unreadable, unsafe paths, and binary files', () => {

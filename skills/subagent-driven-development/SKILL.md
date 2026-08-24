@@ -128,9 +128,11 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 
 **BLOCKED:** The implementer cannot complete the task. Assess the blocker:
 1. If it's a context problem, provide more context and re-dispatch
-2. If the task requires more reasoning, raise its `effort:` and re-dispatch
-3. If the task is too large, break it into smaller pieces
-4. If the plan itself is wrong, escalate to the human
+2. If the task requires more reasoning or is too large for one pass, break it
+   into smaller pieces — a `general-purpose` implementer has no `effort:`
+   dial the controller can raise at dispatch time (that field lives only in
+   a named agent's frontmatter, not the Agent tool's dispatch parameters)
+3. If the plan itself is wrong, escalate to the human
 
 **Never** ignore an escalation or re-dispatch unchanged. If the implementer said it's stuck, something needs to change.
 

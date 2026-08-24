@@ -19,7 +19,7 @@ const CATEGORIES = [
   'Fly Integration',
 ];
 
-const RUBRIC_VERSION = '2026-05-19';
+const RUBRIC_VERSION = '2026-08-25';
 
 const PROVIDERS = {
   Vercel: {

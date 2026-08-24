@@ -94,7 +94,66 @@ function parseTools(raw) {
 }
 
 /**
- * @param {{rootDir?: string, fableAllowed?: string[]}} opts
+ * Load and resolve the `model:` value for one agent file.
+ *
+ * @returns {{error: string}|{model: string, fm: object}} an error string means
+ *   the file is already fully classified (unreadable, no frontmatter, duplicate
+ *   'model' key, or missing 'model') and the caller should record it and move on.
+ */
+function loadModel(file, rel) {
+  let fm;
+  try {
+    fm = extractFrontmatter(fs.readFileSync(file, 'utf-8'));
+  } catch (err) {
+    return { error: `${rel} - unreadable: ${err.message}` };
+  }
+  if (!fm) {
+    return { error: `${rel} - missing frontmatter` };
+  }
+  if (fm.__duplicates__.includes('model')) {
+    return { error: `${rel} - duplicate 'model' key: last-wins parsing must not decide a fail-closed check` };
+  }
+
+  const model = (fm.model || '').trim();
+  if (!model) {
+    return { error: `${rel} - missing 'model'. An unpinned agent inherits the session model; every Claude work route must pin 'opus' (ADR 0046)` };
+  }
+  return { model, fm };
+}
+
+/** Validate a `model: fable` agent's allowlist membership and read-only capability. */
+function checkFableAgent(rel, fm, fableAllowed) {
+  const errors = [];
+  if (!fableAllowed.has(rel)) {
+    errors.push(`${rel} - 'fable' is not permitted here. Add the path to FABLE_ALLOWED in scripts/ci/validate-model-routes.js only for a non-implementation plan/spec/advisory agent`);
+    return errors;
+  }
+  for (const key of ['tools', 'effort']) {
+    if (fm.__duplicates__.includes(key)) {
+      errors.push(`${rel} - duplicate '${key}' key on a fable agent`);
+    }
+  }
+  const tools = parseTools(fm.tools);
+  if (!tools) {
+    errors.push(`${rel} - fable agent needs a single-line, parseable, non-empty 'tools:'. Missing/empty/indented means INHERITED FULL ACCESS, not read-only`);
+  } else {
+    const bad = tools.filter(t => !READ_ONLY_TOOLS.has(t));
+    if (bad.length) {
+      errors.push(`${rel} - fable agent may not hold ${bad.join(', ')}. Allowed: ${[...READ_ONLY_TOOLS].join(', ')}`);
+    }
+  }
+  const effort = (fm.effort || '').trim();
+  if (!FABLE_EFFORTS.has(effort)) {
+    errors.push(`${rel} - fable agent needs an explicit 'effort:' of ${[...FABLE_EFFORTS].join('|')} (got '${effort || '<missing>'}'), so it cannot pass here and fail tests/test-agent-effort-tiers.sh invariant (iv)`);
+  }
+  return errors;
+}
+
+/**
+ * @param {{rootDir?: string, fableAllowed?: string[], files?: string[]}} opts
+ *   `files`, when given, is used instead of re-discovering agent files — callers
+ *   that already discovered them (e.g. the CLI entry point below, for its summary
+ *   count) can avoid walking the tree twice. Not part of the public test surface.
  * @returns {string[]} error strings; empty means the policy holds
  */
 function validateModelRoutes(opts = {}) {
@@ -102,29 +161,14 @@ function validateModelRoutes(opts = {}) {
   const fableAllowed = new Set(opts.fableAllowed || FABLE_ALLOWED);
   const errors = [];
 
-  for (const file of discoverAgentFiles(rootDir)) {
+  for (const file of opts.files || discoverAgentFiles(rootDir)) {
     const rel = path.relative(rootDir, file).split(path.sep).join('/');
-    let fm;
-    try {
-      fm = extractFrontmatter(fs.readFileSync(file, 'utf-8'));
-    } catch (err) {
-      errors.push(`${rel} - unreadable: ${err.message}`);
+    const loaded = loadModel(file, rel);
+    if (loaded.error) {
+      errors.push(loaded.error);
       continue;
     }
-    if (!fm) {
-      errors.push(`${rel} - missing frontmatter`);
-      continue;
-    }
-    if (fm.__duplicates__.includes('model')) {
-      errors.push(`${rel} - duplicate 'model' key: last-wins parsing must not decide a fail-closed check`);
-      continue;
-    }
-
-    const model = (fm.model || '').trim();
-    if (!model) {
-      errors.push(`${rel} - missing 'model'. An unpinned agent inherits the session model; every Claude work route must pin 'opus' (ADR 0046)`);
-      continue;
-    }
+    const { model, fm } = loaded;
     if (model === 'opus') continue;
 
     if (model !== 'fable') {
@@ -136,38 +180,18 @@ function validateModelRoutes(opts = {}) {
     }
 
     // model === 'fable' from here.
-    if (!fableAllowed.has(rel)) {
-      errors.push(`${rel} - 'fable' is not permitted here. Add the path to FABLE_ALLOWED in scripts/ci/validate-model-routes.js only for a non-implementation plan/spec/advisory agent`);
-      continue;
-    }
-    for (const key of ['tools', 'effort']) {
-      if (fm.__duplicates__.includes(key)) {
-        errors.push(`${rel} - duplicate '${key}' key on a fable agent`);
-      }
-    }
-    const tools = parseTools(fm.tools);
-    if (!tools) {
-      errors.push(`${rel} - fable agent needs a single-line, parseable, non-empty 'tools:'. Missing/empty/indented means INHERITED FULL ACCESS, not read-only`);
-    } else {
-      const bad = tools.filter(t => !READ_ONLY_TOOLS.has(t));
-      if (bad.length) {
-        errors.push(`${rel} - fable agent may not hold ${bad.join(', ')}. Allowed: ${[...READ_ONLY_TOOLS].join(', ')}`);
-      }
-    }
-    const effort = (fm.effort || '').trim();
-    if (!FABLE_EFFORTS.has(effort)) {
-      errors.push(`${rel} - fable agent needs an explicit 'effort:' of ${[...FABLE_EFFORTS].join('|')} (got '${effort || '<missing>'}'), so it cannot pass here and fail tests/test-agent-effort-tiers.sh invariant (iv)`);
-    }
+    errors.push(...checkFableAgent(rel, fm, fableAllowed));
   }
 
   return errors;
 }
 
 if (require.main === module) {
-  const errors = validateModelRoutes();
+  const discovered = discoverAgentFiles(ROOT);
+  const errors = validateModelRoutes({ files: discovered });
   for (const e of errors) console.error(`ERROR: ${e}`);
   if (errors.length) process.exit(1);
-  console.log(`Validated model routes for ${discoverAgentFiles(ROOT).length} agent files`);
+  console.log(`Validated model routes for ${discovered.length} agent files`);
 }
 
 module.exports = { validateModelRoutes, discoverAgentFiles, parseTools, FABLE_ALLOWED };

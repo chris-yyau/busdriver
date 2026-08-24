@@ -312,7 +312,7 @@
     {
       "path": "agents/fastapi-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/fastapi-reviewer.md"
     },
     {
@@ -342,7 +342,7 @@
     {
       "path": "agents/go-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/go-reviewer.md"
     },
     {
@@ -375,19 +375,19 @@
     {
       "path": "agents/opensource-forker.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/opensource-forker.md"
     },
     {
       "path": "agents/opensource-packager.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/opensource-packager.md"
     },
     {
       "path": "agents/opensource-sanitizer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/opensource-sanitizer.md"
     },
     {
@@ -411,14 +411,14 @@
     },
     {
       "path": "agents/pr-test-analyzer.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/pr-test-analyzer.md",
       "source": "ecc"
     },
     {
       "path": "agents/python-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/python-reviewer.md"
     },
     {
@@ -430,19 +430,19 @@
     {
       "path": "agents/react-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/react-build-resolver.md"
     },
     {
       "path": "agents/react-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/react-reviewer.md"
     },
     {
       "path": "agents/refactor-cleaner.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/refactor-cleaner.md"
     },
     {
@@ -454,7 +454,7 @@
     {
       "path": "agents/rust-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/rust-reviewer.md"
     },
     {
@@ -465,7 +465,7 @@
     },
     {
       "path": "agents/seo-specialist.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/seo-specialist.md",
       "source": "ecc"
     },
@@ -491,7 +491,7 @@
     {
       "path": "agents/typescript-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/typescript-reviewer.md"
     },
     {
@@ -4609,7 +4609,7 @@
     {
       "path": "skills/autonomous-agent-harness/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/autonomous-agent-harness/SKILL.md"
     },
     {

@@ -44,7 +44,7 @@ function extractFrontmatter(content) {
 function validateAgents() {
   if (!fs.existsSync(AGENTS_DIR)) {
     console.log('No agents directory found, skipping validation');
-    process.exit(0);
+    return true;
   }
 
   const files = fs.readdirSync(AGENTS_DIR).filter(f => f.endsWith('.md'));
@@ -81,15 +81,12 @@ function validateAgents() {
     }
   }
 
-  if (hasErrors) {
-    process.exit(1);
-  }
-
   console.log(`Validated ${files.length} agent files`);
+  return !hasErrors;
 }
 
 if (require.main === module) {
-  validateAgents();
+  process.exit(validateAgents() ? 0 : 1);
 }
 
 module.exports = { extractFrontmatter, validateAgents };

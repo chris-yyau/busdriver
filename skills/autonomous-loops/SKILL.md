@@ -95,12 +95,12 @@ claude -p --model opus "Read .claude-context.md for priorities. Work through the
 rm .claude-context.md
 ```
 
-**With `--allowedTools` restrictions:**
+**With tool restrictions** — the two flags do different jobs, so a headless pass usually needs both: `--tools` limits which tools *exist* in the session (structural confinement), while `--allowedTools` auto-approves the ones named. In `claude -p` there is nobody to answer a permission prompt, so an implementation pass that only confines will be denied rather than applying its fixes:
 ```bash
-# Read-only analysis pass
-claude -p --model opus --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
+# Read-only analysis pass — confined AND pre-approved
+claude -p --model opus --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
 
-# Write-only implementation pass
+# Implementation pass — needs the write tools auto-approved, not just available
 claude -p --model opus --allowedTools "Read,Write,Edit,Bash" "Implement the fixes from security-audit.md..."
 ```
 

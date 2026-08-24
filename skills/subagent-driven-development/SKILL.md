@@ -109,7 +109,7 @@ dispatch (a pinned agent file whose `tools:` is enforced by
 `scripts/ci/validate-model-routes.js`, or an explicit read-only `--tools` list —
 `--allowedTools` only auto-approves and leaves Bash/Write/Edit available, so it
 confines nothing). A bare `Agent(model="fable")` inherits full tooling and is
-never it.
+never a valid Fable dispatch.
 Codex routing is unchanged.
 
 **Always specify the model explicitly when dispatching a subagent.** An

@@ -1728,7 +1728,7 @@ def _generate_evolved(skill_candidates: list, workflow_instincts: list, agent_ca
         domains = ', '.join(cand['domains'])
         instinct_ids = [i.get('id', 'unnamed') for i in cand['instincts']]
 
-        content = f"---\nmodel: opus\ntools: Read, Grep, Glob\n---\n"
+        content = "---\nmodel: opus\ntools: Read, Grep, Glob\n---\n"
         content += f"# {agent_name}\n\n"
         content += f"Evolved from {len(cand['instincts'])} instincts "
         content += f"(avg confidence: {cand['avg_confidence']:.0%})\n"

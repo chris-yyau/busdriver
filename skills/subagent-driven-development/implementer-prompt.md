@@ -6,7 +6,7 @@ Use this template when dispatching an implementer subagent.
 Subagent (general-purpose):
   description: "Implement Task N: [task name]"
   model: opus   # required and always opus for Claude work (ADR 0046); an omitted
-                # model silently inherits the session's
+                # model silently inherits the session's model
   prompt: |
     You are implementing Task N: [task name]
 

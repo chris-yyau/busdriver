@@ -16,14 +16,16 @@ recommendation — see `docs/adr/0046-opus-only-claude-work-routes.md`.
 - `opus`: **all** Claude work. There is no cheaper Claude tier to route to.
 - `fable`: **only** when all three hold — the task is plan/spec/advisory, it produces no
   product-code mutation, and it needs no write tools.
-- `codex`: unchanged, review/gate only.
+- `codex`: outside this policy — review/gate routes unchanged. This command does not
+  claim Codex is review/gate-only today; the Pi replacement owns its implementation rows.
 
 A `fable` route must name a concrete read-only dispatch form: a frontmatter-pinned agent
 (whose `tools:` is enforced by `scripts/ci/validate-model-routes.js`) or an explicit read-only `--tools` list (which limits which tools *exist* in the session; `--allowedTools` alone only auto-approves and leaves Bash/Write/Edit available). A bare `Agent(model="fable")` inherits full tooling and is never the recommendation.
 
-The four live Fable dispatches (blueprint-review arbiter, council Mythos Witness,
-orchestrator advisor fallback, ultimate-council) are grandfathered exceptions that
-predate this policy and are outside this command's domain.
+The three live Fable dispatch sites (blueprint-review arbiter, council Mythos Witness —
+which `/ultimate-council` forces rather than adding a fourth site — and the orchestrator
+advisor fallback) are grandfathered exceptions that predate this policy and are outside
+this command's domain.
 
 ## Required Output
 

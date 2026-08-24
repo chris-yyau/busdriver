@@ -38,30 +38,42 @@ const FABLE_EFFORTS = new Set(['low', 'medium', 'high']);
 // Selects the ERROR MESSAGE only — never the verdict, which is the closed whitelist.
 const WEAKER_FAMILY = /(^|[-.])(sonnet|haiku)([-.]|$)/i;
 
+/** List `.md` files directly inside `dir`, sorted; [] when `dir` doesn't exist. */
+function listMarkdownFiles(dir) {
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
+  // `f` is a readdirSync entry name (never a path), and `dir` derives from
+  // rootDir: the repo root, or a test-owned temp dir. Not user input.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  return fs.readdirSync(dir).sort().filter(f => f.endsWith('.md')).map(f => path.join(dir, f));
+}
+
 /** Discover agent files: agents/*.md plus skills/<skill>/agents/*.md. */
 function discoverAgentFiles(rootDir) {
-  const found = [];
-  const pushDir = dir => {
-    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
-    for (const f of fs.readdirSync(dir).sort()) {
-      // `f` is a readdirSync entry name (never a path), and `dir` derives from
-      // rootDir: the repo root, or a test-owned temp dir. Not user input.
-      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      if (f.endsWith('.md')) found.push(path.join(dir, f));
-    }
-  };
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-  pushDir(path.join(rootDir, 'agents'));
+  const found = listMarkdownFiles(path.join(rootDir, 'agents'));
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   const skillsDir = path.join(rootDir, 'skills');
-  if (fs.existsSync(skillsDir)) {
-    for (const skill of fs.readdirSync(skillsDir).sort()) {
-      // `skill` is a readdirSync entry name under the repo's own skills/ dir.
-      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      pushDir(path.join(skillsDir, skill, 'agents'));
-    }
+  if (!fs.existsSync(skillsDir)) return found;
+  for (const skill of fs.readdirSync(skillsDir).sort()) {
+    // `skill` is a readdirSync entry name under the repo's own skills/ dir.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    found.push(...listMarkdownFiles(path.join(skillsDir, skill, 'agents')));
   }
   return found;
+}
+
+/**
+ * Strip matching surrounding quotes from one comma-split token and validate it.
+ * @returns {string|null} the cleaned token, or null when it's empty or still
+ *   carries a stray quote/bracket (an unparseable token rejects the whole line).
+ */
+function normalizeToken(raw) {
+  let tok = raw.trim();
+  if (tok.length >= 2 && /^["']/.test(tok) && tok[0] === tok[tok.length - 1]) {
+    tok = tok.slice(1, -1).trim();
+  }
+  if (!tok || /["'\[\]]/.test(tok)) return null;
+  return tok;
 }
 
 /**
@@ -82,12 +94,9 @@ function parseTools(raw) {
     v = v.slice(1, -1);
   }
   const tokens = [];
-  for (let tok of v.split(',')) {
-    tok = tok.trim();
-    if (tok.length >= 2 && /^["']/.test(tok) && tok[0] === tok[tok.length - 1]) {
-      tok = tok.slice(1, -1).trim();
-    }
-    if (!tok || /["'\[\]]/.test(tok)) return null;
+  for (const raw of v.split(',')) {
+    const tok = normalizeToken(raw);
+    if (tok === null) return null;
     tokens.push(tok);
   }
   return tokens.length ? tokens : null;

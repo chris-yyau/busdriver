@@ -122,6 +122,12 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
 
     local marker_content
     marker_content=$(gate_marker_read "$repo_dir" "$state_dir" 2>/dev/null || echo "")
+    if [[ -n "$marker_content" ]] \
+       && gate_skip_file_repo_controlled "$repo_dir" "$state_dir/litmus-passed.local"; then
+        gate_marker_unlink "$repo_dir" "$state_dir"
+        GATE_VALIDATE_REASON="Review marker cannot be repository-controlled (committed or index-staged). Run /litmus."
+        return 1
+    fi
     if [[ -z "$marker_content" ]]; then
         GATE_VALIDATE_REASON="Code review required before merging.
 
@@ -130,12 +136,6 @@ Run /litmus to review the merge result. The review must pass before git merge ca
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run litmus instead.
 If the user wants to skip: touch $repo_dir/$state_dir/skip-litmus.local
 After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate rejects files newer than 30s to prevent self-bypass)."
-        return 1
-    fi
-
-    if gate_skip_file_repo_controlled "$repo_dir" "$state_dir/litmus-passed.local"; then
-        gate_marker_unlink "$repo_dir" "$state_dir"
-        GATE_VALIDATE_REASON="Review marker cannot be repository-controlled (committed or index-staged). Run /litmus."
         return 1
     fi
 

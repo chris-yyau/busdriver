@@ -79,8 +79,13 @@ assert "SKILL.md fallback blocking parse uses high/medium" \
 assert_not "SKILL.md fallback blocking parse has no CRITICAL/HIGH/MEDIUM prose" \
   grep -q 'CRITICAL/HIGH/MEDIUM' <<<"$fallback_block"
 
+report_has_dashboard_labels_in() {
+  local f="$1"
+  grep -q 'HIGH:' "$f" && grep -q 'MEDIUM:' "$f" && grep -q 'LOW:' "$f"
+}
+
 report_has_dashboard_labels() {
-  grep -q 'HIGH:' "$REPORT" && grep -q 'MEDIUM:' "$REPORT" && grep -q 'LOW:' "$REPORT"
+  report_has_dashboard_labels_in "$REPORT"
 }
 
 assert_not "litmus-metrics-report does not aggregate severity.critical" \
@@ -89,12 +94,11 @@ assert_not "litmus-metrics-report does not aggregate severity.critical" \
 assert "litmus-metrics-report dashboard labels include HIGH/MEDIUM/LOW" \
   report_has_dashboard_labels
 
-missing_medium_label() {
-  grep -q 'HIGH:' "$REPORT" && ! grep -q 'MEDIUM:' "$REPORT" && grep -q 'LOW:' "$REPORT"
-}
+fixture_missing_medium="$TMP/fixture-missing-medium.txt"
+printf '%s\n' '  HIGH: 1' '  LOW: 1' >"$fixture_missing_medium"
 
 assert_not "dashboard label helper fails closed when MEDIUM label absent" \
-  missing_medium_label
+  report_has_dashboard_labels_in "$fixture_missing_medium"
 
 assert_not "litmus-metrics-report dashboard has no CRITICAL label" \
   grep -q 'CRITICAL:' "$REPORT"

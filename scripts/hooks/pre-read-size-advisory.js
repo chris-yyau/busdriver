@@ -7,6 +7,13 @@
  * guidance. Silent when limit/offset is set, under threshold, outside the
  * workspace root, or on any error. Never blocks, never reads file content
  * into context.
+ *
+ * Intentional residual (issue #626, Council Option A): this decision-time
+ * advisory intentionally performs a BOUNDED probe (open + scan, <= 1 MiB,
+ * realpath-contained to the payload cwd) BEFORE the Read permission decision,
+ * disclosing only a coarse existence/regularity/over-threshold predicate about
+ * the model-named path. Do NOT deploy where pre-permission probing is
+ * unacceptable; hook privilege MUST remain <= model privilege.
  */
 
 'use strict';
@@ -139,24 +146,29 @@ function run(inputOrRaw, _options = {}) {
 
 module.exports = { run, countLines, isSafePath, THRESHOLD };
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', c => {
-  if (data.length < MAX_STDIN) {
-    const remaining = MAX_STDIN - data.length;
-    data += c.substring(0, remaining);
-  }
-});
+// Standalone stdin main only when executed directly (node pre-read-size-advisory.js).
+// run-with-flags.js requires this module and calls run() in-process; unconditional
+// registration would double-consume the payload and duplicate protocol output.
+if (require.main === module) {
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', c => {
+    if (data.length < MAX_STDIN) {
+      const remaining = MAX_STDIN - data.length;
+      data += c.substring(0, remaining);
+    }
+  });
 
-process.stdin.on('end', () => {
-  const result = run(data);
+  process.stdin.on('end', () => {
+    const result = run(data);
 
-  if (result.stderr) {
-    process.stderr.write(`${result.stderr}\n`);
-  }
+    if (result.stderr) {
+      process.stderr.write(`${result.stderr}\n`);
+    }
 
-  if (Object.prototype.hasOwnProperty.call(result, 'additionalContext')) {
-    process.stdout.write(buildPreToolUseAdditionalContext(result.additionalContext));
-  } else {
-    process.stdout.write(data);
-  }
-});
+    if (Object.prototype.hasOwnProperty.call(result, 'additionalContext')) {
+      process.stdout.write(buildPreToolUseAdditionalContext(result.additionalContext));
+    } else {
+      process.stdout.write(data);
+    }
+  });
+}

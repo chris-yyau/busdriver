@@ -191,7 +191,7 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:read:size-advisory\" \"scripts/hooks/pre-read-size-advisory.js\" \"standard,strict\""
           }
         ],
-        "description": "Advisory: surface file line count before wholesale Read over ~200 lines"
+        "description": "Advisory: surface when a wholesale Read targets a file over ~200 lines"
       },
       {
         "matcher": "Edit|Write",

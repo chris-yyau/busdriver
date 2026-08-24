@@ -1852,6 +1852,21 @@ def _rm_argv_end(toks, start, cmd_indexes):
     second one and hide the `-rf /etc` it was meant to catch.
     """
     end = len(toks)
+    # Never at all unless the COMMAND WORD is ONE word and stays one. Each of
+    # `rm${IFS}/etc`, `rm${IFS}$HOME`, `{rm,/etc}`, a `r?` matching two files
+    # and `/bin/@(rm|rmdir)` reaches the real rm while ALSO supplying operands
+    # this walk never sees, so a cut made without reading them hides the
+    # target. Counting literal fragments does not find those operands — a field
+    # supplied ENTIRELY by an expansion leaves an empty fragment behind — and
+    # naming the metacharacters one at a time is a list that is never finished.
+    # So this is an ALLOWLIST: a plain literal name or path may be cut at,
+    # everything else is refused rather than read, the same inversion applied
+    # at option position and in recursive_targets. `$PWD/rm build rm -rf`
+    # therefore keeps warning where `/bin/rm build rm -rf` clears — a literal
+    # path is still one word, and an expansion is a word count this guard
+    # cannot prove. Over-warning is the one direction it may move in.
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", toks[start]):
+        return end
     for k in range(start + 1, len(toks)):
         if k in cmd_indexes:
             continue

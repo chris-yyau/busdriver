@@ -54,16 +54,16 @@ The `claude -p` flag runs Claude Code non-interactively with a prompt, exits whe
 set -e
 
 # Step 1: Implement the feature
-claude -p "Read the spec in docs/auth-spec.md. Implement OAuth2 login in src/auth/. Write tests first (TDD). Do NOT create any new documentation files."
+claude -p --model opus "Read the spec in docs/auth-spec.md. Implement OAuth2 login in src/auth/. Write tests first (TDD). Do NOT create any new documentation files."
 
 # Step 2: De-sloppify (cleanup pass)
-claude -p "Review all files changed by the previous commit. Remove any unnecessary type tests, overly defensive checks, or testing of language features (e.g., testing that TypeScript generics work). Keep real business logic tests. Run the test suite after cleanup."
+claude -p --model opus "Review all files changed by the previous commit. Remove any unnecessary type tests, overly defensive checks, or testing of language features (e.g., testing that TypeScript generics work). Keep real business logic tests. Run the test suite after cleanup."
 
 # Step 3: Verify
-claude -p "Run the full build, lint, type check, and test suite. Fix any failures. Do not add new features."
+claude -p --model opus "Run the full build, lint, type check, and test suite. Fix any failures. Do not add new features."
 
 # Step 4: Commit
-claude -p "Create a conventional commit for all staged changes. Use 'feat: add OAuth2 login flow' as the message."
+claude -p --model opus "Create a conventional commit for all staged changes. Use 'feat: add OAuth2 login flow' as the message."
 ```
 
 ### Key Design Principles
@@ -77,13 +77,13 @@ claude -p "Create a conventional commit for all staged changes. Use 'feat: add O
 
 **With model routing:**
 ```bash
-# Research with Opus (deep reasoning)
+# Research
 claude -p --model opus "Analyze the codebase architecture and write a plan for adding caching..."
 
-# Implement with Sonnet (fast, capable)
-claude -p "Implement the caching layer according to the plan in docs/caching-plan.md..."
+# Implement
+claude -p --model opus "Implement the caching layer according to the plan in docs/caching-plan.md..."
 
-# Review with Opus (thorough)
+# Review
 claude -p --model opus "Review all changes for security issues, race conditions, and edge cases..."
 ```
 
@@ -91,17 +91,17 @@ claude -p --model opus "Review all changes for security issues, race conditions,
 ```bash
 # Pass context via files, not prompt length
 echo "Focus areas: auth module, API rate limiting" > .claude-context.md
-claude -p "Read .claude-context.md for priorities. Work through them in order."
+claude -p --model opus "Read .claude-context.md for priorities. Work through them in order."
 rm .claude-context.md
 ```
 
-**With `--allowedTools` restrictions:**
+**With tool restrictions** — the two flags do different jobs, so a headless pass usually needs both: `--tools` limits which tools *exist* in the session (structural confinement), while `--allowedTools` auto-approves the ones named. In `claude -p` there is nobody to answer a permission prompt, so an implementation pass that only confines will be denied rather than applying its fixes:
 ```bash
-# Read-only analysis pass
-claude -p --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
+# Read-only analysis pass — confined AND pre-approved
+claude -p --model opus --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" "Audit this codebase for security vulnerabilities..."
 
-# Write-only implementation pass
-claude -p --allowedTools "Read,Write,Edit,Bash" "Implement the fixes from security-audit.md..."
+# Implementation pass — needs the write tools auto-approved, not just available
+claude -p --model opus --allowedTools "Read,Write,Edit,Bash" "Implement the fixes from security-audit.md..."
 ```
 
 ---
@@ -339,10 +339,10 @@ Instead of constraining the Implementer, let it be thorough. Then add a focused 
 
 ```bash
 # Step 1: Implement (let it be thorough)
-claude -p "Implement the feature with full TDD. Be thorough with tests."
+claude -p --model opus "Implement the feature with full TDD. Be thorough with tests."
 
 # Step 2: De-sloppify (separate context, focused cleanup)
-claude -p "Review all changes in the working tree. Remove:
+claude -p --model opus "Review all changes in the working tree. Remove:
 - Tests that verify language/framework behavior rather than business logic
 - Redundant type checks that the type system already enforces
 - Over-defensive error handling for impossible states
@@ -357,16 +357,16 @@ Keep all business logic tests. Run the test suite after cleanup to ensure nothin
 ```bash
 for feature in "${features[@]}"; do
   # Implement
-  claude -p "Implement $feature with TDD."
+  claude -p --model opus "Implement $feature with TDD."
 
   # De-sloppify
-  claude -p "Cleanup pass: review changes, remove test/code slop, run tests."
+  claude -p --model opus "Cleanup pass: review changes, remove test/code slop, run tests."
 
   # Verify
-  claude -p "Run build + lint + tests. Fix any failures."
+  claude -p --model opus "Run build + lint + tests. Fix any failures."
 
   # Commit
-  claude -p "Commit with message: feat: add $feature"
+  claude -p --model opus "Commit with message: feat: add $feature"
 done
 ```
 
@@ -457,11 +457,11 @@ Each stage runs in its own agent process with its own context window:
 
 | Stage | Model | Purpose |
 |-------|-------|---------|
-| Research | Sonnet | Read codebase + RFC, produce context doc |
+| Research | Opus | Read codebase + RFC, produce context doc |
 | Plan | Opus | Design implementation steps |
 | Implement | Codex | Write code following the plan |
-| Test | Sonnet | Run build + test suite |
-| PRD Review | Sonnet | Spec compliance check |
+| Test | Opus | Run build + test suite |
+| PRD Review | Opus | Spec compliance check |
 | Code Review | Opus | Quality + security check |
 | Review Fix | Codex | Address review issues |
 | Final Review | Opus | Quality gate (large tier only) |
@@ -570,12 +570,9 @@ These patterns compose well:
 
 3. **Any loop + Verification** — Use ECC's `/verify` command or `verification-loop` skill as a gate before commits.
 
-4. **Ralphinho's tiered approach in simpler loops** — Even in a sequential pipeline, you can route simple tasks to Haiku and complex tasks to Opus:
+4. **Ralphinho's stage separation in simpler loops** — Even in a sequential pipeline, keep each stage in its own process with its own context window. Claude work runs on `opus` (ADR 0046); `effort:` is the cost dial, not the model:
    ```bash
-   # Simple formatting fix
-   claude -p --model haiku "Fix the import ordering in src/utils.ts"
-
-   # Complex architectural change
+   claude -p --model opus "Fix the import ordering in src/utils.ts"
    claude -p --model opus "Refactor the auth module to use the strategy pattern"
    ```
 

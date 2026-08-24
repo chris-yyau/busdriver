@@ -2,7 +2,7 @@
 # Continuous Learning v2 - Observer Agent Launcher
 #
 # Starts the background observer agent that analyzes observations
-# and creates instincts. Uses Haiku model for cost efficiency.
+# and creates instincts. Uses Opus per the Opus-only Claude work policy (ADR 0046).
 #
 # v2.1: Project-scoped — detects current project and analyzes
 #       project-specific observations into project-scoped instincts.

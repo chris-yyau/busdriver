@@ -14,10 +14,11 @@ for _dir in /opt/homebrew/bin /usr/local/bin /opt/pkg/env/active/bin; do
 done
 
 # ── Skip for internal observer sessions ───────────────────────────────────
-# The ECC observer spawns `claude --model haiku` subprocesses for analysis.
-# Those subprocesses trigger SessionStart hooks including this one.
-# Loading the full orchestrator context into a haiku subprocess is wasteful
-# and can cause the model to attempt starting another observer (recursion).
+# The ECC observer spawns `claude` subprocesses for analysis. Those subprocesses
+# trigger SessionStart hooks including this one. Loading the full orchestrator
+# context into an observer subprocess is wasteful and can cause the model to
+# attempt starting another observer (recursion). observer-loop.sh sets
+# CLAUDE_HOMUNCULUS_INTERNAL=1 on that spawn so this guard actually fires.
 if [ "${CLAUDE_HOMUNCULUS_INTERNAL:-}" = "1" ]; then
     exit 0
 fi

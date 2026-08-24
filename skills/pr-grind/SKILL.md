@@ -41,11 +41,10 @@ GitHub branch-protection settings encode org policy that pr-grind has no automat
 
 ## Architecture: Dispatcher + Per-Round Worker
 
-This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:
+This skill is a **thin dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent (opus, like every Claude route — ADR 0046), dispatched once per round. The split survives the model unification because neither of its reasons was price:
 
-- Cuts cost ~5× by running mechanical fix work on Sonnet
 - Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
-- Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
+- Separates author from reviewer: the dispatcher keeps triage of subagent results, bail handling, merge decisions, and the skip-file protocol out of the worker's context
 
 **This file is dispatcher-only. The worker does not read it.** `agents/pr-grinder.md`
 is self-contained for Steps 1–6.5 — the 3-phase check verification, the four feedback
@@ -1388,4 +1387,4 @@ When emitting the verbatim message template (from the canonical protocol — see
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
 - **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree.
 - **Gate:** Litmus runs inside the dispatcher-owned commit block before each fix commit; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
-- **Subagent:** `pr-grinder` (Sonnet) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.
+- **Subagent:** `pr-grinder` (opus) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.

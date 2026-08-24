@@ -17,10 +17,15 @@ const fs = require('fs');
 
 const MAX_TRANSCRIPT_CHARS = 7000;
 const MAX_TURNS = 25;
-const LLM_TIMEOUT_MS = 90000;
+// 25000, deliberately BELOW the 30000ms outer spawnSync bound that
+// scripts/hooks/run-with-flags.js applies to pre-compact.js (it has no
+// module.exports, so it takes runLegacySpawn). At 90000 the outer bound always
+// won, SIGTERMing the hook before the `if (!llmSummary)` fallback could write
+// anything. The ~5s reserve covers the hook's preamble plus that fallback write.
+const LLM_TIMEOUT_MS = 25000;
 
 function getLLMModel() {
-  return process.env.ECC_LLM_SUMMARY_MODEL || 'haiku';
+  return process.env.ECC_LLM_SUMMARY_MODEL || 'opus';
 }
 
 function getContextThreshold() {

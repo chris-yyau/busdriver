@@ -16,7 +16,7 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 def generate_spec(
     skill_path: Path,
-    model: str = "haiku",
+    model: str = "opus",
     max_retries: int = 2,
 ) -> ComplianceSpec:
     """Generate a compliance spec from a skill/rule file.
@@ -44,7 +44,7 @@ def generate_spec(
             ["claude", "-p", prompt, "--model", model, "--output-format", "text"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,  # opus per ADR 0046 — was 120s, sized for a cheaper model
         )
 
         if result.returncode != 0:

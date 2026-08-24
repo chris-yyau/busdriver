@@ -269,12 +269,12 @@
     {
       "path": "agents/code-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/code-reviewer.md"
     },
     {
       "path": "agents/code-simplifier.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/code-simplifier.md",
       "source": "ecc"
     },
@@ -286,7 +286,7 @@
     },
     {
       "path": "agents/conversation-analyzer.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/conversation-analyzer.md",
       "source": "ecc"
     },
@@ -300,13 +300,13 @@
     {
       "path": "agents/doc-updater.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/doc-updater.md"
     },
     {
       "path": "agents/e2e-runner.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/e2e-runner.md"
     },
     {

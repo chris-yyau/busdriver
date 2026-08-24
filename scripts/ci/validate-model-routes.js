@@ -121,6 +121,17 @@ function loadModel(file, rel) {
   return { model, fm };
 }
 
+/** Validate a fable agent's `tools:` line is single-line, parseable, and read-only. */
+function checkFableTools(rel, fm) {
+  const tools = parseTools(fm.tools);
+  if (!tools) {
+    return [`${rel} - fable agent needs a single-line, parseable, non-empty 'tools:'. Missing/empty/indented means INHERITED FULL ACCESS, not read-only`];
+  }
+  const bad = tools.filter(t => !READ_ONLY_TOOLS.has(t));
+  if (!bad.length) return [];
+  return [`${rel} - fable agent may not hold ${bad.join(', ')}. Allowed: ${[...READ_ONLY_TOOLS].join(', ')}`];
+}
+
 /** Validate a `model: fable` agent's allowlist membership and read-only capability. */
 function checkFableAgent(rel, fm, fableAllowed) {
   const errors = [];
@@ -133,20 +144,35 @@ function checkFableAgent(rel, fm, fableAllowed) {
       errors.push(`${rel} - duplicate '${key}' key on a fable agent`);
     }
   }
-  const tools = parseTools(fm.tools);
-  if (!tools) {
-    errors.push(`${rel} - fable agent needs a single-line, parseable, non-empty 'tools:'. Missing/empty/indented means INHERITED FULL ACCESS, not read-only`);
-  } else {
-    const bad = tools.filter(t => !READ_ONLY_TOOLS.has(t));
-    if (bad.length) {
-      errors.push(`${rel} - fable agent may not hold ${bad.join(', ')}. Allowed: ${[...READ_ONLY_TOOLS].join(', ')}`);
-    }
-  }
+  errors.push(...checkFableTools(rel, fm));
   const effort = (fm.effort || '').trim();
   if (!FABLE_EFFORTS.has(effort)) {
     errors.push(`${rel} - fable agent needs an explicit 'effort:' of ${[...FABLE_EFFORTS].join('|')} (got '${effort || '<missing>'}'), so it cannot pass here and fail tests/test-agent-effort-tiers.sh invariant (iv)`);
   }
   return errors;
+}
+
+/**
+ * Classify a single discovered agent file against the model-route policy.
+ * @returns {string[]} zero or more error strings for this file
+ */
+function classifyAgentFile(file, rootDir, fableAllowed) {
+  const rel = path.relative(rootDir, file).split(path.sep).join('/');
+  const loaded = loadModel(file, rel);
+  if (loaded.error) return [loaded.error];
+
+  const { model, fm } = loaded;
+  if (model === 'opus') return [];
+
+  if (model !== 'fable') {
+    const why = WEAKER_FAMILY.test(model)
+      ? `'${model}' is a weaker Claude tier`
+      : `'${model}' is not an accepted model`;
+    return [`${rel} - ${why}. Claude work routes must pin 'opus' (ADR 0046); 'fable' is allowed only for an allowlisted read-only advisory agent`];
+  }
+
+  // model === 'fable' from here.
+  return checkFableAgent(rel, fm, fableAllowed);
 }
 
 /**
@@ -162,25 +188,7 @@ function validateModelRoutes(opts = {}) {
   const errors = [];
 
   for (const file of opts.files || discoverAgentFiles(rootDir)) {
-    const rel = path.relative(rootDir, file).split(path.sep).join('/');
-    const loaded = loadModel(file, rel);
-    if (loaded.error) {
-      errors.push(loaded.error);
-      continue;
-    }
-    const { model, fm } = loaded;
-    if (model === 'opus') continue;
-
-    if (model !== 'fable') {
-      const why = WEAKER_FAMILY.test(model)
-        ? `'${model}' is a weaker Claude tier`
-        : `'${model}' is not an accepted model`;
-      errors.push(`${rel} - ${why}. Claude work routes must pin 'opus' (ADR 0046); 'fable' is allowed only for an allowlisted read-only advisory agent`);
-      continue;
-    }
-
-    // model === 'fable' from here.
-    errors.push(...checkFableAgent(rel, fm, fableAllowed));
+    errors.push(...classifyAgentFile(file, rootDir, fableAllowed));
   }
 
   return errors;

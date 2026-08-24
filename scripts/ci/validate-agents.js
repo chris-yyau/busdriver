@@ -8,7 +8,8 @@ const path = require('path');
 
 const AGENTS_DIR = path.join(__dirname, '../../agents');
 const REQUIRED_FIELDS = ['model', 'tools'];
-const VALID_MODELS = ['haiku', 'sonnet', 'opus'];
+// Model-VALUE policy lives in validate-model-routes.js (ADR 0046), which also covers
+// skills/*/agents/*.md. This file keeps required-field/duplicate checks for agents/.
 
 function extractFrontmatter(content) {
   // Strip BOM if present (UTF-8 BOM: \uFEFF)
@@ -78,12 +79,6 @@ function validateAgents() {
         hasErrors = true;
       }
     }
-
-    // Validate model is a known value
-    if (frontmatter.model && !VALID_MODELS.includes(frontmatter.model)) {
-      console.error(`ERROR: ${file} - Invalid model '${frontmatter.model}'. Must be one of: ${VALID_MODELS.join(', ')}`);
-      hasErrors = true;
-    }
   }
 
   if (hasErrors) {
@@ -93,4 +88,8 @@ function validateAgents() {
   console.log(`Validated ${files.length} agent files`);
 }
 
-validateAgents();
+if (require.main === module) {
+  validateAgents();
+}
+
+module.exports = { extractFrontmatter, validateAgents };

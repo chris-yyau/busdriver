@@ -15,7 +15,10 @@
 #      failure's only diagnostic routinely vanished before anyone read it.
 #
 # Every timeout assertion reads the pre-dispatch BANNER, so nothing here ever
-# waits on a real timeout — the suite runs in seconds.
+# waits on a real timeout — the suite runs in seconds. The single deliberate
+# exception is test 4g (issue #599): a genuine --timeout 1 with a sleeping
+# stub, the only live exercise of the timeout→archive path. It waits exactly
+# the 1s budget.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
@@ -71,6 +74,7 @@ trap cleanup EXIT
 
 mk_codex_ok()   { printf '#!/usr/bin/env bash\necho CODEX_OK\n'                        > "$STUB/codex"; chmod +x "$STUB/codex"; }
 mk_codex_fail() { printf '#!/usr/bin/env bash\necho "BOOM_DIAGNOSTIC"\nexit 3\n'       > "$STUB/codex"; chmod +x "$STUB/codex"; }
+mk_codex_sleep(){ printf '#!/usr/bin/env bash\nexec sleep 60\n'                              > "$STUB/codex"; chmod +x "$STUB/codex"; }
 
 BASE_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 banner() { PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" "$RUN_BASH" "$DISPATCH" "$@" 2>&1 | head -1; }
@@ -245,10 +249,32 @@ if [[ -s "$PIPE_ROOT/homunculus/dispatch-log.jsonl" ]] \
 else
   bad "SIGPIPE killed the script before log_event — the failed run left no audit trail"
 fi
-case "$PIPE_STATE" in
-  dispatchtest-pipe-*) rm -rf "$PIPE_ROOT" ;;
-  *) echo "REFUSING to remove unexpected pipe root '$PIPE_ROOT'" >&2 ;;
-esac
+# ── 4g. RUNTIME timeout (issue #599): a real short --timeout with a sleeping
+#      CLI must be logged as status=timeout AND archived, with the log line
+#      pointing at the durable failures/ copy. This is the one live exercise of
+#      the timeout→archive path; every other assertion in this suite reads the
+#      banner, so this is the deliberate single exception to "runs in seconds":
+#      the wait is exactly the 1s budget, not a poll.
+#      Calibration knob: --timeout 1 is the smallest legal value (0 and '' are
+#      rejected in test 3), and the stub sleeps 60s — it cannot finish within
+#      ANY budget the CLI accepts, so no platform timing tolerance is needed.
+#      Ceiling: adds ~1s (plus dispatch startup, which precedes the timer).
+rm -rf "$TEST_LOGROOT"
+mk_codex_sleep
+PATH="$BASE_PATH" BUSDRIVER_STATE_DIR="$TEST_STATE" BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0 \
+  "$RUN_BASH" "$DISPATCH" --cli codex --timeout 1 --prompt p >/dev/null 2>&1
+LOGF="$TEST_LOGROOT/homunculus/dispatch-log.jsonl"
+_TOUT_OUT=""
+[[ -f "$LOGF" ]] && _TOUT_OUT="$(grep -o '"output_file":"[^"]*"' "$LOGF")"
+_TOUT_OUT="${_TOUT_OUT#\"output_file\":\"}"
+_TOUT_OUT="${_TOUT_OUT%\"}"
+if [[ -f "$LOGF" ]] && grep -q '"status":"timeout"' "$LOGF" \
+   && [[ "$_TOUT_OUT" == "$TEST_LOGROOT"/homunculus/failures/* ]] \
+   && [[ -f "$_TOUT_OUT" ]]; then
+  ok "runtime timeout is logged as status=timeout and archived ($_TOUT_OUT)"
+else
+  bad "runtime timeout was not logged/archived (log=$_TOUT_OUT)"
+fi
 
 # ── 5. ...and the log line POINTS at the durable copy, not at the $TMPDIR path
 #      that may no longer exist. An archive nothing references is not a fix.

@@ -57,6 +57,10 @@
 # Fail-CLOSED: any subcommand failure → FETCH_OK=0; remaining vars stay at
 # their pre-call values (empty if first invocation).
 
+_fetch_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/head-push-date.sh disable=SC1091
+. "$_fetch_lib_dir/lib/head-push-date.sh"
+
 _fetch_pr_state() {
     local pr_number="${1:-}"
     if [[ -z "$pr_number" ]]; then
@@ -115,10 +119,14 @@ _fetch_pr_state() {
     # (Cubic P2: branch-agnostic payload.head match can pick up the wrong PushEvent
     # if two branches share the same tip SHA; filtering by payload.ref = refs/heads/<branch>
     # eliminates the ambiguity).
-    local _full_sha _sha _pr_json _pr_branch
-    _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName 2>/dev/null) || true
+    local _full_sha _sha _pr_json _pr_branch _pr_cross_repo _suites_json
+    _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || true
     _full_sha=$(printf '%s' "$_pr_json" | jq -r '.headRefOid // empty' 2>/dev/null) || true
     _pr_branch=$(printf '%s' "$_pr_json" | jq -r '.headRefName // empty' 2>/dev/null) || true
+    # Fork PRs: owner/name above are the BASE repo, whose events feed can never witness
+    # a branch living in the fork. Fail-closing them would stale every fork PR forever
+    # (#271-class). Unknown/unparseable ⇒ 0, i.e. the STRICT same-repo path.
+    _pr_cross_repo=$(printf '%s' "$_pr_json" | jq -r 'if .isCrossRepository == true then "1" else "0" end' 2>/dev/null || echo "0")
     _sha=$(printf '%s' "$_full_sha" | cut -c1-8)
     if [[ -n "$_sha" ]]; then
         HEAD_SHA="$_sha"
@@ -132,17 +140,14 @@ _fetch_pr_state() {
         # so a fetch failure must NOT trip FETCH_OK (that would stale every bot over an
         # unread value). Best-effort; empty on failure.
         HEAD_COMMITTED_DATE=$(gh api "repos/$owner/$name/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
-        # HEAD_PUSH_DATE is best-effort (events API caps at ~300 events / ~90 days);
-        # an empty result makes Tier F fail CLOSED to stale (no committer fallback,
-        # #189) and must NOT trip FETCH_OK. --paginate + slurp so a HEAD push on a later events
-        # page is still found; match on the full OID since payload.head is 40-char.
-        # Branch filter (payload.ref == refs/heads/<branch>) prevents picking up a
-        # PushEvent from a different branch that happens to share the same tip SHA.
-        local _ref="refs/heads/${_pr_branch:-}"
-        HEAD_PUSH_DATE=$(gh api --paginate "repos/$owner/$name/events?per_page=100" 2>/dev/null \
-            | jq -rs --arg head "$_full_sha" --arg ref "$_ref" \
-                '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' \
-                2>/dev/null || echo "")
+        # HEAD_PUSH_DATE is best-effort; bounded to one events page (#624). An empty
+        # result makes Tier F fail CLOSED to stale (no committer fallback, #189) and
+        # must NOT trip FETCH_OK. Match on the full OID since payload.head is 40-char.
+        # Branch filter prevents picking up a PushEvent from a different branch that
+        # shares the same tip SHA. Shared resolver: scripts/lib/head-push-date.sh.
+        HEAD_PUSH_CHECKS_FALLBACK_OK=0
+        resolve_head_push_date_with_fallback_gate "$owner" "$name" "$_full_sha" "$_pr_branch" "$_pr_cross_repo"
+        HEAD_PUSH_DATE="${HEAD_PUSH_DATE:-}"
         # BRANCH+SHA-bound fallback freshness anchor (#269): HEAD_PUSH_DATE (PushEvent) is
         # preferred, but it is empty for a brand-new branch whose FIRST push CREATED the ref
         # (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
@@ -171,14 +176,24 @@ _fetch_pr_state() {
         # deleted/fork branch) we cannot confirm the suite belongs to this PR — fail
         # closed to stale (one extra wait-round / codex-retrigger) rather than risk a
         # backdated ack. The guard is deliberate, not dead code.
-        if [[ -z "$HEAD_PUSH_DATE" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
+        if [[ -z "$HEAD_PUSH_DATE" && "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}" = "1" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
             # shellcheck disable=SC2312  # gh failure is intentionally masked → best-effort (|| echo "")
-            HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null \
+            _suites_json=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null || echo "")
+            HEAD_CHECKS_DATE=$(printf '%s' "$_suites_json" \
                 | jq -rs --arg sha "$_full_sha" \
                     '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
                 2>/dev/null || echo "")
+            # Drop a suite predating this branch's creation (#624 R2). Shared helpers so
+            # the three consumers cannot drift; no-op when either date is empty.
+            apply_head_checks_floor
+            # ...but do not lose a VALID post-creation suite with it (#743 Codex P2):
+            # re-select the earliest suite AT/AFTER the floor from the same response.
+            if [[ -z "$HEAD_CHECKS_DATE" && -n "${HEAD_PUSH_CREATE_DATE:-}" ]]; then
+                HEAD_CHECKS_DATE=$(head_checks_date_after_floor_from_suites_json \
+                    "$_suites_json" "$_full_sha" "$HEAD_PUSH_CREATE_DATE")
+            fi
         fi
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
@@ -208,7 +223,8 @@ _fetch_pr_state() {
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
     # can read these without the caller needing a separate export step.
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_PUSH_CHECKS_FALLBACK_OK \
+        HEAD_PUSH_CREATE_DATE HEAD_SHA HEAD_FULL_SHA
 
     return 0
 }

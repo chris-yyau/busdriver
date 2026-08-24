@@ -1,3 +1,66 @@
+## [1.110.14](https://github.com/chris-yyau/busdriver/compare/v1.110.13...v1.110.14) (2026-08-23)
+
+
+### Bug Fixes
+
+* **gitcmd_detect:** narrow the [#589](https://github.com/chris-yyau/busdriver/issues/589) glob rule to quoted literals ([#589](https://github.com/chris-yyau/busdriver/issues/589)) ([#749](https://github.com/chris-yyau/busdriver/issues/749)) ([419f60e](https://github.com/chris-yyau/busdriver/commit/419f60ebd63a82d6dcdf1ba253947136ddd3bb51))
+
+## [1.110.13](https://github.com/chris-yyau/busdriver/compare/v1.110.12...v1.110.13) (2026-08-23)
+
+
+### Bug Fixes
+
+* **pr-grind:** bound HEAD_PUSH_DATE events fetch to one page ([#624](https://github.com/chris-yyau/busdriver/issues/624)) ([#743](https://github.com/chris-yyau/busdriver/issues/743)) ([9763781](https://github.com/chris-yyau/busdriver/commit/976378163d6359e429b689e87ad15e186e24b1e1)), closes [#269](https://github.com/chris-yyau/busdriver/issues/269) [#271-class](https://github.com/chris-yyau/busdriver/issues/271-class) [269/#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271) [#271](https://github.com/chris-yyau/busdriver/issues/271)
+
+## [1.110.12](https://github.com/chris-yyau/busdriver/compare/v1.110.11...v1.110.12) (2026-08-23)
+
+
+### Bug Fixes
+
+* **dispatcher:** treat zombie children as dead without group enumeration ([#582](https://github.com/chris-yyau/busdriver/issues/582)) ([#746](https://github.com/chris-yyau/busdriver/issues/746)) ([1fe6667](https://github.com/chris-yyau/busdriver/commit/1fe66675559a223eb11ebf4617d9d4729e3a3d66))
+
+## [1.110.11](https://github.com/chris-yyau/busdriver/compare/v1.110.10...v1.110.11) (2026-08-23)
+
+
+### Bug Fixes
+
+* **lease:** return skip slots only when audit append definitely did not write ([#549](https://github.com/chris-yyau/busdriver/issues/549)) ([#744](https://github.com/chris-yyau/busdriver/issues/744)) ([af79942](https://github.com/chris-yyau/busdriver/commit/af79942e3ca71aa3c51bee6b3a929fad760558eb))
+
+## [1.110.10](https://github.com/chris-yyau/busdriver/compare/v1.110.9...v1.110.10) (2026-08-23)
+
+
+### Bug Fixes
+
+* **careful-guard:** gate rm scan on command position, honor quote provenance ([#585](https://github.com/chris-yyau/busdriver/issues/585)) ([#741](https://github.com/chris-yyau/busdriver/issues/741)) ([aa507cd](https://github.com/chris-yyau/busdriver/commit/aa507cde4fb79079e35eee5a3fb0ecaf4f98a71a))
+
+## [1.110.9](https://github.com/chris-yyau/busdriver/compare/v1.110.8...v1.110.9) (2026-08-23)
+
+
+### Bug Fixes
+
+* **codex-retrigger:** keep the claim while a nudge post is in flight ([#677](https://github.com/chris-yyau/busdriver/issues/677)) ([#739](https://github.com/chris-yyau/busdriver/issues/739)) ([4f526e7](https://github.com/chris-yyau/busdriver/commit/4f526e7682d07fdd0aec2deb35d7c4ffeb56ef5f))
+
+## [1.110.8](https://github.com/chris-yyau/busdriver/compare/v1.110.7...v1.110.8) (2026-08-23)
+
+
+### Bug Fixes
+
+* **skills:** align planned pipeline with ADR 0038 test ordering ([#653](https://github.com/chris-yyau/busdriver/issues/653)) ([#736](https://github.com/chris-yyau/busdriver/issues/736)) ([f35704c](https://github.com/chris-yyau/busdriver/commit/f35704c910c66fe8688b4dd3d3207d435297bc15))
+
+## [1.110.7](https://github.com/chris-yyau/busdriver/compare/v1.110.6...v1.110.7) (2026-08-22)
+
+
+### Bug Fixes
+
+* **blueprint-review:** salvage complete reviewer verdicts on non-zero exit ([#714](https://github.com/chris-yyau/busdriver/issues/714)) ([#738](https://github.com/chris-yyau/busdriver/issues/738)) ([af1d531](https://github.com/chris-yyau/busdriver/commit/af1d531be177f12115e43c3e4e57ac4182582e65)), closes [#616](https://github.com/chris-yyau/busdriver/issues/616) [#704](https://github.com/chris-yyau/busdriver/issues/704)
+
+## [1.110.6](https://github.com/chris-yyau/busdriver/compare/v1.110.5...v1.110.6) (2026-08-22)
+
+
+### Bug Fixes
+
+* **gates:** bind for/select loop variables in marker_check ([#638](https://github.com/chris-yyau/busdriver/issues/638)) ([#728](https://github.com/chris-yyau/busdriver/issues/728)) ([0ba72cc](https://github.com/chris-yyau/busdriver/commit/0ba72cc131027e03aa2a9ccd2e46f6c00df8b3ff)), closes [516/#539](https://github.com/chris-yyau/busdriver/issues/539) [#643](https://github.com/chris-yyau/busdriver/issues/643)
+
 ## [1.110.5](https://github.com/chris-yyau/busdriver/compare/v1.110.4...v1.110.5) (2026-08-22)
 
 

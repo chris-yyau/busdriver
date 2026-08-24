@@ -1975,6 +1975,97 @@ def toks_once(seg, _cache={}):  # noqa: B006 - deliberate per-scan memo, see bel
         _cache[seg] = got
     return got
 
+def _quoted_literal(raw):
+    """True iff this RAW spelling wraps the whole token in one pair of quotes.
+
+    Both quote styles count: bash performs pathname expansion on neither, so the
+    glob characters inside are literal filename characters either way. `None`
+    (raw stream unavailable or unaligned -- see _raw_tokens) is False, which is
+    the fail-CLOSED answer.
+    """
+    return (raw is not None and len(raw) > 1
+            and raw[0] == raw[-1] and raw[0] in '\047\042'
+            and raw[0] not in raw[1:-1])
+
+
+def _fallback_interpreter_name(tok, raw=None):
+    """`_interpreter_name` for the any-position scan, with ONE narrowing: a
+    glob-shaped word that did NOT resolve to a real interpreter is not the `sh`
+    stand-in (#589).
+
+    That is the whole of #589. `_interpreter_name` fnmatches a glob-shaped token
+    against `_INTERPRETERS` first, so `/bin/ba?h` and `'./b*sh'` still resolve to
+    `bash` and stay fail-CLOSED; only the fall-through — a word that matches no
+    interpreter at all, like `'*.py'` — stops being promoted.
+
+    QUOTED ONLY, which is the load-bearing half and why `raw` is threaded in.
+    shlex strips quotes, so `tok` alone cannot tell `'*.py'` (data: bash performs
+    no pathname expansion inside quotes, so it can only name a file literally
+    called `*.py`) from `./*.py` (a real glob, which expands to whatever is on
+    disk). Narrowing on `tok` alone therefore suppressed the UNQUOTED form too —
+    and `X=$(printf x y) ./*.py -c 'git commit -m x'` runs bash whenever the
+    glob catches a shell, e.g. a `shell.py` symlink. That is a bypass, not the
+    documented literal-file exclusion. `_raw_tokens` carries the spelling
+    verbatim; an unavailable or unaligned raw stream makes `_quoted_literal`
+    False, so the narrowing simply does not apply — fail CLOSED.
+
+    The test is RESOLUTION, not the returned name. `name == 'sh'` cannot express
+    it: `_interpreter_name` answers `sh` both for the stand-in it invents when a
+    glob reaches nothing AND for a glob that genuinely resolves to the real
+    `sh` -- `/bin/?h` fnmatches `sh`, so comparing names suppressed a shell that
+    actually runs, and `/bin/?h -c 'git commit -m x'` went undetected. Asking
+    whether the returned interpreter itself still matches the pattern separates
+    them: a resolved glob matches (`bash` vs `ba?h`, `sh` vs `?h`), the stand-in
+    does not (`sh` vs `*.py`).
+
+    The whole rule rests on "fnmatch found nothing, so bash finds nothing", and
+    that premise holds for ONLY `*` and `?` on a plain word. Every construct
+    where the two disagree is excluded rather than modelled, because modelling
+    them is the ladder this file exists to stop climbing:
+
+      [        no POSIX bracket CLASSES in fnmatch, so `/bin/ba[[:alpha:]]h`
+               expands to /bin/bash for the shell and to nothing here
+      $ `      an expansion resolves BEFORE globbing; `b$a*sh` may reach bash
+      { (      brace expansion and extglob, per _unreadable_word
+      \\        an escape fnmatch does not honour the way the shell does
+
+    Case is handled rather than excluded: the resolution test lowercases both
+    sides, because `bash -O nocaseglob` expands `/bin/B?SH` to /bin/bash while
+    `fnmatchcase` refuses it — suppressing on that non-match was a bypass. Any
+    interpreter the pattern could reach in ANY case blocks the narrowing, which
+    is the fail-CLOSED direction. This honours the `return 'sh'` refusal
+    `_interpreter_name` documents instead of undoing it.
+
+    Narrowed to words whose ONLY unreadable feature is the glob. `_unreadable_word`
+    is true for `$`, a backtick, a brace and a paren as well, so gating on it
+    wholesale would have disabled this rule entirely -- every glob is unreadable
+    by that test. Requiring the absence of the others keeps `b$a*sh` a
+    fail-CLOSED stand-in: the shell expands `$a` before globbing and may well
+    reach `bash`, so it is not an unresolved glob literal. #589 is about glob
+    literals; it does not re-open the unreadable-word hole.
+    """
+    name = _interpreter_name(tok)
+    word = _norm_cmd_word(tok)
+    if name is None:
+        return name
+    if not _quoted_literal(raw):
+        # Unquoted `./*.py` really globs and reaches a shell when expansion catches one.
+        return name
+    if word in _INTERPRETERS:
+        # A literal interpreter name is not a glob.
+        return name
+    if not re.search(r'[*?]', word):
+        # Only `*` and `?` are where fnmatch and bash agree.
+        return name
+    if re.search(r'[\[$`{(\\]', tok):
+        # fnmatch has no POSIX bracket classes; `$`, backtick, brace, paren, and
+        # backslash all resolve before globbing.
+        return name
+    if any(fnmatch.fnmatchcase(i.lower(), word.lower()) for i in _INTERPRETERS):
+        # A resolving glob still names a shell; `bash -O nocaseglob` expands `/bin/B?SH`.
+        return name
+    return None
+
 
 def _shell_payloads(cmd):
     """Strings an interpreter/eval will itself execute — `bash -c '<s>'`,
@@ -2120,9 +2211,62 @@ def _shell_payloads(cmd):
         # payload was missed - the fail-OPEN this bound exists to avoid.
         upto = (len(toks_once(seg)) - len(_first_reading) + 1
                 if _first_reading else None)
+        torn = _torn_assignment(toks_once(seg), upto)
         if not _first_reading or not _READABLE_NAME.match(_first_reading[0]) \
-                or _torn_assignment(toks_once(seg), upto):
+                or torn:
             toks = toks_once(seg)
+            # NO POSITIONAL NARROWING HERE, and the attempt is recorded so it is
+            # not retried. #589's review round asked for exactly that: once the
+            # walk returns a suffix, `len(toks) - len(argv)` is the command
+            # word's index, so "only that index may name an interpreter" reads
+            # like a free precision win. It is not. The index is trustworthy
+            # only when the walk READ a command word, and this branch is
+            # reached precisely when it did not -- the walk landed on nothing,
+            # on debris no command is named, or the segment TORE. Narrowing to
+            # that index is therefore narrowing to a token the tear already
+            # invalidated, and it is fail-OPEN twice over:
+            #
+            #   * Gated on the index alone, these six all stop being detected,
+            #     and every one is verified to run the commit in the child
+            #     (they are the `torn-nested+` rows in tests/):
+            #         X=$((1 + 2)) bash -c "git commit -m x"
+            #         X=${foo:-a b} bash -c "git commit -m x"
+            #         X=$(printf x y) bash -c "git commit -m x"
+            #         X=<(printf x y) bash -c "git commit -m x"
+            #         env A-B=$((1 + 2)) bash -c "git commit -m x"
+            #         env -u x X=$(printf x y) bash -c "git commit -m x"
+            #     Measured: 10 of 1,808 spec checks fail, the six above plus the
+            #     two `(accepted)` rows and two `eval` rows.
+            #   * Gated on the index only when the segment is NOT torn, it still
+            #     suppressed a later interpreter behind an unreadable command
+            #     word: `./+ bash -c 'git commit -m x'` went DETECTED -> not
+            #     detected against main (`./+` may be a dispatcher running
+            #     `exec "$@"`). That spelling shipped briefly on this branch and
+            #     is what this comment exists to stop coming back.
+            #
+            # The reviewer's own reproducer -- `X=$(printf x y) printf '%s' bash
+            # -c 'git commit -m x'`, where `bash` is a printf ARGUMENT -- stays
+            # DETECTED, deliberately. Telling it apart from the third row above
+            # means knowing where `$(` closes, which is the span rebuild this
+            # file reverted after five verified bypasses (a quoted closer,
+            # `X=$(printf ")" x) bash -c '<s>'`, forges the boundary). It is the
+            # same accepted echo/printf-argument-after-tear cost the block above
+            # already prices, it is pre-existing on main rather than new here,
+            # and it costs a visible stall, never a bypass. Pinned as
+            # `torn-nested~ (accepted-current)` in tests/test-gitcmd-detect.sh
+            # with the condition under which it may be retired; see
+            # docs/adr/0045-torn-assignment-any-position-recovery.md.
+            # Quote provenance for the #589 narrowing, aligned 1:1 with `toks`.
+            # Unavailable or unaligned -> None, and _quoted_literal then refuses
+            # to narrow anything (fail CLOSED). The length re-check covers the
+            # case where toks_once fell back to its own split on a _tokenize
+            # failure, which _raw_tokens cannot know about.
+            try:
+                _raws = _raw_tokens(seg)
+            except Exception:           # noqa: BLE001 - fail CLOSED, never narrow
+                _raws = None
+            if _raws is not None and len(_raws) != len(toks):
+                _raws = None
             first_interp = first_eval = -1
             canon = {}
             for k, tok in enumerate(toks):
@@ -2145,7 +2289,8 @@ def _shell_payloads(cmd):
                 if _ASSIGN_TOK_RE.match(tok) or (
                         _ENV_ASSIGN_TOK_RE.match(tok) and not _unreadable_word(tok)):
                     continue
-                name = _interpreter_name(tok)
+                name = _fallback_interpreter_name(
+                    tok, _raws[k] if _raws is not None else None)
                 if name is not None and first_interp < 0:
                     first_interp, canon[k] = k, name
                 # BOTH, not elif. An unreadable word resolves to the `sh`

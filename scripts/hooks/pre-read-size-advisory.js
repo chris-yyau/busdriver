@@ -127,7 +127,7 @@ function fdRealPath(fd) {
   }
 }
 
-function countLines(openPath, cwdReal) {
+function countLines(openPath, cwdReal, rootStat) {
   let fd;
   try {
     // O_NOFOLLOW defends the final component against symlink swaps. The
@@ -141,7 +141,14 @@ function countLines(openPath, cwdReal) {
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
     const fdPath = fdRealPath(fd);
-    if (fdPath === null) return null;
+        if (fdPath === null) return null;
+    // The root's DIRECTORY identity must be unchanged since capture: a
+    // rename-and-replace of the root pathname is rejected here, and an ABA
+    // restore moves the fd's file out of the root string (the kernel path
+    // follows the renames) — either way the probe stays inside the original
+    // trusted root.
+    const rootNow = fs.statSync(cwdReal);
+    if (rootNow.dev !== rootStat.dev || rootNow.ino !== rootStat.ino) return null;
     // String-descendant test against the root captured at hook start. The root
     // '/' case must not become '//' (a bare-prefix comparison would reject
     // every descendant and silently disable the advisory).
@@ -153,18 +160,22 @@ function countLines(openPath, cwdReal) {
     // scanned (the bounded probe). Budget exhausted with the count still
     // unknown → silent; the advisory only fires on a VERIFIED over-threshold.
     const window = scanWindow(fd, Math.min(stat.size, MAX_WORK_BYTES), buffer);
-    if (window === null) return null;
+        if (window === null) return null;
+    // Re-stat after the scan: a concurrent truncation makes the pre-read
+    // stat.size stale, and the 201-proof below must reason about the file's
+    // CURRENT size (a scan that hit the new EOF proves nothing beyond it).
+    const current = fs.fstatSync(fd);
 
-    if (window.lines > THRESHOLD) return window.lines;
+        if (window.lines > THRESHOLD) return window.lines;
     // A fully-scanned window with exactly THRESHOLD newlines still VERIFIES a
     // THRESHOLD+1st line when the scan ended mid-line or more bytes follow the
     // window: any byte after the last newline (or a continuing line) means a
     // further line exists. Beyond-window bytes are outside the bounded probe's
     // NUL scope, so this cannot misfire on window-unseen binary markers.
-    if (window.lines === THRESHOLD && (window.lastByte !== 0x0a || window.offset < stat.size)) {
+        if (window.lines === THRESHOLD && (window.lastByte !== 0x0a || window.offset < current.size)) {
       return THRESHOLD + 1;
     }
-    if (window.offset < stat.size) return null;
+        if (window.offset < current.size) return null;
     return window.lastByte !== 0x0a ? window.lines + 1 : window.lines;
   } catch {
     return null;
@@ -201,9 +212,12 @@ function run(inputOrRaw, _options = {}) {
   // Canonicalize the trust root ONCE, before any containment or open: the
   // opened fd's kernel path is compared against THIS fixed string, so a swap
   // of cwd's own components after this point cannot re-anchor the check.
-  let cwdReal;
+    let cwdReal;
+  let rootStat;
   try {
-    cwdReal = fs.realpathSync(cwd);
+        cwdReal = fs.realpathSync(cwd);
+    const s = fs.statSync(cwdReal);
+    rootStat = { dev: s.dev, ino: s.ino };
   } catch {
     return { exitCode: 0 };
   }
@@ -212,7 +226,7 @@ function run(inputOrRaw, _options = {}) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved, cwdReal);
+    const lines = countLines(resolved, cwdReal, rootStat);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }

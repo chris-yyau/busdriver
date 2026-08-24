@@ -260,4 +260,45 @@ describe('pre-read-size-advisory', () => {
     expect(additionalContextOf(run(payload(oversized)))).toBe('')
     expect(reads).toBe(0)
   })
+
+  it('stays silent for every control-character path (property sweep)', () => {
+    const controls = Array.from({ length: 32 }, (_, i) => String.fromCharCode(i))
+      .concat('\x7f', '\u0085', '\u2028', '\u2029')
+    for (const c of controls) {
+      expect(additionalContextOf(run(payload(`evil${c}name`)))).toBe('')
+    }
+  })
+
+  it('advises above, silent at and below the threshold (boundary sweep)', () => {
+    const below = join(dir, 'sweep-below.txt')
+    const at = join(dir, 'sweep-at.txt')
+    const above = join(dir, 'sweep-above.txt')
+    writeFileSync(below, 'line\n'.repeat(THRESHOLD - 1))
+    writeFileSync(at, 'line\n'.repeat(THRESHOLD))
+    writeFileSync(above, 'line\n'.repeat(THRESHOLD + 1))
+    expect(additionalContextOf(run(payload(below)))).toBe('')
+    expect(additionalContextOf(run(payload(at)))).toBe('')
+    expect(additionalContextOf(run(payload(above)))).toContain('exceeds the ~200-line self-read threshold')
+  })
+
+  it('bounds short-read sequences of any length (property sweep)', () => {
+    const sweep = join(dir, 'sweep-short-reads.bin')
+    writeFileSync(sweep, `${'line\n'.repeat(THRESHOLD + 5)}${'a'.repeat(1024 * 1024)}`)
+    for (const step of [1, 4, 64, 4096, 65536]) {
+      let calls = 0
+      const originalRead = fs.readSync.bind(fs)
+      vi.spyOn(fs, 'readSync').mockImplementation((...args: unknown[]) => {
+        calls++
+        const len = Math.min(step, args[3] as number)
+        return (originalRead as (...a: unknown[]) => number)(args[0] as number, args[1] as Buffer, args[2] as number, len, args[4] as number)
+      })
+
+      const text = additionalContextOf(run(payload(sweep)))
+      expect(calls).toBeLessThanOrEqual(Math.ceil((1024 * 1024) / (64 * 1024)) + 2)
+      if (step === 65536) {
+        expect(text).toContain('exceeds the ~200-line self-read threshold')
+      }
+      vi.restoreAllMocks()
+    }
+  })
 })

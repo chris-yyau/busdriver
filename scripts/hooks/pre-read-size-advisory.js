@@ -20,12 +20,14 @@ const MAX_STDIN = 1024 * 1024;
 const THRESHOLD = 200;
 const READ_CHUNK = 64 * 1024;
 const MAX_SCAN_BYTES = 50 * 1024 * 1024;
+const MAX_WORK_BYTES = 1024 * 1024;
 const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0);
 let data = '';
 
+// Strict: callers must pass a string (run() guards typeof first). No
+// coercion — a wrong-typed file_path must stay silent, never throw.
 function isSafePath(filePath) {
-  const value = String(filePath);
-  return value.length > 0 && !/[\x00-\x1f\x7f\u0085\u2028\u2029]/.test(value);
+  return filePath.length > 0 && !/[\x00-\x1f\x7f\u0085\u2028\u2029]/.test(filePath);
 }
 
 // Resolve <filePath> against the payload cwd (the trusted workspace root) and
@@ -57,8 +59,12 @@ function countLines(filePath) {
     let lines = 0;
     let lastByte = 0;
     let offset = 0;
+    // Fixed work budget independent of newline count: a newline-sparse file
+    // must not be read in full. Budget exhausted with the count still unknown
+    // → silent (fail-open: the advisory only fires on a VERIFIED over-threshold).
+    const scanEnd = Math.min(stat.size, MAX_WORK_BYTES);
 
-    while (offset < stat.size) {
+    while (offset < scanEnd) {
       const toRead = Math.min(READ_CHUNK, stat.size - offset);
       const read = fs.readSync(fd, buffer, 0, toRead, offset);
       if (read <= 0) break;
@@ -74,6 +80,10 @@ function countLines(filePath) {
       offset += read;
     }
 
+    if (offset < stat.size) {
+      // Budget exhausted before EOF: line count unknown → stay silent.
+      return null;
+    }
     if (lastByte !== 0x0a) lines++;
     return lines;
   } catch {
@@ -103,11 +113,11 @@ function run(inputOrRaw, _options = {}) {
   }
 
   const { file_path: filePath, offset, limit } = input?.tool_input || {};
-  if (offset !== undefined || limit !== undefined || !filePath || !isSafePath(filePath)) {
+  if (offset !== undefined || limit !== undefined || typeof filePath !== 'string' || !filePath || !isSafePath(filePath)) {
     return { exitCode: 0 };
   }
 
-  const resolved = resolveContained(String(filePath), input?.cwd || process.cwd());
+  const resolved = resolveContained(filePath, input?.cwd || process.cwd());
   if (resolved === null) {
     return { exitCode: 0 };
   }

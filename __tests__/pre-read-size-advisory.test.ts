@@ -98,6 +98,16 @@ describe('pre-read-size-advisory', () => {
     expect(additionalContextOf(run(payload(largeFile, { cwd: otherDir })))).toBe('')
   })
 
+  it('stays silent for a wrong-typed file_path (never throws)', () => {
+    const malformed = JSON.stringify({
+      tool: 'Read',
+      cwd: testDir,
+      tool_input: { file_path: { toString: null, valueOf: null } },
+    })
+    expect(() => run(malformed)).not.toThrow()
+    expect(additionalContextOf(run(malformed))).toBe('')
+  })
+
   it('counts the final line when the file has no trailing newline', () => {
     const noTrailingNewline = join(dir, 'no-trailing.txt')
     writeFileSync(noTrailingNewline, `${'line\n'.repeat(THRESHOLD)}final-line`)
@@ -131,6 +141,21 @@ describe('pre-read-size-advisory', () => {
     expect(text).toContain('exceeds the ~200-line self-read threshold')
     expect(bytesRequested).toBeGreaterThan(0)
     expect(bytesRequested).toBeLessThan(2 * 1024 * 1024)
+  })
+
+  it('stops at the work budget for newline-sparse files (bounded work)', () => {
+    const sparse = join(dir, 'no-newline-sparse.bin')
+    writeFileSync(sparse, 'a'.repeat(1024 * 1024 + 1))
+    let bytesRequested = 0
+    const originalRead = fs.readSync.bind(fs)
+    vi.spyOn(fs, 'readSync').mockImplementation((...args: unknown[]) => {
+      bytesRequested += args[3] as number
+      return (originalRead as (...a: unknown[]) => number)(...args)
+    })
+
+    expect(additionalContextOf(run(payload(sparse)))).toBe('')
+    expect(bytesRequested).toBeGreaterThan(0)
+    expect(bytesRequested).toBeLessThanOrEqual(1024 * 1024)
   })
 
   it('stays silent for files over the scan cap without reading them', () => {

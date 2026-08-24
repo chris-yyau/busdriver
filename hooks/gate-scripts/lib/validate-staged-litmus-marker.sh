@@ -133,16 +133,17 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         return 1
     fi
 
+    if gate_skip_file_repo_controlled "$repo_dir" "$state_dir/litmus-passed.local"; then
+        gate_marker_unlink "$repo_dir" "$state_dir"
+        GATE_VALIDATE_REASON="Review marker cannot be repository-controlled (committed or index-staged). Run /litmus."
+        return 1
+    fi
+
     if echo "$marker_content" | grep -q "^DEGRADED"; then
         gate_marker_unlink "$repo_dir" "$state_dir"
         GATE_VALIDATE_REASON="Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $state_dir/skip-litmus.local to bypass."
         return 1
     elif [[ "$marker_content" =~ ^SKIPPED-NONE-[0-9]+$ ]]; then
-        if gate_skip_file_repo_controlled "$repo_dir" "$state_dir/litmus-passed.local"; then
-            gate_marker_unlink "$repo_dir" "$state_dir"
-            GATE_VALIDATE_REASON="SKIPPED-NONE marker cannot be repository-controlled (committed or index-staged). Run /litmus."
-            return 1
-        fi
         local skipped_epoch skipped_age now_epoch
         skipped_epoch=${marker_content#SKIPPED-NONE-}
         if [[ ! "$skipped_epoch" =~ ^[0-9]{1,10}$ ]]; then

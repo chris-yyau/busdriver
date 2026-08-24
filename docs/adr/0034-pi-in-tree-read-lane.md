@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted. Implemented in `skills/dispatch-cli/scripts/dispatch.sh` (`pi)` arm),
-`scripts/lib/resolve-cli.sh` (`resolve_pi_model`), `tests/test-pi-dispatch-arm.sh`.
+Accepted. Implemented in `skills/dispatch-cli/scripts/dispatch.sh` (`pi-read)` arm),
+`scripts/lib/resolve-cli.sh` (`resolve_pi_read_model`), `tests/test-pi-dispatch-arm.sh`.
 
 ## Context
 
@@ -35,7 +35,7 @@ runs in the working tree by default.
 
 ## Decision
 
-Add a `pi` arm to `dispatch-cli` that **runs inside the working tree**, with:
+Add a `pi-read` arm to `dispatch-cli` that **runs inside the working tree**, with:
 
 1. **A positive tool allowlist — `--tools read`.** Not a denylist.
 2. **Six project-config kill switches** — `--no-approve --no-context-files
@@ -43,7 +43,7 @@ Add a `pi` arm to `dispatch-cli` that **runs inside the working tree**, with:
    `--no-session`).
 3. **Read-only by construction.** The arm ignores `--mode`, and is excluded from
    `--cli all --mode auto` batches so it can never appear as a writer.
-4. **Model configurable at `~/.claude/busdriver.json` → `{"pi": {"model":
+4. **Model configurable at `~/.claude/busdriver.json` → `{"pi_read": {"model":
    "provider/id"}}`**, resolved through the same hardened reader as
    `.auditor.model`: USER config only, no env override, password-DB-derived
    `$HOME`, `env -i` child, validate-and-default inside the child, result
@@ -52,7 +52,7 @@ Add a `pi` arm to `dispatch-cli` that **runs inside the working tree**, with:
    for the provider named by the resolved model.
 6. **No droid escalation on failure.** Every other read-only voice falls back to
    `droid exec` when it errors. pi must not: the operator picked the provider at
-   `.pi.model`, and that key exists to control *which* third party sees repo
+   `.pi_read.model`, and that key exists to control *which* third party sees repo
    source, so a silent re-send elsewhere defeats it — and the fallback would
    overwrite the pi error this lane surfaces deliberately.
 
@@ -71,8 +71,13 @@ carried a second shell (`hypa_shell`), web fetch/search (`exa_*`), and a
 set grows with every extension the operator installs.
 
 One config key carries provider *and* model because that is pi's own reference
-form, which lets `.pi.model` reuse `.auditor.model`'s validation regex verbatim
+form, which lets `.pi_read.model` reuse `.auditor.model`'s validation regex verbatim
 instead of introducing a second config grammar.
+
+The route/key rename is a hard cut: legacy `--cli pi` and `.pi.model` are not
+aliased. A legacy-only config refuses with a migration message; `--cli pi` refuses
+with its own. There is no shipped default to fall through to — an unset or invalid
+`.pi_read.model` resolves empty and the lane skips.
 
 ## Alternatives considered
 
@@ -171,10 +176,10 @@ instead of introducing a second config grammar.
   the flags, without them, and with `--approve`. No failing case could be
   produced, so it tested nothing. Whether pi honours the `--no-*` flags is pi's
   contract; this suite does not claim to prove it.
-- The shipped default requires its provider workspace's China-hosting opt-in;
-  without it the provider returns HTTP 403 `RegionError`. The arm therefore
-  merges child stderr into the transcript so that reads as a provider error, not
-  a silent dead voice. Operators without the opt-in set a different `.pi.model`.
+- A *configured* model may be region-gated: some providers return HTTP 403
+  `RegionError` without their workspace opt-in. The arm therefore merges child
+  stderr into the transcript so that reads as a provider error, not a silent dead
+  voice. There is no shipped default, so an unconfigured lane skips instead.
 
 ## Revisit trigger
 

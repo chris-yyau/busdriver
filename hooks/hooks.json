@@ -184,6 +184,16 @@
         "description": "Doc file warning: warn about non-standard documentation files"
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:read:size-advisory\" \"scripts/hooks/pre-read-size-advisory.js\" \"standard,strict\""
+          }
+        ],
+        "description": "Advisory: surface when a wholesale Read targets a file verifiably over ~200 lines within a bounded probe (50 MiB cap, 1 MiB scan window)"
+      },
+      {
         "matcher": "Edit|Write",
         "hooks": [
           {

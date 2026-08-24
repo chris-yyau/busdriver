@@ -3,15 +3,18 @@
  * Read size advisory (PreToolUse - Read)
  *
  * Fail-open advisory: when a wholesale Read targets a file over ~200 lines,
- * surface the line count and narrowing-first guidance. Silent when limit is
- * already set, under threshold, or on any error. Never blocks, never reads
- * file content into context.
+ * surface that it exceeds the self-read threshold and narrowing-first
+ * guidance. Silent when limit/offset is set, under threshold, outside the
+ * workspace root, or on any error. Never blocks, never reads file content
+ * into context.
  */
 
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const { buildPreToolUseAdditionalContext } = require('./pretooluse-visible-output');
+const { assertWithinTrustedRoot } = require('../lib/path-safety.js');
 
 const MAX_STDIN = 1024 * 1024;
 const THRESHOLD = 200;
@@ -23,6 +26,22 @@ let data = '';
 function isSafePath(filePath) {
   const value = String(filePath);
   return value.length > 0 && !/[\x00-\x1f\x7f\u0085\u2028\u2029]/.test(value);
+}
+
+// Resolve <filePath> against the payload cwd (the trusted workspace root) and
+// reject anything whose realpath escapes it. The hook must not become a
+// side-channel that opens/scans paths the Read operation's own permission
+// decision would deny. Delegates the containment boundary to the canonical
+// path-safety primitive (realpath both sides, reject escapes); a missing or
+// unresolvable target stays silent (fail-open advisory).
+function resolveContained(filePath, cwd) {
+  try {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- resolve only canonicalizes against the payload cwd; assertWithinTrustedRoot enforces the realpath containment boundary on the result.
+    const abs = path.resolve(cwd, filePath);
+    return assertWithinTrustedRoot(abs, cwd);
+  } catch {
+    return null;
+  }
 }
 
 function countLines(filePath) {
@@ -46,7 +65,10 @@ function countLines(filePath) {
       if (buffer.subarray(0, read).includes(0)) return null;
 
       for (let i = 0; i < read; i++) {
-        if (buffer[i] === 0x0a) lines++;
+        if (buffer[i] === 0x0a) {
+          lines++;
+          if (lines > THRESHOLD) return lines;
+        }
         lastByte = buffer[i];
       }
       offset += read;
@@ -85,7 +107,12 @@ function run(inputOrRaw, _options = {}) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(String(filePath));
+  const resolved = resolveContained(String(filePath), input?.cwd || process.cwd());
+  if (resolved === null) {
+    return { exitCode: 0 };
+  }
+
+  const lines = countLines(resolved);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }
@@ -93,7 +120,7 @@ function run(inputOrRaw, _options = {}) {
   return {
     exitCode: 0,
     additionalContext: [
-      `[Hook] The requested file is ${lines} lines - over the ~200-line self-read threshold.`,
+      '[Hook] The requested file exceeds the ~200-line self-read threshold.',
       '[Hook] 1) Do you need all of it? Narrow with offset/limit - free, no dispatch floor.',
       '[Hook] 2) Otherwise route to pi. Both trust gates are yours to judge, not this hook\'s.',
     ],

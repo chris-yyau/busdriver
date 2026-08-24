@@ -54,16 +54,16 @@ The `claude -p` flag runs Claude Code non-interactively with a prompt, exits whe
 set -e
 
 # Step 1: Implement the feature
-claude -p "Read the spec in docs/auth-spec.md. Implement OAuth2 login in src/auth/. Write tests first (TDD). Do NOT create any new documentation files."
+claude -p --model opus "Read the spec in docs/auth-spec.md. Implement OAuth2 login in src/auth/. Write tests first (TDD). Do NOT create any new documentation files."
 
 # Step 2: De-sloppify (cleanup pass)
-claude -p "Review all files changed by the previous commit. Remove any unnecessary type tests, overly defensive checks, or testing of language features (e.g., testing that TypeScript generics work). Keep real business logic tests. Run the test suite after cleanup."
+claude -p --model opus "Review all files changed by the previous commit. Remove any unnecessary type tests, overly defensive checks, or testing of language features (e.g., testing that TypeScript generics work). Keep real business logic tests. Run the test suite after cleanup."
 
 # Step 3: Verify
-claude -p "Run the full build, lint, type check, and test suite. Fix any failures. Do not add new features."
+claude -p --model opus "Run the full build, lint, type check, and test suite. Fix any failures. Do not add new features."
 
 # Step 4: Commit
-claude -p "Create a conventional commit for all staged changes. Use 'feat: add OAuth2 login flow' as the message."
+claude -p --model opus "Create a conventional commit for all staged changes. Use 'feat: add OAuth2 login flow' as the message."
 ```
 
 ### Key Design Principles
@@ -91,7 +91,7 @@ claude -p --model opus "Review all changes for security issues, race conditions,
 ```bash
 # Pass context via files, not prompt length
 echo "Focus areas: auth module, API rate limiting" > .claude-context.md
-claude -p "Read .claude-context.md for priorities. Work through them in order."
+claude -p --model opus "Read .claude-context.md for priorities. Work through them in order."
 rm .claude-context.md
 ```
 
@@ -339,10 +339,10 @@ Instead of constraining the Implementer, let it be thorough. Then add a focused 
 
 ```bash
 # Step 1: Implement (let it be thorough)
-claude -p "Implement the feature with full TDD. Be thorough with tests."
+claude -p --model opus "Implement the feature with full TDD. Be thorough with tests."
 
 # Step 2: De-sloppify (separate context, focused cleanup)
-claude -p "Review all changes in the working tree. Remove:
+claude -p --model opus "Review all changes in the working tree. Remove:
 - Tests that verify language/framework behavior rather than business logic
 - Redundant type checks that the type system already enforces
 - Over-defensive error handling for impossible states
@@ -357,16 +357,16 @@ Keep all business logic tests. Run the test suite after cleanup to ensure nothin
 ```bash
 for feature in "${features[@]}"; do
   # Implement
-  claude -p "Implement $feature with TDD."
+  claude -p --model opus "Implement $feature with TDD."
 
   # De-sloppify
-  claude -p "Cleanup pass: review changes, remove test/code slop, run tests."
+  claude -p --model opus "Cleanup pass: review changes, remove test/code slop, run tests."
 
   # Verify
-  claude -p "Run build + lint + tests. Fix any failures."
+  claude -p --model opus "Run build + lint + tests. Fix any failures."
 
   # Commit
-  claude -p "Commit with message: feat: add $feature"
+  claude -p --model opus "Commit with message: feat: add $feature"
 done
 ```
 

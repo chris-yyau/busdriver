@@ -172,6 +172,26 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
     fi
 
     if [[ "$marker_content" =~ ^PASS-MERGE-[0-9]+$ ]]; then
+        local merge_epoch merge_age now_epoch
+        merge_epoch=${marker_content#PASS-MERGE-}
+        if [[ ! "$merge_epoch" =~ ^[0-9]{1,10}$ ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="PASS-MERGE marker has an invalid epoch. Run /litmus."
+            return 1
+        fi
+        now_epoch=$(date +%s)
+        merge_epoch=$((10#$merge_epoch))
+        if [[ "$merge_epoch" -gt "$now_epoch" ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="PASS-MERGE marker has a future epoch. Run /litmus."
+            return 1
+        fi
+        merge_age=$(( now_epoch - merge_epoch ))
+        if [[ "$merge_age" -gt 3600 ]]; then
+            gate_marker_unlink "$repo_dir" "$state_dir"
+            GATE_VALIDATE_REASON="PASS-MERGE marker is stale (over 1h old). Run /litmus."
+            return 1
+        fi
         if git -C "$repo_dir" -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv --quiet 2>/dev/null; then
             if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content"; then
                 GATE_VALIDATE_REASON="Could not persist the one-use merge claim."

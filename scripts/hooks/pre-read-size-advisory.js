@@ -28,9 +28,7 @@ const THRESHOLD = 200;
 const READ_CHUNK = 64 * 1024;
 const MAX_SCAN_BYTES = 50 * 1024 * 1024;
 const MAX_WORK_BYTES = 1024 * 1024;
-const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0);
-let data = '';
-
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
 // Strict: callers must pass a string (run() guards typeof first). No
 // coercion — a wrong-typed file_path must stay silent, never throw.
 function isSafePath(filePath) {
@@ -56,13 +54,15 @@ function resolveContained(filePath, cwd) {
 // Scan up to <end> bytes of <fd> (the bounded window), counting newlines and
 // tracking the last byte. Returns null when a NUL (binary marker) appears
 // anywhere in the window — the window is scanned COMPLETELY so a later-chunk
-// NUL is still detected before any over-threshold classification.
-function scanWindow(fd, size, end, buffer) {
+// NUL is still detected before any over-threshold classification. Reads are
+// bounded by <end> itself, so short reads can never push the scan past the
+// work budget.
+function scanWindow(fd, end, buffer) {
   let lines = 0;
   let lastByte = 0;
   let offset = 0;
   while (offset < end) {
-    const toRead = Math.min(READ_CHUNK, size - offset);
+    const toRead = Math.min(READ_CHUNK, end - offset);
     const read = fs.readSync(fd, buffer, 0, toRead, offset);
     if (read <= 0) break;
     if (buffer.subarray(0, read).includes(0)) return null;
@@ -75,21 +75,18 @@ function scanWindow(fd, size, end, buffer) {
   return { lines, lastByte, offset };
 }
 
-function countLines(openPath, filePath, cwd) {
+function countLines(openPath) {
   let fd;
   try {
+    // O_NOFOLLOW: refuse to open through ANY symlink, so the fd can only be a
+    // regular file AT the contained pathname. resolveContained() in run()
+    // validated the target before open; a symlink swap at any point (pre-open,
+    // ABA, post-open) makes this open fail → silent. No pathname is
+    // re-resolved after open, so there is no pathname check an attacker can
+    // race against the fd's identity.
     fd = fs.openSync(openPath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
-    // TOCTOU closure anchored on the ORIGINAL user-supplied path: openPath may
-    // have been swapped for a symlink between the containment check and this
-    // open (before OR after). Re-resolving the original path through
-    // containment rejects a pre-open escape; comparing the held fd against the
-    // re-resolved target rejects a post-open swap.
-    const reResolved = resolveContained(filePath, cwd);
-    if (reResolved === null) return null;
-    const pathStat = fs.statSync(reResolved);
-    if (pathStat.dev !== stat.dev || pathStat.ino !== stat.ino) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
 
@@ -97,7 +94,7 @@ function countLines(openPath, filePath, cwd) {
     // Fixed work budget independent of newline count: at most MAX_WORK_BYTES
     // scanned (the bounded probe). Budget exhausted with the count still
     // unknown → silent; the advisory only fires on a VERIFIED over-threshold.
-    const window = scanWindow(fd, stat.size, Math.min(stat.size, MAX_WORK_BYTES), buffer);
+    const window = scanWindow(fd, Math.min(stat.size, MAX_WORK_BYTES), buffer);
     if (window === null) return null;
 
     if (window.lines > THRESHOLD) return window.lines;
@@ -140,7 +137,7 @@ function run(inputOrRaw, _options = {}) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved, filePath, cwd);
+  const lines = countLines(resolved);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }
@@ -161,15 +158,32 @@ module.exports = { run, countLines, isSafePath, THRESHOLD };
 // run-with-flags.js requires this module and calls run() in-process; unconditional
 // registration would double-consume the payload and duplicate protocol output.
 if (require.main === module) {
-  process.stdin.setEncoding('utf8');
+  // Byte-capped capture mirroring run-with-flags' readStdinRaw: decoded
+  // String#length counts UTF-16 units, not UTF-8 bytes, so a multi-byte
+  // payload could exceed the advertised cap. On truncation the captured JSON
+  // is malformed by construction — run() allows (fail-open) and the echo is
+  // suppressed so the hook protocol output is never a cut payload.
+  const chunks = [];
+  let byteLength = 0;
+  let truncated = false;
   process.stdin.on('data', c => {
-    if (data.length < MAX_STDIN) {
-      const remaining = MAX_STDIN - data.length;
-      data += c.substring(0, remaining);
+    if (byteLength < MAX_STDIN) {
+      const remaining = MAX_STDIN - byteLength;
+      if (c.length > remaining) {
+        chunks.push(c.subarray(0, remaining));
+        byteLength += remaining;
+        truncated = true;
+      } else {
+        chunks.push(c);
+        byteLength += c.length;
+      }
+    } else {
+      truncated = true;
     }
   });
 
   process.stdin.on('end', () => {
+    const data = Buffer.concat(chunks).toString('utf8');
     const result = run(data);
 
     if (result.stderr) {
@@ -178,7 +192,7 @@ if (require.main === module) {
 
     if (Object.prototype.hasOwnProperty.call(result, 'additionalContext')) {
       process.stdout.write(buildPreToolUseAdditionalContext(result.additionalContext));
-    } else {
+    } else if (!truncated) {
       process.stdout.write(data);
     }
   });

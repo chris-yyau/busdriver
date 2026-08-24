@@ -171,11 +171,11 @@ describe('pre-read-size-advisory', () => {
     expect(additionalContextOf(run(payload(lateNul)))).toBe('')
   })
 
-  it('stays silent when the path is swapped after open (descriptor identity)', () => {
+  it('scans the contained original, not a swapped target (descriptor identity)', () => {
     const target = join(dir, 'swap-target.txt')
     const swapped = join(dir, 'swap-me.txt')
     writeFileSync(target, `${'line\n'.repeat(THRESHOLD + 10)}`)
-    writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD)}`)
     const swappedReal = fs.realpathSync(swapped)
     const originalOpen = fs.openSync.bind(fs)
     vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {

@@ -16,7 +16,7 @@ let testDir = process.cwd()
 function payload(filePath: string, extra: Record<string, unknown> = {}) {
   const { cwd = testDir, ...toolExtra } = extra
   return JSON.stringify({
-    tool: 'Read',
+    tool_name: 'Read',
     cwd,
     tool_input: { file_path: filePath, ...toolExtra },
   })
@@ -77,8 +77,26 @@ describe('pre-read-size-advisory', () => {
 
   it('confirms Read payload uses tool_input.file_path', () => {
     const parsed = JSON.parse(payload(largeFile))
-    expect(parsed.tool).toBe('Read')
+    expect(parsed.tool_name).toBe('Read')
     expect(parsed.tool_input.file_path).toBe(largeFile)
+  })
+
+  it('stays silent when the path is swapped to an out-of-root file before open (TOCTOU)', () => {
+    const outside = join(otherDir, 'outside-target.txt')
+    const swapped = join(dir, 'swap-preopen.txt')
+    writeFileSync(outside, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    writeFileSync(swapped, `${'line\n'.repeat(THRESHOLD + 10)}`)
+    const swappedReal = fs.realpathSync(swapped)
+    const originalOpen = fs.openSync.bind(fs)
+    vi.spyOn(fs, 'openSync').mockImplementation((...args: unknown[]) => {
+      if (String(args[0]) === swappedReal) {
+        rmSync(swapped, { force: true })
+        symlinkSync(outside, swapped)
+      }
+      return (originalOpen as (...a: unknown[]) => number)(...args)
+    })
+
+    expect(additionalContextOf(run(payload(swapped)))).toBe('')
   })
 
   it('stays silent under threshold, with offset/limit, missing path, malformed, missing, unreadable, unsafe paths, and binary files', () => {

@@ -75,16 +75,20 @@ function scanWindow(fd, size, end, buffer) {
   return { lines, lastByte, offset };
 }
 
-function countLines(filePath) {
+function countLines(openPath, filePath, cwd) {
   let fd;
   try {
-    fd = fs.openSync(filePath, OPEN_FLAGS);
+    fd = fs.openSync(openPath, OPEN_FLAGS);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) return null;
-    // TOCTOU closure: the path may have been swapped for a symlink between the
-    // containment check and this open. The held fd must be the same file the
-    // contained path resolves to NOW, or stay silent.
-    const pathStat = fs.statSync(filePath);
+    // TOCTOU closure anchored on the ORIGINAL user-supplied path: openPath may
+    // have been swapped for a symlink between the containment check and this
+    // open (before OR after). Re-resolving the original path through
+    // containment rejects a pre-open escape; comparing the held fd against the
+    // re-resolved target rejects a post-open swap.
+    const reResolved = resolveContained(filePath, cwd);
+    if (reResolved === null) return null;
+    const pathStat = fs.statSync(reResolved);
     if (pathStat.dev !== stat.dev || pathStat.ino !== stat.ino) return null;
     if (stat.size === 0) return 0;
     if (stat.size > MAX_SCAN_BYTES) return null;
@@ -130,12 +134,13 @@ function run(inputOrRaw, _options = {}) {
     return { exitCode: 0 };
   }
 
-  const resolved = resolveContained(filePath, input?.cwd || process.cwd());
+  const cwd = input?.cwd || process.cwd();
+  const resolved = resolveContained(filePath, cwd);
   if (resolved === null) {
     return { exitCode: 0 };
   }
 
-  const lines = countLines(resolved);
+  const lines = countLines(resolved, filePath, cwd);
   if (lines === null || lines <= THRESHOLD) {
     return { exitCode: 0 };
   }

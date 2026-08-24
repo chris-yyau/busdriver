@@ -53,7 +53,7 @@ install_one() {
     local sig='# Installed by busdriver scripts/install-git-hooks.sh'
 
     mkdir -p "$HOOK_DIR"
-    python3 - "$HOOK_DIR" "$hook_name" "$hook_path" "$sig" "$PLUGIN_ROOT" "$gate_src" <<'PY'
+    python3 -I -S - "$HOOK_DIR" "$hook_name" "$hook_path" "$sig" "$PLUGIN_ROOT" "$gate_src" <<'PY'
 import os
 import shlex
 import stat

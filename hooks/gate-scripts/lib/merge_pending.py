@@ -16,6 +16,7 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 
 from audit_append import append_at, open_state_dir, state_dir_unchanged  # noqa: E402
+from skip_age import skip_file_too_young  # noqa: E402
 
 PENDING = "merge-litmus-pending.local"
 PENDING_TMP = "merge-litmus-pending.local.tmp"
@@ -148,7 +149,7 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
         if dfd is None:
             return False
         try:
-            if not _is_regular(dfd, SKIP):
+            if skip_file_too_young(dfd, SKIP):
                 return False
             if not _unlink_if_exists(dfd, SKIP):
                 return False

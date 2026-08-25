@@ -43,10 +43,18 @@ readonly HOOK_TIMING_BUDGET=3.5
 ok() { printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }
 no() { printf "  FAIL  %s (%s)\n" "$1" "$2"; FAIL=$((FAIL + 1)); }
 
+CHECK_N=0
 check() {   # <name> <expected: allow|block> <actual-output>
     local name="$1" expected="$2" out="$3" got="allow"
+    CHECK_N=$((CHECK_N + 1))
     case "$out" in *'"block"'*) got="block" ;; esac
-    if [ "$got" = "$expected" ]; then ok "$name"; else no "$name" "expected=$expected got=$got"; fi
+    # The ORDINAL is carried into the failure line because the suite names whole GROUPS,
+    # with each group's twin case sharing the group's `...and the marker classifier agrees`
+    # name -- so the name alone does not say which of them regressed. The ordinal does, and
+    # it says it for every such group at once rather than group by group. Raised by
+    # CodeRabbit on #766.
+    if [ "$got" = "$expected" ]; then ok "$name"
+    else no "$name [check #$CHECK_N]" "expected=$expected got=$got"; fi
 }
 
 # ── A throwaway repo with ONE armed (pending) design-review marker ───────────
@@ -1379,6 +1387,16 @@ check "...doas the same way" block \
     "$(bash_decision "printf 'rm -rf src' | doas -u root perl5.36-x86_64-linux-gnu")"
 check "...and env, whose -u also takes a separate operand" block \
     "$(bash_decision "printf 'rm -rf src' | env -u FOO perl5.36-x86_64-linux-gnu")"
+# `genv` is the Homebrew GNU `env`, already modelled as one in `_ENV_NAMES` -- but it is
+# NOT in `_WRAPPERS`/`_WRAPPER_CMDS`, so the walk's preamble test used to spend the run on
+# it as an ordinary program and read the receiver behind it as data. Raised by Cursor
+# Bugbot on #766. The precision half is pinned too: a `genv grep` run is still a grep.
+check "...and genv, the Homebrew GNU env (#766)" block \
+    "$(bash_decision "printf 'rm -rf src' | genv perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees on genv" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | genv lldb-19")"
+check "...however a genv-wrapped grep argument stays data" allow \
+    "$(bash_decision "printf 'rm -rf src' | genv -u FOO grep lldb-19")"
 # NESTED wrappers compose for free, because a wrapper NAME is preamble to the walk rather
 # than a candidate: the run is never spent on `env` itself.
 check "...and a wrapper nested inside a wrapper" block \
@@ -3757,21 +3775,27 @@ esac
 # against cmdword; marker_check is a separate program, so its half is sampled through the
 # real gate rather than quantified, which keeps the added wall-clock proportionate.
 TWIN_BAD=0
+# The offending COMBINATIONS are accumulated, not just counted: a bare tally names no
+# preamble and no receiver, so a regression here could not be reproduced from the failure
+# line alone. Raised by CodeRabbit on #766.
+TWIN_BAD_CASES=""
 for _pre in "" "sudo -u root " "flock -- -- " "env --unset=FOO " "timeout -s KILL 5 "; do
     for _r in "perl5.36-x86_64-linux-gnu" "lldb-19"; do
         case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}${_r}")" in
             *'"block"'*) ;;
-            *) TWIN_BAD=$((TWIN_BAD + 1)) ;;
+            *) TWIN_BAD=$((TWIN_BAD + 1))
+               TWIN_BAD_CASES="${TWIN_BAD_CASES} [allowed: ${_pre}${_r}]" ;;
         esac
         case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}grep ${_r}")" in
-            *'"block"'*) TWIN_BAD=$((TWIN_BAD + 1)) ;;
+            *'"block"'*) TWIN_BAD=$((TWIN_BAD + 1))
+                         TWIN_BAD_CASES="${TWIN_BAD_CASES} [blocked: ${_pre}grep ${_r}]" ;;
         esac
     done
 done
 if [[ "$TWIN_BAD" -eq 0 ]]; then
     ok "property: the marker twin agrees on a 20-case sample of the same grid (#565)"
 else
-    no "property: marker twin parity" "$TWIN_BAD disagreement(s)"
+    no "property: marker twin parity" "$TWIN_BAD disagreement(s):${TWIN_BAD_CASES}"
 fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

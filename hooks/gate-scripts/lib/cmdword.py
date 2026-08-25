@@ -1007,7 +1007,13 @@ def _runs_cmdpos_receiver(toks):
                 continue              # otherwise a test expression runs no command
             # PREAMBLE NAMES -- wrappers, reserved words and MULTI-CALL DISPATCHERS, whose
             # applet is the real command (`busybox env <name>` runs the interpreter).
-            if b in _RESERVED or b in _WRAPPERS or b in _CMD_PREFIX_WORDS:
+            # `_ENV_NAMES` is asked ALONGSIDE `_WRAPPERS`, which holds `env` but not the
+            # Homebrew GNU spelling `genv`: without it `genv lldb-19` spent the run on
+            # `genv` as an ordinary program and allowed the piped interpreter behind it.
+            # Asked here rather than by widening `_WRAPPERS`, so no other site's reading
+            # of that set moves. Raised by Cursor Bugbot on #766.
+            if (b in _RESERVED or b in _WRAPPERS or b in _CMD_PREFIX_WORDS
+                    or b in _ENV_NAMES):
                 # The NESTED-COMMAND reading: this name is the wrapper, reserved word or
                 # dispatcher it looks like, and a nested command re-opens option parsing.
                 nxt.add((False, False, b in _OPERAND_WRAPPERS, False, runs))

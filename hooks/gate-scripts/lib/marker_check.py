@@ -2800,7 +2800,12 @@ def _runs_cmdpos_receiver(words):
             # never reaches it and `printf <payload> | coproc lldb-19` is not fed. Treating
             # it as transparent preamble blocked that, while the twin -- whose `_RESERVED`
             # has never held `coproc` -- allowed it. KEEP IN STEP WITH cmdword._RESERVED.
-            if (b in _WRAPPER_CMDS or b in _CMD_PREFIX_WORDS
+            # `_ENV_NAMES` is asked ALONGSIDE `_WRAPPER_CMDS`, which holds `env` but not the
+            # Homebrew GNU spelling `genv`: without it `genv lldb-19` spent the run on
+            # `genv` as an ordinary program and allowed the piped interpreter behind it.
+            # Asked here rather than by widening `_WRAPPER_CMDS`, so no other site's reading
+            # of that set moves. Raised by Cursor Bugbot on #766.
+            if (b in _WRAPPER_CMDS or b in _CMD_PREFIX_WORDS or b in _ENV_NAMES
                     or (b in _RESERVED_SH and b != "coproc")):
                 # The NESTED-COMMAND reading: this name is the wrapper, reserved word or
                 # dispatcher it looks like, and a nested command re-opens option parsing.

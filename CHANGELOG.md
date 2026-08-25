@@ -1,3 +1,10 @@
+## [1.112.6](https://github.com/chris-yyau/busdriver/compare/v1.112.5...v1.112.6) (2026-08-25)
+
+
+### Bug Fixes
+
+* **pr-grind:** pace Codex retrigger with live wait-round budget ([#679](https://github.com/chris-yyau/busdriver/issues/679)) ([#763](https://github.com/chris-yyau/busdriver/issues/763)) ([5c2b6a8](https://github.com/chris-yyau/busdriver/commit/5c2b6a8244fd8fbf1c9f7bc53bad54ab8a4f5a85))
+
 ## [1.112.5](https://github.com/chris-yyau/busdriver/compare/v1.112.4...v1.112.5) (2026-08-25)
 
 

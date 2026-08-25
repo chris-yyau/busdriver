@@ -1,3 +1,10 @@
+## [1.112.8](https://github.com/chris-yyau/busdriver/compare/v1.112.7...v1.112.8) (2026-08-25)
+
+
+### Bug Fixes
+
+* **gate-scripts:** recognize multiarch and dash-versioned interpreters in command position ([#565](https://github.com/chris-yyau/busdriver/issues/565)) ([#766](https://github.com/chris-yyau/busdriver/issues/766)) ([b950436](https://github.com/chris-yyau/busdriver/commit/b950436ea2033bf65cf189a6f9dfdb781d50d0a1)), closes [#562](https://github.com/chris-yyau/busdriver/issues/562)
+
 ## [1.112.7](https://github.com/chris-yyau/busdriver/compare/v1.112.6...v1.112.7) (2026-08-25)
 
 

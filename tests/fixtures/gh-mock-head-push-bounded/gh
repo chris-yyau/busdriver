@@ -22,11 +22,41 @@ _record_sentinel() {
 # (e.g. `gh api -X GET repos/o/r/activity ...` or path-first after api).
 # `$1` must be the `api` subcommand — a trailing/mid-argv `api` token must not
 # unlock the activity/events arms (real `gh` rejects that ordering).
+# Skip values of value-taking flags so `gh api --jq repos/o/r/events graphql`
+# cannot false-match the events arm (Codex P2 on PR #764).
 _gh_api_endpoint() {
-  local a
-  [[ "${1:-}" == "api" ]] || return 1
-  shift
-  for a in "$@"; do
+  local -a args=("$@")
+  local i=0 n=${#args[@]} a
+  [[ "${args[0]:-}" == "api" ]] || return 1
+  i=1
+  while (( i < n )); do
+    a="${args[i]}"
+    case "$a" in
+      # Long options that take a following value (gh api --help).
+      --jq|--method|--header|--field|--raw-field|--hostname|--cache|--input|--preview|--template)
+        i=$((i + 2))
+        continue
+        ;;
+      --jq=*|--method=*|--header=*|--field=*|--raw-field=*|--hostname=*|--cache=*|--input=*|--preview=*|--template=*)
+        i=$((i + 1))
+        continue
+        ;;
+      # Short options that take a following value (-p preview, -t template).
+      -q|-X|-H|-f|-F|-p|-t)
+        i=$((i + 2))
+        continue
+        ;;
+      # Attached short forms: -XGET, -Fkey=value, -q'.filter', -t'{{.}}', -pname.
+      -X?*|-H?*|-f?*|-F?*|-q?*|-p?*|-t?*)
+        i=$((i + 1))
+        continue
+        ;;
+      -*)
+        # Boolean / unknown flags — do not consume the next token.
+        i=$((i + 1))
+        continue
+        ;;
+    esac
     # Exact repos/{owner}/{repo}/activity — no empty/extra segments, no URI
     # delimiters (? #) inside owner/repo, no query suffix.
     if [[ "$a" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]]; then
@@ -38,6 +68,43 @@ _gh_api_endpoint() {
       printf '%s' "$a"
       return 0
     fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# True when `gh api ...` still has a positional endpoint after skipping
+# value-taking flag args (real gh rejects a bare flag-only invocation).
+_gh_api_has_positional() {
+  local -a args=("$@")
+  local i=0 n=${#args[@]} a
+  [[ "${args[0]:-}" == "api" ]] || return 1
+  i=1
+  while (( i < n )); do
+    a="${args[i]}"
+    case "$a" in
+      --jq|--method|--header|--field|--raw-field|--hostname|--cache|--input|--preview|--template)
+        i=$((i + 2))
+        continue
+        ;;
+      --jq=*|--method=*|--header=*|--field=*|--raw-field=*|--hostname=*|--cache=*|--input=*|--preview=*|--template=*)
+        i=$((i + 1))
+        continue
+        ;;
+      -q|-X|-H|-f|-F|-p|-t)
+        i=$((i + 2))
+        continue
+        ;;
+      -X?*|-H?*|-f?*|-F?*|-q?*|-p?*|-t?*)
+        i=$((i + 1))
+        continue
+        ;;
+      -*)
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    return 0
   done
   return 1
 }
@@ -150,10 +217,33 @@ elif [[ "$_endpoint" =~ ^repos/[^/?#]+/[^/?#]+/events(\?[^#]*)?$ ]]; then
     echo '[]'
   fi
 else
+  # Flag-only `gh api` (no positional endpoint) must not return `{}` — real gh
+  # rejects it; a silent success green-washes omitted endpoints (Litmus #764).
+  if [[ "${1:-}" == "api" ]] && ! _gh_api_has_positional "$@"; then
+    echo "FAIL: gh api missing endpoint (#748)" >&2
+    exit 1
+  fi
   # A mangled/unauthorized activity path must not silently fall through to `{}`.
-  # Inspect repos-relative and absolute API URL tokens only.
+  # Inspect repos-relative and absolute API URL *positional* tokens only — skip
+  # values of value-taking flags so `--jq repos/.../activity` cannot false-trip
+  # this guard when the real endpoint is graphql (pairs with _gh_api_endpoint).
+  _skip_next=0
   for _a in "$@"; do
+    if [[ "$_skip_next" -eq 1 ]]; then
+      _skip_next=0
+      continue
+    fi
     case "$_a" in
+      --jq|--method|--header|--field|--raw-field|--hostname|--cache|--input|--preview|--template|-q|-X|-H|-f|-F|-p|-t)
+        _skip_next=1
+        continue
+        ;;
+      --jq=*|--method=*|--header=*|--field=*|--raw-field=*|--hostname=*|--cache=*|--input=*|--preview=*|--template=*|-X?*|-H?*|-f?*|-F?*|-q?*|-p?*|-t?*)
+        continue
+        ;;
+      -*)
+        continue
+        ;;
       repos/*|*://*/repos/*|*/repos/*)
         if [[ "$_a" =~ /activity([/?#]|$) ]]; then
           echo "FAIL: activity endpoint shape (#748)" >&2

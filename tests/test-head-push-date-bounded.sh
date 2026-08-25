@@ -484,6 +484,38 @@ fi
 gh pr view 1 --jq activity >/dev/null 2>&1
 _jq_rc=$?
 check "unrelated activity substring does not trip mangled-path guard" "0" "$_jq_rc"
+# Path-shaped --jq values must not select the events/activity arm (Codex P2 #764).
+# Real endpoint is graphql; a false events match would return [] and green-wash.
+_jq_events_out=$(gh api --jq 'repos/owner/repo/events' graphql 2>/dev/null) || _jq_events_out="ERR"
+check "endpoint locator skips --jq value looking like events path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_jq_events_out"
+_jq_activity_out=$(gh api --jq 'repos/owner/repo/activity' graphql 2>/dev/null) || _jq_activity_out="ERR"
+check "endpoint locator skips --jq value looking like activity path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_jq_activity_out"
+# --template / -t / -p values must not select REST arms either (Litmus #764).
+_tmpl_events_out=$(gh api --template 'repos/owner/repo/events' graphql 2>/dev/null) || _tmpl_events_out="ERR"
+check "endpoint locator skips --template value looking like events path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_tmpl_events_out"
+_tmpl_eq_out=$(gh api --template='repos/owner/repo/activity' graphql 2>/dev/null) || _tmpl_eq_out="ERR"
+check "endpoint locator skips --template= value looking like activity path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_tmpl_eq_out"
+_t_short_out=$(gh api -t 'repos/owner/repo/events' graphql 2>/dev/null) || _t_short_out="ERR"
+check "endpoint locator skips -t value looking like events path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_t_short_out"
+_p_short_out=$(gh api -p 'repos/owner/repo/activity' graphql 2>/dev/null) || _p_short_out="ERR"
+check "endpoint locator skips -p value looking like activity path" \
+  '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' "$_p_short_out"
+# Flag-only api (path-shaped value, no positional endpoint) must fail closed.
+if ! gh api --jq 'repos/owner/repo/activity' >/dev/null 2>&1; then
+  check "gh api --jq path-shaped value without endpoint fails closed" "1" "1"
+else
+  check "gh api --jq path-shaped value without endpoint fails closed" "1" "0"
+fi
+if ! gh api --template 'repos/owner/repo/events' >/dev/null 2>&1; then
+  check "gh api --template path-shaped value without endpoint fails closed" "1" "1"
+else
+  check "gh api --template path-shaped value without endpoint fails closed" "1" "0"
+fi
 # -f values embedding /activity are not endpoint tokens either (only repos/* is scanned).
 if ! gh api "repos/owner/repo/activity" -X GET \
   -H 'X-GitHub-Api-Version: 2022-11-28' \

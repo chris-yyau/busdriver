@@ -30,6 +30,20 @@ FAULT_GENERATOR=0
 pass() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1"; FAILURES=$((FAILURES + 1)); }
 
+# Print the suite verdict and exit with it. Shared by the end of this file and
+# by the fault child's early exit below, so the two accounting paths can never
+# drift apart — an early exit that hard-coded `exit 0` would invert the (j2)
+# non-zero-rc assertion and re-open the very fail-open (j2) exists to catch.
+finish() {
+  echo
+  if [[ "$FAILURES" -eq 0 ]]; then
+    echo "PASS (test-opencode-review-arm)"
+    exit 0
+  fi
+  echo "FAIL: $FAILURES assertion(s) (test-opencode-review-arm)"
+  exit 1
+}
+
 echo "test-opencode-review-arm"
 
 # ── 1. Shipped config denies by wildcard, not enumeration ──────────
@@ -815,6 +829,14 @@ PY
 else
   fail "validate_opencode_home_config behavioral assertions failed (see above)"
 fi
+# The fault child exists ONLY to exercise the (j) block above, so stop here
+# rather than re-running the remaining ~400 lines of unrelated assertions a
+# second time (#762). Unbounded, the recursion nearly doubles this suite against
+# run-shell-tests.sh's shared 180s per-test budget, which this file has no
+# override for — headroom a slower/shared CI runner can exhaust before ever
+# reaching the (j2) assertion. `finish` keeps the child's exit status on the
+# same accounting as a full run.
+[[ "$FAULT_GENERATOR" == 1 ]] && finish
 # (j2, #730) Prove the guard above can actually fail: re-run this file with a
 # crashing case generator and require a non-zero exit, the generator guard's own
 # diagnostic, and the absence of the green property line. The middle condition
@@ -1229,10 +1251,4 @@ if (
 else
   fail "banner normalization missing/weakened in _run_review_with_retries"
 fi
-echo
-if [[ "$FAILURES" -eq 0 ]]; then
-  echo "PASS (test-opencode-review-arm)"
-  exit 0
-fi
-echo "FAIL: $FAILURES assertion(s) (test-opencode-review-arm)"
-exit 1
+finish

@@ -11,8 +11,9 @@
 # positive stalls a healthy grind; a false negative costs one wasted round.
 #
 # READ-ONLY: never arms, clears, touches, ages, or otherwise mutates markers.
-# Never creates/reads/consumes the operator-only design-review skip file or its lease ledger.
-# Never invokes design-clear.sh.
+# May read the operator skip file / lease ledger only to detect an already-active
+# authorization (mtime + slot count) — never claims a lease slot, never creates
+# or disarms the skip file, never invokes design-clear.sh.
 #
 # Reuses the authoritative classifier + freeze semantics:
 #   - gate_marker_pending / gate_render_pending_records (resolve-repo-dir.sh)
@@ -167,15 +168,54 @@ source "$_GATE_LIB" || exit 0
 # ── Design-review markers (authoritative classifier) ─────────────────────────
 # gate_marker_pending: 0 = none, 1 = pending, 2 = enumerate/list failure.
 # Gates treat 2 as fail-CLOSED; THIS preflight treats 2 as fail-OPEN.
+# Soft deadline: a hung classify must not stall the dispatcher (optimization
+# that never returns is worse than one wasted round). Timeout → fail OPEN.
 _MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
-_MK_CODE=0
-if [ -n "$_MK_RECS" ]; then
+_MK_RCFILE="$(mktemp 2>/dev/null)" || _MK_RCFILE=""
+_MK_CODE=2
+if [ -n "$_MK_RECS" ] || [ -n "$_MK_RCFILE" ]; then
     # shellcheck disable=SC2064
-    trap 'rm -f "$_MK_RECS" 2>/dev/null || true' EXIT
-    gate_marker_pending "$ANCHOR" >"$_MK_RECS" 2>/dev/null || _MK_CODE=$?
-else
-    gate_marker_pending "$ANCHOR" >/dev/null 2>&1 || _MK_CODE=$?
+    trap 'rm -f "$_MK_RECS" "$_MK_RCFILE" 2>/dev/null || true' EXIT
 fi
+# Job control so the background classify gets its own process group (pgid ==
+# subshell pid). On timeout we kill the whole tree — git/python descendants
+# included — not just the wrapper shell.
+set -m
+(
+    _c=0
+    if [ -n "$_MK_RECS" ]; then
+        gate_marker_pending "$ANCHOR" >"$_MK_RECS" 2>/dev/null || _c=$?
+    else
+        gate_marker_pending "$ANCHOR" >/dev/null 2>&1 || _c=$?
+    fi
+    [ -n "$_MK_RCFILE" ] && printf '%s\n' "$_c" >"$_MK_RCFILE"
+) &
+_MK_PID=$!
+# Poll up to ~8s. Fractional sleep is fine on Darwin/bash 3.2.
+_MK_I=0
+while [ "$_MK_I" -lt 80 ]; do
+    if ! kill -0 "$_MK_PID" 2>/dev/null; then
+        wait "$_MK_PID" 2>/dev/null || true
+        break
+    fi
+    sleep 0.1
+    _MK_I=$((_MK_I + 1))
+done
+if kill -0 "$_MK_PID" 2>/dev/null; then
+    # Process-group kill first; fall back to the subshell pid alone.
+    kill -TERM -"$_MK_PID" 2>/dev/null || kill -TERM "$_MK_PID" 2>/dev/null || true
+    wait "$_MK_PID" 2>/dev/null || true
+    _MK_CODE=2  # timed out → fail OPEN
+elif [ -n "$_MK_RCFILE" ] && [ -s "$_MK_RCFILE" ]; then
+    _MK_CODE="$(cat "$_MK_RCFILE" 2>/dev/null || echo 2)"
+else
+    _MK_CODE=2
+fi
+set +m
+case "$_MK_CODE" in
+    0|1|2) : ;;
+    *) _MK_CODE=2 ;;
+esac
 
 case "$_MK_CODE" in
     0) : ;;  # clear

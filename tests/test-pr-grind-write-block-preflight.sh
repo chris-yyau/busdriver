@@ -113,7 +113,27 @@ else
     no "preflight leaves operator skip file untouched" "file missing"
 fi
 
-# ── 4. Worker env-bail backstop unchanged ────────────────────────────────────
+# ── 4. Freeze definite-block boundaries (inner scope vs disjoint) ────────────
+FZ="$(mktemp -d)" || FZ=""
+if [ -n "$FZ" ]; then
+    git -C "$FZ" init -q
+    mkdir -p "$FZ/.claude" "$FZ/src/auth"
+    printf 'src/auth\n' >"$FZ/.claude/freeze-scope.local"
+    FZ_RC=0
+    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    if [ "$FZ_RC" -eq 0 ]; then ok "freeze scope inside worktree → not definite (exit 0)"
+    else no "freeze scope inside worktree → not definite (exit 0)" "rc=$FZ_RC"; fi
+    printf '/tmp/not-this-tree\n' >"$FZ/.claude/freeze-scope.local"
+    FZ_RC=0
+    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    if [ "$FZ_RC" -eq 1 ]; then ok "freeze scope disjoint from worktree → exit 1"
+    else no "freeze scope disjoint from worktree → exit 1" "rc=$FZ_RC"; fi
+    rm -rf "$FZ"
+else
+    no "freeze fixture" "mktemp failed"
+fi
+
+# ── 5. Worker env-bail backstop unchanged ────────────────────────────────────
 # shellcheck disable=SC2016  # literal backticks sought in agent prose
 if grep -q 'PreToolUse gate blocks a Write/Edit/MultiEdit/Bash you cannot route around' "$AGENT" \
    && grep -qF '| `env` |' "$AGENT"; then
@@ -122,7 +142,7 @@ else
     no "worker env-bail backstop row still present in pr-grinder.md" "row missing or rewritten"
 fi
 
-# ── 5. Dispatcher wires preflight before every pr-grinder dispatch ───────────
+# ── 6. Dispatcher wires preflight before every pr-grinder dispatch ───────────
 if grep -q 'scripts/pr-grind-write-block-preflight.sh' "$SKILL" \
    && grep -q 'BEFORE every.*pr-grinder\|before every worker dispatch\|Write-block preflight' "$SKILL"; then
     ok "SKILL.md wires write-block preflight before worker dispatch"

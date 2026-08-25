@@ -1,3 +1,10 @@
+## [1.112.2](https://github.com/chris-yyau/busdriver/compare/v1.112.1...v1.112.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **careful-guard:** scan rm argv only at command-word indexes ([#745](https://github.com/chris-yyau/busdriver/issues/745)) ([#760](https://github.com/chris-yyau/busdriver/issues/760)) ([735a986](https://github.com/chris-yyau/busdriver/commit/735a986632821c941265a3c589e25bd03aa3899e))
+
 ## [1.112.1](https://github.com/chris-yyau/busdriver/compare/v1.112.0...v1.112.1) (2026-08-24)
 
 

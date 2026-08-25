@@ -1,3 +1,10 @@
+## [1.112.5](https://github.com/chris-yyau/busdriver/compare/v1.112.4...v1.112.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* **tests:** make opencode case generator status load-bearing ([#730](https://github.com/chris-yyau/busdriver/issues/730)) ([#762](https://github.com/chris-yyau/busdriver/issues/762)) ([b9953a0](https://github.com/chris-yyau/busdriver/commit/b9953a03e86470deaa68ccdc68a439ece5e54d9e))
+
 ## [1.112.4](https://github.com/chris-yyau/busdriver/compare/v1.112.3...v1.112.4) (2026-08-25)
 
 

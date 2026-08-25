@@ -1,8 +1,8 @@
 # ADR 0041 — Re-add Bugbot (cursor) to the pr-grind ack registry
 
-**Status:** Accepted
+**Status:** Superseded (2026-08-25, ADR 0047 — Bugbot dashboard-disabled; cursor dropped from registry again)
 **Date:** 2026-08-17
-**Amends:** ADR 0035 (cursor half only; the devin half stands)
+**Amends:** ADR 0035 (cursor half only; the devin half stands; cursor half restored by ADR 0047)
 
 ## Context
 

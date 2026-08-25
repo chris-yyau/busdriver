@@ -257,8 +257,9 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     #         operator (it names the blocking doc / freeze path and the
   │     #         release path, including the "do not drain unless abandoned"
   │     #         caveat). BAIL `env` WITHOUT dispatching — do not spend a round.
-  │     # Never create the operator-only design-review skip file; never invoke
-  │     # design-clear.sh from this path; never inspect/approve a skip lease here.
+  │     # Never create/disarm the operator-only design-review skip file; never
+  │     # invoke design-clear.sh from this path. Read-only observation of an
+  │     # already-active lease (mtime + slots) is allowed; never claim a slot.
   │
   ├── Dispatch a round:
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)

@@ -54,11 +54,17 @@ usage() {
 # a slot — presence/mtime/slot-count only. Return 0 = authorizes; 1 = does not.
 _lease_authorizes() {  # <state_dir_abs>
     local sd="$1" skip ledger age slots
-    # Construct name without a contiguous forbidden token in this file's source.
+    # Symlinked state dir or skip/ledger → not authorizing (do not follow).
+    if [ -L "$sd" ]; then
+        return 1
+    fi
     # shellcheck disable=SC2140
     skip="$sd/skip"-design-"review.local"
     # shellcheck disable=SC2140
     ledger="$sd/.skip"-design-"review-lease.d"
+    if [ -L "$skip" ] || [ -L "$ledger" ]; then
+        return 1
+    fi
     [ -f "$skip" ] && [ -r "$skip" ] || return 1
     age="$(
         P="$skip" python3 -I -c '
@@ -89,51 +95,92 @@ except Exception:
 # the worktree (e.g. src/auth) still permits some writes — not definite; leave
 # those to the worker env bail. Unreadable/unresolvable → fail OPEN (return 0).
 # Prints block message and returns 1 on definite block; returns 0 otherwise.
-_freeze_check_one() {  # <freeze_file> <resolve_base> <worktree_abs>
-    local freeze="$1" base="$2" wt="$3" scope scope_abs verdict
-    if [ -e "$freeze" ] || [ -L "$freeze" ]; then
-        if [ ! -f "$freeze" ] || [ ! -r "$freeze" ]; then
-            return 0
-        fi
-    else
-        return 0
-    fi
-    scope="$(head -1 "$freeze" 2>/dev/null || true)"
-    [ -n "$scope" ] || return 0
-    case "$scope" in
-        /*) scope_abs="$scope" ;;
-        *)  scope_abs="$base/$scope" ;;
-    esac
+_freeze_check_one() {  # <resolve_base> <worktree_abs>
+    local base="$1" wt="$2" verdict
+    # Entire freeze probe in one O_NOFOLLOW/O_NONBLOCK python walk so a FIFO
+    # or symlink component cannot hang or redirect the preflight.
     verdict="$(
-        WT="$wt" SCOPE="$scope_abs" python3 -I -c '
-import sys
+        BASE="$base" WT="$wt" python3 -I -c '
+import os, sys, stat as stmod
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import os
+base = os.environ["BASE"]
+wt = os.environ["WT"]
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 try:
-    wt = os.path.realpath(os.environ["WT"])
-    sc = os.path.realpath(os.environ["SCOPE"])
-    wt_sep = wt if wt.endswith("/") else wt + "/"
-    sc_sep = sc if sc.endswith("/") else sc + "/"
-    # Overlap ⇔ some worktree path is in-scope (freeze-guard can allow a write).
-    overlap = (wt == sc or wt.startswith(sc_sep) or sc.startswith(wt_sep))
-    print("disjoint" if not overlap else "overlap")
-except Exception:
-    print("?")
-' 2>/dev/null || echo "?"
+    dfd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+except OSError:
+    print("open"); sys.exit(0)
+try:
+    try:
+        cfd = os.open(".claude", os.O_RDONLY | os.O_DIRECTORY | O_NOFOLLOW, dir_fd=dfd)
+    except OSError:
+        print("open"); sys.exit(0)
+    try:
+        try:
+            ffd = os.open("freeze-scope.local", os.O_RDONLY | O_NOFOLLOW | O_NONBLOCK, dir_fd=cfd)
+        except OSError:
+            print("open"); sys.exit(0)
+        try:
+            st = os.fstat(ffd)
+            if not stmod.S_ISREG(st.st_mode):
+                print("open"); sys.exit(0)
+            # Read until newline or EOF; cap length so a huge first line fails OPEN
+            # rather than a truncated prefix producing a false disjoint.
+            chunks = []
+            total = 0
+            MAX = 65536
+            while total < MAX:
+                b = os.read(ffd, min(4096, MAX - total))
+                if not b:
+                    break
+                chunks.append(b)
+                total += len(b)
+                if b"\n" in b:
+                    break
+            data = b"".join(chunks)
+            if b"\n" not in data and total >= MAX:
+                print("open"); sys.exit(0)
+        finally:
+            os.close(ffd)
+    finally:
+        os.close(cfd)
+finally:
+    os.close(dfd)
+raw = data.split(b"\n", 1)[0].decode("utf-8", "surrogateescape").strip("\r")
+if not raw:
+    print("open"); sys.exit(0)
+scope_abs = raw if raw.startswith("/") else os.path.join(base, raw)
+try:
+    wt_r = os.path.realpath(wt)
+    sc_r = os.path.realpath(scope_abs)
+except OSError:
+    print("open"); sys.exit(0)
+wt_sep = wt_r if wt_r.endswith("/") else wt_r + "/"
+sc_sep = sc_r if sc_r.endswith("/") else sc_r + "/"
+overlap = (wt_r == sc_r or wt_r.startswith(sc_sep) or sc_r.startswith(wt_sep))
+# Display sanitization only — containment used raw above.
+safe = "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in raw)
+if overlap:
+    print("overlap")
+else:
+    print("disjoint|" + safe)
+' 2>/dev/null || echo open
     )"
     case "$verdict" in
-        disjoint)
+        disjoint\|*)
+            _scope_safe="${verdict#disjoint|}"
             printf '%s\n' "WRITE_BLOCK_PREFLIGHT: blocked — do not dispatch this round"
             printf '\n'
             printf '%s\n' "Freeze scope is active and excludes this worktree, so worker Write/Edit will fail."
-            printf 'Allowed scope: %s\n' "$scope"
-            printf 'Freeze file:   %s\n' "$freeze"
+            printf 'Allowed scope: %s\n' "$_scope_safe"
+            printf 'Freeze file:   %s/%s\n' "$base" "$FREEZE_REL"
             printf '%s\n' "Release path: rm .claude/freeze-scope.local (from the checkout that holds the freeze)."
             printf '%s\n' "Worker env bail is unchanged if a block arises mid-round."
             return 1
             ;;
         overlap) return 0 ;;
-        *) return 0 ;;  # unresolvable → fail OPEN
+        *) return 0 ;;
     esac
 }
 
@@ -202,8 +249,15 @@ while [ "$_MK_I" -lt 80 ]; do
     _MK_I=$((_MK_I + 1))
 done
 if kill -0 "$_MK_PID" 2>/dev/null; then
-    # Process-group kill first; fall back to the subshell pid alone.
     kill -TERM -"$_MK_PID" 2>/dev/null || kill -TERM "$_MK_PID" 2>/dev/null || true
+    _MK_J=0
+    while [ "$_MK_J" -lt 20 ]; do
+        sleep 0.1
+        _MK_J=$((_MK_J + 1))
+    done
+    # Always KILL the process group after grace — do not key off wrapper liveness
+    # (a dead wrapper can leave ignoring descendants).
+    kill -KILL -"$_MK_PID" 2>/dev/null || kill -KILL "$_MK_PID" 2>/dev/null || true
     wait "$_MK_PID" 2>/dev/null || true
     _MK_CODE=2  # timed out → fail OPEN
 elif [ -n "$_MK_RCFILE" ] && [ -s "$_MK_RCFILE" ]; then
@@ -232,15 +286,48 @@ case "$_MK_CODE" in
             else
                 _LIST=""
                 if [ -n "$_MK_RECS" ] && [ -s "$_MK_RECS" ]; then
-                    _LIST="$(gate_render_pending_records "$_MK_RECS" "$ANCHOR" 2>/dev/null || true)"
+                    # Print doc_path fields from NUL records — sanitize to
+                    # printable single-line paths (no escape expansion).
+                    _LIST="$(
+                        python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+path = sys.argv[1]
+try:
+    data = open(path, "rb").read().split(b"\0")
+except OSError:
+    sys.exit(0)
+out = []
+truncated = False
+i = 0
+while i + 3 < len(data):
+    kind, _src, doc, reason = data[i], data[i+1], data[i+2], data[i+3]
+    i += 4
+    if kind == b"overflow":
+        truncated = True
+        continue
+    if not doc:
+        continue
+    if len(out) >= 20:
+        truncated = True
+        continue
+    s = doc.decode("utf-8", "replace")
+    safe = "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in s)
+    if safe:
+        out.append("  - " + safe)
+if truncated:
+    out.append("  - … listing truncated — run design-clear.sh with no args for the full set")
+if out:
+    sys.stdout.write("\n".join(out) + "\n")
+' "$_MK_RECS" 2>/dev/null || true
+                    )"
                 fi
-                [ -n "$_LIST" ] || _LIST="  - (design review pending)\n"
+                [ -n "$_LIST" ] || _LIST="  - (design review pending)"
                 printf '%s\n' "WRITE_BLOCK_PREFLIGHT: blocked — do not dispatch this round"
                 printf '\n'
                 printf '%s\n' "Pending design-review markers make repo writes impossible for a worker round."
                 printf '%s\n' "Unreviewed design documents:"
-                # shellcheck disable=SC2059
-                printf "%b\n" "$_LIST"
+                printf '%s\n' "$_LIST"
                 printf '%s\n' "Release via scripts/design-clear.sh (lists pending; names the audited path)."
                 printf '%s\n' "Do not drain a live sibling worktree's marker unless it is abandoned."
                 printf '%s\n' "Do NOT create the operator-only design-review skip file. Worker env bail is unchanged if a block arises mid-round."
@@ -258,10 +345,10 @@ esac
 # freeze-guard.sh reads CWD-relative `.claude/freeze-scope.local`. The worker may
 # run with cwd = WORKTREE_DIR (bash blocks) or the session cwd (Write/Edit), so
 # check both when they differ. Definite block only when scope ∁ worktree (disjoint).
-_freeze_check_one "$ANCHOR/$FREEZE_REL" "$ANCHOR" "$ANCHOR" || exit 1
+_freeze_check_one "$ANCHOR" "$ANCHOR" || exit 1
 _SESSION="$(pwd -P 2>/dev/null || true)"
 if [ -n "$_SESSION" ] && [ "$_SESSION" != "$ANCHOR" ]; then
-    _freeze_check_one "$_SESSION/$FREEZE_REL" "$_SESSION" "$ANCHOR" || exit 1
+    _freeze_check_one "$_SESSION" "$ANCHOR" || exit 1
 fi
 
 exit 0

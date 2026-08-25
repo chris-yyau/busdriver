@@ -112,6 +112,17 @@ if [ -f "$_SKIP" ]; then
 else
     no "preflight leaves operator skip file untouched" "file missing"
 fi
+# Too-new skip file must NOT authorize (anti-self-bypass floor).
+P="$_SKIP" python3 -I -c 'import os,time; os.utime(os.environ["P"], (time.time()-5,)*2)'
+OUT4=""; RC4=0
+OUT4="$(bash "$PF" -C "$WORK" 2>&1)" || RC4=$?
+if [ "$RC4" -eq 1 ]; then
+    ok "too-new skip file does not authorize (exit 1 with pending markers)"
+else
+    no "too-new skip file does not authorize (exit 1 with pending markers)" "rc=$RC4 out=$OUT4"
+fi
+# Restore aged mtime for later assertions that expect the skip file present.
+P="$_SKIP" python3 -I -c 'import os,time; os.utime(os.environ["P"], (time.time()-120,)*2)'
 
 # ── 4. Freeze definite-block boundaries (inner scope vs disjoint) ────────────
 FZ="$(mktemp -d)" || FZ=""
@@ -128,6 +139,40 @@ if [ -n "$FZ" ]; then
     bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
     if [ "$FZ_RC" -eq 1 ]; then ok "freeze scope disjoint from worktree → exit 1"
     else no "freeze scope disjoint from worktree → exit 1" "rc=$FZ_RC"; fi
+    # Symlinked freeze file must fail OPEN (no follow / no disclosure).
+    rm -f "$FZ/.claude/freeze-scope.local"
+    echo secret-line >"$FZ/secret.txt"
+    ln -s "$FZ/secret.txt" "$FZ/.claude/freeze-scope.local"
+    FZ_RC=0
+    OUTF="$(bash "$PF" -C "$FZ" 2>&1)" || FZ_RC=$?
+    if [ "$FZ_RC" -eq 0 ] && ! printf '%s' "$OUTF" | grep -q 'secret-line'; then
+        ok "symlinked freeze file → fail OPEN (no target disclosure)"
+    else
+        no "symlinked freeze file → fail OPEN (no target disclosure)" "rc=$FZ_RC out=$OUTF"
+    fi
+    # Symlinked .claude parent must also fail OPEN.
+    rm -rf "$FZ/.claude"
+    mkdir -p "$FZ/real-claude" "$FZ/elsewhere"
+    printf '/tmp/not-this-tree\n' >"$FZ/elsewhere/freeze-scope.local"
+    ln -s "$FZ/elsewhere" "$FZ/.claude"
+    FZ_RC=0
+    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    if [ "$FZ_RC" -eq 0 ]; then ok "symlinked .claude parent → fail OPEN"
+    else no "symlinked .claude parent → fail OPEN" "rc=$FZ_RC"; fi
+    # FIFO at freeze path must fail OPEN without hanging.
+    rm -rf "$FZ/.claude"
+    mkdir -p "$FZ/.claude"
+    mkfifo "$FZ/.claude/freeze-scope.local"
+    FZ_RC=0
+    # Bound the whole preflight call — if it hangs past 3s this fails.
+    perl -e 'alarm 3; exec @ARGV' bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    if [ "$FZ_RC" -eq 0 ] || [ "$FZ_RC" -eq 142 ]; then
+        # 0 = fail open; 142 = alarm (should not happen if O_NONBLOCK works)
+        if [ "$FZ_RC" -eq 0 ]; then ok "FIFO freeze file → fail OPEN (no hang)"
+        else no "FIFO freeze file → fail OPEN (no hang)" "alarm fired rc=$FZ_RC"; fi
+    else
+        no "FIFO freeze file → fail OPEN (no hang)" "rc=$FZ_RC"
+    fi
     rm -rf "$FZ"
 else
     no "freeze fixture" "mktemp failed"

@@ -31,9 +31,9 @@ a downgrade candidate.
 
 pr-grind's clean-marker (Invariant 2, `skills/pr-grind/SKILL.md`) refuses to
 write the `clean` (merge-ready) marker while ANY registered advisory reviewer bot
-(`cursor`, `cubic-dev-ai`, `coderabbitai`, `greptile-apps`, plus Codex tracked separately
-— `devin-ai-integration` was dropped from the registry by ADR 0035, and
-`cursor`/Bugbot was dropped by it and re-added by ADR 0041;
+(`cubic-dev-ai`, `coderabbitai`, `greptile-apps`, plus Codex tracked separately
+— `cursor`/Bugbot and `devin-ai-integration` were dropped from the registry by
+ADR 0035; `cursor` was briefly re-added by ADR 0041 and dropped again by ADR 0047;
 `codescene-delta-analysis` is ledger-only, enumerated for content but
 with no `/reviews` entries so it never appears in this stale-gating set) is
 `stale` in the ack ledger. `stale` means the bot's last review targets a

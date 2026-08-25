@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (Cursor, CodeRabbit, Cubic, Greptile, etc.)
+- AI reviewer acks (CodeRabbit, Cubic, Greptile, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -70,7 +70,7 @@ loop exits clean — not before, and never skip it.
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | Cursor, CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cubic, Greptile are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -167,7 +167,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
+                   PRIOR_REVIEWER_ACKS="cubic-dev-ai=none,coderabbitai=none,greptile-apps=none",
                    PRIOR_CODEX_ACK="none"
                    # PRIOR_CODEX_ACK persists Codex's RESULT_CODEX_ACK across
                    # rounds (parallel to PRIOR_REVIEWER_ACKS), so the max-wait
@@ -397,7 +397,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
   │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
   │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
-  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all four
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
   │        registered bots acked HEAD but Codex is still reviewing — is
   │        legitimate and must NOT be misread as no-progress). A round with
   │        none of these is broken — re-dispatching would loop forever on no
@@ -444,18 +444,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        worked-example "always include codescene and
   │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the four registered ack-bots that the worker can
+  │        scoped to the three registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (6 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
+  │        (5 bots: `cubic-dev-ai`, `coderabbitai`,
   │        `greptile-apps`, `codescene-delta-analysis`,
   │        `chatgpt-codex-connector`).
-  │        After comma-splitting, the number of entries MUST equal 6; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 6
+  │        After comma-splitting, the number of entries MUST equal 5; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -747,7 +747,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           (e.g. Codex/Devin after a rebase). It NEVER touches merge authority — required
                           checks + litmus still gate; this only releases the *advisory* ack after those
                           are already green. Treats ALL registered advisory bots uniformly (no per-bot
-                          special-casing — Codex and Cursor/Cubic/Coderabbit/Greptile are aligned).
+                          special-casing — Codex and Cubic/Coderabbit/Greptile are aligned).
 
                           1. Opt-in gate: run the resolver and proceed ONLY if it prints `1`:
                              `OPTIN=$(bash "<PLUGIN_ROOT>/scripts/advisory-downgrade-optin.sh")`.
@@ -1346,10 +1346,10 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
-RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
+RESULT_REVIEWER_ACKS: cubic-dev-ai=stale,coderabbitai=stale,greptile-apps=stale
+RESULT_ACK_TIERS: cubic-dev-ai=none,coderabbitai=none,greptile-apps=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,greptile-apps=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1360,10 +1360,10 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cursor=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): commit=4361cc54; fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cubic-dev-ai=stale,...; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All four registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three registered bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 

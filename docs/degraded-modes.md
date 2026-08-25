@@ -12,10 +12,10 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **Droid CLI** | Local | Council Researcher voice down | Council loses Researcher (4-voice: Architect + Skeptic + Pragmatist + Critic) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
-| CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by cursor + cubic |
-| Cursor Bugbot | CI bot | No AI bug review; loses a gated ack | Other gated reviewers (Cubic, CodeRabbit) still gate | Continue; `--max-wait` backstops a stuck `Cursor Bugbot` check |
+| CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by cubic |
+| Cursor Bugbot | CI bot | No AI bug review (ungated; ADR 0047) | Other gated reviewers (Cubic, CodeRabbit, Greptile) still gate | Continue |
 | Cubic | CI bot | No additional AI review | Low impact — other gated reviewers cover | Continue |
-| Greptile | CI bot | No AI review; loses a gated ack | Other gated reviewers (Cursor, Cubic, CodeRabbit) still gate | Continue; `--max-wait` backstops a stuck `Greptile Review` check |
+| Greptile | CI bot | No AI review; loses a gated ack | Other gated reviewers (Cubic, CodeRabbit) still gate | Continue; `--max-wait` backstops a stuck `Greptile Review` check |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
 | GitGuardian | CI bot | No secrets scan | gitleaks local hook is the primary | Ensure gitleaks passed locally |
 | Codecov | CI bot | No coverage diff | Advisory only | Continue; coverage unmeasured on this PR |

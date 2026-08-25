@@ -280,6 +280,93 @@ unset GH_MOCK_EVENTS_FILE
 check "fetch-pr-state bounded miss → empty HEAD_PUSH_DATE" "" "${HEAD_PUSH_DATE:-}"
 check "fetch-pr-state bounded miss → no HEAD_CHECKS_DATE fallback" "0" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
 
+# --- Mock hardening (#748 / ADR 0047): activity arm first + positive argv ---
+# A branch literally named `events` must hit the activity arm (argv contract) and
+# must NOT create the events sentinel — proving path-token matching, not substring.
+_mock_sent=$(mktemp -d)
+export PATH="$GH_MOCK:$PATH"
+export GH_MOCK_ACTIVITY_SENTINEL="$_mock_sent/activity"
+export GH_MOCK_EVENTS_SENTINEL="$_mock_sent/events"
+rm -f "$GH_MOCK_ACTIVITY_SENTINEL" "$GH_MOCK_EVENTS_SENTINEL"
+_act_out=$(gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/events -f per_page=2 -f direction=desc 2>/dev/null) || _act_out="ERR"
+check "activity arm + branch named events → empty array (route-on default)" "[]" "$_act_out"
+if [[ -f "$GH_MOCK_ACTIVITY_SENTINEL" ]]; then
+  check "activity unset-file records invocation sentinel" "1" "1"
+else
+  check "activity unset-file records invocation sentinel" "1" "0"
+fi
+if [[ ! -e "$GH_MOCK_EVENTS_SENTINEL" ]]; then
+  check "activity call does not create events sentinel" "1" "1"
+else
+  check "activity call does not create events sentinel" "1" "0"
+fi
+# Positive argv: omitting per_page=2 must fail (negatives alone are insufficient).
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/events -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects missing per_page=2" "1" "1"
+else
+  check "activity argv rejects missing per_page=2" "1" "0"
+fi
+# Endpoint-token matching: an /events fetch for branch `activity` must NOT be
+# classified as the activity arm (flattened-$* false positive).
+_ev_out=$(gh api "repos/owner/repo/events?per_page=100" 2>/dev/null) || _ev_out="ERR"
+check "events fetch for any branch stays on events arm" "[]" "$_ev_out"
+# Substring-in-joined-args is not enough: a bogus -H value must not satisfy the
+# API-version positive check.
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'Bogus: X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/events -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects forged API-version header value" "1" "1"
+else
+  check "activity argv rejects forged API-version header value" "1" "0"
+fi
+# Flag ordering: `-X GET` before the path must still hit the activity arm.
+_act_ord=$(gh api -X GET "repos/owner/repo/activity" \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc 2>/dev/null) || _act_ord="ERR"
+check "activity arm tolerates -X GET before path" "[]" "$_act_ord"
+# Equals-form pagination must be rejected on both legs.
+if ! gh api "repos/owner/repo/activity" -X GET --paginate=true \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects --paginate=true" "1" "1"
+else
+  check "activity argv rejects --paginate=true" "1" "0"
+fi
+if ! gh api --paginate=true "repos/owner/repo/events?per_page=100" >/dev/null 2>&1; then
+  check "events argv rejects --paginate=true" "1" "1"
+else
+  check "events argv rejects --paginate=true" "1" "0"
+fi
+# Quoted branch names must not break the parameterized PR JSON.
+_pr_json=$(GH_MOCK_HEAD_REF_NAME='feat/"quoted"' GH_MOCK_IS_CROSS_REPOSITORY=true \
+  gh pr view 1 --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || _pr_json=""
+_pr_branch=$(printf '%s' "$_pr_json" | jq -r '.headRefName // empty')
+_pr_cross=$(printf '%s' "$_pr_json" | jq -r 'if .isCrossRepository == true then "1" else "0" end')
+check "PR JSON survives quoted branch name" 'feat/"quoted"' "$_pr_branch"
+check "PR JSON coerces isCrossRepository=true" "1" "$_pr_cross"
+unset GH_MOCK_ACTIVITY_SENTINEL GH_MOCK_EVENTS_SENTINEL
+rm -rf "$_mock_sent"
+
+# --- Cross-repo fetch-pr-state e2e (ADR 0047 Testing §8) — lands first ---
+# Must supply a non-empty check-suites fixture: the mock defaults to
+# {"check_suites":[]} which would leave HEAD_CHECKS_DATE empty for the wrong reason.
+export GH_MOCK_IS_CROSS_REPOSITORY=true
+export GH_MOCK_CHECK_SUITES_FILE="$FIXTURES/check-suites-for-head.json"
+export GH_MOCK_EVENTS_FILE="$FIXTURES/events-push-outside-window.json"
+unset FETCH_OK HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_COMMITTED_DATE \
+  HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
+# shellcheck source=/dev/null
+. "$FETCH_PR_STATE" 123
+unset GH_MOCK_IS_CROSS_REPOSITORY GH_MOCK_CHECK_SUITES_FILE GH_MOCK_EVENTS_FILE
+[[ "$FETCH_OK" = "1" ]] || { echo "FAIL: FETCH_OK not 1 on cross-repo e2e"; fail=$((fail + 1)); }
+check "cross-repo e2e → fallback eligible" "1" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
+check "cross-repo e2e → HEAD_CHECKS_DATE from suites fixture" "2026-08-10T11:00:05Z" "${HEAD_CHECKS_DATE:-}"
+check "cross-repo e2e → no CreateEvent floor from base feed" "" "${HEAD_PUSH_CREATE_DATE:-}"
+
 echo "───────────────────────────────"
 echo "Total: $((pass + fail))  Pass: $pass  Fail: $fail"
 [[ "$fail" -eq 0 ]]

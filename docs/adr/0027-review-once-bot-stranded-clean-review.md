@@ -2,12 +2,12 @@
 
 ## Status
 
-**Superseded (2026-08-09, ADR 0035; still superseded after ADR 0041 re-added
-`cursor` — on Cursor Ultra it re-reviews every push, so it is no longer a
-review-once bot and needs no stranded-clean-review machinery).** Both bots this
-ADR exists for —
+**Superseded (2026-08-09, ADR 0035; ADR 0041 briefly re-added `cursor`, then
+ADR 0047 dropped it again after Bugbot was dashboard-disabled — Case 4 stays
+deleted; do not revive stranded-clean machinery for an ungated bot).** Both bots
+this ADR exists for —
 `devin-ai-integration` and `cursor` (Bugbot) — were **dropped from the pr-grind
-ack registry** (ADR 0035): a 60-day cross-repo audit (14 repos, 682 PRs) showed
+ack registry** (ADR 0035; cursor again via ADR 0047): a 60-day cross-repo audit (14 repos, 682 PRs) showed
 their findings were ~75-92% redundant with the remaining bots, their exclusive
 findings had a 34% fix rate (mostly dependency/version nags the author ignored),
 and both are review-once-at-create bots that structurally cannot re-review

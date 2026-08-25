@@ -1,3 +1,10 @@
+# [1.113.0](https://github.com/chris-yyau/busdriver/compare/v1.112.8...v1.113.0) (2026-08-25)
+
+
+### Features
+
+* **pr-grind:** drop cursor (Bugbot) from ack registry again (ADR 0047) ([#770](https://github.com/chris-yyau/busdriver/issues/770)) ([0226ff4](https://github.com/chris-yyau/busdriver/commit/0226ff458b0bbd5076fb716d9a2508580b58aeb6))
+
 ## [1.112.8](https://github.com/chris-yyau/busdriver/compare/v1.112.7...v1.112.8) (2026-08-25)
 
 

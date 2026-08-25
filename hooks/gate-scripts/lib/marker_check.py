@@ -2738,18 +2738,21 @@ def _runs_cmdpos_receiver(words):
                 # whatever it is spelt like -- a lock file may be called `time`, `-n` or `>`.
                 # So the token is never the program here; the only question is what it
                 # settles, and each answer that the text permits becomes its own reading.
-                if w != "--":
-                    # ...the positional -- but NEVER `--`, which getopt consumes as the
-                    # end-of-options marker before the wrapper's own operand is read. Letting
-                    # it satisfy the slot made `flock -- lldb-19 grep x` read the LOCK FILE
-                    # as the program and falsely block. (When an option is outstanding, `--`
-                    # can still be ITS operand -- that reading is added just below.)
+                if w != "--" or oend:
+                    # ...the positional. A `--` can only be it once the options have ALREADY
+                    # ended -- while they are still open getopt consumes the `--` itself as
+                    # the terminator, before the wrapper's operand is read, so letting it
+                    # satisfy the slot made `flock -- lldb-19 grep x` read the LOCK FILE as
+                    # the program and falsely block. Past a first `--` the word is ordinary
+                    # again, so `flock -- -- lldb-19` locks a file called `--` and runs the
+                    # debugger. (When an option is outstanding, `--` can still be ITS
+                    # operand -- that reading is added just below.)
                     nxt.add((False, popt, False, oend, runs))
                 if popt:
                     nxt.add((False, False, True, oend, runs))      # ...the option's operand
                 if m:
                     nxt.add((m.group(0) == w, popt, True, oend, runs))   # ...a redirection
-                if w == "--":
+                if w == "--" and not oend:
                     nxt.add((False, False, True, True, runs))      # ...the end of options
                 elif w.startswith("-") and not oend:
                     nxt.add((False, not _attached_value, True, oend, runs))   # ...another option
@@ -2762,9 +2765,11 @@ def _runs_cmdpos_receiver(words):
                     # interpreter, while the redirection reading alone swallowed it.
                     nxt.add((False, False, wop, oend, runs))
                 continue
-            if w == "--":
-                # END OF OPTIONS, for the command that carried it. It claims no operand of
-                # its own, and a nested command re-opens option parsing below.
+            if w == "--" and not oend:
+                # END OF OPTIONS, for the command that carried it -- and only the FIRST one:
+                # once the options have ended a second `--` is an ordinary word, so
+                # `flock -- -- lldb-19` locks a file called `--` and runs the debugger.
+                # It claims no operand of its own, and a nested command re-opens parsing.
                 nxt.add((False, False, wop, True, runs))
                 if popt:
                     # ...or the OUTSTANDING OPTION's operand, a variable or file literally
@@ -2779,7 +2784,12 @@ def _runs_cmdpos_receiver(words):
                 nxt.add((False, False, wop, oend, runs))
                 continue
             if b in _TEST_OPEN_SH:
-                continue              # a test expression runs no command
+                if popt:
+                    # ...unless an option is outstanding, in which case this is its OPERAND
+                    # and not a test at all: `env -u '[' lldb-19` unsets a variable named
+                    # `[` and runs the debugger. Dropping the reading emptied the set here.
+                    nxt.add((False, False, wop, oend, runs))
+                continue              # otherwise a test expression runs no command
             # PREAMBLE NAMES -- wrappers, reserved words and MULTI-CALL DISPATCHERS, whose
             # applet is the real command (`busybox env <name>` runs the interpreter). Only
             # when no option operand is outstanding: `env -u timeout <name>` names a wrapper

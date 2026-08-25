@@ -3613,6 +3613,41 @@ for _ in range(3000):
     p1 += 1
 print("P1", "ok" if p1 == 3000 else "FAIL", p1)
 
+# P5/P6 (#565) -- the command-position receiver walk, quantified over PREAMBLE x NAME rather
+# than enumerated. The walk carries a five-flag reading set, and its bugs have all been
+# INTERACTIONS between preamble tokens rather than any single token: a repeated `--`, an
+# option operand shadowing a wrapper positional, a flag read as a value option. Fixed
+# examples caught each only after review named it, so the combinations are generated here.
+# Every preamble below is UNAMBIGUOUS -- the program is definitely the word after it -- which
+# is what lets both directions be asserted at once. The ambiguous preambles are deliberately
+# ABSENT: `flock -n /tmp/l` and `sudo -uroot` cannot be resolved without an option-arity
+# table, so they over-block by design and are pinned as documented examples above instead.
+_PRE = ["", "sudo ", "doas ", "env ", "busybox env ", "toybox env ", "sudo -u root ",
+        "doas -u root ", "env -u FOO ", "sudo -u root env -u X ", "timeout 5 ",
+        "flock /tmp/l ", "flock -- /tmp/l ", "flock -- -- ", "sudo -- ", "env -- ",
+        "nice -n 3 ", "timeout -s KILL 5 ", "env --unset=FOO ", "FOO=1 ",
+        "sudo -- env -u X ", "2>/dev/null ", "time ", "command ", "exec ", "nohup "]
+_RECV = ["perl5.36-x86_64-linux-gnu", "lldb-19", "gdb-14", "gdb-multiarch",
+         "/usr/bin/perl5.38-x86_64-linux-gnu", "python3.12-x86_64-linux-gnu"]
+_N = len(_PRE) * len(_RECV)
+p5 = p6 = 0
+for _pre in _PRE:
+    for _r in _RECV:
+        # P5, the fail-OPEN direction: in COMMAND POSITION the name is a receiver, whatever
+        # preamble precedes it.
+        if cmdword.is_file_mod("printf 'rm -rf src' | %s%s" % (_pre, _r)):
+            p5 += 1
+        else:
+            print("P5-FAIL", repr(_pre + _r))
+        # P6, the precision direction: one word to the right the SAME name is grep's data,
+        # and no preamble bookkeeping may promote it back into command position.
+        if not cmdword.is_file_mod("printf 'rm -rf src' | %sgrep %s" % (_pre, _r)):
+            p6 += 1
+        else:
+            print("P6-FAIL", repr(_pre + "grep " + _r))
+print("P5", "ok" if p5 == _N else "FAIL", p5)
+print("P6", "ok" if p6 == _N else "FAIL", p6)
+
 # P2 -- a stated write handed to a shell always blocks, however the pipeline is dressed.
 # This is the fail-OPEN direction: every regression in this file was a composition that
 # made a real write read as inert, so it is quantified over rather than enumerated.
@@ -3709,6 +3744,35 @@ case "$PROP_OUT" in
     *"P2 ok 3000"*) ok "property: a written payload piped to a shell always blocks (3000 seeded)" ;;
     *) no "property: a written payload piped to a shell always blocks" "$PROP_OUT" ;;
 esac
+case "$PROP_OUT" in
+    *"P5 ok 156"*) ok "property: a command-position receiver blocks under every preamble (156, #565)" ;;
+    *) no "property: command-position receiver coverage" "$PROP_OUT" ;;
+esac
+case "$PROP_OUT" in
+    *"P6 ok 156"*) ok "property: the same names one word RIGHT stay data (156, #565)" ;;
+    *) no "property: command-position receiver precision" "$PROP_OUT" ;;
+esac
+
+# ...and the TWIN agrees on a sample of the same grid. The property above runs in-process
+# against cmdword; marker_check is a separate program, so its half is sampled through the
+# real gate rather than quantified, which keeps the added wall-clock proportionate.
+TWIN_BAD=0
+for _pre in "" "sudo -u root " "flock -- -- " "env --unset=FOO " "timeout -s KILL 5 "; do
+    for _r in "perl5.36-x86_64-linux-gnu" "lldb-19"; do
+        case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}${_r}")" in
+            *'"block"'*) ;;
+            *) TWIN_BAD=$((TWIN_BAD + 1)) ;;
+        esac
+        case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}grep ${_r}")" in
+            *'"block"'*) TWIN_BAD=$((TWIN_BAD + 1)) ;;
+        esac
+    done
+done
+if [[ "$TWIN_BAD" -eq 0 ]]; then
+    ok "property: the marker twin agrees on a 20-case sample of the same grid (#565)"
+else
+    no "property: marker twin parity" "$TWIN_BAD disagreement(s)"
+fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

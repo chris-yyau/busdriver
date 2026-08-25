@@ -1220,11 +1220,19 @@ check "brace group still reopens"        ask   '{ rm -rf /etc; }'
 # its neighbours read as that rm argv.
 check "rm in one segment only"           allow 'rm build; grep rm -rf src'
 check "...and a real one still warns"    ask   'rm -rf /etc; grep rm src'
-# PINNED over-warn, unchanged from before this gate existed: a dangling
-# redirect admits the next segment, so a redirect TARGET that happens to be
-# named rm is still scanned as a command word. The admission is what keeps a
-# genuinely orphaned command word visible, and warning is the safe direction.
-check "redirect target named rm"         ask   '>& rm grep -rf /etc'
+# #745: redirect TARGET named rm is an operand; grep owns the command slot.
+check "redirect target named rm"         allow '>& rm grep -rf /etc'
+
+echo "--- #745: rm argv at command-word indexes only ---"
+check "operand rm after --"              allow 'rm -- build rm -rf'
+check "operand rm without --"            allow 'rm build rm -rf'
+check "direct recursive rm"              ask   'rm -rf /etc'
+check "sudo recursive rm"                ask   'sudo rm -rf /etc'
+check "separated redirect then rm"       ask   '>& out.log rm -rf /etc'
+check "find -exec recursive rm"          ask   'find . -exec rm -rf {} \;'
+check "xargs recursive rm"               ask   'echo /etc | xargs rm -rf'
+check "literal rm after then is operand" allow 'echo then rm -rf /etc'
+check "argv not cut when target follows operand rm" ask   'rm build rm -rf /etc'
 
 # The enumerated cases above each pin ONE shape. They do not exercise the shapes
 # in COMBINATION, and combination is where this parser actually failed: the

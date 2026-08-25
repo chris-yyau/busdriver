@@ -137,10 +137,8 @@ check_cmd "rm behind then"       ask 'if true; then rm -rf /etc; fi'
 check_cmd "rm behind do (loop)"  ask 'for f in a; do rm -rf /etc; done'
 check_cmd "rm in a case arm"     ask 'case x in x) rm -rf /etc;; esac'
 check_cmd "eval-rm behind then"  ask 'if true; then eval "rm -rf /etc"; fi'
-# (No "benign keyword + literal rm" case here: careful-guard scans EVERY token
-#  for `rm`, not just the command word, so `echo then rm -rf /etc` over-warns on
-#  the literal rm on main too — that is this advisory guard's intended bias, not
-#  a keyword-handling effect.)
+# #745: operand rm spellings are no longer scanned as command words; see
+# test-careful-guard-truncate-context.sh for allow fixtures.
 
 echo "---"
 echo "passed: $pass  failed: $fail"

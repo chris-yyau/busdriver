@@ -1,35 +1,318 @@
 #!/usr/bin/env bash
-# Records bounded HEAD_PUSH_DATE fetch args; fails if events API uses --paginate (#624).
-case "$*" in
-    *api*events*)
-        if [[ "$*" == *--paginate* ]]; then
-            echo "FAIL: events fetch must not use --paginate (#624)" >&2
-            exit 1
-        fi
-        if [ -n "${GH_MOCK_EVENTS_FILE:-}" ] && [ -f "${GH_MOCK_EVENTS_FILE}" ]; then
-            cat "${GH_MOCK_EVENTS_FILE}"
+# Records bounded HEAD_PUSH_DATE fetch args; fails if events/activity misuse pagination
+# or omit the activity positive argv contract (#624 / #748 / ADR 0047).
+#
+# Activity arm is FIRST and matched on a repos/*/activity *endpoint token* found
+# among argv (not flattened `$*`), so branch names `events`/`activity` cannot
+# misroute. Events matching is likewise endpoint-path only.
+#
+# Argv contract is deliberately NOT a full `gh` getopt reimplementation: it
+# (1) requires the production positive form the Decision depends on, and
+# (2) rejects forbidden selectors in any common packaging (`-F after=`,
+# `-Fafter=`, `-F=after=`, `-iFafter=`, `--field=after=`, bare `after=`, …).
+set -euo pipefail
+
+_record_sentinel() {
+  local path="${1:-}"
+  [[ -n "$path" ]] || return 0
+  : >"$path" 2>/dev/null || true
+}
+
+# Classify one argv token for `gh api` parsing: value|attached|bool|positional.
+# Shared by endpoint locator, missing-endpoint guard, and mangled-path guard so
+# the three scanners cannot drift on which flags consume a following value.
+_gh_api_flag_kind() {
+  case "$1" in
+    --jq|--method|--header|--field|--raw-field|--hostname|--cache|--input|--preview|--template|-q|-X|-H|-f|-F|-p|-t)
+      printf 'value'
+      ;;
+    --jq=*|--method=*|--header=*|--field=*|--raw-field=*|--hostname=*|--cache=*|--input=*|--preview=*|--template=*|-X?*|-H?*|-f?*|-F?*|-q?*|-p?*|-t?*)
+      printf 'attached'
+      ;;
+    -*)
+      printf 'bool'
+      ;;
+    *)
+      printf 'positional'
+      ;;
+  esac
+}
+
+# Locate the REST path among argv regardless of flag ordering after `api`
+# (e.g. `gh api -X GET repos/o/r/activity ...` or path-first after api).
+# `$1` must be the `api` subcommand — a trailing/mid-argv `api` token must not
+# unlock the activity/events arms (real `gh` rejects that ordering).
+# Skip values of value-taking flags so `gh api --jq repos/o/r/events graphql`
+# cannot false-match the events arm (Codex P2 on PR #764).
+# First positional only — real `gh api` accepts one endpoint arg; a later
+# `repos/.../events` must not override an earlier `graphql` (Codex P2 #764).
+_gh_api_endpoint() {
+  local -a args=("$@")
+  local i=0 n=${#args[@]} a kind
+  [[ "${args[0]:-}" == "api" ]] || return 1
+  i=1
+  while (( i < n )); do
+    a="${args[i]}"
+    kind="$(_gh_api_flag_kind "$a")"
+    case "$kind" in
+      value)
+        i=$((i + 2))
+        continue
+        ;;
+      attached|bool)
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    # Exact repos/{owner}/{repo}/activity — no empty/extra segments, no URI
+    # delimiters (? #) inside owner/repo, no query suffix.
+    if [[ "$a" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
+    # Events may carry ?per_page=N (production events fetch).
+    if [[ "$a" =~ ^repos/[^/?#]+/[^/?#]+/events(\?[^#]*)?$ ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
+    # Non-matching first positional: do not scan further positionals.
+    return 1
+  done
+  return 1
+}
+
+# First positional endpoint token after `api` (any path), or fail.
+# Rejects a second positional so malformed `gh api graphql repos/.../events`
+# cannot green-wash (real gh: accepts 1 arg). Sets GH_MOCK_MULTI_POS=1 when
+# more than one positional is present so callers can fail closed.
+_gh_api_first_positional() {
+  local -a args=("$@")
+  local i=0 n=${#args[@]} a kind found=""
+  unset GH_MOCK_MULTI_POS
+  [[ "${args[0]:-}" == "api" ]] || return 1
+  i=1
+  while (( i < n )); do
+    a="${args[i]}"
+    kind="$(_gh_api_flag_kind "$a")"
+    case "$kind" in
+      value)
+        i=$((i + 2))
+        continue
+        ;;
+      attached|bool)
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    if [[ -n "$found" ]]; then
+      GH_MOCK_MULTI_POS=1
+      printf '%s' "$found"
+      return 0
+    fi
+    found="$a"
+    i=$((i + 1))
+  done
+  [[ -n "$found" ]] || return 1
+  printf '%s' "$found"
+  return 0
+}
+
+# True when `gh api ...` still has a positional endpoint after skipping
+# value-taking flag args (real gh rejects a bare flag-only invocation).
+_gh_api_has_positional() {
+  _gh_api_first_positional "$@" >/dev/null
+}
+
+# Activity argv contract (ADR 0047 Decision): STRICT ALLOWLIST of the measured
+# production form. Anything else fails closed — this is a test mock, not gh getopt.
+_activity_argv_ok() {
+  local has_x_get=0 has_api_ver=0 has_ref=0 has_per_page=0 has_direction=0
+  local api_count=0 endpoint_count=0 x_count=0 h_count=0
+  local ref_count=0 per_page_count=0 direction_count=0
+  local -a args=("$@")
+  local i=0 n=${#args[@]} a val endpoint
+
+  endpoint="$(_gh_api_endpoint "$@" || true)"
+  [[ "$endpoint" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]] || return 1
+
+  while (( i < n )); do
+    a="${args[i]}"
+    case "$a" in
+      api)
+        api_count=$((api_count + 1))
+        (( api_count == 1 )) || return 1
+        ;;
+      -X)
+        x_count=$((x_count + 1))
+        (( x_count == 1 )) || return 1
+        i=$((i + 1))
+        (( i < n )) || return 1
+        [[ "${args[i]}" == "GET" ]] || return 1
+        has_x_get=1
+        ;;
+      -H)
+        h_count=$((h_count + 1))
+        (( h_count == 1 )) || return 1
+        i=$((i + 1))
+        (( i < n )) || return 1
+        [[ "${args[i]}" == "X-GitHub-Api-Version: 2022-11-28" ]] || return 1
+        has_api_ver=1
+        ;;
+      -f)
+        i=$((i + 1))
+        (( i < n )) || return 1
+        val="${args[i]}"
+        case "$val" in
+          ref=refs/heads/?*)
+            # Require a non-empty branch segment (refs/heads/ alone is invalid).
+            ref_count=$((ref_count + 1))
+            (( ref_count == 1 )) || return 1
+            has_ref=1
+            ;;
+          per_page=2)
+            per_page_count=$((per_page_count + 1))
+            (( per_page_count == 1 )) || return 1
+            has_per_page=1
+            ;;
+          direction=desc)
+            direction_count=$((direction_count + 1))
+            (( direction_count == 1 )) || return 1
+            has_direction=1
+            ;;
+          *) return 1 ;;
+        esac
+        ;;
+      *)
+        if [[ "$a" == "$endpoint" ]]; then
+          endpoint_count=$((endpoint_count + 1))
+          (( endpoint_count == 1 )) || return 1
         else
-            echo '[]'
+          return 1
         fi
         ;;
-    *api*check-suites*)
-        # Without this the call fell through to the default `{}`, so any test that
-        # exercises HEAD_PUSH_CHECKS_FALLBACK_OK=1 end-to-end would silently see no
-        # suites and pass for the wrong reason (CodeRabbit, PR #743).
-        if [ -n "${GH_MOCK_CHECK_SUITES_FILE:-}" ] && [ -f "${GH_MOCK_CHECK_SUITES_FILE}" ]; then
-            cat "${GH_MOCK_CHECK_SUITES_FILE}"
-        else
-            echo '{"check_suites":[]}'
+    esac
+    i=$((i + 1))
+  done
+  [[ "$api_count" -eq 1 && "$endpoint_count" -eq 1 \
+    && "$x_count" -eq 1 && "$h_count" -eq 1 \
+    && "$ref_count" -eq 1 && "$per_page_count" -eq 1 && "$direction_count" -eq 1 \
+    && "$has_x_get" -eq 1 && "$has_api_ver" -eq 1 && "$has_ref" -eq 1 \
+    && "$has_per_page" -eq 1 && "$has_direction" -eq 1 ]]
+}
+
+_endpoint="$(_gh_api_endpoint "$@" || true)"
+# Real `gh api` accepts one endpoint arg; reject extras before any arm routes.
+if [[ "${1:-}" == "api" ]]; then
+  _gh_api_first_positional "$@" >/dev/null || true
+  if [[ "${GH_MOCK_MULTI_POS:-}" == "1" ]]; then
+    echo "FAIL: gh api accepts 1 endpoint arg (#748)" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$_endpoint" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]]; then
+  if ! _activity_argv_ok "$@"; then
+    echo "FAIL: activity fetch argv contract (#748)" >&2
+    exit 1
+  fi
+  # Record on both fixture and fallback paths (matches events arm) so a test that
+  # sets GH_MOCK_ACTIVITY_FILE still observes the activity leg was hit.
+  _record_sentinel "${GH_MOCK_ACTIVITY_SENTINEL:-}"
+  if [ -n "${GH_MOCK_ACTIVITY_FILE:-}" ] && [ -f "${GH_MOCK_ACTIVITY_FILE}" ]; then
+    cat "${GH_MOCK_ACTIVITY_FILE}"
+  else
+    echo '[]'
+  fi
+elif [[ "$_endpoint" =~ ^repos/[^/?#]+/[^/?#]+/events(\?[^#]*)?$ ]]; then
+  for _a in "$@"; do
+    case "$_a" in
+      --paginate|--paginate=*)
+        echo "FAIL: events fetch must not use --paginate (#624)" >&2
+        exit 1
+        ;;
+    esac
+  done
+  _record_sentinel "${GH_MOCK_EVENTS_SENTINEL:-}"
+  if [ -n "${GH_MOCK_EVENTS_FILE:-}" ] && [ -f "${GH_MOCK_EVENTS_FILE}" ]; then
+    cat "${GH_MOCK_EVENTS_FILE}"
+  else
+    echo '[]'
+  fi
+else
+  # Flag-only `gh api` (no positional endpoint) must not return `{}` — real gh
+  # rejects it; a silent success green-washes omitted endpoints (Litmus #764).
+  if [[ "${1:-}" == "api" ]] && ! _gh_api_has_positional "$@"; then
+    echo "FAIL: gh api missing endpoint (#748)" >&2
+    exit 1
+  fi
+  # A mangled/unauthorized activity path must not silently fall through to `{}`.
+  # Inspect repos-relative and absolute API URL *positional* tokens only — skip
+  # values of value-taking flags so `--jq repos/.../activity` cannot false-trip
+  # this guard when the real endpoint is graphql (pairs with _gh_api_endpoint).
+  # Match `activity` only as a resource after owner/repo — owner or repo named
+  # `activity` must not reject unrelated endpoints (Litmus #764).
+  _skip_next=0
+  for _a in "$@"; do
+    if [[ "$_skip_next" -eq 1 ]]; then
+      _skip_next=0
+      continue
+    fi
+    case "$(_gh_api_flag_kind "$_a")" in
+      value)
+        _skip_next=1
+        continue
+        ;;
+      attached|bool)
+        continue
+        ;;
+    esac
+    case "$_a" in
+      repos/*|*://*/repos/*|*/repos/*)
+        if [[ "$_a" =~ (^|/)repos/[^/]+/[^/]+/(.*/)?activity([/?#]|$) ]]; then
+          echo "FAIL: activity endpoint shape (#748)" >&2
+          exit 1
         fi
         ;;
-    *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
-    *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
-    *api*pulls*reviews*)         echo '[]' ;;
-    *pr*view*--comments*)        echo '{"comments":[]}' ;;
-    *api*check-runs*)            echo '{"check_runs":[]}' ;;
-    *api*statuses*)              echo '[]' ;;
-    *api*issues*reactions*)      echo '[]' ;;
-    *api*commits*--jq*)         echo '2024-01-01T00:00:00Z' ;;
-    *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch","isCrossRepository":false}' ;;
-    *)                           echo '{}' ;;
-esac
+    esac
+  done
+  # Route check-suites on the positional endpoint token (same rule as
+  # activity/events), not flattened $* — a --jq/branch value containing
+  # "check-suites" must not select this arm (CodeRabbit #764).
+  # Exact production shape: repos/{owner}/{repo}/commits/{sha}/check-suites.
+  _pos="$(_gh_api_first_positional "$@" || true)"
+  if [[ -n "$_pos" && "$_pos" =~ ^repos/[^/?#]+/[^/?#]+/commits/[^/?#]+/check-suites$ ]]; then
+    # Without this the call fell through to the default `{}`, so any test that
+    # exercises HEAD_PUSH_CHECKS_FALLBACK_OK=1 end-to-end would silently see no
+    # suites and pass for the wrong reason (CodeRabbit, PR #743).
+    if [ -n "${GH_MOCK_CHECK_SUITES_FILE:-}" ] && [ -f "${GH_MOCK_CHECK_SUITES_FILE}" ]; then
+      cat "${GH_MOCK_CHECK_SUITES_FILE}"
+    else
+      echo '{"check_suites":[]}'
+    fi
+  else
+    case "$*" in
+      *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
+      *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+      *api*pulls*reviews*)         echo '[]' ;;
+      *pr*view*--comments*)        echo '{"comments":[]}' ;;
+      *api*check-runs*)            echo '{"check_runs":[]}' ;;
+      *api*statuses*)              echo '[]' ;;
+      *api*issues*reactions*)      echo '[]' ;;
+      *api*commits*--jq*)         echo '2024-01-01T00:00:00Z' ;;
+      *pr*view*headRefOid*)
+        # Parameterised so the cross-repo e2e is constructible (ADR 0047 Testing §8).
+        # Encode via jq so a branch name containing quotes cannot corrupt the JSON.
+        _cross="${GH_MOCK_IS_CROSS_REPOSITORY:-false}"
+        case "$_cross" in
+          true|false) ;;
+          *) _cross=false ;;
+        esac
+        _branch="${GH_MOCK_HEAD_REF_NAME:-feat/test-branch}"
+        _oid="${GH_MOCK_HEAD_REF_OID:-abcdef1234567890abcdef1234567890abcdef12}"
+        jq -nc --arg oid "$_oid" --arg branch "$_branch" --argjson cross "$_cross" \
+          '{headRefOid:$oid,headRefName:$branch,isCrossRepository:$cross}'
+        ;;
+      *)                           echo '{}' ;;
+    esac
+  fi
+fi

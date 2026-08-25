@@ -6,6 +6,6 @@ export default {
   },
   ignores: [
     (message) => /^(chore|build)\(deps(-dev)?\):/i.test(message),
-    (message) => /^merge\s/i.test(message),
+    (message) => /^merge[: ]/i.test(message),
   ],
 };

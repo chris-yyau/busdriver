@@ -1329,7 +1329,7 @@ fi
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
-- Model: Sonnet
+- Model: opus
 - CI: all required checks passing
 - Automated reviewers: all completed, no actionable findings
 - Advisory checks: [fixed | N failing — noted as beyond PR scope]

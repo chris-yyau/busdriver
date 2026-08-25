@@ -19,7 +19,7 @@ const CATEGORIES = [
   'Fly Integration',
 ];
 
-const RUBRIC_VERSION = '2026-05-19';
+const RUBRIC_VERSION = '2026-08-25';
 
 const PROVIDERS = {
   Vercel: {
@@ -630,16 +630,12 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'docs/token-optimization.md'),
       fix: 'Create docs/token-optimization.md with target settings and tradeoffs.',
     },
-    {
-      id: 'cost-model-route-command',
-      category: 'Cost Efficiency',
-      points: 3,
-      scopes: ['repo', 'commands'],
-      path: 'commands/model-route.md',
-      description: 'Model route command exists for complexity-aware routing',
-      pass: fileExists(rootDir, 'commands/model-route.md'),
-      fix: 'Add commands/model-route.md and route policies for cheap-default execution.',
-    },
+    // `cost-model-route-command` was deleted with ADR 0046 (Opus-only Claude work
+    // routes). It scored the mere existence of commands/model-route.md as Cost
+    // Efficiency for "complexity-aware routing" / "cheap-default execution" — the
+    // tiering thesis the ADR retires. `context-model-route` already asserts that
+    // same file's presence, so nothing is left unchecked; the Cost Efficiency
+    // subtotal drops by its 3 points.
     ...buildGithubChecks(rootDir),
   ];
 }

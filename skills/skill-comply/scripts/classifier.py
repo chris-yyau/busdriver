@@ -17,7 +17,7 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 def classify_events(
     spec: ComplianceSpec,
     trace: list[ObservationEvent],
-    model: str = "haiku",
+    model: str = "opus",
 ) -> dict[str, list[int]]:
     """Classify which tool calls match which compliance steps.
 
@@ -47,7 +47,7 @@ def classify_events(
         ["claude", "-p", prompt, "--model", model, "--output-format", "text"],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=180,  # opus per ADR 0046 — was 60s, sized for a cheaper model
     )
 
     if result.returncode != 0:

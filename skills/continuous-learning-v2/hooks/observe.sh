@@ -146,7 +146,7 @@ if [ -n "${CLV2_CONFIG:-}" ] && [ -f "$(dirname "$CLV2_CONFIG")/disabled" ]; the
 fi
 
 # Prevent observe.sh from firing on non-human sessions to avoid:
-#   - ECC observing its own Haiku observer sessions (self-loop)
+#   - ECC observing its own observer sessions (self-loop)
 #   - ECC observing other tools' automated sessions
 #   - automated sessions creating project-scoped homunculus metadata
 

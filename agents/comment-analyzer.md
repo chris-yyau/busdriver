@@ -1,7 +1,7 @@
 ---
 name: comment-analyzer
 description: Analyze code comments for accuracy, completeness, maintainability, and comment rot risk. Use when reviewing comments or docstrings against the code they describe, or auditing a diff for stale, misleading, or out-of-date comments (comment rot).
-model: sonnet
+model: opus
 effort: low
 tools: [Read, Grep, Glob, Bash]
 ---

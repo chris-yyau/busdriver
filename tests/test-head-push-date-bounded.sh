@@ -283,7 +283,8 @@ check "fetch-pr-state bounded miss → no HEAD_CHECKS_DATE fallback" "0" "${HEAD
 # --- Mock hardening (#748 / ADR 0047): activity arm first + positive argv ---
 # A branch literally named `events` must hit the activity arm (argv contract) and
 # must NOT create the events sentinel — proving path-token matching, not substring.
-_mock_sent=$(mktemp -d)
+_mock_sent=$(mktemp -d) || exit 1
+trap 'rm -rf -- "${_mock_sent:-}"' EXIT
 export PATH="$GH_MOCK:$PATH"
 export GH_MOCK_ACTIVITY_SENTINEL="$_mock_sent/activity"
 export GH_MOCK_EVENTS_SENTINEL="$_mock_sent/events"
@@ -484,6 +485,18 @@ fi
 gh pr view 1 --jq activity >/dev/null 2>&1
 _jq_rc=$?
 check "unrelated activity substring does not trip mangled-path guard" "0" "$_jq_rc"
+# Owner/repo named `activity` must not reject unrelated endpoints (Litmus #764).
+_owner_act=$(gh api repos/activity/repo/statuses/x 2>/dev/null) || _owner_act="ERR"
+check "owner named activity does not trip mangled guard" "[]" "$_owner_act"
+_repo_act=$(gh api repos/owner/activity/check-runs 2>/dev/null) || _repo_act="ERR"
+check "repo named activity does not trip mangled guard" '{"check_runs":[]}' "$_repo_act"
+# First positional wins — a later events path must not select the events arm;
+# real gh rejects two positionals, so the mock fails closed (Litmus #764).
+if ! gh api graphql repos/owner/repo/events >/dev/null 2>&1; then
+  check "second positional events path fails closed" "1" "1"
+else
+  check "second positional events path fails closed" "1" "0"
+fi
 # Path-shaped --jq values must not select the events/activity arm (Codex P2 #764).
 # Real endpoint is graphql; a false events match would return [] and green-wash.
 _jq_events_out=$(gh api --jq 'repos/owner/repo/events' graphql 2>/dev/null) || _jq_events_out="ERR"
@@ -534,18 +547,20 @@ check "PR JSON survives quoted branch name" 'feat/"quoted"' "$_pr_branch"
 check "PR JSON coerces isCrossRepository=true" "1" "$_pr_cross"
 unset GH_MOCK_ACTIVITY_SENTINEL GH_MOCK_EVENTS_SENTINEL
 rm -rf "$_mock_sent"
+trap - EXIT
 
 # --- Cross-repo fetch-pr-state e2e (ADR 0047 Testing §8) — lands first ---
 # Must supply a non-empty check-suites fixture: the mock defaults to
 # {"check_suites":[]} which would leave HEAD_CHECKS_DATE empty for the wrong reason.
 export GH_MOCK_IS_CROSS_REPOSITORY=true
+export GH_MOCK_HEAD_REF_OID="$FULL_SHA"
 export GH_MOCK_CHECK_SUITES_FILE="$FIXTURES/check-suites-for-head.json"
 export GH_MOCK_EVENTS_FILE="$FIXTURES/events-push-outside-window.json"
 unset FETCH_OK HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_COMMITTED_DATE \
   HEAD_PUSH_CHECKS_FALLBACK_OK HEAD_PUSH_CREATE_DATE 2>/dev/null || true
 # shellcheck source=/dev/null
 . "$FETCH_PR_STATE" 123
-unset GH_MOCK_IS_CROSS_REPOSITORY GH_MOCK_CHECK_SUITES_FILE GH_MOCK_EVENTS_FILE
+unset GH_MOCK_IS_CROSS_REPOSITORY GH_MOCK_HEAD_REF_OID GH_MOCK_CHECK_SUITES_FILE GH_MOCK_EVENTS_FILE
 [[ "$FETCH_OK" = "1" ]] || { echo "FAIL: FETCH_OK not 1 on cross-repo e2e"; fail=$((fail + 1)); }
 check "cross-repo e2e → fallback eligible" "1" "${HEAD_PUSH_CHECKS_FALLBACK_OK:-0}"
 check "cross-repo e2e → HEAD_CHECKS_DATE from suites fixture" "2026-08-10T11:00:05Z" "${HEAD_CHECKS_DATE:-}"

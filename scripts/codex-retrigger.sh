@@ -45,6 +45,7 @@
 #
 # CONTRACT — fail-SAFE: a failed re-trigger must NEVER stale the gate.
 #   Usage:  codex-retrigger.sh <pr-number> <head-sha> [owner/repo]
+#           codex-retrigger.sh --await-cooldown <pr-number> <head-sha> [wait-rounds-remaining]
 #   Exit 2 ONLY on missing required args (a wiring bug; surfaced by tests).
 #   Exit 0 on every OPERATIONAL path — opt-out, bad input, budget spent, cooling
 #   down, gh missing, post failure — so a caller that forgets `|| true` still cannot
@@ -56,6 +57,19 @@
 #   call is IN FLIGHT — and through a successful one — the claim is KEPT rather than
 #   freeing a slot whose nudge GitHub already accepted. Only a KNOWN non-zero rc
 #   releases, so the retry semantics above are unchanged. See the trap block below.
+#
+#   --await-cooldown (#679) — optional leading flag. The dispatcher wait-round
+#   loop calls `codex-retrigger.sh --await-cooldown <pr> <head> [wait-rounds-remaining]`
+#   AFTER the post attempt, when further wait rounds remain (`MAX_WAIT - wait_round`).
+#   That call never posts: if a marker is hot and remaining > 0 it SLEEPS out the
+#   cooldown so the NEXT wait-round can spend attempt 2..N. Time pacing therefore
+#   lives in the dispatcher loop (which can afford a multi-minute sleep), not in the
+#   worker's Bash tool call (default tool ceiling ~120s < default COOLDOWN 180s).
+#   A single await sleep is capped at AWAIT_SLEEP_CAP so it always fits the caller's
+#   own Bash tool ceiling; a COOLDOWN longer than the cap is paid down across
+#   successive wait-rounds rather than killed mid-sleep. See AWAIT_SLEEP_CAP below.
+#   The ordinary post path (no flag) keeps skip-when-hot so the worker→dispatcher
+#   mirror still dedupes. Hooks / `none`-path never pass the flag.
 #
 # Opt-out:  PR_GRIND_CODEX_RETRIGGER=0           (default ON; any non-"0" => on)
 # Phrase:   PR_GRIND_CODEX_RETRIGGER_PHRASE      (default "@codex review"; for
@@ -92,45 +106,41 @@
 #           Anything outside those ranges falls back to the default — a malformed or
 #           fat-fingered knob must never widen the budget OR stale the gate.
 #
-# COUPLING WITH THE DISPATCHER'S WAIT BUDGET (#673 P1, Codex review on PR #676) — the
-# two knobs above are NOT independent of the caller's `--max-wait`. Every attempt
-# after the first only lands if it falls inside the dispatcher's remaining wait
-# wall-clock, so the defaults must satisfy, approximately:
-#     COOLDOWN * (MAX - 1) <= 0.8 * dispatcher wait budget in wall-clock seconds
-# because an attempt that would fall outside that window is never reached — the
-# dispatcher bails on --max-wait before the cooldown for that slot elapses. With
-# `--max-wait 8` the loop exhausts in roughly 8 minutes (ADR 0005's Context section
-# documents this figure), giving a 480s budget and a 384s ceiling.
+# COUPLING WITH THE DISPATCHER'S WAIT BUDGET (#673 / #676 / #679) — the two knobs
+# above are NOT independent of the caller's `--max-wait`. Reachability has two
+# halves, and both must hold:
 #
-# THE 0.8 IS THE POINT, not decoration. The first correction of this defect used
-# `<=` against the FULL 480s and shipped COOLDOWN=240, which makes `240 * 2 = 480`
-# exactly equal the budget — so the last attempt lands precisely at the moment the
-# dispatcher bails and is reachable only with zero trigger latency, zero marker-write
-# time, and perfectly aligned polling. That is "fits" on paper and "unreliable" in
-# practice (litmus MEDIUM on PR #676, caught immediately after the first fix). The
-# budget must be fit INSIDE, not filled. The shipped defaults are therefore MAX=3,
-# COOLDOWN=180 → `180 * 2 = 360s`, leaving 120s of headroom to absorb that latency.
+#   (1) ROUND BUDGET — each attempt after the first needs a wait-round that can
+#       host it. Shipped defaults must satisfy `MAX <= default --max-wait` so the
+#       full attempt budget fits inside the round budget. Pinned by case 18.
 #
-# 180s remains at or above the observed Codex turnaround (it answered a nudge on
-# PR #676 in about 3 minutes), so pacing still normally gives Codex time to reply
-# before a re-nudge — and when it does not, ADR 0005 already settled the cost: Codex
-# de-dupes, so the downside is one extra comment, never a correctness problem.
+#   (2) TIME PACING — COOLDOWN is genuine wait-time for Codex (~3 min observed).
+#       Pre-#679 the helper only *skipped* while hot, so eight fast wait-rounds
+#       could exhaust `--max-wait` before COOLDOWN elapsed and leave attempts 2..N
+#       unreachable while case 18's old 480s typical still looked green. #679 closes
+#       that by having the dispatcher call `--await-cooldown` with live remaining
+#       wait rounds after each wait-round post attempt: while remaining > 0 and the
+#       cooldown is hot, it SLEEPS so the next wait-round can spend. The ordinary
+#       post path keeps skip-when-hot (mirror dedupe; no sleep inside the worker
+#       Bash tool). Each await sleep is bounded by AWAIT_SLEEP_CAP so it fits the
+#       caller's Bash tool ceiling; a COOLDOWN above the cap therefore needs
+#       `n = ceil(COOLDOWN / AWAIT_SLEEP_CAP)` wait-rounds to clear EACH cooldown
+#       interval that follows an attempt, rather than one. Attempt 1 pays no
+#       cooldown (the pacing gate below only engages once a marker is occupied), so
+#       attempt `k` lands in round `1 + (k - 1) * n` and full-budget reachability
+#       needs `1 + (MAX - 1) * n <= --max-wait` — NOT `MAX * n`, which would count a
+#       cooldown before the first attempt and reject valid configs when `n > 1`.
+#       This is the coupling to re-check when raising the cooldown (ADR 0005
+#       Revisit). Full-budget reachability still requires enough wait rounds left
+#       when Codex becomes sole-stale — `MAX <= default --max-wait` is necessary for
+#       the defaults when that happens early, not a guarantee after other bots have
+#       already burned the wait budget.
 #
-# WHAT THE INEQUALITY IS AND IS NOT. `--max-wait` counts wait-ROUNDS, and the
-# dispatcher enforces no minimum duration per round — so 480s is a documented TYPICAL,
-# never a guarantee. Eight fast rounds can exhaust the budget in well under 360s, and
-# the later attempts would then be unreachable even at COOLDOWN=180. This bound
-# therefore catches order-of-magnitude and zero-margin mistakes (the two live defects
-# on PR #676: 900, wrong by ~4x, and 240, wrong by having no headroom) but it cannot
-# promise reachability. Closing that properly means pacing in ROUNDS instead of
-# wall-clock, or a dispatcher-enforced minimum wait-round duration — both caller-side,
-# neither derivable from the mtimes this helper reads. Tracked separately; do not
-# paper over it here by inventing a tighter constant.
-#
-# A future change to either knob — or to the dispatcher's default --max-wait — must
-# be re-checked against this inequality; see tests/test-codex-retrigger.sh's dedicated
-# assertion (which pins the 0.8 margin, not bare `<=`, precisely so restoring 240
-# fails) and ADR 0005's Revisit trigger list.
+# The shipped defaults remain MAX=3, COOLDOWN=180 (180s still meets or exceeds the
+# observed Codex turnaround on PR #676). When Codex answers faster, ADR 0005 already
+# settled the cost — Codex de-dupes, so an early re-nudge is one extra comment, never
+# a correctness problem. A future change to MAX or to the dispatcher's default
+# `--max-wait` must keep `MAX <= --max-wait`; see case 18 and ADR 0005's Revisit list.
 # Markers:  ${BUSDRIVER_STATE_DIR:-.claude}/.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local
 #           for attempt 1, and `...-<HEAD8>-<n>.local` for attempts n >= 2.
 #           Attempt 1 deliberately keeps ADR 0005's exact filename, so a marker left
@@ -147,12 +157,27 @@
 #           design-marker token directory).
 set -u
 
+AWAIT_COOLDOWN=0
+if [ "${1:-}" = "--await-cooldown" ]; then
+    AWAIT_COOLDOWN=1
+    shift
+fi
+
 PR="${1:-}"
 HEAD_SHA="${2:-}"
-REPO="${3:-}"
+REPO_OR_REMAINING="${3:-}"
+# Post path: arg3 is owner/repo. Await path: arg3 is wait-rounds-remaining.
+if [ "$AWAIT_COOLDOWN" = 1 ]; then
+    REPO=""
+    WAIT_ROUNDS_REMAINING="$REPO_OR_REMAINING"
+else
+    REPO="$REPO_OR_REMAINING"
+    WAIT_ROUNDS_REMAINING=""
+fi
 
 if [ -z "$PR" ] || [ -z "$HEAD_SHA" ]; then
     echo "usage: codex-retrigger.sh <pr-number> <head-sha> [owner/repo]" >&2
+    echo "       codex-retrigger.sh --await-cooldown <pr-number> <head-sha> [wait-rounds-remaining]" >&2
     exit 2
 fi
 
@@ -209,6 +234,24 @@ read_int_knob() {
 MAX_ATTEMPTS=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_MAX:-}" 3 1 10)
 COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 180 0 86400)
 
+# Ceiling on a SINGLE `--await-cooldown` sleep. NOT an operator knob, deliberately:
+# it is a property of the caller's runtime, not a preference. The dispatcher's await
+# call is one Bash tool call, and that tool CAPS `timeout` at 600000ms
+# (skills/litmus/SKILL.md). COOLDOWN accepts up to 86400s, so an unclamped
+# `sleep $((COOLDOWN - age))` asks for a call the caller cannot legally issue: the
+# tool kills it mid-sleep, the cooldown never clears, and attempts 2..N go
+# unreachable — the very #679 defect this flag exists to close (cursor + Codex, PR
+# #763). 480s keeps the required `sleep + 60s` timeout at 540s, matching the
+# under-cap budget litmus already ships against the same 600s ceiling.
+# Dispatcher Bash timeout for --await-cooldown MUST be >= 540000ms (cap+60s).
+#
+# Clamping the SLEEP rather than the KNOB is what preserves both halves: a long
+# COOLDOWN stays a legitimate "nudge rarely" choice on the post path, while the await
+# path pays it down ACROSS wait-rounds — each round sleeps at most the cap and exits,
+# and the next round re-reads the marker age and continues. Lowering COOLDOWN's own
+# ceiling to fit the tool would instead silently rewrite that operator choice.
+AWAIT_SLEEP_CAP=480
+
 # Scan the slots ONCE for the three things the decision needs: how many attempts are
 # actually spent (occupancy), the LOWEST FREE slot to claim, and the NEWEST marker
 # mtime to pace against.
@@ -256,6 +299,12 @@ fi
 # Pace the attempts. Without this, consecutive wait-rounds seconds apart would burn
 # the whole budget before Codex could plausibly answer — restoring the #673 dead end
 # AND spamming the PR, i.e. losing on both axes at once.
+#
+# #679 — two modes share this block:
+#   post path (default): skip-when-hot (mirror dedupe; never sleep — worker Bash
+#     tool ceiling ~120s is below default COOLDOWN 180s).
+#   --await-cooldown: dispatcher-only; if remaining wait rounds > 0 and hot, SLEEP
+#     out the cooldown then exit 0 without posting, so the next wait-round can spend.
 if [ "$OCCUPIED" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
     _now=$(date +%s 2>/dev/null || echo "")
     if [ "$MTIME_UNREADABLE" = "1" ] || [ -z "$_now" ] || [ "$NEWEST" -eq 0 ]; then
@@ -263,10 +312,49 @@ if [ "$OCCUPIED" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
         exit 0
     fi
     _age=$(( _now - NEWEST ))
+    # Clock rollback / future-dated marker → negative age. Clamp so `_need` cannot
+    # exceed COOLDOWN and stall the grinder for an unbounded sleep (#679 litmus).
+    [ "$_age" -lt 0 ] && _age=0
     if [ "$_age" -lt "$COOLDOWN" ]; then
+        _need=$(( COOLDOWN - _age ))
+        if [ "$AWAIT_COOLDOWN" = 1 ]; then
+            case "$WAIT_ROUNDS_REMAINING" in
+                ''|*[!0-9]*)
+                    echo "ℹ️  codex-retrigger: await-cooldown: missing/non-digit wait-rounds-remaining for PR #$PR @ $HEAD8; not pacing." >&2
+                    exit 0
+                    ;;
+            esac
+            # `00` / `000` are digits but mean zero — require a numeric positive
+            # via arithmetic, not a textual `0` pattern alone (#679 litmus).
+            if [ "$WAIT_ROUNDS_REMAINING" -eq 0 ]; then
+                echo "ℹ️  codex-retrigger: await-cooldown: no wait rounds remaining for PR #$PR @ $HEAD8; not pacing." >&2
+                exit 0
+            fi
+            # Never ask for a sleep the caller's Bash tool cannot host (see
+            # AWAIT_SLEEP_CAP). A longer remainder is paid down across wait-rounds
+            # instead of being killed mid-call.
+            _sleep="$_need"
+            if [ "$_sleep" -gt "$AWAIT_SLEEP_CAP" ]; then
+                _sleep="$AWAIT_SLEEP_CAP"
+                echo "ℹ️  codex-retrigger: await-cooldown: pacing ${_sleep}s of ${_need}s remaining (per-round cap ${AWAIT_SLEEP_CAP}s, COOLDOWN=${COOLDOWN}s) for PR #$PR @ $HEAD8 (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING); cooldown still hot, next wait-round continues." >&2
+            else
+                echo "ℹ️  codex-retrigger: await-cooldown: pacing ${_sleep}s of ${COOLDOWN}s for PR #$PR @ $HEAD8 (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING)." >&2
+            fi
+            sleep "$_sleep" || {
+                echo "ℹ️  codex-retrigger: await-cooldown sleep failed for PR #$PR @ $HEAD8; skipping (fail-safe)." >&2
+                exit 0
+            }
+            exit 0
+        fi
         echo "ℹ️  codex-retrigger: attempt $OCCUPIED/$MAX_ATTEMPTS posted ${_age}s ago for PR #$PR @ $HEAD8; cooling down (${COOLDOWN}s); skipping." >&2
         exit 0
     fi
+fi
+
+# --await-cooldown with a cool marker (or no markers / budget spent above): done.
+if [ "$AWAIT_COOLDOWN" = 1 ]; then
+    echo "ℹ️  codex-retrigger: await-cooldown: cooldown clear for PR #$PR @ $HEAD8; nothing to pace." >&2
+    exit 0
 fi
 
 ATTEMPT=$(( OCCUPIED + 1 ))          # ordinal for messages: this is the Nth nudge

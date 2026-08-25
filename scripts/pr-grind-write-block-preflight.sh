@@ -431,9 +431,11 @@ if out:
                 printf '%s\n' "$_LIST"
                 # Absolute, plugin-relative: when pr-grind targets a repo other
                 # than the busdriver checkout, a bare `scripts/design-clear.sh`
-                # resolves inside the target and does not exist there.
+                # resolves inside the target and does not exist there. Shell-quote
+                # so a plugin path with spaces/metacharacters stays copy-pasteable.
+                _RELEASE_CMD="$(printf '%q' "${_SCRIPT_DIR}/design-clear.sh")"
                 printf 'Release via %s (lists pending; names the audited path).\n' \
-                    "${_SCRIPT_DIR}/design-clear.sh"
+                    "$_RELEASE_CMD"
                 printf '%s\n' "Do not drain a live sibling worktree's marker unless it is abandoned."
                 printf '%s\n' "Do NOT create the operator-only design-review skip file. Worker env bail is unchanged if a block arises mid-round."
                 exit 1
@@ -447,13 +449,14 @@ if out:
 esac
 
 # ── Freeze scope ─────────────────────────────────────────────────────────────
-# freeze-guard.sh reads CWD-relative `.claude/freeze-scope.local`. The worker may
-# run with cwd = WORKTREE_DIR (bash blocks) or the session cwd (Write/Edit), so
-# check both when they differ. Definite block only when scope ∁ worktree (disjoint).
-_freeze_check_one "$ANCHOR" "$ANCHOR" || exit 1
+# freeze-guard.sh is registered only for Write/Edit/MultiEdit and reads
+# CWD-relative `.claude/freeze-scope.local` from the hook process CWD (session
+# launch dir), not from the -C worktree. A freeze that exists only under the
+# sibling WORKTREE_DIR is invisible to the real gate; treating it as definite
+# here false-positives and stalls a healthy grind (fail-OPEN design). Probe the
+# session CWD only; still compare that scope against ANCHOR for disjointness.
 _SESSION="$(pwd -P 2>/dev/null || true)"
-if [ -n "$_SESSION" ] && [ "$_SESSION" != "$ANCHOR" ]; then
-    _freeze_check_one "$_SESSION" "$ANCHOR" || exit 1
-fi
+[ -n "$_SESSION" ] || exit 0
+_freeze_check_one "$_SESSION" "$ANCHOR" || exit 1
 
 exit 0

@@ -261,6 +261,9 @@ else
 fi
 
 # ── 4. Freeze definite-block boundaries (inner scope vs disjoint) ────────────
+# freeze-guard reads CWD-relative `.claude/freeze-scope.local` (session/hook
+# CWD). Mirror that: cd into the fixture before invoking so the probe observes
+# the same freeze file the real Write/Edit hook would.
 FZ="$(mktemp -d)" || FZ=""
 # Centralize cleanup: an early exit or interrupt inside the block below would
 # otherwise leak the fixture, since the block-local removal only runs on the
@@ -271,20 +274,33 @@ if [ -n "$FZ" ]; then
     mkdir -p "$FZ/.claude" "$FZ/src/auth"
     printf 'src/auth\n' >"$FZ/.claude/freeze-scope.local"
     FZ_RC=0
-    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    (cd "$FZ" && bash "$PF" -C "$FZ") >/dev/null 2>&1 || FZ_RC=$?
     if [ "$FZ_RC" -eq 0 ]; then ok "freeze scope inside worktree → not definite (exit 0)"
     else no "freeze scope inside worktree → not definite (exit 0)" "rc=$FZ_RC"; fi
     printf '/tmp/not-this-tree\n' >"$FZ/.claude/freeze-scope.local"
     FZ_RC=0
-    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    (cd "$FZ" && bash "$PF" -C "$FZ") >/dev/null 2>&1 || FZ_RC=$?
     if [ "$FZ_RC" -eq 1 ]; then ok "freeze scope disjoint from worktree → exit 1"
     else no "freeze scope disjoint from worktree → exit 1" "rc=$FZ_RC"; fi
+    # Freeze only under -C while session CWD differs → not definite (hook-invisible).
+    # Use a sterile empty CWD so REPO_ROOT/.claude/freeze-scope.local cannot
+    # contaminate the assertion (the probe reads session CWD, not -C alone).
+    FZ_EMPTY="$(mktemp -d)" || FZ_EMPTY=""
+    FZ_RC=0
+    if [ -n "$FZ_EMPTY" ]; then
+        (cd "$FZ_EMPTY" && bash "$PF" -C "$FZ") >/dev/null 2>&1 || FZ_RC=$?
+        rmdir "$FZ_EMPTY" 2>/dev/null || rm -rf "$FZ_EMPTY"
+    else
+        FZ_RC=99
+    fi
+    if [ "$FZ_RC" -eq 0 ]; then ok "freeze only under -C (foreign session CWD) → fail OPEN"
+    else no "freeze only under -C (foreign session CWD) → fail OPEN" "rc=$FZ_RC"; fi
     # Symlinked freeze file must fail OPEN (no follow / no disclosure).
     rm -f "$FZ/.claude/freeze-scope.local"
     echo secret-line >"$FZ/secret.txt"
     ln -s "$FZ/secret.txt" "$FZ/.claude/freeze-scope.local"
     FZ_RC=0
-    OUTF="$(bash "$PF" -C "$FZ" 2>&1)" || FZ_RC=$?
+    OUTF="$(cd "$FZ" && bash "$PF" -C "$FZ" 2>&1)" || FZ_RC=$?
     if [ "$FZ_RC" -eq 0 ] && ! printf '%s' "$OUTF" | grep -q 'secret-line'; then
         ok "symlinked freeze file → fail OPEN (no target disclosure)"
     else
@@ -296,7 +312,7 @@ if [ -n "$FZ" ]; then
     printf '/tmp/not-this-tree\n' >"$FZ/elsewhere/freeze-scope.local"
     ln -s "$FZ/elsewhere" "$FZ/.claude"
     FZ_RC=0
-    bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    (cd "$FZ" && bash "$PF" -C "$FZ") >/dev/null 2>&1 || FZ_RC=$?
     if [ "$FZ_RC" -eq 0 ]; then ok "symlinked .claude parent → fail OPEN"
     else no "symlinked .claude parent → fail OPEN" "rc=$FZ_RC"; fi
     # FIFO at freeze path must fail OPEN without hanging.
@@ -307,11 +323,13 @@ if [ -n "$FZ" ]; then
     # Bound the whole preflight call. The preflight's own classify budget is ~8s
     # plus a ~2s kill grace, so a 3s bound was tighter than the code under test
     # and fired on loaded runners; 30s means only a real hang trips this.
+    # Keep paths as separate argv words (no bash -c string interpolation).
     FZ_BOUND=1
     if command -v timeout >/dev/null 2>&1; then
-        timeout 30 bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+        (cd "$FZ" && timeout 30 bash "$PF" -C "$FZ") >/dev/null 2>&1 || FZ_RC=$?
     elif command -v perl >/dev/null 2>&1; then
-        perl -e 'alarm 30; exec @ARGV' bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+        perl -e 'alarm 30; chdir $ARGV[0] or exit 1; exec @ARGV[1..$#ARGV]' \
+            "$FZ" bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
     else
         FZ_BOUND=0
     fi

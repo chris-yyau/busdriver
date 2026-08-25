@@ -71,12 +71,22 @@ COMMON_DIR="$(git -C "$WORK" rev-parse --git-common-dir 2>/dev/null)" || COMMON_
 COMMON=""
 [ -n "$COMMON_DIR" ] && COMMON="$(cd "$WORK" && cd "$COMMON_DIR" && pwd -P)" || true
 TOKDIR="$COMMON/busdriver/design-review-needed.local.d"
-chmod 000 "$TOKDIR" 2>/dev/null || true
-OUT2=""; RC2=0
-OUT2="$(bash "$PF" -C "$WORK" 2>&1)" || RC2=$?
-chmod 755 "$TOKDIR" 2>/dev/null || true
-if [ "$RC2" -eq 0 ]; then ok "unreadable marker dir → exit 0 (fail OPEN)"
-else no "unreadable marker dir → exit 0 (fail OPEN)" "rc=$RC2 out=$OUT2"; fi
+_UID="$(id -u)"
+if [ "$_UID" -eq 0 ]; then
+    # Mode bits do not restrict root, so the classifier would still read the
+    # marker and the fail-OPEN assertion would report a false failure. Many CI
+    # containers run as root.
+    printf "  SKIP  unreadable marker dir → fail OPEN (running as root)\n"
+elif [ ! -d "$TOKDIR" ]; then
+    no "unreadable marker dir → exit 0 (fail OPEN)" "fixture marker dir not found: $TOKDIR"
+else
+    chmod 000 "$TOKDIR" 2>/dev/null || true
+    OUT2=""; RC2=0
+    OUT2="$(bash "$PF" -C "$WORK" 2>&1)" || RC2=$?
+    chmod 755 "$TOKDIR" 2>/dev/null || true
+    if [ "$RC2" -eq 0 ]; then ok "unreadable marker dir → exit 0 (fail OPEN)"
+    else no "unreadable marker dir → exit 0 (fail OPEN)" "rc=$RC2 out=$OUT2"; fi
+fi
 
 # ── 3. No skip-lease consumption ─────────────────────────────────────────────
 # Arm a recent-but-aged lease (older than the 30s floor, younger than 3600s),
@@ -124,8 +134,93 @@ fi
 # Restore aged mtime for later assertions that expect the skip file present.
 P="$_SKIP" python3 -I -c 'import os,time; os.utime(os.environ["P"], (time.time()-120,)*2)'
 
+# ── 3b. Slot count is scoped to the CURRENT lease ────────────────────────────
+# lease_slot.py keys uses as `<st_mtime_ns>.<n>` and prunes other prefixes on
+# the next claim. Counting the whole ledger made leftovers from a spent lease
+# read as exhausted, so a freshly re-armed skip file produced a block the real
+# gate would never raise.
+_LEDGER="$WORK/.claude/${_LEASE_DIRNAME}"
+_KEY="$(P="$_SKIP" python3 -I -c 'import os; print(os.stat(os.environ["P"], follow_symlinks=False).st_mtime_ns)')"
+_I=1
+while [ "$_I" -le 25 ]; do
+    mkdir -p "$_LEDGER/1234567890.$_I"
+    _I=$((_I + 1))
+done
+RC5=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC5=$?
+if [ "$RC5" -eq 0 ]; then
+    ok "leftover foreign-prefix slots do not exhaust the current lease"
+else
+    no "leftover foreign-prefix slots do not exhaust the current lease" "rc=$RC5"
+fi
+# Junk names under the current key prefix (<key>.junkN) must not count as uses —
+# the gate only claims exact <key>.1..<key>.20 directories.
+_I=1
+while [ "$_I" -le 25 ]; do
+    mkdir -p "$_LEDGER/${_KEY}.junk$_I"
+    _I=$((_I + 1))
+done
+RC5b=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC5b=$?
+_I=1
+while [ "$_I" -le 25 ]; do
+    rmdir "$_LEDGER/${_KEY}.junk$_I" 2>/dev/null || true
+    _I=$((_I + 1))
+done
+if [ "$RC5b" -eq 0 ]; then
+    ok "junk-suffix dirs under lease key do not exhaust the current lease"
+else
+    no "junk-suffix dirs under lease key do not exhaust the current lease" "rc=$RC5b"
+fi
+# A poison sentinel for THIS lease means the gate refuses it outright. Drop the
+# foreign slots first, so exit 1 can only come from the sentinel and not from a
+# ledger that is merely over the count.
+_I=1
+while [ "$_I" -le 25 ]; do
+    rmdir "$_LEDGER/1234567890.$_I" 2>/dev/null || true
+    _I=$((_I + 1))
+done
+mkdir -p "$_LEDGER/${_KEY}.poison"
+RC6=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC6=$?
+if [ "$RC6" -eq 1 ]; then
+    ok "poisoned lease does not authorize (exit 1 with pending markers)"
+else
+    no "poisoned lease does not authorize (exit 1 with pending markers)" "rc=$RC6"
+fi
+rm -rf "$_LEDGER/${_KEY}.poison"
+
+# ── 3c. Lease thresholds must not drift from the gate's ──────────────────────
+# The preflight duplicates the gate's floors by necessity: the gate defines them
+# inline in a hook that cannot be sourced, and lease_slot.py takes them as argv.
+# Assert equality so a future gate change fails here instead of silently turning
+# the preflight into a source of false blocks.
+_GATE="$REPO_ROOT/hooks/gate-scripts/pre-implementation-gate.sh"
+G_USES="$(grep -m1 '^LEASE_MAX_USES=' "$_GATE" | cut -d= -f2)"
+G_AGE="$(grep -m1 '^LEASE_MAX_AGE=' "$_GATE" | cut -d= -f2)"
+# shellcheck disable=SC2016  # literal `$` sought in the scanned scripts' source
+G_MIN="$(grep -o 'lease_slot\.py" "\$STATE_DIR" "\$LEASE_MAX_USES" [0-9]*' "$_GATE" \
+  | grep -o '[0-9]*$' | head -1)"
+# shellcheck disable=SC2016
+P_USES="$(grep -o '"\$slots" -lt [0-9]*' "$PF" | grep -o '[0-9]*$' | head -1)"
+# shellcheck disable=SC2016
+P_AGE="$(grep -o '"\$age" -le [0-9]*' "$PF" | grep -o '[0-9]*$' | head -1)"
+# shellcheck disable=SC2016
+P_MIN="$(grep -o '"\$age" -ge [0-9]*' "$PF" | grep -o '[0-9]*$' | head -1)"
+if [ -n "$G_USES" ] && [ -n "$G_AGE" ] && [ -n "$G_MIN" ] \
+   && [ "$P_USES" = "$G_USES" ] && [ "$P_AGE" = "$G_AGE" ] && [ "$P_MIN" = "$G_MIN" ]; then
+    ok "preflight lease floors match the gate (uses=$G_USES min=$G_MIN max=$G_AGE)"
+else
+    no "preflight lease floors match the gate" \
+       "gate uses=$G_USES min=$G_MIN max=$G_AGE / preflight uses=$P_USES min=$P_MIN max=$P_AGE"
+fi
+
 # ── 4. Freeze definite-block boundaries (inner scope vs disjoint) ────────────
 FZ="$(mktemp -d)" || FZ=""
+# Centralize cleanup: an early exit or interrupt inside the block below would
+# otherwise leak the fixture, since the block-local removal only runs on the
+# fall-through path.
+[ -n "$FZ" ] && trap 'rm -rf "$WORK" "$FZ"' EXIT
 if [ -n "$FZ" ]; then
     git -C "$FZ" init -q
     mkdir -p "$FZ/.claude" "$FZ/src/auth"
@@ -164,16 +259,28 @@ if [ -n "$FZ" ]; then
     mkdir -p "$FZ/.claude"
     mkfifo "$FZ/.claude/freeze-scope.local"
     FZ_RC=0
-    # Bound the whole preflight call — if it hangs past 3s this fails.
-    perl -e 'alarm 3; exec @ARGV' bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
-    if [ "$FZ_RC" -eq 0 ] || [ "$FZ_RC" -eq 142 ]; then
-        # 0 = fail open; 142 = alarm (should not happen if O_NONBLOCK works)
-        if [ "$FZ_RC" -eq 0 ]; then ok "FIFO freeze file → fail OPEN (no hang)"
-        else no "FIFO freeze file → fail OPEN (no hang)" "alarm fired rc=$FZ_RC"; fi
+    # Bound the whole preflight call. The preflight's own classify budget is ~8s
+    # plus a ~2s kill grace, so a 3s bound was tighter than the code under test
+    # and fired on loaded runners; 30s means only a real hang trips this.
+    FZ_BOUND=1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 30 bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    elif command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm 30; exec @ARGV' bash "$PF" -C "$FZ" >/dev/null 2>&1 || FZ_RC=$?
+    else
+        FZ_BOUND=0
+    fi
+    if [ "$FZ_BOUND" -eq 0 ]; then
+        # Neither bounding tool present: a missing tool is not a hang, so do not
+        # report a failure for it.
+        printf "  SKIP  FIFO freeze file → fail OPEN (no timeout or perl available)\n"
+    elif [ "$FZ_RC" -eq 0 ]; then
+        ok "FIFO freeze file → fail OPEN (no hang)"
+    elif [ "$FZ_RC" -eq 124 ] || [ "$FZ_RC" -eq 142 ]; then
+        no "FIFO freeze file → fail OPEN (no hang)" "timed out rc=$FZ_RC"
     else
         no "FIFO freeze file → fail OPEN (no hang)" "rc=$FZ_RC"
     fi
-    rm -rf "$FZ"
 else
     no "freeze fixture" "mktemp failed"
 fi

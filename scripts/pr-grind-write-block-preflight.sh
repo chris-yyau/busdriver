@@ -53,7 +53,7 @@ usage() {
 # Matches lease_slot floors (30s min age, 3600s max age, 20 uses) WITHOUT claiming
 # a slot — presence/mtime/slot-count only. Return 0 = authorizes; 1 = does not.
 _lease_authorizes() {  # <state_dir_abs>
-    local sd="$1" skip ledger age slots
+    local sd="$1" skip ledger meta age key slots
     # Symlinked state dir or skip/ledger → not authorizing (do not follow).
     if [ -L "$sd" ]; then
         return 1
@@ -66,25 +66,72 @@ _lease_authorizes() {  # <state_dir_abs>
         return 1
     fi
     [ -f "$skip" ] && [ -r "$skip" ] || return 1
-    age="$(
+    # ONE stat yields both the age and the lease key, so the 30s floor and the
+    # slot prefix can never end up describing two different leases.
+    meta="$(
         P="$skip" python3 -I -c '
 import os, time, sys
 try:
     st = os.stat(os.environ["P"], follow_symlinks=False)
-    print(int(time.time() - st.st_mtime))
+    print("%d %d" % (int(time.time() - st.st_mtime), st.st_mtime_ns))
 except Exception:
     sys.exit(1)
 ' 2>/dev/null
     )" || return 1
+    age="${meta%% *}"
+    key="${meta##* }"
     # Too new (anti-self-bypass) or expired → not authorizing.
-    [ -n "$age" ] || return 1
+    [ -n "$age" ] && [ -n "$key" ] || return 1
     [ "$age" -ge 30 ] || return 1
     [ "$age" -le 3600 ] || return 1
     slots=0
     if [ -d "$ledger" ]; then
-        # Count existing slot dirs only; do not create or claim.
-        slots="$(find "$ledger" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-        [ -n "$slots" ] || slots=0
+        # Count slots for THIS lease only. lease_slot.py keys uses as
+        # `<st_mtime_ns>.<n>` and prunes other prefixes on the next claim, so
+        # counting the whole ledger reports a freshly re-armed skip file as
+        # exhausted and manufactures a block the real gate would not raise.
+        # A `<st_mtime_ns>.poison` sentinel means the gate refuses this lease
+        # outright, so it is not authorizing regardless of the slot count.
+        slots="$(
+            L="$ledger" K="$key" python3 -I -c '
+import os, stat as stmod, sys
+ledger = os.environ["L"]
+key = os.environ["K"]
+prefix = key + "."
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+# Open ledger inode without following a post-check symlink swap; count only
+# the exact claimable slots the gate helper would mkdir: <key>.1..<key>.20.
+try:
+    flags = os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+    lfd = os.open(ledger, flags)
+except OSError:
+    sys.exit(1)
+try:
+    entries = set(os.listdir(lfd))
+    if key + ".poison" in entries:
+        print("poison")
+        sys.exit(0)
+    n = 0
+    for i in range(1, 21):
+        name = "%s%d" % (prefix, i)
+        if name not in entries:
+            continue
+        try:
+            if stmod.S_ISDIR(os.stat(name, dir_fd=lfd, follow_symlinks=False).st_mode):
+                n += 1
+        except OSError:
+            continue
+    print(n)
+finally:
+    try:
+        os.close(lfd)
+    except OSError:
+        pass
+' 2>/dev/null
+        )" || slots=0  # unenumerable ledger → fail OPEN, as everywhere else here
+        [ "$slots" = "poison" ] && return 1
+        case "$slots" in ''|*[!0-9]*) slots=0 ;; esac
     fi
     [ "$slots" -lt 20 ] || return 1
     return 0
@@ -328,7 +375,11 @@ if out:
                 printf '%s\n' "Pending design-review markers make repo writes impossible for a worker round."
                 printf '%s\n' "Unreviewed design documents:"
                 printf '%s\n' "$_LIST"
-                printf '%s\n' "Release via scripts/design-clear.sh (lists pending; names the audited path)."
+                # Absolute, plugin-relative: when pr-grind targets a repo other
+                # than the busdriver checkout, a bare `scripts/design-clear.sh`
+                # resolves inside the target and does not exist there.
+                printf 'Release via %s (lists pending; names the audited path).\n' \
+                    "${_SCRIPT_DIR}/design-clear.sh"
                 printf '%s\n' "Do not drain a live sibling worktree's marker unless it is abandoned."
                 printf '%s\n' "Do NOT create the operator-only design-review skip file. Worker env bail is unchanged if a block arises mid-round."
                 exit 1

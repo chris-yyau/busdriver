@@ -43,10 +43,18 @@ readonly HOOK_TIMING_BUDGET=3.5
 ok() { printf "  PASS  %s\n" "$1"; PASS=$((PASS + 1)); }
 no() { printf "  FAIL  %s (%s)\n" "$1" "$2"; FAIL=$((FAIL + 1)); }
 
+CHECK_N=0
 check() {   # <name> <expected: allow|block> <actual-output>
     local name="$1" expected="$2" out="$3" got="allow"
+    CHECK_N=$((CHECK_N + 1))
     case "$out" in *'"block"'*) got="block" ;; esac
-    if [ "$got" = "$expected" ]; then ok "$name"; else no "$name" "expected=$expected got=$got"; fi
+    # The ORDINAL is carried into the failure line because the suite names whole GROUPS,
+    # with each group's twin case sharing the group's `...and the marker classifier agrees`
+    # name -- so the name alone does not say which of them regressed. The ordinal does, and
+    # it says it for every such group at once rather than group by group. Raised by
+    # CodeRabbit on #766.
+    if [ "$got" = "$expected" ]; then ok "$name"
+    else no "$name [check #$CHECK_N]" "expected=$expected got=$got"; fi
 }
 
 # ── A throwaway repo with ONE armed (pending) design-review marker ───────────
@@ -1252,7 +1260,7 @@ check "...and the marker classifier agrees" block \
     "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -iSpython3.13t")"
 # A DASH-separated version is NOT such a shape. `lldb-19` and `gdb-14` are real packaged
 # names, but `grep lldb-19` is an equally real grep -- so they belong to the
-# command-position class tracked in #565. The bare names stay in the exact-name set.
+# command-position class answered below (#565). The bare names stay in the exact-name set.
 check "a dash-versioned debugger as an ARGUMENT stays data (#565)" allow \
     "$(bash_decision "printf 'rm -rf src' | grep lldb-19")"
 check "...likewise gdb" allow \
@@ -1345,13 +1353,364 @@ check "an S inside another env option's operand is data" allow \
 # file has always known, so this is the established fail-CLOSED reading, not a new one.
 check "a bundle-shaped word over-blocks whatever runs it (documented)" block \
     "$(bash_decision "printf 'rm -rf src' | echo -Sbash")"
-# KNOWN RESIDUAL (#565), pinned so the gap is visible rather than assumed closed: a
-# MULTIARCH name carries the platform triplet on the versioned name itself. Its suffix is
-# non-numeric, so no any-word pattern can admit it without also admitting the data above,
-# and command-position matching means threading a new receiver class through every
-# receiver site in both classifiers -- tracked as its own change.
-check "a multiarch interpreter name is a documented MISS (#565)" allow \
+# ---- #565: the COMMAND-POSITION-only receiver class ------------------------
+# A MULTIARCH name carries the platform triplet on the versioned name itself, and a
+# DASH-VERSIONED debugger is spelt exactly like an ordinary grep argument. Neither can join
+# the any-word patterns above without also admitting the data controls just tested, so both
+# are answered where data never lands: COMMAND POSITION. ONE predicate
+# (`_CMDPOS_INTERP_RE`) behind ONE walk (`_runs_cmdpos_receiver`) that every receiver site
+# asks, in BOTH classifiers -- so the next receiver class is added once rather than site by
+# site, which is what the three partial threadings on #562 each failed OPEN for.
+check "a multiarch interpreter name in command position is a receiver (#565)" block \
     "$(bash_decision "printf 'rm -rf src' | perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | perl5.36-x86_64-linux-gnu")"
+check "...however the name is qualified by path" block \
+    "$(bash_decision "printf 'rm -rf src' | /usr/bin/perl5.36-x86_64-linux-gnu")"
+# The DASH-VERSIONED debuggers deferred out of #562, now answered in the one position where
+# the spelling is unambiguous. `lldb` treats piped stdin as debugger commands, and its
+# `platform shell` runs an arbitrary shell command on the current platform.
+check "a dash-versioned debugger in command position is a receiver (#565)" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | lldb-19")"
+check "...likewise gdb" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | gdb-14")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | lldb-19")"
+# A WRAPPER's value-taking option carries its value off, so the command-word peel lands on
+# `root` and the program behind it was never tested. The walk answers that WITHOUT an
+# option-arity table -- the table this module refuses to keep, because every gap in one
+# fails OPEN: a plain word can still be the program while every plain word before it was
+# itself immediately preceded by an option, and so could have been that option's operand.
+check "a wrapper run reaches the receiver behind its option operand (#565)" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -u root perl5.36-x86_64-linux-gnu")"
+check "...doas the same way" block \
+    "$(bash_decision "printf 'rm -rf src' | doas -u root perl5.36-x86_64-linux-gnu")"
+check "...and env, whose -u also takes a separate operand" block \
+    "$(bash_decision "printf 'rm -rf src' | env -u FOO perl5.36-x86_64-linux-gnu")"
+# `genv` is the Homebrew GNU `env`, already modelled as one in `_ENV_NAMES` -- but it is
+# NOT in `_WRAPPERS`/`_WRAPPER_CMDS`, so the walk's preamble test used to spend the run on
+# it as an ordinary program and read the receiver behind it as data. Raised by Cursor
+# Bugbot on #766. The precision half is pinned too: a `genv grep` run is still a grep.
+check "...and genv, the Homebrew GNU env (#766)" block \
+    "$(bash_decision "printf 'rm -rf src' | genv perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees on genv" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | genv lldb-19")"
+check "...however a genv-wrapped grep argument stays data" allow \
+    "$(bash_decision "printf 'rm -rf src' | genv -u FOO grep lldb-19")"
+# NESTED wrappers compose for free, because a wrapper NAME is preamble to the walk rather
+# than a candidate: the run is never spent on `env` itself.
+check "...and a wrapper nested inside a wrapper" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -u root env -u X perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -u root perl5.36-x86_64-linux-gnu")"
+# The ATTACHED `env -iS` bundle, which the -S PRESENCE rule already answers -- pinned here
+# so the multiarch spelling of that context is covered rather than assumed covered.
+check "...and an attached env -S bundle wrapping one" block \
+    "$(bash_decision "printf 'rm -rf src' | env -iSperl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -iSperl5.36-x86_64-linux-gnu")"
+# find hands `-exec` a command of its OWN and does not read stdin itself, so the pipe is
+# still unread when that command runs.
+check "...and a find -exec payload" block \
+    "$(bash_decision "printf 'rm -rf src' | find . -maxdepth 0 -exec perl5.36-x86_64-linux-gnu ';'")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | find . -maxdepth 0 -exec perl5.36-x86_64-linux-gnu ';'")"
+# A SUBSTITUTION body executes on the pipeline stdin while the stage command word is `echo`,
+# so the body gets the same command-position question the stage got.
+check "...and a substitution body" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(perl5.36-x86_64-linux-gnu)"')"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "$(perl5.36-x86_64-linux-gnu)"')"
+# An EXECUTED OPERAND is a command in its own right, so it is walked as one: `flock -c`
+# names no interpreter among the stage words, and the wrapper preamble sits INSIDE the
+# operand where neither the stage walk nor the any-word test can reach it.
+check "...and an executed operand carrying its own wrapper" block \
+    "$(bash_decision "printf 'rm -rf src' | flock /tmp/l -c 'sudo -u root perl5.36-x86_64-linux-gnu'")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock /tmp/l -c 'sudo -u root perl5.36-x86_64-linux-gnu'")"
+# A MULTI-CALL DISPATCHER puts the real command one word to the right, so a walk that
+# spent its run on `busybox` never reached the interpreter its `env` applet execs.
+check "...and a receiver behind a multi-call dispatcher" block \
+    "$(bash_decision "printf 'rm -rf src' | busybox env perl5.36-x86_64-linux-gnu")"
+check "...toybox the same way" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | toybox env lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | busybox env perl5.36-x86_64-linux-gnu")"
+# The EXTGLOB spelling, RESOLVED, in front of the same walk. The unresolved-character test
+# does not cover it: shlex leaves `@` on the command word and `@` is not one of those
+# characters, so the deglobbed text is where this has to be asked.
+check "...and the extglob spelling once resolved" block \
+    "$(bash_decision 'printf "rm -rf src" | /usr/bin/perl5.36-x86_64-linux-@(gnu)')"
+check "...including a globbed version number" block \
+    "$(bash_decision 'printf "platform shell rm -rf src" | /usr/bin/lldb-@(19)')"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | /usr/bin/perl5.36-x86_64-linux-@(gnu)')"
+# A substitution body has EXECUTED OPERANDS of its own, and the marker classifier walks the
+# body explicitly rather than recursing as its twin does -- so the operand question has to
+# be asked there too, or the twins desync on exactly this shape.
+check "...and an executed operand INSIDE a substitution body" block \
+    "$(bash_decision "printf 'rm -rf src' | echo \"\$(flock /tmp/l -c 'sudo -u root perl5.36-x86_64-linux-gnu')\"")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | echo \"\$(flock /tmp/l -c 'sudo -u root perl5.36-x86_64-linux-gnu')\"")"
+# An executed operand is a whole PROGRAM, not one command, so every simple command inside it
+# is walked: a receiver two commands along is still the thing this pipe feeds.
+check "...and a receiver in an operand's SECOND command" block \
+    "$(bash_decision "printf 'rm -rf src' | flock /tmp/l -c 'true; sudo -u root perl5.36-x86_64-linux-gnu'")"
+check "...however the commands are joined" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | flock /tmp/l -c 'true && lldb-19'")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock /tmp/l -c 'true; sudo -u root perl5.36-x86_64-linux-gnu'")"
+# A few wrappers take a mandatory POSITIONAL operand before the command they run, which to
+# the walk is the same could-have-been-eaten shape a value option's operand has. Without
+# that, `flock` spent the run on its LOCK FILE and read the interpreter behind it as data.
+check "...and a receiver behind a wrapper's positional operand" block \
+    "$(bash_decision "printf 'rm -rf src' | flock /tmp/l perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock /tmp/l perl5.36-x86_64-linux-gnu")"
+# An ARRAY-ELEMENT assignment is a prefix like any other. The twins used two different
+# assignment regexes here and only one admitted the bracket form.
+check "...and one behind an array-element assignment prefix" block \
+    "$(bash_decision "printf 'rm -rf src' | A[0]=x perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | A[0]=x perl5.36-x86_64-linux-gnu")"
+# `--` ends the OPTIONS. A wrapper's pending POSITIONAL is not an option, so the two are
+# tracked apart -- clearing both together read `flock -- /tmp/l <name>` as running the lock
+# file.
+check "...and a receiver past both -- and a positional operand" block \
+    "$(bash_decision "printf 'rm -rf src' | flock -- /tmp/l perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock -- /tmp/l perl5.36-x86_64-linux-gnu")"
+# GNU timeout takes `infinity`, `inf` and `1e9` as well as a plain number, and those are
+# ordinary WORDS to the numeric test -- which is why `timeout` is named as an
+# operand-taking wrapper rather than left to that test.
+check "...and one behind a non-numeric timeout duration" block \
+    "$(bash_decision "printf 'rm -rf src' | timeout infinity perl5.36-x86_64-linux-gnu")"
+check "...however the duration is spelt" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | timeout 1e9 lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | timeout infinity perl5.36-x86_64-linux-gnu")"
+# `gdb-multiarch` is the one NON-numeric dash suffix these debuggers ship -- a real Debian
+# binary that reads GDB commands from stdin exactly as bare `gdb` does. Named, not
+# pattern-matched: a general non-numeric dash suffix is the shape ordinary data wears.
+check "...and the multiarch debugger spelling" block \
+    "$(bash_decision "printf 'shell rm -rf src' | gdb-multiarch")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | gdb-multiarch")"
+# A positional operand is DATA, whatever it is spelt like -- including a shell keyword. The
+# walk deliberately carries no name-introducer branch, because skipping the word after
+# `function` swallowed the receiver behind a lock file with that name.
+check "...and a receiver behind a keyword-shaped positional operand" block \
+    "$(bash_decision "printf 'rm -rf src' | flock function perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock function perl5.36-x86_64-linux-gnu")"
+# ...and the positional is the very NEXT word whatever it is spelt like, so a lock file
+# named after a wrapper or a keyword does not leave the slot open for the receiver to fall
+# into. Answered before the preamble names, which is the only ordering that gets this right.
+check "...and one behind a wrapper-shaped positional operand" block \
+    "$(bash_decision "printf 'rm -rf src' | flock time perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock time perl5.36-x86_64-linux-gnu")"
+# An OPTION operand inside a wrapper preamble belongs to the OPTION, not to the wrapper, so
+# it must not consume the pending positional: `-w`'s `1` is not the lock file.
+check "...and one where an option operand precedes the positional" block \
+    "$(bash_decision "printf 'rm -rf src' | flock -w 1 /tmp/l perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock -w 1 /tmp/l perl5.36-x86_64-linux-gnu")"
+# `--` ends option PARSING, so a dash-word after it is an ordinary operand -- a lock file
+# may legitimately be called `-n`.
+check "...and one behind a dash-shaped positional past --" block \
+    "$(bash_decision "printf 'rm -rf src' | flock -- -n perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock -- -n perl5.36-x86_64-linux-gnu")"
+# With an OPTION operand and a WRAPPER positional both outstanding, the option's goes first
+# and the wrapper's stays pending -- consuming the wrapper slot instead left it open for the
+# receiver to fall into.
+check "...and one where an option operand shadows the positional" block \
+    "$(bash_decision "printf 'rm -rf src' | timeout -s KILL infinity perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | timeout -s KILL infinity perl5.36-x86_64-linux-gnu")"
+# `--` ends the options of the command that CARRIED it. A nested wrapper re-opens option
+# parsing, so `env`'s own `-u` is still an option after `sudo --`.
+check "...and one past a -- that belonged to an outer wrapper" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -- env -u X perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -- env -u X perl5.36-x86_64-linux-gnu")"
+# A wrapper NAME sitting in an option's data is data. Reading it as a nested wrapper opened
+# a positional slot the receiver then fell into.
+check "...and one behind a wrapper name used as option data" block \
+    "$(bash_decision "printf 'rm -rf src' | env -u timeout perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -u timeout perl5.36-x86_64-linux-gnu")"
+# A FLAG and a value option are indistinguishable in un-run text, and so are a lock file and
+# a redirection. The walk refuses to guess: it carries every reading the tokens still permit
+# and blocks when ANY of them runs a receiver. These three each defeated a different
+# single-guess rule before that.
+check "...and one past a flag-only option in a wrapper preamble" block \
+    "$(bash_decision "printf 'rm -rf src' | flock -n /tmp/l perl5.36-x86_64-linux-gnu")"
+check "...and past a long flag" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | timeout --preserve-status infinity lldb-19")"
+check "...and one behind a positional that merely SPELLS a redirection" block \
+    "$(bash_decision "printf 'rm -rf src' | flock '>' perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock -n /tmp/l perl5.36-x86_64-linux-gnu")"
+# ACCEPTED OVER-BLOCK, and the direct price of refusing to guess: with a flag in an
+# operand-taking wrapper's preamble, the program may be one word further along than it looks,
+# so an argument spelt like a packaged debugger is asked and blocks. Pinned so the cost is
+# visible rather than discovered.
+check "a flock -n whose grep pattern is a debugger name over-blocks (documented, #565)" block \
+    "$(bash_decision "printf 'rm -rf src' | flock -n /tmp/l grep lldb-19")"
+# ...and the same trade one option-spelling along: a SHORT option carrying an attached value
+# cannot be told from a bundle of flags (`sudo -uroot` claims nothing, `sudo -nu root` does),
+# so the walk keeps the claiming reading and over-blocks. The `--long=value` spelling IS
+# unambiguous and is handled, so only the short form pays.
+check "an attached SHORT-option value over-blocks (documented, #565)" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo -uroot grep lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -uFOO grep lldb-19")"
+# An option outstanding when a WRAPPER NAME arrives leaves two readings alive, and both must
+# survive: the option may have been a FLAG, making this a nested wrapper, or a value option,
+# making the name its data. Keeping only the second lost the receiver behind the first.
+check "...and one behind a wrapper nested under a flag-only option" block \
+    "$(bash_decision "printf 'rm -rf src' | env -i flock /tmp/l perl5.36-x86_64-linux-gnu")"
+check "...and its timeout equivalent" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -i timeout infinity lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -i flock /tmp/l perl5.36-x86_64-linux-gnu")"
+# An OPTION's operand can spell a redirection too, once the lexer has erased the quoting.
+check "...and one behind an option operand that spells a redirection" block \
+    "$(bash_decision "printf 'rm -rf src' | env -C '>' perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -C '>' perl5.36-x86_64-linux-gnu")"
+# `--` is only END OF OPTIONS when nothing is waiting to claim it. With an option
+# outstanding it may equally be that option's OPERAND -- a variable literally named `--` --
+# and under that reading options are still parsing, so the `-i` behind it is still an option.
+check "...and one past a -- an outstanding option could have claimed" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -u -- -i lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -u -- -i lldb-19")"
+check "...and a long option carrying its value attached still reaches the receiver" block \
+    "$(bash_decision "printf 'rm -rf src' | sudo --user=root perl5.36-x86_64-linux-gnu")"
+# ---- ...and the data controls the position rule exists to preserve ----------
+# The SAME names one word to the right are ordinary arguments and stay allowed. This is the
+# whole reason the class is command-position-only rather than any-word.
+check "a multiarch name as an ARGUMENT stays data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep perl5.36-x86_64-linux-gnu")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | grep perl5.36-x86_64-linux-gnu")"
+# A wrapper does not make an argument a program. `grep` is a plain word no option could have
+# eaten, so it IS the program and the walk stops there -- everything past it is grep's data.
+check "a debugger name behind a WRAPPED grep stays data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | sudo grep lldb-19")"
+# ...and stays data once an option operand has ALREADY been consumed, which is the case that
+# separates "could still be the program" from "one word to the right of it".
+check "...even after the wrapper has consumed an option operand" allow \
+    "$(bash_decision "printf 'rm -rf src' | sudo -u root grep lldb-19")"
+check "...and a wrapped hyphenated word grep only searches for" allow \
+    "$(bash_decision "printf 'rm -rf src' | sudo grep python3-report-final-copy")"
+# A dispatcher does not make an argument a program either: `grep` is still the applet that
+# runs, so the debugger name behind it is still grep's data.
+check "...nor does a dispatcher promote grep's argument" allow \
+    "$(bash_decision "printf 'rm -rf src' | busybox grep lldb-19")"
+# ...and neither does a wrapper's positional operand: the run survives the LOCK FILE, then
+# `grep` ends it, so `lldb-19` is grep's data in both the bare and the -c spelling.
+check "...nor does a wrapper's positional operand" allow \
+    "$(bash_decision "printf 'rm -rf src' | flock /tmp/l grep lldb-19")"
+check "...nor an executed operand whose own command is grep" allow \
+    "$(bash_decision "printf 'rm -rf src' | flock /tmp/l -c 'grep lldb-19'")"
+# ...and a consumed duration ends the run just as any other operand does, whichever
+# spelling it wears.
+check "...nor a timeout duration, numeric or not" allow \
+    "$(bash_decision "printf 'rm -rf src' | timeout 5 grep lldb-19")"
+check "...including the word spelling" allow \
+    "$(bash_decision "printf 'rm -rf src' | timeout infinity grep lldb-19")"
+check "...and -- does not revive the run either" allow \
+    "$(bash_decision "printf 'rm -rf src' | flock -- /tmp/l grep lldb-19")"
+# The multiarch debugger name is data one word to the right, exactly like its siblings.
+check "...and gdb-multiarch as an ARGUMENT stays data" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep gdb-multiarch")"
+# Past a `--` a dash-spelt word is an ordinary PATH command, so it ends the run like any
+# other program and its argument stays data. The two twins reached that by different routes
+# and one of them treated every dash-word as an operand however late it appeared.
+check "a dash-spelt command past -- keeps its argument as data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | env -- -read-only lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -- -read-only lldb-19")"
+check "...while the receiver directly past -- is still one" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -- lldb-19")"
+# bash runs a COPROCESS on its own pipes, so the pipeline's stdin never reaches it. The two
+# twins disagreed on that -- one holds `coproc` among its reserved words and read it as
+# transparent preamble -- and the walk excludes it in both.
+check "a coprocess is not fed by the pipeline (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | coproc lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | coproc perl5.36-x86_64-linux-gnu")"
+# A long option whose value is ATTACHED has no separate operand to claim, so it cannot keep
+# command position alive past the real program.
+check "an attached long-option value does not promote grep's argument (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | env --unset=FOO grep lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env --unset=FOO grep lldb-19")"
+# ...and a `--` that nothing was waiting to claim really does end the options.
+check "...and a plain -- past a satisfied option still ends them" allow \
+    "$(bash_decision "printf 'rm -rf src' | env -u FOO -- grep lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -u FOO -- grep lldb-19")"
+# ...and none of those extra readings promotes grep's argument once grep is reached.
+check "...nor does a wrapper nested under a flag-only option" allow \
+    "$(bash_decision "printf 'rm -rf src' | env -i flock /tmp/l grep lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -i timeout 5 grep lldb-19")"
+# A word that CONSUMES a pending operand clears it for the option AND the wrapper alike.
+# Clearing only one carried the pending state past the real program and promoted its
+# argument to a command candidate.
+check "an operand consumed mid-preamble does not promote grep's argument (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | nice -n 3 grep lldb-19")"
+check "...including an assignment-shaped one" allow \
+    "$(bash_decision "printf 'rm -rf src' | env -C FOO=bar grep lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | nice -n 3 grep lldb-19")"
+# A NAMED wrapper's positional is known to be an operand, so it is consumed rather than
+# TESTED -- unlike an option's operand, whose arity is unknown and which therefore still
+# fails closed. A lock file named like a packaged debugger is still just a lock file.
+check "a wrapper's positional operand is not itself a receiver (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | flock lldb-19 grep x")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | flock lldb-19 grep x")"
+# ...and past `--` a bare argument is still just an argument.
+check "...and an argument past -- stays data" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep -- lldb-19")"
+# ...and none of that preamble bookkeeping promotes grep's argument once grep is reached.
+check "...nor does an option operand shadowing a positional" allow \
+    "$(bash_decision "printf 'rm -rf src' | timeout -s KILL 5 grep lldb-19")"
+check "...and the marker classifier agrees on that one" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | timeout -s KILL 5 grep lldb-19")"
+check "...nor a nested wrapper past an outer --" allow \
+    "$(bash_decision "printf 'rm -rf src' | sudo -- env -u X grep lldb-19")"
+check "...and the marker classifier agrees on a wrapped option operand" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -u root grep lldb-19")"
+# An option's own operand is not a command word either, whichever side of the option it sits.
+check "a debugger name as an option OPERAND stays data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep -e lldb-19")"
+# `--` is the END-OF-OPTIONS terminator, the one dash-word that takes no operand -- so the
+# word after it IS the program and everything past that is its data. Without the special
+# case the walk read `--` as an ordinary option, kept the run alive across `grep`, and
+# over-blocked a wrapper equivalent of the control just above.
+check "...and a debugger name past a wrapper's -- terminator (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | sudo -- grep lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -- grep lldb-19")"
+# ...while the terminator does NOT hide a receiver standing directly behind it.
+check "...while a receiver directly behind -- is still one" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | sudo -- lldb-19")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | sudo -- lldb-19")"
+# TWO-OR-MORE dash components are REQUIRED on the multiarch branch, and that is what keeps a
+# real single-component command out of it: `python3-config` prints build flags, reads no
+# program from stdin, and appears in COMMAND POSITION -- where nothing else would save it.
+check "a one-component python3-* command is not a receiver (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | python3-config --libs")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | python3-config --libs")"
 # `source` is the bash spelling of `.`, and like `.` it means something only in COMMAND
 # position: as any-word it flipped `grep source`, where the word is a PATTERN.
 check "source names a command only in command position" allow \
@@ -3272,6 +3631,41 @@ for _ in range(3000):
     p1 += 1
 print("P1", "ok" if p1 == 3000 else "FAIL", p1)
 
+# P5/P6 (#565) -- the command-position receiver walk, quantified over PREAMBLE x NAME rather
+# than enumerated. The walk carries a five-flag reading set, and its bugs have all been
+# INTERACTIONS between preamble tokens rather than any single token: a repeated `--`, an
+# option operand shadowing a wrapper positional, a flag read as a value option. Fixed
+# examples caught each only after review named it, so the combinations are generated here.
+# Every preamble below is UNAMBIGUOUS -- the program is definitely the word after it -- which
+# is what lets both directions be asserted at once. The ambiguous preambles are deliberately
+# ABSENT: `flock -n /tmp/l` and `sudo -uroot` cannot be resolved without an option-arity
+# table, so they over-block by design and are pinned as documented examples above instead.
+_PRE = ["", "sudo ", "doas ", "env ", "busybox env ", "toybox env ", "sudo -u root ",
+        "doas -u root ", "env -u FOO ", "sudo -u root env -u X ", "timeout 5 ",
+        "flock /tmp/l ", "flock -- /tmp/l ", "flock -- -- ", "sudo -- ", "env -- ",
+        "nice -n 3 ", "timeout -s KILL 5 ", "env --unset=FOO ", "FOO=1 ",
+        "sudo -- env -u X ", "2>/dev/null ", "time ", "command ", "exec ", "nohup "]
+_RECV = ["perl5.36-x86_64-linux-gnu", "lldb-19", "gdb-14", "gdb-multiarch",
+         "/usr/bin/perl5.38-x86_64-linux-gnu", "python3.12-x86_64-linux-gnu"]
+_N = len(_PRE) * len(_RECV)
+p5 = p6 = 0
+for _pre in _PRE:
+    for _r in _RECV:
+        # P5, the fail-OPEN direction: in COMMAND POSITION the name is a receiver, whatever
+        # preamble precedes it.
+        if cmdword.is_file_mod("printf 'rm -rf src' | %s%s" % (_pre, _r)):
+            p5 += 1
+        else:
+            print("P5-FAIL", repr(_pre + _r))
+        # P6, the precision direction: one word to the right the SAME name is grep's data,
+        # and no preamble bookkeeping may promote it back into command position.
+        if not cmdword.is_file_mod("printf 'rm -rf src' | %sgrep %s" % (_pre, _r)):
+            p6 += 1
+        else:
+            print("P6-FAIL", repr(_pre + "grep " + _r))
+print("P5", "ok" if p5 == _N else "FAIL", p5)
+print("P6", "ok" if p6 == _N else "FAIL", p6)
+
 # P2 -- a stated write handed to a shell always blocks, however the pipeline is dressed.
 # This is the fail-OPEN direction: every regression in this file was a composition that
 # made a real write read as inert, so it is quantified over rather than enumerated.
@@ -3368,6 +3762,41 @@ case "$PROP_OUT" in
     *"P2 ok 3000"*) ok "property: a written payload piped to a shell always blocks (3000 seeded)" ;;
     *) no "property: a written payload piped to a shell always blocks" "$PROP_OUT" ;;
 esac
+case "$PROP_OUT" in
+    *"P5 ok 156"*) ok "property: a command-position receiver blocks under every preamble (156, #565)" ;;
+    *) no "property: command-position receiver coverage" "$PROP_OUT" ;;
+esac
+case "$PROP_OUT" in
+    *"P6 ok 156"*) ok "property: the same names one word RIGHT stay data (156, #565)" ;;
+    *) no "property: command-position receiver precision" "$PROP_OUT" ;;
+esac
+
+# ...and the TWIN agrees on a sample of the same grid. The property above runs in-process
+# against cmdword; marker_check is a separate program, so its half is sampled through the
+# real gate rather than quantified, which keeps the added wall-clock proportionate.
+TWIN_BAD=0
+# The offending COMBINATIONS are accumulated, not just counted: a bare tally names no
+# preamble and no receiver, so a regression here could not be reproduced from the failure
+# line alone. Raised by CodeRabbit on #766.
+TWIN_BAD_CASES=""
+for _pre in "" "sudo -u root " "flock -- -- " "env --unset=FOO " "timeout -s KILL 5 "; do
+    for _r in "perl5.36-x86_64-linux-gnu" "lldb-19"; do
+        case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}${_r}")" in
+            *'"block"'*) ;;
+            *) TWIN_BAD=$((TWIN_BAD + 1))
+               TWIN_BAD_CASES="${TWIN_BAD_CASES} [allowed: ${_pre}${_r}]" ;;
+        esac
+        case "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | ${_pre}grep ${_r}")" in
+            *'"block"'*) TWIN_BAD=$((TWIN_BAD + 1))
+                         TWIN_BAD_CASES="${TWIN_BAD_CASES} [blocked: ${_pre}grep ${_r}]" ;;
+        esac
+    done
+done
+if [[ "$TWIN_BAD" -eq 0 ]]; then
+    ok "property: the marker twin agrees on a 20-case sample of the same grid (#565)"
+else
+    no "property: marker twin parity" "$TWIN_BAD disagreement(s):${TWIN_BAD_CASES}"
+fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

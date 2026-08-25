@@ -58,6 +58,19 @@ fi
 exit 0
 STUB
   chmod +x "$bindir/gh"
+  # A fake `sleep`: with STUB_SLEEP_LOG set it RECORDS the requested duration and
+  # returns immediately, so the await-cap assertion costs no wall-clock. Unset (every
+  # other case) it defers to the real sleep, leaving timing-dependent cases untouched.
+  cat > "$bindir/sleep" <<'SLEEPSTUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_SLEEP_LOG:-}" ]; then
+  printf '%s\n' "${1:-}" >> "$STUB_SLEEP_LOG"
+  exit 0
+fi
+for _c in /bin/sleep /usr/bin/sleep; do [ -x "$_c" ] && exec "$_c" "$@"; done
+exit 0
+SLEEPSTUB
+  chmod +x "$bindir/sleep"
 }
 
 PR=217
@@ -239,9 +252,18 @@ marker_n() {
   else printf '.pr-grind-codex-retriggered-pr%s-%s-%s.local' "$PR" "$HEAD8" "$1"; fi
 }
 # Run once in a sandbox; extra `VAR=value` args are passed as environment.
+# Optional `--await-cooldown [N]` selects #679 dispatcher pacing mode (never posts).
 run_rt() {
+  local prefix=()
+  local remain=()
+  if [ "${1:-}" = "--await-cooldown" ]; then
+    prefix=("--await-cooldown"); shift
+    if [ -n "${1:-}" ] && [[ "$1" != *=* ]]; then
+      remain=("$1"); shift
+    fi
+  fi
   ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
-    env "$@" "$BASH_BIN" "$RT" "$PR" "$HEAD" ) >/dev/null 2>&1
+    env "$@" "$BASH_BIN" "$RT" ${prefix[@]+"${prefix[@]}"} "$PR" "$HEAD" ${remain[@]+"${remain[@]}"} ) >/dev/null 2>&1
 }
 
 # --- 10/11. The budget spends across rounds, then STOPS. Both directions of the
@@ -351,68 +373,33 @@ else
   fail "hole refill: refilled=$refilled posts=$(posts_in "$CALLLOG") (expected 2, i.e. budget 3 minus the pre-seeded slot)"
 fi
 
-# --- 18. #676 — SHIPPED DEFAULTS MUST FIT THE DISPATCHER'S DEFAULT WAIT BUDGET.
-#         `COOLDOWN * (MAX - 1)` is the wall-clock needed to spend the full budget
-#         (MAX-1 gaps between MAX attempts); any attempt that would land later than
-#         the dispatcher's `--max-wait` wall-clock is never reached, because the
-#         dispatcher bails first. ADR 0005's Context section documents `--max-wait 8`
-#         exhausting in ~8 minutes (480s) — that is the wall-clock this pins against.
-#         A future default that violates this inequality makes the retry budget
-#         unreachable in practice: the exact #676 defect (900*2=1800s vs. a ~480s
-#         budget, i.e. attempt 2 would land 22.5 minutes after the dispatcher already
-#         bailed). Read the values out of the SHIPPED SCRIPT rather than hardcoding
-#         them here, so this fails loudly if either knob's default regresses.
+# --- 18. #676/#679 — SHIPPED DEFAULTS MUST FIT THE LIVE WAIT-ROUND BUDGET.
+#         Pre-#679 this case pinned `COOLDOWN * (MAX - 1) <= 0.8 * 480s` against an
+#         ADR-copied typical wall-clock. That rejected order-of-magnitude / zero-margin
+#         defaults (900, 240) but could NOT prove reachability: `--max-wait` counts
+#         rounds, and fast rounds can exhaust them before COOLDOWN elapses.
 #
-#         THE MARGIN IS PART OF THE ASSERTION. A bare `<=` against the full 480s
-#         admits COOLDOWN=240 (240*2=480 exactly), which places the last attempt at
-#         the precise instant the dispatcher bails — reachable only with zero trigger
-#         latency, zero marker-write time and perfectly aligned polling. That was the
-#         FIRST attempt at fixing this defect and litmus flagged it MEDIUM on the same
-#         PR. So the budget must be fit INSIDE, not filled: require 20% headroom, and
-#         confirm this case rejects 240 as well as 900 before trusting it.
-#
-#         WHAT THIS DOES *NOT* PROVE — read before relying on it. `--max-wait` counts
-#         wait-ROUNDS, not seconds, and the dispatcher enforces no minimum duration per
-#         round. So 480s is a documented TYPICAL (ADR 0005's Context), never a
-#         guarantee: eight fast rounds can exhaust the budget in well under 360s, and
-#         the later attempts would be unreachable while this case still passes. Do not
-#         read a green result here as "the retry budget is always reachable" (litmus
-#         MEDIUM on PR #676 caught exactly that overclaim).
-#
-#         What it IS: a sanity bound on the two defaults against the only wall-clock
-#         figure the repo actually documents — enough to catch an order-of-magnitude
-#         mistake like COOLDOWN=900 (wrong by ~4x) or a zero-margin value like 240,
-#         which is what the two live defects on this PR were. Closing the gap properly
-#         means pacing in ROUNDS rather than wall-clock, or having the dispatcher
-#         enforce a minimum wait-round duration; both are caller-side changes tracked
-#         separately, not something this helper can assert from mtimes alone.
+#         #679 closes the fast-round residual via dispatcher `--await-cooldown` (live
+#         remaining wait rounds) so time pacing happens between rounds. Necessary
+#         default coupling is then `DEFAULT_MAX <= DEFAULT_MAX_WAIT` — enough round
+#         slots when Codex is sole-stale early. It does NOT manufacture rounds already
+#         spent waiting on other bots. Read BOTH sides from shipped sources.
 # `|| true` is REQUIRED, not defensive noise. This file runs under `set -euo pipefail`,
 # so a no-match `grep` exits 1, the pipeline fails, and the assignment aborts the whole
-# script — before the guard below can run. Observed: breaking either regex ends the run
-# at case 17 with exit 1, no `Results:` line and no failure message, i.e. a red CI build
-# that names nothing. That made the guard added for the previous finding dead code
-# (cubic P3, PR #676). Swallowing the status here is what lets an empty value REACH the
-# guard and fail loudly with a diagnosis.
+# script — before the guard below can run.
 DEFAULT_MAX=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_MAX:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
 DEFAULT_COOLDOWN=$(grep -oE 'read_int_knob "\$\{PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-\}" [0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
-WAIT_BUDGET_WALLCLOCK=480   # ADR 0005 Context: `--max-wait 8` exhausts in ~8 min
-# 80% of the budget — integer arithmetic, no bc dependency.
-BUDGET_CEILING=$(( WAIT_BUDGET_WALLCLOCK * 8 / 10 ))
-# Guard BEFORE the arithmetic, not after: a source reformat that breaks either
-# regex yields an empty DEFAULT_MAX/DEFAULT_COOLDOWN, and bash arithmetic
-# silently reads an empty operand as 0 — so `needed` would evaluate to 0 and
-# the case would report a misleading "need 0s <= 384s" PASS instead of failing
-# loudly on the real problem (the extraction itself), masking the case behind
-# defaults that were never actually read (cubic P3, PR #676).
-if [ -z "$DEFAULT_MAX" ] || [ -z "$DEFAULT_COOLDOWN" ]; then
-  fail "wait-budget coupling: could not extract DEFAULT_MAX/DEFAULT_COOLDOWN from $RT — the read_int_knob call(s) no longer match this case's extraction regex (source reformatted?); fix the regex before trusting this case's PASS/FAIL"
+SKILL_MD="$SCRIPT_DIR/skills/pr-grind/SKILL.md"
+DEFAULT_MAX_WAIT=$(grep -oE 'MAX_WAIT = --max-wait N value \(default [0-9]+\)' "$SKILL_MD" | grep -oE '[0-9]+' || true)
+# Guard BEFORE the arithmetic, not after: a source reformat that breaks extraction
+# yields an empty value, and bash arithmetic silently reads empty as 0 — masking
+# the real problem behind a misleading PASS (cubic P3, PR #676).
+if [ -z "$DEFAULT_MAX" ] || [ -z "$DEFAULT_COOLDOWN" ] || [ -z "$DEFAULT_MAX_WAIT" ]; then
+  fail "wait-budget coupling: could not extract DEFAULT_MAX/DEFAULT_COOLDOWN/DEFAULT_MAX_WAIT (max='$DEFAULT_MAX' cooldown='$DEFAULT_COOLDOWN' max_wait='$DEFAULT_MAX_WAIT') — fix the extraction regex before trusting this case"
+elif [ "$DEFAULT_MAX" -le "$DEFAULT_MAX_WAIT" ]; then
+  ok "wait-budget coupling: shipped MAX=$DEFAULT_MAX fits inside default --max-wait=$DEFAULT_MAX_WAIT (COOLDOWN=${DEFAULT_COOLDOWN}s paced via dispatcher --await-cooldown, #679)"
 else
-  needed=$(( DEFAULT_COOLDOWN * (DEFAULT_MAX - 1) ))
-  if [ "$needed" -le "$BUDGET_CEILING" ]; then
-    ok "wait-budget coupling: shipped defaults (MAX=$DEFAULT_MAX, COOLDOWN=$DEFAULT_COOLDOWN) need ${needed}s <= ${BUDGET_CEILING}s (80% of the ${WAIT_BUDGET_WALLCLOCK}s wait budget)"
-  else
-    fail "wait-budget coupling: MAX=$DEFAULT_MAX COOLDOWN=$DEFAULT_COOLDOWN need ${needed}s > ${BUDGET_CEILING}s (80% of ${WAIT_BUDGET_WALLCLOCK}s) — the last attempt would land at or past the dispatcher's bail with no latency headroom; re-derive defaults against ADR 0005's --max-wait figure"
-  fi
+  fail "wait-budget coupling: MAX=$DEFAULT_MAX > default --max-wait=$DEFAULT_MAX_WAIT — later attempts cannot fit in the round budget even with #679 sleep-pacing; lower MAX or raise --max-wait"
 fi
 
 # --- 19. #677 — A SIGNAL IN THE OUTCOME-INDETERMINATE WINDOW MUST NOT RELEASE THE
@@ -442,6 +429,61 @@ if [ "$signalled_marker" = yes ] && [ "$(posts_in "$CALLLOG")" = 3 ]; then
   ok "#677 signal-during-post: claim retained while outcome indeterminate → landed nudge spends its attempt (3 posts, not 4)"
 else
   fail "#677 signal-during-post: marker-after-signal=$signalled_marker (expected yes) posts=$(posts_in "$CALLLOG") (expected 3 — a 4th means the released slot re-posted a nudge GitHub already accepted)"
+fi
+
+# --- 20. #679 — DISPATCHER --await-cooldown PACES; POST PATH STAYS SKIP-WHEN-HOT.
+#         Post path: hot marker → skip (no sleep). Await path with remaining > 0:
+#         sleep out cooldown, never post. After await, a fresh post path call can
+#         spend attempt 2. COOLDOWN=2 + touch-refresh avoids whole-second flake.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=2
+hot_skip=$(posts_in "$CALLLOG")
+touch "$STATE/$(marker_n 1)"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=2
+still_hot=$(posts_in "$CALLLOG")
+# Await paces without posting, then post path can spend attempt 2.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=2
+touch "$STATE/$(marker_n 1)"
+run_rt --await-cooldown 3 PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=2
+after_await=$(posts_in "$CALLLOG")
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=2
+paced=$(posts_in "$CALLLOG")
+if [ "$hot_skip" = 1 ] && [ "$still_hot" = 1 ] && [ "$after_await" = 1 ] && [ "$paced" = 2 ] && [ -e "$STATE/$(marker_n 2)" ]; then
+  ok "#679 await-cooldown: hot skip on post (1), await does not post (1), then attempt 2 posts (2)"
+else
+  fail "#679 await-cooldown: hot_skip=$hot_skip still_hot=$still_hot after_await=$after_await paced=$paced (expected 1/1/1/2)"
+fi
+
+# --- 21. #679/#763 — AN AWAIT SLEEP MUST FIT THE CALLER'S BASH TOOL CEILING.
+#         COOLDOWN accepts up to 86400s, but the dispatcher's await is ONE Bash tool
+#         call and that tool caps `timeout` at 600000ms. An unclamped
+#         `sleep $((COOLDOWN - age))` therefore asks for a call the caller cannot
+#         issue: it is killed mid-sleep, the cooldown never clears, and attempts 2..N
+#         go unreachable — the #679 defect re-opened by any large cooldown (cursor +
+#         Codex, PR #763). Assert BOTH halves: the helper clamps the sleep to
+#         AWAIT_SLEEP_CAP, and that cap plus the documented +60s margin still fits
+#         the 600s ceiling. The `sleep` stub records instead of sleeping, so proving
+#         the 480s clamp costs no wall-clock.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+# `|| true` for the same set -e / no-match reason as case 18.
+AWAIT_CAP=$(grep -oE '^AWAIT_SLEEP_CAP=[0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+SLEEPLOG="$STATE/sleeps.log"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=86400
+run_rt --await-cooldown 3 STUB_SLEEP_LOG="$SLEEPLOG" \
+  PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=86400
+slept=$([ -f "$SLEEPLOG" ] && tr -d '[:space:]' < "$SLEEPLOG" || echo "")
+posts_after_await=$(posts_in "$CALLLOG")
+# Guard extraction BEFORE arithmetic (case 18's lesson): an empty value would read
+# as 0 and turn a broken assertion into a misleading PASS.
+if [ -z "$AWAIT_CAP" ]; then
+  fail "await sleep cap: could not extract AWAIT_SLEEP_CAP from $RT — fix the extraction regex before trusting this case"
+elif [ "$(( AWAIT_CAP + 60 ))" -gt 600 ]; then
+  fail "await sleep cap: AWAIT_SLEEP_CAP=${AWAIT_CAP}s + 60s margin exceeds the 600s Bash tool timeout ceiling — the dispatcher cannot legally host this sleep"
+elif [ "$slept" = "$AWAIT_CAP" ] && [ "$posts_after_await" = 1 ]; then
+  ok "await sleep cap: COOLDOWN=86400s clamps to a single ${AWAIT_CAP}s sleep (fits the 600s tool ceiling), paid down across wait-rounds, still no post"
+else
+  fail "await sleep cap: slept='$slept' (expected '$AWAIT_CAP') posts=$posts_after_await (expected 1 — await must never post); an unclamped sleep would be killed mid-call and strand attempts 2..N"
 fi
 
 echo "Results: $passed passed, $failed failed"

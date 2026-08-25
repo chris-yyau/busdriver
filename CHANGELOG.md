@@ -1,3 +1,45 @@
+## [1.112.6](https://github.com/chris-yyau/busdriver/compare/v1.112.5...v1.112.6) (2026-08-25)
+
+
+### Bug Fixes
+
+* **pr-grind:** pace Codex retrigger with live wait-round budget ([#679](https://github.com/chris-yyau/busdriver/issues/679)) ([#763](https://github.com/chris-yyau/busdriver/issues/763)) ([5c2b6a8](https://github.com/chris-yyau/busdriver/commit/5c2b6a8244fd8fbf1c9f7bc53bad54ab8a4f5a85))
+
+## [1.112.5](https://github.com/chris-yyau/busdriver/compare/v1.112.4...v1.112.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* **tests:** make opencode case generator status load-bearing ([#730](https://github.com/chris-yyau/busdriver/issues/730)) ([#762](https://github.com/chris-yyau/busdriver/issues/762)) ([b9953a0](https://github.com/chris-yyau/busdriver/commit/b9953a03e86470deaa68ccdc68a439ece5e54d9e))
+
+## [1.112.4](https://github.com/chris-yyau/busdriver/compare/v1.112.3...v1.112.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **litmus:** align severity taxonomy in fallback and metrics ([#542](https://github.com/chris-yyau/busdriver/issues/542)) ([#754](https://github.com/chris-yyau/busdriver/issues/754)) ([35e8f7d](https://github.com/chris-yyau/busdriver/commit/35e8f7dd20cb9cbea463da4646496f89ee14f3b8))
+
+## [1.112.3](https://github.com/chris-yyau/busdriver/compare/v1.112.2...v1.112.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **opencode:** wire auth-staging tests to production helper ([#618](https://github.com/chris-yyau/busdriver/issues/618)) ([#761](https://github.com/chris-yyau/busdriver/issues/761)) ([8bc8fd1](https://github.com/chris-yyau/busdriver/commit/8bc8fd151a294a322f9b490e2c59e758708b2372))
+
+## [1.112.2](https://github.com/chris-yyau/busdriver/compare/v1.112.1...v1.112.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **careful-guard:** scan rm argv only at command-word indexes ([#745](https://github.com/chris-yyau/busdriver/issues/745)) ([#760](https://github.com/chris-yyau/busdriver/issues/760)) ([735a986](https://github.com/chris-yyau/busdriver/commit/735a986632821c941265a3c589e25bd03aa3899e))
+
+## [1.112.1](https://github.com/chris-yyau/busdriver/compare/v1.112.0...v1.112.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **routes:** align every live Claude model route with the Opus-only work policy ([#747](https://github.com/chris-yyau/busdriver/issues/747)) ([#757](https://github.com/chris-yyau/busdriver/issues/757)) ([eaa5265](https://github.com/chris-yyau/busdriver/commit/eaa526511fac84ae89fbd02f284284d5ead3e42a))
+
 # [1.112.0](https://github.com/chris-yyau/busdriver/compare/v1.111.0...v1.112.0) (2026-08-24)
 
 

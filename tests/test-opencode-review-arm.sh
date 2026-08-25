@@ -20,9 +20,29 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="$REPO_ROOT/scripts/lib/opencode-review-config.json"
 FAILURES=0
+# #730 fault injection, test-only: `--fault-generator` swaps the (j) property
+# generator for a crashing producer so the regression check after that block can
+# prove the suite fails closed. A positional arg (not an env var) is deliberate:
+# the child cannot inherit it, so the self-re-run cannot recurse.
+FAULT_GENERATOR=0
+[[ "${1:-}" == "--fault-generator" ]] && FAULT_GENERATOR=1
 
 pass() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1"; FAILURES=$((FAILURES + 1)); }
+
+# Print the suite verdict and exit with it. Shared by the end of this file and
+# by the fault child's early exit below, so the two accounting paths can never
+# drift apart — an early exit that hard-coded `exit 0` would invert the (j2)
+# non-zero-rc assertion and re-open the very fail-open (j2) exists to catch.
+finish() {
+  echo
+  if [[ "$FAILURES" -eq 0 ]]; then
+    echo "PASS (test-opencode-review-arm)"
+    exit 0
+  fi
+  echo "FAIL: $FAILURES assertion(s) (test-opencode-review-arm)"
+  exit 1
+}
 
 echo "test-opencode-review-arm"
 
@@ -407,57 +427,13 @@ if (
   fi
   # (a4c2) direct python contract: a write that cannot be cleaned up (target
   # pre-created as a DIRECTORY — open and unlink both fail) must exit 1
-  # (fail-closed); a cleaned-up failure exits 2 (fail-open). The python below
-  # mirrors the validator's inline auth-staging logic verbatim.
+  # (fail-closed); a cleaned-up failure exits 2 (fail-open). Exercises the
+  # REAL production staging helper (not an inline copy).
   mkdir -p "$_home/.local/share/opencode" || exit 1
   printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json"
   _fault_sand="$(mktemp -d)" || exit 1
   mkdir -p "$_fault_sand/.local/share/opencode/auth.json"   # target is a DIR
-  /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
-            sys.exit(2)
-        sys.exit(1)  # state unknown — fail closed
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)  # cleanup failed too — FAIL CLOSED
-    sys.exit(2)      # cleaned up — fail open
-PY
-  _frc=$?
+  _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand" 2>/dev/null; _frc=$?
   [[ "$_frc" -eq 1 ]] || { echo "  ✗ (a4c2) unstageable auth did not exit 1 (got $_frc)"; ok=0; }
   # (a4c3) failure classification: valid JSON stages (exit 0); invalid JSON,
   # oversize, FIFO source, and symlink source fail OPEN (exit 2 — no auth
@@ -482,51 +458,7 @@ PY
     # which exits 2 for the same reason — a false pass.
     [[ -e "$_home/.local/share/opencode/auth.json" || -L "$_home/.local/share/opencode/auth.json" ]] \
       || { echo "  ✗ (a4c3) $_kind fixture missing"; ok=0; continue; }
-    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
-            sys.exit(2)
-        sys.exit(1)  # state unknown — fail closed
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)
-    sys.exit(2)
-PY
-    _frc2=$?
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand2" 2>/dev/null; _frc2=$?
     [[ "$_frc2" -eq "$_want" ]] || { echo "  ✗ (a4c3) $_kind auth exit $_frc2 (want $_want)"; ok=0; }
     rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
   done
@@ -545,54 +477,27 @@ PY
       3) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null; _rw=2 ;;
       4) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
     esac
-    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):
-            sys.exit(2)
-        sys.exit(1)
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)
-    sys.exit(2)
-PY
-    _frc3=$?
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand2" 2>/dev/null; _frc3=$?
     [[ "$_frc3" -eq "$_rw" ]] || { echo "  ✗ (a4c3b) random case $_rk/$_ri exit $_frc3 (want $_rw)"; ok=0; }
     rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
   done
+  # (a4c5) mutation bite — reverting production auth staging to open()+chmod
+  # must fail this guard (the drift #617 introduced). Static: the REAL helper
+  # keeps born-0600 os.open and never chmod-after. Behavioral: under umask 022
+  # the production path still yields 600 (open() without mode would leave 644).
+  _auth_fn="$(sed -n '/^_bd_oc_stage_auth_json/,/^}/p' "$RC")"
+  echo "$_auth_fn" | grep -q 'os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)'     || { echo "  ✗ (a4c5) production auth staging lost born-0600 os.open"; ok=0; }
+  echo "$_auth_fn" | grep -q 'os.chmod(dest'     && { echo "  ✗ (a4c5) production auth staging regressed to chmod-after"; ok=0; }
+  _mut_sand="$(mktemp -d)" || exit 1
+  printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-mut.json"
+  (
+    umask 0022
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth-mut.json" "$_mut_sand" 2>/dev/null
+  )
+  _mm="$(/usr/bin/stat -f%Lp "$_mut_sand/.local/share/opencode/auth.json" 2>/dev/null || /usr/bin/stat -c%a "$_mut_sand/.local/share/opencode/auth.json" 2>/dev/null || echo "000")"
+  [[ "$_mm" == "600" ]] || { echo "  ✗ (a4c5) born-0600 guard: mode $_mm under umask 022"; ok=0; }
+  rm -rf "$_mut_sand" "$_home/.local/share/opencode/auth-mut.json" 2>/dev/null || true
+
   # (a4c4) the VALIDATOR's shell-level rc classifier: 0 = ok, 2 = fail-open,
   # EVERYTHING else (1, 137, 143 — helper killed mid-write) = fail-closed,
   # with the sandbox removed and the handle cleared. Exercises the REAL
@@ -732,15 +637,14 @@ PY
   # materializes + validates each case individually.
   _cases="$(mktemp -d)" || exit 1
   mkdir -p "$_cases/home/.opencode"
-  # shellcheck disable=SC2312  # decoder status is checked; generator status is not load-bearing
-  while read -r _expect _ext _b64; do
-    # Clear BOTH canonical paths first — a stale file under the other
-    # extension would mask or corrupt this case's expectation.
-    rm -f "$_cases/home/.opencode/opencode.json" "$_cases/home/.opencode/opencode.jsonc"
-    printf '%s' "$_b64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$_cases/home/.opencode/opencode$_ext" || { echo "  ✗ (j) case decode failed"; ok=0; break; }
-    if validate_opencode_home_config "$_cases/home" 2>/dev/null; then _got=PASS; else _got=FAIL; fi
-    [[ "$_got" == "$_expect" ]] || { echo "  ✗ (j) case .opencode$_ext expected $_expect got $_got"; ok=0; }
-  done < <(python3 - "$_cases" <<'PY'
+  # The generator's exit status IS load-bearing (#730). Consuming it through
+  # `< <(python3 ...)` made a crashing producer indistinguishable from EOF, so
+  # zero property coverage could still certify itself green. Materialize the
+  # spec, check the producer status, and pin the deterministic case count —
+  # both before the loop, so a truncated-but-rc-0 stream is caught too.
+  _gen=(python3 - "$_cases")
+  [[ "$FAULT_GENERATOR" == 1 ]] && _gen=(false)   # #730 regression seam
+  "${_gen[@]}" > "$_cases/spec" <<'PY'
 import base64, random, sys
 rng = random.Random(20260809)
 ALLOWED = {"provider", "$schema"}
@@ -778,7 +682,35 @@ for keys, jsonc in cases:
     expect = "PASS" if (isinstance(keys, list) and set(keys) <= ALLOWED) else "FAIL"
     print(f"{expect} {ext} {base64.b64encode(doc.encode()).decode()}")
 PY
-)
+  _gen_rc=$?
+  [[ "$_gen_rc" -eq 0 ]] || { echo "  ✗ (j) case generator exited $_gen_rc"; ok=0; }
+  _n=$(wc -l < "$_cases/spec")
+  [[ "$_n" -eq 34 ]] || { echo "  ✗ (j) expected 34 generated cases, got $_n"; ok=0; }
+  # shellcheck disable=SC2312  # decoder status is checked inline
+  while read -r _expect _ext _b64 _rest; do
+    # The record SHAPE is load-bearing too (#730). The line count above proves
+    # how many records arrived, not that any of them is well-formed: a truncated
+    # record such as `FAIL .json` leaves _b64 empty, decodes to an empty config,
+    # and that config refuses — so _got=FAIL matches the expectation and a
+    # broken generator re-certifies itself green. No sentinel for "valid empty
+    # payload" is needed because the generator never emits one: doc_for always
+    # emits at least `{`/`}`, and every root-literal case is a non-empty string.
+    # The base64 pattern spells out whole 4-char quanta with canonical padding
+    # rather than `[A-Za-z0-9+/]+=*`, which accepts junk like `A=` / `A===`; the
+    # quanta form also matches the empty string, hence the explicit -z guard.
+    if [[ ! "$_expect" =~ ^(PASS|FAIL)$ ]] || [[ ! "$_ext" =~ ^\.jsonc?$ ]] \
+       || [[ -z "$_b64" ]] \
+       || [[ ! "$_b64" =~ ^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$ ]] \
+       || [[ -n "$_rest" ]]; then
+      echo "  ✗ (j) malformed generated case record: $_expect $_ext $_b64 $_rest"; ok=0; break
+    fi
+    # Clear BOTH canonical paths first — a stale file under the other
+    # extension would mask or corrupt this case's expectation.
+    rm -f "$_cases/home/.opencode/opencode.json" "$_cases/home/.opencode/opencode.jsonc"
+    printf '%s' "$_b64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))' > "$_cases/home/.opencode/opencode$_ext" || { echo "  ✗ (j) case decode failed"; ok=0; break; }
+    if validate_opencode_home_config "$_cases/home" 2>/dev/null; then _got=PASS; else _got=FAIL; fi
+    [[ "$_got" == "$_expect" ]] || { echo "  ✗ (j) case .opencode$_ext expected $_expect got $_got"; ok=0; }
+  done < "$_cases/spec"
   rm -rf "$_cases"
 
   exit $((1 - ok))
@@ -786,6 +718,37 @@ PY
   pass "validate_opencode_home_config: provider-only pass, mcp/unparseable refuse, JSONC-tolerant, -I isolated"
 else
   fail "validate_opencode_home_config behavioral assertions failed (see above)"
+fi
+# The fault child exists ONLY to exercise the (j) block above, so stop here
+# rather than re-running the remaining ~400 lines of unrelated assertions a
+# second time (#762). Unbounded, the recursion nearly doubles this suite against
+# run-shell-tests.sh's shared 180s per-test budget, which this file has no
+# override for — headroom a slower/shared CI runner can exhaust before ever
+# reaching the (j2) assertion. `finish` keeps the child's exit status on the
+# same accounting as a full run.
+[[ "$FAULT_GENERATOR" == 1 ]] && finish
+# (j2, #730) Prove the guard above can actually fail: re-run this file with a
+# crashing case generator and require a non-zero exit, the generator guard's own
+# diagnostic, and the absence of the green property line. The middle condition
+# is load-bearing — without it any early child failure (one that never reached
+# the generator) would satisfy the other two and certify a guard that never ran.
+# Skipped in the fault child itself — that is what keeps the re-run from recursing.
+# Both matches use a herestring, NOT `printf | grep -q`: under this file's
+# `set -o pipefail`, an early-exiting `grep -q` can SIGPIPE the producer, making
+# the pipeline status 141 regardless of whether the pattern matched. On the
+# negated match that inverts into a fail-OPEN — grep FINDS the green line (which
+# must fail this assertion), the pipeline reports 141, `!` flips it to true, and
+# the very fail-open this block exists to detect passes instead. A herestring
+# has no producer to signal, so grep's own status is the status.
+if [[ "$FAULT_GENERATOR" == 0 ]]; then
+  _fault_out="$(bash "${BASH_SOURCE[0]}" --fault-generator 2>&1)"; _fault_rc=$?
+  if [[ "$_fault_rc" -ne 0 ]] \
+     && grep -qF '✗ (j) case generator exited' <<<"$_fault_out" \
+     && ! grep -qF 'validate_opencode_home_config: provider-only pass' <<<"$_fault_out"; then
+    pass "(j) injected generator failure fails the suite without the green property assertion"
+  else
+    fail "(j) injected generator failure still exited $_fault_rc / printed the property assertion (fail-open)"
+  fi
 fi
 # (g) BOTH opencode arms call the shared guard before dispatch.
 # shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
@@ -1178,10 +1141,4 @@ if (
 else
   fail "banner normalization missing/weakened in _run_review_with_retries"
 fi
-echo
-if [[ "$FAILURES" -eq 0 ]]; then
-  echo "PASS (test-opencode-review-arm)"
-  exit 0
-fi
-echo "FAIL: $FAILURES assertion(s) (test-opencode-review-arm)"
-exit 1
+finish

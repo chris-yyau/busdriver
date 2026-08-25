@@ -32,13 +32,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="sonnet",
-        help="Model for scenario execution (default: sonnet)",
+        default="opus",
+        help="Model for scenario execution (default: opus)",
     )
     parser.add_argument(
         "--gen-model",
-        default="haiku",
-        help="Model for spec/scenario generation (default: haiku)",
+        default="opus",
+        help="Model for spec/scenario generation (default: opus)",
     )
     parser.add_argument(
         "--dry-run",

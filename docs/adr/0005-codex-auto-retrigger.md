@@ -46,16 +46,18 @@ correctness problem. See the coupling comment in `scripts/codex-retrigger.sh` an
 the pinned assertion in `tests/test-codex-retrigger.sh`, which is written against
 the 0.8 margin rather than a bare `<=` precisely so that restoring 240 fails.
 
-**Known residual — the inequality is a sanity bound, not a guarantee.** `--max-wait`
-counts wait-ROUNDS and the dispatcher enforces no minimum duration per round, so the
-480s figure is a documented typical rather than a contract. Eight fast rounds can
-exhaust the budget in well under 360s, leaving the later attempts unreachable even at
-`COOLDOWN=180`, with the pinned assertion still green. What the bound genuinely buys
-is rejection of order-of-magnitude and zero-margin defaults — the two live defects on
-PR #676. Closing the gap properly requires a caller-side change: pace in ROUNDS rather
-than wall-clock, or have the dispatcher enforce a minimum wait-round duration. Neither
-is derivable from the mtimes `codex-retrigger.sh` reads, so neither belongs in the
-helper; tracked as a follow-up.
+**Known residual — closed by #679.** `--max-wait` counts wait-ROUNDS and the
+dispatcher enforces no minimum duration per round, so the 480s figure was only a
+documented typical. Eight fast rounds could exhaust the budget in well under 360s,
+leaving later attempts unreachable even at `COOLDOWN=180`, with the old pinned
+assertion still green. #679 closes that at the shared helper via two modes: the
+ordinary post path keeps skip-when-hot (mirror dedupe; no sleep inside the worker
+Bash tool — default tool ceiling ~120s is below COOLDOWN 180s), and the dispatcher
+calls `--await-cooldown` with live remaining wait rounds after each wait-round post
+so a still-hot cooldown **sleeps** in the loop before the next round. Time pacing
+stays real wall-clock. `MAX <= default --max-wait` (case 18) is necessary for the
+defaults when Codex is sole-stale early; it does not manufacture rounds already
+spent waiting on other bots. Hooks and the `none`-path never pass `--await-cooldown`.
 
 *Why the original reasoning does not survive.* This ADR justified one-shot purely
 as ANTI-SPAM (see the first Guards bullet) — never as a safety boundary. What it
@@ -279,14 +281,19 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (19 cases total: 10 original + 9 added
-  by #673, `gh` stubbed). The #673 cases pin the budget in BOTH directions — it
+- Covered by `tests/test-codex-retrigger.sh` (22 cases total: 10 original + 9 added
+  by #673 + 1 by #677 + 1 by #679 + 1 by #763, `gh` stubbed). The #673 cases pin the
+  budget in BOTH directions — it
   spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
   pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
   PRs a fresh budget), the cooldown blocking while hot and releasing once elapsed,
   a malformed `MAX` falling back to the default rather than unlimited, a `MAX`
-  ceiling, a failed post spending no attempt, hole refill, and the #676
-  wait-budget-coupling assertion.
+  ceiling, a failed post spending no attempt, hole refill, and the #676/#679
+  wait-budget-coupling assertion (now `MAX <= default --max-wait` against live
+  SKILL.md). Case 20 is #677's signal-during-post claim retention, case 21 is #679
+  proving sleep-pacing under a live wait-round budget, and case 22 is #763 clamping
+  a `COOLDOWN=86400s` remainder to one `AWAIT_SLEEP_CAP` sleep that still posts
+  nothing.
   The original 10: happy path, one-shot
   (marker present → no second post), opt-out, fail-safe (post failure → released
   claim, exit 0, no marker), transient recovery, custom phrase, bad-input skip,
@@ -339,15 +346,28 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   changing code; only if neither knob helps, consider tightening the trigger (e.g.
   require N consecutive Codex-only-stale wait-rounds before posting). **Raising the
   cooldown re-opens the coupling below — check it.**
+- **`PR_GRIND_CODEX_RETRIGGER_COOLDOWN` is raised above `AWAIT_SLEEP_CAP` (480s)** →
+  one `--await-cooldown` call can no longer clear the cooldown, because a single
+  await sleep is capped to fit the caller's 600000ms Bash tool ceiling. The
+  remainder is paid down across wait-rounds, so each cooldown interval AFTER an
+  attempt costs `n = ceil(COOLDOWN / 480)` rounds instead of one. Attempt 1 pays no
+  cooldown (the pacing gate only engages once a marker is occupied), so attempt `k`
+  lands in round `1 + (k - 1) * n` and the round-budget rule tightens from
+  `MAX <= --max-wait` to `1 + (MAX - 1) * ceil(COOLDOWN / 480) <= --max-wait`. Do
+  NOT write it as `MAX * n`: that counts a cooldown before the first attempt and
+  falsely rejects valid configurations whenever `n > 1`. Re-derive
+  before raising the cooldown; the cap itself tracks the Bash tool limit documented
+  in `skills/litmus/SKILL.md`, so re-check it if that ceiling ever moves.
 - **Either default changes, or the dispatcher's default `--max-wait` changes** →
-  re-check `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`. Violating it does
-  not fail loudly at runtime; it silently makes the later attempts unreachable and
-  degrades the budget back toward one-shot — the #676 defect. `--max-wait` is owned
-  by `skills/pr-grind/SKILL.md`, so a change there can break this from the other
-  side, and the pinned assertion in `tests/test-codex-retrigger.sh` reads the two
-  script defaults but NOT the dispatcher's `--max-wait` (it hardcodes the ~8-minute
-  figure from this ADR's Context). Changing `--max-wait`'s default therefore requires
-  updating that constant by hand — the test cannot catch that one for you.
+  re-check `MAX <= default --max-wait` (the #679 round-budget reachability
+  contract). Violating it does not fail loudly at runtime; it silently makes the
+  later attempts unreachable and degrades the budget back toward one-shot — the
+  #676 defect class. `--max-wait` is owned by `skills/pr-grind/SKILL.md`, and case
+  18 of `tests/test-codex-retrigger.sh` reads BOTH the helper's `MAX` default and
+  the SKILL's `--max-wait` default, so a change on either side fails the suite.
+  (The pre-#679 480s wall-clock typical is no longer the load-bearing bound —
+  wait-round callers now pass live remaining rounds and the helper sleeps out a
+  hot cooldown.)
 - Codex answers the *first* nudge essentially always, across many PRs → the budget
   is dead weight; drop `MAX` back to 1 and keep the cooldown.
 - Codex ignores all N attempts often enough that operators still reach for the skip
@@ -355,11 +375,11 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   classification (#673) is what needs shipping, not a larger N.
 - The trigger phrase or connector login changes upstream → update the
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` default / the `chatgpt-codex-connector` login.
-- **Raising `MAX` or `COOLDOWN`, or lowering the dispatcher's default `--max-wait`,
-  without re-checking `COOLDOWN * (MAX - 1) <= 0.8 * wait-budget wall-clock`** →
-  re-creates the #676 dead end (a scheduled attempt whose cooldown has not yet
-  elapsed when `--max-wait` exhausts is never reached). Re-derive the inequality
-  against the current `--max-wait` default before changing either knob.
+- **Raising `MAX` above the dispatcher's default `--max-wait`, or lowering
+  `--max-wait` below `MAX`, without re-checking case 18** → re-creates unreachable
+  later attempts even with #679 sleep-pacing (not enough rounds to host each
+  attempt). Re-derive against the current `--max-wait` default before changing
+  either knob.
 
 <!-- design-reviewed: PASS -->
 <!-- design-review-coverage: FULL 3/3  -->

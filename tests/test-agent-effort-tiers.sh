@@ -23,8 +23,11 @@
 #         enumeration of every high-tier agent; deep-reasoning analyzers are
 #         high by policy but not floor-enforced, since under-tiering them is a
 #         mild cost, not a safety risk)
-#   (iv)  effort xhigh|max requires model: opus (sonnet silently caps at ~high,
-#         so sonnet+xhigh is a misconfig that pays for reasoning it can't use)
+#   (iv)  effort xhigh|max requires model: opus (weaker Claude-family ids silently
+#         cap at ~high, so pairing one with xhigh pays for reasoning it can't use).
+#         Since ADR 0046 every Claude work route is opus anyway, and
+#         scripts/ci/validate-model-routes.js enforces that pin; this invariant
+#         remains the guard for a future allowlisted non-opus advisory agent.
 #
 # All frontmatter checks are scoped to the YAML block between the first two
 # `---` fences, so a body line that happens to begin with `effort:`/`model:`/
@@ -88,9 +91,10 @@ for f in "$AGENTS_DIR"/*.md; do
     continue
   fi
 
-  # `|| true`: a model-less agent legitimately inherits the session model; don't
-  # let grep's exit-1 abort the whole run under `set -e` (invariant iv treats an
-  # empty model as "not opus", which is the correct fail for an xhigh/max agent).
+  # `|| true`: don't let grep's exit-1 abort the whole run under `set -e` when an
+  # agent has no model line. Such an agent is itself a policy violation since
+  # ADR 0046 (validate-model-routes.js rejects a missing pin); here it simply
+  # reads as "not opus", the correct fail for an xhigh/max agent.
   model="$(printf '%s\n' "$fm" | grep -m1 '^model:' | sed -E 's/^model:[[:space:]]*//; s/[[:space:]]+$//' || true)"
 
   # (ii) Write/Edit tool => >= medium.

@@ -1,7 +1,7 @@
 ---
 name: a11y-architect
 description: Accessibility Architect specializing in WCAG 2.2 compliance for Web and Native platforms. Use PROACTIVELY when designing UI components, establishing design systems, or auditing code for inclusive user experiences.
-model: sonnet
+model: opus
 effort: medium
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 ---

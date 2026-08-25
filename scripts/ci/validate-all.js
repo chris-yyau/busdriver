@@ -19,6 +19,7 @@ const path = require('path');
 
 const VALIDATORS = [
   'validate-agents.js',
+  'validate-model-routes.js',
   'validate-commands.js',
   'validate-hooks.js',
   'validate-skills.js',

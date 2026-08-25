@@ -41,11 +41,10 @@ GitHub branch-protection settings encode org policy that pr-grind has no automat
 
 ## Architecture: Dispatcher + Per-Round Worker
 
-This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:
+This skill is a **thin dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent (opus, like every Claude route — ADR 0046), dispatched once per round. The split survives the model unification because neither of its reasons was price:
 
-- Cuts cost ~5× by running mechanical fix work on Sonnet
 - Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
-- Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
+- Separates author from reviewer: the dispatcher keeps triage of subagent results, bail handling, merge decisions, and the skip-file protocol out of the worker's context
 
 **This file is dispatcher-only. The worker does not read it.** `agents/pr-grinder.md`
 is self-contained for Steps 1–6.5 — the 3-phase check verification, the four feedback
@@ -638,6 +637,19 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # phrase override (forks): PR_GRIND_CODEX_RETRIGGER_PHRASE. `|| true` keeps a
   │     # failed post from ever staling the gate. Distinct from the COMPLETION
   │     # first-engagement grace, which only RE-POLLS a `none` Codex (never a `stale`).
+  │     # #679 — post via the ordinary helper (skip-when-hot; no sleep — preserves
+  │     # worker→dispatcher mirror dedupe). Then --await-cooldown with the INTEGER
+  │     # remaining wait rounds AFTER this round (`MAX_WAIT - wait_round`, template-
+  │     # substituted — these are dispatcher conversation counters, NOT shell
+  │     # variables; `$(( MAX_WAIT - wait_round ))` in a fresh Bash would read as 0
+  │     # and skip pacing). If the marker is still hot and further rounds remain,
+  │     # SLEEP out the cooldown in the dispatcher loop so the next wait-round can
+  │     # spend attempt 2..N.
+  │     # Bash tool timeout MUST be >= COOLDOWN+60s (default COOLDOWN=180 → use
+  │     # timeout ≥ 240000ms on this invocation). A killed await leaves attempts
+  │     # 2..N unreachable — the #679 defect. Same class as COMPLETION's 480s Codex
+  │     # grace block: the long wait lives in a dispatcher-owned Bash call with an
+  │     # explicit raised timeout, never in the worker.
   │     If RESULT_COMMIT_SHA == "none" AND RESULT_CODEX_ACK == "stale"
   │        AND RESULT_REVIEWER_ACKS has no `stale` entry, run this block. Per the
   │        "CWD Reset Across Bash Calls" contract it MUST open with `cd "$WORKTREE_DIR"`
@@ -647,7 +659,9 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        cd runs in a subshell and ABORTS on failure (`|| exit 0`) so a bad
   │        WORKTREE_DIR never lets git/gh run in the wrong repo:
   │          ( cd "$WORKTREE_DIR" || exit 0
-  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
+  │            _head="$(git rev-parse HEAD)"
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$_head" || true
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" --await-cooldown "$PR_NUMBER" "$_head" "<MAX_WAIT - wait_round>" || true )
   │
   └── Update state:
         # PRIOR_COMMIT_SHA is the last FIX-ROUND's reported SHA and is RETAINED
@@ -1388,4 +1402,4 @@ When emitting the verbatim message template (from the canonical protocol — see
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
 - **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree.
 - **Gate:** Litmus runs inside the dispatcher-owned commit block before each fix commit; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
-- **Subagent:** `pr-grinder` (Sonnet) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.
+- **Subagent:** `pr-grinder` (opus) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.

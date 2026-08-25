@@ -1,7 +1,7 @@
 ---
 name: code-explorer
 description: Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, and documenting dependencies to inform new development. Use when you need to understand how an existing feature works before extending or modifying it — tracing call paths, mapping layers, and surfacing dependencies.
-model: sonnet
+model: opus
 effort: low
 tools: [Read, Grep, Glob]
 ---

@@ -99,7 +99,7 @@ mcp__scheduled-tasks__create_scheduled_task({
 })
 
 # Via claude -p (programmatic mode)
-echo "Review open PRs and summarize" | claude -p --project /path/to/repo
+echo "Review open PRs and summarize" | claude -p --model opus --project /path/to/repo
 ```
 
 **Useful cron patterns:**
@@ -128,7 +128,7 @@ curl -X POST "https://api.anthropic.com/dispatch" \
 # GitHub webhook → dispatch → Claude agent → fix → PR
 
 # Trigger from another agent
-claude -p "Analyze the output of the security scan and create issues for findings"
+claude -p --model opus "Analyze the output of the security scan and create issues for findings"
 ```
 
 ### 4. Computer Use
@@ -213,17 +213,17 @@ Ensure these are in `~/.claude.json`:
 
 ```bash
 # Daily morning briefing
-claude -p "Create a scheduled task: every weekday at 9am, review my GitHub notifications, open PRs, and calendar. Write a morning briefing to memory."
+claude -p --model opus "Create a scheduled task: every weekday at 9am, review my GitHub notifications, open PRs, and calendar. Write a morning briefing to memory."
 
 # Continuous learning
-claude -p "Create a scheduled task: every Sunday at 8pm, extract patterns from this week's sessions and update the learned skills."
+claude -p --model opus "Create a scheduled task: every Sunday at 8pm, extract patterns from this week's sessions and update the learned skills."
 ```
 
 ### Step 3: Initialize Memory Graph
 
 ```bash
 # Bootstrap your identity and context
-claude -p "Create memory entities for: me (user profile), my projects, my key contacts. Add observations about current priorities."
+claude -p --model opus "Create memory entities for: me (user profile), my projects, my key contacts. Add observations about current priorities."
 ```
 
 ### Step 4: Enable Computer Use (Optional)

@@ -26,7 +26,7 @@ class Scenario:
 def generate_scenarios(
     skill_path: Path,
     spec_yaml: str,
-    model: str = "haiku",
+    model: str = "opus",
 ) -> list[Scenario]:
     """Generate 3 scenarios with decreasing prompt strictness.
 
@@ -44,7 +44,7 @@ def generate_scenarios(
         ["claude", "-p", prompt, "--model", model, "--output-format", "text"],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=300,  # opus per ADR 0046 — was 120s, sized for a cheaper model
     )
 
     if result.returncode != 0:

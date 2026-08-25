@@ -62,7 +62,7 @@ echo ""
 
 # Severity distribution (across all reviews)
 echo "Severity distribution (total across all reviews):"
-jq -s '{ critical: ([.[].severity.critical] | add // 0), high: ([.[].severity.high] | add // 0), medium: ([.[].severity.medium] | add // 0), low: ([.[].severity.low] | add // 0) }' "$METRICS_FILE" 2>/dev/null | jq -r '"  CRITICAL: \(.critical)\n  HIGH: \(.high)\n  MEDIUM: \(.medium)\n  LOW: \(.low)"' 2>/dev/null || echo "  (unable to parse severity data)"
+jq -s '{ high: ([.[].severity.high] | add // 0), medium: ([.[].severity.medium] | add // 0), low: ([.[].severity.low] | add // 0) }' "$METRICS_FILE" 2>/dev/null | jq -r '"  HIGH: \(.high)\n  MEDIUM: \(.medium)\n  LOW: \(.low)"' 2>/dev/null || echo "  (unable to parse severity data)"
 echo ""
 
 # Average iterations to pass

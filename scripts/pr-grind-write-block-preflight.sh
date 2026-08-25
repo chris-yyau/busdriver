@@ -54,6 +54,7 @@ usage() {
 # a slot — presence/mtime/slot-count only. Return 0 = authorizes; 1 = does not.
 _lease_authorizes() {  # <state_dir_abs>
     local sd="$1" skip ledger meta age key slots root rel
+    local _rcf _rcp _rci _rcj _rcv
     # Symlinked state dir or skip/ledger → not authorizing (do not follow).
     if [ -L "$sd" ]; then
         return 1
@@ -75,9 +76,50 @@ _lease_authorizes() {  # <state_dir_abs>
     # supply it, skip the check and fail OPEN like every other missing helper.
     root="$(dirname "$sd")"
     rel="${BUSDRIVER_STATE_DIR:-.claude}/$(basename "$skip")"
-    if command -v gate_skip_file_repo_controlled >/dev/null 2>&1 \
-       && gate_skip_file_repo_controlled "$root" "$rel"; then
-        return 1
+    # Bound the Git-backed trackedness probe. An unbounded hang here would stall
+    # the whole preflight after marker classify already gained a process-group
+    # watchdog. Timeout / helper error → fail OPEN (do not refuse authorization
+    # from an unknown probe), matching the missing-helper path above.
+    if command -v gate_skip_file_repo_controlled >/dev/null 2>&1; then
+        _rcf="$(mktemp 2>/dev/null)" || _rcf=""
+        set -m
+        (
+            if gate_skip_file_repo_controlled "$root" "$rel"; then
+                [ -n "$_rcf" ] && printf '1\n' >"$_rcf"
+            else
+                [ -n "$_rcf" ] && printf '0\n' >"$_rcf"
+            fi
+        ) &
+        _rcp=$!
+        _rci=0
+        while [ "$_rci" -lt 30 ]; do
+            if ! kill -0 "$_rcp" 2>/dev/null; then
+                wait "$_rcp" 2>/dev/null || true
+                break
+            fi
+            sleep 0.1
+            _rci=$((_rci + 1))
+        done
+        if kill -0 "$_rcp" 2>/dev/null; then
+            kill -TERM -"$_rcp" 2>/dev/null || kill -TERM "$_rcp" 2>/dev/null || true
+            _rcj=0
+            while [ "$_rcj" -lt 10 ]; do
+                sleep 0.1
+                _rcj=$((_rcj + 1))
+            done
+            kill -KILL -"$_rcp" 2>/dev/null || kill -KILL "$_rcp" 2>/dev/null || true
+            wait "$_rcp" 2>/dev/null || true
+            rm -f "$_rcf" 2>/dev/null || true
+            set +m
+            # timed out → fail OPEN (do not treat as repo-controlled)
+            :
+        else
+            set +m
+            _rcv=""
+            [ -n "$_rcf" ] && [ -s "$_rcf" ] && _rcv="$(cat "$_rcf" 2>/dev/null || true)"
+            rm -f "$_rcf" 2>/dev/null || true
+            [ "$_rcv" = "1" ] && return 1
+        fi
     fi
     # ONE stat yields both the age and the lease key, so the 30s floor and the
     # slot prefix can never end up describing two different leases.
@@ -107,7 +149,7 @@ except Exception:
         # outright, so it is not authorizing regardless of the slot count.
         slots="$(
             L="$ledger" K="$key" python3 -I -c '
-import os, stat as stmod, sys
+import os, sys
 ledger = os.environ["L"]
 key = os.environ["K"]
 prefix = key + "."
@@ -125,16 +167,15 @@ try:
     if key + ".poison" in entries:
         print("poison")
         sys.exit(0)
+    # Count exact-name occupancy, not only directories. lease_slot.py::_claim_locked
+    # treats FileExistsError on mkdir(<key>.n) as occupied for any inode type
+    # (file/FIFO/symlink), so filtering to S_ISDIR under-counts and can false-
+    # clear when every claimable name is held by a non-directory.
     n = 0
     for i in range(1, 21):
         name = "%s%d" % (prefix, i)
-        if name not in entries:
-            continue
-        try:
-            if stmod.S_ISDIR(os.stat(name, dir_fd=lfd, follow_symlinks=False).st_mode):
-                n += 1
-        except OSError:
-            continue
+        if name in entries:
+            n += 1
     print(n)
 finally:
     try:

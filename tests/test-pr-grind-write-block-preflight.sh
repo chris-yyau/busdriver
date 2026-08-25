@@ -172,6 +172,26 @@ if [ "$RC5b" -eq 0 ]; then
 else
     no "junk-suffix dirs under lease key do not exhaust the current lease" "rc=$RC5b"
 fi
+# Exact <key>.1..<key>.20 names of ANY inode type occupy claimable slots —
+# lease_slot treats FileExistsError on mkdir as occupied. Filling all 20 with
+# regular files must exhaust authorization (exit 1 with pending markers).
+_I=1
+while [ "$_I" -le 20 ]; do
+    : >"$_LEDGER/${_KEY}.$_I"
+    _I=$((_I + 1))
+done
+RC5c=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC5c=$?
+_I=1
+while [ "$_I" -le 20 ]; do
+    rm -f "$_LEDGER/${_KEY}.$_I" 2>/dev/null || true
+    _I=$((_I + 1))
+done
+if [ "$RC5c" -eq 1 ]; then
+    ok "non-directory exact slot names exhaust the current lease"
+else
+    no "non-directory exact slot names exhaust the current lease" "rc=$RC5c"
+fi
 # A poison sentinel for THIS lease means the gate refuses it outright. Drop the
 # foreign slots first, so exit 1 can only come from the sentinel and not from a
 # ledger that is merely over the count.

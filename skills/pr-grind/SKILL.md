@@ -637,6 +637,19 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # phrase override (forks): PR_GRIND_CODEX_RETRIGGER_PHRASE. `|| true` keeps a
   │     # failed post from ever staling the gate. Distinct from the COMPLETION
   │     # first-engagement grace, which only RE-POLLS a `none` Codex (never a `stale`).
+  │     # #679 — post via the ordinary helper (skip-when-hot; no sleep — preserves
+  │     # worker→dispatcher mirror dedupe). Then --await-cooldown with the INTEGER
+  │     # remaining wait rounds AFTER this round (`MAX_WAIT - wait_round`, template-
+  │     # substituted — these are dispatcher conversation counters, NOT shell
+  │     # variables; `$(( MAX_WAIT - wait_round ))` in a fresh Bash would read as 0
+  │     # and skip pacing). If the marker is still hot and further rounds remain,
+  │     # SLEEP out the cooldown in the dispatcher loop so the next wait-round can
+  │     # spend attempt 2..N.
+  │     # Bash tool timeout MUST be >= COOLDOWN+60s (default COOLDOWN=180 → use
+  │     # timeout ≥ 240000ms on this invocation). A killed await leaves attempts
+  │     # 2..N unreachable — the #679 defect. Same class as COMPLETION's 480s Codex
+  │     # grace block: the long wait lives in a dispatcher-owned Bash call with an
+  │     # explicit raised timeout, never in the worker.
   │     If RESULT_COMMIT_SHA == "none" AND RESULT_CODEX_ACK == "stale"
   │        AND RESULT_REVIEWER_ACKS has no `stale` entry, run this block. Per the
   │        "CWD Reset Across Bash Calls" contract it MUST open with `cd "$WORKTREE_DIR"`
@@ -646,7 +659,9 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        cd runs in a subshell and ABORTS on failure (`|| exit 0`) so a bad
   │        WORKTREE_DIR never lets git/gh run in the wrong repo:
   │          ( cd "$WORKTREE_DIR" || exit 0
-  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
+  │            _head="$(git rev-parse HEAD)"
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$_head" || true
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" --await-cooldown "$PR_NUMBER" "$_head" "<MAX_WAIT - wait_round>" || true )
   │
   └── Update state:
         # PRIOR_COMMIT_SHA is the last FIX-ROUND's reported SHA and is RETAINED

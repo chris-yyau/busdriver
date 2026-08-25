@@ -810,6 +810,9 @@ echo "Codex ack: $CODEX_ACK"
 # a failed post never stales the gate. See ADR 0005. Distinct from the COMPLETION
 # first-engagement grace (skills/pr-grind/references/completion.md), which only RE-POLLS a `none`
 # Codex and never RE-TRIGGERS a `stale` one.
+# #679 — do NOT sleep-pace here (worker Bash tool ceiling ~120s < default COOLDOWN
+# 180s). Post only; the dispatcher --await-cooldown call owns time pacing between
+# wait-rounds. Skip-when-hot still dedupes against the dispatcher's same-round mirror.
 if git diff --cached --quiet 2>/dev/null \
    && [ "$CODEX_ACK" = "stale" ] && ! printf '%s' "$ACKS" | grep -q '=stale'; then
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "${HEAD_FULL_SHA:-$HEAD_SHA}" || true

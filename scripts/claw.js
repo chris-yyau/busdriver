@@ -14,7 +14,7 @@ const { spawnSync } = require('child_process');
 const readline = require('readline');
 
 const SESSION_NAME_RE = /^[a-zA-Z0-9][-a-zA-Z0-9]*$/;
-const DEFAULT_MODEL = process.env.CLAW_MODEL || 'sonnet';
+const DEFAULT_MODEL = process.env.CLAW_MODEL || 'opus';
 const DEFAULT_COMPACT_KEEP_TURNS = 20;
 
 function isValidSessionName(name) {

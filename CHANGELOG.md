@@ -1,3 +1,10 @@
+## [1.112.1](https://github.com/chris-yyau/busdriver/compare/v1.112.0...v1.112.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **routes:** align every live Claude model route with the Opus-only work policy ([#747](https://github.com/chris-yyau/busdriver/issues/747)) ([#757](https://github.com/chris-yyau/busdriver/issues/757)) ([eaa5265](https://github.com/chris-yyau/busdriver/commit/eaa526511fac84ae89fbd02f284284d5ead3e42a))
+
 # [1.112.0](https://github.com/chris-yyau/busdriver/compare/v1.111.0...v1.112.0) (2026-08-24)
 
 

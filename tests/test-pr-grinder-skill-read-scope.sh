@@ -5,8 +5,8 @@
 # open with a MANDATORY wholesale `Read skills/pr-grind/SKILL.md`, ordered on
 # the claim that "the full Step 1-6 protocol" lived there. It does not — that
 # protocol is inline in agents/pr-grinder.md, and SKILL.md is dispatcher
-# control flow. The order cost ~25k Sonnet tokens on every dispatched round
-# (4-5 rounds is a normal grind) and returned nothing the worker lacked.
+# control flow. The order cost ~25k tokens of the worker's context budget on every
+# dispatched round (4-5 rounds is a normal grind) and returned nothing the worker lacked.
 #
 # This test pins BOTH halves of that, because prose alone would survive
 # exactly until the next edit that "helpfully" restores the read:

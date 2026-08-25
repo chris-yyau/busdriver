@@ -73,11 +73,17 @@ assert "SKILL.md fallback JSON format uses high|medium|low" \
 assert_not "SKILL.md fallback JSON format has no CRITICAL|HIGH|MEDIUM|LOW" \
   grep -q 'CRITICAL|HIGH|MEDIUM|LOW' <<<"$fallback_block"
 
-assert "SKILL.md fallback blocking parse is fail-closed on non-low severities" \
-  grep -q 'not exactly `low`' <<<"$fallback_block"
+assert "SKILL.md fallback blocking parse requires exact lowercase enum" \
+  grep -q 'exact lowercase enum' <<<"$fallback_block"
 
-assert "SKILL.md fallback blocking parse treats unrecognized severities as blocking" \
-  grep -q 'Unrecognized or out-of-enum severities count as blocking' <<<"$fallback_block"
+assert "SKILL.md fallback blocking parse fails closed on uppercase LOW" \
+  grep -Fq $'including `LOW` and `LoW`' <<<"$fallback_block"
+
+assert_not "SKILL.md fallback blocking parse has no case-insensitive ambiguity" \
+  grep -q 'case-insensitive' <<<"$fallback_block"
+
+assert "SKILL.md fallback blocking parse blocks unless severity is exactly low" \
+  grep -q 'blocks unless severity is exactly' <<<"$fallback_block"
 
 assert "SKILL.md fallback blocking parse treats unparseable output as FAIL" \
   grep -q 'not a JSON array of issues, treat as FAIL' <<<"$fallback_block"

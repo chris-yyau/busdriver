@@ -215,6 +215,31 @@ else
        "gate uses=$G_USES min=$G_MIN max=$G_AGE / preflight uses=$P_USES min=$P_MIN max=$P_AGE"
 fi
 
+# ── 3d. A repo-controlled skip file is not operator consent ─────────────────
+# The gate's _skip_lease_consume refuses a skip file tracked in the index or
+# HEAD (#325). Reading one as an active lease cleared the preflight and dropped
+# the worker into the `env` bail this probe exists to avoid, so assert the
+# untracked baseline authorizes and the staged same file does not.
+RC7=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC7=$?
+if [ "$RC7" -eq 0 ]; then
+    ok "untracked aged skip file still authorizes (repo-control baseline)"
+else
+    no "untracked aged skip file still authorizes (repo-control baseline)" "rc=$RC7"
+fi
+if git -C "$WORK" add -f -- ".claude/${_SKIP_BASENAME}" >/dev/null 2>&1; then
+    RC8=0
+    bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC8=$?
+    git -C "$WORK" rm --cached -q -- ".claude/${_SKIP_BASENAME}" >/dev/null 2>&1 || true
+    if [ "$RC8" -eq 1 ]; then
+        ok "repo-controlled (staged) skip file does not authorize"
+    else
+        no "repo-controlled (staged) skip file does not authorize" "rc=$RC8"
+    fi
+else
+    no "repo-controlled (staged) skip file does not authorize" "fixture stage failed"
+fi
+
 # ── 4. Freeze definite-block boundaries (inner scope vs disjoint) ────────────
 FZ="$(mktemp -d)" || FZ=""
 # Centralize cleanup: an early exit or interrupt inside the block below would

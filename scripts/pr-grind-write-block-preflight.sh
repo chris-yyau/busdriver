@@ -53,7 +53,7 @@ usage() {
 # Matches lease_slot floors (30s min age, 3600s max age, 20 uses) WITHOUT claiming
 # a slot — presence/mtime/slot-count only. Return 0 = authorizes; 1 = does not.
 _lease_authorizes() {  # <state_dir_abs>
-    local sd="$1" skip ledger meta age key slots
+    local sd="$1" skip ledger meta age key slots root rel
     # Symlinked state dir or skip/ledger → not authorizing (do not follow).
     if [ -L "$sd" ]; then
         return 1
@@ -66,6 +66,19 @@ _lease_authorizes() {  # <state_dir_abs>
         return 1
     fi
     [ -f "$skip" ] && [ -r "$skip" ] || return 1
+    # A skip file tracked in the index or HEAD is committable content, not
+    # operator consent (#325), and the gate's _skip_lease_consume refuses it.
+    # Reporting it as authorizing would clear the preflight and drop the worker
+    # straight into the `env` bail this probe exists to spend a round avoiding.
+    # gate_skip_file_repo_controlled is the vetted resolver the gates share, so
+    # reuse it rather than re-deriving tracked-ness; if the sourced lib did not
+    # supply it, skip the check and fail OPEN like every other missing helper.
+    root="$(dirname "$sd")"
+    rel="${BUSDRIVER_STATE_DIR:-.claude}/$(basename "$skip")"
+    if command -v gate_skip_file_repo_controlled >/dev/null 2>&1 \
+       && gate_skip_file_repo_controlled "$root" "$rel"; then
+        return 1
+    fi
     # ONE stat yields both the age and the lease key, so the 30s floor and the
     # slot prefix can never end up describing two different leases.
     meta="$(

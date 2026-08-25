@@ -238,6 +238,7 @@ COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 180 0 86400)
 # unreachable — the very #679 defect this flag exists to close (cursor + Codex, PR
 # #763). 480s keeps the required `sleep + 60s` timeout at 540s, matching the
 # under-cap budget litmus already ships against the same 600s ceiling.
+# Dispatcher Bash timeout for --await-cooldown MUST be >= 540000ms (cap+60s).
 #
 # Clamping the SLEEP rather than the KNOB is what preserves both halves: a long
 # COOLDOWN stays a legitimate "nudge rarely" choice on the post path, while the await

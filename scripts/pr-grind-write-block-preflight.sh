@@ -66,6 +66,12 @@ _lease_authorizes() {  # <state_dir_abs>
     if [ -L "$skip" ] || [ -L "$ledger" ]; then
         return 1
     fi
+    # Gate opens the ledger with O_DIRECTORY. A regular file/FIFO/etc. at the
+    # ledger path cannot hold claimable slots and is refused on claim — treating
+    # it as authorizing here only wastes a dispatch into the worker env bail.
+    if [ -e "$ledger" ] && [ ! -d "$ledger" ]; then
+        return 1
+    fi
     [ -f "$skip" ] && [ -r "$skip" ] || return 1
     # A skip file tracked in the index or HEAD is committable content, not
     # operator consent (#325), and the gate's _skip_lease_consume refuses it.

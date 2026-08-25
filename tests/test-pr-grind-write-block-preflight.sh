@@ -209,6 +209,19 @@ else
     no "poisoned lease does not authorize (exit 1 with pending markers)" "rc=$RC6"
 fi
 rm -rf "$_LEDGER/${_KEY}.poison"
+# Non-directory inode at the ledger path: gate opens with O_DIRECTORY and
+# refuses; authorizing would only waste a round on the worker env bail.
+rm -rf "$_LEDGER"
+: >"$_LEDGER"
+RC6b=0
+bash "$PF" -C "$WORK" >/dev/null 2>&1 || RC6b=$?
+rm -f "$_LEDGER"
+mkdir -p "$_LEDGER"
+if [ "$RC6b" -eq 1 ]; then
+    ok "non-directory lease ledger does not authorize"
+else
+    no "non-directory lease ledger does not authorize" "rc=$RC6b"
+fi
 
 # ── 3c. Lease thresholds must not drift from the gate's ──────────────────────
 # The preflight duplicates the gate's floors by necessity: the gate defines them

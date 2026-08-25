@@ -124,8 +124,13 @@
 #       post path keeps skip-when-hot (mirror dedupe; no sleep inside the worker
 #       Bash tool). Each await sleep is bounded by AWAIT_SLEEP_CAP so it fits the
 #       caller's Bash tool ceiling; a COOLDOWN above the cap therefore needs
-#       `ceil(COOLDOWN / AWAIT_SLEEP_CAP)` wait-rounds per attempt rather than one,
-#       which is the coupling to re-check when raising the cooldown (ADR 0005
+#       `n = ceil(COOLDOWN / AWAIT_SLEEP_CAP)` wait-rounds to clear EACH cooldown
+#       interval that follows an attempt, rather than one. Attempt 1 pays no
+#       cooldown (the pacing gate below only engages once a marker is occupied), so
+#       attempt `k` lands in round `1 + (k - 1) * n` and full-budget reachability
+#       needs `1 + (MAX - 1) * n <= --max-wait` — NOT `MAX * n`, which would count a
+#       cooldown before the first attempt and reject valid configs when `n > 1`.
+#       This is the coupling to re-check when raising the cooldown (ADR 0005
 #       Revisit). Full-budget reachability still requires enough wait rounds left
 #       when Codex becomes sole-stale — `MAX <= default --max-wait` is necessary for
 #       the defaults when that happens early, not a guarantee after other bots have

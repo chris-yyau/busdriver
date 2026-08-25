@@ -281,15 +281,19 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   is one extra comment. Acceptable (same spirit as the bootstrapping caveat below).
 - New operator knobs: `PR_GRIND_CODEX_RETRIGGER` (default on),
   `PR_GRIND_CODEX_RETRIGGER_PHRASE` (default `@codex review`).
-- Covered by `tests/test-codex-retrigger.sh` (20 cases total: 10 original + 9 added
-  by #673 + 1 by #679, `gh` stubbed). The #673 cases pin the budget in BOTH directions — it
+- Covered by `tests/test-codex-retrigger.sh` (22 cases total: 10 original + 9 added
+  by #673 + 1 by #677 + 1 by #679 + 1 by #763, `gh` stubbed). The #673 cases pin the
+  budget in BOTH directions — it
   spends across rounds AND stops at MAX — plus `MAX=1` restoring one-shot, a
   pre-#673 marker counting as attempt 1 spent (so an upgrade cannot hand in-flight
   PRs a fresh budget), the cooldown blocking while hot and releasing once elapsed,
   a malformed `MAX` falling back to the default rather than unlimited, a `MAX`
   ceiling, a failed post spending no attempt, hole refill, and the #676/#679
   wait-budget-coupling assertion (now `MAX <= default --max-wait` against live
-  SKILL.md, plus case 20 proving sleep-pacing under a live wait-round budget).
+  SKILL.md). Case 20 is #677's signal-during-post claim retention, case 21 is #679
+  proving sleep-pacing under a live wait-round budget, and case 22 is #763 clamping
+  a `COOLDOWN=86400s` remainder to one `AWAIT_SLEEP_CAP` sleep that still posts
+  nothing.
   The original 10: happy path, one-shot
   (marker present → no second post), opt-out, fail-safe (post failure → released
   claim, exit 0, no marker), transient recovery, custom phrase, bad-input skip,
@@ -345,9 +349,13 @@ so that route needed new plumbing to reproduce a signal the index already carrie
 - **`PR_GRIND_CODEX_RETRIGGER_COOLDOWN` is raised above `AWAIT_SLEEP_CAP` (480s)** →
   one `--await-cooldown` call can no longer clear the cooldown, because a single
   await sleep is capped to fit the caller's 600000ms Bash tool ceiling. The
-  remainder is paid down across wait-rounds, so each attempt then costs
-  `ceil(COOLDOWN / 480)` rounds instead of one and the round-budget rule tightens
-  from `MAX <= --max-wait` to `MAX * ceil(COOLDOWN / 480) <= --max-wait`. Re-derive
+  remainder is paid down across wait-rounds, so each cooldown interval AFTER an
+  attempt costs `n = ceil(COOLDOWN / 480)` rounds instead of one. Attempt 1 pays no
+  cooldown (the pacing gate only engages once a marker is occupied), so attempt `k`
+  lands in round `1 + (k - 1) * n` and the round-budget rule tightens from
+  `MAX <= --max-wait` to `1 + (MAX - 1) * ceil(COOLDOWN / 480) <= --max-wait`. Do
+  NOT write it as `MAX * n`: that counts a cooldown before the first attempt and
+  falsely rejects valid configurations whenever `n > 1`. Re-derive
   before raising the cooldown; the cap itself tracks the Bash tool limit documented
   in `skills/litmus/SKILL.md`, so re-check it if that ceiling ever moves.
 - **Either default changes, or the dispatcher's default `--max-wait` changes** →

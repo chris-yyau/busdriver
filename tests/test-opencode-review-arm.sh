@@ -427,57 +427,13 @@ if (
   fi
   # (a4c2) direct python contract: a write that cannot be cleaned up (target
   # pre-created as a DIRECTORY — open and unlink both fail) must exit 1
-  # (fail-closed); a cleaned-up failure exits 2 (fail-open). The python below
-  # mirrors the validator's inline auth-staging logic verbatim.
+  # (fail-closed); a cleaned-up failure exits 2 (fail-open). Exercises the
+  # REAL production staging helper (not an inline copy).
   mkdir -p "$_home/.local/share/opencode" || exit 1
   printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth.json"
   _fault_sand="$(mktemp -d)" || exit 1
   mkdir -p "$_fault_sand/.local/share/opencode/auth.json"   # target is a DIR
-  /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
-            sys.exit(2)
-        sys.exit(1)  # state unknown — fail closed
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)  # cleanup failed too — FAIL CLOSED
-    sys.exit(2)      # cleaned up — fail open
-PY
-  _frc=$?
+  _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand" 2>/dev/null; _frc=$?
   [[ "$_frc" -eq 1 ]] || { echo "  ✗ (a4c2) unstageable auth did not exit 1 (got $_frc)"; ok=0; }
   # (a4c3) failure classification: valid JSON stages (exit 0); invalid JSON,
   # oversize, FIFO source, and symlink source fail OPEN (exit 2 — no auth
@@ -502,51 +458,7 @@ PY
     # which exits 2 for the same reason — a false pass.
     [[ -e "$_home/.local/share/opencode/auth.json" || -L "$_home/.local/share/opencode/auth.json" ]] \
       || { echo "  ✗ (a4c3) $_kind fixture missing"; ok=0; continue; }
-    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):  # ENOENT, ENOTDIR — dest never existed
-            sys.exit(2)
-        sys.exit(1)  # state unknown — fail closed
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)
-    sys.exit(2)
-PY
-    _frc2=$?
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand2" 2>/dev/null; _frc2=$?
     [[ "$_frc2" -eq "$_want" ]] || { echo "  ✗ (a4c3) $_kind auth exit $_frc2 (want $_want)"; ok=0; }
     rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
   done
@@ -565,54 +477,27 @@ PY
       3) mkfifo "$_home/.local/share/opencode/auth.json" 2>/dev/null; _rw=2 ;;
       4) printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-target.json"; ln -s auth-target.json "$_home/.local/share/opencode/auth.json"; _rw=2 ;;
     esac
-    /usr/bin/python3 -I - "$_home/.local/share/opencode/auth.json" "$_fault_sand2" <<'PY' 2>/dev/null
-import json, os, stat, sys
-
-src, sand = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(2)
-try:
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        sys.exit(2)
-    raw = os.read(fd, (1 << 20) + 1)
-finally:
-    os.close(fd)
-if len(raw) > (1 << 20):
-    sys.exit(2)
-try:
-    def _reject(x):
-        raise ValueError(x)
-    parsed = json.loads(raw.decode("utf-8"), parse_constant=_reject)
-    if not isinstance(parsed, dict) or not parsed:
-        sys.exit(2)
-except Exception:
-    sys.exit(2)
-d = os.path.join(sand, ".local", "share", "opencode")
-dest = os.path.join(d, "auth.json")
-try:
-    os.makedirs(d, exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(raw)
-    os.chmod(dest, 0o600)
-except Exception:
-    try:
-        os.lstat(dest)
-    except OSError as e:
-        if e.errno in (2, 20):
-            sys.exit(2)
-        sys.exit(1)
-    try:
-        os.unlink(dest)
-    except Exception:
-        sys.exit(1)
-    sys.exit(2)
-PY
-    _frc3=$?
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth.json" "$_fault_sand2" 2>/dev/null; _frc3=$?
     [[ "$_frc3" -eq "$_rw" ]] || { echo "  ✗ (a4c3b) random case $_rk/$_ri exit $_frc3 (want $_rw)"; ok=0; }
     rm -rf "$_fault_sand2/.local/share" 2>/dev/null || true
   done
+  # (a4c5) mutation bite — reverting production auth staging to open()+chmod
+  # must fail this guard (the drift #617 introduced). Static: the REAL helper
+  # keeps born-0600 os.open and never chmod-after. Behavioral: under umask 022
+  # the production path still yields 600 (open() without mode would leave 644).
+  _auth_fn="$(sed -n '/^_bd_oc_stage_auth_json/,/^}/p' "$RC")"
+  echo "$_auth_fn" | grep -q 'os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)'     || { echo "  ✗ (a4c5) production auth staging lost born-0600 os.open"; ok=0; }
+  echo "$_auth_fn" | grep -q 'os.chmod(dest'     && { echo "  ✗ (a4c5) production auth staging regressed to chmod-after"; ok=0; }
+  _mut_sand="$(mktemp -d)" || exit 1
+  printf '{"k":"v"}\n' > "$_home/.local/share/opencode/auth-mut.json"
+  (
+    umask 0022
+    _bd_oc_stage_auth_json "$_home/.local/share/opencode/auth-mut.json" "$_mut_sand" 2>/dev/null
+  )
+  _mm="$(/usr/bin/stat -f%Lp "$_mut_sand/.local/share/opencode/auth.json" 2>/dev/null || /usr/bin/stat -c%a "$_mut_sand/.local/share/opencode/auth.json" 2>/dev/null || echo "000")"
+  [[ "$_mm" == "600" ]] || { echo "  ✗ (a4c5) born-0600 guard: mode $_mm under umask 022"; ok=0; }
+  rm -rf "$_mut_sand" "$_home/.local/share/opencode/auth-mut.json" 2>/dev/null || true
+
   # (a4c4) the VALIDATOR's shell-level rc classifier: 0 = ok, 2 = fail-open,
   # EVERYTHING else (1, 137, 143 — helper killed mid-write) = fail-closed,
   # with the sandbox removed and the handle cleared. Exercises the REAL

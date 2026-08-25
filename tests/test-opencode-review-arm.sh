@@ -810,8 +810,13 @@ PY
     # broken generator re-certifies itself green. No sentinel for "valid empty
     # payload" is needed because the generator never emits one: doc_for always
     # emits at least `{`/`}`, and every root-literal case is a non-empty string.
+    # The base64 pattern spells out whole 4-char quanta with canonical padding
+    # rather than `[A-Za-z0-9+/]+=*`, which accepts junk like `A=` / `A===`; the
+    # quanta form also matches the empty string, hence the explicit -z guard.
     if [[ ! "$_expect" =~ ^(PASS|FAIL)$ ]] || [[ ! "$_ext" =~ ^\.jsonc?$ ]] \
-       || [[ ! "$_b64" =~ ^[A-Za-z0-9+/]+=*$ ]] || [[ -n "$_rest" ]]; then
+       || [[ -z "$_b64" ]] \
+       || [[ ! "$_b64" =~ ^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$ ]] \
+       || [[ -n "$_rest" ]]; then
       echo "  ✗ (j) malformed generated case record: $_expect $_ext $_b64 $_rest"; ok=0; break
     fi
     # Clear BOTH canonical paths first — a stale file under the other

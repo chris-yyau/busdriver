@@ -1,3 +1,10 @@
+## [1.112.4](https://github.com/chris-yyau/busdriver/compare/v1.112.3...v1.112.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **litmus:** align severity taxonomy in fallback and metrics ([#542](https://github.com/chris-yyau/busdriver/issues/542)) ([#754](https://github.com/chris-yyau/busdriver/issues/754)) ([35e8f7d](https://github.com/chris-yyau/busdriver/commit/35e8f7dd20cb9cbea463da4646496f89ee14f3b8))
+
 ## [1.112.3](https://github.com/chris-yyau/busdriver/compare/v1.112.2...v1.112.3) (2026-08-25)
 
 

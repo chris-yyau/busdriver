@@ -13,10 +13,14 @@ _record_sentinel() {
   : >"$path" 2>/dev/null || true
 }
 
-# Locate the REST path among argv regardless of flag ordering
-# (e.g. `gh api -X GET repos/o/r/activity ...` or path-first).
+# Locate the REST path among argv regardless of flag ordering after `api`
+# (e.g. `gh api -X GET repos/o/r/activity ...` or path-first after api).
+# `$1` must be the `api` subcommand — a trailing/mid-argv `api` token must not
+# unlock the activity/events arms (real `gh` rejects that ordering).
 _gh_api_endpoint() {
   local a
+  [[ "${1:-}" == "api" ]] || return 1
+  shift
   for a in "$@"; do
     case "$a" in
       repos/*/activity|repos/*/activity\?*|*"/repos/"*"/activity"|*"/repos/"*"/activity?"*)

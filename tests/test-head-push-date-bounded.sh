@@ -341,6 +341,17 @@ if ! gh api --paginate=true "repos/owner/repo/events?per_page=100" >/dev/null 2>
 else
   check "events argv rejects --paginate=true" "1" "0"
 fi
+# Without the `api` subcommand, real `gh` rejects the invocation — the mock must
+# not route a bare activity path (Codex P2 on #764).
+_no_api=$(gh "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc 2>/dev/null) || _no_api="ERR"
+check "activity path without api subcommand is not routed" "{}" "$_no_api"
+# A trailing `api` token must not unlock the activity arm either.
+_trail_api=$(gh "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc api 2>/dev/null) || _trail_api="ERR"
+check "trailing api token does not unlock activity arm" "{}" "$_trail_api"
 # Quoted branch names must not break the parameterized PR JSON.
 _pr_json=$(GH_MOCK_HEAD_REF_NAME='feat/"quoted"' GH_MOCK_IS_CROSS_REPOSITORY=true \
   gh pr view 1 --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || _pr_json=""

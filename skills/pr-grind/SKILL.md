@@ -246,6 +246,22 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # cheap, and re-deriving removes any need to reason about whether this
   │     # invocation's own pushes are already reflected. They are, by construction.
   │
+  ├── Write-block preflight (every round, BEFORE dispatch) — #625:
+  │     # Optimization only; fail-OPEN. The PreToolUse gates stay fail-CLOSED;
+  │     # the worker's `env` bail stays the mid-round backstop.
+  │     bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-grind-write-block-preflight.sh" \
+  │       -C <WORKTREE_DIR>
+  │     # exit 0 → clear (or detector unreadable/unresolvable) → dispatch
+  │     # exit 1 → definite block (pending design-review markers, or freeze-scope
+  │     #         that excludes this worktree). Surface the script's stdout to the
+  │     #         operator (it names the blocking doc / freeze path and the
+  │     #         release path, including the "do not drain unless abandoned"
+  │     #         caveat). BAIL `env` WITHOUT dispatching — do not spend a round.
+  │     # exit 2 → usage error → fail OPEN (dispatch); do not invent a block
+  │     # Never create/disarm the operator-only design-review skip file; never
+  │     # invoke design-clear.sh from this path. Read-only observation of an
+  │     # already-active lease (mtime + slots) is allowed; never claim a slot.
+  │
   ├── Dispatch a round:
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
@@ -1187,6 +1203,17 @@ Whichever row is taken, the resolver **asserts unconditionally**, before it exit
 ### Dispatch a Round (default path)
 
 Build the context block and dispatch the subagent. The block must include everything the subagent needs — it has no memory of prior rounds.
+
+**Write-block preflight before every worker dispatch (#625).** A sibling worktree (or this one) can arm a design-review marker or freeze mid-grind; Step 0 does not catch that. Before each `Agent(subagent_type="pr-grinder", …)` call, run:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-grind-write-block-preflight.sh" -C "$WORKTREE_DIR"
+```
+
+- **exit 0** — clear, or detector state absent/unreadable/unresolvable (**fail OPEN**). Dispatch.
+- **exit 1** — definite write block. Print the script's stdout (blocking doc + `design-clear.sh` release path, or freeze file + `rm .claude/freeze-scope.local`). BAIL `env` without launching the worker. Do not create the operator-only design-review skip file; do not drain a live sibling marker unless abandoned.
+- **exit 2** — malformed CLI usage only (missing/empty `-C` or unknown arguments). Treat as **fail OPEN**: dispatch. A missing, non-directory, or unresolvable `-C` target returns **exit 0** and also fails open — never invent a block from a malformed or unusable probe target.
+- This check is read-only: it may observe an already-active operator skip lease (mtime + remaining slots) so a definite-block decision stays accurate, but it must not claim/consume a lease slot. The worker's PreToolUse → `env` bail path in `agents/pr-grinder.md` is unchanged.
 
 **Generate a unique `RESULT_FILE` path BEFORE dispatch** so the worker's belt-and-suspenders RESULT-block backup (per `agents/pr-grinder.md` "Output Format") is uniquely scoped to this dispatch attempt. Use `mktemp -t pr-grinder-result.XXXXXXXX` (preferred) or compose `/tmp/pr-grinder-result-${PR_NUMBER}-${ROUND}-$$-$(date +%s%N).txt`; either form prevents a stale leftover from a prior round / session / concurrent grind from being mis-parsed as the current round's output.
 

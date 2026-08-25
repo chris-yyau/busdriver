@@ -1,3 +1,10 @@
+## [1.112.7](https://github.com/chris-yyau/busdriver/compare/v1.112.6...v1.112.7) (2026-08-25)
+
+
+### Bug Fixes
+
+* **pr-grind:** preflight definite write blocks before worker dispatch ([#625](https://github.com/chris-yyau/busdriver/issues/625)) ([#765](https://github.com/chris-yyau/busdriver/issues/765)) ([99c9406](https://github.com/chris-yyau/busdriver/commit/99c9406f0bc1fc47927ac88f5d06fe1036769fce))
+
 ## [1.112.6](https://github.com/chris-yyau/busdriver/compare/v1.112.5...v1.112.6) (2026-08-25)
 
 

@@ -788,7 +788,18 @@ PY
   _n=$(wc -l < "$_cases/spec")
   [[ "$_n" -eq 34 ]] || { echo "  ✗ (j) expected 34 generated cases, got $_n"; ok=0; }
   # shellcheck disable=SC2312  # decoder status is checked inline
-  while read -r _expect _ext _b64; do
+  while read -r _expect _ext _b64 _rest; do
+    # The record SHAPE is load-bearing too (#730). The line count above proves
+    # how many records arrived, not that any of them is well-formed: a truncated
+    # record such as `FAIL .json` leaves _b64 empty, decodes to an empty config,
+    # and that config refuses — so _got=FAIL matches the expectation and a
+    # broken generator re-certifies itself green. No sentinel for "valid empty
+    # payload" is needed because the generator never emits one: doc_for always
+    # emits at least `{`/`}`, and every root-literal case is a non-empty string.
+    if [[ ! "$_expect" =~ ^(PASS|FAIL)$ ]] || [[ ! "$_ext" =~ ^\.jsonc?$ ]] \
+       || [[ ! "$_b64" =~ ^[A-Za-z0-9+/]+=*$ ]] || [[ -n "$_rest" ]]; then
+      echo "  ✗ (j) malformed generated case record: $_expect $_ext $_b64 $_rest"; ok=0; break
+    fi
     # Clear BOTH canonical paths first — a stale file under the other
     # extension would mask or corrupt this case's expectation.
     rm -f "$_cases/home/.opencode/opencode.json" "$_cases/home/.opencode/opencode.jsonc"
@@ -810,11 +821,18 @@ fi
 # is load-bearing — without it any early child failure (one that never reached
 # the generator) would satisfy the other two and certify a guard that never ran.
 # Skipped in the fault child itself — that is what keeps the re-run from recursing.
+# Both matches use a herestring, NOT `printf | grep -q`: under this file's
+# `set -o pipefail`, an early-exiting `grep -q` can SIGPIPE the producer, making
+# the pipeline status 141 regardless of whether the pattern matched. On the
+# negated match that inverts into a fail-OPEN — grep FINDS the green line (which
+# must fail this assertion), the pipeline reports 141, `!` flips it to true, and
+# the very fail-open this block exists to detect passes instead. A herestring
+# has no producer to signal, so grep's own status is the status.
 if [[ "$FAULT_GENERATOR" == 0 ]]; then
   _fault_out="$(bash "${BASH_SOURCE[0]}" --fault-generator 2>&1)"; _fault_rc=$?
   if [[ "$_fault_rc" -ne 0 ]] \
-     && printf '%s\n' "$_fault_out" | grep -qF '✗ (j) case generator exited' \
-     && ! printf '%s\n' "$_fault_out" | grep -qF 'validate_opencode_home_config: provider-only pass'; then
+     && grep -qF '✗ (j) case generator exited' <<<"$_fault_out" \
+     && ! grep -qF 'validate_opencode_home_config: provider-only pass' <<<"$_fault_out"; then
     pass "(j) injected generator failure fails the suite without the green property assertion"
   else
     fail "(j) injected generator failure still exited $_fault_rc / printed the property assertion (fail-open)"

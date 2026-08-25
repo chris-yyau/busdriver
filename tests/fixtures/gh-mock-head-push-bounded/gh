@@ -5,6 +5,11 @@
 # Activity arm is FIRST and matched on a repos/*/activity *endpoint token* found
 # among argv (not flattened `$*`), so branch names `events`/`activity` cannot
 # misroute. Events matching is likewise endpoint-path only.
+#
+# Argv contract is deliberately NOT a full `gh` getopt reimplementation: it
+# (1) requires the production positive form the Decision depends on, and
+# (2) rejects forbidden selectors in any common packaging (`-F after=`,
+# `-Fafter=`, `-F=after=`, `-iFafter=`, `--field=after=`, bare `after=`, …).
 set -euo pipefail
 
 _record_sentinel() {
@@ -22,128 +27,173 @@ _gh_api_endpoint() {
   [[ "${1:-}" == "api" ]] || return 1
   shift
   for a in "$@"; do
-    case "$a" in
-      repos/*/activity|repos/*/activity\?*|*"/repos/"*"/activity"|*"/repos/"*"/activity?"*)
-        printf '%s' "$a"
-        return 0
-        ;;
-      repos/*/events|repos/*/events\?*|*"/repos/"*"/events"|*"/repos/"*"/events?"*)
-        printf '%s' "$a"
-        return 0
-        ;;
-    esac
+    # Exact repos/{owner}/{repo}/activity — no empty/extra segments, no URI
+    # delimiters (? #) inside owner/repo, no query suffix.
+    if [[ "$a" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
+    # Events may carry ?per_page=N (production events fetch).
+    if [[ "$a" =~ ^repos/[^/?#]+/[^/?#]+/events(\?[^#]*)?$ ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
   done
   return 1
 }
 
+# Activity argv contract (ADR 0047 Decision): STRICT ALLOWLIST of the measured
+# production form. Anything else fails closed — this is a test mock, not gh getopt.
 _activity_argv_ok() {
   local has_x_get=0 has_api_ver=0 has_ref=0 has_per_page=0 has_direction=0
+  local api_count=0 endpoint_count=0 x_count=0 h_count=0
+  local ref_count=0 per_page_count=0 direction_count=0
   local -a args=("$@")
-  local i=0 n=${#args[@]} a val
+  local i=0 n=${#args[@]} a val endpoint
+
+  endpoint="$(_gh_api_endpoint "$@" || true)"
+  [[ "$endpoint" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]] || return 1
+
   while (( i < n )); do
     a="${args[i]}"
     case "$a" in
-      --paginate|--paginate=*|*/--paginate|--paginate=true|--paginate=false)
-        return 1
+      api)
+        api_count=$((api_count + 1))
+        (( api_count == 1 )) || return 1
         ;;
       -X)
+        x_count=$((x_count + 1))
+        (( x_count == 1 )) || return 1
         i=$((i + 1))
         (( i < n )) || return 1
-        [[ "${args[i]}" == "GET" ]] && has_x_get=1
-        ;;
-      -XGET)
+        [[ "${args[i]}" == "GET" ]] || return 1
         has_x_get=1
         ;;
       -H)
+        h_count=$((h_count + 1))
+        (( h_count == 1 )) || return 1
         i=$((i + 1))
         (( i < n )) || return 1
-        [[ "${args[i]}" == "X-GitHub-Api-Version: 2022-11-28" ]] && has_api_ver=1
+        [[ "${args[i]}" == "X-GitHub-Api-Version: 2022-11-28" ]] || return 1
+        has_api_ver=1
         ;;
       -f)
         i=$((i + 1))
         (( i < n )) || return 1
         val="${args[i]}"
         case "$val" in
-          ref=refs/heads/*) has_ref=1 ;;
-          per_page=2) has_per_page=1 ;;
-          direction=desc) has_direction=1 ;;
-          after=*|before=*|time_period=*|actor=*) return 1 ;;
+          ref=refs/heads/?*)
+            # Require a non-empty branch segment (refs/heads/ alone is invalid).
+            ref_count=$((ref_count + 1))
+            (( ref_count == 1 )) || return 1
+            has_ref=1
+            ;;
+          per_page=2)
+            per_page_count=$((per_page_count + 1))
+            (( per_page_count == 1 )) || return 1
+            has_per_page=1
+            ;;
+          direction=desc)
+            direction_count=$((direction_count + 1))
+            (( direction_count == 1 )) || return 1
+            has_direction=1
+            ;;
+          *) return 1 ;;
         esac
+        ;;
+      *)
+        if [[ "$a" == "$endpoint" ]]; then
+          endpoint_count=$((endpoint_count + 1))
+          (( endpoint_count == 1 )) || return 1
+        else
+          return 1
+        fi
         ;;
     esac
     i=$((i + 1))
   done
-  [[ "$has_x_get" -eq 1 && "$has_api_ver" -eq 1 && "$has_ref" -eq 1 \
+  [[ "$api_count" -eq 1 && "$endpoint_count" -eq 1 \
+    && "$x_count" -eq 1 && "$h_count" -eq 1 \
+    && "$ref_count" -eq 1 && "$per_page_count" -eq 1 && "$direction_count" -eq 1 \
+    && "$has_x_get" -eq 1 && "$has_api_ver" -eq 1 && "$has_ref" -eq 1 \
     && "$has_per_page" -eq 1 && "$has_direction" -eq 1 ]]
 }
 
 _endpoint="$(_gh_api_endpoint "$@" || true)"
 
-case "$_endpoint" in
-  repos/*/activity|repos/*/activity\?*|*"/activity"|*"/activity?"*)
-    if ! _activity_argv_ok "$@"; then
-      echo "FAIL: activity fetch argv contract (#748)" >&2
-      exit 1
-    fi
-    if [ -n "${GH_MOCK_ACTIVITY_FILE:-}" ] && [ -f "${GH_MOCK_ACTIVITY_FILE}" ]; then
-      cat "${GH_MOCK_ACTIVITY_FILE}"
-    else
-      # Unset file → record sentinel and return [] so legacy events-only cases
-      # prove they *route on* rather than silently skipping the activity leg.
-      _record_sentinel "${GH_MOCK_ACTIVITY_SENTINEL:-}"
-      echo '[]'
-    fi
-    ;;
-  repos/*/events|repos/*/events\?*|*"/events"|*"/events?"*)
-    for _a in "$@"; do
-      case "$_a" in
-        --paginate|--paginate=*)
-          echo "FAIL: events fetch must not use --paginate (#624)" >&2
+if [[ "$_endpoint" =~ ^repos/[^/?#]+/[^/?#]+/activity$ ]]; then
+  if ! _activity_argv_ok "$@"; then
+    echo "FAIL: activity fetch argv contract (#748)" >&2
+    exit 1
+  fi
+  if [ -n "${GH_MOCK_ACTIVITY_FILE:-}" ] && [ -f "${GH_MOCK_ACTIVITY_FILE}" ]; then
+    cat "${GH_MOCK_ACTIVITY_FILE}"
+  else
+    # Unset file → record sentinel and return [] so legacy events-only cases
+    # prove they *route on* rather than silently skipping the activity leg.
+    _record_sentinel "${GH_MOCK_ACTIVITY_SENTINEL:-}"
+    echo '[]'
+  fi
+elif [[ "$_endpoint" =~ ^repos/[^/?#]+/[^/?#]+/events(\?[^#]*)?$ ]]; then
+  for _a in "$@"; do
+    case "$_a" in
+      --paginate|--paginate=*)
+        echo "FAIL: events fetch must not use --paginate (#624)" >&2
+        exit 1
+        ;;
+    esac
+  done
+  _record_sentinel "${GH_MOCK_EVENTS_SENTINEL:-}"
+  if [ -n "${GH_MOCK_EVENTS_FILE:-}" ] && [ -f "${GH_MOCK_EVENTS_FILE}" ]; then
+    cat "${GH_MOCK_EVENTS_FILE}"
+  else
+    echo '[]'
+  fi
+else
+  # A mangled/unauthorized activity path must not silently fall through to `{}`.
+  # Inspect repos-relative and absolute API URL tokens only.
+  for _a in "$@"; do
+    case "$_a" in
+      repos/*|*://*/repos/*|*/repos/*)
+        if [[ "$_a" =~ /activity([/?#]|$) ]]; then
+          echo "FAIL: activity endpoint shape (#748)" >&2
           exit 1
-          ;;
-      esac
-    done
-    _record_sentinel "${GH_MOCK_EVENTS_SENTINEL:-}"
-    if [ -n "${GH_MOCK_EVENTS_FILE:-}" ] && [ -f "${GH_MOCK_EVENTS_FILE}" ]; then
-      cat "${GH_MOCK_EVENTS_FILE}"
-    else
-      echo '[]'
-    fi
-    ;;
-  *)
-    case "$*" in
-      *api*check-suites*)
-        # Without this the call fell through to the default `{}`, so any test that
-        # exercises HEAD_PUSH_CHECKS_FALLBACK_OK=1 end-to-end would silently see no
-        # suites and pass for the wrong reason (CodeRabbit, PR #743).
-        if [ -n "${GH_MOCK_CHECK_SUITES_FILE:-}" ] && [ -f "${GH_MOCK_CHECK_SUITES_FILE}" ]; then
-          cat "${GH_MOCK_CHECK_SUITES_FILE}"
-        else
-          echo '{"check_suites":[]}'
         fi
         ;;
-      *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
-      *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
-      *api*pulls*reviews*)         echo '[]' ;;
-      *pr*view*--comments*)        echo '{"comments":[]}' ;;
-      *api*check-runs*)            echo '{"check_runs":[]}' ;;
-      *api*statuses*)              echo '[]' ;;
-      *api*issues*reactions*)      echo '[]' ;;
-      *api*commits*--jq*)         echo '2024-01-01T00:00:00Z' ;;
-      *pr*view*headRefOid*)
-        # Parameterised so the cross-repo e2e is constructible (ADR 0047 Testing §8).
-        # Encode via jq so a branch name containing quotes cannot corrupt the JSON.
-        _cross="${GH_MOCK_IS_CROSS_REPOSITORY:-false}"
-        case "$_cross" in
-          true|false) ;;
-          *) _cross=false ;;
-        esac
-        _branch="${GH_MOCK_HEAD_REF_NAME:-feat/test-branch}"
-        _oid="${GH_MOCK_HEAD_REF_OID:-abcdef1234567890abcdef1234567890abcdef12}"
-        jq -nc --arg oid "$_oid" --arg branch "$_branch" --argjson cross "$_cross" \
-          '{headRefOid:$oid,headRefName:$branch,isCrossRepository:$cross}'
-        ;;
-      *)                           echo '{}' ;;
     esac
-    ;;
-esac
+  done
+  case "$*" in
+    *api*check-suites*)
+      # Without this the call fell through to the default `{}`, so any test that
+      # exercises HEAD_PUSH_CHECKS_FALLBACK_OK=1 end-to-end would silently see no
+      # suites and pass for the wrong reason (CodeRabbit, PR #743).
+      if [ -n "${GH_MOCK_CHECK_SUITES_FILE:-}" ] && [ -f "${GH_MOCK_CHECK_SUITES_FILE}" ]; then
+        cat "${GH_MOCK_CHECK_SUITES_FILE}"
+      else
+        echo '{"check_suites":[]}'
+      fi
+      ;;
+    *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
+    *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    *api*pulls*reviews*)         echo '[]' ;;
+    *pr*view*--comments*)        echo '{"comments":[]}' ;;
+    *api*check-runs*)            echo '{"check_runs":[]}' ;;
+    *api*statuses*)              echo '[]' ;;
+    *api*issues*reactions*)      echo '[]' ;;
+    *api*commits*--jq*)         echo '2024-01-01T00:00:00Z' ;;
+    *pr*view*headRefOid*)
+      # Parameterised so the cross-repo e2e is constructible (ADR 0047 Testing §8).
+      # Encode via jq so a branch name containing quotes cannot corrupt the JSON.
+      _cross="${GH_MOCK_IS_CROSS_REPOSITORY:-false}"
+      case "$_cross" in
+        true|false) ;;
+        *) _cross=false ;;
+      esac
+      _branch="${GH_MOCK_HEAD_REF_NAME:-feat/test-branch}"
+      _oid="${GH_MOCK_HEAD_REF_OID:-abcdef1234567890abcdef1234567890abcdef12}"
+      jq -nc --arg oid "$_oid" --arg branch "$_branch" --argjson cross "$_cross" \
+        '{headRefOid:$oid,headRefName:$branch,isCrossRepository:$cross}'
+      ;;
+    *)                           echo '{}' ;;
+  esac
+fi

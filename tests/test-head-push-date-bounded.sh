@@ -342,16 +342,157 @@ else
   check "events argv rejects --paginate=true" "1" "0"
 fi
 # Without the `api` subcommand, real `gh` rejects the invocation — the mock must
-# not route a bare activity path (Codex P2 on #764).
-_no_api=$(gh "repos/owner/repo/activity" -X GET \
+# not route a bare activity path (Codex P2 on #764). Fail closed (non-zero), not `{}`.
+if ! gh "repos/owner/repo/activity" -X GET \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
-  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc 2>/dev/null) || _no_api="ERR"
-check "activity path without api subcommand is not routed" "{}" "$_no_api"
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity path without api subcommand is not routed" "1" "1"
+else
+  check "activity path without api subcommand is not routed" "1" "0"
+fi
 # A trailing `api` token must not unlock the activity arm either.
-_trail_api=$(gh "repos/owner/repo/activity" -X GET \
+if ! gh "repos/owner/repo/activity" -X GET \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
-  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc api 2>/dev/null) || _trail_api="ERR"
-check "trailing api token does not unlock activity arm" "{}" "$_trail_api"
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc api >/dev/null 2>&1; then
+  check "trailing api token does not unlock activity arm" "1" "1"
+else
+  check "trailing api token does not unlock activity arm" "1" "0"
+fi
+# Forbidden activity selectors must be rejected via every field flag form
+# (Codex P2 on #764): -f, -F, --field, --raw-field, and --field=/--raw-field=.
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -F after=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects -F after=" "1" "1"
+else
+  check "activity argv rejects -F after=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  --field before=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects --field before=" "1" "1"
+else
+  check "activity argv rejects --field before=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  --raw-field=actor=someone >/dev/null 2>&1; then
+  check "activity argv rejects --raw-field=actor=" "1" "1"
+else
+  check "activity argv rejects --raw-field=actor=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -Fafter=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects attached -Fafter=" "1" "1"
+else
+  check "activity argv rejects attached -Fafter=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -ftime_period=day >/dev/null 2>&1; then
+  check "activity argv rejects attached -ftime_period=" "1" "1"
+else
+  check "activity argv rejects attached -ftime_period=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -iFafter=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects bundled -iFafter=" "1" "1"
+else
+  check "activity argv rejects bundled -iFafter=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -iF before=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects bundled -iF before=" "1" "1"
+else
+  check "activity argv rejects bundled -iF before=" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -F=after=2024-01-01T00:00:00Z >/dev/null 2>&1; then
+  check "activity argv rejects -F=after= equals form" "1" "1"
+else
+  check "activity argv rejects -F=after= equals form" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity?after=2024-01-01T00:00:00Z" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects after= in endpoint query string" "1" "1"
+else
+  check "activity argv rejects after= in endpoint query string" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity?%61fter=2024-01-01T00:00:00Z" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects any query string on activity path" "1" "1"
+else
+  check "activity argv rejects any query string on activity path" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  --jq '-fref=refs/heads/feat/x' \
+  -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv does not treat --jq value as ref field" "1" "1"
+else
+  check "activity argv does not treat --jq value as ref field" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  --preview '-fref=refs/heads/feat/x' \
+  -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv does not treat --preview value as ref field" "1" "1"
+else
+  check "activity argv does not treat --preview value as ref field" "1" "0"
+fi
+# A legal ref whose name embeds a forbidden-looking substring must still pass.
+_ok_ref=$(gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/fafter=x -f per_page=2 -f direction=desc 2>/dev/null) || _ok_ref="ERR"
+check "activity argv accepts ref value embedding fafter=" "[]" "$_ok_ref"
+if ! gh api "repos/owner/repo/extra/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects extra path segments" "1" "1"
+else
+  check "activity argv rejects extra path segments" "1" "0"
+fi
+if ! gh api "repos/owner/repo?after=x/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects URI delimiter in owner/repo" "1" "1"
+else
+  check "activity argv rejects URI delimiter in owner/repo" "1" "0"
+fi
+if ! gh api "repos/owner/repo/activity" api -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc >/dev/null 2>&1; then
+  check "activity argv rejects duplicate api token" "1" "1"
+else
+  check "activity argv rejects duplicate api token" "1" "0"
+fi
+# Unrelated args containing the word "activity" must not trip the mangled-path guard.
+gh pr view 1 --jq activity >/dev/null 2>&1
+_jq_rc=$?
+check "unrelated activity substring does not trip mangled-path guard" "0" "$_jq_rc"
+# -f values embedding /activity are not endpoint tokens either (only repos/* is scanned).
+if ! gh api "repos/owner/repo/activity" -X GET \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  -f ref=refs/heads/feat/x -f per_page=2 -f direction=desc \
+  -f ref=refs/heads/other >/dev/null 2>&1; then
+  check "activity argv rejects duplicate -f ref" "1" "1"
+else
+  check "activity argv rejects duplicate -f ref" "1" "0"
+fi
 # Quoted branch names must not break the parameterized PR JSON.
 _pr_json=$(GH_MOCK_HEAD_REF_NAME='feat/"quoted"' GH_MOCK_IS_CROSS_REPOSITORY=true \
   gh pr view 1 --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || _pr_json=""

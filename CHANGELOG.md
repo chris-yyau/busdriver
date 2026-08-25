@@ -1,3 +1,10 @@
+## [1.112.3](https://github.com/chris-yyau/busdriver/compare/v1.112.2...v1.112.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **opencode:** wire auth-staging tests to production helper ([#618](https://github.com/chris-yyau/busdriver/issues/618)) ([#761](https://github.com/chris-yyau/busdriver/issues/761)) ([8bc8fd1](https://github.com/chris-yyau/busdriver/commit/8bc8fd151a294a322f9b490e2c59e758708b2372))
+
 ## [1.112.2](https://github.com/chris-yyau/busdriver/compare/v1.112.1...v1.112.2) (2026-08-25)
 
 

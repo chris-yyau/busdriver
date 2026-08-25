@@ -734,7 +734,23 @@ PY
     # cleanup failure (FAIL-CLOSED — a partial/incorrectly-permissioned
     # auth.json left in the sandbox would break every provider's auth parse).
     _voh_auth_rc=0
-    "$_voh_py" -I - "$_voh_authp" "$_voh_sandbox" <<'PY' 2>/dev/null || _voh_auth_rc=$?
+    _bd_oc_stage_auth_json "$_voh_authp" "$_voh_sandbox" "$_voh_py" || _voh_auth_rc=$?
+    if [[ "$_voh_auth_rc" -eq 0 ]]; then
+      :  # staged (or nothing to stage)
+    elif ! _bd_oc_auth_rc_classify "$_voh_auth_rc" "$_voh_sandbox"; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Copy auth.json into <sandbox>/.local/share/opencode/auth.json with the same
+# O_NOFOLLOW+fstat+size+JSON discipline and born-0600 write semantics as the
+# opencode arms. exit 0 = staged; 2 = fail-open; 1 = fail-closed.
+# Usage: _bd_oc_stage_auth_json <src_auth.json> <sandbox_home> [<python>]
+_bd_oc_stage_auth_json() {
+  local _src="$1" _sand="$2" _py="${3:-/usr/bin/python3}"
+  "$_py" -I - "$_src" "$_sand" <<'PY' 2>/dev/null
 import errno, json, os, stat, sys
 
 src, sand = sys.argv[1], sys.argv[2]
@@ -787,13 +803,6 @@ except Exception:
         sys.exit(1)  # partial file may remain — FAIL CLOSED
     sys.exit(2)      # cleaned up — fail open
 PY
-    if [[ "$_voh_auth_rc" -eq 0 ]]; then
-      :  # staged (or nothing to stage)
-    elif ! _bd_oc_auth_rc_classify "$_voh_auth_rc" "$_voh_sandbox"; then
-      return 1
-    fi
-  fi
-  return 0
 }
 
 # Auth staging rc classifier: 0 = staged (ok); 2 = source unreadable/nothing

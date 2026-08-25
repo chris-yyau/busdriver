@@ -2566,14 +2566,16 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
 # shapes ordinary data never has: an interpreter name glued to digits is one, a
 # DASH-separated version is not. `lldb-19` and `gdb-14` are real packaged spellings, but
 # `grep lldb-19` is an equally real grep, so they belong to the command-position class
-# tracked in #565 -- the bare names `lldb`/`gdb` are in the exact-name set and unaffected.
+# answered in COMMAND POSITION by `_CMDPOS_INTERP_RE` (#565) -- the bare names `lldb`/`gdb`
+# are in the exact-name set and unaffected.
 # The numeric requirement is what keeps the rest safe to ask
 # of every word: `python3-report` is ordinary hyphenated data, and matching it read a word
 # `grep` merely searches for as an interpreter.
 #
-# KNOWN RESIDUAL (#565): a MULTIARCH name carries the platform triplet on the versioned
-# name itself (`perl5.36-x86_64-linux-gnu`), which this deliberately does not match -- see
-# the fuller note on cmdword._VERSIONED_INTERP_RE.
+# A MULTIARCH name (`perl5.36-x86_64-linux-gnu`) is still deliberately NOT matched here --
+# its suffix is non-numeric, so any pattern loose enough to accept it also accepts the
+# hyphenated data above. It is answered in COMMAND POSITION instead, by
+# `_CMDPOS_INTERP_RE` below (#565).
 # KEEP IN STEP WITH cmdword._VERSIONED_INTERP_RE / cmdword._is_stdin_shell.
 _VERSIONED_INTERP_RE = re.compile(
     r"(?:python[0-9]+(?:\.[0-9]+)*t?"
@@ -2587,6 +2589,40 @@ _VERSIONED_INTERP_RE = re.compile(
 _ATTACHED_INTERP_RE = re.compile(
     r"(?:python[0-9]+(?:\.[0-9]+)*t?"
     r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+
+# Receiver spellings that are receivers ONLY in COMMAND POSITION (#565). Both wear a shape
+# ordinary data also wears -- a MULTIARCH name carries the platform triplet on the versioned
+# name itself (`/usr/bin/perl5.36-x86_64-linux-gnu`) and a DASH-VERSIONED debugger
+# (`lldb-19`, `gdb-14`) is spelt exactly like the argument of an ordinary grep -- so neither
+# can join the any-word patterns above. Command position is what makes both safe: data never
+# lands there. Two-or-more dash components are REQUIRED on the multiarch branch, which keeps
+# `python3-config` -- a real command that does NOT read a program from stdin -- out of it.
+# The bare `lldb`/`gdb` stay in `_SHELL_NAMES` and are unaffected.
+# See cmdword._CMDPOS_INTERP_RE for the fuller note, and `_runs_cmdpos_receiver` for the walk
+# that decides the position. KEEP IN STEP WITH cmdword._CMDPOS_INTERP_RE.
+# OUT OF SCOPE here: the HERE-STRING transport (`<name> <<< '<payload>'`) does not ask this
+# predicate. `<<<` is a redirection rather than a pipeline, and THIS file's here-string path
+# already answers the bare and version-qualified names through `_is_shell_name` -- it is the
+# TWIN that recognizes only `_SHELLS` there, a pre-existing desync this change neither widens
+# nor narrows. The class below is missed by both, consistently. Closing it means broadening
+# cmdword to the whole receiver family rather than to this class alone.
+# KEEP IN STEP WITH cmdword._CMDPOS_INTERP_RE.
+_CMDPOS_INTERP_RE = re.compile(
+    r"(?:python[0-9]+(?:\.[0-9]+)*t?"
+    r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)"
+    r"-[0-9A-Za-z_]+(?:-[0-9A-Za-z_]+)+"
+    # ...and `gdb-multiarch`, the one non-numeric dash suffix these two ship: a real Debian
+    # binary that reads GDB commands from stdin exactly as bare `gdb` does. Named rather
+    # than pattern-matched, because a general non-numeric dash suffix is precisely the shape
+    # ordinary data wears.
+    r"|(?:lldb|gdb)-(?:[0-9]+(?:\.[0-9]+)*|multiarch)")
+
+# WRAPPERS whose first POSITIONAL word is an operand rather than the command they run
+# (`flock <file> <cmd>`, `chroot <newroot> <cmd>`, `su`/`runuser <user>`, `script
+# <typefile>`), so the walk's run must survive it exactly as it survives a value option's
+# operand. See cmdword._OPERAND_WRAPPERS for why the set is deliberately small.
+# KEEP IN STEP WITH cmdword._OPERAND_WRAPPERS.
+_OPERAND_WRAPPERS = ("flock", "chroot", "su", "runuser", "script", "timeout")
 
 
 # `env` under BOTH its spellings: Homebrew installs GNU coreutils with a `g` prefix, so
@@ -2637,6 +2673,167 @@ def _env_names_split_string(w):
 def _is_shell_name(name):
     """Exact shell/interpreter name, or a version-qualified spelling of one."""
     return name in _SHELL_NAMES or bool(_VERSIONED_INTERP_RE.fullmatch(name))
+
+
+def _runs_cmdpos_receiver(words):
+    """Does this simple command RUN a command-position-only receiver (#565)?
+
+    The two questions the sites used to ask separately -- "which word runs" and "is that
+    word a receiver" -- asked together, so a new receiver class is added to
+    `_CMDPOS_INTERP_RE` once instead of site by site.
+
+    A WRAPPER preamble is the whole difficulty, and it is answered WITHOUT an option-arity
+    table -- the table this module refuses to keep, because every gap in one fails OPEN.
+    A one-guess walk cannot do it: `_effective_command_word("sudo -u root <name>")` stops at
+    `root`, the operand of `-u`, while `sudo grep lldb-19` must stop at `grep`. Every
+    single-guess rule tried here bought one shape and lost another -- an option's operand
+    versus a wrapper's positional, a flag versus a value option, a lock file versus a
+    redirection -- because each of those pairs is genuinely indistinguishable in un-run text.
+
+    So this does not guess. It carries the SET of readings the preamble still permits, one
+    per way the tokens so far could have been parsed, and asks each of them whether THIS word
+    is the program. A word is a receiver if ANY surviving reading says it runs -- ambiguity
+    resolves toward blocking, as it does everywhere else in this module. The set is bounded
+    by the four flags below, so it can never exceed a handful of entries and the walk stays
+    linear.
+
+    What keeps the allow controls intact is that most preambles are NOT ambiguous. `sudo grep
+    lldb-19` admits exactly one reading, in which `grep` runs and the debugger name behind it
+    is its data. Ambiguity appears only where an arity is genuinely unknown, and there it
+    costs precision rather than safety.
+
+    ACCEPTED OVER-BLOCK, the price of refusing to guess: an operand-taking wrapper carrying a
+    FLAG (`flock -n /tmp/l grep lldb-19`) reads `-n` as possibly consuming the lock file, so
+    the program may be one word further along and `lldb-19` is asked. Blocking a `-n` flock
+    whose grep pattern is spelt like a packaged debugger is the direction this module chooses
+    throughout.
+    KEEP IN STEP WITH cmdword._runs_cmdpos_receiver.
+    """
+    # Each reading is (skip_next, prev_opt, wrapper_operand, opts_ended, runs):
+    #   skip_next        -- a bare redirection operator took the next token as its target
+    #   prev_opt         -- an option is outstanding and may still claim an operand
+    #   wrapper_operand  -- a NAMED wrapper's own positional is still outstanding
+    #   opts_ended       -- a `--` in THIS command turned every later dash-word into data
+    #   runs             -- the next plain word could still be the program
+    states = {(False, False, False, False, True)}
+    for w in words:
+        m = _REDIR_PREFIX_RE.match(w)
+        b = _bn(w)
+        # `_skippable` also matches ANY dash word, which this must not inherit: past a `--`
+        # the dash branch above no longer fires, so a PATH command spelt `-read-only` would
+        # be skipped as an operand and its argument promoted to command position -- a block
+        # the twin does not make, because its `_NUMERIC_RE` never matched a dash word.
+        # A long option whose value is ATTACHED cannot claim a separate operand,
+        # so it must not keep command position alive past the real program:
+        # `env --unset=FOO grep lldb-19` promoted grep's argument and falsely blocked.
+        _attached_value = w.startswith("--") and "=" in w
+        _operandish = _ASSIGN_RE.match(w) or (_skippable(w) and not w.startswith("-"))
+        nxt = set()
+        for skip, popt, wop, oend, runs in states:
+            if skip:
+                nxt.add((False, popt, wop, oend, runs))
+                continue
+            if wop:
+                # A wrapper's outstanding positional absorbs THIS token under every reading,
+                # whatever it is spelt like -- a lock file may be called `time`, `-n` or `>`.
+                # So the token is never the program here; the only question is what it
+                # settles, and each answer that the text permits becomes its own reading.
+                if w != "--":
+                    # ...the positional -- but NEVER `--`, which getopt consumes as the
+                    # end-of-options marker before the wrapper's own operand is read. Letting
+                    # it satisfy the slot made `flock -- lldb-19 grep x` read the LOCK FILE
+                    # as the program and falsely block. (When an option is outstanding, `--`
+                    # can still be ITS operand -- that reading is added just below.)
+                    nxt.add((False, popt, False, oend, runs))
+                if popt:
+                    nxt.add((False, False, True, oend, runs))      # ...the option's operand
+                if m:
+                    nxt.add((m.group(0) == w, popt, True, oend, runs))   # ...a redirection
+                if w == "--":
+                    nxt.add((False, False, True, True, runs))      # ...the end of options
+                elif w.startswith("-") and not oend:
+                    nxt.add((False, not _attached_value, True, oend, runs))   # ...another option
+                continue
+            if m:                     # a BARE operator takes the next token as its target
+                nxt.add((m.group(0) == w, popt, wop, oend, runs))
+                if popt:
+                    # ...or the OPTION's operand, quoting having been erased by the lexer:
+                    # `env -C '>' <name>` changes into a directory called `>` and runs the
+                    # interpreter, while the redirection reading alone swallowed it.
+                    nxt.add((False, False, wop, oend, runs))
+                continue
+            if w == "--":
+                # END OF OPTIONS, for the command that carried it. It claims no operand of
+                # its own, and a nested command re-opens option parsing below.
+                nxt.add((False, False, wop, True, runs))
+                if popt:
+                    # ...or the OUTSTANDING OPTION's operand, a variable or file literally
+                    # named `--`: `env -u -- -i lldb-19` unsets `--`, reads `-i`, and runs
+                    # the debugger. Options are still parsing under that reading.
+                    nxt.add((False, False, wop, oend, runs))
+                continue
+            if w.startswith("-") and not oend:
+                nxt.add((False, not _attached_value, wop, oend, runs))
+                continue
+            if _operandish:           # an assignment prefix, or a bare numeric operand
+                nxt.add((False, False, wop, oend, runs))
+                continue
+            if b in _TEST_OPEN_SH:
+                continue              # a test expression runs no command
+            # PREAMBLE NAMES -- wrappers, reserved words and MULTI-CALL DISPATCHERS, whose
+            # applet is the real command (`busybox env <name>` runs the interpreter). Only
+            # when no option operand is outstanding: `env -u timeout <name>` names a wrapper
+            # in `-u`'s DATA, and reading that as a nested wrapper opened a positional slot
+            # the receiver fell into.
+            # `coproc` is EXCLUDED from the reserved words here, unlike everywhere else in
+            # this file: bash runs a coprocess on its OWN pipes, so the pipeline's stdin
+            # never reaches it and `printf <payload> | coproc lldb-19` is not fed. Treating
+            # it as transparent preamble blocked that, while the twin -- whose `_RESERVED`
+            # has never held `coproc` -- allowed it. KEEP IN STEP WITH cmdword._RESERVED.
+            if (b in _WRAPPER_CMDS or b in _CMD_PREFIX_WORDS
+                    or (b in _RESERVED_SH and b != "coproc")):
+                # The NESTED-COMMAND reading: this name is the wrapper, reserved word or
+                # dispatcher it looks like, and a nested command re-opens option parsing.
+                nxt.add((False, False, b in _OPERAND_WRAPPERS, False, runs))
+                if not popt:
+                    continue          # unambiguous -- nothing outstanding could claim it
+                # ...else fall through as well. With an option outstanding the word may be
+                # its DATA instead (`env -u timeout <name>`), and the option may equally
+                # have been a FLAG that claims nothing (`env -i flock /tmp/l <name>`), so
+                # both readings have to survive.
+            if not runs:
+                continue              # past the program under this reading: it is data
+            if _CMDPOS_INTERP_RE.fullmatch(b):
+                return True
+            # ...not the program, so the program is behind us -- unless an option could have
+            # claimed this word, in which case it may still be ahead.
+            nxt.add((False, False, wop, oend, popt))
+        if not nxt:
+            return False              # no reading survives: nothing here runs a receiver
+        states = nxt
+    return False
+
+
+def _cmdpos_receiver_in_any_simple_command(text):
+    """`_runs_cmdpos_receiver` asked of EVERY simple command in this text.
+
+    An executed operand is a whole PROGRAM, not one command: `flock /tmp/l -c 'true; sudo
+    -u root perl5.36-x86_64-linux-gnu'` puts the receiver in the SECOND command, and a walk
+    handed the operand's flat token stream stops at `true`. Same split-then-ask shape
+    `_launcher_in_any_simple_command` already uses beside it, with the same fail-CLOSED
+    exits. KEEP IN STEP WITH cmdword._cmdpos_receiver_in_any_simple_command.
+    """
+    _segs, _ok = _split_simple_commands(text)
+    if not _ok:
+        return True
+    for _s in _segs:
+        _t = _lexed_toks(_s)
+        if _t is None:
+            return True
+        if _runs_cmdpos_receiver(_strip_time_prefix(_t)):
+            return True
+    return False
+
 # LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell.
 # Matched in COMMAND POSITION only -- these are ordinary words, and the any-word test would
 # flip `grep script`. KEEP IN STEP WITH cmdword._LAUNCHER_SHELLS.
@@ -2773,6 +2970,24 @@ def _leads_with_launcher(toks, words):
         or _shell_mode_launch(words))
 
 
+def _lexed_toks(text):
+    """RAW tokens of `text` with the QUOTING RESOLVED, or None when it will not lex.
+
+    Split out of `_lexed_words` for the POSITIONAL callers. `_stage_words` peels an
+    attached option value into a word of its own, which is what the any-word name tests
+    want and exactly what a command-position walk must not see: `--label=lldb-19` would
+    hand `_runs_cmdpos_receiver` a bare `lldb-19` with nothing in front of it, turning an
+    option's DATA into a program.
+    """
+    try:
+        _l = shlex.shlex(text, posix=True, punctuation_chars=True)
+        _l.whitespace_split = True
+        _l.commenters = ""
+        return list(_l)
+    except ValueError:
+        return None                       # unlexable: the caller chooses its own fallback
+
+
 def _lexed_words(text):
     """Words of `text` with the QUOTING RESOLVED, falling back to a raw split.
 
@@ -2780,13 +2995,8 @@ def _lexed_words(text):
     the fail-open this exists to close. KEEP IN STEP WITH cmdword, whose executed-operand
     loop lexes for the same reason.
     """
-    try:
-        _l = shlex.shlex(text, posix=True, punctuation_chars=True)
-        _l.whitespace_split = True
-        _l.commenters = ""
-        return list(_stage_words(list(_l)))
-    except ValueError:
-        return text.split()
+    _t = _lexed_toks(text)
+    return text.split() if _t is None else list(_stage_words(_t))
 
 
 def _launcher_in_any_simple_command(text):
@@ -3186,7 +3396,13 @@ def _piped_shell_producers(pairs):
                 # `chroot` are themselves wrappers, so peeling steps past them. Ask the
                 # LEADING token, plus the whole wrapper run when one leads (for
                 # `env -i script`). KEEP IN STEP WITH cmdword.
+                # ...and the same command-position-only rule for the interpreter
+                # spellings that wear a data shape (`perl5.36-x86_64-linux-gnu`,
+                # `lldb-19`). Asked of the WALK rather than of `cw`, because `cw` lands on
+                # a wrapper option's operand -- see `_runs_cmdpos_receiver`.
+                # KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
                 if (cw and _bn(cw) in (".", "source")) \
+                   or _runs_cmdpos_receiver(_strip_time_prefix(toks)) \
                    or _launcher_in_any_simple_command(seg):
                     last = i
                     kdepth = max(0, kdepth + _group_delta(_words))
@@ -3239,9 +3455,12 @@ def _piped_shell_producers(pairs):
                         if _bt is None \
                            or any(_is_shell_name(_bn(w)) for w in _bw) \
                            or (_bcw and _bn(_bcw) in (".", "source")) \
+                           or _runs_cmdpos_receiver(_strip_time_prefix(_bt)) \
                            or _leads_with_launcher(_bt, _bw) \
                            or any(_is_shell_name(_bn(w))
                                   for _p in _bprogs for w in _lexed_words(_p)) \
+                           or any(_cmdpos_receiver_in_any_simple_command(_p)
+                                  for _p in _bprogs) \
                            or any(_launcher_in_any_simple_command(_p)
                                   for _p in _bprogs):
                             _sub_unres = True
@@ -3292,8 +3511,12 @@ def _piped_shell_producers(pairs):
                         _dtoks = list(_dlex)
                     except ValueError:
                         _dtoks = None
-                    if _dtoks is None or any(_is_shell_name(_bn(w))
-                                             for w in _stage_words(_dtoks)):
+                    # BOTH name questions, not just the any-word one:
+                    # `perl5.36-x86_64-linux-@(gnu)` resolves to a command-position
+                    # receiver. KEEP IN STEP WITH cmdword.
+                    if _dtoks is None \
+                       or any(_is_shell_name(_bn(w)) for w in _stage_words(_dtoks)) \
+                       or _runs_cmdpos_receiver(_strip_time_prefix(_dtoks)):
                         last = i
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
@@ -3315,6 +3538,7 @@ def _piped_shell_producers(pairs):
                    or any(_UNRESOLVED_CW_RE.search(p) for p in _progs) \
                    or any(_is_shell_name(_bn(w))
                           for p in _progs for w in _lexed_words(p)) \
+                   or any(_cmdpos_receiver_in_any_simple_command(p) for p in _progs) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
         kdepth = max(0, kdepth + _group_delta(_words))

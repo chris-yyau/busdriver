@@ -58,6 +58,19 @@ fi
 exit 0
 STUB
   chmod +x "$bindir/gh"
+  # A fake `sleep`: with STUB_SLEEP_LOG set it RECORDS the requested duration and
+  # returns immediately, so the await-cap assertion costs no wall-clock. Unset (every
+  # other case) it defers to the real sleep, leaving timing-dependent cases untouched.
+  cat > "$bindir/sleep" <<'SLEEPSTUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_SLEEP_LOG:-}" ]; then
+  printf '%s\n' "${1:-}" >> "$STUB_SLEEP_LOG"
+  exit 0
+fi
+for _c in /bin/sleep /usr/bin/sleep; do [ -x "$_c" ] && exec "$_c" "$@"; done
+exit 0
+SLEEPSTUB
+  chmod +x "$bindir/sleep"
 }
 
 PR=217
@@ -440,6 +453,37 @@ if [ "$hot_skip" = 1 ] && [ "$still_hot" = 1 ] && [ "$after_await" = 1 ] && [ "$
   ok "#679 await-cooldown: hot skip on post (1), await does not post (1), then attempt 2 posts (2)"
 else
   fail "#679 await-cooldown: hot_skip=$hot_skip still_hot=$still_hot after_await=$after_await paced=$paced (expected 1/1/1/2)"
+fi
+
+# --- 21. #679/#763 — AN AWAIT SLEEP MUST FIT THE CALLER'S BASH TOOL CEILING.
+#         COOLDOWN accepts up to 86400s, but the dispatcher's await is ONE Bash tool
+#         call and that tool caps `timeout` at 600000ms. An unclamped
+#         `sleep $((COOLDOWN - age))` therefore asks for a call the caller cannot
+#         issue: it is killed mid-sleep, the cooldown never clears, and attempts 2..N
+#         go unreachable — the #679 defect re-opened by any large cooldown (cursor +
+#         Codex, PR #763). Assert BOTH halves: the helper clamps the sleep to
+#         AWAIT_SLEEP_CAP, and that cap plus the documented +60s margin still fits
+#         the 600s ceiling. The `sleep` stub records instead of sleeping, so proving
+#         the 480s clamp costs no wall-clock.
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+# `|| true` for the same set -e / no-match reason as case 18.
+AWAIT_CAP=$(grep -oE '^AWAIT_SLEEP_CAP=[0-9]+' "$RT" | grep -oE '[0-9]+$' || true)
+SLEEPLOG="$STATE/sleeps.log"
+run_rt PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=86400
+run_rt --await-cooldown 3 STUB_SLEEP_LOG="$SLEEPLOG" \
+  PR_GRIND_CODEX_RETRIGGER_MAX=3 PR_GRIND_CODEX_RETRIGGER_COOLDOWN=86400
+slept=$([ -f "$SLEEPLOG" ] && tr -d '[:space:]' < "$SLEEPLOG" || echo "")
+posts_after_await=$(posts_in "$CALLLOG")
+# Guard extraction BEFORE arithmetic (case 18's lesson): an empty value would read
+# as 0 and turn a broken assertion into a misleading PASS.
+if [ -z "$AWAIT_CAP" ]; then
+  fail "await sleep cap: could not extract AWAIT_SLEEP_CAP from $RT — fix the extraction regex before trusting this case"
+elif [ "$(( AWAIT_CAP + 60 ))" -gt 600 ]; then
+  fail "await sleep cap: AWAIT_SLEEP_CAP=${AWAIT_CAP}s + 60s margin exceeds the 600s Bash tool timeout ceiling — the dispatcher cannot legally host this sleep"
+elif [ "$slept" = "$AWAIT_CAP" ] && [ "$posts_after_await" = 1 ]; then
+  ok "await sleep cap: COOLDOWN=86400s clamps to a single ${AWAIT_CAP}s sleep (fits the 600s tool ceiling), paid down across wait-rounds, still no post"
+else
+  fail "await sleep cap: slept='$slept' (expected '$AWAIT_CAP') posts=$posts_after_await (expected 1 — await must never post); an unclamped sleep would be killed mid-call and strand attempts 2..N"
 fi
 
 echo "Results: $passed passed, $failed failed"

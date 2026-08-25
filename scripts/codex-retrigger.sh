@@ -65,6 +65,9 @@
 #   cooldown so the NEXT wait-round can spend attempt 2..N. Time pacing therefore
 #   lives in the dispatcher loop (which can afford a multi-minute sleep), not in the
 #   worker's Bash tool call (default tool ceiling ~120s < default COOLDOWN 180s).
+#   A single await sleep is capped at AWAIT_SLEEP_CAP so it always fits the caller's
+#   own Bash tool ceiling; a COOLDOWN longer than the cap is paid down across
+#   successive wait-rounds rather than killed mid-sleep. See AWAIT_SLEEP_CAP below.
 #   The ordinary post path (no flag) keeps skip-when-hot so the worker→dispatcher
 #   mirror still dedupes. Hooks / `none`-path never pass the flag.
 #
@@ -119,7 +122,11 @@
 #       wait rounds after each wait-round post attempt: while remaining > 0 and the
 #       cooldown is hot, it SLEEPS so the next wait-round can spend. The ordinary
 #       post path keeps skip-when-hot (mirror dedupe; no sleep inside the worker
-#       Bash tool). Full-budget reachability still requires enough wait rounds left
+#       Bash tool). Each await sleep is bounded by AWAIT_SLEEP_CAP so it fits the
+#       caller's Bash tool ceiling; a COOLDOWN above the cap therefore needs
+#       `ceil(COOLDOWN / AWAIT_SLEEP_CAP)` wait-rounds per attempt rather than one,
+#       which is the coupling to re-check when raising the cooldown (ADR 0005
+#       Revisit). Full-budget reachability still requires enough wait rounds left
 #       when Codex becomes sole-stale — `MAX <= default --max-wait` is necessary for
 #       the defaults when that happens early, not a guarantee after other bots have
 #       already burned the wait budget.
@@ -222,6 +229,23 @@ read_int_knob() {
 MAX_ATTEMPTS=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_MAX:-}" 3 1 10)
 COOLDOWN=$(read_int_knob "${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}" 180 0 86400)
 
+# Ceiling on a SINGLE `--await-cooldown` sleep. NOT an operator knob, deliberately:
+# it is a property of the caller's runtime, not a preference. The dispatcher's await
+# call is one Bash tool call, and that tool CAPS `timeout` at 600000ms
+# (skills/litmus/SKILL.md). COOLDOWN accepts up to 86400s, so an unclamped
+# `sleep $((COOLDOWN - age))` asks for a call the caller cannot legally issue: the
+# tool kills it mid-sleep, the cooldown never clears, and attempts 2..N go
+# unreachable — the very #679 defect this flag exists to close (cursor + Codex, PR
+# #763). 480s keeps the required `sleep + 60s` timeout at 540s, matching the
+# under-cap budget litmus already ships against the same 600s ceiling.
+#
+# Clamping the SLEEP rather than the KNOB is what preserves both halves: a long
+# COOLDOWN stays a legitimate "nudge rarely" choice on the post path, while the await
+# path pays it down ACROSS wait-rounds — each round sleeps at most the cap and exits,
+# and the next round re-reads the marker age and continues. Lowering COOLDOWN's own
+# ceiling to fit the tool would instead silently rewrite that operator choice.
+AWAIT_SLEEP_CAP=480
+
 # Scan the slots ONCE for the three things the decision needs: how many attempts are
 # actually spent (occupancy), the LOWEST FREE slot to claim, and the NEWEST marker
 # mtime to pace against.
@@ -300,8 +324,17 @@ if [ "$OCCUPIED" -ge 1 ] && [ "$COOLDOWN" -gt 0 ]; then
                 echo "ℹ️  codex-retrigger: await-cooldown: no wait rounds remaining for PR #$PR @ $HEAD8; not pacing." >&2
                 exit 0
             fi
-            echo "ℹ️  codex-retrigger: await-cooldown: pacing ${_need}s of ${COOLDOWN}s for PR #$PR @ $HEAD8 (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING)." >&2
-            sleep "$_need" || {
+            # Never ask for a sleep the caller's Bash tool cannot host (see
+            # AWAIT_SLEEP_CAP). A longer remainder is paid down across wait-rounds
+            # instead of being killed mid-call.
+            _sleep="$_need"
+            if [ "$_sleep" -gt "$AWAIT_SLEEP_CAP" ]; then
+                _sleep="$AWAIT_SLEEP_CAP"
+                echo "ℹ️  codex-retrigger: await-cooldown: pacing ${_sleep}s of ${_need}s remaining (per-round cap ${AWAIT_SLEEP_CAP}s, COOLDOWN=${COOLDOWN}s) for PR #$PR @ $HEAD8 (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING); cooldown still hot, next wait-round continues." >&2
+            else
+                echo "ℹ️  codex-retrigger: await-cooldown: pacing ${_sleep}s of ${COOLDOWN}s for PR #$PR @ $HEAD8 (wait-rounds-remaining=$WAIT_ROUNDS_REMAINING)." >&2
+            fi
+            sleep "$_sleep" || {
                 echo "ℹ️  codex-retrigger: await-cooldown sleep failed for PR #$PR @ $HEAD8; skipping (fail-safe)." >&2
                 exit 0
             }

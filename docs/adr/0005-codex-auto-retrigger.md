@@ -342,6 +342,14 @@ so that route needed new plumbing to reproduce a signal the index already carrie
   changing code; only if neither knob helps, consider tightening the trigger (e.g.
   require N consecutive Codex-only-stale wait-rounds before posting). **Raising the
   cooldown re-opens the coupling below — check it.**
+- **`PR_GRIND_CODEX_RETRIGGER_COOLDOWN` is raised above `AWAIT_SLEEP_CAP` (480s)** →
+  one `--await-cooldown` call can no longer clear the cooldown, because a single
+  await sleep is capped to fit the caller's 600000ms Bash tool ceiling. The
+  remainder is paid down across wait-rounds, so each attempt then costs
+  `ceil(COOLDOWN / 480)` rounds instead of one and the round-budget rule tightens
+  from `MAX <= --max-wait` to `MAX * ceil(COOLDOWN / 480) <= --max-wait`. Re-derive
+  before raising the cooldown; the cap itself tracks the Bash tool limit documented
+  in `skills/litmus/SKILL.md`, so re-check it if that ceiling ever moves.
 - **Either default changes, or the dispatcher's default `--max-wait` changes** →
   re-check `MAX <= default --max-wait` (the #679 round-budget reachability
   contract). Violating it does not fail loudly at runtime; it silently makes the

@@ -4,6 +4,22 @@
 
 Accepted (2026-08-26). Supersedes [ADR 0010](0010-skill-vault-lazy-tier-archive.md).
 
+**Amended 2026-08-27 — two sources, not three.** Decision 3 below is superseded on two
+points: its third bullet is void, and its second bullet no longer restricts
+`~/.agents/skills` to third-party skills — that directory now holds operator-authored
+skills as well. Concretely: `~/.local/share/agent-skills` was collapsed into `~/.agents/skills` and
+removed. The separate directory bought provenance separation but nothing read it
+directly — every consumer reached it through a per-consumer `SKILL.md` symlink, and that
+mount is a silent-failure surface: `busdriver-consumer-update` and `um-executor` had
+never been mounted into `~/.agents/skills` at all, so Cursor and Codex could not see
+them, with nothing to signal the gap. The four authored skills are named in `.claude/CLAUDE.md`;
+`~/.agents/.skill-lock.json` is a hint only (already desynced, and a hand-copied
+skill is absent from it too), so absence must never be read as authorship. `~/.agents`
+is now a git repo, so authored work survives an `npx skills` mishap — the one risk the
+split directory was actually covering. All four own skills are now real
+directories under `~/.agents/skills`, mounted for Claude as dir symlinks like every
+other skill.
+
 ## Context
 
 An audit on 2026-08-26 measured the plugin's skill surface against every retained Claude Code transcript (103 project directories), OMP session logs, and Cursor state:
@@ -44,4 +60,4 @@ The conclusion the operator reached: busdriver's value is the **pipeline** — h
 
 ## Revisit Trigger
 
-A kept skill goes unused for 90 days (delete it), or a deleted skill is restored from the anchor twice (it belongs in a source — decide which of the three).
+A kept skill goes unused for 90 days (delete it), or a deleted skill is restored from the anchor twice (it belongs in a source — decide which of the two).

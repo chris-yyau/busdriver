@@ -34,5 +34,3 @@ Fix: Concrete change to make.
 ## Related
 
 - Agent: `fastapi-reviewer`
-- Skill: `fastapi-patterns`
-- Skill: `security-scan`

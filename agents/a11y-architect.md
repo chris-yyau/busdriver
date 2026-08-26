@@ -147,4 +147,4 @@ Button(action: close) {
 
 ## Reference
 
-- See skill `accessibility` to transform raw UI requirements into platform-specific accessible code (WAI-ARIA, SwiftUI, or Jetpack Compose) based on WCAG 2.2 criteria.
+- Busdriver no longer ships an accessibility pattern library (ADR 0048) — rely on the model to transform raw UI requirements into platform-specific accessible code (WAI-ARIA, SwiftUI, or Jetpack Compose) based on WCAG 2.2 criteria.

@@ -159,7 +159,7 @@ Gates (pre-commit, pre-PR, pre-implementation, pre-merge, freeze) + formatting +
 |-----------|--------|---------|
 | **Skill** | `busdriver:name` via Skill tool | `busdriver:litmus` |
 | **Command** | `/name` via Skill tool | `/fastapi-review`, `/tdd`, `/verify` |
-| **Agent** | DISPATCH via Agent tool with `subagent_type` | `go-reviewer`, `typescript-reviewer` |
+| **Agent** | DISPATCH via Agent tool with `subagent_type` | `python-reviewer`, `typescript-reviewer` |
 
 **Namespace:** `busdriver:` is this plugin's namespace. Unprefixed skill names in this file are also busdriver-owned.
 

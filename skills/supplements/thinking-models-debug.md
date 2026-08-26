@@ -3,7 +3,6 @@ name: thinking-models-debug
 description: 4 structured reasoning models for debugging — Fault Tree, Hypothesis-Driven Investigation, Occam's Razor, Counterfactual Thinking
 targets:
   - busdriver:systematic-debugging
-  - busdriver:agent-introspection-debugging
 source: gsd-build/get-shit-done references/thinking-models-debug.md (adapted)
 added: 2026-05-01
 ---
@@ -12,7 +11,7 @@ added: 2026-05-01
 
 Structured reasoning models for investigation and root-cause analysis. Apply these at decision points during a debugging session, not continuously. Each model counters a specific failure mode.
 
-> Load alongside `busdriver:systematic-debugging` or `busdriver:agent-introspection-debugging` when investigating bugs, test failures, or unexpected behavior.
+> Load alongside `busdriver:systematic-debugging` when investigating bugs, test failures, or unexpected behavior.
 
 ## Conflict Resolution
 

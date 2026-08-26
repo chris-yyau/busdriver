@@ -34,6 +34,3 @@ Fix: Concrete change to make.
 ## Related
 
 - Agent: `fastapi-reviewer`
-- Skill: `fastapi-patterns`
-- Command: `/python-review`
-- Skill: `security-scan`

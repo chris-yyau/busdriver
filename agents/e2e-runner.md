@@ -110,7 +110,7 @@ Common causes: race conditions (use auto-wait locators), network timing (wait fo
 
 ## Reference
 
-For detailed Playwright patterns, Page Object Model examples, configuration templates, CI/CD workflows, and artifact management strategies, see skill: `e2e-testing`.
+Busdriver no longer ships an e2e pattern library (ADR 0048) — rely on the model for Playwright patterns, Page Object Model examples, configuration templates, CI/CD workflows, and artifact management strategies.
 
 ---
 

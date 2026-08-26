@@ -92,7 +92,7 @@ psql -c "SELECT indexrelname, idx_scan, idx_tup_read FROM pg_stat_user_indexes O
 
 ## Reference
 
-For detailed index patterns, schema design examples, connection management, concurrency strategies, JSONB patterns, and full-text search, see skills: `postgres-patterns` and `database-migrations`.
+Busdriver no longer ships database pattern libraries (ADR 0048) — rely on the model for index patterns, schema design, connection management, concurrency strategies, JSONB patterns, and full-text search.
 
 ---
 

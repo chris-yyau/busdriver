@@ -602,16 +602,10 @@ If the question doesn't benefit from multiple perspectives, say so and just answ
 
 | Instead of council | Use |
 | --- | --- |
-| Verifying whether output is correct | `santa-method` |
+| Verifying whether output is correct | `/santa-loop` |
 | Breaking a feature into implementation steps | `planner` |
 | Designing system architecture | `architect` |
-| Reviewing code for bugs or security | `code-reviewer` or `santa-method` |
+| Reviewing code for bugs or security | `code-reviewer` |
 | Straight factual questions | just answer directly |
 | Obvious execution tasks | just do the task |
 
-## Related Skills
-
-- `santa-method` — adversarial verification (two-reviewer convergence)
-- `knowledge-ops` — persist durable decision deltas to the right location (vault)
-- `search-first` — gather external reference material before convening
-- `architecture-decision-records` — formalize the outcome when the decision becomes long-lived system policy

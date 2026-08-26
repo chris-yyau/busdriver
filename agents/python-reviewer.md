@@ -101,7 +101,7 @@ Fix: What to change
 
 ## Reference
 
-For detailed Python patterns, security examples, and code samples, see skill: `python-patterns`.
+Busdriver no longer ships a Python pattern library (ADR 0048) — rely on the model for detailed patterns, security examples, and code samples.
 
 ---
 

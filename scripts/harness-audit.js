@@ -601,16 +601,6 @@ function getRepoChecks(rootDir) {
       fix: 'Add prompt/tool preflight security guards in hooks/hooks.json.',
     },
     {
-      id: 'security-scan-command',
-      category: 'Security Guardrails',
-      points: 2,
-      scopes: ['repo', 'commands'],
-      path: 'commands/security-scan.md',
-      description: 'Security scan command exists',
-      pass: fileExists(rootDir, 'commands/security-scan.md'),
-      fix: 'Add commands/security-scan.md with scan and remediation workflow.',
-    },
-    {
       id: 'cost-skill',
       category: 'Cost Efficiency',
       points: 4,

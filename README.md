@@ -38,25 +38,17 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the tool call — Claude cannot rationalize its way past these.
 
-### 15 languages and frameworks
+### Domain reviewers
 
-| Language | Patterns | Testing | Reviewer | Build Resolver |
-|----------|----------|---------|----------|---------------|
-| Go | `golang-patterns` | `golang-testing` | `go-reviewer` | `go-build-resolver` |
-| Python | `python-patterns` | `python-testing` | `python-reviewer` | -- |
-| Rust | `rust-patterns` | `rust-testing` | `rust-reviewer` | `rust-build-resolver` |
-| TypeScript/JS | `coding-standards` | `tdd-guide` | `typescript-reviewer` | `build-error-resolver` |
-| Swift | `swiftui-patterns` | -- | -- | -- |
-| Kotlin | `kotlin-patterns` | `kotlin-testing` | `kotlin-reviewer` | `kotlin-build-resolver` |
-| C++ | `cpp-coding-standards` | `cpp-testing` | `cpp-reviewer` | `cpp-build-resolver` |
-| Java | `java-coding-standards` | `springboot-tdd` | `java-reviewer` | `java-build-resolver` |
-| Perl | `perl-patterns` | `perl-testing` | -- | -- |
-| Flutter/Dart | `flutter-dart-code-review` | -- | `flutter-reviewer` | -- |
-| Django | `django-patterns` | `django-tdd` | -- | -- |
-| Spring Boot | `springboot-patterns` | `springboot-tdd` | -- | -- |
-| Laravel | `laravel-patterns` | `laravel-tdd` | -- | -- |
-| Nuxt | `nuxt4-patterns` | -- | -- | -- |
-| PyTorch | `pytorch-patterns` | -- | -- | `pytorch-build-resolver` |
+Language pattern libraries and framework guides are no longer shipped — the model covers that (ADR 0048). What remains per domain is the reviewer or build-resolver agent the pipeline dispatches:
+
+| Domain | Reviewer | Build Resolver |
+|--------|----------|---------------|
+| Python / FastAPI | `python-reviewer`, `fastapi-reviewer` | -- |
+| TypeScript / JS | `typescript-reviewer` | `build-error-resolver` |
+| React / Next.js | `react-reviewer` | `react-build-resolver` |
+| Database / SQL | `database-reviewer` | -- |
+| Security-sensitive changes | `security-reviewer` | -- |
 
 ### Specialized agents
 
@@ -64,7 +56,7 @@ Architect, planner, TDD guide, security reviewer, language-specific reviewers, b
 
 ### Skills and commands
 
-From brainstorming and planning to domain patterns, deployment workflows, supply chain management, and AI/LLM pipeline optimization. See `skills/` for the full inventory.
+From brainstorming and planning through review gates, PR grinding, and merge — busdriver carries the pipeline; language and framework knowledge is left to the model (ADR 0048). See `skills/` for the full inventory.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 ---
 name: skill-supply-chain
-description: Skill supply chain audit loaded alongside security-scan to detect malicious patterns in installed Claude Code skills and plugins
-targets: busdriver:security-scan
+description: Skill supply chain audit loaded alongside security-review to detect malicious patterns in installed Claude Code skills and plugins
+targets: busdriver:security-review
 type: supplement
 source: gstack /cso Phase 8
 added: 2026-03-23
@@ -9,7 +9,7 @@ added: 2026-03-23
 
 # Skill Supply Chain Audit
 
-> Load alongside `security-scan` skill when scanning Claude Code configuration.
+> Load alongside `busdriver:security-review` when scanning Claude Code configuration.
 
 ## Why This Matters
 

@@ -457,10 +457,9 @@ This is not ceremony. Both failures below were observed:
 
 ## Wiring
 
-`imagegen-frontend-web`, `imagegen-frontend-mobile`, and `image-to-code` are
-prompt-direction skills written for hosts that already have an image tool.
-They say *"if image generation is available"* — with this skill, it is. Read the
-direction skill for the brief, then dispatch each image through a command above.
+This skill is the transport, not the art direction. The brief comes from the
+caller — `impeccable:impeccable` for UI/UX work, or the user's own description.
+Write the brief first, then dispatch each image through a command above.
 
 ## Video
 
@@ -472,6 +471,6 @@ account:
 
 The tool exposes no `upload_url` parameter, so unblocking it means disabling ZDR
 for the Grok team — a retention-policy change, not a wiring change. Don't do
-that for b-roll. For website motion use `motion-foundations` / `motion-patterns`
-(CSS/Motion beats a generated mp4 for UI). If real video is ever needed, the
-escape hatch is `agent-tools` (inference.sh → Veo), which bills per call.
+that for b-roll. For website motion, write the CSS/Motion transitions directly —
+the model covers that, and CSS/Motion beats a generated mp4 for UI. If real video
+is ever needed, call Veo through a third-party inference CLI, which bills per call.

@@ -76,7 +76,7 @@ DO NOT skip phases after your entry point. Only exception: small specific tasks 
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
 
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: dual-engine — `busdriver:design-taste-frontend` explores landing/marketing/portfolio/showcase → `impeccable:impeccable` hardens (impeccable owns dashboards/app UI solo); `busdriver:ui-ux-pro-max` + `busdriver:design-system` fill gaps; load `.impeccable.md` if present (full model in domain-supplements UI/UX block). Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `council` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: `impeccable:impeccable` (separately installed plugin) owns design end-to-end; load `.impeccable.md` if present. Consider `council` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
 **NEXT:** Phase 2. INVOKE `busdriver:writing-plans`. Do NOT start coding.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
@@ -104,17 +104,17 @@ Creates isolated workspace, verifies baseline tests pass.
 - **Tests** — behavioral changes ship with tests. **Ordering is not mandated** — RED → GREEN → REFACTOR is available on demand via `/tdd` (`busdriver:test-driven-development`, detail `busdriver:tdd-workflow`), not a Phase 4 default. Advisory, not gate-enforced: no hook checks test ordering or existence (ADR 0038).
 - **Verification** — `busdriver:verification-before-completion` (no claims without fresh evidence).
 - **Debugging** — `busdriver:systematic-debugging` when stuck — root cause first.
-- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer` (vault), `java-reviewer` (vault), `kotlin-reviewer` (vault), `flutter-reviewer` (vault), `csharp-reviewer` (vault), `swift-reviewer` (vault), `react-reviewer`, `django-reviewer` (vault), `fastapi-reviewer`, `fsharp-reviewer` (vault), `mle-reviewer`, `vue-reviewer` (vault), `php-reviewer` (vault)). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
+- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `python-reviewer`, `react-reviewer`, `fastapi-reviewer`). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md`.
 
 **When build fails — DISPATCH immediately, don't debug manually first:**
-DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver` (vault). React: `react-build-resolver`. Django: `django-build-resolver` (vault). Java/Quarkus/Spring: `java-build-resolver` (vault). HarmonyOS: `harmonyos-app-resolver` (vault). No resolver: use `busdriver:systematic-debugging`.
+DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. React: `react-build-resolver`. No resolver: use `busdriver:systematic-debugging`.
 
 **Domain skills:** detect language/framework and load matching skills from `domain-supplements.md`. A language's `Testing:` entry is reference material, not an ordering mandate — RED-GREEN-REFACTOR stays opt-in per the Tests discipline above, even when the domain guide walks through it (ADR 0038).
 
 ### Phase 5: Verification
 
-Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verification-before-completion` as the final gate. Django: `django-verification` (vault). Spring Boot: `springboot-verification` (vault). Also `busdriver:security-scan` for `.claude/` config.
+Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verification-before-completion` as the final gate. If the change touches `.claude/` config, `hooks/`, agents, MCP servers, or settings, also run `busdriver:security-review` with the `skill-supply-chain.md` supplement (the former `security-scan` pass — supply-chain audit of hook/agent/skill/MCP wiring).
 
 **DISPATCH `security-reviewer` agent** if auth, user input, API endpoints, payments, or secrets touched.
 
@@ -133,20 +133,13 @@ Verify tests → present 4 options (merge/PR/keep/discard) → execute → clean
 
 ## Routing Catalog
 
-- **Domain detection** (Go / Python / Rust / Kotlin / Swift / Flutter / etc.): `domain-supplements.md`
+- **Domain detection** (Python / TypeScript / React / database / AI-LLM): `domain-supplements.md`
 - **Non-pipeline tasks** (refactoring, research, content, ops, agent architecture, etc.): `tasks-catalog.md`
 
 Read these files when the user's request doesn't match a pipeline phase above. Both files are in this skill's directory (`${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/`).
 
-Skills not in either file are still discoverable via the system-prompt skill registry (Claude sees all skill names + descriptions automatically). The orchestrator only routes to busdriver-owned skills.
+Skills not in either file are still discoverable via the system-prompt skill registry (Claude sees all skill names + descriptions automatically). The orchestrator routes to busdriver-owned skills plus a few *(personal)* toolbox skills that are installed per machine (ADR 0048) — those are best-effort routes, not dependencies.
 
-## Vault (Archived Skills)
-
-Long-tail skills, agents, and commands live in `skills-archive/`, `agents-archive/`, and `commands-archive/` at the plugin root — outside auto-discovery, so they cost zero registry context. A route marked `(vault)` in this file, `tasks-catalog.md`, or `domain-supplements.md` means: **Read `${CLAUDE_PLUGIN_ROOT}/skills-archive/<name>/SKILL.md` (or `agents-archive/<name>.md`, or `commands-archive/<name>.md` for archived `/command` shims) and apply its content directly** — same guidance, loaded on demand. Dispatch of an archived agent is replaced by applying its `.md` body as instructions in-context or via a `general-purpose` agent; an archived command shim is followed to its backing skill (usually also in the vault). **Path translation:** archived files were moved verbatim, so cross-references inside them may still point at pre-archive live paths. When applying archived content, resolve any referenced `skills/<name>/`, `agents/<name>.md`, or `commands/<name>.md` that does not exist live against the corresponding `-archive/` directory (`skills-archive/<name>/`, `agents-archive/<name>.md`, `commands-archive/<name>.md`) before following it.
-
-**Promotion is manual-on-friction:** if a vaulted skill keeps coming back (roughly ≥2 loads in a month), `git mv` it back to the live directory and drop its `(vault)` markers — `tests/test-vault-references.sh` enforces consistency both ways.
-
-<!-- keep-simple(UPGRADE: build usage tracking only if >3 manual promotions in 60 days): no usage telemetry, no auto-GC — council 2026-07-03 verdict; see docs/adr/0010. -->
 
 ## System Alert Handling
 
@@ -164,9 +157,9 @@ Gates (pre-commit, pre-PR, pre-implementation, pre-merge, freeze) + formatting +
 
 | Interface | Syntax | Example |
 |-----------|--------|---------|
-| **Skill** | `busdriver:name` via Skill tool | `busdriver:golang-patterns` |
-| **Command** | `/name` via Skill tool | `/go-review`, `/tdd`, `/verify` |
-| **Agent** | DISPATCH via Agent tool with `subagent_type` | `go-reviewer`, `typescript-reviewer` |
+| **Skill** | `busdriver:name` via Skill tool | `busdriver:litmus` |
+| **Command** | `/name` via Skill tool | `/fastapi-review`, `/tdd`, `/verify` |
+| **Agent** | DISPATCH via Agent tool with `subagent_type` | `python-reviewer`, `typescript-reviewer` |
 
 **Namespace:** `busdriver:` is this plugin's namespace. Unprefixed skill names in this file are also busdriver-owned.
 

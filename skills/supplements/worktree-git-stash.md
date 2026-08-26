@@ -1,7 +1,7 @@
 ---
 name: worktree-git-stash
 description: Why `git stash` is unsafe inside git worktrees — refs/stash is shared across all linked worktrees, so a sibling pop can corrupt your tree
-targets: busdriver:using-git-worktrees, busdriver:parallel-execution-optimizer, busdriver:claude-devfleet, busdriver:dispatching-parallel-agents
+targets: busdriver:using-git-worktrees, busdriver:dispatching-parallel-agents
 type: supplement
 source: get-shit-done #3542 (adapted)
 added: 2026-05-29
@@ -21,7 +21,7 @@ Consequence: a `git stash pop` (or `apply`) run inside one worktree silently app
 - untracked files that "appear from nowhere",
 - a broken worktree-isolation invariant that is very hard to debug.
 
-This bites precisely the topology busdriver uses: `parallel-execution-optimizer` runs "multi-worktree implementation passes" and `claude-devfleet` dispatches "each agent in an isolated git worktree."
+This bites precisely the topology busdriver uses: multi-worktree implementation passes, with each parallel agent dispatched in an isolated git worktree.
 
 ## Rule
 

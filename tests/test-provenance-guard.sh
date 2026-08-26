@@ -22,7 +22,7 @@
 # per line, `#` comments; absent = empty). A pattern-derived DISTILLATION must
 # not copy the vendor's `author:` frontmatter - mark it with an
 # `<!-- Origin: inspired by <upstream> -->` comment and keep it local (e.g.
-# skills/canary, distilled from gstack).
+# a skill distilled from gstack).
 #
 # Boundary: frontmatter only. In-body citations of a vendor (a best-practices
 # skill that references vendor docs) are NOT provenance and are not flagged.

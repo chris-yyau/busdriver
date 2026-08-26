@@ -4,7 +4,7 @@ description: Adversarial dual-review convergence loop — two independent model 
 
 # Santa Loop
 
-Adversarial dual-review convergence loop using the santa-method skill. Two independent reviewers — different models, no shared context — must both return NICE before code ships.
+Adversarial dual-review convergence loop. Two independent reviewers — different models, no shared context — must both return NICE before code ships.
 
 ## Purpose
 

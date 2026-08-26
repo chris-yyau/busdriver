@@ -10,7 +10,6 @@
  * destructured — vitest's interop maps module.exports onto the default export.
  *
  * For a full TDD workflow on a specific module, use `busdriver:tdd`.
- * For more JS patterns, see `busdriver:react-testing` / `busdriver:python-testing`.
  */
 import { describe, it, expect } from 'vitest'
 import shellSplit from '../scripts/lib/shell-split.js'

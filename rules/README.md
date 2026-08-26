@@ -52,7 +52,7 @@ being loaded.
 
 - **Rules** are the short, always-loaded invariants and principles here.
 - **Skills** (`skills/`) provide deep, on-demand reference material for specific
-  tasks (e.g. `python-patterns`, `golang-testing`).
+  tasks (e.g. `litmus`, `blueprint-review`).
 
 Rules tell you *what* to do; skills tell you *how*.
 

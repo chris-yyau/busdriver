@@ -5,7 +5,7 @@
 >
 > **How supplements load:** Supplements are NOT auto-loaded by hooks. When invoking a skill or dispatching an agent listed in a supplement's `targets:` frontmatter, Claude must Read the supplement file from `skills/supplements/` and apply its content alongside the targeted skill. The orchestrator's "Supplement Loading Protocol" section provides the instruction. Opt-in supplements require an explicit trigger condition (a user trigger phrase OR an auto-memory signal listed in the manifest's Trigger column).
 >
-> **`(vault)` targets:** A `(vault)` marker in the Added column means the supplement's target skill has been archived to `skills-archive/` and is no longer loaded via the `Skill` tool — it's Read on-demand instead. This changes the loading path: the orchestrator's automatic "check MANIFEST.md for active supplements targeting this skill" step only fires on `Skill`-tool invocation, so it does not automatically fire when an archived skill is loaded by manually Reading it from `skills-archive/`. Consumers who Read a `(vault)` skill directly must independently apply this manifest's supplement-loading protocol — the supplement will not be surfaced for them automatically.
+> **`(personal)` targets:** a target marked *(personal)* is a skill that is not part of busdriver — it is installed per machine under `~/.claude/skills` (ADR 0048). The supplement applies when that skill is invoked, if it is installed.
 >
 > **Upstream tracking:** Fork-edit state is tracked in `.upstream-sources.json` at the repo root, not in this file.
 
@@ -15,27 +15,26 @@
 |------|---------|--------|-------|
 | `anti-sycophancy.md` | `busdriver:brainstorming`, `council` | gstack /office-hours | 2026-03-23 |
 | `llm-security-audit.md` | `security-reviewer` agent | gstack /cso Phase 7 | 2026-03-23 |
-| `skill-supply-chain.md` | `busdriver:security-scan` | gstack /cso Phase 8 | 2026-03-23 |
+| `skill-supply-chain.md` | `busdriver:security-review` | gstack /cso Phase 8 | 2026-03-23 |
 | `diff-aware-qa.md` | `e2e-runner` agent | gstack /qa | 2026-03-23 |
-| `confidence-gated-findings.md` | `security-reviewer` agent, `security-scan` skill | gstack /cso | 2026-03-24 |
+| `confidence-gated-findings.md` | `security-reviewer` agent, `busdriver:security-review` | gstack /cso | 2026-03-24 |
 | `three-layer-knowledge.md` | `busdriver:brainstorming`, `busdriver:writing-plans` | gstack shared | 2026-03-24 |
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `blueprint-review` skill | gstack /office-hours | 2026-03-24 |
-| `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (council 2026-03-24) | 2026-03-24 (vault) |
-| `context-degradation-tiers.md` | `busdriver:context-budget`, `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
+| `context-degradation-tiers.md` | `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
 | `thinking-models-planning.md` | `busdriver:writing-plans`, `busdriver:brainstorming`, `busdriver:executing-plans` | GSD references/thinking-models-planning.md (adapted) | 2026-04-08 |
 | `gates-taxonomy.md` | `busdriver:orchestrator`, `busdriver:litmus`, `busdriver:blueprint-review`, `busdriver:verification-loop`, `busdriver:finishing-a-development-branch` | GSD references/gates.md (adapted) | 2026-04-08 |
 | `agent-contracts.md` | `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development`, `busdriver:executing-plans`, `busdriver:orchestrator` | GSD references/agent-contracts.md (adapted) | 2026-04-08 |
-| `thinking-models-debug.md` | `busdriver:systematic-debugging`, `busdriver:agent-introspection-debugging` | GSD references/thinking-models-debug.md (adapted) | 2026-05-01 |
+| `thinking-models-debug.md` | `busdriver:systematic-debugging` | GSD references/thinking-models-debug.md (adapted) | 2026-05-01 |
 | `thinking-models-execution.md` | `busdriver:executing-plans`, `busdriver:subagent-driven-development`, `busdriver:dispatching-parallel-agents` | GSD references/thinking-models-execution.md (adapted) | 2026-05-01 |
-| `thinking-models-research.md` | `busdriver:deep-research`, `busdriver:research-ops`, `busdriver:search-first`, `busdriver:codebase-onboarding` | GSD references/thinking-models-research.md (adapted) | 2026-05-01 (vault) |
+| `thinking-models-research.md` | `deep-research` *(personal)* | GSD references/thinking-models-research.md (adapted) | 2026-05-01 |
 | `thinking-models-verification.md` | `busdriver:verification-loop`, `busdriver:verification-before-completion`, `busdriver:blueprint-review` | GSD references/thinking-models-verification.md (adapted) | 2026-05-01 |
-| `worktree-git-stash.md` | `busdriver:using-git-worktrees`, `busdriver:parallel-execution-optimizer`, `busdriver:claude-devfleet`, `busdriver:dispatching-parallel-agents` | get-shit-done #3542 (adapted) | 2026-05-29 |
+| `worktree-git-stash.md` | `busdriver:using-git-worktrees`, `busdriver:dispatching-parallel-agents` | get-shit-done #3542 (adapted) | 2026-05-29 |
 
 ## Opt-In Supplements
 
 | File | Targets | Trigger | Source | Added |
 |------|---------|---------|--------|-------|
-| `design-anti-slop.md` | `impeccable:impeccable`, `document-skills:frontend-design`, `busdriver:frontend-patterns`, `busdriver:ui-ux-pro-max`, `design-taste-frontend` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
+| `design-anti-slop.md` | `impeccable:impeccable`, `document-skills:frontend-design` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
 | `beginner-mode.md` | `busdriver:brainstorming`, `busdriver:grill-me` | "I'm new to this", "explain like I'm a beginner", "beginner mode", "what does X mean", "I don't understand X" + auto-memory user-knowledge-gap entries | in-house (grill-me integration) | 2026-05-05 |
 

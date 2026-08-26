@@ -110,7 +110,6 @@ Instead of loading full skill content at session start, use a trigger table that
 |---------|-------|-----------|
 | "test", "tdd", "coverage" | tdd-workflow | User mentions testing |
 | "security", "auth", "xss" | security-review | Security-related work |
-| "deploy", "ci/cd" | deployment-patterns | Deployment context |
 
 ### Context Composition Awareness
 Monitor what's consuming your context window:

@@ -5,7 +5,7 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 ## What It Does
 
 - **Pipeline enforcement** — phases 1–6 (brainstorming → finishing)
-- **Domain detection** — loads language/framework patterns automatically
+- **Domain detection** — routes to the matching reviewer / build-resolver agent
 - **Gate enforcement** — six hook-enforced gates (litmus pre-commit/pre-PR, blueprint-review, pre-implementation, freeze/guard, pre-merge/pr-grind)
 - **Agent dispatch** — specialized agents in `agents/` (reviewers, build resolvers, gan/opensource pipelines, etc.)
 
@@ -28,8 +28,8 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 - **Phase 6** → `busdriver:finishing-a-development-branch`
 
 ### 3. Domain Detection
-Detects language/framework from file extensions and loads matching patterns:
-- Go, Python, Django, Spring Boot, Frontend (React/Next.js), C++, Swift, Kotlin, Rust, Flutter, Perl, PHP/Laravel, Nuxt, Database, DevOps, AI/LLM, Video
+Detects language/framework from file extensions and dispatches the matching reviewer or build-resolver agent (`domain-supplements.md`). Busdriver no longer ships language pattern libraries — the model covers that (ADR 0048):
+- Python (+ FastAPI), Frontend/Backend TypeScript (+ React), Database, AI/LLM, Security-sensitive changes
 
 ### 4. Non-Pipeline Tasks
 Direct routes for tasks outside the pipeline: refactoring, research, council, multi-agent, content, media, etc.

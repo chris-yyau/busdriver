@@ -118,7 +118,7 @@ jest --ci                           # Tests (Jest)
 
 ## Reference
 
-This repo does not yet ship a dedicated `typescript-patterns` skill. For detailed TypeScript and JavaScript patterns, use `coding-standards` plus `frontend-patterns` or `backend-patterns` based on the code being reviewed.
+Busdriver no longer ships TypeScript/JavaScript pattern libraries (ADR 0048) — rely on the model for detailed patterns, whether the code is frontend or backend.
 
 ---
 

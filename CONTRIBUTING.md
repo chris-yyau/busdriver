@@ -24,27 +24,28 @@ Thanks for your interest in contributing to Busdriver! This guide covers how to 
 
 ```text
 busdriver/
-├── skills/                    # 146 skill definitions (flat, auto-discovered)
+├── skills/                    # 37 skill definitions (flat, auto-discovered)
 │   ├── orchestrator/          # Master routing skill
 │   ├── brainstorming/         # Phase 1: discovery
 │   ├── writing-plans/         # Phase 2: planning
 │   ├── using-git-worktrees/   # Phase 3: isolation
 │   ├── executing-plans/       # Phase 4: execution
 │   ├── verification-loop/     # Phase 5: verification
-│   ├── finishing-a-dev-branch/# Phase 6: finishing
-│   ├── litmus/        # Pre-commit/PR code review
-│   ├── blueprint-review/       # Plan/design doc review
-│   ├── golang-patterns/       # Language: Go patterns
-│   ├── python-patterns/       # Language: Python patterns
-│   └── ...                    # 134 more skills
-├── agents/                    # 29 specialized agent definitions
+│   ├── finishing-a-development-branch/ # Phase 6: finishing
+│   ├── litmus/                # Pre-commit/PR code review
+│   ├── blueprint-review/      # Plan/design doc review
+│   ├── supplements/           # Domain supplements, loaded on demand
+│   └── ...                    # pipeline mechanics only (ADR 0048) —
+│                              # language/framework pattern libraries are
+│                              # left to the model, not shipped here
+├── agents/                    # 40 specialized agent definitions
 │   ├── architect.md
 │   ├── planner.md
 │   ├── tdd-guide.md
 │   ├── code-reviewer.md
 │   ├── security-reviewer.md
-│   ├── go-reviewer.md         # Language-specific reviewers (8)
-│   ├── go-build-resolver.md   # Language-specific build resolvers (7)
+│   ├── python-reviewer.md     # Domain reviewers (Python, TypeScript, DB, ...)
+│   ├── build-error-resolver.md
 │   └── ...
 ├── hooks/                     # Hook registration and gate scripts
 │   ├── hooks.json             # Hook definitions (PreToolUse, PostToolUse)

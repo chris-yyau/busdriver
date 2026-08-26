@@ -471,6 +471,6 @@ account:
 
 The tool exposes no `upload_url` parameter, so unblocking it means disabling ZDR
 for the Grok team — a retention-policy change, not a wiring change. Don't do
-that for b-roll. For website motion use `motion-foundations` / `motion-patterns`
-(CSS/Motion beats a generated mp4 for UI). If real video is ever needed, the
-escape hatch is `agent-tools` (inference.sh → Veo), which bills per call.
+that for b-roll. For website motion, write the CSS/Motion transitions directly —
+the model covers that, and CSS/Motion beats a generated mp4 for UI. If real video
+is ever needed, call Veo through a third-party inference CLI, which bills per call.

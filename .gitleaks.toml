@@ -4,5 +4,4 @@
 [allowlist]
   paths = [
     '''tests/test-reviewed-commits-tracking\.sh''',
-    '''skills/api-design/SKILL\.md''',
   ]

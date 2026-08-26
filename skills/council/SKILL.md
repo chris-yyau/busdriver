@@ -602,7 +602,7 @@ If the question doesn't benefit from multiple perspectives, say so and just answ
 
 | Instead of council | Use |
 | --- | --- |
-| Verifying whether output is correct | `santa-method` |
+| Verifying whether output is correct | `/santa-loop` |
 | Breaking a feature into implementation steps | `planner` |
 | Designing system architecture | `architect` |
 | Reviewing code for bugs or security | `code-reviewer` |

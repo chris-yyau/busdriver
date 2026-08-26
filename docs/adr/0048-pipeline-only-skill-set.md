@@ -12,7 +12,9 @@ removed. The separate directory bought provenance separation but nothing read it
 directly — every consumer reached it through a per-consumer `SKILL.md` symlink, and that
 mount is a silent-failure surface: `busdriver-consumer-update` and `um-executor` had
 never been mounted into `~/.agents/skills` at all, so Cursor and Codex could not see
-them, with nothing to signal the gap. The four authored skills are named in `.claude/CLAUDE.md`;
+them, with nothing to signal the gap. The four authored skills are named in `.claude/CLAUDE.md` as a maintenance
+inventory, not a trust boundary — sharing the directory means a name no longer
+establishes provenance;
 `~/.agents/.skill-lock.json` is a hint only (already desynced, and a hand-copied
 skill is absent from it too), so absence must never be read as authorship. `~/.agents`
 is now a git repo, so authored work survives an `npx skills` mishap — the one risk the

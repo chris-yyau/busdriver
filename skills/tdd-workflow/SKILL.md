@@ -1,6 +1,6 @@
 ---
 name: tdd-workflow
-description: Use when TDD is explicitly requested — via `/tdd`, `/go-test`, `/rust-test`, `/react-test`, or a direct ask. Not a default for every feature, bugfix, or refactor (ADR 0038). Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
+description: Use when TDD is explicitly requested — via `/tdd` or a direct ask. Not a default for every feature, bugfix, or refactor (ADR 0038). Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
 argument-hint: <path/to/*.plan.md>
 metadata:
   origin: ECC
@@ -291,7 +291,7 @@ describe('Button Component', () => {
 
 ### Bun Native Test Pattern (`bun:test`)
 
-When the project uses Bun's built-in runner (see [Step 0](#step-0-detect-the-test-runner)), import from `bun:test` and run with `bun test` — not `bun run test`. The API is Jest-like, so `describe` / `it` / `expect` and most matchers carry over. See the `bun-runtime` skill for runtime, install, and bundler details.
+When the project uses Bun's built-in runner (see [Step 0](#step-0-detect-the-test-runner)), import from `bun:test` and run with `bun test` — not `bun run test`. The API is Jest-like, so `describe` / `it` / `expect` and most matchers carry over.
 
 ```typescript
 import { describe, it, expect, mock } from 'bun:test'

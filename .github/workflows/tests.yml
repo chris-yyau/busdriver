@@ -96,7 +96,6 @@ jobs:
             tests/test-ultimate-tier.sh \
             tests/test-blueprint-arbiter-default-pin.sh \
             tests/test-blueprint-review-oracle-arbiter-contract.sh \
-            tests/test-vault-references.sh \
             tests/test-upstream-manifest.sh
 
   compliance:

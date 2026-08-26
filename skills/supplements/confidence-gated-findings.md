@@ -1,7 +1,7 @@
 ---
 name: confidence-gated-findings
 description: Confidence-gated severity thresholds for security reviews — daily mode (8/10, zero noise) vs comprehensive mode (2/10, surface more)
-targets: security-reviewer agent, security-scan skill
+targets: security-reviewer agent, busdriver:security-review
 type: supplement
 source: gstack /cso
 added: 2026-03-24
@@ -9,7 +9,7 @@ added: 2026-03-24
 
 # Confidence-Gated Findings
 
-> Load alongside `security-reviewer` agent and `security-scan` skill.
+> Load alongside `security-reviewer` agent and `busdriver:security-review`.
 
 ## Two Modes
 

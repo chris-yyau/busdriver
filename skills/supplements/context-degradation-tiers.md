@@ -2,7 +2,6 @@
 name: context-degradation-tiers
 description: Graduated behavioral rules for context pressure — tier-based throttling (PEAK/GOOD/DEGRADING/POOR) with early warning signals for quality degradation
 targets:
-  - busdriver:context-budget
   - busdriver:strategic-compact
   - busdriver:dispatching-parallel-agents
   - busdriver:subagent-driven-development

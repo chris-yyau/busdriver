@@ -186,7 +186,7 @@ and a pasted excerpt is a smaller confidentiality surface than the whole tree.
 2. **Check the facts.** agy will state confident specifics it did not verify.
    Anything load-bearing — a number, a name, a claim about the product — gets
    checked against source before it ships.
-3. **Run `busdriver:humanizer` over the draft. Always — not only when it reads
+3. **Run `humanizer` (personal skill, `~/.claude/skills/humanizer`; skip if not installed) over the draft. Always — not only when it reads
    badly.** agy is an LLM and leaves the same tells Claude does: em dash
    overuse, rule of three, inflated symbolism, "delve"/"leverage"/"robust",
    negative parallelism. The step is cheap and you are the worst judge of

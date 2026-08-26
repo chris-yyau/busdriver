@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026-07-03).
+Superseded by [ADR 0048](0048-pipeline-only-skill-set.md) (2026-08-26). The vault directories, `(vault)` markers, `vault-promote.sh`, and `test-vault-references.sh` were removed; the recovery anchor is git history (branch `pre-trim-2026-08-26` = `0226ff45`).
+
+Previously: Accepted (2026-07-03).
 
 ## Context
 

@@ -457,10 +457,9 @@ This is not ceremony. Both failures below were observed:
 
 ## Wiring
 
-`imagegen-frontend-web`, `imagegen-frontend-mobile`, and `image-to-code` are
-prompt-direction skills written for hosts that already have an image tool.
-They say *"if image generation is available"* — with this skill, it is. Read the
-direction skill for the brief, then dispatch each image through a command above.
+This skill is the transport, not the art direction. The brief comes from the
+caller — `impeccable:impeccable` for UI/UX work, or the user's own description.
+Write the brief first, then dispatch each image through a command above.
 
 ## Video
 

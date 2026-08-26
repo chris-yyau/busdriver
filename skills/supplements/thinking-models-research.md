@@ -2,10 +2,7 @@
 name: thinking-models-research
 description: 5 structured reasoning models for research and synthesis — First Principles, Simpson's Paradox, Survivorship Bias, Confirmation Bias Counter, Steel Man
 targets:
-  - busdriver:deep-research
-  - busdriver:research-ops  # (vault)
-  - busdriver:search-first
-  - busdriver:codebase-onboarding
+  - deep-research  # personal skill (~/.claude/skills), if installed
 source: gsd-build/get-shit-done references/thinking-models-research.md (adapted)
 added: 2026-05-01
 ---
@@ -14,7 +11,7 @@ added: 2026-05-01
 
 Structured reasoning models for research and synthesis. Apply these at decision points during evidence gathering and recommendation, not continuously. Each model counters a specific failure mode.
 
-> Load alongside `busdriver:deep-research`, `busdriver:research-ops`, `busdriver:search-first`, or `busdriver:codebase-onboarding` when evaluating contested recommendations or synthesizing conflicting findings. (vault)
+> Load alongside `deep-research` (personal skill, if installed) — or any research/synthesis task — when evaluating contested recommendations or synthesizing conflicting findings.
 
 ## Conflict Resolution
 

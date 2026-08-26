@@ -24,7 +24,7 @@ The only escape hatch is the gitignored, operator-created `.local` skip file (`.
 
 ## Routing
 
-Any task beyond trivial Q&A: INVOKE `busdriver:orchestrator` for full routing, or Read `tasks-catalog.md` (non-pipeline) / `domain-supplements.md` (domain detection) in this skill's dir. Rows marked `(vault)` = archived: Read `skills-archive/<name>/SKILL.md` (or `agents-archive/`, `commands-archive/`) on demand and apply directly.
+Any task beyond trivial Q&A: INVOKE `busdriver:orchestrator` for full routing, or Read `tasks-catalog.md` (non-pipeline) / `domain-supplements.md` (domain detection) in this skill's dir.
 
 ## Supplements
 

@@ -2646,7 +2646,7 @@ execute_review() {
     #      probe rounds showed every ENUMERATED denylist leaking: `permission:
     #      {edit:deny}` → model shelled out; `tools:{write,edit,bash:false}` →
     #      delegated the write to a `task` SUBAGENT; +`task,webfetch:false` →
-    #      reached past built-ins to `Skill "firecrawl-scrape"` (vault) and MCP tools.
+    #      reached past built-ins to `Skill "firecrawl-scrape"` and MCP tools.
     #      Only the wildcard held.
     #   2. FILESYSTEM + PROJECT CONFIG — `--dir <empty tmpdir>`. opencode roots
     #      the project there, so the reviewed tree's files AND its config-based

@@ -1,3 +1,43 @@
+# [2.0.0](https://github.com/chris-yyau/busdriver/compare/v1.113.0...v2.0.0) (2026-08-26)
+
+
+* refactor(skills)!: trim busdriver to the pipeline-only skill set (ADR 0048) ([#773](https://github.com/chris-yyau/busdriver/issues/773)) ([cb1fb74](https://github.com/chris-yyau/busdriver/commit/cb1fb74c21faf9bb5537aad99b08b19119fd3454))
+
+
+### BREAKING CHANGES
+
+* language pattern libraries, framework guides, third-party
+toolbox skills, and the ADR 0010 vault are no longer shipped by busdriver.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+* chore(manifest): prune deleted skills from the upstream manifest and config (ADR 0048)
+
+Drops .upstream-sources.json entries for every deleted skill, archive path, command
+shim and agent (1343 -> 418 tracked files) and the 9 upstreams left with no files;
+removes the vendored-skill exceptions from .gitignore, .gitleaks.toml and
+.claude/review-exclude.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+* refactor(orchestrator): rewire routing, supplements, and docs (ADR 0048)
+
+- tasks-catalog.md / domain-supplements.md rewritten to what still exists; third-party
+  toolbox skills become best-effort *(personal)* routes surfaced via ~/.claude/skills
+- orchestrator Phase 4/5 dispatch lists trimmed; Vault section removed; the former
+  security-scan pass is kept as security-review + skill-supply-chain supplement
+- supplements manifest/targets retargeted; orphaned nutrient-api-terms dropped from
+  the upstream manifest (its file was deleted in the first commit)
+- agents/commands/skills/tests: dangling references to deleted skills removed
+- tests.yml no longer shellchecks the deleted tests/test-vault-references.sh
+- imagegen Wiring paragraph no longer routes to the deleted direction skills
+- CLAUDE.md SETTLED paragraph replaced with the three-source skill model; README
+  language table replaced with the domain-reviewer table
+- ADR 0048 added; ADR 0010 marked superseded
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
 # [1.113.0](https://github.com/chris-yyau/busdriver/compare/v1.112.8...v1.113.0) (2026-08-25)
 
 

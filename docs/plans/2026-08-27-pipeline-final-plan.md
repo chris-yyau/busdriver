@@ -66,19 +66,27 @@ Verified on this host (`claude` CLI, macOS, `/bin/sh` = bash 3.2.57):
 
 Design direction to validate next (four untested claims; (a), (b) and (d) take one `claude -p` run
 each, while (c) needs one run PER disposition — five runs — because a single blocking hook would
-mask the others; the prepared but NOT executed probe for (a) is below):
+mask the others. Four of those five are `claude -p` runs; the `ask` case must be driven from an
+INTERACTIVE session, because `-p` is non-interactive and `ask` is defined as "prompts the user"
+while `defer` is its non-interactive counterpart (hooks reference), so a headless run cannot prove
+the prompt appears. The prepared but NOT executed probe for (a) is below):
 
 - (a) exec-form registration `{"command":"/usr/bin/env","args":["-i","PATH=/usr/bin:/bin","bash","…"]}`
   runs despite committed `SHELLOPTS=noexec` (expected: yes — `env -i` wipes it before bash starts);
-- (b) whether `${CLAUDE_PLUGIN_ROOT}` substitution applies inside `args` (needed to locate
-  `sanitized-gate.sh` / `sanitized-node.sh`; `env -i` wipes the env var, so it must be passed as an
-  `args` value) and whether stdin JSON still reaches an exec-form hook;
+- (b) whether stdin JSON still reaches an exec-form hook, and how `env -i` interacts with it —
+  that pair is the actual untested claim. `${CLAUDE_PLUGIN_ROOT}` substitution inside `args` is
+  NOT open: the hooks reference (https://code.claude.com/docs/en/hooks.md) documents that "path
+  placeholders like `${CLAUDE_PLUGIN_ROOT}` are substituted into `command` and into each `args`
+  element as plain strings", which is exactly what lets us locate `sanitized-gate.sh` /
+  `sanitized-node.sh` even though `env -i` wipes the exported variable (it must therefore be
+  passed as an `args` value, not read from the environment). Keep a local probe for this only as
+  an installed-version compatibility check, not as a discovery;
 - (c) whether an exec-form hook still blocks in each disposition the gates use, kept as separate
   cases: exit 2 (a blocking error in its own right, which supersedes any JSON on stdout); the
   legacy top-level `{"decision":"block"}` the contained gates actually emit
   (`hooks/gate-scripts/pre-commit-gate.sh:50` and siblings); and the current
   `hookSpecificOutput.permissionDecision: "deny"` + `permissionDecisionReason` at exit 0
-  ; and `hookSpecificOutput.permissionDecision: "ask"` at exit 0 — the disposition `hooks/gate-scripts/careful-guard.sh:2272` actually emits — which must still force the user prompt under exec form, not silently allow or deny. Also how a
+  ; and `hookSpecificOutput.permissionDecision: "ask"` at exit 0 — the disposition `hooks/gate-scripts/careful-guard.sh:2272` actually emits — which must still force the user prompt under exec form, not silently allow or deny, and which is therefore the one case that has to be driven interactively rather than under `claude -p`. Also how a
   failed spawn is treated (the `|| exit 2` fail-closed tail cannot exist in exec form — the
   disposition must live entirely inside the wrapper);
 - (d) whether a committed `"disableAllHooks": true` silences hooks (if yes, that class cannot be
@@ -86,15 +94,60 @@ mask the others; the prepared but NOT executed probe for (a) is below):
   operator-owned rails — `core.hooksPath` is already `~/.codex/git-hooks` on this host, and branch
   protection's required checks).
 
-If (a)–(c) hold: ONE launch-boundary change — convert every contained gate registration in
-`hooks/hooks.json` (the 19 `/usr/bin/env -i …` entries) to exec form, update
-`scripts/ci/validate-hooks.js` and `tests/test-node-hook-containment.sh` /
-`tests/test-gate-env-containment.sh` to require exec form for contained gates (fail-closed pin, not
-prose), add a test that drives a `SHELLOPTS=noexec` env through a registration and asserts the
-gate still emits its decision, and record the closure of ADR 0016's named residual in a new ADR.
-`#622` (merge/cherry-pick/revert/--continue skip the `commit` pre-filter in
-`hooks/gate-scripts/pre-commit-gate.sh:112-115`) is independent: gate on the effect (HEAD moved
-without a review marker) rather than the verb, with a test that drives a conflict-free merge.
+If (a)–(c) hold: ONE launch-boundary change — every contained gate registration in
+`hooks/hooks.json` (the 19 `/usr/bin/env -i …` entries) moves to a launch form that a
+repository-controlled `env` block cannot silence. The mechanism is NOT designed here; it is the
+subject of `docs/plans/2026-08-27-hook-exec-form-713.md` (to be written and blueprint-reviewed).
+What this handover records are the facts the review of this plan established, as constraints and a
+test matrix that design must pass — deliberately not as a mechanism sketch, because every sketch
+attempted here grew a new bypass per review round. Facts: exec form substitutes only the documented
+path placeholders and passes `$HOME`, `${XDG_CONFIG_HOME:-}`, `${PR_GRIND_CODEX_RETRIGGER:-}` and
+`$CLAUDE_HOOK_EVENT_NAME` literally, so today's capture-then-`env -i` shell strings cannot be
+transcribed into `args`; a bash first hop imports `BASH_FUNC_*` (which overrides builtins,
+including `exec`) before its first line runs; any dynamically linked first hop is subject to
+`LD_PRELOAD`/`DYLD_*` (statically linked binaries, and SIP-protected system binaries on macOS, are
+the known exceptions); `BUSDRIVER_ORIG_HOME` is created from the outer `HOME` by the registration
+and does not pre-exist; `PR_GRIND_CODEX_RETRIGGER_PHRASE` is deliberately never forwarded. Required
+tests: (T1) each of `SHELLOPTS=noexec`, `BASH_ENV`, `BASH_FUNC_exec%%` and — where the chosen first
+hop makes it closable — `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`, set in a committed `settings.json`
+env and driven through a registration, still yields the gate's decision; (T2) the gate observes the
+same values today's shell strings hand it (`HOME` via passwd, `XDG_CONFIG_HOME`,
+`BUSDRIVER_ORIG_HOME`, `CLAUDE_HOOK_EVENT_NAME`, the enumerated retrigger kill switches — and not the
+phrase), proven by diffing the gate's environment under the old and new launch; (T3) stdin JSON
+arrives intact and every current disposition (exit 2, legacy `{"decision":"block"}`,
+`permissionDecision` `deny` and `ask`, failed spawn) behaves as today; (T4)
+`scripts/ci/validate-hooks.js`, `tests/test-node-hook-containment.sh` and
+`tests/test-gate-env-containment.sh` pin the launch form for every contained gate (fail-closed pin,
+not prose). Whatever the design cannot close it states as a residual with an upstream issue
+(Claude Code should refuse or scrub loader/shell-behavior keys from repository-controlled `env`),
+and the closure of ADR 0016's named residual is recorded in a new ADR.
+`#622` (a conflict-free `git merge` commits without litmus because the `commit`-token pre-filter at
+`hooks/gate-scripts/pre-commit-gate.sh:112-115` never fires and `git_commit()` —
+`hooks/gate-scripts/lib/gitcmd_detect.py:2654`, `_scan_commit` at `:2553` — returns
+`IS_GIT_COMMIT != yes` at `pre-commit-gate.sh:184`) is independent of #713 and gets its own design doc
+(`docs/plans/2026-08-27-commit-gate-effect-complete-622.md`, blueprint-reviewed). Twelve litmus
+rounds on this plan showed that any mechanism sketched here in prose grows a new bypass per round,
+so this handover states one invariant and a test matrix, not a mechanism. Invariant: while a
+review marker is outstanding, no invocation may create a commit, move HEAD, or replace the
+index/tree the marker was bound to unless the marker provably binds to exactly the repository,
+index and tree that invocation will commit; anything the gate cannot prove is refused
+(fail-closed), and the effect check in `hooks/gate-scripts/post-commit-consume-marker.sh:201-206`
+stays audit-only defense in depth (at PreToolUse HEAD has not moved, at PostToolUse the commit
+already exists). Facts the design must account for — each already produced a bypass against a
+verb-list sketch: the marker binds to `git diff --cached` before the command runs; git aliases
+(`-c alias.x=…`, repo-local and global `alias.*`); last-wins option overrides (`--no-commit` then
+`--commit`, `--squash` then `--no-squash`); `pull` (fetch + merge/rebase; `--ff-only` moves HEAD
+with no commit to review); fast-forward under `--no-commit`; sequencer `--continue`/`--skip`
+auto-processing the remaining `sequencer/todo` entries, and the absence of a universal
+behavior-preserving two-step form (`rebase`, `am` likewise); compound commands that mutate state
+and commit in one tool call; repository/index redirection via `GIT_DIR`, `GIT_INDEX_FILE`,
+`GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE`,
+`GIT_DISCOVERY_ACROSS_FILESYSTEM`, `--git-dir`/`--work-tree`/`--bare`, whether on the command or in
+a committed settings `env` block that the `env -i`-contained gate never sees (the hook payload
+carries no env fields — the design must decide whether that forces command-level refusal of every
+override, or enforcement in a native git hook that sees the real environment). Required tests:
+every case above, plus the original conflict-free `git merge`, asserted as a pre-use refusal — not
+after-the-fact detection.
 
 Prepared probe (not run — operator stopped the session before execution):
 

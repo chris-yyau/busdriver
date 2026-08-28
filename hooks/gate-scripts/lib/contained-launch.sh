@@ -48,7 +48,7 @@ set -u
 # R7. No arguments at all is the args-ignoring-client shape. Fail CLOSED and say why on
 # stderr — never on stdout, which is where a decision document would go, and never the
 # environment, which is what bare `env` used to dump.
-if [ "$#" -eq 0 ]; then
+if [[ "$#" -eq 0 ]]; then
     printf '%s\n' \
         'contained-launch: invoked with no arguments — refusing to run a gate uncontained.' \
         'This means the client honoured the hook "command" but dropped its "args"; the' \
@@ -71,7 +71,7 @@ esac
 # Everything after the disposition is the contained invocation itself: the assignments that
 # survive `env -i`, then the interpreter, the wrapper and its operands. An empty tail cannot
 # launch anything, so it is a wiring bug, and a wiring bug in a gate is a block.
-if [ "$#" -eq 0 ]; then
+if [[ "$#" -eq 0 ]]; then
     printf '%s\n' 'contained-launch: no command to run — failing CLOSED (exit 2).' >&2
     exit 2
 fi
@@ -87,7 +87,7 @@ fi
 utility=''
 utility_operands=0
 for arg in "$@"; do
-    if [ -n "$utility" ]; then
+    if [[ -n "$utility" ]]; then
         utility_operands=$((utility_operands + 1))
         continue
     fi
@@ -96,7 +96,7 @@ for arg in "$@"; do
         *) utility="$arg" ;;
     esac
 done
-if [ -z "$utility" ]; then
+if [[ -z "$utility" ]]; then
     printf '%s\n' \
         'contained-launch: the argument list is only assignments — no program to run.' \
         'env would print the environment and exit 0 here; failing CLOSED (exit 2). See #713.' >&2
@@ -120,7 +120,7 @@ esac
 # Measured before this guard existed: a payload containing `$(touch …)` created the file, and
 # bash exited 0 afterwards, so the gate ALSO allowed. Code execution and a bypass from the
 # same truncation. Anything short of a complete argv fails CLOSED here instead.
-if [ "$utility_operands" -eq 0 ]; then
+if [[ "$utility_operands" -eq 0 ]]; then
     printf '%s\n' \
         "contained-launch: '$utility' was given no operands — the argument list is truncated." \
         'An interpreter with no script reads its source from stdin, which is the hook payload.' \
@@ -131,15 +131,28 @@ fi
 /usr/bin/env -i "$@"
 rc=$?
 
-# 0 and 2 are the wrapper's own answers and pass through untouched: allow, and block.
-# Anything else is a launch or runtime failure that never produced a decision — 127 for a
-# missing wrapper, 126 for one that is not executable, 1 for a wrapper that refused its own
-# arguments. The registration says which way that resolves.
-case "$rc" in
-    0|2) exit "$rc" ;;
-esac
-
-if [ "$disposition" = open ]; then
+# This reproduces the shell-form tails EXACTLY, which is the point — the disposition replaces
+# a tail, it does not redesign one.
+#
+#   `… || exit 0`  (the two GateGuard rows)  =>  rc 0 stays 0, ANY non-zero becomes 0
+#   `… || exit 2`  (everything else)         =>  rc 0 stays 0, ANY non-zero becomes 2
+#
+# Note what the `open` rule does NOT do: it does not pass a 2 through. That is deliberate, and
+# it is exactly what `|| exit 0` did — this is a restoration, not a new policy. Exit 2 is not
+# reliably a decision here: bash returns 2 for its own usage and syntax failures.
+#
+# The case worth being explicit about is `sanitized-node.sh` refusing a MALFORMED argument
+# list: it deliberately fails CLOSED even under `--fail-open`, emitting exit 2 *and*
+# `{"decision":"block"}` on stdout. Converting the status does not lose that block — the
+# legacy top-level `decision` field is honoured on PreToolUse (measured under exec form; see
+# the probe table in ADR 0049), and these rows carry their deny on stdout rather than in the
+# status anyway (tests/test-gateguard-containment.sh asserts both halves: the JSON is emitted,
+# and the status is 0). So the forced-CLOSED contract survives on the channel that actually
+# carries it, and the status conversion stays faithful to the tail it replaced.
+if [[ "$rc" -eq 0 ]]; then
+    exit 0
+fi
+if [[ "$disposition" == open ]]; then
     exit 0
 fi
 exit 2

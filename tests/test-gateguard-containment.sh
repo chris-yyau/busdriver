@@ -360,6 +360,21 @@ mal_empty_out=$(bash "$WRAPPER" --fail-open "" "" "$PROFILES" 2>/dev/null); mal_
 assert_true test "$mal_empty_rc" -eq 2 "empty hookId/scriptPath satisfies arity but still blocks CLOSED"
 grep -q '"decision":"block"' <<<"$mal_empty_out"; assert $? "empty-arg case emits block JSON"
 
+# ── #713: the same malformed case THROUGH the launcher, on an `open` row ────────────
+# The launcher restores `|| exit 0` for these two registrations, so it converts the wrapper's
+# exit 2 to 0. That is faithful to the tail it replaced, but it would be a silent regression
+# if the block travelled ONLY in the status. It does not: the wrapper's forced-CLOSED refusal
+# rides on stdout as a legacy `{"decision":"block"}` document, which is honoured on PreToolUse
+# (measured under exec form — see the probe table in ADR 0049). Assert BOTH halves here, so
+# the conversion cannot start losing the decision without a test noticing.
+LAUNCHER_PATH="$REPO_ROOT/hooks/gate-scripts/lib/contained-launch.sh"
+mal_launched_out=$("$LAUNCHER_PATH" open PATH=/usr/bin:/bin "CLAUDE_PLUGIN_ROOT=$REPO_ROOT" \
+    /bin/bash "$WRAPPER" --fail-open "" "" "$PROFILES" </dev/null 2>/dev/null)
+mal_launched_rc=$?
+assert_true test "$mal_launched_rc" -eq 0 "launcher open disposition converts the wrapper exit 2 to 0, as || exit 0 did"
+grep -q '"decision":"block"' <<<"$mal_launched_out"
+assert $? "…and the forced-CLOSED block still reaches stdout, which is what actually blocks"
+
 # Marker-absent behaviour is only assertable when the machine really has no markers.
 if [[ ! -e "$GG_ROOT" ]]; then
     _payload=$(edit_payload "unenrolled-$RUN_TOKEN" "$FIXTURE_REPO")

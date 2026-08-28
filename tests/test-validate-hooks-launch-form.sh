@@ -31,25 +31,25 @@ if [[ -z "$TMP" || ! -d "$TMP" ]]; then
     printf '  FAIL could not create a temporary directory\n' >&2
     printf 'PASS=0 FAIL=1\n'; exit 1
 fi
-# The launcher-mutation rows below overwrite a TRACKED file in place — the validator
-# resolves contained-launch.sh relative to its own location and takes no override for it, by
-# design (an overridable first-hop path would be a hole, not a feature). A byte-exact backup
-# is taken before any of that and restored here, on every exit path including a signal.
 LAUNCHER="$REPO_ROOT/hooks/gate-scripts/lib/contained-launch.sh"
-LAUNCHER_BAK="$TMP/contained-launch.sh.bak"
-restore_launcher() {
-    if [[ -f "$LAUNCHER_BAK" ]]; then
-        cp "$LAUNCHER_BAK" "$LAUNCHER" && chmod +x "$LAUNCHER"
-    fi
-}
-# The signal handler must EXIT, not fall through. A bare `trap '<cleanup>' INT TERM` runs the
-# cleanup and then resumes the script — which here would mean the backup has just been
-# deleted with `rm -rf "$TMP"` while the mutation loop below is still going, and the very
-# next `sed … > "$LAUNCHER"` truncates the tracked launcher before sed fails to read the
-# vanished backup. Restore, clean, and leave.
-trap 'restore_launcher; rm -rf "$TMP"' EXIT
-trap 'restore_launcher; rm -rf "$TMP"; exit 130' INT
-trap 'restore_launcher; rm -rf "$TMP"; exit 143' TERM
+# The launcher rows below mutate the FIRST HOP OF EVERY LIVE GATE. An earlier revision did it
+# in place, with a backup and a restoring trap. That was wrong at the design level, not just
+# the edge cases: no trap survives SIGKILL, and every hook in this repo fires constantly, so
+# any tool call landing inside the mutation window would have executed a deliberately
+# weakened launcher — one of these variants has its no-argument path stubbed to `exit 0`.
+# A test must not put a fail-open gate on disk, however briefly.
+#
+# So the mutations run against a SANDBOX TREE instead, laid out so the validator's own
+# `__dirname/../../…` resolution lands inside it. It sits under node_modules (gitignored, and
+# still on node's resolution path for ajv) so no tracked file is touched and `git status`
+# stays clean throughout.
+# Unique per run: a fixed path would let two concurrent invocations delete and overwrite each
+# other's sandbox between mutation and validation, so one run could validate the OTHER run's
+# mutation — flaky failures, or worse, a row scored as rejected on someone else's evidence.
+SANDBOX="$REPO_ROOT/node_modules/.cache/bd713-launcher-mutations.$$.${RANDOM}"
+trap 'rm -rf "$TMP" "$SANDBOX"' EXIT
+trap 'rm -rf "$TMP" "$SANDBOX"; exit 130' INT
+trap 'rm -rf "$TMP" "$SANDBOX"; exit 143' TERM
 
 # mutate <name> <python-body> — <python-body> edits `doc` in place; `rows()` yields
 # (block, index, hook) for every registration in the document.
@@ -379,36 +379,42 @@ assert "$_rc" "sweep ran every index in both directions ($_swept mutations)"
 # R7 lives in this file, not in hooks.json, so a hooks.json-only mutation matrix would leave
 # the actual defence unproven. The validator probes the real script on every run; these rows
 # are what show that probe can fail.
-cp "$LAUNCHER" "$LAUNCHER_BAK"
-_rc=1; [[ -s "$LAUNCHER_BAK" ]] && _rc=0
-assert "$_rc" "launcher backed up before the in-place mutations below"
+rm -rf "$SANDBOX"
+mkdir -p "$SANDBOX/scripts/ci" "$SANDBOX/hooks/gate-scripts/lib" "$SANDBOX/schemas"
+cp "$VALIDATOR" "$SANDBOX/scripts/ci/validate-hooks.js" \
+    && cp "$HOOKS_JSON" "$SANDBOX/hooks/hooks.json"
+_sandbox_ok=$?
+# The schema is optional in this repo (the validator guards its read with existsSync), so
+# copy it only when it exists rather than failing setup over a file that may not be there.
+if [[ "$_sandbox_ok" -eq 0 && -f "$REPO_ROOT/schemas/hooks.schema.json" ]]; then
+    cp "$REPO_ROOT/schemas/hooks.schema.json" "$SANDBOX/schemas/hooks.schema.json"
+    _sandbox_ok=$?
+fi
+_rc=1; [[ "$_sandbox_ok" -eq 0 ]] && _rc=0
+assert "$_rc" "sandbox tree built (no tracked file is mutated by the rows below)"
+
+SANDBOX_VALIDATOR="$SANDBOX/scripts/ci/validate-hooks.js"
+SANDBOX_LAUNCHER="$SANDBOX/hooks/gate-scripts/lib/contained-launch.sh"
 
 launcher_mutation() {  # launcher_mutation <name> <sed-expression>
-    # Re-check the backup on EVERY call, not once up front. The redirection below truncates
-    # a tracked file, so it must never run when the only copy of the original is gone — a
-    # failed `cp`, a signal that already cleaned $TMP, anything. Refuse instead.
-    if [[ ! -s "$LAUNCHER_BAK" ]]; then
-        assert 1 "$1 — SKIPPED: no launcher backup, refusing to truncate the tracked file"
+    if ! sed "$2" "$LAUNCHER" > "$SANDBOX_LAUNCHER" || ! chmod +x "$SANDBOX_LAUNCHER"; then
+        # A setup failure would ALSO be rejected by the validator, so scoring it as a
+        # rejection would count broken plumbing as coverage. Report it as its own failure.
+        assert 1 "$1 — SKIPPED: could not build the mutated launcher in the sandbox"
         return
     fi
-    # Build the mutation elsewhere and move it into place, so a failing `sed` cannot leave a
-    # truncated launcher behind: `> "$LAUNCHER"` empties the file before sed writes anything.
-    if ! sed "$2" "$LAUNCHER_BAK" > "$TMP/mutated-launcher.sh"; then
-        assert 1 "$1 — SKIPPED: could not build the mutated launcher"
-        return
+    if node "$SANDBOX_VALIDATOR" "$SANDBOX/hooks/hooks.json" >/dev/null 2>&1; then
+        assert 1 "$1 — ESCAPED the validator"
+    else
+        assert 0 "$1 — rejected"
     fi
-    if ! cp "$TMP/mutated-launcher.sh" "$LAUNCHER" || ! chmod +x "$LAUNCHER"; then
-        # A partial copy leaves a damaged launcher the validator would also reject — the row
-        # would then be scored as a successful rejection while proving nothing. Restore and
-        # report the setup failure instead of counting it as coverage.
-        assert 1 "$1 — SKIPPED: could not install the mutated launcher"
-        restore_launcher
-        return
-    fi
-    if node "$VALIDATOR" "$HOOKS_JSON" >/dev/null 2>&1; then assert 1 "$1 — ESCAPED the validator"
-    else assert 0 "$1 — rejected"; fi
-    restore_launcher
 }
+
+# The sandbox must pass BEFORE anything is mutated in it, or every rejection below could be
+# an artefact of a bad copy rather than of the mutation.
+cp "$LAUNCHER" "$SANDBOX_LAUNCHER" && chmod +x "$SANDBOX_LAUNCHER"
+node "$SANDBOX_VALIDATOR" "$SANDBOX/hooks/hooks.json" >/dev/null 2>&1
+assert $? "control: the UNMUTATED sandbox passes (so the rejections below are the mutations)"
 
 launcher_mutation "launcher no-arg path weakened to exit 0 (R7 reopened)" 's/^    exit 2$/    exit 0/'
 launcher_mutation "launcher no-arg path made to print the environment" 's|^    exit 2$|    /usr/bin/env; exit 2|'
@@ -472,7 +478,10 @@ PAYLOAD="$(printf '{"tool_input":{"command":"x"}}\n$(touch %s)\n' "$SENTINEL")"
 _trunc_bad=0
 for ((_k = 1; _k < ${#_full[@]}; _k++)); do
     rm -f "$SENTINEL"
-    _out="$(printf '%s' "$PAYLOAD" | "$LAUNCHER" "${_full[@]:0:$_k}" 2>/dev/null)"
+    # printf's status is masked by the pipeline; capture the payload once instead of
+    # re-deriving it inside the substitution on every iteration.
+    printf '%s' "$PAYLOAD" > "$TMP/payload.json"
+    _out="$("$LAUNCHER" "${_full[@]:0:$_k}" <"$TMP/payload.json" 2>/dev/null)"
     _trc=$?
     if [[ "$_trc" -ne 2 || -n "$_out" || -e "$SENTINEL" ]]; then
         _trunc_bad=$((_trunc_bad + 1))
@@ -495,9 +504,9 @@ _rc=1; [[ ! -e "$SENTINEL" ]] && _rc=0
 assert "$_rc" "control: the complete argv does not execute the payload either"
 rm -f "$SENTINEL"
 
-# Positive control: the restored launcher must pass, or every row above is meaningless.
+# The real tree was never touched — assert that, rather than assuming it.
 node "$VALIDATOR" "$HOOKS_JSON" >/dev/null 2>&1
-assert $? "control: the restored launcher PASSES again (the mutations above were the cause)"
+assert $? "control: the REAL launcher still passes (the rows above never wrote to it)"
 
 printf '\nPASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -eq 0 ]]; then

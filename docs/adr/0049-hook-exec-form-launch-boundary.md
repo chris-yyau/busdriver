@@ -102,7 +102,12 @@ first shipped as accepted residuals fail CLOSED instead:
   refused its own arguments — resolves to that disposition, which is what the shell-form
   `|| exit 2` tail used to do and is now **declared per registration rather than inferred
   from a string**. That was **R8**. CI pins the disposition against the wrapper's own
-  `--fail-open` flag, so the two spellings cannot disagree.
+  `--fail-open` flag, so the two spellings cannot disagree. The mapping reproduces the tails
+  exactly — `closed` is `|| exit 2`, `open` is `|| exit 0` — including the part worth stating
+  plainly: `open` converts a 2 as well, because `|| exit 0` did. That does not lose
+  `sanitized-node.sh`'s forced-CLOSED refusal of a malformed argument list, which travels as a
+  legacy `{"decision":"block"}` on stdout (honoured on PreToolUse — see the probe table) and
+  is pinned in `tests/test-gateguard-containment.sh` on both halves.
 
 **Why a bash first hop is admissible when the design originally rejected one.** The
 objection was that bash imports exported shell functions from the environment — a
@@ -247,9 +252,13 @@ disposition flipped to `--fail-open`, a timeout zeroed, a timeout and its adviso
 lowered together), the first hop (`command` reverted to bare `/usr/bin/env`, `command`
 repointed elsewhere, the disposition dropped, an unknown disposition, a closed gate flipped
 open, an open row flipped closed, and a *tandem swap* that keeps both populations intact),
-and the launcher script itself — restored from a byte-exact backup on every exit path —
-(no-arg path weakened to exit 0, made to print the environment, privileged mode dropped from
-the shebang). It then drives the launcher directly: named partial-argv shapes
+and the launcher script itself (no-arg path weakened to exit 0, made to print the
+environment, privileged mode dropped from the shebang). Those last three run against a
+**per-run sandbox tree**, laid out so the validator's own `__dirname/../../…` resolution lands
+inside it, never against the tracked file: an earlier revision mutated the real launcher in
+place behind a restoring trap, which is the wrong shape regardless of the edge cases — no trap
+survives SIGKILL, this repo's hooks fire constantly, and one of those variants stubs the
+no-argument path to `exit 0`. A test must not put a fail-open gate on disk, however briefly. It then drives the launcher directly: named partial-argv shapes
 (disposition only, disposition plus assignments, a relative program), and an **exhaustive
 prefix sweep** that takes a real registration argv out of `hooks.json` and feeds the launcher
 every proper prefix of it, requiring exit 2, an empty stdout, and no execution of a payload
@@ -269,10 +278,16 @@ once; this file is what keeps them proven.
 nudges still forward `PR_GRIND_CODEX_RETRIGGER` — the property whose loss the exemption
 exists to prevent.
 
-**Revisit trigger.** *Spent for R7 and R8 — both are closed above.* Remaining: Claude Code
-gaining a manifest-level minimum-version gate (would let the plugin refuse an old client
-outright rather than merely failing closed under one); refusing loader/shell-behaviour keys from repository-controlled `env` (retires R6
-upstream); or an exec-form launcher that fails closed on a missing operand (retires R8).
+**Revisit trigger.** *Spent for R7 and R8 — both are closed above, so the two triggers this
+ADR originally listed for them (a minimum-version gate that would retire R7, a launcher that
+fails closed on a missing operand that would retire R8) no longer apply.* What remains:
+Claude Code gaining a manifest-level minimum-version gate would still be worth taking, not to
+close R7 but to refuse an unsupported client outright rather than merely failing closed under
+one; Claude Code refusing loader and shell-behaviour keys from repository-controlled `env`
+would retire **R6** upstream; and migrating the 31 advisory registrations would *narrow* **R10** — not close it, since the
+two nudge exemptions are carriers too and cannot migrate while they are the only plane the
+`@codex review` kill switch still reaches. Closing R10 outright needs both: the advisories
+migrated, and a transport for that switch that survives `env -i`.
 
 ## Alternatives considered
 

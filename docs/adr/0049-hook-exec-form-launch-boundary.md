@@ -93,7 +93,36 @@ first shipped as accepted residuals fail CLOSED instead:
   That last one is the sharpest: every registration passes the wrapper path after
   `/bin/bash`, so a tail truncated to end exactly there leaves bash with no script — and a
   bash with no script and a non-tty stdin **reads its source from stdin**, which here is the
-  hook payload. Naming bare `/usr/bin/env` as `command`
+  hook payload. Counting operands is not sufficient on its own, though, and the shortfall was
+  found in review of this ADR's own implementation: `/bin/bash --`, `-s` and `-i` each supply
+  exactly one operand and still leave bash reading stdin, and `/bin/bash /dev/stdin` does the
+  same while being absolute. So the first operand must additionally be an absolute path, must
+  not reach a descriptor, and — **only if it
+  exists** — must be a regular file. The descriptor rule is about the file, not its name: a
+  first draft listed `/dev/stdin`, `/dev/fd/*` and `/proc/*/fd/*` literally, and review
+  measured `/dev/./stdin`, `/dev//stdin`, `/dev/../dev/stdin` and `/dev/fd/../fd/0` executing
+  a payload and exiting 0 straight past it. Spelling enumeration is unwinnable, so the rule
+  collapses repeated slashes, refuses any remaining `.` or `..` segment (no wrapper path needs
+  one, and refusing beats writing a normalizer that has to be exactly right to be a boundary),
+  and then refuses the whole `/dev` and `/proc` trees — a rule about the tree needs no
+  revision when a new alias for descriptor 0 appears. A lexical rule is still only half of it,
+  because the regular-file test *follows symlinks* while everything before it reads the path as
+  text: `/tmp/wrapper -> /dev/stdin` and `/tmp/d -> /dev` then `/tmp/d/stdin` were both measured
+  running the payload and exiting 0. So a symlinked final component is refused outright
+  (resolving the chain would need `readlink`, an external binary this script is designed not to
+  have) and the directory is resolved with `cd -P`/`pwd -P` — both builtins — before the tree
+  test is applied again to the physical path. All of that constrains the first OPERAND, which
+  helps only while the program being launched is the interpreter that would read it — and
+  `/usr/bin/env /bin/bash -s` breaks that assumption from outside every operand rule (measured:
+  payload executed, launcher exited 0). Chaining is unbounded, so the program is pinned to
+  `/bin/bash` instead: the contract already names one interpreter and all 17 registrations use
+  it, so pinning makes an existing rule executable rather than adding a new one, and collapses
+  every nesting shape into a single refusal. The existence condition is deliberate: a missing wrapper
+  has to keep reaching bash so it still becomes a 127 and **R8**'s disposition still decides
+  it, rather than the containment rule silently converting a missing wrapper on the two `open`
+  rows from allow to block. Containment does not depend on the distinction either way —
+  nothing has executed at that point, so these rules pick an exit status, never whether the
+  payload runs. Naming bare `/usr/bin/env` as `command`
   meant an args-dropping client ran `env` with no operands: an allow on every gate plus a
   per-event environment dump. That was **R7**.
 - **Its first argument is the launch-failure disposition** (`closed`, or `open` for the two
@@ -173,7 +202,15 @@ above and the residual list below; the revisit trigger for them is spent.
   execution**: bash with no script operand reads stdin, and stdin is the hook payload. A
   payload containing `$(touch …)` created the file, and bash then exited 0, so the gate
   allowed as well. Both refused now, along with a non-absolute program, and an exhaustive
-  prefix sweep over a real registration argv keeps them refused.
+  prefix sweep over a real registration argv keeps them refused. Review of the shipped
+  launcher then found the same execution reachable one door further in, past the arity check
+  rather than short of it: `/bin/bash --`, `-s`, `-i` and `/dev/stdin` each pass "at least one
+  operand" and still read the payload as source. A second review round then found the fix for
+  *that* refusing only the canonical spellings — `/dev/./stdin` and three siblings still ran
+  the payload — so the descriptor rule is now about path shape rather than a list of names.
+  The first operand is required to be an
+  absolute, non-descriptor path that is a regular file if it exists at all, with a named
+  regression case per form asserting exit 2, an empty stdout, and an unfired payload.
 - **R8 — CLOSED.** A missing or unreadable wrapper makes bash exit 127, which does not
   block, and the wrapper's own fail-closed paths cannot run when the wrapper never starts.
   The `|| exit 2` tail that used to convert that into a block cannot exist in exec form.
@@ -238,7 +275,7 @@ be `#!/bin/bash -p`, and it must still print its own refusal message under an im
 `printf` function — three checks because the R7 defence lives in that script, not in
 `hooks.json`, and a matrix that only mutates the JSON would leave the actual defence unproven.
 
-`tests/test-validate-hooks-launch-form.sh` drives **36 named mutations** against copies of the
+`tests/test-validate-hooks-launch-form.sh` drives **37 named mutations** against copies of the
 document and asserts the validator rejects each, with a green control so the suite cannot
 pass by rejecting everything: launch form (shell-form revert, dropped `-i`, reordered `-i`,
 empty `args`, `args` collapsed to one joined string, widened `PATH`, `async: true`, a
@@ -259,8 +296,22 @@ inside it, never against the tracked file: an earlier revision mutated the real 
 place behind a restoring trap, which is the wrong shape regardless of the edge cases — no trap
 survives SIGKILL, this repo's hooks fire constantly, and one of those variants stubs the
 no-argument path to `exit 0`. A test must not put a fail-open gate on disk, however briefly. It then drives the launcher directly: named partial-argv shapes
-(disposition only, disposition plus assignments, a relative program), and an **exhaustive
-prefix sweep** that takes a real registration argv out of `hooks.json` and feeds the launcher
+(disposition only, disposition plus assignments, a relative program), the **stdin-reading
+operand** forms that survive the arity check (`/bin/bash` given `--`, `-s`, `-i`,
+`/dev/stdin` or `/dev/fd/0` — `-c` rides along in the same sweep but is not one of them:
+bash exits 2 with "option requires an argument" and never opens fd 0, so it is refused a door
+earlier by the absolute-path rule), each paired with five further SPELLINGS of the same two
+descriptors (`/dev/./stdin`, `/dev//stdin`, `/dev/../dev/stdin`, `/dev/fd/../fd/0`,
+`/proc/self/fd/0`) so that a rule about path shape, not a list of names, is what refuses them.
+A hand-written list is what failed here twice, so the spellings are also **generated** — every
+combination of slash run, dot-segment prefix and descriptor name — and two **filesystem
+aliases** (a symlinked final component and a symlinked directory component) cover the case no
+lexical rule can see, alongside **nested interpreters** (`/usr/bin/env /bin/bash -s`), which no
+operand rule can see. Every one of those rows asserts WHICH RULE refused it, not merely that
+something did: most of these paths name nothing that exists, and a nonexistent operand under
+the `closed` disposition already produces exit 2 with no output — the success condition — so a
+status-only assertion would stay green with the guard deleted. Two R8 assertions are paired with them: a missing wrapper, and a wrapper
+under a directory that does not exist, both of which must still reach bash, and an **exhaustive prefix sweep** that takes a real registration argv out of `hooks.json` and feeds the launcher
 every proper prefix of it, requiring exit 2, an empty stdout, and no execution of a payload
 whose command substitution would fire if anything interpreted it as shell source. The sweep
 is what caught the prefix ending at `/bin/bash`; the hand-written list had missed it. Positive

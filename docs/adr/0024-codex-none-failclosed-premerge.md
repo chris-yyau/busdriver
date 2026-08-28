@@ -245,7 +245,11 @@ here.
   bounded read-only check. On an *active* repo that stayed `none` this duplicates
   COMPLETION's warning (harmless, idempotent); on a **force-on-only** repo it is the
   sole warning even on the marker path (COMPLETION requires auto-detected active).
-  Skipped entirely under the kill switch.
+  *Amended by ADR 0049 (#713, residual R9):* the kill switch no longer skips this — the
+  exec-form registration cannot forward `PR_GRIND_CODEX_RETRIGGER`, so an operator with
+  `=0` still gets the bounded read and the read-only advisory here. `=0` continues to
+  suppress the outbound `@codex review` nudge registrations, which stayed shell-form for
+  exactly that reason; only the advisory survives it.
 - **No new way to wedge a merge** — the block set is unchanged; purely additive
   read-only output on allow paths.
 - The `⚠️` may become wallpaper if ignored — accepted for an advisory signal on a

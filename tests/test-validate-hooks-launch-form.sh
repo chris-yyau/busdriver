@@ -439,8 +439,177 @@ done
 _prc=$?
 _rc=1; [[ "$_prc" -eq 2 ]] && _rc=0
 assert "$_rc" "a non-absolute program is refused, failing CLOSED (got $_prc)"
+# ── STDIN-READING OPERANDS, the arity check's blind spot ───────────────────────────
+# The "at least one operand" rule above is satisfied by `/bin/bash --`, `-s` and `-i` — each
+# is exactly one operand, and each leaves bash reading its source from STDIN, i.e. from the
+# hook payload. `/bin/bash /dev/stdin` does the same while being absolute, so a path-shape
+# rule alone does not catch it either. Assert exit 2, an empty stdout, AND that the payload's
+# command substitution never ran: a rejection that still executed the payload is not a fix.
+#
+# The second half of the list is the SPELLING sweep, and it is the half that found a real
+# hole. A rule written as `case … in /dev/stdin|/dev/fd/*)` compares strings, so it refused
+# the canonical name and let `/dev/./stdin`, `/dev//stdin`, `/dev/../dev/stdin` and
+# `/dev/fd/../fd/0` through to bash — each of them measured executing the payload and exiting
+# 0. Enumerating spellings is not the fix (there are infinitely many), but enumerating a few
+# here is what keeps the shape rule that replaced it honest: every entry below must be refused
+# by a rule about path SHAPE, never by having been listed.
+#
+# `-c` is in the list for completeness, not because it reads stdin: bash exits 2 with
+# "option requires an argument" and never opens fd 0 (measured). It is refused here by the
+# absolute-path rule, one door earlier, and would fail closed even without these rules.
+_STDIN_SENTINEL="$TMP/stdin-operand-executed"
+_STDIN_PAYLOAD="$(printf '{"tool_input":{"command":"x"}}\n$(touch %s)\n' "$_STDIN_SENTINEL")"
+for _op in -- -s -i -c /dev/stdin /dev/fd/0 \
+           /dev/./stdin /dev//stdin /dev/../dev/stdin /dev/fd/../fd/0 /proc/self/fd/0; do
+    rm -f "$_STDIN_SENTINEL"
+    printf '%s' "$_STDIN_PAYLOAD" > "$TMP/stdin-operand-payload"
+    _out="$("$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash "$_op" \
+        <"$TMP/stdin-operand-payload" 2>/dev/null)"
+    _prc=$?
+    _rc=1; [[ "$_prc" -eq 2 ]] && _rc=0
+    assert "$_rc" "stdin-reading operand [/bin/bash $_op] fails CLOSED (exit 2, got $_prc)"
+    _rc=1; [[ -z "$_out" ]] && _rc=0
+    assert "$_rc" "stdin-reading operand [/bin/bash $_op] writes nothing to stdout"
+    _rc=1; [[ ! -e "$_STDIN_SENTINEL" ]] && _rc=0
+    assert "$_rc" "stdin-reading operand [/bin/bash $_op] never executes the payload"
+done
+rm -f "$_STDIN_SENTINEL"
+# ── NESTED INTERPRETERS, where operand rules cannot reach ──────────────────────────
+# Every rule above constrains the first OPERAND, which only helps while the program being
+# launched is the interpreter that would read it. `/usr/bin/env /bin/bash -s` breaks that
+# assumption from the outside: the program is absolute, the first operand is `/bin/bash` (as
+# unimpeachable as an operand gets), and the inner `env` then runs `bash -s` on the payload.
+# Measured before the interpreter pin: the payload ran and the launcher exited 0. Chaining is
+# unbounded, so these rows assert the refusal comes from the PIN — the only rule that does not
+# have to imagine the shape in advance.
+for _chain in "/usr/bin/env /bin/bash -s" "/usr/bin/env /bin/bash" "/bin/sh /bin/bash -s"; do
+    rm -f "$_STDIN_SENTINEL"
+    printf '%s' "$_STDIN_PAYLOAD" > "$TMP/stdin-operand-payload"
+    # shellcheck disable=SC2086  # deliberate word split: $_chain is a fixed argv, not user input
+    _err="$("$LAUNCHER" closed PATH=/usr/bin:/bin $_chain \
+        <"$TMP/stdin-operand-payload" 2>&1 >"$TMP/stdin-operand-stdout")"
+    _prc=$?
+    _out="$(cat "$TMP/stdin-operand-stdout")"
+    _rc=1; [[ "$_prc" -eq 2 && -z "$_out" && ! -e "$_STDIN_SENTINEL" ]] && _rc=0
+    assert "$_rc" "nested interpreter [$_chain] fails CLOSED, silent, payload unfired (got $_prc)"
+    _rc=1; [[ "$_err" == *'names'*'/bin/bash as the interpreter'* ]] && _rc=0
+    assert "$_rc" "nested interpreter [$_chain] is refused BY THE INTERPRETER PIN"
+done
+rm -f "$_STDIN_SENTINEL"
+
+# ── GENERATED spellings, because a hand-written list is what failed here twice ──────
+# The list above is a list, and both holes in this rule were found by someone thinking of a
+# spelling nobody had listed. So generate the space instead of enumerating it: every
+# combination of a slash run, a dot-segment prefix and a descriptor name is a different string
+# naming the same file, and all of them must be refused by a rule about SHAPE. A future edit
+# that reverts to matching names will fail dozens of these at once rather than passing because
+# it happened to cover the six that were written down.
+#
+# Each row also asserts WHICH RULE refused it, and that is not decoration. Most of these
+# spellings name nothing that exists — `/dev/anydir/../stdin` fails pathname resolution at
+# `anydir` long before `..` is reached — and a nonexistent operand under the `closed`
+# disposition produces exit 2, no output and no sentinel all by itself, because bash's 127 is
+# converted. That is the success condition, so a status-only row would stay green with the
+# path-shape guard deleted entirely. Naming the expected refusal is what makes the row test
+# the guard rather than the disposition.
+for _name in stdin fd/0; do
+    for _sep in / // ///; do
+        for _prefix in '' . ./. anydir/..; do
+            _spelling="/dev${_sep}${_prefix:+$_prefix/}${_name}"
+            # A dot segment is refused for BEING a dot segment, before anything looks at the
+            # filesystem; everything else survives to the tree test.
+            case "$_prefix" in
+                '') _want='it is under /dev or /proc' ;;
+                *)  _want="carries a '.' or '..' segment" ;;
+            esac
+            rm -f "$_STDIN_SENTINEL"
+            printf '%s' "$_STDIN_PAYLOAD" > "$TMP/stdin-operand-payload"
+            _err="$("$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash "$_spelling" \
+                <"$TMP/stdin-operand-payload" 2>&1 >"$TMP/stdin-operand-stdout")"
+            _prc=$?
+            _out="$(cat "$TMP/stdin-operand-stdout")"
+            _rc=1; [[ "$_prc" -eq 2 && -z "$_out" && ! -e "$_STDIN_SENTINEL" ]] && _rc=0
+            assert "$_rc" \
+                "generated spelling [$_spelling] fails CLOSED, silent, payload unfired (got $_prc)"
+            _rc=1; [[ "$_err" == *"$_want"* ]] && _rc=0
+            assert "$_rc" "generated spelling [$_spelling] is refused for the right reason"
+        done
+    done
+done
+rm -f "$_STDIN_SENTINEL"
+# ── FILESYSTEM ALIASES, where the lexical rule alone is not enough ──────────────────
+# Every check above reads the path as text; the regular-file check that follows them FOLLOWS
+# SYMLINKS. So an alias reaches the descriptor without spelling it, and both shapes were
+# measured executing the payload and exiting 0 before this was closed: a symlinked FINAL
+# component, and a symlinked DIRECTORY component. They are refused by two different rules —
+# the final component because a symlink is refused outright, the directory because it is
+# resolved with `cd -P`/`pwd -P` before the tree test — so both need their own row.
+#
+# Two things about these rows are load-bearing and were both got wrong first time.
+#
+# The setup MUST be asserted. Every success condition below — exit 2, empty stdout, no
+# sentinel — is ALSO what a missing wrapper produces under the `closed` disposition, which
+# converts bash's 127. So an `ln` that silently failed would leave these rows green while
+# testing nothing at all: a security test that passes because its fixture is absent.
+#
+# And the directory row cannot be isolated by choosing a clever target, which is where two
+# attempts at it went wrong. Naming `stdin` under the aliased directory is refused by `-L` one
+# rule early, because `/dev/stdin` is itself a symlink on both platforms. Naming `fd/0` is
+# worse than it looks: on Linux `/dev/fd` resolves through `/proc/self/fd` and the entries
+# there are symlinks too, so the row passes for the wrong reason on macOS and fails outright
+# on CI. And every remaining entry under `/dev` is a device node, which the regular-file rule
+# would refuse on its own even with the directory defence deleted.
+#
+# So isolate on the REFUSAL, not on the fixture: assert which rule spoke. `/dev/null` exists
+# and is not a symlink everywhere this runs, and the physical-directory rule is the only one
+# that says "its directory resolves to". Delete that rule and the row goes red on the message
+# even though the status would still be 2 — which is exactly the discrimination the fixture
+# could not give us portably. (Verified in both directions against a sandbox copy of the
+# launcher with only the `physical_dir=` block neutered: the alias then executed the payload
+# and exited 0.)
+ln -sf /dev/stdin "$TMP/alias-to-stdin"
+_rc=1; [[ -L "$TMP/alias-to-stdin" ]] && _rc=0
+assert "$_rc" "fixture: the final-component alias was actually created as a symlink"
+rm -rf "$TMP/alias-to-dev" && ln -sf /dev "$TMP/alias-to-dev"
+_rc=1; [[ -L "$TMP/alias-to-dev" && -e "$TMP/alias-to-dev/null" ]] && _rc=0
+assert "$_rc" "fixture: the directory alias was created and resolves into /dev"
+_err="$("$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash "$TMP/alias-to-dev/null" </dev/null 2>&1 >/dev/null)"
+_rc=1; [[ "$_err" == *"its directory resolves to"* ]] && _rc=0
+assert "$_rc" "the directory alias is refused BY THE PHYSICAL-DIRECTORY RULE, not by a later one"
+for _alias in "$TMP/alias-to-stdin" "$TMP/alias-to-dev/null"; do
+    rm -f "$_STDIN_SENTINEL"
+    printf '%s' "$_STDIN_PAYLOAD" > "$TMP/stdin-operand-payload"
+    _out="$("$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash "$_alias" \
+        <"$TMP/stdin-operand-payload" 2>/dev/null)"
+    _prc=$?
+    _rc=1; [[ "$_prc" -eq 2 ]] && _rc=0
+    assert "$_rc" "symlink alias [${_alias##*/tmp.}] fails CLOSED (exit 2, got $_prc)"
+    _rc=1; [[ -z "$_out" ]] && _rc=0
+    assert "$_rc" "symlink alias [${_alias##*/tmp.}] writes nothing to stdout"
+    _rc=1; [[ ! -e "$_STDIN_SENTINEL" ]] && _rc=0
+    assert "$_rc" "symlink alias [${_alias##*/tmp.}] never executes the payload"
+done
+rm -f "$_STDIN_SENTINEL"
+# The alias rules must not swallow R8 either, and this is the case that distinguishes
+# "refuse what cannot be resolved" from "refuse what resolves somewhere dangerous": a wrapper
+# under a directory that does not exist has no physical path at all. It still has to reach
+# bash, become a 127, and let the disposition decide — otherwise the containment rule has
+# quietly retired R8 for every registration whose plugin root is temporarily absent.
+"$LAUNCHER" open PATH=/usr/bin:/bin /bin/bash "$TMP/absent-dir/wrapper.sh" x </dev/null >/dev/null 2>&1
+_prc=$?
+_rc=1; [[ "$_prc" -eq 0 ]] && _rc=0
+assert "$_rc" "a wrapper under a MISSING directory still reaches bash; open allows (got $_prc)"
+# The same rule must not swallow R8: a MISSING wrapper is absolute and non-existent, so it
+# still reaches bash, still becomes a 127, and the disposition still decides it. Asserting
+# both halves here keeps the containment rule from quietly becoming a policy change on the
+# two `open` rows.
+"$LAUNCHER" open PATH=/usr/bin:/bin /bin/bash "$TMP/absent-wrapper.sh" x </dev/null >/dev/null 2>&1
+_prc=$?
+_rc=1; [[ "$_prc" -eq 0 ]] && _rc=0
+assert "$_rc" "a missing wrapper still reaches bash and the open disposition allows (got $_prc)"
 # Positive control: the full argv still runs, so the rows above are not just "everything blocks".
-"$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash -c 'exit 0' </dev/null >/dev/null 2>&1
+printf '#!/bin/bash\nexit 0\n' > "$TMP/control-wrapper.sh" && chmod +x "$TMP/control-wrapper.sh"
+"$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash "$TMP/control-wrapper.sh" </dev/null >/dev/null 2>&1
 _prc=$?
 _rc=1; [[ "$_prc" -eq 0 ]] && _rc=0
 assert "$_rc" "control: the complete argv still runs and allows (got $_prc)"

@@ -257,15 +257,20 @@ assert "$_rc" "R8: the open disposition still allows on launch failure — the 2
 
 # The conversion must not swallow a real decision: 0 and 2 pass straight through, or the
 # launcher would turn every allow into a block (or worse, every block into an allow).
-"$_launcher" closed PATH=/usr/bin:/bin /bin/bash -c 'exit 0' </dev/null >/dev/null 2>&1
+# These probes run REAL wrapper files rather than `/bin/bash -c '…'`: an option operand is
+# now refused before launch (it would otherwise leave bash reading the hook payload from
+# stdin), so `-c` would exercise the refusal path instead of the status conversion.
+printf '#!/bin/bash\nexit 0\n' > "$TMP/rc0-wrapper.sh" && chmod +x "$TMP/rc0-wrapper.sh"
+printf '#!/bin/bash\nexit 2\n' > "$TMP/rc2-wrapper.sh" && chmod +x "$TMP/rc2-wrapper.sh"
+"$_launcher" closed PATH=/usr/bin:/bin /bin/bash "$TMP/rc0-wrapper.sh" </dev/null >/dev/null 2>&1
 _pass_rc=$?
 _rc=1; [[ "$_pass_rc" -eq 0 ]] && _rc=0
 assert "$_rc" "launcher passes an ALLOW (0) through untouched (got rc=$_pass_rc)"
-"$_launcher" closed PATH=/usr/bin:/bin /bin/bash -c 'exit 2' </dev/null >/dev/null 2>&1
+"$_launcher" closed PATH=/usr/bin:/bin /bin/bash "$TMP/rc2-wrapper.sh" </dev/null >/dev/null 2>&1
 _blk_rc=$?
 _rc=1; [[ "$_blk_rc" -eq 2 ]] && _rc=0
 assert "$_rc" "launcher passes a BLOCK (2) through untouched (got rc=$_blk_rc)"
-"$_launcher" bogus PATH=/usr/bin:/bin /bin/bash -c 'exit 0' </dev/null >/dev/null 2>&1
+"$_launcher" bogus PATH=/usr/bin:/bin /bin/bash "$TMP/rc0-wrapper.sh" </dev/null >/dev/null 2>&1
 _bogus_rc=$?
 _rc=1; [[ "$_bogus_rc" -eq 2 ]] && _rc=0
 assert "$_rc" "launcher refuses an unknown disposition, failing CLOSED (got rc=$_bogus_rc)"

@@ -60,7 +60,7 @@ Full consumption semantics, the audit event taxonomy, and the per-repo opt-in fi
 
 ## Reviewers and agents
 
-40 agents and 38 skills ship with the plugin. Language pattern libraries and framework guides do not — the model covers those (ADR 0048). What remains per domain is the reviewer or build-resolver the pipeline dispatches:
+40 agents and 37 skills ship with the plugin. Language pattern libraries and framework guides do not — the model covers those (ADR 0048). What remains per domain is the reviewer or build-resolver the pipeline dispatches:
 
 | Domain | Reviewer | Build resolver |
 |--------|----------|---------------|
@@ -79,7 +79,7 @@ claude plugin marketplace add github:chris-yyau/busdriver
 claude plugin install busdriver@busdriver
 ```
 
-**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as an optional review backend.
+**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as the Auditor-role review backend (`BUSDRIVER_REVIEW_CLI=opencode` is rejected for every other role).
 
 ## Review CLI
 
@@ -93,6 +93,8 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 | `droid` | Droid CLI |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
 | `none` | Disable the review gate (logs a warning on every commit) |
+
+`opencode` is accepted here too, but only for the Auditor role — it always runs the fixed read-only Auditor harness and is rejected for the ordinary review gate.
 
 **Without any external CLI:** auto-detection falls back to the built-in code-reviewer agent. Commits are still reviewed, but by the same model that wrote the code — less independent. Run `node scripts/doctor.js` to see your effective reviewer.
 
@@ -163,12 +165,12 @@ For council, fallback preserves availability but dilutes role identity (Droid fi
 
 ## Credits
 
-Busdriver is built on two upstream projects, and still carries their code directly — 320 files at last count, tracked file-by-file in `.upstream-sources.json` and kept current by the `sync-upstream` tooling:
+Busdriver is built on two upstream projects, and still carries their code directly — 319 files at last count, tracked file-by-file in `.upstream-sources.json` and kept current by the `sync-upstream` tooling:
 
 - **[Superpowers](https://github.com/obra/superpowers)** (MIT) by Jesse Vincent — the pipeline backbone: brainstorming, planning, systematic debugging, worktrees, verification, skill authoring
 - **[Everything Claude Code](https://github.com/affaan-m/everything-claude-code)** (MIT) by Affaan Mustafa — agents, commands, hooks, session and install tooling
 
-Smaller borrowings are credited in the files that carry them: `careful-guard.sh` names its gstack ([garrytan/gstack](https://github.com/garrytan/gstack), MIT) origin in its header, and each supplement in `skills/supplements/` records its source in frontmatter.
+Smaller borrowings are credited where they land: `skills/grill-me/` comes from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT) and is tracked in the same manifest; `careful-guard.sh` names its gstack ([garrytan/gstack](https://github.com/garrytan/gstack), MIT) origin in its header, and each supplement in `skills/supplements/` records its source in frontmatter.
 
 ## Contributing
 

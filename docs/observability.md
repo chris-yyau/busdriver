@@ -63,7 +63,7 @@ tail -10 .claude/bypass-log.jsonl | jq .
 # Count bypasses by event type
 jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
 
-# What pre-merge activity did the gate record for PR 666? (#667 — no output
+# What did the gate record for PR 666, pre- and post-merge? (#667 — no output
 # means it never authorized a merge. Output is recorded activity, not proof of
 # authorization: a `skip-pr-grind-claimed` row can survive an attempt the gate
 # went on to block, so read it with its matching -consumed/-released event.
@@ -71,8 +71,8 @@ jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
 # whether it was merged from a shell outside Claude Code, where no PreToolUse
 # hook fires. A blocked attempt normally leaves no record either, so absence
 # alone does not distinguish "never attempted" from "attempted and refused".)
-jq -r --arg pr 666 'select(.gate == "pre-merge" and (.pr | tostring) == $pr)
-  | "\(.ts) \(.event)"' .claude/bypass-log.jsonl
+jq -r --arg pr 666 'select((.gate == "pre-merge" or .gate == "post-merge")
+  and (.pr | tostring) == $pr) | "\(.ts) \(.gate) \(.event)"' .claude/bypass-log.jsonl
 
 # Seatbelt scanner bypasses (which scanner + env var)
 jq -r 'select(.event == "seatbelt-skip") | "\(.scanner) via \(.reason) at \(.ts)"' .claude/bypass-log.jsonl
@@ -82,7 +82,7 @@ Use these monthly to identify drift — scanners you keep bypassing (candidates 
 
 ## Skip-file semantics
 
-Deep semantics live with the gate that owns each file. All are gitignored and operator-created, and a file created within 30 seconds is rejected. That age check is a heuristic, not prevention: it detects a just-created skip file and raises the cost of an agent self-bypass (which would have to create the file and then wait), rather than making one impossible.
+Deep semantics live with the gate that owns each file. All are gitignored and *intended* to be operator-created — nothing here proves a human wrote one — and a file created within 30 seconds is rejected. That age check is a heuristic, not prevention: it detects a just-created skip file and raises the cost of an agent self-bypass (which would have to create the file and then wait), rather than making one impossible.
 
 | File | Consumption | Source of truth |
 |------|-------------|-----------------|

@@ -28,7 +28,7 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 Six blocking gates plus one advisory guard, all hook-enforced. The six emit `{"decision":"block"}` from a PreToolUse hook, so the harness rejects the tool call — Claude cannot rationalize its way past them — and they fail **closed**: a gate that errors blocks rather than waving the operation through.
 
-Careful guard is the deliberate exception. It emits `permissionDecision: ask` to raise a confirmation prompt rather than blocking, and it fails **open** on internal error, so a bug in it cannot wedge every Bash call in the session.
+Careful guard is the deliberate exception. It emits `permissionDecision: ask` to raise a confirmation prompt rather than blocking, and its own `ERR` trap fails **open**, so a runtime bug inside the guard returns an empty decision instead of wedging every Bash call in the session. That guarantee is bounded by the trap: a failure *before* the trap can run — a syntax error, a missing script, a sanitized-wrapper failure — never produces a decision, so `contained-launch.sh` applies this registration's declared `closed` disposition and blocks.
 
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|

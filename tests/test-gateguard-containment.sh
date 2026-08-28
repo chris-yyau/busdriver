@@ -95,19 +95,35 @@ GG_ENABLED="$GG_ROOT/enabled"
 # hooks.json:151/161 left this suite fully green, because the suite never read the
 # registration it claims to validate. Demonstrated by doing exactly that and watching
 # 18/18 still pass. The command is now EXTRACTED from hooks.json and executed, so the
-# containment prefix, the wrapper reference, the flag, the profile CSV and the `|| exit 0`
-# tail are all live inputs rather than restated constants.
-hooks_command_for() {  # hooks_command_for <hook_id>  -> the registration's command string
+# containment prefix, the wrapper reference, the flag and the profile CSV are all live
+# inputs rather than restated constants. (#713 removed the `|| exit 0` tail: exec form has
+# no shell to interpret one, so its ABSENCE is what is pinned now — see R8.)
+# #713: registrations are exec form (`command` + `args`), so the hook id now lives in an
+# `args` element and a `typeof o.command === "string" && o.command.includes(id)` selector
+# matches NOTHING. Emit the whole argv, one element per line, so callers can both
+# pattern-match it and EXECUTE it without a shell.
+hooks_argv_for() {  # hooks_argv_for <hook_id>  -> one argv element per line
+    # ${CLAUDE_PLUGIN_ROOT} is resolved HERE, exactly as Claude Code resolves it into each
+    # argv element before spawning. Under the old `bash -c "$cmd"` the outer shell expanded
+    # it from the environment as a side effect; exec form has no shell, so an unsubstituted
+    # element reaches /bin/bash as the LITERAL string `${CLAUDE_PLUGIN_ROOT}/…`, which is
+    # not a file — bash exits 127 and every row below passes for the wrong reason (the
+    # NODE_OPTIONS sentinel row especially: node never runs, so the probe cannot fire).
+    # shellcheck disable=SC2016  # single-quoted ON PURPOSE: every `$` below is JavaScript.
     node -e '
       const fs=require("fs");
       const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
-      const id=process.argv[2], cmds=[];
+      const id=process.argv[2], root=process.argv[3], vecs=[];
       (function walk(o){ if(Array.isArray(o)) o.forEach(walk);
-        else if(o&&typeof o==="object"){ if(typeof o.command==="string"&&o.command.includes(id)) cmds.push(o.command);
+        else if(o&&typeof o==="object"){
+          if(typeof o.command==="string"){
+            const argv=[o.command].concat(Array.isArray(o.args)?o.args:[]);
+            if(argv.some(a=>typeof a==="string"&&a.includes(id))) vecs.push(argv);
+          }
           Object.values(o).forEach(walk); } })(j);
-      if(cmds.length!==1){ process.stderr.write("expected 1 command for "+id+", got "+cmds.length+"\n"); process.exit(1); }
-      process.stdout.write(cmds[0]);
-    ' "$REPO_ROOT/hooks/hooks.json" "$1"
+      if(vecs.length!==1){ process.stderr.write("expected 1 registration for "+id+", got "+vecs.length+"\n"); process.exit(1); }
+      process.stdout.write(vecs[0].map(a=>a.split("${CLAUDE_PLUGIN_ROOT}").join(root)).join("\n"));
+    ' "$REPO_ROOT/hooks/hooks.json" "$1" "$REPO_ROOT"
 }
 
 # A NODE_OPTIONS probe: `--require` runs BEFORE the hook's first line, so it is a
@@ -145,8 +161,17 @@ state_file_name_for() {
 # pre-existing ~/.gateguard forces the marker-free branch where the readers are unreachable;
 # on CI, whose home is fresh, it would have aborted every run before a single enrolled row.
 run_contained() {  # run_contained <hook_id> <payload> ; echoes stdout, RETURNS rc
-    local hook_id="$1" payload="$2" cmd out rc
-    cmd="$(hooks_command_for "$hook_id")" || return 99
+    local hook_id="$1" payload="$2" out rc
+    # #713: exec form. Read the argv into an array and run it DIRECTLY. The old
+    # `bash -c "$cmd"` reintroduced the very outer shell this migration removes, so it
+    # could not have observed a SHELLOPTS/BASH_FUNC bypass even in principle.
+    local -a argv=()
+    local _argv_raw
+    # Capture first, then split: a process substitution's exit status is invisible to the
+    # `while`, so a lookup failure would silently yield an empty argv and a bogus PASS.
+    _argv_raw="$(hooks_argv_for "$hook_id")" || return 99
+    while IFS= read -r _el; do argv+=("$_el"); done <<<"$_argv_raw"
+    [[ ${#argv[@]} -ge 2 ]] || return 99
     out="$(
         printf '%s' "$payload" | \
         ECC_HOOK_PROFILE=standard \
@@ -160,7 +185,7 @@ run_contained() {  # run_contained <hook_id> <payload> ; echoes stdout, RETURNS 
         GIT_DIR=/nonexistent GIT_WORK_TREE=/nonexistent GIT_CONFIG_GLOBAL=/nonexistent \
         CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
         CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
-        bash -c "$cmd" 2>/dev/null
+        "${argv[@]}" 2>/dev/null
     )"
     rc=$?
     printf '%s' "$out"
@@ -183,16 +208,27 @@ edit_payload() {  # edit_payload <session> <cwd>
 echo "── registration + wrapper-disposition rows (no marker needed)"
 
 # The registrations must reach the hook only through the wrapper.
-# The ANCHORED TUPLE #629 keys on, asserted per registration: a leading `/usr/bin/env -i`,
-# the exact wrapper reference, the disposition flag, the profile CSV, and the matching outer
-# tail. Checked structurally, not by a line grep — and the execution rows above now depend on
-# these same strings, so a shape regression breaks both.
+# The ANCHORED TUPLE #629 keys on, asserted per registration: the first hop, its declared
+# launch-failure disposition, the exact wrapper reference, the wrapper's own disposition flag
+# and the profile CSV. Checked structurally, not by a line grep — and the execution rows above
+# depend on these same strings, so a shape regression breaks both.
+#
+# #713: `/usr/bin/env -i` is no longer the FIRST hop. `command` is contained-launch.sh, which
+# supplies `env -i` itself; naming env as `command` was residual R7 (a client that drops
+# `args` runs bare env, which exits 0 and prints the environment). These two rows are also
+# the only two allowed the `open` disposition, so the assertion pins that too — a silent flip
+# to `closed` would change what happens when GateGuard cannot launch.
+LAUNCH_PREFIX="$REPO_ROOT/hooks/gate-scripts/lib/contained-launch.sh open PATH=/usr/bin:/bin "
 for _id in "$EDIT_HOOK_ID" "$BASH_HOOK_ID"; do
-    _cmd="$(hooks_command_for "$_id")" || _cmd=""
+    _cmd="$(hooks_argv_for "$_id" | tr '\n' ' ')"; _cmd="${_cmd% }" || _cmd=""
     assert_true test -n "$_cmd" "hooks.json has exactly one command for $_id"
     case "$_cmd" in
-        "/usr/bin/env -i "*) assert 0 "$_id starts with /usr/bin/env -i (containment prefix)" ;;
-        *) assert 1 "$_id starts with /usr/bin/env -i (containment prefix)" ;;
+        "$LAUNCH_PREFIX"*) assert 0 "$_id starts with contained-launch.sh + the open disposition (#713)" ;;
+        *) assert 1 "$_id starts with contained-launch.sh + the open disposition (#713)" ;;
+    esac
+    case "$_cmd" in
+        *" /usr/bin/env "*) assert 1 "$_id does not name /usr/bin/env in its argv (the launcher supplies env -i) — R7" ;;
+        *) assert 0 "$_id does not name /usr/bin/env in its argv (the launcher supplies env -i) — R7" ;;
     esac
     case "$_cmd" in
         *"hooks/gate-scripts/lib/sanitized-node.sh"*) assert 0 "$_id launches through sanitized-node.sh" ;;
@@ -203,12 +239,15 @@ for _id in "$EDIT_HOOK_ID" "$BASH_HOOK_ID"; do
         *) assert 1 "$_id carries the --fail-open disposition" ;;
     esac
     case "$_cmd" in
-        *'"minimal,standard,strict"'*) assert 0 "$_id passes the full profile CSV" ;;
+        *"minimal,standard,strict"*) assert 0 "$_id passes the full profile CSV" ;;
         *) assert 1 "$_id passes the full profile CSV" ;;
     esac
+    # #713 / R8: exec form has no shell, so the `|| exit 0` tail is GONE, not preserved.
+    # The fail-open disposition is carried solely by the wrapper's own --fail-open operand
+    # (asserted above). Pin the tail's ABSENCE so a revert to shell form fails loudly.
     case "$_cmd" in
-        *"|| exit 0") assert 0 "$_id ends with the fail-open tail || exit 0" ;;
-        *) assert 1 "$_id ends with the fail-open tail || exit 0" ;;
+        *"|| exit"*) assert 1 "$_id carries no shell tail (exec form, #713)" ;;
+        *) assert 0 "$_id carries no shell tail (exec form, #713)" ;;
     esac
     case "$_cmd" in
         *"run-with-flags.js"*) assert 1 "$_id does not invoke the runner directly (bare node)" ;;
@@ -218,11 +257,16 @@ done
 
 # Counted over hook COMMAND strings only, not raw lines: the descriptions mention the flag
 # too, and a line grep would score 4 and pass for the wrong reason.
+# shellcheck disable=SC2016  # the node script is single-quoted ON PURPOSE: `$` inside it
+# belongs to JavaScript, and letting the shell expand it would rewrite the program.
 _counts=$(node -e '
   const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
   const cmds=[];
+  // #713: exec form — the flag lives in `args`, so join the whole argv per registration.
   (function walk(o){ if(Array.isArray(o)) o.forEach(walk);
-    else if(o&&typeof o==="object"){ if(typeof o.command==="string") cmds.push(o.command);
+    else if(o&&typeof o==="object"){
+      if(typeof o.command==="string")
+        cmds.push([o.command].concat(Array.isArray(o.args)?o.args:[]).join(" "));
       Object.values(o).forEach(walk); } })(j);
   const fo=cmds.filter(c=>c.includes("--fail-open"));
   process.stdout.write([fo.length, fo.filter(c=>/gateguard/.test(c)).length,
@@ -281,8 +325,16 @@ csv_ok=$(node -e '
   const src=fs.readFileSync(process.argv[1],"utf8");
   const valid=[...src.matchAll(/VALID_PROFILES = new Set\(\[([^\]]*)\]/g)][0][1]
       .split(",").map(s=>s.trim().replace(/^.|.$/g,"")).sort().join(",");
-  const hooks=fs.readFileSync(process.argv[2],"utf8");
-  const csvs=[...hooks.matchAll(/gateguard-fact-force\.js\\" \\"([a-z,]+)\\"/g)].map(m=>m[1]);
+  // #713: exec form — read the operand structurally; a text regex over the raw JSON
+  // cannot see argv elements that are separate JSON strings.
+  const doc=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));
+  const csvs=[];
+  (function walk(o){ if(Array.isArray(o)) o.forEach(walk);
+    else if(o&&typeof o==="object"){
+      const argv=Array.isArray(o.args)?[o.command].concat(o.args):null;
+      if(argv){ const i=argv.findIndex(a=>typeof a==="string"&&a.endsWith("gateguard-fact-force.js"));
+                if(i>=0&&typeof argv[i+1]==="string") csvs.push(argv[i+1]); }
+      Object.values(o).forEach(walk); } })(doc);
   const ok=csvs.length===2 && csvs.every(c=>c.split(",").sort().join(",")===valid);
   process.stdout.write(ok?"1":"0");
 ' "$REPO_ROOT/scripts/lib/hook-flags.js" "$REPO_ROOT/hooks/hooks.json" 2>/dev/null || echo 0)

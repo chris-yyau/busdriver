@@ -151,6 +151,38 @@ SHELL_GATE = re.compile(
     r'/usr/bin/env -i PATH=/usr/bin:/bin ' + ASSIGN +
     r'bash "' + ROOT + r'/hooks/gate-scripts/lib/sanitized-gate\.sh" [A-Za-z0-9._-]+\.sh'
 )
+# ── EXEC-FORM shapes (#713) ────────────────────────────────────────────────────────────
+# The contained registrations no longer go through `/bin/sh -c`: they are `command` +
+# `args`, spawned as a direct argv. `commands()` below canonicalizes such a registration
+# to a single space-joined string so the shape allowlist stays ONE mechanism rather than
+# two parallel ones. The operands are unquoted here because an argv element carries no
+# shell quoting — that absence is the entire point of the migration.
+#
+# The `|| exit N` tail CANNOT exist in exec form (there is no shell to interpret it), so
+# blocking-ness is no longer readable from a trailing string. It is carried by TWO fields
+# that must agree: the launcher's declared DISPOSITION (first argument, `closed` or `open`)
+# and the wrapper's own `--fail-open` flag. The launcher converts any status that is not a
+# decision — 127 for a missing wrapper, 126, 1 — into that disposition, which is what the
+# tail used to do. See #713 / R8 and tests/test-gate-env-containment.sh.
+#
+# The shape below requires BOTH, so a registration whose two halves disagree fails to match
+# and is reported unrecognized rather than silently classified by one of them.
+EXEC_ASSIGN = r'(?:[A-Z_][A-Z0-9_]*=[^ ]* )*'
+LAUNCH = ROOT + r'/hooks/gate-scripts/lib/contained-launch\.sh'
+EXEC_NODE_GATE_CLOSED = re.compile(
+    LAUNCH + r' closed PATH=/usr/bin:/bin ' + EXEC_ASSIGN +
+    r'/bin/bash ' + ROOT + r'/hooks/gate-scripts/lib/sanitized-node\.sh '
+    r'([a-z0-9:._-]+) scripts/hooks/([A-Za-z0-9._-]+\.js) [a-z,]+'
+)
+EXEC_NODE_GATE_OPEN = re.compile(
+    LAUNCH + r' open PATH=/usr/bin:/bin ' + EXEC_ASSIGN +
+    r'/bin/bash ' + ROOT + r'/hooks/gate-scripts/lib/sanitized-node\.sh '
+    r'--fail-open ([a-z0-9:._-]+) scripts/hooks/([A-Za-z0-9._-]+\.js) [a-z,]+'
+)
+EXEC_SHELL_GATE = re.compile(
+    LAUNCH + r' (?:closed|open) PATH=/usr/bin:/bin ' + EXEC_ASSIGN +
+    r'/bin/bash ' + ROOT + r'/hooks/gate-scripts/lib/sanitized-gate\.sh [A-Za-z0-9._-]+\.sh'
+)
 RUNNER = re.compile(
     r'node "' + ROOT + r'/scripts/hooks/run-with-flags\.js" ' + EVENT + ' ' + SCRIPT
     + ' ' + PROFILES
@@ -198,6 +230,15 @@ def classify(cmd):
     allowed. `1 1` alone therefore does not describe a fail-closed gate — the two halves can
     contradict each other, and only a record carrying both settles it.
     """
+    matched = EXEC_NODE_GATE_CLOSED.fullmatch(cmd)
+    if matched:
+        # #713: no tail exists in exec form, so the blocking bit is the launcher's declared
+        # disposition — and the shape above already required the wrapper flag to agree with
+        # it, so the two halves cannot contradict each other unnoticed.
+        return [(matched.group(2), 1, 1, "closed")]
+    matched = EXEC_NODE_GATE_OPEN.fullmatch(cmd)
+    if matched:
+        return [(matched.group(2), 0, 1, "open")]
     matched = NODE_GATE.fullmatch(cmd)
     if matched:
         disposition = "open" if matched.group(1) == "--fail-open" else "closed"
@@ -219,7 +260,7 @@ def classify(cmd):
             # hole again. Report it unrecognized instead.
             return None
         return []
-    if SHELL_GATE.fullmatch(cmd) or cmd in PLAIN_BASH:
+    if SHELL_GATE.fullmatch(cmd) or EXEC_SHELL_GATE.fullmatch(cmd) or cmd in PLAIN_BASH:
         return []
     return None
 
@@ -227,9 +268,18 @@ def classify(cmd):
 def commands(node):
     if isinstance(node, dict):
         cmd = node.get("command")
+        args = node.get("args")
         if isinstance(cmd, str):
-            yield cmd
-        for value in node.values():
+            if isinstance(args, list) and all(isinstance(a, str) for a in args):
+                # #713 exec form: index ONE argv vector per registration. Yielding the bare
+                # `command` here would index the constant "/usr/bin/env" and lose every
+                # operand — which is how a migrated blocking gate would read as unwired.
+                yield " ".join([cmd] + args)
+            else:
+                yield cmd
+        for key, value in node.items():
+            if key == "args":
+                continue          # already consumed as part of the vector above
             for found in commands(value):
                 yield found
     elif isinstance(node, list):
@@ -341,9 +391,9 @@ for h in "${CONTAINED[@]}"; do
         [[ "$_rec" == "ok" ]] || _bad=1
     done <<< "$_recs"
     if [[ "$_found" -ge 1 && "$_bad" -eq 0 ]]; then
-        assert 0 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
+        assert 0 "$h: every registration launches via contained-launch.sh + sanitized-node.sh in the fail-closed disposition (#713: launcher disposition closed, no || exit 2 tail)"
     else
-        assert 1 "$h: every registration launches via /usr/bin/env -i + sanitized-node.sh, fail-closed with || exit 2"
+        assert 1 "$h: every registration launches via contained-launch.sh + sanitized-node.sh in the fail-closed disposition (#713: launcher disposition closed, no || exit 2 tail)"
     fi
 done
 
@@ -583,7 +633,7 @@ while IFS= read -r _dh; do
         _lines=$((_lines+1))
         [[ "$_verdict" == "ok" ]] || _bad=1
     done <<< "$_regs"
-    _dm="$_dh (deny-capable): every registration launches via /usr/bin/env -i + sanitized-node.sh, tail agreeing with its disposition"
+    _dm="$_dh (deny-capable): every registration launches via contained-launch.sh + sanitized-node.sh, with the launcher disposition and the wrapper flag agreeing (#713: exec form, no tail)"
     if [[ "$_lines" -ge 1 && "$_bad" -eq 0 ]]; then assert 0 "$_dm"; else assert 1 "$_dm"; fi
 done <<< "$_deny"
 

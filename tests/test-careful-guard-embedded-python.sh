@@ -126,7 +126,11 @@ import json, sys
 for event in json.load(open(sys.argv[1])).get("hooks", {}).values():
     for group in event:
         for h in group.get("hooks", []):
-            if "careful-guard.sh" in h.get("command", ""):
+            # #713: exec form — the gate basename is an `args` element, not part of
+            # `command` (which is the constant "/usr/bin/env"). Search the whole argv,
+            # or `outer` comes back empty and this coupling assertion dies silently.
+            argv = [h.get("command", "")] + list(h.get("args") or [])
+            if any("careful-guard.sh" in str(a) for a in argv):
                 print(h.get("timeout", "")); raise SystemExit
 PY
 )

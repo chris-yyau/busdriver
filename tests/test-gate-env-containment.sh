@@ -182,18 +182,58 @@ crash_rc=$?
 assert_true test "$crash_rc" -eq 2 "runner crash (exit 127) converted to fail-CLOSED block (exit 2), not forwarded"
 grep -q '"decision":"block"' <<<"$crash_out"; assert $? "crash path emits block decision"
 
-# Registration-level fail-CLOSED: if bash cannot even launch the wrapper (missing file
-# / bad CLAUDE_PLUGIN_ROOT), the outer command exits 127 BEFORE the wrapper runs. The
-# trailing `|| exit 2` in the hooks.json registration must convert that to a block.
-# Run the EXACT outer shape against a nonexistent wrapper path.
+# ── R8 (#713): missing-wrapper launch failure blocks again ──────────────────────────
+# BEFORE #713 the registrations were shell-form command strings ending in `|| exit 2`, so
+# when bash could not launch the wrapper (missing file / bad CLAUDE_PLUGIN_ROOT) the outer
+# shell exited 127 and that tail converted it to a block. This block pinned exactly that.
+#
+# Exec form has no shell, so the tail could not be transcribed, and for one landing the
+# guarantee was genuinely lost: 127 is not 2, and only exit 2 blocks (measured), so the tool
+# call PROCEEDED. That was residual R8. It is now CLOSED — contained-launch.sh sits in front
+# of `env -i` and converts any status that is not a decision (0 or 2) into the registration's
+# declared disposition, which is what the tail used to do and is now declared per row rather
+# than inferred from a string.
+#
+# TWO assertions, because the interesting failure is one-sided: a launch failure must block
+# under `closed`, and must still allow under `open` (the two GateGuard rows). Pinning only
+# the first would let a change flip every row closed and still look correct here.
+LAUNCHER="$REPO_ROOT/hooks/gate-scripts/lib/contained-launch.sh"
+"$LAUNCHER" closed PATH=/usr/bin:/bin HOME="$REAL_HOME" \
+    /bin/bash "$TMP/does-not-exist/sanitized-node.sh" "pre:bash:block-no-verify" x y \
+    </dev/null >/dev/null 2>&1
+launch_rc=$?
+assert_true test "${launch_rc:-0}" -eq 2 "R8 CLOSED: a missing wrapper exits 2 and BLOCKS (#713)"
+"$LAUNCHER" open PATH=/usr/bin:/bin HOME="$REAL_HOME" \
+    /bin/bash "$TMP/does-not-exist/sanitized-node.sh" --fail-open "pre:x" y z \
+    </dev/null >/dev/null 2>&1
+launch_open_rc=$?
+assert_true test "${launch_open_rc:-1}" -eq 0 "R8: the open disposition still allows on launch failure (GateGuard rows)"
+# Raw bash — no launcher — is still fail-OPEN. This is why the launcher has to exist: it is
+# the only thing standing between a 127 and an allow.
 /usr/bin/env -i PATH=/usr/bin:/bin HOME="$REAL_HOME" \
-    bash "$TMP/does-not-exist/sanitized-node.sh" "pre:bash:block-no-verify" x y </dev/null >/dev/null 2>&1 || launch_rc=$?
-assert_true test "${launch_rc:-0}" -ne 0 "bash cannot launch a missing wrapper (non-zero, pre-|| baseline)"
-# Now with the registration's `|| exit 2` tail:
-( /usr/bin/env -i PATH=/usr/bin:/bin HOME="$REAL_HOME" \
-    bash "$TMP/does-not-exist/sanitized-node.sh" "pre:bash:block-no-verify" x y </dev/null >/dev/null 2>&1 || exit 2 )
-guard_rc=$?
-assert_true test "$guard_rc" -eq 2 "missing-wrapper launch failure → registration '|| exit 2' blocks (fail-CLOSED)"
+    bash "$TMP/does-not-exist/sanitized-node.sh" "pre:bash:block-no-verify" x y </dev/null >/dev/null 2>&1
+raw_rc=$?
+assert_true test "${raw_rc:-0}" -ne 2 "control: without the launcher a missing wrapper does NOT exit 2 (so the row above is not vacuous)"
+# And prove every contained registration actually carries a disposition for the launcher to
+# act on — a tail-free registration with no disposition would be fail-open again.
+_nodisp=$(python3 - "$REPO_ROOT/hooks/hooks.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+n = 0
+for blocks in doc.get("hooks", doc).values():
+    for blk in blocks:
+        for hk in blk.get("hooks", []):
+            args = hk.get("args")
+            if not isinstance(args, list):
+                continue
+            if not any(isinstance(a, str) and a.endswith("/sanitized-node.sh") for a in args):
+                continue
+            if args[0] not in ("closed", "open") or "||" in args:
+                n += 1
+print(n)
+PY
+)
+assert_true test "${_nodisp:-1}" -eq 0 "R8: every sanitized-node.sh registration declares a launch disposition and carries no shell tail"
 
 # Missing HOOK SCRIPT: run-with-flags.js fail-OPENs (exit 0) when the dispatched hook
 # script is absent; the wrapper must catch that and fail CLOSED. Point it at a hook

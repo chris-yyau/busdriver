@@ -441,15 +441,33 @@ SAW=$(wc -l < "$ENVF" | tr -d ' ')
 if [[ "$RC" == 0 && "$N" == 1 && "$LEAK" == 0 && "$SAW" -gt 0 ]]; then
   ok "inherited GH_REPO/GH_HOST: contained (nudge on cwd repo, $SAW gh calls all pinned)"
 else
-  fail "#416 env containment: rc=$RC N=$N leaked=$LEAK of $SAW gh calls; env log: $(cat "$ENVF")"
+  ENV_LOG="$(cat "$ENVF" 2>/dev/null)" || ENV_LOG='<unreadable>'
+  fail "#416 env containment: rc=$RC N=$N leaked=$LEAK of $SAW gh calls; env log: $ENV_LOG"
 fi
 
-# ── Case 12b (#416): hooks.json must not re-import routing/state env on line 78 ──
-NUDGE_LINE=$(grep -n 'codex-nudge-premerge.sh' "$SCRIPT_DIR/hooks/hooks.json" | head -1)
-if [[ -n "$NUDGE_LINE" ]] && ! printf '%s' "$NUDGE_LINE" | grep -qE 'GH_REPO=|GH_HOST=|BUSDRIVER_STATE_DIR='; then
+# ── Case 12b (#416): hooks.json must not re-import routing/state env for the nudge ──
+# #713: this used to `grep -n 'codex-nudge-premerge.sh' … | head -1` and check that ONE
+# line for the forbidden names. Under exec form the first matching line is the bare
+# `"codex-nudge-premerge.sh"` args element, which trivially contains none of them — so the
+# check PASSED while inspecting nothing, and the assignments it polices moved to lines it
+# never read. Every other launch-form reader broke loudly; this one went green for the
+# wrong reason, which is the failure mode the repo's "prove the guard fires" rule exists
+# to prevent. It now reads the registration's FULL argv, structurally.
+NUDGE_ARGV=$(python3 - "$SCRIPT_DIR/hooks/hooks.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for blocks in doc.get("hooks", doc).values():
+    for blk in blocks:
+        for hk in blk.get("hooks", []):
+            argv = [hk.get("command", "")] + list(hk.get("args") or [])
+            if any(isinstance(a, str) and a.endswith("codex-nudge-premerge.sh") for a in argv):
+                print(" ".join(str(a) for a in argv)); raise SystemExit
+PY
+)
+if [[ -n "$NUDGE_ARGV" ]] && ! printf '%s' "$NUDGE_ARGV" | grep -qE 'GH_REPO=|GH_HOST=|BUSDRIVER_STATE_DIR='; then
   ok "hooks.json nudge registration passes no GH_REPO/GH_HOST/BUSDRIVER_STATE_DIR"
 else
-  fail "#416: hooks.json re-imports repo-controlled env for the nudge hook: $NUDGE_LINE"
+  fail "#416: hooks.json re-imports repo-controlled env for the nudge hook: $NUDGE_ARGV"
 fi
 
 # ── Case 13: preceding standalone GH_REPO= assignment segment → SKIP ──

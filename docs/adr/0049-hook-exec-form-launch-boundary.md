@@ -45,7 +45,7 @@ hook returns `status: 0` with no decision — an ALLOW.
 
 Move **17 of the 19 contained registrations** in `hooks/hooks.json` from shell form to
 **exec form** (`command` + `args`), spawned as a direct argv with no shell between Claude
-Code and `/usr/bin/env`. This is the whole change: the wrappers, the gates and the 31
+Code and the plugin's own first hop. This is the whole change: the wrappers, the gates and the 31
 advisory registrations are untouched.
 
 **Two registrations are deliberately NOT migrated** — `codex-nudge-premerge.sh` and
@@ -81,13 +81,21 @@ narrowed to the gates, not eliminated from the plugin.
 `bash` becomes `/bin/bash` (absolute), removing the PATH lookup `env` performed.
 
 **`command` is the plugin's own first hop, not `/usr/bin/env`.** `contained-launch.sh`
-(`#!/bin/bash -p`) applies `env -i` itself and exists to make the two failure modes that
-were first shipped as accepted residuals fail CLOSED instead:
+(`#!/bin/bash -p`) applies `env -i` itself and exists to make the failure modes that were
+first shipped as accepted residuals fail CLOSED instead:
 
-- **With no arguments it exits 2 and prints nothing** — the shape a client takes when it
-  honours `command` and drops `args`. Naming bare `/usr/bin/env` there meant that client ran
-  `env` with no operands, which **exits 0 and prints the environment**: an allow on every
-  gate plus a per-event environment dump. That was **R7**.
+- **With no arguments — or with a tail that lost its program — it exits 2 and prints
+  nothing.** The bare-`command` case is the shape a client takes when it drops `args`
+  entirely; the partial case matters just as much, because `env -i NAME=value` with no
+  utility after the assignments does not fail, it applies them, **prints the environment and
+  exits 0**. A tail of only assignments, and a non-absolute program (which the sterile child
+  would resolve by PATH lookup), and a program given **no operands at all** are all refused.
+  That last one is the sharpest: every registration passes the wrapper path after
+  `/bin/bash`, so a tail truncated to end exactly there leaves bash with no script — and a
+  bash with no script and a non-tty stdin **reads its source from stdin**, which here is the
+  hook payload. Naming bare `/usr/bin/env` as `command`
+  meant an args-dropping client ran `env` with no operands: an allow on every gate plus a
+  per-event environment dump. That was **R7**.
 - **Its first argument is the launch-failure disposition** (`closed`, or `open` for the two
   GateGuard rows that carried `|| exit 0` before this change). Any status that is not a
   decision — 127 for a missing wrapper, 126 for a non-executable one, 1 for a wrapper that
@@ -119,7 +127,7 @@ through as literal text. Each dropped value was dispositioned rather than assume
 | `CLAUDE_HOOK_EVENT_NAME` (7 rows) | **The platform never sets it** — zero occurrences in the 2.1.248 bundle, and a live probe showed it unset on both PreToolUse and PostToolUse. It has always forwarded the empty string. Every consumer reads it as `env.X \|\| <default>`, so empty and unset are identical. Passing a literal event key would have *newly enabled* `mcp-health-check.js`'s `handlePostToolUseFailure` branch (`:720-723`), which is unreachable today — a behaviour change beyond this ADR's scope. Left dropped; enabling that branch is separate work. |
 | `XDG_CONFIG_HOME`, `BUSDRIVER_ORIG_HOME` (1 row) | Residual **R3**, accepted. Behaviour is unchanged for any operator whose session `HOME` equals their passwd home and whose `XDG_CONFIG_HOME` is unset or `$HOME/.config`. ADR 0044's carve-out is **kept**. |
 | `PR_GRIND_CODEX_RETRIGGER` (1 row: `pre-merge-gate.sh`) | Residual **R9**, narrowed. The two rows where this knob has an **outbound** effect are the nudges, and they are not migrated (above), so `@codex review` comments stay suppressed. What is lost is the one remaining reader: `pre-merge-gate.sh`'s `codex_none_warning`, the ADR 0024 missing-Codex advisory. It is **read-only — it posts nothing** (verified: neither `codex-premerge-warn.sh` nor `codex-active-repo.sh` contains a write call), so an operator with `=0` now gets its bounded `gh` read and its warning at merge time instead of the promised "zero network, zero output". Advisory noise, not an outbound action. |
-| `\|\| exit 2` / `\|\| exit 0` tails (7 rows) | Residual **R8**. Exec form has no shell to interpret a tail. `sanitized-node.sh` already normalizes every runner exit outside `{0,2}` through `_block`, so the tails were belt-and-braces on that path — but a launch failure *before* the wrapper starts is now fail-open. |
+| `\|\| exit 2` / `\|\| exit 0` tails (7 rows) | **Replaced, not lost — R8 is closed.** Exec form has no shell to interpret a tail, so for one round a launch failure *before* the wrapper starts was fail-open. `contained-launch.sh` now performs the same conversion from a declared per-registration disposition, and does it for the 12 `sanitized-gate.sh` rows as well — those never carried a tail, so their launch failures were fail-open before #713 too. |
 
 ## Consequences
 
@@ -152,7 +160,15 @@ above and the residual list below; the revisit trigger for them is spent.
   (`requiredMinimumVersion` is enforced only from managed policy settings, so it is optional
   org hardening rather than a shipped control) — but the degradation is no longer an allow,
   so the missing gate is no longer load-bearing. The two shell-form nudges were never
-  affected: their whole command is one string.
+  affected: their whole command is one string. The PARTIAL loss shape counts too and was
+  found in implementation review, not design: `env -i NAME=value` with no utility applies the
+  assignments, prints the environment and exits 0, so a tail truncated after the disposition
+  would have reproduced the whole residual inside the hop meant to close it. Worse, a tail
+  truncated one element later — ending exactly at `/bin/bash` — was **arbitrary code
+  execution**: bash with no script operand reads stdin, and stdin is the hook payload. A
+  payload containing `$(touch …)` created the file, and bash then exited 0, so the gate
+  allowed as well. Both refused now, along with a non-absolute program, and an exhaustive
+  prefix sweep over a real registration argv keeps them refused.
 - **R8 — CLOSED.** A missing or unreadable wrapper makes bash exit 127, which does not
   block, and the wrapper's own fail-closed paths cannot run when the wrapper never starts.
   The `|| exit 2` tail that used to convert that into a block cannot exist in exec form.
@@ -233,7 +249,13 @@ repointed elsewhere, the disposition dropped, an unknown disposition, a closed g
 open, an open row flipped closed, and a *tandem swap* that keeps both populations intact),
 and the launcher script itself — restored from a byte-exact backup on every exit path —
 (no-arg path weakened to exit 0, made to print the environment, privileged mode dropped from
-the shebang), each with a positive control afterwards. It then runs an
+the shebang). It then drives the launcher directly: named partial-argv shapes
+(disposition only, disposition plus assignments, a relative program), and an **exhaustive
+prefix sweep** that takes a real registration argv out of `hooks.json` and feeds the launcher
+every proper prefix of it, requiring exit 2, an empty stdout, and no execution of a payload
+whose command substitution would fire if anything interpreted it as shell source. The sweep
+is what caught the prefix ending at `/bin/bash`; the hand-written list had missed it. Positive
+controls follow every sweep, so a launcher that blocked everything could not pass. It then runs an
 **exhaustive sweep** — every single-element deletion and duplication of one registration's
 argv — because a hand-picked list only catches holes someone already imagined. The sweep
 earned its place immediately: it found that dropping the `CLAUDE_PLUGIN_ROOT=` assignment

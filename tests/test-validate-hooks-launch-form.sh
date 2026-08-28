@@ -42,7 +42,14 @@ restore_launcher() {
         cp "$LAUNCHER_BAK" "$LAUNCHER" && chmod +x "$LAUNCHER"
     fi
 }
-trap 'restore_launcher; rm -rf "$TMP"' EXIT INT TERM
+# The signal handler must EXIT, not fall through. A bare `trap '<cleanup>' INT TERM` runs the
+# cleanup and then resumes the script — which here would mean the backup has just been
+# deleted with `rm -rf "$TMP"` while the mutation loop below is still going, and the very
+# next `sed … > "$LAUNCHER"` truncates the tracked launcher before sed fails to read the
+# vanished backup. Restore, clean, and leave.
+trap 'restore_launcher; rm -rf "$TMP"' EXIT
+trap 'restore_launcher; rm -rf "$TMP"; exit 130' INT
+trap 'restore_launcher; rm -rf "$TMP"; exit 143' TERM
 
 # mutate <name> <python-body> — <python-body> edits `doc` in place; `rows()` yields
 # (block, index, hook) for every registration in the document.
@@ -377,7 +384,27 @@ _rc=1; [[ -s "$LAUNCHER_BAK" ]] && _rc=0
 assert "$_rc" "launcher backed up before the in-place mutations below"
 
 launcher_mutation() {  # launcher_mutation <name> <sed-expression>
-    sed "$2" "$LAUNCHER_BAK" > "$LAUNCHER" && chmod +x "$LAUNCHER"
+    # Re-check the backup on EVERY call, not once up front. The redirection below truncates
+    # a tracked file, so it must never run when the only copy of the original is gone — a
+    # failed `cp`, a signal that already cleaned $TMP, anything. Refuse instead.
+    if [[ ! -s "$LAUNCHER_BAK" ]]; then
+        assert 1 "$1 — SKIPPED: no launcher backup, refusing to truncate the tracked file"
+        return
+    fi
+    # Build the mutation elsewhere and move it into place, so a failing `sed` cannot leave a
+    # truncated launcher behind: `> "$LAUNCHER"` empties the file before sed writes anything.
+    if ! sed "$2" "$LAUNCHER_BAK" > "$TMP/mutated-launcher.sh"; then
+        assert 1 "$1 — SKIPPED: could not build the mutated launcher"
+        return
+    fi
+    if ! cp "$TMP/mutated-launcher.sh" "$LAUNCHER" || ! chmod +x "$LAUNCHER"; then
+        # A partial copy leaves a damaged launcher the validator would also reject — the row
+        # would then be scored as a successful rejection while proving nothing. Restore and
+        # report the setup failure instead of counting it as coverage.
+        assert 1 "$1 — SKIPPED: could not install the mutated launcher"
+        restore_launcher
+        return
+    fi
     if node "$VALIDATOR" "$HOOKS_JSON" >/dev/null 2>&1; then assert 1 "$1 — ESCAPED the validator"
     else assert 0 "$1 — rejected"; fi
     restore_launcher
@@ -386,6 +413,87 @@ launcher_mutation() {  # launcher_mutation <name> <sed-expression>
 launcher_mutation "launcher no-arg path weakened to exit 0 (R7 reopened)" 's/^    exit 2$/    exit 0/'
 launcher_mutation "launcher no-arg path made to print the environment" 's|^    exit 2$|    /usr/bin/env; exit 2|'
 launcher_mutation "launcher privileged mode dropped from the shebang" '1s|^#!/bin/bash -p$|#!/bin/bash|'
+
+# ── PARTIAL argument loss, the side door into R7 ────────────────────────────────────
+# `env -i NAME=value` with no utility does not fail: it applies the assignments, PRINTS the
+# environment and exits 0. So dropping the tail only partway — keeping the disposition and
+# some assignments — used to yield an allow plus an environment dump from the very hop added
+# to stop exactly that. Asserted directly against the launcher, because no hooks.json shape
+# can express "the client kept three of my six args".
+for _tail in "closed" "closed PATH=/usr/bin:/bin" "closed PATH=/usr/bin:/bin A=1" "open PATH=/usr/bin:/bin"; do
+    # shellcheck disable=SC2086  # $_tail is a deliberate argv split, not a path
+    _out="$("$LAUNCHER" $_tail </dev/null 2>/dev/null)"; _prc=$?
+    _rc=1; [[ "$_prc" -eq 2 ]] && _rc=0
+    assert "$_rc" "partial argv [$_tail] fails CLOSED (exit 2, got $_prc)"
+    _rc=1; [[ -z "$_out" ]] && _rc=0
+    assert "$_rc" "partial argv [$_tail] prints no environment on stdout"
+done
+# A relative program would be resolved by a PATH lookup inside the sterile child.
+"$LAUNCHER" closed PATH=/usr/bin:/bin bash -c true </dev/null >/dev/null 2>&1
+_prc=$?
+_rc=1; [[ "$_prc" -eq 2 ]] && _rc=0
+assert "$_rc" "a non-absolute program is refused, failing CLOSED (got $_prc)"
+# Positive control: the full argv still runs, so the rows above are not just "everything blocks".
+"$LAUNCHER" closed PATH=/usr/bin:/bin /bin/bash -c 'exit 0' </dev/null >/dev/null 2>&1
+_prc=$?
+_rc=1; [[ "$_prc" -eq 0 ]] && _rc=0
+assert "$_rc" "control: the complete argv still runs and allows (got $_prc)"
+
+# ── EXHAUSTIVE truncation sweep over a REAL registration argv ───────────────────────
+# Hand-picked partial shapes are guesses. This takes an actual registration out of
+# hooks.json and feeds the launcher every proper prefix of it, requiring each to fail CLOSED
+# with an empty stdout AND no side effect from the payload. It is what catches the prefix a
+# human list misses — the one ending exactly at `/bin/bash`, where bash has no script operand
+# and reads its source from STDIN, i.e. from the hook payload. Before that guard existed the
+# payload below created the sentinel and the launcher returned 0: code execution and an
+# allow from the same truncation.
+_argv_raw="$(python3 - "$HOOKS_JSON" "$REPO_ROOT" <<'PY'
+import json, sys
+doc, root = json.load(open(sys.argv[1])), sys.argv[2]
+for blocks in doc.get("hooks", doc).values():
+    for blk in blocks:
+        for hk in blk.get("hooks", []):
+            args = hk.get("args")
+            if isinstance(args, list) and any("sanitized-gate.sh" in str(a) for a in args):
+                for a in args:
+                    print(str(a).replace("${CLAUDE_PLUGIN_ROOT}", root))
+                raise SystemExit
+PY
+)" || _argv_raw=""
+_full=()
+while IFS= read -r _el; do _full+=("$_el"); done <<<"$_argv_raw"
+_rc=1; [[ ${#_full[@]} -ge 5 ]] && _rc=0
+assert "$_rc" "sweep target: a real registration argv with ${#_full[@]} elements"
+
+SENTINEL="$TMP/payload-executed"
+# A payload whose command substitution runs only if something interprets it as shell source.
+PAYLOAD="$(printf '{"tool_input":{"command":"x"}}\n$(touch %s)\n' "$SENTINEL")"
+
+_trunc_bad=0
+for ((_k = 1; _k < ${#_full[@]}; _k++)); do
+    rm -f "$SENTINEL"
+    _out="$(printf '%s' "$PAYLOAD" | "$LAUNCHER" "${_full[@]:0:$_k}" 2>/dev/null)"
+    _trc=$?
+    if [[ "$_trc" -ne 2 || -n "$_out" || -e "$SENTINEL" ]]; then
+        _trunc_bad=$((_trunc_bad + 1))
+        printf '       prefix len %d: rc=%d stdout=%d sentinel=%s\n' \
+            "$_k" "$_trc" "${#_out}" "$([[ -e "$SENTINEL" ]] && echo YES || echo no)"
+    fi
+done
+rm -f "$SENTINEL"
+_rc=1; [[ "$_trunc_bad" -eq 0 ]] && _rc=0
+assert "$_rc" "every proper prefix of a real argv fails CLOSED, silent, with no payload execution ($_trunc_bad bad)"
+
+# Positive control for the sweep: the COMPLETE argv must still run, or the loop above proves
+# only that the launcher rejects everything.
+rm -f "$SENTINEL"
+printf '%s' "$PAYLOAD" | "$LAUNCHER" "${_full[@]}" >/dev/null 2>&1
+_full_rc=$?
+_rc=1; [[ "$_full_rc" -eq 0 || "$_full_rc" -eq 2 ]] && _rc=0
+assert "$_rc" "control: the complete argv reaches the gate and yields a decision (rc=$_full_rc)"
+_rc=1; [[ ! -e "$SENTINEL" ]] && _rc=0
+assert "$_rc" "control: the complete argv does not execute the payload either"
+rm -f "$SENTINEL"
 
 # Positive control: the restored launcher must pass, or every row above is meaningless.
 node "$VALIDATOR" "$HOOKS_JSON" >/dev/null 2>&1

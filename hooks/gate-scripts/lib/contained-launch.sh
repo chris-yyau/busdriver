@@ -76,6 +76,58 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
+# A NON-EMPTY tail is not enough, and getting this wrong reopens R7 through the side door.
+# `env -i NAME=value` with no utility after the assignments does NOT fail: env applies the
+# assignments, PRINTS THE RESULTING ENVIRONMENT and exits 0 — the exact behaviour that made
+# bare `/usr/bin/env` unusable as `command`. So a client (or a bad edit) that drops the tail
+# only PARTIALLY, keeping the disposition and some assignments, would otherwise get an allow
+# plus an environment dump out of the very hop added to prevent that. Require a real program
+# to run, and require it absolute: a relative one would be resolved by a PATH lookup inside
+# the sterile child, which is a name we do not control.
+utility=''
+utility_operands=0
+for arg in "$@"; do
+    if [ -n "$utility" ]; then
+        utility_operands=$((utility_operands + 1))
+        continue
+    fi
+    case "$arg" in
+        [A-Za-z_]*=*) continue ;;
+        *) utility="$arg" ;;
+    esac
+done
+if [ -z "$utility" ]; then
+    printf '%s\n' \
+        'contained-launch: the argument list is only assignments — no program to run.' \
+        'env would print the environment and exit 0 here; failing CLOSED (exit 2). See #713.' >&2
+    exit 2
+fi
+case "$utility" in
+    /*) ;;
+    *)
+        printf '%s\n' \
+            "contained-launch: refusing a non-absolute program '$utility' — it would be" \
+            'resolved by a PATH lookup in the sterile child. Failing CLOSED (exit 2).' >&2
+        exit 2
+        ;;
+esac
+
+# The program must be followed by at least one operand, and this is the sharpest of the three
+# checks. Every real registration passes the wrapper path after `/bin/bash`, so a tail
+# truncated to end exactly at `/bin/bash` leaves bash with NO script — and a bash with no
+# script operand and a non-tty stdin READS ITS SOURCE FROM STDIN. Stdin here is the hook
+# payload: attacker-influenced JSON, whose command substitutions bash would then execute.
+# Measured before this guard existed: a payload containing `$(touch …)` created the file, and
+# bash exited 0 afterwards, so the gate ALSO allowed. Code execution and a bypass from the
+# same truncation. Anything short of a complete argv fails CLOSED here instead.
+if [ "$utility_operands" -eq 0 ]; then
+    printf '%s\n' \
+        "contained-launch: '$utility' was given no operands — the argument list is truncated." \
+        'An interpreter with no script reads its source from stdin, which is the hook payload.' \
+        'Failing CLOSED (exit 2) without running anything. See #713.' >&2
+    exit 2
+fi
+
 /usr/bin/env -i "$@"
 rc=$?
 

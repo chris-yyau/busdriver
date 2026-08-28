@@ -116,7 +116,17 @@ new marker, so the `none` and `stale` paths share the same per-(PR,HEAD) marker:
 - **Fail-safe.** The wrapper exits 0 on every operational path (not opted in, bad
   args → except missing-args exit 2, a wiring bug; delegate skip/fail). A failed
   nudge never stales the gate.
-- **Global kill switch still wins.** `PR_GRIND_CODEX_RETRIGGER=0` disables both the
+- **Global kill switch still wins.** It reaches the nudge on every plane, and ADR 0049
+  (#713) is the reason it still does: exec form cannot forward a session env var, and the
+  nudge hook runs its delegate as a CHILD of its own `env -i` process
+  (`codex-nudge-premerge.sh:291` → `codex-nudge-if-expected.sh:52` → `exec
+  codex-retrigger.sh`), so a migrated nudge would have read the switch as `1` and resumed
+  posting. The two nudge registrations were therefore **left in shell form** rather than
+  migrated — they are non-gating, so the #713 `SHELLOPTS` hardening they forgo costs a
+  nudge, never a gate. One narrow loss remains (residual **R9**): the *pre-merge gate*, which
+  did migrate, no longer honours the switch in its non-gating missing-Codex advisory. That
+  advisory is read-only and posts nothing; see ADR 0024.
+- `PR_GRIND_CODEX_RETRIGGER=0` disables both the
   `stale` retrigger and the `none` nudge (the wrapper delegates through it).
 
 ## Alternatives

@@ -123,13 +123,21 @@ verified against live code — not pinned in this ADR.
    active/force-on **and** a *positive* `none` warns.
 
 4. **Kill switch wired.** `PR_GRIND_CODEX_RETRIGGER=0` must actually reach the gate.
-   `hooks/hooks.json:67` does not pass it through `env -i` (only the nudge
-   registration does). The pre-merge registration MUST re-import **only** that
-   variable — a deliberate, documented ADR 0016 exception. It is **kill-only**: its
-   sole effect is to suppress an advisory and short-circuit before any network, so
-   a repo-injected value can only turn the repo's own advisory *off* (a
-   fail-toward-silence direction that grants no bypass). **Test:** `=0` survives
-   `env -i`, does zero network, emits nothing.
+   *Amended by ADR 0049 (#713, residual R9):* it no longer reaches **this gate**. The
+   pre-merge registration migrated to exec form, which cannot forward a session env var, so
+   `codex_none_warning`'s kill-switch short-circuit never fires and an operator with `=0`
+   now gets its bounded `gh` read and its warning at merge time. This is advisory noise
+   only — the warning is read-only, posts nothing, and does not touch merge authority. The
+   **outbound** half of the switch is intact: the two `@codex review` nudge registrations
+   were deliberately left in shell form precisely so it would keep reaching them.
+   Historically the pre-merge registration re-imported **only** that variable through
+   `env -i` — a deliberate, documented ADR 0016 exception, safe because the variable is
+   **kill-only**: its sole effect here is to suppress an advisory and short-circuit before
+   any network, so a repo-injected value could only turn the repo's own advisory *off* (a
+   fail-toward-silence direction granting no bypass). Since ADR 0049 that re-import is gone
+   and the code path below is simply never short-circuited on this plane. The `=0` test —
+   survives `env -i`, zero network, emits nothing — now holds for the two nudge
+   registrations only.
 
 5. **Authoritative target resolution — including fork PRs.** The engagement lookup
    needs `<owner/repo> <pr> <head>`, none of which the gate's parsed command yields

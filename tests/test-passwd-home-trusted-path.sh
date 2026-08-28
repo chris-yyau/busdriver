@@ -90,17 +90,58 @@ install_wrapper() {  # install_wrapper <src> <dest>
 # can help. That class is closed by `/usr/bin/env -i` at the launch, so every
 # sanitized-gate.sh registration must actually use it. (test-node-hook-containment.sh
 # already pins the same invariant for the node-hook registrations.)
-_regs="$(grep 'sanitized-gate.sh' "$REPO_ROOT/hooks/hooks.json")"
-_bad=0
-_n=0
-while IFS= read -r _line; do
-    [[ -z "$_line" ]] && continue
-    _n=$((_n+1))
-    grep -qE '"command":[[:space:]]*"/usr/bin/env -i ' <<<"$_line" || _bad=1
-done <<< "$_regs"
+# #713: read the document STRUCTURALLY, never line-wise. The registrations are exec form
+# (`command` + `args`), so `sanitized-gate.sh` and `/usr/bin/env` land on different lines
+# and the old single-line grep matched neither — it would have gone quietly vacuous rather
+# than red, which is the failure mode this repo's own review rules call out.
+# The membership test is also deliberately a SUBSTRING, not `endswith`: under exec form the
+# wrapper path is followed by the gate basename, so an `endswith("/sanitized-gate.sh")`
+# population silently EXCLUDES every shell-form row — which is precisely the two Codex
+# nudges deliberately left behind (see ADR 0049), i.e. the check would pass by not looking.
+# Those two are non-gating and stay shell form so they can still forward
+# $PR_GRIND_CODEX_RETRIGGER, but the invariant THIS test pins — the sterile `env -i` child
+# that closes the imported-function class — holds for them too, so they are asserted, not
+# skipped. Both populations are pinned so a gate cannot be quietly moved between them.
+_probe_out="$(python3 - "$REPO_ROOT/hooks/hooks.json" <<'PY'
+import json, sys
+EXEMPT = ("codex-nudge-premerge.sh", "codex-nudge-precreate.sh")
+PREFIX = "/usr/bin/env -i PATH=/usr/bin:/bin "
+LAUNCH = "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh"
+doc = json.load(open(sys.argv[1]))
+n = bad = exempt = badexempt = 0
+for blocks in doc.get("hooks", doc).values():
+    for blk in blocks:
+        for hk in blk.get("hooks", []):
+            if hk.get("type") != "command":
+                continue
+            cmd, args = hk.get("command"), hk.get("args")
+            argv = [cmd] + list(args) if isinstance(args, list) else [cmd]
+            if not any(isinstance(a, str) and "/sanitized-gate.sh" in a for a in argv):
+                continue
+            if any(isinstance(a, str) and any(e in a for e in EXEMPT) for a in argv):
+                exempt += 1
+                # Shell form, but still the same sterile launch: `env -i` is the first thing
+                # the outer shell runs, so bash still starts with no imported functions.
+                if args is not None or not str(cmd).startswith(PREFIX):
+                    badexempt += 1
+                continue
+            n += 1
+            # #713: the first hop is contained-launch.sh, which supplies `env -i` itself.
+            # `command` must NOT be bare /usr/bin/env — a client that drops `args` would then
+            # run env with no operands, which exits 0 and prints the environment (R7).
+            if not (cmd == LAUNCH and isinstance(args, list)
+                    and args[0] in ("closed", "open") and args[1] == "PATH=/usr/bin:/bin"):
+                bad += 1
+print("%d %d %d %d" % (n, bad, exempt, badexempt))
+PY
+)" || _probe_out="0 1 0 1"
+read -r _n _bad _exempt _badexempt <<<"$_probe_out"
 _rc=0
-[[ "$_n" -ge 1 && "$_bad" -eq 0 ]] || _rc=1
-assert "$_rc" "all $_n sanitized-gate.sh registrations launch under /usr/bin/env -i (strips BASH_FUNC_*)"
+[[ "$_n" -eq 10 && "$_bad" -eq 0 ]] || _rc=1
+assert "$_rc" "all $_n sanitized-gate.sh GATE registrations launch via contained-launch.sh, which applies env -i (strips BASH_FUNC_*)"
+_rc=0
+[[ "$_exempt" -eq 2 && "$_badexempt" -eq 0 ]] || _rc=1
+assert "$_rc" "the $_exempt shell-form Codex nudges still launch under /usr/bin/env -i too (#713 / ADR 0049)"
 
 # ── Leg 1: sanitized-gate.sh ────────────────────────────────────────────────
 cat > "$TMP/root/hooks/gate-scripts/_probe.sh" <<'PROBE'

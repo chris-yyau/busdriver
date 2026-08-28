@@ -30,18 +30,31 @@ import { join } from 'node:path';
  * nothing objects.
  */
 describe('codex-nudge hooks: env -i allowlist', () => {
-  const hooks = readFileSync(
-    join(__dirname, '..', 'hooks', 'hooks.json'),
-    'utf8',
+  const hooks = JSON.parse(
+    readFileSync(join(__dirname, '..', 'hooks', 'hooks.json'), 'utf8'),
   );
 
   const NUDGE_SCRIPTS = ['codex-nudge-premerge.sh', 'codex-nudge-precreate.sh'];
 
-  // Pull each nudge hook's full `env -i ... <script>` command out of the JSON.
+  // #713: registrations are exec form (`command` + `args`), so `env -i` and the script
+  // basename now sit on DIFFERENT JSON lines. The old single-line filter matched nothing
+  // and this suite would have gone vacuous — passing while checking nothing — which is
+  // precisely the failure mode the negative pin below exists to prevent. Walk the
+  // document structurally and join each registration's full argv instead.
+  const argvs: string[] = [];
+  (function walk(node: unknown): void {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node && typeof node === 'object') {
+      const o = node as Record<string, unknown>;
+      if (typeof o.command === 'string') {
+        argvs.push([o.command, ...(Array.isArray(o.args) ? (o.args as string[]) : [])].join(' '));
+      }
+      Object.values(o).forEach(walk);
+    }
+  })(hooks);
+
   const commandsFor = (script: string): string[] =>
-    hooks
-      .split('\n')
-      .filter((line) => line.includes('env -i') && line.includes(script));
+    argvs.filter((a) => a.includes('/usr/bin/env') && a.includes(script));
 
   for (const script of NUDGE_SCRIPTS) {
     describe(script, () => {
@@ -51,10 +64,23 @@ describe('codex-nudge hooks: env -i allowlist', () => {
         expect(commands.length).toBeGreaterThan(0);
       });
 
-      it('forwards the clamped MAX and COOLDOWN knobs so operator config reaches the hook path', () => {
+      // #713 / ADR 0049: these two registrations are the ONLY ones deliberately left in
+      // shell form. Exec form substitutes only documented PATH placeholders, so a
+      // `${PR_GRIND_CODEX_RETRIGGER:-}` capture cannot be transcribed into an argv element
+      // — it would ship as a literal string — and `env -i` would then strip the real value.
+      // That matters here and nowhere else: this hook runs its delegate
+      // (codex-nudge-if-expected.sh -> codex-retrigger.sh) as a CHILD of the `env -i`
+      // process, so under exec form the delegate reads the switch as unset too and
+      // `PR_GRIND_CODEX_RETRIGGER=0` would stop suppressing an OUTBOUND `gh pr comment`.
+      // Both nudges are non-gating, so leaving them in shell form costs only the #713
+      // SHELLOPTS hardening on a nudge, never on a gate. Keeping the forwarding asserted
+      // is what stops a future "migrate the last two" edit from silently re-enabling the
+      // comments.
+      it('still forwards the clamped RETRIGGER knobs (shell form — ADR 0049)', () => {
         for (const cmd of commands) {
-          expect(cmd).toContain('PR_GRIND_CODEX_RETRIGGER_MAX=');
-          expect(cmd).toContain('PR_GRIND_CODEX_RETRIGGER_COOLDOWN=');
+          expect(cmd).toContain('PR_GRIND_CODEX_RETRIGGER="${PR_GRIND_CODEX_RETRIGGER:-}"');
+          expect(cmd).toContain('PR_GRIND_CODEX_RETRIGGER_MAX="${PR_GRIND_CODEX_RETRIGGER_MAX:-}"');
+          expect(cmd).toContain('PR_GRIND_CODEX_RETRIGGER_COOLDOWN="${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}"');
         }
       });
 
@@ -65,4 +91,30 @@ describe('codex-nudge hooks: env -i allowlist', () => {
       });
     });
   }
+
+  // The other half of the #713 split. Every EXEC-FORM contained registration lost the
+  // knobs (they cannot be transcribed), so none may carry one — including the pre-merge
+  // GATE, whose read-only missing-Codex advisory consequently no longer honours the kill
+  // switch (named residual R9, ADR 0049 / #777; it posts nothing, so no outbound effect).
+  // Asserted as its own population: without it, "no exec-form row forwards a knob" would
+  // be satisfied just as well by there being no exec-form rows at all.
+  describe('exec-form contained gates', () => {
+    // #713: the first hop is contained-launch.sh, which supplies `env -i` itself — naming
+    // bare /usr/bin/env as `command` was residual R7. The disposition is its first argument.
+    const execArgvs = argvs.filter(
+      (a) => /^\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/gate-scripts\/lib\/contained-launch\.sh (closed|open) PATH=\/usr\/bin:\/bin /.test(a)
+        && (a.includes('sanitized-gate.sh') || a.includes('sanitized-node.sh'))
+        && !NUDGE_SCRIPTS.some((n) => a.includes(n)),
+    );
+
+    it('are the expected population (17 — the two nudges excluded)', () => {
+      expect(execArgvs).toHaveLength(17);
+    });
+
+    it('forward NO PR_GRIND_* knob', () => {
+      for (const cmd of execArgvs) {
+        expect(cmd).not.toContain('PR_GRIND_CODEX_RETRIGGER');
+      }
+    });
+  });
 });

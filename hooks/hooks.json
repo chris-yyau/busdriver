@@ -31,44 +31,77 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" careful-guard.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "careful-guard.sh"
+            ],
             "timeout": 10
           }
         ],
-        "description": "[GUARD] Warn before destructive commands (rm -rf, force-push, DROP TABLE, git reset --hard)"
+        "description": "[GUARD] Warn before destructive commands (rm -rf, force-push, DROP TABLE, git reset --hard) [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" XDG_CONFIG_HOME=\"${XDG_CONFIG_HOME:-}\" BUSDRIVER_ORIG_HOME=\"${HOME:-}\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-commit-gate.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "pre-commit-gate.sh"
+            ],
             "timeout": 10
           }
         ],
-        "description": "[GATE] Block git commit until codex + design review pass"
+        "description": "[GATE] Block git commit until codex + design review pass [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-pr-gate.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "pre-pr-gate.sh"
+            ],
             "timeout": 10
           }
         ],
-        "description": "[GATE] Block gh pr create until codex review passes"
+        "description": "[GATE] Block gh pr create until codex review passes [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" CODEX_WARN_OUTER_BUDGET=20 bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-merge-gate.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "CODEX_WARN_OUTER_BUDGET=20",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "pre-merge-gate.sh"
+            ],
             "timeout": 20
           }
         ],
-        "description": "[GATE] Block gh pr merge until pr-grind declares PR clean"
+        "description": "[GATE] Block gh pr merge until pr-grind declares PR clean [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded). Also R9 (PR_GRIND_CODEX_RETRIGGER is no longer forwarded, so this gate's non-gating missing-Codex advisory \u2014 codex_none_warning, read-only, posts nothing \u2014 no longer honours the kill switch: an operator with =0 now gets its bounded `gh` read and its warning at merge time. Outbound `@codex review` comments stay suppressed \u2014 the two nudge registrations that post are deliberately left in shell form.)"
       },
       {
         "matcher": "Bash",
@@ -79,39 +112,65 @@
             "timeout": 20
           }
         ],
-        "description": "[NUDGE] Non-gating: fire @codex review on gh pr merge when Codex is none + repo active"
+        "description": "[NUDGE] Non-gating: fire @codex review on gh pr merge when Codex is none + repo active [#713/ADR 0049] DELIBERATELY LEFT IN SHELL FORM \u2014 not migrated. Exec form cannot forward `$PR_GRIND_CODEX_RETRIGGER`: `env -i` strips it, and this hook runs its delegate (codex-nudge-if-expected.sh \u2192 codex-retrigger.sh) as a CHILD of that sterile process, so under exec form `PR_GRIND_CODEX_RETRIGGER=0` would stop suppressing outbound `@codex review` comments. This registration is non-gating, so an outer-shell SHELLOPTS=noexec silencing it is not a gate bypass \u2014 it only skips a nudge. The exact command string is pinned verbatim by scripts/ci/validate-hooks.js."
       },
       {
         "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" pre-implementation-gate.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "pre-implementation-gate.sh"
+            ],
             "timeout": 5
           }
         ],
-        "description": "[GATE] Block impl code while design docs unreviewed"
+        "description": "[GATE] Block impl code while design docs unreviewed [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" freeze-guard.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "freeze-guard.sh"
+            ],
             "timeout": 3
           }
         ],
-        "description": "[GATE] Freeze/Guard \u2014 restrict edits to investigation scope during debugging"
+        "description": "[GATE] Freeze/Guard \u2014 restrict edits to investigation scope during debugging [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:bash:block-no-verify\" \"scripts/hooks/block-no-verify.js\" \"standard,strict\" || exit 2"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "pre:bash:block-no-verify",
+              "scripts/hooks/block-no-verify.js",
+              "standard,strict"
+            ]
           }
         ],
-        "description": "Block git hook-bypass flag to protect pre-commit hooks"
+        "description": "Block git hook-bypass flag to protect pre-commit hooks [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
@@ -148,30 +207,62 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" --fail-open \"pre:edit-write:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"minimal,standard,strict\" || exit 0"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "open",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "--fail-open",
+              "pre:edit-write:gateguard-fact-force",
+              "scripts/hooks/gateguard-fact-force.js",
+              "minimal,standard,strict"
+            ]
           }
         ],
-        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary — see skills/gateguard/SKILL.md."
+        "description": "[GATE] GateGuard: force impact facts (importers, affected API) before editing. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary \u2014 see skills/gateguard/SKILL.md. [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" --fail-open \"pre:bash:gateguard-fact-force\" \"scripts/hooks/gateguard-fact-force.js\" \"minimal,standard,strict\" || exit 0"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "open",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "--fail-open",
+              "pre:bash:gateguard-fact-force",
+              "scripts/hooks/gateguard-fact-force.js",
+              "minimal,standard,strict"
+            ]
           }
         ],
-        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary — see skills/gateguard/SKILL.md."
+        "description": "[GATE] GateGuard: force blast-radius + rollback facts before a destructive command. Contained under env -i like the wrapped gates (#616); consent is an out-of-tree marker under the operator's passwd home, not an env var. --fail-open because GateGuard guards no boundary \u2014 see skills/gateguard/SKILL.md. [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:bash:dev-server-block\" \"scripts/hooks/pre-bash-dev-server-block.js\" \"standard,strict\" || exit 2"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "pre:bash:dev-server-block",
+              "scripts/hooks/pre-bash-dev-server-block.js",
+              "standard,strict"
+            ]
           }
         ],
-        "description": "Block unattended dev server launches outside tmux"
+        "description": "Block unattended dev server launches outside tmux [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Write",
@@ -208,21 +299,41 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:config-protection\" \"scripts/hooks/config-protection.js\" \"standard,strict\" || exit 2",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "pre:config-protection",
+              "scripts/hooks/config-protection.js",
+              "standard,strict"
+            ],
             "timeout": 30
           }
         ],
-        "description": "Block modifications to linter/formatter config files"
+        "description": "Block modifications to linter/formatter config files [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:mcp-health-check\" \"scripts/hooks/mcp-health-check.js\" \"standard,strict\" || exit 2"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "pre:mcp-health-check",
+              "scripts/hooks/mcp-health-check.js",
+              "standard,strict"
+            ]
           }
         ],
-        "description": "Check MCP server health before MCP tool execution"
+        "description": "Check MCP server health before MCP tool execution [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash|Write|Edit|MultiEdit",
@@ -266,11 +377,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" check-design-document.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "check-design-document.sh"
+            ],
             "timeout": 5
           }
         ],
-        "description": "[STATE] Flag design docs for review gate"
+        "description": "[STATE] Flag design docs for review gate [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Write|Edit|MultiEdit",
@@ -288,33 +407,57 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" post-commit-consume-marker.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "post-commit-consume-marker.sh"
+            ],
             "timeout": 5
           }
         ],
-        "description": "[CLEANUP] Consume codex marker after successful commit"
+        "description": "[CLEANUP] Consume codex marker after successful commit [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" post-pr-consume-marker.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "post-pr-consume-marker.sh"
+            ],
             "timeout": 5
           }
         ],
-        "description": "[CLEANUP] Consume PR review marker after successful gh pr create"
+        "description": "[CLEANUP] Consume PR review marker after successful gh pr create [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" post-merge-confirm-bypass.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "post-merge-confirm-bypass.sh"
+            ],
             "timeout": 15
           }
         ],
-        "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge"
+        "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       },
       {
         "matcher": "Bash",
@@ -325,7 +468,7 @@
             "timeout": 20
           }
         ],
-        "description": "[NUDGE] Non-gating: fire @codex review on successful gh pr create so Codex gets its full pre-merge window (ADR 0024 revisit #1 / #473)"
+        "description": "[NUDGE] Non-gating: fire @codex review on successful gh pr create so Codex gets its full pre-merge window (ADR 0024 revisit #1 / #473) [#713/ADR 0049] DELIBERATELY LEFT IN SHELL FORM \u2014 not migrated. Exec form cannot forward `$PR_GRIND_CODEX_RETRIGGER`: `env -i` strips it, and this hook runs its delegate (codex-nudge-if-expected.sh \u2192 codex-retrigger.sh) as a CHILD of that sterile process, so under exec form `PR_GRIND_CODEX_RETRIGGER=0` would stop suppressing outbound `@codex review` comments. This registration is non-gating, so an outer-shell SHELLOPTS=noexec silencing it is not a gate bypass \u2014 it only skips a nudge. The exact command string is pinned verbatim by scripts/ci/validate-hooks.js."
       },
       {
         "matcher": "Bash",
@@ -470,10 +613,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"post:mcp-health-check\" \"scripts/hooks/mcp-health-check.js\" \"standard,strict\" || exit 2"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh",
+              "post:mcp-health-check",
+              "scripts/hooks/mcp-health-check.js",
+              "standard,strict"
+            ]
           }
         ],
-        "description": "Track failed MCP tool calls, mark unhealthy servers"
+        "description": "Track failed MCP tool calls, mark unhealthy servers [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
       }
     ],
     "Stop": [

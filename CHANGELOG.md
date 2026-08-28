@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/chris-yyau/busdriver/compare/v2.0.0...v2.0.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **hooks:** close the outer-shell gate bypass with a fail-closed first hop ([#713](https://github.com/chris-yyau/busdriver/issues/713)) ([#778](https://github.com/chris-yyau/busdriver/issues/778)) ([47d2d37](https://github.com/chris-yyau/busdriver/commit/47d2d379894a9166b2c93c6a0957256b5cb041cd))
+
 # [2.0.0](https://github.com/chris-yyau/busdriver/compare/v1.113.0...v2.0.0) (2026-08-26)
 
 

@@ -138,7 +138,7 @@ Each route is an ordered fallback chain — first element primary, later element
 
 Council architect, skeptic, and the design-review arbiter are not configurable — they use Claude's Agent tool.
 
-For council, fallback preserves availability but dilutes role identity (Droid filling in as Pragmatist is no longer "Agy's strategic lens"). Append `"none"` as the terminal entry — `["agy", "none"]` — to keep the lens pure and let the voice drop instead. Architect always runs in-context and Skeptic usually runs, so the council convenes with at least two voices even with no external CLIs installed. The core commit pipeline always works.
+For council, fallback preserves availability but dilutes role identity (Droid filling in as Pragmatist is no longer "Agy's strategic lens"). Append `"none"` as the terminal entry — `["agy", "none"]` — to keep the lens pure and let the voice drop instead. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
 
 > **Migration note:** `roundtable.pragmatist` / `roundtable.critic` were renamed to `council.*`. Old keys are silently ignored.
 

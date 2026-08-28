@@ -7,7 +7,7 @@ This is **not** a comprehensive audit trail of every gate execution. `review-met
 | File (per project) | Who writes | What it captures |
 |--------------------|-----------|------------------|
 | `.claude/review-metrics.jsonl` | litmus | Review outcome (PASS/FAIL), issue count, severity breakdown, iteration, CLI used, mode, commit SHA, branch, diff size |
-| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). Env-var bypasses (`SKIP_LITMUS`, `SKIP_PR_GRIND`) were removed in #325 / ADR 0016 — only the audited, file-based skips remain |
+| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). Env-var bypasses (`SKIP_LITMUS`, `SKIP_PR_GRIND`) were removed in #325 / ADR 0016 — for **busdriver's own gates**, only the audited, file-based skips remain. The seatbelt plugin is a separate tool writing to the same log and still supports its own `SKIP_SEATBELT` / `SKIP_<SCANNER>` env vars (see `seatbelt-skip` below) |
 
 ## Event types written to `bypass-log.jsonl`
 
@@ -18,7 +18,7 @@ All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-me
 | `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
 | `skip-marker-cleared` | `scripts/design-clear.sh --skip <name>` | A drainable spent skip file or consumed review artifact (`skip-litmus.local`, `skip-design-review.local`, `litmus-passed.local`, `pr-review-passed.local`, the two PR `.local.json` verdicts) was released. Removal makes the next gate STRICTER, never looser — that direction is the whole membership test for the allowlist |
 | `skip-marker-clear-failed` | `scripts/design-clear.sh --skip <name>` | The `skip-marker-cleared` event was already written (audit first, unlink second) but the removal did not complete or could not be verified — the unlink failed, or the state directory changed under the descriptor afterwards so the result is unprovable. The audit log's correction that the release did not take effect |
-| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written. (Cutover note: prior to v1.41.x, the consumed event was logged here with `gate:"pre-merge"`; from v1.41.x onward `skip-pr-grind-consumed` is logged at PostToolUse with `gate:"post-merge"`.) |
+| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | Records that the gate *reached* the skip-approval path for one `gh pr merge` and was about to write a `.merge-bypass-pending.local` claim. It is **not** proof the merge was authorized: the event is written before the claim, so if that write then fails the gate blocks and this event survives anyway. Pair it with the matching `skip-pr-grind-consumed`/`-released` event to see what actually happened. (Cutover note: before v1.41.x, the consumed event was logged here with `gate:"pre-merge"`; from v1.41.x onward `skip-pr-grind-consumed` is logged at PostToolUse with `gate:"post-merge"`.) |
 | `skip-pr-grind-consumed` | post-merge cleanup hook (PostToolUse) | The PR is confirmed merged AND tamper checks passed — the claim was honored and the skip file was deleted. `reason` records how success was confirmed: `github-api-state-merged` (authoritative `gh pr view --json state`, the normal path since #664 — gh prints its `Squashed and merged` line only on a TTY, and its exit code is unreliable with `--delete-branch`), `cli-pattern-merged` when gh's own output confirmed it (a TTY, or stderr), `cross-repo-merge-unverifiable-token-spent` for a merge steered at another repo/host (this checkout's same-numbered PR is a different pull request, so it is not queried at all — the token is spent rather than left armed, and the operator re-touches if that merge failed), or `auto-merge-accepted-token-spent` for an accepted `--auto` queue |
 | `skip-pr-grind-released` | post-merge cleanup hook (PostToolUse) | `gh pr merge` failed AND the GitHub API does not report the PR `MERGED`; the claim was discarded and the skip file was preserved for retry. A local failure after GitHub already merged the PR (the `--delete-branch` worktree-conflict shape) does NOT hit this path — it is reclassified `success` (`reason: github-api-state-merged`) and emits `skip-pr-grind-consumed` instead |
 | `skip-pr-grind-released-auto-queued` | post-merge cleanup hook (PostToolUse) | **Retired in #664 — no longer emitted.** An accepted `gh pr merge --auto` queue now consumes the token (`reason: auto-merge-accepted-token-spent`): GitHub lands that merge with no second PostToolUse event, so nothing could ever confirm it and preserving left a spent bypass armed. Historical entries keep their original meaning (skip file was preserved) |
@@ -63,11 +63,14 @@ tail -10 .claude/bypass-log.jsonl | jq .
 # Count bypasses by event type
 jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
 
-# Did the gate authorize PR 666's merge? (#667 — no output means it never did.
+# What pre-merge activity did the gate record for PR 666? (#667 — no output
+# means it never authorized a merge. Output is recorded activity, not proof of
+# authorization: a `skip-pr-grind-claimed` row can survive an attempt the gate
+# went on to block, so read it with its matching -consumed/-released event.
 # If GitHub says the PR is merged, it merged without gate authorization; check
 # whether it was merged from a shell outside Claude Code, where no PreToolUse
-# hook fires. A blocked attempt is also recordless, so absence alone does not
-# distinguish "never attempted" from "attempted and refused".)
+# hook fires. A blocked attempt normally leaves no record either, so absence
+# alone does not distinguish "never attempted" from "attempted and refused".)
 jq -r --arg pr 666 'select(.gate == "pre-merge" and (.pr | tostring) == $pr)
   | "\(.ts) \(.event)"' .claude/bypass-log.jsonl
 
@@ -79,7 +82,7 @@ Use these monthly to identify drift — scanners you keep bypassing (candidates 
 
 ## Skip-file semantics
 
-Deep semantics live with the gate that owns each file. All are gitignored and operator-created, and a file created within 30 seconds is rejected — this prevents Claude from creating skip files itself to bypass gates.
+Deep semantics live with the gate that owns each file. All are gitignored and operator-created, and a file created within 30 seconds is rejected. That age check is a heuristic, not prevention: it detects a just-created skip file and raises the cost of an agent self-bypass (which would have to create the file and then wait), rather than making one impossible.
 
 | File | Consumption | Source of truth |
 |------|-------------|-----------------|

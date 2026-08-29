@@ -109,6 +109,54 @@ def classify_entry(root, entry):
     return rel if carries_key(doc) else None
 
 
+def require_repo_root(root):
+    """Raise unless `root` IS the top level of the repository git resolves for it.
+
+    `git -C <dir>` walks UP for repository metadata, so an ordinary subdirectory
+    of some other repository answers happily — about that other repository. The
+    caller asked about `root`; anything else is a different tree wearing the
+    right name, and reporting it clean is the same fail-open as a redirected
+    GIT_DIR. Confirm the discovered top-level before reading a single entry.
+    """
+    top = git(root, "rev-parse", "--show-toplevel").decode("utf-8", "surrogateescape").strip()
+    if os.path.realpath(top) != os.path.realpath(root):
+        raise RuntimeError("%s is not a repository root (git resolved %s)" % (root, top))
+
+
+def scan_index(root):
+    """Every tracked entry under `root` that cannot be cleared, as report lines.
+
+    Raises `RuntimeError`/`OSError` when any entry cannot be read, so the caller
+    answers 2 rather than clearing what it never saw.
+    """
+    # The WHOLE index, not a `*.json` pathspec, and `-s` for the mode. Both
+    # narrowings are bypasses:
+    #
+    #   * by extension — a `.claude` tracked as a SUBMODULE or a directory
+    #     SYMLINK puts no `*.json` path in this index at all. The settings
+    #     file materializes at checkout and Claude reads it; a globbed scan
+    #     never saw a candidate and reports clean.
+    #   * by assuming a tracked `*.json` is a JSON file — a
+    #     `.claude/settings.json` symlink stores its TARGET PATH as the blob,
+    #     and a target named `"payload"` parses as valid, harmless JSON while
+    #     the reader follows the link to the file holding the kill switch.
+    #
+    # Same family as the committed-`.claude`-symlink case in
+    # tests/test-skip-file-repo-controlled.sh. So: every non-regular entry is
+    # reported wherever it sits, and only regular `*.json` blobs are parsed.
+    listing = git(root, "ls-files", "-s", "-z")
+    hits = []
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        # A tracked path whose blob cannot be read is not evidence of anything,
+        # least of all cleanliness — `classify_entry` raises, naming the path.
+        hit = classify_entry(root, entry)
+        if hit is not None:
+            hits.append(hit)
+    return hits
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: scan_disable_all_hooks.py <repo-root>", file=sys.stderr)
@@ -116,57 +164,11 @@ def main(argv):
     root = argv[1]
 
     try:
-        # `git -C <dir>` walks UP for repository metadata, so an ordinary
-        # subdirectory of some other repository answers happily — about that
-        # other repository. The caller asked about `root`; anything else is a
-        # different tree wearing the right name, and reporting it clean is the
-        # same fail-open as a redirected GIT_DIR. Confirm the discovered
-        # top-level IS the requested root before reading a single entry.
-        top = git(root, "rev-parse", "--show-toplevel").decode("utf-8", "surrogateescape").strip()
+        require_repo_root(root)
+        hits = scan_index(root)
     except (RuntimeError, OSError) as exc:
         print("scan failed: %s" % exc, file=sys.stderr)
         return 2
-    if os.path.realpath(top) != os.path.realpath(root):
-        print(
-            "scan failed: %s is not a repository root (git resolved %s)" % (root, top),
-            file=sys.stderr,
-        )
-        return 2
-
-    try:
-        # The WHOLE index, not a `*.json` pathspec, and `-s` for the mode. Both
-        # narrowings are bypasses:
-        #
-        #   * by extension — a `.claude` tracked as a SUBMODULE or a directory
-        #     SYMLINK puts no `*.json` path in this index at all. The settings
-        #     file materializes at checkout and Claude reads it; a globbed scan
-        #     never saw a candidate and reports clean.
-        #   * by assuming a tracked `*.json` is a JSON file — a
-        #     `.claude/settings.json` symlink stores its TARGET PATH as the blob,
-        #     and a target named `"payload"` parses as valid, harmless JSON while
-        #     the reader follows the link to the file holding the kill switch.
-        #
-        # Same family as the committed-`.claude`-symlink case in
-        # tests/test-skip-file-repo-controlled.sh. So: every non-regular entry is
-        # reported wherever it sits, and only regular `*.json` blobs are parsed.
-        listing = git(root, "ls-files", "-s", "-z")
-    except (RuntimeError, OSError) as exc:
-        print("scan failed: %s" % exc, file=sys.stderr)
-        return 2
-
-    hits = []
-    for entry in listing.split(b"\0"):
-        if not entry:
-            continue
-        try:
-            hit = classify_entry(root, entry)
-        except (RuntimeError, OSError) as exc:
-            # A tracked path whose blob cannot be read is not evidence of
-            # anything, least of all cleanliness. `exc` already names the path.
-            print("scan failed on %s" % exc, file=sys.stderr)
-            return 2
-        if hit is not None:
-            hits.append(hit)
 
     for hit in hits:
         print(hit)

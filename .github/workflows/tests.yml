@@ -81,6 +81,14 @@ jobs:
             tests/test-gateguard-containment.sh \
             tests/test-gate-env-containment.sh \
             tests/test-node-hook-containment.sh
+      - name: Lint gate-integrity content lock (#742)
+        # scripts/gate-integrity.sh is the content lock over hooks/gate-scripts/**
+        # and scripts/hooks/** — the control that makes a launcher body edit
+        # impossible to land without a lockfile diff. Required, not soft.
+        run: |
+          shellcheck --severity=warning \
+            scripts/gate-integrity.sh \
+            tests/test-gate-integrity.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

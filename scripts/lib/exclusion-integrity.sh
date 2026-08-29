@@ -167,7 +167,7 @@ verify_exclusion_policy() {
     # would accept a policy that HEAD carries but the worktree deleted as a clean absence,
     # short-circuiting past the committed-clean probe below and quietly contradicting this
     # function's contract that staged or unstaged deletions are refused.
-    if [[ ! -e "$_worktree/$_policy_rel" ]] && ! git -C "$_worktree" cat-file -e "$_base:$_policy_rel" 2>/dev/null; then
+    if [[ ! -e "$_worktree/$_policy_rel" ]] && ! git -C "$_worktree" --no-replace-objects cat-file -e "$_base:$_policy_rel" 2>/dev/null; then
         if ! _policy_pinned=$(mktemp -t busdriver-excl-policy-XXXXXX); then
             _excl_fail "env" "could not create a temp file to pin the absent exclusion policy; fail-closed"
             return 1
@@ -197,7 +197,7 @@ verify_exclusion_policy() {
         _excl_fail "env" "could not create a temp file to pin the committed exclusion policy; fail-closed"
         return 1
     fi
-    if ! git -C "$_worktree" show "$_base:$_policy_rel" > "$_policy_pinned" 2>/dev/null; then
+    if ! git -C "$_worktree" --no-replace-objects show "$_base:$_policy_rel" > "$_policy_pinned" 2>/dev/null; then
         rm -f "$_policy_pinned"
         _excl_fail "judgment" "could not read the COMMITTED exclusion policy ($_policy_rel) from HEAD; refusing to use the worktree copy instead"
         return 1
@@ -411,7 +411,7 @@ verify_exclusion_logic() {
                 _excl_fail "env" "could not create a temp file to pin the committed exclusion logic; fail-closed"
                 return 1
             fi
-            if ! git -C "$_wt" show "$_base:$_excl_logic_rel" > "$_excl_pinned" 2>/dev/null; then
+            if ! git -C "$_wt" --no-replace-objects show "$_base:$_excl_logic_rel" > "$_excl_pinned" 2>/dev/null; then
                 rm -f "$_excl_pinned"
                 _excl_fail "judgment" "could not read the COMMITTED exclusion logic ($_excl_logic_rel) from HEAD; refusing to source the worktree copy instead"
                 return 1

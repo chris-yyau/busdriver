@@ -50,6 +50,13 @@
 #   0 on success envelope; 1 on bail envelope.
 
 set -uo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process. A replacement
+# object can substitute the commit or tree a diff resolves, so annotating only the
+# canonical marker hash would leave merge-base resolution, the exclusion re-verify and
+# the pinned-blob reads still honouring replacements. (The per-call
+# `GIT_NO_REPLACE_OBJECTS=1` on the grind-trailer reads below predates this and is now
+# redundant, but harmless — left in place rather than widening this diff.)
+export GIT_NO_REPLACE_OBJECTS=1
 
 emit_bootstrap_bail() {
     local category="${1:-judgment}"
@@ -371,7 +378,7 @@ trap 'rm -rf "$RUN_DIR"' EXIT
 # is load-bearing; run-review-loop.sh mints with the identical expression. The
 # litmus marker is validated later by re-running the same form, so all three files
 # must agree — tests/test-litmus-marker-binding.sh asserts that mechanically.
-PRE_LITMUS_DIFF_SHA=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
+PRE_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
     emit_bail "env" "failed to hash pre-litmus staged diff"
 PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list pre-litmus staged paths"
@@ -957,7 +964,7 @@ else
     fi
 
     # #576 canonical form — must equal the minting expression in run-review-loop.sh.
-    EXPECTED_HASH=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
+    EXPECTED_HASH=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
         emit_bail "env" "failed to hash post-litmus staged diff"
     if [[ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]]; then
         emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
@@ -966,7 +973,7 @@ fi
 
 # --- Step 6: Commit message composition + commit-type derivation ---
 # #576 canonical form — compared against PRE_LITMUS_DIFF_SHA, which uses it too.
-POST_LITMUS_DIFF_SHA=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
+POST_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
     emit_bail "env" "failed to hash post-litmus staged diff for commit message"
 POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list post-litmus staged paths"

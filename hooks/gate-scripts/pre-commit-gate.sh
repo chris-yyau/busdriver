@@ -11,6 +11,16 @@
 #       a committed settings.json could inject it, so gate env is now sanitized.)
 
 set -euo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process, not just the
+# annotated ones. A replacement object can substitute the commit or tree that
+# `git diff` resolves, so a crafted refs/replace entry could make the reviewer read
+# fabricated history while the real content is what gets committed. Annotating call
+# sites one at a time left merge-base resolution, name-only/numstat classification and
+# the short-circuit path scan still honouring replacements — the env var covers them
+# all, and the explicit --no-replace-objects on the canonical hash stays as
+# documentation of the invariant.
+export GIT_NO_REPLACE_OBJECTS=1
+
 # ── Harness-portable root/state resolution ─────────────────────────────
 # BUSDRIVER_PLUGIN_ROOT: plugin-root override; falls back to CLAUDE_PLUGIN_ROOT.
 # Falls back to relative path from this script's location.
@@ -747,7 +757,7 @@ if [ -f "$MARKER" ]; then
     else
         HASH_CMD=()
     fi
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

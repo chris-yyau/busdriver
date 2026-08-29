@@ -3,6 +3,16 @@
 # Reads state, runs review, parses results, updates state, handles iteration logic
 
 set -euo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process, not just the
+# annotated ones. A replacement object can substitute the commit or tree that
+# `git diff` resolves, so a crafted refs/replace entry could make the reviewer read
+# fabricated history while the real content is what gets committed. Annotating call
+# sites one at a time left merge-base resolution, name-only/numstat classification and
+# the short-circuit path scan still honouring replacements — the env var covers them
+# all, and the explicit --no-replace-objects on the canonical hash stays as
+# documentation of the invariant.
+export GIT_NO_REPLACE_OBJECTS=1
+
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
@@ -225,11 +235,13 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 #     or fail the hashed bytes.
 # Must stay byte-identical to pre-pr-gate.sh's CURRENT_HASH computation (same formula).
 compute_pr_diff_hash() {
-  local base="$1" mb diff
+  # $2 (optional) pins the branch tip: #576 — resolving HEAD afresh here while the
+  # caller reviewed a specific commit lets the marker describe a different snapshot.
+  local base="$1" tip="${2:-HEAD}" mb diff
   [[ -z "$base" ]] && return 1
-  mb=$(git merge-base "$base" HEAD 2>/dev/null) || return 1
+  mb=$(git merge-base "$base" "$tip" 2>/dev/null) || return 1
   [[ -z "$mb" ]] && return 1
-  diff=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...HEAD" 2>/dev/null) || return 1
+  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...${tip}" 2>/dev/null) || return 1
   [[ -z "$diff" ]] && return 1
   printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
 }
@@ -1065,6 +1077,15 @@ PROMPT=$(sed -n '/^---$/,/^---$/!p' "$STATE_FILE" | sed '1d')
 # the correct state for PR mode, where the diff is base...HEAD rather than --cached.
 _HEAD_BASE=()
 _HEAD_SHA=""
+# PR-mode endpoints. Declared (and BLANKED) here for two reasons: these are plain shell
+# variables, so an exported value would otherwise be inherited and could choose the
+# review base before this script computes it; and the pin has to be READ after it is
+# WRITTEN — an earlier revision froze _PR_BASE_REF near the mode guard, hundreds of
+# lines before _PR_BASE_SHA was resolved, so it silently kept the mutable branch name
+# and the pin never took effect.
+_PR_BASE_SHA=""
+_PR_BASE_REF=""
+_PR_TIP=""
 if _HEAD_SHA=$(git rev-parse --verify HEAD 2>/dev/null); then
   _HEAD_BASE=("$_HEAD_SHA")
 else
@@ -1112,7 +1133,16 @@ else
     # while the reviewed artifact is _HEAD_SHA lets a concurrent HEAD move source the
     # exclusion inputs from a different history than the one under review — the same
     # check-versus-use split this block exists to close.
-    _excl_base=$(git merge-base "$(resolve_pr_base_branch)" "${_HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+    # Pin the BASE ref too. Pinning only the tip leaves PR_BASE_BRANCH a mutable ref that
+    # the exclusion anchor, the reviewer diff and the marker hash each resolve
+    # independently: an A->B->A base transition lets the reviewer inspect B's diff while
+    # the marker hashes A, and the gate at A then accepts that mismatched review.
+    _PR_BASE_SHA=$(git rev-parse --verify "$(resolve_pr_base_branch)" 2>/dev/null || echo "")
+    if [ -n "$_PR_BASE_SHA" ]; then
+      _excl_base=$(git merge-base "$_PR_BASE_SHA" "${_HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+    else
+      _excl_base=""
+    fi
   else
     _excl_base="${_HEAD_SHA:-HEAD}"
   fi
@@ -1155,10 +1185,31 @@ else
     # shellcheck source=lib/exclude-generated.sh
     source "$EXCL_LOGIC_SOURCE"
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
-    if [ -n "${EXCL_POLICY_SOURCE:-}" ] && [[ " ${REVIEW_EXCLUDE_ARGS[*]-} " != *":(exclude)$_excl_probe"* ]]; then
+    # EXACT match, and the same comparison the strip below uses. A substring test
+    # accepted an element merely CONTAINING the probe — an older parser reading the live
+    # policy could return a suffix-bearing argument that satisfied the check, survived a
+    # strip that removes only exact matches, and left the attacker-controlled live
+    # exclusions in force.
+    _excl_probe_seen=no
+    for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+      [ "$_excl_arg" = ":(exclude)$_excl_probe" ] && _excl_probe_seen=yes && break
+    done
+    if [ -n "${EXCL_POLICY_SOURCE:-}" ] && [ "$_excl_probe_seen" != yes ]; then
       echo "⚠️  The exclusion parser at the review anchor does not support a pinned policy" >&2
       echo "    (it would read the live, unverified one) — reviewing with NO exclusions" >&2
       REVIEW_EXCLUDE_ARGS=()
+    else
+      # STRIP the sentinel. Leaving it in place turns it into a live
+      # `:(exclude)__busdriver_pin_probe_<pid>_<random>` pathspec, and the name is
+      # derivable — a file staged under it would be dropped from the reviewer's diff
+      # while the full-snapshot marker still authorised it. It has done its job the
+      # moment we observed it.
+      _excl_kept=()
+      for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+        [ "$_excl_arg" = ":(exclude)$_excl_probe" ] && continue
+        _excl_kept+=("$_excl_arg")
+      done
+      REVIEW_EXCLUDE_ARGS=(${_excl_kept[@]+"${_excl_kept[@]}"})
     fi
   fi
   # Unconditional: verify_exclusion_policy can succeed (leaving a pinned temp) and
@@ -1183,17 +1234,39 @@ source "$SCRIPT_DIR/lib/markdown-checker.sh"
 # Capture diff for scope control (excluding auto-generated files)
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
-  ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
+  # #576: the PINNED tip, not the mutable HEAD ref — otherwise exclusions anchored on
+  # the merge base can mix with material from a different commit, and an A->B->A
+  # transition lets a review of one snapshot authorise another.
+  _PR_TIP="${_HEAD_SHA:-HEAD}"
+  # Now that the exclusion block has resolved _PR_BASE_SHA, freeze the base ref here —
+  # at the point of first use, and after the origin/ normalisation.
+  #
+  # There is NO fallback to the branch name. Falling back to a mutable ref is the same
+  # bug in a quieter costume: the file list, the reviewer diff and the marker hash each
+  # resolve it separately, so a ref that appears or moves between those calls reopens
+  # the review-to-marker gap on exactly the path where something already went wrong.
+  # An unpinnable base is a refusal.
+  if [ -z "$_PR_BASE_SHA" ]; then
+    _PR_BASE_SHA=$(git rev-parse --verify "$PR_BASE_BRANCH" 2>/dev/null || echo "")
+  fi
+  if [ -z "$_PR_BASE_SHA" ]; then
+    echo "❌ Could not resolve $PR_BASE_BRANCH to a commit — refusing to review against a moving base." >&2
+    echo "   Fetch the base branch (git fetch origin) and re-run." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _PR_BASE_REF="$_PR_BASE_SHA"
+  ALL_STAGED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}")
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
   # reviewer actually reads.
-  STAGED_DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
-  PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE_BRANCH" 2>/dev/null || true)
-  FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
+  FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
   echo "📋 Capturing staged changes..."
   # #576: take ONE atomic snapshot of the index and derive BOTH the reviewer's material
@@ -1251,7 +1324,7 @@ else
   # THE CANONICAL MARKER-HASH FORM — byte-identical to pre-commit-gate.sh (which
   # documents why each flag is load-bearing) and to the three sites in
   # dispatcher-commit-block.sh. Asserted by tests/test-litmus-marker-binding.sh.
-  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
+  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
     rm -f "$_INDEX_SNAPSHOT"
     echo "❌ Could not hash the staged diff — refusing to mint a review marker" >&2
     write_terminal_status setup_error
@@ -1284,7 +1357,7 @@ else
   # pipeline fails would abort the script before write_terminal_status ever ran,
   # leaving the state file stuck at PENDING with no machine-readable terminal status
   # for automated callers to read.
-  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
     echo "❌ Could not measure the staged diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1307,7 +1380,7 @@ else
     # size ceilings below behave identically). Callers key off exit 2 here.
     exit 2
   fi
-  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
     echo "❌ Could not capture the staged diff from the index snapshot — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1530,7 +1603,7 @@ while IFS=$'\t' read -r added removed _file; do
   [ "$removed" = "-" ] && removed=0
   ADDITION_LINES=$((ADDITION_LINES + added))
   DELETION_LINES=$((DELETION_LINES + removed))
-done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
+done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
 WEIGHTED_LINES=$(( ADDITION_LINES + DELETION_LINES / 4 ))
 echo "   Staged files: $STAGED_FILE_COUNT"
 echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELETION_LINES, weighted: $WEIGHTED_LINES)"
@@ -1670,7 +1743,7 @@ else
   # #576: same pin — this drives which findings are kept as in-diff.
   # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
   # are kept as in-diff, so a blinded rendering here silently drops real findings.
-  DIFF_FOR_FILTER=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re

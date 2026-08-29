@@ -43,7 +43,7 @@ PRODUCER_LIB="scripts/lib/exclusion-integrity.sh"
 # THE CANONICAL FORM under test. Deliberately spelled out here rather than sourced
 # from the scripts: a test that derives the expression from the code it checks
 # cannot detect the code changing. This literal is the specification.
-CANON_FLAGS='-c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index'
+CANON_FLAGS='--no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index'
 
 hash_canonical() { # $1 = repo dir
     # shellcheck disable=SC2086
@@ -331,7 +331,7 @@ fi
 # Pinning only the marker is worse than useless: a constant-output driver hides staged
 # content from the reviewer while the marker still binds the real index, so the gate
 # certifies content nobody read.
-if grep -q 'STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text' "$PRODUCER"; then
+if grep -q 'STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text' "$PRODUCER"; then
     ok "the reviewer-facing staged diff is pinned against diff drivers, not just the marker"
 else
     bad "commit-mode STAGED_DIFF is not pinned — a hostile driver can hide content from the reviewer"
@@ -377,7 +377,7 @@ fi
 # the downstream reads that decide SIZE and SHORT-CIRCUIT classification must name the
 # same base the marker was hashed against.
 missing_base=""
-for pat in 'FILTERED_FILES=$(GIT_INDEX_FILE' 'SC_PATHS=$(git diff --cached --name-only --no-renames' 'DIFF_FOR_FILTER=$(git -c color.ui=never'; do
+for pat in 'FILTERED_FILES=$(GIT_INDEX_FILE' 'SC_PATHS=$(git diff --cached --name-only --no-renames' 'DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never'; do
     line=$(grep -F "$pat" "$PRODUCER" | head -1 || true)
     case "$line" in
         *'_HEAD_BASE[@]'*) : ;;
@@ -530,7 +530,7 @@ fi
 # PR mode must validate the exclusion inputs against the MERGE BASE, not the branch
 # tip: the branch IS the artifact under review, so a PR that commits `*` into
 # review-exclude would otherwise be "clean" against itself and hide its own diff.
-if grep -q 'git merge-base "$(resolve_pr_base_branch)" "${_HEAD_SHA:-HEAD}"' "$PRODUCER"; then
+if grep -q 'git merge-base "$_PR_BASE_SHA" "${_HEAD_SHA:-HEAD}"' "$PRODUCER"; then
     ok "PR mode anchors the exclusion inputs on the merge base, not the branch tip"
 else
     bad "PR mode validates exclusions against its own HEAD — a branch can widen them for itself"
@@ -556,6 +556,15 @@ if grep -q '_excl_probe=' "$PRODUCER" && grep -q '_excl_probe=' "$DISPATCHER"; t
     ok "both callers prove the exclusion parser honoured the pinned policy"
 else
     bad "no sentinel probe — an older parser would silently read the live policy"
+fi
+
+# The sentinel must not survive into the built args: it would become a live exclude
+# pathspec under a derivable name, dropping a file staged under it from review while
+# the full-snapshot marker still authorised it.
+if grep -q 'excl_arg" = ":(exclude)\$_excl_probe"' "$PRODUCER"; then
+    ok "the pin sentinel is stripped from the exclusion args after it is observed"
+else
+    bad "the pin sentinel stays in REVIEW_EXCLUDE_ARGS as a live exclude pattern"
 fi
 
 # The producer must actually call the guard — the lib being correct is worth nothing

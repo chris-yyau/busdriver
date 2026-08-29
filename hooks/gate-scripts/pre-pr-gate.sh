@@ -14,6 +14,16 @@
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process, not just the
+# annotated ones. A replacement object can substitute the commit or tree that
+# `git diff` resolves, so a crafted refs/replace entry could make the reviewer read
+# fabricated history while the real content is what gets committed. Annotating call
+# sites one at a time left merge-base resolution, name-only/numstat classification and
+# the short-circuit path scan still honouring replacements — the env var covers them
+# all, and the explicit --no-replace-objects on the canonical hash stays as
+# documentation of the invariant.
+export GIT_NO_REPLACE_OBJECTS=1
+
 # ── Harness-portable state resolution ──────────────────────────────────
 # BUSDRIVER_STATE_DIR: state-dir override, defaults to .claude.
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so

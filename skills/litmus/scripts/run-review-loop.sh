@@ -1464,7 +1464,15 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     exit 1
   fi
   _PR_BASE_REF="$_PR_BASE_SHA"
-  ALL_STAGED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}")
+  # Checked explicitly, exactly as the commit-mode sibling is. A bare assignment fails
+  # the script under `set -e` BEFORE write_terminal_status runs, and this script has no
+  # ERR trap — so a git/config/object failure here strands the review in a stale PENDING
+  # rather than reporting a setup error.
+  if ! ALL_STAGED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}"); then
+    echo "❌ Could not list the files changed between the base and the branch tip — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
   # reviewer actually reads.
@@ -1581,7 +1589,11 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
   PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
-  FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"})
+  if ! FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
+    echo "❌ Could not list the reviewable files for this branch — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 else
   echo "📋 Capturing staged changes..."
   # The index snapshot was taken and exported before the exclusion checks above.

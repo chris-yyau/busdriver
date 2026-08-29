@@ -532,79 +532,142 @@ else
     bad "link-count probe order is wrong (GNU=$probe_line, BSD=$probe_line2)"
 fi
 
-# A descriptor's identity MUST describe the file it holds open, exactly, on every
-# platform — and `stat` cannot deliver that. On Linux /dev/fd is a symlink into
-# /proc/self/fd, so without `-L` a probe returns the PROCFS SYMLINK: wrong inode (every
-# legitimate external file refused) and link count 1 (a hardlink into the worktree reads
-# as safe). Measured on Ubuntu: 26:3867899 nlink=1 for a file whose real identity was
-# 66306:47717019 nlink=2. On macOS /dev/fd is its own pseudo-filesystem and reports the
-# fdesc device for EVERY open file, so no -L helps and only the inode is usable — which
-# a same-numbered file on another filesystem satisfies. fstat(2) is the only answer that
-# is exact on both, so assert against a file built here: whichever platform runs the
-# suite checks its own behaviour.
+# The pinned read MUST describe and return the file it actually opened, on every
+# platform, and it must never be able to hang. `stat` cannot do the first: on Linux
+# /dev/fd is a symlink into /proc/self/fd, so a probe without -L reports the PROCFS
+# SYMLINK — wrong inode (every legitimate external file refused) and link count 1 (a
+# hardlink into the worktree reads as safe); measured on Ubuntu as 26:3867899 nlink=1
+# for a file whose real identity was 66306:47717019 nlink=2. On macOS /dev/fd is its own
+# pseudo-filesystem reporting the fdesc device for every open file, so only the inode is
+# usable there — which a same-numbered file on another filesystem satisfies. And a shell
+# redirection cannot do the second: `9< fifo` blocks until a writer appears. Assert
+# against files built here, so whichever platform runs the suite checks its own
+# behaviour.
 # shellcheck source=/dev/null
 . "$REPO_ROOT/$PRODUCER_LIB"
 tfd=$(mktemp -d)
+mkdir -p "$tfd/wt"                # a "worktree" the fixture is NOT inside
 printf 'fd-probe\n' > "$tfd/one"
-ln "$tfd/one" "$tfd/two"          # 2 names, one inode
-exec 7< "$tfd/one"
-fd_stat=$(_excl_fstat 7 || echo "")
-exec 7<&-
-fd_ident="${fd_stat%:*}"
-fd_nlink="${fd_stat##*:}"
-path_ident=$(_excl_ident "$tfd/one" || echo "")
-if [ "$fd_nlink" = "2" ]; then
-    ok "a descriptor's link count is the open file's, not the /dev/fd entry's"
+pin_stat=$(_excl_pin_external "$tfd/one" "$tfd/wt" "$tfd/copy" || echo "")
+IFS=: read -r pin_dev pin_num pin_nlink <<< "$pin_stat"
+pin_ident="${pin_dev}:${pin_num}"
+path_ident=$(python3 -c 'import os,sys; s=os.stat(sys.argv[1]); print("%d:%d" % (s.st_dev, s.st_ino))' "$tfd/one")
+if [ "$pin_nlink" = "1" ]; then
+    ok "the pinned read reports the open file's link count, not a /dev/fd entry's"
 else
-    bad "descriptor link count is '$fd_nlink', not 2 — a hardlink into the worktree would read as safe"
+    bad "pinned link count is '$pin_nlink', not 1 — the probe is not describing the open file"
 fi
-if [ -n "$fd_ident" ] && [ "$fd_ident" = "$path_ident" ]; then
-    ok "a descriptor's identity matches its path's, so the binding can be checked at all"
+# ...and a second name must be REFUSED. This is the case a /dev/fd probe gets wrong on
+# Linux (it reports the procfs symlink's link count, 1, for a file that has two names).
+printf 'fd-probe\n' > "$tfd/linked"
+ln "$tfd/linked" "$tfd/linked2"
+if _excl_pin_external "$tfd/linked" "$tfd/wt" "$tfd/linked-copy" >/dev/null 2>&1; then
+    bad "a file with two names was accepted — a hardlink into the worktree would read as safe"
 else
-    bad "descriptor identity '$fd_ident' != path identity '$path_ident' — every trusted-external file would be refused"
+    ok "a file with more than one name is refused by the pinned read"
+fi
+if [ -n "$pin_ident" ] && [ "$pin_ident" = "$path_ident" ]; then
+    ok "the pinned read's identity matches its path's, so the binding can be checked at all"
+else
+    bad "pinned identity '$pin_ident' != path identity '$path_ident' — every trusted-external file would be refused"
 fi
 # Device-qualified, unconditionally: inode numbers repeat across filesystems, so an
-# inode-only binding is satisfiable by a same-numbered file on another device. There is
-# no platform where this is allowed to degrade.
-tfd_keep="$tfd"
-case "$fd_ident" in
-    *:*) ok "descriptor identity is device-qualified on this platform" ;;
-    *)   bad "descriptor identity is inode-only — a cross-device inode collision satisfies the binding" ;;
+# inode-only binding is satisfiable by a same-numbered file on another device.
+case "$pin_ident" in
+    *:*) ok "the pinned identity is device-qualified" ;;
+    *)   bad "the pinned identity is inode-only — a cross-device inode collision satisfies the binding" ;;
 esac
-# The interpreter behind fstat is resolved by absolute path, not PATH: a PATH entry is
-# repo-reachable, and this decides whether unreviewed code may be sourced. Emptying PATH
-# must not change the answer.
+if cmp -s "$tfd/one" "$tfd/copy"; then
+    ok "the pinned read copies the bytes it opened"
+else
+    bad "the pinned copy does not match the source"
+fi
+# The copy must be bracketed on BOTH sides. Every identity check happens before a byte
+# is read, and the read loop is not instantaneous: a second name linked onto the inode,
+# or a rewrite, lands mid-copy while device and inode stay identical. Only a re-read
+# after the last byte catches that, and st_ctime_ns is the kernel-maintained witness
+# (linking bumps it, writing bumps it, utimes cannot backdate it). This one is pinned
+# structurally rather than raced: the window is real but not deterministically
+# reproducible in a test, and a pin that always runs beats a probe that sometimes does.
+post_missing=""
+grep -q 'st2 = os.fstat(fd)' "$PRODUCER_LIB" || post_missing="$post_missing re-fstat"
+grep -q 'if st2.st_nlink != 1:' "$PRODUCER_LIB" || post_missing="$post_missing nlink"
+grep -q 'st.st_size, st.st_mtime_ns, st.st_ctime_ns' "$PRODUCER_LIB" || post_missing="$post_missing ctime"
+if [ -z "$post_missing" ]; then
+    ok "the pinned read re-validates the inode after copying, not only before"
+else
+    bad "the pinned read never re-checks the source after the copy:$post_missing"
+fi
+# A FIFO must be REFUSED, promptly. This is the case a `[[ -f ]]` guard plus a shell
+# redirection cannot cover: the open itself blocks, so the gate hangs before any check
+# can run. The timeout is the assertion — without a non-blocking open this never returns.
+mkfifo "$tfd/pipe"
+# `timeout` is NOT assumed: stock macOS ships none, and a missing binary exits 127 —
+# which would land in the generic "refused" branch and record a PASS without ever
+# running the code under test. Use it when present, otherwise a plain watchdog.
+deadline_run() {  # $1 = seconds; rest = command
+    local _secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$_secs" "$@"; return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$_secs" "$@"; return $?
+    fi
+    "$@" & local _pid=$!
+    ( command sleep "$_secs"; kill -9 "$_pid" 2>/dev/null ) & local _watch=$!
+    local _rc=0
+    wait "$_pid" || _rc=$?
+    kill "$_watch" 2>/dev/null || true
+    wait "$_watch" 2>/dev/null || true
+    return "$_rc"
+}
+fifo_rc=0
+deadline_run 5 bash -c '. "$1/$2"; _excl_pin_external "$3" "$4" "$5"' _ \
+    "$REPO_ROOT" "$PRODUCER_LIB" "$tfd/pipe" "$tfd/wt" "$tfd/fifo-copy" >/dev/null 2>&1 || fifo_rc=$?
+if [ "$fifo_rc" = "0" ]; then
+    bad "a FIFO was accepted as exclusion logic"
+elif [ "$fifo_rc" = "124" ] || [ "$fifo_rc" -gt 128 ]; then
+    # 124 is what `timeout` reports; >128 is a signal, which is how the fallback
+    # watchdog kills a stuck child. Both mean the open never returned.
+    bad "opening a FIFO hung the pinned read (killed with rc $fifo_rc) — the open is not non-blocking"
+else
+    ok "a FIFO is refused promptly instead of hanging the gate"
+fi
+# The interpreter is resolved by absolute path, not PATH: a PATH entry is repo-reachable,
+# and this decides whether unreviewed code may be sourced.
 # shellcheck disable=SC2123  # emptying PATH is the point: the helper must not need it
 if ( PATH=/nonexistent; _excl_python >/dev/null 2>&1 ); then
-    ok "the fstat helper resolves python3 by absolute path, not through PATH"
+    ok "the pinned read resolves python3 by absolute path, not through PATH"
 else
-    bad "the fstat helper lost python3 when PATH was emptied — it is resolving through PATH"
+    bad "the pinned read lost python3 when PATH was emptied — it is resolving through PATH"
 fi
-
-# PYTHONPATH is REPO-INJECTABLE — a committed .claude/settings.json `env` block sets it
-# — and an injected sitecustomize module is imported before the -c program runs. That
-# puts repo-controlled code inside the helper that decides whether unreviewed exclusion
-# logic may be sourced, where it can simply forge the answer. Mount the real attack: a
-# sitecustomize that monkeypatches os.fstat to report a single-name file, then assert
-# the helper still sees both names.
+# PYTHONPATH is REPO-INJECTABLE — a committed .claude/settings.json `env` block sets it —
+# and an injected sitecustomize is imported before the -c program runs. That puts
+# repo-controlled code inside the helper that decides whether unreviewed exclusion logic
+# may be sourced, where it can simply forge the answer. Mount the real attack: a
+# sitecustomize that monkeypatches os.fstat to report a single-name file, then assert the
+# helper still sees both names.
 pyd=$(mktemp -d)
 cat > "$pyd/sitecustomize.py" <<'PYFORGE'
-import os
+import os, stat
 class _Forged:
     st_dev = 1
     st_ino = 1
     st_nlink = 1
+    st_mode = stat.S_IFREG | 0o644
 os.fstat = lambda fd: _Forged()
+os.stat = lambda p, **kw: _Forged()
 PYFORGE
-exec 7< "$tfd_keep/one"
-forged=$(PYTHONPATH="$pyd" _excl_fstat 7 || echo "")
-exec 7<&-
-if [ "${forged##*:}" = "2" ]; then
-    ok "an injected PYTHONPATH sitecustomize cannot forge the descriptor identity"
+# The forge reports a fabricated device, inode and single-name count for a "regular"
+# file. If the injected module ran at all, the helper echoes 1:1:1 instead of the honest
+# identity — or refuses; either way the result stops matching the un-injected run.
+forged=$(PYTHONPATH="$pyd" _excl_pin_external "$tfd/one" "$tfd/wt" "$tfd/forge-copy" || echo "")
+if [ "$forged" = "$pin_stat" ]; then
+    ok "an injected PYTHONPATH sitecustomize cannot forge the pinned identity"
 else
-    bad "PYTHONPATH injection changed the fstat result to '$forged' — the helper is missing -I/-S"
+    bad "PYTHONPATH injection changed the pinned result to '$forged' (honest: '$pin_stat') — the helper is missing -I/-S"
 fi
-rm -rf "$pyd" "$tfd_keep"
+rm -rf "$pyd" "$tfd"
 
 # PR mode must validate the exclusion inputs against the MERGE BASE, not the branch
 # tip: the branch IS the artifact under review, so a PR that commits `*` into

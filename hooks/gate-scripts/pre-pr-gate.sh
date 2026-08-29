@@ -398,18 +398,22 @@ else
     fi
 fi
 
-# Every accept below authorizes a diff taken against $HEAD_SHA. If the branch tip has
-# moved since, `gh pr create` would open a PR on commits this gate never hashed — the
-# marker is honest about what was reviewed, but no longer about what is being pushed.
-# Re-read the tip immediately before each accept and refuse if it changed.
+# Every accept below authorizes the diff between $MERGE_BASE and $HEAD_SHA. BOTH ends
+# have to still hold: the tip can move, and so can the merge-base, because it is derived
+# from $PR_BASE — a mutable ref that a force-update can relocate while HEAD sits
+# perfectly still. Checking only the tip would leave that second half unpinned, which is
+# the producer's own invariant (it pins both endpoints) violated on the gate side. Either
+# one moving means `gh pr create` would open a PR over a diff this gate never hashed.
 #
-# This narrows the window rather than closing it: the tip can still move between this
+# This narrows the window rather than closing it: either end can still move between this
 # check and `gh pr create` itself, which is the verification-versus-use gap #793 tracks
 # and is not closable from a PreToolUse hook.
-require_head_unmoved() {
-    local _live
-    _live=$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)
-    [ -n "$_live" ] && [ "$_live" = "$HEAD_SHA" ]
+require_diff_endpoints_unmoved() {
+    local _live_head _live_base
+    _live_head=$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)
+    [ -n "$_live_head" ] && [ "$_live_head" = "$HEAD_SHA" ] || return 1
+    _live_base=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" "$HEAD_SHA" 2>/dev/null || true)
+    [ -n "$_live_base" ] && [ "$_live_base" = "$MERGE_BASE" ]
 }
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable
@@ -436,10 +440,10 @@ if [ -n "$MERGE_BASE" ] && [ "$DIFF_FAILED" -eq 0 ] && [ "$DIFF_EMPTY" -eq 0 ] &
         if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ] \
             && verify_pr_artifact_gate "$CODEX_LEAD_ART" "$CURRENT_HASH" "$MAX_AGE" \
             && verify_pr_artifact_gate "$BACKSTOP_ART" "$CURRENT_HASH" "$MAX_AGE" \
-            && require_head_unmoved; then
+            && require_diff_endpoints_unmoved; then
             exit 0  # defer consumption to post-pr-consume-marker.sh
         else
-            echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched, or the branch tip moved mid-check — re-run litmus PR review." >&2
+            echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched, or a diff endpoint moved mid-check — re-run litmus PR review." >&2
             rm -f "$PR_MARKER"
         fi
     elif echo "$PR_MARKER_CONTENT" | grep -qE '^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-[0-9]+$'; then
@@ -456,7 +460,7 @@ if [ -n "$MERGE_BASE" ] && [ "$DIFF_FAILED" -eq 0 ] && [ "$DIFF_EMPTY" -eq 0 ] &
         FAST_EPOCH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-([0-9]+)$/\2/')
         FAST_AGE=$(( $(date +%s) - FAST_EPOCH ))
         if [ "$FAST_HASH" = "$CURRENT_HASH" ] && [ "$FAST_AGE" -ge 0 ] && [ "$FAST_AGE" -le "$MAX_AGE" ] \
-            && require_head_unmoved; then
+            && require_diff_endpoints_unmoved; then
             exit 0  # defer consumption to post-pr-consume-marker.sh
         else
             echo "[pre-pr-gate] Bypass marker stale or for a different diff — re-run litmus PR review." >&2

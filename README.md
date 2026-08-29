@@ -26,11 +26,9 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 ## Gates
 
-Six blocking gates plus one advisory guard, all hook-enforced. The six emit `{"decision":"block"}` from a PreToolUse hook, so the harness rejects the tool call — Claude cannot rationalize its way past them — and they fail **closed**: a gate that errors blocks rather than waving the operation through.
+Seven hook-enforced gates. Each runs as a PreToolUse hook, so a block rejects the tool call itself rather than asking Claude to comply — it cannot rationalize its way past one.
 
-Careful guard is the deliberate exception. It emits `permissionDecision: ask` to raise a confirmation prompt rather than blocking, and its own `ERR` trap fails **open**, so a runtime bug inside the guard returns an empty decision instead of wedging every Bash call in the session. That guarantee is bounded by the trap: a failure *before* the trap can run — a syntax error, a missing script, a sanitized-wrapper failure — never produces a decision, so `contained-launch.sh` applies this registration's declared `closed` disposition and blocks.
-
-That fail-closed guarantee is about the *decision*, not about arming. Blueprint review only blocks once a design doc has been flagged for review, and flagging has two paths: a doc written through `Write`/`Edit`/`MultiEdit` is pre-armed inside the pre-implementation gate itself, fail-closed (#347), while a doc created through Bash redirection is not — it is left to the PostToolUse `check-design-document.sh` detector, which by design never blocks a write and exits 0 on its own error. If that detector misses a Bash-created plan, nothing is armed and later implementation is not held back. That path is a documented best-effort residual, not a closed gate.
+Six of the seven refuse the operation; careful guard is advisory and raises a confirmation prompt instead. The gates are built to fail closed, but the exact disposition of each — what happens when a hook errors, and which paths arm a gate in the first place — is a per-gate detail that belongs with the gate rather than here. Read [docs/observability.md](docs/observability.md) and `docs/adr/` before relying on a specific failure mode.
 
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
@@ -52,9 +50,9 @@ touch .claude/skip-design-review.local   # pre-implementation — lease: 20 writ
 touch .claude/skip-pr-grind.local        # pre-merge — deferred; see docs/observability.md
 ```
 
-Consumption is logged to `.claude/bypass-log.jsonl`, with two caveats worth knowing. The litmus paths append `skip-review-consumed` with `|| true`, so a failed write does not stop the bypass — logging there is best-effort. And careful guard confirmations and freeze-guard deactivations emit no event at all. The log records skip-file and merge-authorization activity, not every gate execution.
+Consumption is logged to `.claude/bypass-log.jsonl`. Treat that log as a record of skip-file and merge-authorization activity, not as a complete audit of every gate execution — what each gate does and does not record varies, and the event taxonomy in [docs/observability.md](docs/observability.md) is the source of truth.
 
-A file younger than 30 seconds is rejected. That is a **timing heuristic, not an authentication boundary** — it raises the cost of an agent arming its own bypass inside a single turn, but nothing here proves a human created the file, and `skip-pr-grind.local` is not among the paths `marker_check.py` protects from agent writes. Detection, not prevention.
+A file younger than 30 seconds is rejected. Treat that as a **timing heuristic, not an authentication boundary**: it raises the cost of an agent arming its own bypass inside a single turn, but nothing here establishes that a human created the file. Detection, not prevention.
 
 The old environment-variable bypasses (`SKIP_LITMUS`, …) were removed in [#325](https://github.com/chris-yyau/busdriver/pull/325) / ADR 0016: a committed `settings.json` `env` block is merged into the session, which made env-based skips a PR-injectable bypass lever. Gate env is now sanitized.
 

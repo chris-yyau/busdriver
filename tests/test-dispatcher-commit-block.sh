@@ -86,9 +86,9 @@ set -euo pipefail
 
 hash_staged_diff() {
     if command -v sha256sum >/dev/null 2>&1; then
-        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1
+        git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1
     else
-        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1
+        git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1
     fi
 }
 
@@ -1298,9 +1298,9 @@ mkdir -p .claude
 # and collapses distinct diffs onto one digest — so a fixture guarding marker binding
 # must not itself be built out of it (CodeRabbit, PR #795).
 if command -v sha256sum >/dev/null 2>&1; then
-  git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1 > .claude/litmus-passed.local
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1 > .claude/litmus-passed.local
 else
-  git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1 > .claude/litmus-passed.local
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1 > .claude/litmus-passed.local
 fi
 EOF
     chmod +x "$plugin_root/skills/litmus/scripts/run-review-loop.sh"

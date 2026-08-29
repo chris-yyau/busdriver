@@ -7,11 +7,21 @@
 # Defense-in-depth: validates that run-review-loop.sh actually triggered
 # the builtin fallback by checking for the handoff file it creates (exit 3).
 # The handoff file is consumed after use (single-use token).
+#
+# Usage: write-review-marker.sh <prompt-path>
+#   <prompt-path> is the path the caller read from the handoff file and reviewed.
+#   It identifies WHICH arming this write belongs to (#790): the handoff lives at one
+#   fixed path, so a later exit 3 re-arms it, and a delayed agent that skipped this
+#   check would consume somebody else's handoff and compare against somebody else's
+#   baseline. NOT an anti-forgery control — a caller holding Bash can read the handoff
+#   and pass its content back; it orders concurrent writers, nothing more.
 set -euo pipefail
+BUILTIN_PROMPT_PATH="${1:-}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # the "$REPO_DIR/$STATE_DIR" joins below resolve to the configured state dir.
 case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # Validate builtin review was triggered — handoff file is created by
@@ -23,9 +33,110 @@ if [ ! -f "$HANDOFF_FILE" ]; then
     echo "       This script should only be called after run-review-loop.sh exits with code 3." >&2
     exit 1
 fi
+if [ -z "$BUILTIN_PROMPT_PATH" ]; then
+    echo "ERROR: No prompt path given — marker cannot be written." >&2
+    echo "       Usage: write-review-marker.sh <the prompt path you read from" >&2
+    echo "       $STATE_DIR/builtin-review-prompt-path.local and reviewed>" >&2
+    exit 1
+fi
 
-# Consume the handoff file (single-use token)
-rm -f "$HANDOFF_FILE"
+MARKER_FILE="$REPO_DIR/$STATE_DIR/litmus-passed.local"
+BASELINE_FILE="$REPO_DIR/$STATE_DIR/builtin-review-marker-baseline.local"
+GEN_FILE="$REPO_DIR/$STATE_DIR/litmus-marker-gen.local"
+
+# Do not overwrite a marker some OTHER run published after our handoff was armed
+# (#790). The review lock is released at exit 3 so the agent can run, so a second
+# litmus run can complete an ordinary review and publish its marker while this
+# run's agent is still thinking. Our write would then replace a newer review's
+# marker with an older hash — the gate compares marker to staged diff, so the
+# result is a spuriously blocked commit, not a forged authorization.
+#
+# The test is the marker GENERATION token against the baseline run-review-loop.sh
+# snapshotted at exit 3. Every publisher stamps a fresh token before writing the marker
+# (publish_marker_gen there, and this script below), so any publication moves it.
+# Neither cheaper test works: a timestamp is only as fine as `-nt`, which on bash 3.2
+# — this script's interpreter on macOS — is seconds-granular; and a content digest
+# misses an ABA republication of byte-identical content.
+#
+# NOT the freshness check that was tried and reverted (refusing when the reviewed
+# hash no longer matches the current index). That one also refuses in the ordinary
+# late-hash case this writer exists to handle, where the correct behaviour is to
+# mint the marker for the REVIEWED diff and let the gate block the mutated one.
+# This compares the marker against its OWN baseline: with nobody else publishing,
+# the write always proceeds however far the index has moved.
+#
+# The check and the write are made atomic against the ordinary PASS path by taking
+# the SAME review lock that path holds for its whole run (lib/review-lock.sh). Without
+# it the ordering test is check-then-act: a marker published between the test and the
+# redirection below is clobbered anyway, which is the very race this closes. We hold it
+# only for the write — not across the agent phase, which is what exit 3 releases it for.
+#
+# Contention is a refusal, not a wait: the other run holds the lock because it is
+# reviewing, and it will publish its own marker. The handoff is left ARMED in that
+# case (unlike the refusal below) — nothing was written, so a retry once the other run
+# finishes is the cheapest correct outcome, and the token was already armed anyway.
+cd "$REPO_DIR"
+# shellcheck source=lib/review-lock.sh
+source "$SCRIPT_DIR/lib/review-lock.sh"
+_LOCK_RC=0
+review_lock_acquire || _LOCK_RC=$?
+if [[ "$_LOCK_RC" -ne 0 ]]; then
+    _LOCK_PATH=$(review_lock_path)
+    _LOCK_OWNER=$(review_lock_owner)
+    _LOCK_STATE=$(review_lock_owner_state)
+    echo "ERROR: Could not take the review lock — marker not written." >&2
+    echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
+    echo "       Another litmus review is in flight; it publishes its own marker." >&2
+    echo "       If that owner is NOT running, the lock is an orphan — remove it yourself." >&2
+    exit 1
+fi
+trap 'review_lock_release' EXIT
+
+# Is the armed handoff still OURS? Both the handoff and its baseline are rewritten by
+# every exit 3, so a builtin fallback that started after ours has replaced the pair —
+# and the baseline below would then describe ITS starting point, not ours, which is
+# exactly how a marker published in between reads as "unchanged". Refuse, and consume
+# NOTHING: the armed pair belongs to that other run's agent.
+HANDOFF_PATH_NOW=$(cat "$HANDOFF_FILE")
+if [[ "$HANDOFF_PATH_NOW" != "$BUILTIN_PROMPT_PATH" ]]; then
+    echo "ERROR: The builtin handoff was re-armed by a later review — marker not written." >&2
+    echo "       Armed for: $HANDOFF_PATH_NOW" >&2
+    echo "       You reviewed: $BUILTIN_PROMPT_PATH" >&2
+    echo "       That review publishes its own marker. Re-run /litmus if yours must land." >&2
+    exit 1
+fi
+
+# No baseline means the handoff was armed by a version that did not record one, or it
+# was removed — either way this write cannot be ordered against a concurrent one, so
+# refuse rather than assume. Fail-CLOSED, and cheap to recover from: re-run /litmus.
+if [[ ! -f "$BASELINE_FILE" ]]; then
+    rm -f "$HANDOFF_FILE"
+    echo "ERROR: No marker baseline for this handoff — marker cannot be written." >&2
+    echo "       Expected $STATE_DIR/builtin-review-marker-baseline.local, written at exit 3." >&2
+    echo "       Re-run /litmus so the builtin handoff is armed afresh." >&2
+    exit 1
+fi
+
+# Refuse only when a marker EXISTS and the generation has moved — that pair means
+# somebody else published. A marker that has since been REMOVED (post-commit consume)
+# leaves nothing to clobber, so the write proceeds however far the token has moved.
+if [[ -f "$MARKER_FILE" ]]; then
+    MARKER_GEN_NOW="ABSENT"
+    if [[ -f "$GEN_FILE" ]]; then
+        MARKER_GEN_NOW=$(cat "$GEN_FILE")
+    fi
+    MARKER_BASELINE=$(cat "$BASELINE_FILE")
+    if [[ "$MARKER_GEN_NOW" != "$MARKER_BASELINE" ]]; then
+        rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
+        echo "ERROR: A newer review already published $STATE_DIR/litmus-passed.local — not overwriting it." >&2
+        echo "       Another litmus run finished while this builtin review was in flight." >&2
+        echo "       Its marker stands. If your commit is blocked, re-run /litmus." >&2
+        exit 1
+    fi
+fi
+
+# Consume the handoff file (single-use token) and its baseline
+rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
 # Bare `git diff --cached` — must stay byte-identical to pre-commit-gate.sh's
@@ -34,5 +145,10 @@ mkdir -p "$REPO_DIR/$STATE_DIR"
 # checking the marker exists, so any flag added on one side and not the others
 # stops every marker from matching and blocks every commit.
 HASH=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"
+# Stamp the generation BEFORE the marker, same ordering and reason as
+# publish_marker_gen in run-review-loop.sh: a crash between the two must leave a moved
+# token in front of an old marker (the next delayed writer refuses), never the reverse.
+GEN_NONCE=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
+printf '%s-%s-%s\n' "$$" "$(date +%s)" "${GEN_NONCE##*/}" > "$GEN_FILE"
+echo "BUILTIN-${HASH}" > "$MARKER_FILE"
 echo "Review marker written (builtin)"

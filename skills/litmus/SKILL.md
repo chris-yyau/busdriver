@@ -477,9 +477,9 @@ When `run-review-loop.sh` exits with code 3, external review paths were exhauste
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"high|medium|low\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
 4. Parse the agent's JSON output for blocking issues: severity must be a string in the exact lowercase enum `high|medium|low`. Every other value (including `LOW` and `LoW`) fails closed and blocks. An issue blocks unless severity is exactly `low`. If parsing fails or the output is not a JSON array of issues, treat as FAIL.
-5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
+5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path from step 1>"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files). The path argument is **required**: it says which handoff this review belongs to, so a delayed write cannot claim a handoff a later review armed (#790). The writer also exits non-zero without writing if another litmus run published a marker while this review was in flight — that marker stands; do not retry the review, re-run `/litmus` only if the commit is actually blocked.
 6. If blocking issues: report FAIL with issues, fix and re-run
-7. Clean up: remove the temp prompt file and the handoff path file
+7. Clean up: remove the temp prompt file and the handoff path file (the marker writer already consumes the handoff and its `builtin-review-marker-baseline.local` snapshot when it runs)
 
 ## Enhanced Review Features
 

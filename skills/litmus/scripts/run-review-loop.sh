@@ -165,6 +165,29 @@ if [ "$_LOCK_RC" != "0" ]; then
   exit 1
 fi
 trap 'review_lock_release' EXIT
+
+# #790: every marker publication stamps a fresh generation token beside the marker.
+# The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
+# and refuses to publish if it has moved since — which is what stops it clobbering a
+# marker another run published while its agent was still thinking. Comparing marker
+# CONTENT cannot do that job: a republication of byte-identical content is invisible
+# to a digest (ABA).
+#
+# Stamp FIRST, write the marker second. A crash between the two leaves a moved token
+# in front of an old marker, which the delayed writer reads as "somebody published"
+# and refuses — the fail-CLOSED direction. Marker-first inverts that into a clobber.
+#
+# NOT an authorization artifact: forging it only toggles a liveness refusal, exactly
+# like the baseline it is compared against. Every caller below holds the review lock
+# for the lifetime of its run, and the builtin writer takes that same lock, so the
+# stamp and the marker write are serialized against every other publisher.
+publish_marker_gen() {
+  local _gen_nonce
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  _gen_nonce=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
+  printf '%s-%s-%s\n' "$$" "$(date +%s)" "${_gen_nonce##*/}" > "$STATE_DIR/litmus-marker-gen.local"
+}
+
 # Children that take the lock themselves — init-review-loop.sh, invoked directly below
 # and again from the loop — must see this lock as theirs, not deadlock against it.
 review_lock_export_owner
@@ -953,6 +976,7 @@ else
     echo "   Commits will pass without code review." >&2
     echo "" >&2
     mkdir -p "$STATE_DIR"
+    publish_marker_gen
     echo "SKIPPED-NONE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
     printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
@@ -972,6 +996,7 @@ else
       echo "   Resolution keeps already-reviewed code — auto-passing review"
       echo ""
       mkdir -p "$STATE_DIR"
+      publish_marker_gen
       echo "PASS-MERGE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
       clear_iteration_history
       rm -f "$STATE_FILE" 2>/dev/null
@@ -1220,6 +1245,7 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      publish_marker_gen
       printf 'PASS-EXCLUDED-%s-%s\n' "$_excluded_hash" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
     fi
     # Clean up state file and iteration history
@@ -1549,6 +1575,7 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
 
     # Write commit marker (same format as normal PASS)
     mkdir -p "$STATE_DIR"
+    publish_marker_gen
     git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
 
     # Audit trail — distinct event, separate from skip-bypass
@@ -1662,6 +1689,18 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   printf '%s' "$FINAL_PROMPT" > "$BUILTIN_PROMPT_FILE"
   mkdir -p "$STATE_DIR"
   echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local"
+  # #790: snapshot the marker GENERATION as it stands now, so the delayed writer can
+  # tell a marker THIS run left behind from one another run publishes while our agent
+  # is thinking. The review lock is released at exit 3 by design (that is what lets the
+  # agent run), so nothing else orders those two writes. A missing token is a real
+  # value, not an error: it means no publisher has stamped one yet, and a later
+  # publication necessarily creates it.
+  if [ -f "$STATE_DIR/litmus-marker-gen.local" ]; then
+    _BUILTIN_MARKER_BASELINE=$(cat "$STATE_DIR/litmus-marker-gen.local")
+  else
+    _BUILTIN_MARKER_BASELINE="ABSENT"
+  fi
+  printf '%s\n' "$_BUILTIN_MARKER_BASELINE" > "$STATE_DIR/builtin-review-marker-baseline.local"
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
   echo "   The litmus skill will dispatch the code-reviewer agent." >&2
@@ -1862,6 +1901,7 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
     fi
   else
     # Commit mode: write commit marker for pre-commit gate
+    publish_marker_gen
     git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
   fi
 

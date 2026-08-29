@@ -938,12 +938,18 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # and a version predating the pin override would silently read the live policy.
     _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
     if [[ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]]; then
-        printf '%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+        # Leading newline: a policy without a trailing newline would concatenate the
+        # sentinel onto its last pattern, and this bail would fire on a valid marker.
+        printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
     fi
     # shellcheck source=/dev/null
     . "$_excl_logic_source" || \
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
-    if [[ -n "${EXCL_POLICY_SOURCE:-}" ]] && [[ " ${REVIEW_EXCLUDE_ARGS[*]-} " != *":(exclude)$_excl_probe"* ]]; then
+    _excl_probe_seen=no
+    for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+        [[ "$_excl_arg" == ":(exclude)$_excl_probe" ]] && _excl_probe_seen=yes && break
+    done
+    if [[ -n "${EXCL_POLICY_SOURCE:-}" ]] && [[ "$_excl_probe_seen" != yes ]]; then
         emit_bail "judgment" "the exclusion logic at the review anchor does not honour a pinned policy, so its patterns would come from the live, unverified review-exclude; refusing the excluded-only marker"
     fi
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""

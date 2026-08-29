@@ -1180,7 +1180,13 @@ else
     # The sentinel itself is inert (it excludes a path name nothing can have).
     _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
     if [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]; then
-      printf '%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+      # LEADING newline: a policy whose last line has no trailing newline would
+      # otherwise have the sentinel concatenated onto that final pattern, so neither
+      # caller sees a standalone :(exclude)<probe> and both conclude the pin was
+      # ignored — the producer would disable every exclusion and the dispatcher would
+      # reject a perfectly valid PASS-EXCLUDED marker. The extra blank line is inert;
+      # the parser skips empty lines.
+      printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
     fi
     # shellcheck source=lib/exclude-generated.sh
     source "$EXCL_LOGIC_SOURCE"
@@ -1738,7 +1744,10 @@ SAST_FINDINGS_RAW=$(run_sast_scan "$FILTERED_FILES")
 # Uses git diff --unified=0 to get exact hunk ranges.
 DIFF_FOR_FILTER=""
 if [ "$REVIEW_MODE" = "pr" ]; then
-  DIFF_FOR_FILTER=$(git diff --unified=0 "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  # #576: the SAME pinned endpoints as the reviewer diff and the marker hash. This
+  # decides which findings count as in-diff, so filtering against a moved ref can drop
+  # real findings from a review that is bound to a different snapshot.
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 else
   # #576: same pin — this drives which findings are kept as in-diff.
   # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings

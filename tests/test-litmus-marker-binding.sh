@@ -378,9 +378,11 @@ fi
 # same base the marker was hashed against.
 missing_base=""
 for pat in 'FILTERED_FILES=$(GIT_INDEX_FILE' 'SC_PATHS=$(git diff --cached --name-only --no-renames' 'DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never'; do
-    line=$(grep -F "$pat" "$PRODUCER" | head -1 || true)
+    line=$(grep -F "$pat" "$PRODUCER" | grep -v '^ *#' | head -1 || true)
+    # Either pinned endpoint form counts: commit mode names _HEAD_BASE, PR mode names
+    # the pinned _PR_BASE_REF/_PR_TIP pair. What must NOT appear is a bare HEAD.
     case "$line" in
-        *'_HEAD_BASE[@]'*) : ;;
+        *'_HEAD_BASE[@]'*|*'_PR_BASE_REF'*) : ;;
         *) missing_base="$missing_base $pat" ;;
     esac
 done

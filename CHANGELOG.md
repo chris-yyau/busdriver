@@ -1,3 +1,10 @@
+## [2.0.2](https://github.com/chris-yyau/busdriver/compare/v2.0.1...v2.0.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **hooks:** close [#777](https://github.com/chris-yyau/busdriver/issues/777) — document disableAllHooks as a platform limit, pin the tree clean ([#787](https://github.com/chris-yyau/busdriver/issues/787)) ([287e9e9](https://github.com/chris-yyau/busdriver/commit/287e9e9a1f0c9a1a7c5e52d41a5e7e9435afac9c)), closes [#784](https://github.com/chris-yyau/busdriver/issues/784)
+
 ## [2.0.1](https://github.com/chris-yyau/busdriver/compare/v2.0.0...v2.0.1) (2026-08-28)
 
 

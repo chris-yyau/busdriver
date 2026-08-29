@@ -280,7 +280,18 @@ MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true
 # abbreviation lets two chosen blobs share one reviewed-diff binding. This pair is the
 # PR-mode analogue of the commit-mode hash coupling: change one side only and every PR
 # marker stops matching.
-DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+# `|| true` here was a fail-OPEN: it turned every non-zero `git diff` into success while
+# KEEPING whatever partial stdout had already been emitted. A diff that produced the
+# previously reviewed portion and then failed on a later object would hash that partial
+# stream and could match an older authorization, even though the current tip carries
+# additional unreviewed changes. A failed diff means "cannot verify", which must leave
+# CURRENT_HASH empty and take the fail-closed path below.
+if ! DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null); then
+    DIFF_OUTPUT=""
+    DIFF_FAILED=1
+else
+    DIFF_FAILED=0
+fi
 # Select by availability, matching compute_pr_diff_hash: a `sha256sum || shasum` pipe
 # lets a partially-consuming failure hash only the remainder — the empty-stream digest
 # after full consumption — collapsing distinct diffs onto one hash.
@@ -291,7 +302,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
     PR_HASH_CMD=()
 fi
-if [ ${#PR_HASH_CMD[@]} -eq 0 ]; then
+if [ ${#PR_HASH_CMD[@]} -eq 0 ] || [ "$DIFF_FAILED" -eq 1 ]; then
     CURRENT_HASH=""
 else
     CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | "${PR_HASH_CMD[@]}" | cut -d' ' -f1)

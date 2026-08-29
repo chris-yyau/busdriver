@@ -1383,7 +1383,14 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
     exit 2
   fi
-  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # Guarded like the measurement above and like commit mode: an unguarded capture that
+  # fails under `set -e` exits without write_terminal_status, stranding automation on a
+  # stale PENDING.
+  if ! STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+    echo "❌ Could not capture the branch diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
   _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
   if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
     echo "❌ The branch diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2

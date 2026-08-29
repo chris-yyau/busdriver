@@ -52,13 +52,14 @@ expect_rc() {
     if [[ "$got" -eq "$want" ]]; then r=0; else r=1; fi
     assert "$r" "$label (want rc=$want, got rc=$got)"
 }
-# Used where the exact code is not the point and pinning one would be brittle:
-# only "not clean" is guaranteed, and that is the whole safety property.
+# Used where the exact code is not the point and pinning one would be brittle —
+# but still INSIDE the contract: 0 or 2, never 1 and never some crash status. A
+# bare `!= 1` would accept a 127 or a signal death as a safe answer.
 expect_not_clean() {
     local root="$1" label="$2" got r
     scan_rc "$root"; got=$?
-    if [[ "$got" -ne 1 ]]; then r=0; else r=1; fi
-    assert "$r" "$label (rc=$got, must not be 1/clean)"
+    if [[ "$got" -eq 0 || "$got" -eq 2 ]]; then r=0; else r=1; fi
+    assert "$r" "$label (rc=$got, must be 0 or 2 — never clean, never a crash)"
 }
 
 echo "== R1: this repository never ships a hook kill switch =="
@@ -69,7 +70,8 @@ assert "$_r" "no tracked JSON in this repo carries disableAllHooks (rc=$_rc)${_h
 
 echo "== the scan actually fires (a guard never seen failing is not a guard) =="
 
-TMP="$(mktemp -d)"; TMP2="$(mktemp -d)"; trap 'rm -rf "$TMP" "$TMP2"' EXIT
+TMP="$(mktemp -d)"; TMP2="$(mktemp -d)"; TMP3="$(mktemp -d)"
+trap 'rm -rf "$TMP" "$TMP2" "$TMP3"' EXIT
 # Functions, not command strings: a `$G` expanded unquoted splits on a TMPDIR
 # containing a space and silently operates on some other path.
 # `core.hooksPath=` is not decoration: the README this branch adds recommends a
@@ -206,7 +208,6 @@ expect_rc 0 "$TMP2" "a .claude tracked as a directory symlink is not cleared"
 # ambient pair aimed at a clean repository would answer "clean" about a tree the
 # scan never opened — the quietest fail-open available. TMP2 is dirty; ask about
 # it while the environment points somewhere spotless.
-TMP3="$(mktemp -d)"
 must git -C "$TMP3" "${_gitopts[@]}" init -q .
 write "$TMP3/clean.json" '{"permissions":{"allow":[]}}'
 must git -C "$TMP3" "${_gitopts[@]}" add -f clean.json
@@ -216,7 +217,6 @@ GIT_DIR="$TMP3/.git" GIT_INDEX_FILE="$TMP3/.git/index" GIT_WORK_TREE="$TMP3" \
 _env_rc=$?
 if [[ "$_env_rc" -eq 0 ]]; then _r=0; else _r=1; fi
 assert "$_r" "an ambient GIT_DIR/GIT_INDEX_FILE cannot redirect the scan (rc=$_env_rc)"
-rm -rf "$TMP3"
 
 echo "== the key walker is right on shapes nobody enumerated =="
 

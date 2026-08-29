@@ -15,9 +15,12 @@ Two decisions here are load-bearing and neither is cosmetic:
   exception read as a pass — the exact fail-open shape this scan exists to
   refuse.
 
-    0  the key was found; the offending paths are on stdout
-    1  clean
-    2  the scan could not complete; the reason is on stderr
+    0  the tree could not be cleared; the paths responsible are on stdout. That
+       is the key found, and also every entry whose contents are unknowable —
+       malformed JSON, a symlink, a gitlink — because "I could not read it" is
+       not "it is clean".
+    1  clean: every tracked entry was read and none carries the key
+    2  the scan could not complete at all; the reason is on stderr
 """
 
 import json

@@ -97,9 +97,30 @@ _grok_available() {
   # host reason the operator can fix in one step — the case that had #785's
   # owner re-running FULL coverage against a machine, not a review.
   #
-  # Once per process: availability is probed per role and per iteration.
-  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket && -z "${_GROK_SOCKET_WARNED:-}" ]]; then
-    _GROK_SOCKET_WARNED=1
+  # Emitted on EVERY runtime-socket refusal, with no dedup state of any kind.
+  #
+  # It was once-per-process, and that guard is gone rather than fixed. The
+  # variable form did not work at all: every production caller reads the
+  # resolver through a command substitution (`REVIEWER_3_CLI=$(resolve_role_cli
+  # ...)`, `actual=$(resolve_role_cli ...)`), so a flag assigned in that subshell
+  # is discarded on exit while the hint — stderr, which `$(...)` does not
+  # capture — still reaches the operator every time (Codex, PR #791). The
+  # file-marker form that replaced it worked, and cost a HIGH-severity symlink
+  # attack to do it: a predictable path under `${TMPDIR:-/tmp}` created by shell
+  # redirection, which follows symlinks, lets another local user on a shared
+  # /tmp pre-create it as a link and have this truncate any file the victim can
+  # write. It also raced (test-then-create is not atomic across concurrent
+  # substitutions), and every variant that closes those two fails SILENT on an
+  # unwritable TMPDIR — suppressing the warning outright, which is #785's
+  # original defect restored by the fix for it (litmus, PR #791).
+  #
+  # So: no marker, no state, nothing to attack and nothing to go stale. The
+  # cost is 2-5 duplicate paragraphs per run, on a host that has grok fully
+  # configured AND a symlinked docker.sock — the one operator who needs to read
+  # them. Being told repeatedly is strictly better than the silence this whole
+  # issue is about. Do not reintroduce a dedup guard here: an advisory line is
+  # not worth process state, and both shapes have now been tried.
+  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket ]]; then
     grok_preflight_hint >&2
   fi
   return 1

@@ -971,6 +971,58 @@ else
   fail "grok_preflight_hint is not defined — the refusal messages have no source"
 fi
 
+# #785 (PR #791): the route-time warning. Two properties, and the SCOPING one
+# is the load-bearing half — `runtime-socket` warns, every other refusal reason
+# stays silent. Without that, a host that simply has no grok (WHY=binary, the
+# common case) prints a docker.sock error on every council and blueprint run.
+#
+# Behavioural, not textual, and driven through a command substitution exactly as
+# production wraps the resolver (`REVIEWER_3_CLI=$(resolve_role_cli ...)`): a
+# guard held in a shell VARIABLE is discarded when that subshell exits, so a
+# source grep would pass a guard that never fires. stderr is what is counted —
+# `$(...)` does not capture it, which is why the operator sees the hint at all.
+if declare -F _grok_available >/dev/null; then
+  _warn_prog='
+    . "'"$RESOLVE"'" >/dev/null 2>&1 || exit 9
+    grok_sandbox_preflight() { _GROK_PREFLIGHT_WHY="$WHY_FIXTURE"; return 1; }
+    grok_preflight_hint() { echo "SOCKET-HINT-FIXTURE"; }
+    _ignored=$(_grok_available)
+    _ignored=$(_grok_available)
+  '
+  _warn_out="$(WHY_FIXTURE=runtime-socket /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+  _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+  if [[ "$_warn_n" -ge 1 ]]; then
+    pass "a runtime-socket refusal warns at route time, through the command substitution production wraps the resolver in"
+  else
+    fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads resolve-droid-fallback, naming the fallback but never the cause)"
+  fi
+
+  # The other half. A host with no grok at all refuses `binary`, and must say
+  # nothing — this is the scoping decision that keeps the lane quiet for every
+  # operator who never had grok.
+  for _why in binary configdir containment identity profile; do
+    _warn_out="$(WHY_FIXTURE="$_why" /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+    _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+    if [[ "$_warn_n" -eq 0 ]]; then
+      pass "a $_why refusal stays silent at route time"
+    else
+      fail "a $_why refusal emitted the socket hint $_warn_n time(s) — every host without grok would print a docker.sock error on every council and blueprint run, and would be told to fix the wrong thing"
+    fi
+  done
+
+  # No dedup state, deliberately (see the comment on _grok_available). A marker
+  # file bought a HIGH-severity symlink truncation on shared /tmp to suppress an
+  # advisory line, and every atomic variant of it fails silent on an unwritable
+  # TMPDIR — restoring the silence #785 exists to break.
+  if /usr/bin/grep -q '_grok_socket_warn_once\|_GROK_SOCKET_WARNED' "$RESOLVE"; then
+    fail "a dedup guard is back on the runtime-socket warning — a variable one does not survive the caller's command substitution, and a marker-file one is a symlink-truncation surface that fails silent when it cannot write"
+  else
+    pass "the runtime-socket warning carries no dedup state to attack or to go stale"
+  fi
+else
+  fail "_grok_available is not defined — the route-time warning has no source"
+fi
+
 # The strongest statement available: run the real preflight against the file the
 # error message tells operators to install. Header/glob greps alone would still
 # pass an example that the preflight rejects on install.

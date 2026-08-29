@@ -140,6 +140,20 @@ must g add -f config/anything.json
 must g commit -qm deep
 expect_not_clean "$TMP" "a document deeper than the recursion limit is never cleared"
 
+# Case is a bypass on the two filesystems the operator actually runs: macOS and
+# Windows resolve `settings.JSON` when Claude opens `settings.json`, so a
+# case-sensitive suffix test clears on Linux CI the very file that is read.
+# (A distinct basename, because this fixture itself runs on a case-insensitive
+# filesystem — `SETTINGS.JSON` beside `settings.json` would be the same file.)
+write "$TMP/config/anything.json" '{"permissions":{"allow":[]}}'
+write "$TMP/config/Extra.JSON" '{"disableAllHooks": true}'
+must g add -f config/anything.json config/Extra.JSON
+must g commit -qm upcase
+expect_rc 0 "$TMP" "an upper-case .JSON extension is caught"
+must g rm -q --cached config/Extra.JSON
+must rm -f "$TMP/config/Extra.JSON"
+must g commit -qm unupcase
+
 # A broken scan must never read as clean. A non-repository has no `ls-files` to
 # run, and rc 1 there would be the silent fail-open this whole file exists to
 # refuse — so it has to be rc 2, distinct from both verdicts.

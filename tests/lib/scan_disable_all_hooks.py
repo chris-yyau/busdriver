@@ -104,7 +104,10 @@ def main(argv):
             # is a deliberate decision, which is exactly when someone should look.
             hits.append("%s (tracked mode %s, not a regular file — cannot clear)" % (rel, mode))
             continue
-        if not rel.endswith(".json"):
+        # Case-INsensitively: macOS and Windows resolve `.claude/settings.JSON`
+        # when Claude opens `.claude/settings.json`, so a case-sensitive suffix
+        # test clears on Linux CI exactly the file the operator's machine reads.
+        if not rel.lower().endswith(".json"):
             continue
         try:
             # By SHA, not by `git show :<path>`: that spec is ambiguous for a

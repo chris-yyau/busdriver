@@ -325,8 +325,12 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 compute_pr_diff_hash() {
   # $2 (optional) pins the branch tip: #576 — resolving HEAD afresh here while the
   # caller reviewed a specific commit lets the marker describe a different snapshot.
-  local base="$1" tip="${2:-HEAD}" mb diff _d
+  local base="$1" tip="${2:-HEAD}" mb _d _rc
   [[ -z "$base" ]] && return 1
+  # Resolve the tip to a SHA once. Both git invocations below MUST name the same two
+  # commit objects, or the emptiness probe and the hashed bytes could describe
+  # different snapshots.
+  tip=$(git rev-parse --verify "$tip" 2>/dev/null) || return 1
   mb=$(git merge-base "$base" "$tip" 2>/dev/null) || return 1
   [[ -z "$mb" ]] && return 1
   # --full-index: a binary change is distinguished ONLY by its `index` line, which is a
@@ -335,8 +339,6 @@ compute_pr_diff_hash() {
   # own hash (hooks/gate-scripts/pre-pr-gate.sh), which is the PR-mode analogue of the
   # commit-mode four-site coupling: change one without the other and every PR marker
   # stops matching.
-  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null) || return 1
-  [[ -z "$diff" ]] && return 1
   # Select by availability, never `a || b` in one pipe: if sha256sum consumes part (or
   # all) of stdin and then fails, shasum hashes only the unread remainder — after full
   # consumption that is the constant empty-stream digest, which would collapse every PR
@@ -350,7 +352,22 @@ compute_pr_diff_hash() {
     if [ -x "$_d/shasum" ]; then _hash_cmd=("$_d/shasum" -a 256); break; fi
   done
   [ ${#_hash_cmd[@]} -eq 0 ] && return 1
-  printf '%s' "$diff" | "${_hash_cmd[@]}" | cut -d' ' -f1
+  # Never materialise the canonical diff in a shell variable. The reviewer's view is
+  # size-capped; this stream is not, so an excluded multi-megabyte text file — or binary
+  # content forced to text by a committed .gitattributes rule — would sit entirely in
+  # this process's memory. Ask git the emptiness question with --quiet, then stream the
+  # bytes straight into the hash utility. `git diff --quiet` exits 0 for "no
+  # differences", 1 for "differences found", >1 for a real failure; only 1 may proceed,
+  # because collapsing 1 and >1 would read a git error as a non-empty diff.
+  # MUST stay byte-identical to the pre-PR gate, which now streams the same way — a
+  # command substitution strips trailing newlines and a stream does not, so switching
+  # one side alone would silently stop every PR marker from matching.
+  _rc=0
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --quiet --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null || _rc=$?
+  [[ "$_rc" -ne 1 ]] && return 1
+  # `pipefail` is set, so a git failure part-way through the stream fails the whole
+  # pipeline rather than emitting a digest of a truncated diff.
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null | "${_hash_cmd[@]}" | cut -d' ' -f1
 }
 
 # resolve_pr_base_branch: the origin-qualified base branch for PR mode, matching

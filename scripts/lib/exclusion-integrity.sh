@@ -258,10 +258,91 @@ verify_exclusion_policy() {
 # reports divergence on the TRACKED path regardless of physical resolution, so a
 # swapped-to-symlink `lib/` shows its tracked files as deleted and an `rm --cached`
 # shows the copy as untracked — either way non-empty ⇒ refuse.
+# Read one stat field, GNU spelling FIRST and the result shape validated. The two
+# spellings differ per field (links are %h on GNU and %l on BSD; inode is %i on both),
+# so both are passed in rather than guessed.
+#
+# Order and validation are both load-bearing. `-f` means --file-system on GNU and takes
+# FILE operands, so `stat -f %l "$target"` there treats `%l` as another filename: if a
+# file named `%l` happens to exist it SUCCEEDS with non-numeric output, the fallback
+# never runs, and an unvalidated result would silently skip the rejection it feeds — a
+# fail-OPEN inside the guard itself. BSD rejects `-c` outright (`illegal option -- c`,
+# measured), so trying GNU first is safe on both. An unreadable field is "cannot prove
+# the safe condition", which every caller here treats as a refusal.
+_excl_stat_field() {  # $1 = GNU format, $2 = BSD format, $3 = path. Echoes an integer.
+    local _gnu="$1" _bsd="$2" _path="$3" _v
+    # `-L` is REQUIRED, not tidiness. On Linux /dev/fd is a symlink to /proc/self/fd, so
+    # a bare `stat -c %i /dev/fd/9` returns the PROCFS SYMLINK's inode and `%h` returns
+    # 1 — measured on Ubuntu: without -L the fd reported 26:3867899 nlink=1 for a file
+    # whose real identity was 66306:47717019 nlink=2. That is both a false refusal of
+    # every legitimate external file AND a link count that hides a hardlink. With -L the
+    # fd reports the target exactly. On macOS /dev/fd is a device node, not a symlink,
+    # so -L is a no-op there (measured); on an already-resolved regular path it is a
+    # no-op everywhere.
+    _v=$(stat -L -c "$_gnu" "$_path" 2>/dev/null || true)
+    if ! [[ "$_v" =~ ^[0-9]+$ ]]; then
+        _v=$(stat -L -f "$_bsd" "$_path" 2>/dev/null || true)
+    fi
+    [[ "$_v" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$_v"
+}
+
+# File identity for the descriptor/path binding below: "<device>:<inode>".
+#
+# Inode numbers are unique only WITHIN a device, so comparing them alone lets a
+# parent-symlink swap to a file on another filesystem that happens to share an inode
+# number satisfy the binding. The device closes that — but `stat` cannot supply it for a
+# DESCRIPTOR, because `stat` can only be pointed at a path and the path that names a
+# descriptor is platform-dependent: on Linux /dev/fd/N is a procfs symlink (dereferenced
+# with -L, so it works there) while on macOS /dev/fd is its own pseudo-filesystem and
+# reports the fdesc device (3917942468) for every open file regardless of which file it
+# is — measured on both. That left an inode-only comparison on macOS, which is exactly
+# what the cross-device collision defeats.
+#
+# fstat(2) answers about the OPEN FILE itself, so device, inode and link count are all
+# exact on every platform. python3 is the portable way to reach it from shell.
+_excl_python() {
+    local _d
+    for _d in /usr/bin /bin /usr/local/bin /opt/homebrew/bin; do
+        if [ -x "$_d/python3" ]; then printf '%s' "$_d/python3"; return 0; fi
+    done
+    return 1
+}
+
+# Echoes "<dev>:<ino>:<nlink>" for an open descriptor, or fails. Absolute-path lookup
+# for the same reason the hash utilities use one: a PATH entry is repo-reachable, and
+# this decides whether unreviewed code may be sourced.
+_excl_fstat() {  # $1 = fd number
+    local _py _v
+    _py=$(_excl_python) || return 1
+    # `-I -S` are load-bearing, not hygiene. Without them an ambient PYTHONPATH — which
+    # a committed settings.json `env` block can set — loads a sitecustomize module before
+    # the -c program runs, so repo-controlled code executes inside the very helper that
+    # decides whether unreviewed exclusion logic may be sourced, and could forge the
+    # identity and link count it returns. `-I` ignores PYTHONPATH/PYTHONHOME and the user
+    # site directory; `-S` skips site processing altogether. os and sys are builtins, so
+    # nothing here needs site.
+    _v=$("$_py" -I -S -c 'import os,sys
+s = os.fstat(int(sys.argv[1]))
+print("%d:%d:%d" % (s.st_dev, s.st_ino, s.st_nlink))' "$1" 2>/dev/null) || return 1
+    [[ "$_v" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] || return 1
+    printf '%s' "$_v"
+}
+
+# Echoes "<dev>:<ino>" for a PATH, or fails. A real path has a real device under `stat`
+# on both platforms, so this side needs no special handling.
+_excl_ident() {  # $1 = path
+    local _path="$1" _i _d
+    _d=$(_excl_stat_field %d %d "$_path") || return 1
+    _i=$(_excl_stat_field %i %i "$_path") || return 1
+    printf '%s:%s' "$_d" "$_i"
+}
+
 verify_exclusion_logic() {
     local _worktree="$1" _litmus_scripts="$2" _base="${3:-HEAD}"
     local _wt _excl_logic_file _excl_logic_rel _real_wt _real_excl_dir
     local _excl_target _excl_hops _excl_link _excl_nlink _excl_pinned _excl_wt_prefix
+    local _excl_fd_ino _excl_path_ino _excl_fd_nlink _excl_fd_stat
 
     # shellcheck disable=SC2034
     EXCL_LOGIC_SOURCE=""
@@ -394,23 +475,109 @@ verify_exclusion_logic() {
             _excl_fail "judgment" "exclusion logic ($_excl_logic_file) resolves outside the worktree but has $_excl_nlink hard links; a hardlink into the reviewed worktree would make its bytes editable there while this path still looks trusted-external, and that cannot be ruled out cheaply — refusing fail-closed"
             return 1
         fi
-        # Fail CLOSED if the directory cannot be resolved. `|| _real_excl_dir=""`
-        # turned a probe error into an empty string, and the emptiness test below then
-        # read that as "not inside the worktree" — so a filesystem error or a race
-        # silently WAIVED the very check that detects a path resolving into the mutable
-        # worktree. "Could not determine" is not "determined to be safe".
-        if ! _real_excl_dir=$(cd "$(dirname "$_excl_target")" 2>/dev/null && pwd -P); then
-            _excl_fail "env" "could not resolve the real path of the exclusion logic directory ($(dirname "$_excl_target")); cannot classify it as trusted-external, refusing fail-closed"
+        # Pin the trusted-external BYTES, not just the path, and OPEN FIRST. Everything
+        # a pathname check establishes can be undone by a swap before the file is
+        # actually read — and this file decides what a reviewer is shown. The
+        # in-worktree branch below closes that by materialising committed bytes; an
+        # external plugin file has no committed blob here, so open it once and derive
+        # every remaining decision from that descriptor.
+        #
+        # ORDER IS THE WHOLE ARGUMENT. Validating the physical directory and then
+        # opening leaves the classic window: pass the check on a safe path, swap a
+        # parent symlink to a worktree directory, and the open — plus every path-stat
+        # after it — consistently names the malicious file. So the open comes first and
+        # the directory check happens inside the bracket:
+        #   * the snapshot is read from that single open, so no parent component is
+        #     re-traversed between deciding and reading (a plain `cat "$path"` walks the
+        #     whole chain again);
+        #   * nlink == 1 on the OPEN file means the inode has exactly one name anywhere,
+        #     so it cannot also be reachable — and editable — inside the worktree;
+        #   * the identity read before and after the directory check proves that one
+        #     name is $_excl_target, so the directory verified to be outside the
+        #     worktree is the directory of the file actually being read. A pre-open swap
+        #     therefore no longer helps: the descriptor lands on the worktree file, whose
+        #     single name resolves inside the worktree, and the directory check refuses
+        #     it. That identity is always device-qualified: the descriptor side comes
+        #     from fstat(2), which no /dev/fd quirk can blur.
+        # The residual is an A -> B -> A swap inside those stat calls, which is the same
+        # verification-versus-use gap #793 tracks and is not closable in shell.
+        #
+        # Redirecting the GROUP (measured) closes fd 9 on every exit including the
+        # `return 1`s below, so no descriptor leaks into the caller or its children.
+        # The snapshot temp is created BEFORE the bracket for two reasons: it doubles as
+        # the platform probe's subject, and recording it in EXCL_LOGIC_PINNED_TMP right
+        # away means the caller's EXIT trap removes it even when a check below refuses.
+        if ! _excl_pinned=$(mktemp -t busdriver-excl-XXXXXX); then
+            _excl_fail "env" "could not create a temp file to pin the trusted-external exclusion logic; fail-closed"
             return 1
         fi
-        if [[ -z "$_real_excl_dir" ]]; then
-            _excl_fail "env" "empty real path for the exclusion logic directory; cannot classify it as trusted-external, refusing fail-closed"
+        # shellcheck disable=SC2034
+        EXCL_LOGIC_PINNED_TMP="$_excl_pinned"
+        if ! {
+            if ! _excl_fd_stat=$(_excl_fstat 9); then
+                _excl_fail "env" "could not fstat the opened exclusion logic (python3 not found in a trusted system directory, or the call failed); without an exact descriptor identity the bytes cannot be tied to the validated path — refusing fail-closed"
+                return 1
+            fi
+            _excl_fd_ino="${_excl_fd_stat%:*}"          # <dev>:<ino>
+            _excl_fd_nlink="${_excl_fd_stat##*:}"
+            if ! _excl_path_ino=$(_excl_ident "$_excl_target"); then
+                _excl_fail "env" "could not read the identity of the exclusion logic path ($_excl_target); refusing fail-closed"
+                return 1
+            fi
+            if [[ "$_excl_fd_ino" != "$_excl_path_ino" ]]; then
+                _excl_fail "judgment" "the exclusion logic path ($_excl_target) stopped naming the file this gate opened; a component changed mid-check — refusing fail-closed"
+                return 1
+            fi
+            # The link count that matters is the OPEN file's, from the same fstat: the
+            # path-based probe above can be answered by a different inode after a swap,
+            # this one cannot.
+            if [[ "$_excl_fd_nlink" -ne 1 ]]; then
+                _excl_fail "judgment" "the opened exclusion logic has $_excl_fd_nlink names; one of them may be inside the reviewed worktree, where its bytes are editable while this path still looks trusted-external — refusing fail-closed"
+                return 1
+            fi
+            # Fail CLOSED if the directory cannot be resolved. `|| _real_excl_dir=""`
+            # turned a probe error into an empty string, and the emptiness test below
+            # then read that as "not inside the worktree" — so a filesystem error or a
+            # race silently WAIVED the very check that detects a path resolving into the
+            # mutable worktree. "Could not determine" is not "determined to be safe".
+            if ! _real_excl_dir=$(cd "$(dirname "$_excl_target")" 2>/dev/null && pwd -P); then
+                _excl_fail "env" "could not resolve the real path of the exclusion logic directory ($(dirname "$_excl_target")); cannot classify it as trusted-external, refusing fail-closed"
+                return 1
+            fi
+            if [[ -z "$_real_excl_dir" ]]; then
+                _excl_fail "env" "empty real path for the exclusion logic directory; cannot classify it as trusted-external, refusing fail-closed"
+                return 1
+            fi
+            if [[ "$_real_excl_dir" == "$_real_wt" ]] || [[ "$_real_excl_dir" == "$_real_wt"/* ]]; then
+                _excl_fail "judgment" "exclusion logic path ($_excl_logic_file) is lexically outside the worktree but physically resolves inside it ($_real_excl_dir) — the plugin root is likely a symlink into the worktree, so it cannot safely be treated as trusted-external. Point BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT at a location outside the worktree, or set it to the worktree path directly so the in-worktree guard applies."
+                return 1
+            fi
+            # Close the bracket: the directory check above ran against a pathname, and
+            # this proves that pathname still names the opened file afterwards.
+            if ! _excl_path_ino=$(_excl_ident "$_excl_target"); then
+                _excl_fail "env" "could not re-read the identity of the exclusion logic path ($_excl_target) after validating it; refusing fail-closed"
+                return 1
+            fi
+            if [[ "$_excl_fd_ino" != "$_excl_path_ino" ]]; then
+                _excl_fail "judgment" "the exclusion logic path ($_excl_target) changed while it was being validated; refusing fail-closed"
+                return 1
+            fi
+            if ! cat <&9 > "$_excl_pinned" 2>/dev/null; then
+                _excl_fail "env" "could not snapshot the trusted-external exclusion logic ($_excl_target); fail-closed"
+                return 1
+            fi
+            if [[ ! -s "$_excl_pinned" ]]; then
+                _excl_fail "judgment" "the trusted-external exclusion logic ($_excl_target) snapshotted empty; fail-closed"
+                return 1
+            fi
+        } 9< "$_excl_target"; then
+            _excl_fail "env" "could not open the trusted-external exclusion logic ($_excl_target) for a pinned read; fail-closed"
             return 1
         fi
-        if [[ "$_real_excl_dir" == "$_real_wt" ]] || [[ "$_real_excl_dir" == "$_real_wt"/* ]]; then
-            _excl_fail "judgment" "exclusion logic path ($_excl_logic_file) is lexically outside the worktree but physically resolves inside it ($_real_excl_dir) — the plugin root is likely a symlink into the worktree, so it cannot safely be treated as trusted-external. Point BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT at a location outside the worktree, or set it to the worktree path directly so the in-worktree guard applies."
-            return 1
-        fi
+        # Only now is the snapshot authorized to be sourced. EXCL_LOGIC_PINNED_TMP was
+        # already set above so the caller's trap could clean up a refused attempt.
+        # shellcheck disable=SC2034
+        EXCL_LOGIC_SOURCE="$_excl_pinned"
     fi
 
     case "$_excl_logic_file" in

@@ -74,8 +74,15 @@ mkdir -p "$TMPREPO/.claude"
 # Compute the diff hash the exact way the gate does: explicit merge-base, then
 # the canonical PR form (byte-identical to compute_pr_diff_hash), --full-index included.
 MERGE_BASE=$(git -C "$TMPREPO" merge-base origin/main HEAD)
-REAL_DIFF=$(git -C "$TMPREPO" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null || true)
-VALID_HASH=$(printf '%s' "$REAL_DIFF" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+HEAD_TIP=$(git -C "$TMPREPO" rev-parse --verify HEAD)
+# STREAMED, not captured (#576 round 2). Both the writer and the gate now pipe git
+# directly into the hash utility; a command substitution strips trailing newlines, so
+# recomputing that way here would produce a digest the gate can never match.
+pr_diff_hash() {
+    git -C "$TMPREPO" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...${HEAD_TIP}" 2>/dev/null \
+        | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1
+}
+VALID_HASH=$(pr_diff_hash)
 STALE_HASH=$(printf '%s' "stale-marker-content" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 # Dual-voice PR gate (ADR 0006): a non-fast PR marker is honored only when BOTH
@@ -346,13 +353,12 @@ echo "── #438 deterministic diff hash (hostile git diff config) ──"
 # shellcheck disable=SC2317  # invoked via the loop below
 assert_hostile_config_accepted() {
     local label="$1"
-    local hardened_diff hardened_hash
-    hardened_diff=$(git -C "$TMPREPO" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null || true)
-    if [[ -z "$hardened_diff" ]]; then
+    local hardened_hash
+    hardened_hash=$(pr_diff_hash)
+    if [[ -z "$hardened_hash" ]]; then
         check "deterministic diff non-empty under $label (#438)" "nonempty" "empty"
         return
     fi
-    hardened_hash=$(printf '%s' "$hardened_diff" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
     printf '%s' "$hardened_hash" > "$MARKER"
     seed_artifacts "$hardened_hash"
     local got

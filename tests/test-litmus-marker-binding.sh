@@ -532,6 +532,80 @@ else
     bad "link-count probe order is wrong (GNU=$probe_line, BSD=$probe_line2)"
 fi
 
+# A descriptor's identity MUST describe the file it holds open, exactly, on every
+# platform — and `stat` cannot deliver that. On Linux /dev/fd is a symlink into
+# /proc/self/fd, so without `-L` a probe returns the PROCFS SYMLINK: wrong inode (every
+# legitimate external file refused) and link count 1 (a hardlink into the worktree reads
+# as safe). Measured on Ubuntu: 26:3867899 nlink=1 for a file whose real identity was
+# 66306:47717019 nlink=2. On macOS /dev/fd is its own pseudo-filesystem and reports the
+# fdesc device for EVERY open file, so no -L helps and only the inode is usable — which
+# a same-numbered file on another filesystem satisfies. fstat(2) is the only answer that
+# is exact on both, so assert against a file built here: whichever platform runs the
+# suite checks its own behaviour.
+# shellcheck source=/dev/null
+. "$REPO_ROOT/$PRODUCER_LIB"
+tfd=$(mktemp -d)
+printf 'fd-probe\n' > "$tfd/one"
+ln "$tfd/one" "$tfd/two"          # 2 names, one inode
+exec 7< "$tfd/one"
+fd_stat=$(_excl_fstat 7 || echo "")
+exec 7<&-
+fd_ident="${fd_stat%:*}"
+fd_nlink="${fd_stat##*:}"
+path_ident=$(_excl_ident "$tfd/one" || echo "")
+if [ "$fd_nlink" = "2" ]; then
+    ok "a descriptor's link count is the open file's, not the /dev/fd entry's"
+else
+    bad "descriptor link count is '$fd_nlink', not 2 — a hardlink into the worktree would read as safe"
+fi
+if [ -n "$fd_ident" ] && [ "$fd_ident" = "$path_ident" ]; then
+    ok "a descriptor's identity matches its path's, so the binding can be checked at all"
+else
+    bad "descriptor identity '$fd_ident' != path identity '$path_ident' — every trusted-external file would be refused"
+fi
+# Device-qualified, unconditionally: inode numbers repeat across filesystems, so an
+# inode-only binding is satisfiable by a same-numbered file on another device. There is
+# no platform where this is allowed to degrade.
+tfd_keep="$tfd"
+case "$fd_ident" in
+    *:*) ok "descriptor identity is device-qualified on this platform" ;;
+    *)   bad "descriptor identity is inode-only — a cross-device inode collision satisfies the binding" ;;
+esac
+# The interpreter behind fstat is resolved by absolute path, not PATH: a PATH entry is
+# repo-reachable, and this decides whether unreviewed code may be sourced. Emptying PATH
+# must not change the answer.
+# shellcheck disable=SC2123  # emptying PATH is the point: the helper must not need it
+if ( PATH=/nonexistent; _excl_python >/dev/null 2>&1 ); then
+    ok "the fstat helper resolves python3 by absolute path, not through PATH"
+else
+    bad "the fstat helper lost python3 when PATH was emptied — it is resolving through PATH"
+fi
+
+# PYTHONPATH is REPO-INJECTABLE — a committed .claude/settings.json `env` block sets it
+# — and an injected sitecustomize module is imported before the -c program runs. That
+# puts repo-controlled code inside the helper that decides whether unreviewed exclusion
+# logic may be sourced, where it can simply forge the answer. Mount the real attack: a
+# sitecustomize that monkeypatches os.fstat to report a single-name file, then assert
+# the helper still sees both names.
+pyd=$(mktemp -d)
+cat > "$pyd/sitecustomize.py" <<'PYFORGE'
+import os
+class _Forged:
+    st_dev = 1
+    st_ino = 1
+    st_nlink = 1
+os.fstat = lambda fd: _Forged()
+PYFORGE
+exec 7< "$tfd_keep/one"
+forged=$(PYTHONPATH="$pyd" _excl_fstat 7 || echo "")
+exec 7<&-
+if [ "${forged##*:}" = "2" ]; then
+    ok "an injected PYTHONPATH sitecustomize cannot forge the descriptor identity"
+else
+    bad "PYTHONPATH injection changed the fstat result to '$forged' — the helper is missing -I/-S"
+fi
+rm -rf "$pyd" "$tfd_keep"
+
 # PR mode must validate the exclusion inputs against the MERGE BASE, not the branch
 # tip: the branch IS the artifact under review, so a PR that commits `*` into
 # review-exclude would otherwise be "clean" against itself and hide its own diff.
@@ -589,12 +663,80 @@ else
     bad "PR mode is missing --text and/or --full-index"
 fi
 
-# ...and the pre-PR gate must agree with compute_pr_diff_hash, or every PR marker breaks.
-if grep -q 'git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD"' hooks/gate-scripts/pre-pr-gate.sh; then
-    ok "the pre-PR gate hashes the same form as the PR marker writer"
+# ...and the pre-PR gate must agree with compute_pr_diff_hash, or every PR marker
+# breaks. Two assertions, because either one alone passes for the wrong reason. The
+# literal below is the SPECIFICATION (same reasoning as CANON_FLAGS): both sides must
+# spell the canonical PR-mode flags out, so neither can quietly drop --full-index or
+# re-enable a repo-controlled diff driver.
+CANON_PR_FLAGS='--no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none'
+# `--` is load-bearing: the pattern starts with `--`, which grep would read as an
+# option and abort — turning the assertion into an error rather than a comparison.
+if grep -qF -- "$CANON_PR_FLAGS" hooks/gate-scripts/pre-pr-gate.sh && grep -qF -- "$CANON_PR_FLAGS" "$PRODUCER"; then
+    ok "both PR-mode hash sites spell out the canonical flags"
 else
-    bad "pre-PR gate and compute_pr_diff_hash disagree — every PR marker would mismatch"
+    bad "a PR-mode hash site is missing the canonical flags — the binding is forgeable"
 fi
+
+# The second assertion is BEHAVIORAL, and it is the one that catches a real divergence:
+# a grep for one command string still passes the moment either side is reworded, and a
+# rewording can silently change the digest (a command substitution strips trailing
+# newlines; a stream does not). Run both over the SAME repo and require identical
+# output. The producer's function is evaluated as written and the gate's hashing
+# pipeline is evaluated as the gate file spells it — neither is re-implemented here, so
+# this cannot pass by agreeing with a copy of itself.
+tpr=$(new_repo)
+git -C "$tpr" branch -f prbase HEAD
+printf 'changed\n' > "$tpr/f.txt"
+printf '\000\001binary\n' > "$tpr/b.bin"
+git -C "$tpr" add -A
+git -C "$tpr" commit -qm "work" --no-verify
+_prod_fn=$(awk '/^compute_pr_diff_hash\(\)/,/^}/' "$PRODUCER")
+h_prod=$( cd "$tpr" && set -o pipefail && eval "$_prod_fn" && compute_pr_diff_hash prbase HEAD )
+# Strip the `if ! ` / `; then` scaffolding so the assignment can be evaluated alone.
+# `|| true`: if the gate stops streaming, this grep finds nothing and would ABORT the
+# suite under `set -e` — a divergence must be reported as a failing case, not as the
+# test dying. An empty extraction yields an empty digest, which the comparison below
+# reports.
+_gate_expr=$(grep -F 'CURRENT_HASH=$(git -C "$REPO_DIR"' hooks/gate-scripts/pre-pr-gate.sh \
+    | sed 's/^[[:space:]]*if ! //; s/; then$//' || true)
+h_gate=$(
+    set -o pipefail
+    # These four are consumed INSIDE the eval'd gate expression, which shellcheck
+    # cannot see into.
+    # shellcheck disable=SC2034
+    REPO_DIR="$tpr"
+    # shellcheck disable=SC2034
+    MERGE_BASE=$(git -C "$tpr" merge-base prbase HEAD)
+    # shellcheck disable=SC2034
+    HEAD_SHA=$(git -C "$tpr" rev-parse --verify HEAD)
+    # shellcheck disable=SC2034
+    PR_HASH_CMD=()
+    # shellcheck disable=SC2034  # both assignments feed the eval'd gate expression
+    for _hd in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$_hd/sha256sum" ]; then PR_HASH_CMD=("$_hd/sha256sum"); break; fi
+        if [ -x "$_hd/shasum" ]; then PR_HASH_CMD=("$_hd/shasum" -a 256); break; fi
+    done
+    CURRENT_HASH=""
+    [ -n "$_gate_expr" ] && eval "$_gate_expr"
+    printf '%s' "$CURRENT_HASH"
+)
+if [ -n "$h_prod" ] && [ "$h_prod" = "$h_gate" ]; then
+    ok "pre-PR gate and compute_pr_diff_hash produce the same digest on the same diff"
+else
+    bad "pre-PR gate and compute_pr_diff_hash disagree ('$h_gate' vs '$h_prod') — every PR marker would mismatch"
+fi
+
+# Neither side may hold the whole canonical diff in a shell variable: the reviewer's
+# view is size-capped but this stream is not, so an excluded multi-megabyte text file —
+# or binary content forced to text by a committed .gitattributes rule — would sit
+# entirely in gate memory. Both must pipe git straight into the hash utility.
+if grep -qE 'CURRENT_HASH=\$\(git .*\| "\$\{PR_HASH_CMD\[@\]\}"' hooks/gate-scripts/pre-pr-gate.sh \
+   && ! printf '%s' "$_prod_fn" | grep -q 'diff=\$(git'; then
+    ok "both PR-mode hash sites stream the diff instead of buffering it"
+else
+    bad "a PR-mode hash site buffers the entire canonical diff in a shell variable"
+fi
+rm -rf "$tpr"
 
 # The pointer doubles as a TURN token: if another review armed one while this reviewer
 # was running, writing now would overwrite that newer review's marker with a stale hash.

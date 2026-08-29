@@ -329,23 +329,49 @@ PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin
 # disables an operator diff.external driver without breaking the diff; --no-textconv
 # disables a .gitattributes textconv filter (which --no-ext-diff does NOT cover);
 # color/quotePath pinned so operator git config cannot make writer/gate hashes diverge.
-MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true)
+# Pin the tip BEFORE the merge-base, and derive the merge-base from the pin. Resolving
+# `HEAD` here and again below let the two describe different commits: the merge-base
+# could be computed against commit A while the diff was taken against B, so the hash
+# would not name either snapshot honestly.
+HEAD_SHA=$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)
+MERGE_BASE=""
+[ -n "$HEAD_SHA" ] && MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" "$HEAD_SHA" 2>/dev/null || true)
 # #576: --full-index, byte-identical to compute_pr_diff_hash in run-review-loop.sh.
 # A binary change is distinguished only by its `index` line, and the default 7-char
 # abbreviation lets two chosen blobs share one reviewed-diff binding. This pair is the
 # PR-mode analogue of the commit-mode hash coupling: change one side only and every PR
 # marker stops matching.
-# `|| true` here was a fail-OPEN: it turned every non-zero `git diff` into success while
-# KEEPING whatever partial stdout had already been emitted. A diff that produced the
-# previously reviewed portion and then failed on a later object would hash that partial
-# stream and could match an older authorization, even though the current tip carries
-# additional unreviewed changes. A failed diff means "cannot verify", which must leave
-# CURRENT_HASH empty and take the fail-closed path below.
-if ! DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null); then
-    DIFF_OUTPUT=""
+# The canonical diff is NEVER held in a shell variable. The reviewer's view is
+# size-capped; this stream is not, so an excluded multi-megabyte text file — or binary
+# content forced to text by a committed .gitattributes rule — would sit entirely in
+# gate memory. Ask git the emptiness question with --quiet, then stream the bytes
+# straight into the hash utility, so peak memory here is one digest.
+#
+# Both invocations MUST name the same two commit objects, or the emptiness answer and
+# the hashed bytes could describe different snapshots. MERGE_BASE is already a SHA; pin
+# the tip too rather than letting HEAD resolve twice.
+DIFF_FAILED=0
+DIFF_EMPTY=1
+if [ -z "$MERGE_BASE" ] || [ -z "$HEAD_SHA" ]; then
     DIFF_FAILED=1
 else
-    DIFF_FAILED=0
+    # `git diff --quiet` exits 0 for "no differences", 1 for "differences found", and
+    # >1 for a real failure. Collapsing 1 and >1 would read a git error as a non-empty
+    # diff. A failed probe means "cannot verify", which must leave CURRENT_HASH empty
+    # and take the fail-closed path below — the same reason the old `|| true` on the
+    # capture was a fail-OPEN: it turned a non-zero `git diff` into success while
+    # KEEPING whatever partial stdout had already been emitted, so a diff that produced
+    # the previously reviewed portion and then failed on a later object could hash that
+    # partial stream and match an older authorization.
+    DIFF_RC=0
+    git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --quiet --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...${HEAD_SHA}" 2>/dev/null || DIFF_RC=$?
+    if [ "$DIFF_RC" -eq 0 ]; then
+        DIFF_EMPTY=1
+    elif [ "$DIFF_RC" -eq 1 ]; then
+        DIFF_EMPTY=0
+    else
+        DIFF_FAILED=1
+    fi
 fi
 # Select by availability, matching compute_pr_diff_hash: a `sha256sum || shasum` pipe
 # lets a partially-consuming failure hash only the remainder — the empty-stream digest
@@ -357,7 +383,7 @@ for _hash_dir in /usr/bin /bin /sbin /usr/sbin; do
     if [ -x "$_hash_dir/sha256sum" ]; then PR_HASH_CMD=("$_hash_dir/sha256sum"); break; fi
     if [ -x "$_hash_dir/shasum" ]; then PR_HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
 done
-if [ ${#PR_HASH_CMD[@]} -eq 0 ] || [ "$DIFF_FAILED" -eq 1 ]; then
+if [ ${#PR_HASH_CMD[@]} -eq 0 ] || [ "$DIFF_FAILED" -eq 1 ] || [ "$DIFF_EMPTY" -eq 1 ]; then
     CURRENT_HASH=""
 else
     # Guarded: under `set -euo pipefail` an installed-but-failing hash utility would
@@ -365,17 +391,33 @@ else
     # fail-closed block path — losing the decision, the cleanup and the telemetry, and
     # leaving runners that treat a hook error differently from an emitted block to fail
     # open. A hash we could not compute is simply an empty hash.
-    if ! CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | "${PR_HASH_CMD[@]}" | cut -d' ' -f1); then
+    # `pipefail` is set, so a git failure part-way through the stream fails the whole
+    # pipeline and leaves CURRENT_HASH empty rather than hashing a truncated diff.
+    if ! CURRENT_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...${HEAD_SHA}" 2>/dev/null | "${PR_HASH_CMD[@]}" | cut -d' ' -f1); then
         CURRENT_HASH=""
     fi
 fi
+
+# Every accept below authorizes a diff taken against $HEAD_SHA. If the branch tip has
+# moved since, `gh pr create` would open a PR on commits this gate never hashed — the
+# marker is honest about what was reviewed, but no longer about what is being pushed.
+# Re-read the tip immediately before each accept and refuse if it changed.
+#
+# This narrows the window rather than closing it: the tip can still move between this
+# check and `gh pr create` itself, which is the verification-versus-use gap #793 tracks
+# and is not closable from a PreToolUse hook.
+require_head_unmoved() {
+    local _live
+    _live=$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null || true)
+    [ -n "$_live" ] && [ "$_live" = "$HEAD_SHA" ]
+}
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable
 # base...HEAD diff (empty merge-base, or an empty diff — e.g. a transient git
 # failure, or a base ref that briefly disappeared), clear the marker AND both
 # artifacts. Leaving them lets a later base restoration silently reuse stale
 # review state instead of requiring a fresh review for the resolved diff.
-if [ -f "$PR_MARKER" ] && { [ -z "$MERGE_BASE" ] || [ -z "$DIFF_OUTPUT" ]; }; then
+if [ -f "$PR_MARKER" ] && { [ -z "$MERGE_BASE" ] || [ "$DIFF_FAILED" -eq 1 ] || [ "$DIFF_EMPTY" -eq 1 ]; }; then
     echo "[pre-pr-gate] Cannot compute a verifiable base...HEAD diff; clearing stale PR marker + artifacts (fail-closed)." >&2
     rm -f "$PR_MARKER" "$CODEX_LEAD_ART" "$BACKSTOP_ART"
 fi
@@ -385,7 +427,7 @@ fi
 # the empty-string SHA (e3b0c442...); honoring a marker that carries that hash
 # would authorize a PR with no verified diff. Fail closed: skip all marker
 # acceptance and fall through to the block below when there is nothing to gate.
-if [ -n "$MERGE_BASE" ] && [ -n "$DIFF_OUTPUT" ] && [ -f "$PR_MARKER" ]; then
+if [ -n "$MERGE_BASE" ] && [ "$DIFF_FAILED" -eq 0 ] && [ "$DIFF_EMPTY" -eq 0 ] && [ -f "$PR_MARKER" ]; then
     PR_MARKER_CONTENT=$(cat "$PR_MARKER" 2>/dev/null || echo "")
     if echo "$PR_MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
         rm -f "$PR_MARKER"
@@ -393,10 +435,11 @@ if [ -n "$MERGE_BASE" ] && [ -n "$DIFF_OUTPUT" ] && [ -f "$PR_MARKER" ]; then
         # Dual-voice deep-review marker: require hash match AND both fresh PASS artifacts.
         if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ] \
             && verify_pr_artifact_gate "$CODEX_LEAD_ART" "$CURRENT_HASH" "$MAX_AGE" \
-            && verify_pr_artifact_gate "$BACKSTOP_ART" "$CURRENT_HASH" "$MAX_AGE"; then
+            && verify_pr_artifact_gate "$BACKSTOP_ART" "$CURRENT_HASH" "$MAX_AGE" \
+            && require_head_unmoved; then
             exit 0  # defer consumption to post-pr-consume-marker.sh
         else
-            echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched — re-run litmus PR review." >&2
+            echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched, or the branch tip moved mid-check — re-run litmus PR review." >&2
             rm -f "$PR_MARKER"
         fi
     elif echo "$PR_MARKER_CONTENT" | grep -qE '^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-[0-9]+$'; then
@@ -412,7 +455,8 @@ if [ -n "$MERGE_BASE" ] && [ -n "$DIFF_OUTPUT" ] && [ -f "$PR_MARKER" ]; then
         FAST_HASH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-(FAST|EXCLUDED)-([a-f0-9]{64})-[0-9]+$/\2/')
         FAST_EPOCH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-([0-9]+)$/\2/')
         FAST_AGE=$(( $(date +%s) - FAST_EPOCH ))
-        if [ "$FAST_HASH" = "$CURRENT_HASH" ] && [ "$FAST_AGE" -ge 0 ] && [ "$FAST_AGE" -le "$MAX_AGE" ]; then
+        if [ "$FAST_HASH" = "$CURRENT_HASH" ] && [ "$FAST_AGE" -ge 0 ] && [ "$FAST_AGE" -le "$MAX_AGE" ] \
+            && require_head_unmoved; then
             exit 0  # defer consumption to post-pr-consume-marker.sh
         else
             echo "[pre-pr-gate] Bypass marker stale or for a different diff — re-run litmus PR review." >&2

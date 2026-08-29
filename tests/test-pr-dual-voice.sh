@@ -69,8 +69,12 @@ export LITMUS_PR_BASE=main   # resolve_pr_base_branch → origin/main
 # Current diff hash, computed the way the writer/gate do (capture + printf '%s').
 # #576: must match compute_pr_diff_hash / pre-pr-gate.sh byte for byte, --full-index
 # included — a bare `git diff` abbreviates index lines and no longer agrees.
-_D=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$(git merge-base origin/main HEAD)...HEAD")
-CUR=$(printf '%s' "$_D" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+# STREAMED, not captured: since #576 round 2 both sides pipe git straight into the
+# hash, and a command substitution strips trailing newlines. Capturing here would
+# compute a different digest than the code under test and fail every marker match.
+_MB=$(git merge-base origin/main HEAD)
+_TIP=$(git rev-parse --verify HEAD)
+CUR=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${_MB}...${_TIP}" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 BS=".claude/pr-backstop-verdict.local.json"
 art_status() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['status'])" "$1" 2>/dev/null; }

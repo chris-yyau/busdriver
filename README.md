@@ -50,7 +50,7 @@ touch .claude/skip-design-review.local   # pre-implementation — lease: 20 writ
 touch .claude/skip-pr-grind.local        # pre-merge — deferred; see docs/observability.md
 ```
 
-Consumption is logged to `.claude/bypass-log.jsonl`. Treat that log as a record of skip-file and merge-authorization activity, not as a complete audit of every gate execution — what each gate does and does not record varies, and the event taxonomy in [docs/observability.md](docs/observability.md) is the source of truth.
+Consumption is logged to `.claude/bypass-log.jsonl`. Treat that log as a record of skip-file and merge-authorization activity, not as a complete audit of every gate execution — what each gate does and does not record varies (the litmus skip paths log best-effort: a failed write does not stop the bypass, so absence of a skip-consumption event is not proof that no litmus bypass occurred), and the event taxonomy in [docs/observability.md](docs/observability.md) is the source of truth.
 
 A file younger than 30 seconds is rejected. Treat that as a **timing heuristic, not an authentication boundary**: it raises the cost of an agent arming its own bypass inside a single turn, but nothing here establishes that a human created the file. Detection, not prevention.
 

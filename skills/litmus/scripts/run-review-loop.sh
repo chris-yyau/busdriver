@@ -1126,7 +1126,7 @@ else
     echo "⚠️  Exclusion policy failed its integrity check — reviewing with NO exclusions" >&2
     echo "    $EXCL_LOGIC_ERROR" >&2
     REVIEW_EXCLUDE_ARGS=()
-  elif ! verify_exclusion_logic "$_excl_worktree" "$SCRIPT_DIR" "${_HEAD_SHA:-HEAD}"; then
+  elif ! verify_exclusion_logic "$_excl_worktree" "$SCRIPT_DIR" "$_excl_base"; then
     echo "⚠️  Exclusion logic failed its integrity check — reviewing with NO exclusions" >&2
     echo "    $EXCL_LOGIC_ERROR" >&2
     REVIEW_EXCLUDE_ARGS=()

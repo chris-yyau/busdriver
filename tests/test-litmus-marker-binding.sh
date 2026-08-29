@@ -536,6 +536,19 @@ else
     bad "PR mode validates exclusions against its own HEAD — a branch can widen them for itself"
 fi
 
+# Both exclusion guards must be anchored on the SAME resolved base in BOTH callers.
+# Passing different bases (or letting a callee default to a fresh HEAD) lets a policy
+# from one commit combine with logic from another.
+prod_pol=$(grep -c 'verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "$_excl_base"' "$PRODUCER" || true)
+prod_log=$(grep -c 'verify_exclusion_logic "$_excl_worktree" "$SCRIPT_DIR" "$_excl_base"' "$PRODUCER" || true)
+disp_pol=$(grep -c 'verify_exclusion_policy "$WORKTREE_DIR" "$_policy_state_dir" "$_excl_base"' "$DISPATCHER" || true)
+disp_log=$(grep -c 'verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" "$_excl_base"' "$DISPATCHER" || true)
+if [ "$prod_pol" -ge 1 ] && [ "$prod_log" -ge 1 ] && [ "$disp_pol" -ge 1 ] && [ "$disp_log" -ge 1 ]; then
+    ok "policy and logic guards share one pinned base in both the producer and the dispatcher"
+else
+    bad "exclusion guards do not share a pinned base (producer $prod_pol/$prod_log, dispatcher $disp_pol/$disp_log)"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

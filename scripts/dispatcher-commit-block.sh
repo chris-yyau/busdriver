@@ -893,7 +893,14 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # exclude-generated.sh re-read that same live path leaves a clean -> malicious ->
     # clean window in which widened patterns hide staged content from this re-verify.
     # EXCL_POLICY_SOURCE is HEAD's bytes, and STEP 2 points the parser at it.
-    verify_exclusion_policy "$WORKTREE_DIR" "$_policy_state_dir" || \
+    # Resolve the base ONCE and hand it to both guards. Letting each resolve the mutable
+    # HEAD ref independently means an A->B->A transition can combine a policy from one
+    # commit with logic from another, while the canonical hash below describes A again —
+    # exactly the check-versus-use split these guards exist to close.
+    if ! _excl_base=$(git -C "$WORKTREE_DIR" rev-parse --verify HEAD 2>/dev/null); then
+        emit_bail "env" "could not resolve HEAD to anchor the exclusion-integrity checks"
+    fi
+    verify_exclusion_policy "$WORKTREE_DIR" "$_policy_state_dir" "$_excl_base" || \
         emit_bail "$EXCL_LOGIC_ERROR_KIND" "$EXCL_LOGIC_ERROR"
     # The exclusion LOGIC (exclude-generated.sh) is the OTHER input to the filter:
     # sourcing it runs its code AND its hardcoded defaults + review-exclude parse
@@ -910,7 +917,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # policy file, which left the logic file as an unguarded integrity input on the
     # producer side. EXCL_LOGIC_SOURCE is the validated, collapsed path; sourcing
     # anything else would break the check-vs-use pinning from PR #280.
-    verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" || {
+    verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" "$_excl_base" || {
         [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
         emit_bail "$EXCL_LOGIC_ERROR_KIND" "$EXCL_LOGIC_ERROR"
     }

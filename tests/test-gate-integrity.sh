@@ -341,6 +341,52 @@ if [[ -n "$_repo" && -d "$_repo" ]]; then
         printf '  ↳ output: %s\n' "$_out"
         assert 1 "↳ nor can GIT_DIR"
     fi
+    # Pathspec MODE is env-selectable too: under GIT_LITERAL_PATHSPECS a `*.pyc`
+    # pathspec matches nothing and ls-files exits 0 with empty output. The query uses
+    # directory pathspecs and filters afterwards, so the mode cannot reach it.
+    for _v in GIT_LITERAL_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS; do
+        _out="$(env "$_v=1" "$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+        if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+            assert 0 "↳ nor can $_v"
+        else
+            printf '  ↳ output: %s\n' "$_out"
+            assert 1 "↳ nor can $_v"
+        fi
+    done
+    # A MISSING `.git/index` is read by ls-files as an empty index, exit 0 — so a
+    # local `rm .git/index` used to make the whole check vacuous. HEAD is queried
+    # alongside it for exactly this.
+    git -C "$_repo" commit -qm "bytecode" 2>/dev/null
+    rm -f "$_repo/.git/index"
+    _out="$("$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "↳ nor does deleting .git/index (HEAD is queried alongside the index)"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ nor does deleting .git/index (HEAD is queried alongside the index)"
+    fi
+    # git's DEFAULT listing C-QUOTES a path containing a newline, so such a name is
+    # emitted ending in a QUOTE and a `\.pyc$` match on it fails — the file slips
+    # past on the strength of its own name, and the digest never sees it either
+    # because `__pycache__/*.pyc` is exempt from the enumeration. `-z` emits raw
+    # bytes. This is the one bytecode shape that no other assertion here covers.
+    _nl_name="hooks/gate-scripts/lib/__pycache__/we
+ird.pyc"
+    printf 'quoted-path bytecode\n' > "$_repo/$_nl_name" 2>/dev/null
+    if [[ -e "$_repo/$_nl_name" ]]; then
+        git -C "$_repo" add -f -- "$_nl_name" 2>/dev/null
+        _out="$("$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+        if [[ $? -ne 0 && "$_out" == *"ird.pyc"* ]]; then
+            assert 0 "↳ a tracked .pyc whose NAME contains a newline is still found (-z, not C-quoted)"
+        else
+            printf '  ↳ output: %s\n' "$_out"
+            assert 1 "↳ a tracked .pyc whose NAME contains a newline is still found (-z, not C-quoted)"
+        fi
+        git -C "$_repo" rm -q --cached -- "$_nl_name" 2>/dev/null
+        rm -f "$_repo/$_nl_name"
+    else
+        assert 1 "↳ a tracked .pyc whose NAME contains a newline is still found (fixture name unavailable)"
+    fi
     rm -rf "$_repo"
 else
     assert 1 "a TRACKED .pyc under a locked directory fails the check (no fixture tempdir)"

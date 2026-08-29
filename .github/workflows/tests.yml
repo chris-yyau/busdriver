@@ -96,7 +96,16 @@ jobs:
         # stale lock would only surface at the far end of the run, and the wiring
         # would be implicit-by-glob rather than stated anywhere. This step fails
         # fast, here, and names the one-line fix.
-        run: ./scripts/gate-integrity.sh --check
+        # `env -i` + an absolute interpreter, for what they actually buy — and no
+        # more. They stop THIS hop inheriting a hostile env and stop PATH selecting
+        # the interpreter. They do NOT establish a clean first hop: Actions has
+        # already started the outer `run:` shell, which processed any inherited
+        # BASH_ENV before reaching this line. Nothing inside the repo can fix that,
+        # and it is not this control's boundary anyway — a BASH_ENV set from the repo
+        # lands in the workflow diff, the same visible self-bypass as running
+        # `--update`, and one set from outside means the runner is already
+        # compromised. ADR 0016 / ADR 0049: the first hop is the caller's.
+        run: env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash scripts/gate-integrity.sh --check
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

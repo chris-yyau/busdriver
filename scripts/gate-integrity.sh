@@ -1,5 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # gate-integrity.sh — content lock over the hook execution surface (#742).
+#
+# Interpreter is ABSOLUTE (`#!/bin/bash`, not `/usr/bin/env bash`) so PATH cannot
+# select a fake bash. `BASH_ENV` executes before line 1 and no line here can undo it,
+# so the CI step invokes this through `env -i` — the first hop is the caller's to make
+# fail-closed, exactly as ADR 0016 / ADR 0049 settled for the gate registrations.
 #
 # WHAT THIS CLOSES
 # `tests/test-node-hook-containment.sh` pins the two plain-bash launcher
@@ -235,7 +240,45 @@ git_clean() {  # git_clean <args...> — git with the repo-selecting env strippe
         -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
         -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
         -u GIT_NAMESPACE -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM \
+        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS \
+        -u GIT_ICASE_PATHSPECS \
         git "$@"
+}
+
+# Tracked bytecode, from the index AND from HEAD. Both, because each alone is empty in
+# a state the other is not: `ls-files` treats a MISSING `.git/index` as an empty index
+# and exits 0 (delete it and the check goes vacuous), while a fresh repository has no
+# HEAD at all.
+#
+# Pathspecs are DIRECTORIES, never `*.pyc` — a glob pathspec is read literally under
+# GIT_LITERAL_PATHSPECS / GIT_NOGLOB_PATHSPECS, so it would match nothing and exit 0.
+# Output is `-z`: git's default listing C-QUOTES a path containing a newline or a
+# non-printable byte, so such a name ends in a QUOTE and a `\.pyc$` match on it fails —
+# a tracked file slipping past on the strength of its own name. NUL delimiting emits
+# the raw bytes and needs no unquoting. The suffix test is case-folded for the same
+# reason the containment suite folds: this filesystem is case-insensitive, so `MOD.PYC`
+# loads as `mod.pyc`.
+tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on query failure
+    local r="$1" tmp f commits
+    # Any nonzero from the HEAD probe used to read as "a repository with no commits",
+    # silently swallowing a real query failure. `rev-list -n1 --all` separates them:
+    # it exits 0 with EMPTY output when there are genuinely no commits, and nonzero
+    # when the query itself failed.
+    commits="$(git_clean -C "$r" rev-list -n1 --all)" || return 1
+    tmp="$(mktemp)" || return 1
+    if ! git_clean -C "$r" ls-files -z -- "${LOCKED_DIRS[@]}" > "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    if [[ -n "$commits" ]]; then
+        if ! git_clean -C "$r" ls-tree -r -z --name-only HEAD -- "${LOCKED_DIRS[@]}" >> "$tmp"; then
+            rm -f "$tmp"; return 1
+        fi
+    fi
+    while IFS= read -r -d '' f; do
+        case "$f" in *.[pP][yY][cC]) printf '%s\n' "$f" ;; esac
+    done < "$tmp" | LC_ALL=C sort -u
+    rm -f "$tmp"
+    return 0
 }
 
 tracked_pyc=""
@@ -248,9 +291,9 @@ if ! rev_parse_err="$(git_clean -C "$root" rev-parse --git-dir 2>&1)"; then
     printf '  distinguishable here, so all of them refuse rather than skip the check.\n' >&2
     exit 1
 fi
-# An UNQUERYABLE index fails CLOSED for the same reason.
-if ! tracked_pyc="$(git_clean -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
-    printf 'gate-integrity: FAIL — could not query the git index for tracked bytecode:\n' >&2
+# An UNQUERYABLE index or HEAD fails CLOSED for the same reason.
+if ! tracked_pyc="$(tracked_bytecode "$root" 2>&1)"; then
+    printf 'gate-integrity: FAIL — could not query git for tracked bytecode:\n' >&2
     printf '  %s\n' "$tracked_pyc" >&2
     exit 1
 fi

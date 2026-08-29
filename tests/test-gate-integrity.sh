@@ -272,11 +272,58 @@ if [[ ! -r "$_fix/hooks/gate-scripts/lib" ]]; then
     assert "$(( $? == 0 ? 1 : 0 ))" "↳ and --update refuses to record the partial listing"
     chmod 755 "$_fix/hooks/gate-scripts/lib" 2>/dev/null
 else
-    # Running as root, or a filesystem that ignores the mode: the assertion is
-    # unprovable here, and a silent skip is what the CI runner's skip-masking
-    # guard exists to catch.
+    # Running as root, or a filesystem that ignores the mode: `chmod 000` cannot
+    # make the subtree unreadable, so this PARTICULAR fixture is unprovable. Not
+    # a failure and not a silent hole either — the deterministic `find` shim
+    # below asserts the same guard unconditionally, on every host.
     chmod 755 "$_fix/hooks/gate-scripts/lib" 2>/dev/null
-    assert 1 "an UNREADABLE locked subtree fails closed (could not make the fixture unreadable)"
+    printf '  note the chmod fixture is inert here (root or a mode-ignoring filesystem) — the find shim below covers the same guard\n'
+fi
+
+# The same guard, proven WITHOUT depending on filesystem permissions. A `find`
+# that emits its full listing and THEN exits nonzero is the general shape of the
+# fail-OPEN above (an unreadable subtree is only one way to produce it), and a
+# PATH shim reproduces it deterministically as root and non-root alike. The
+# assertion matches the enumeration message, not just the exit code: a shim that
+# failed to intercept would otherwise "pass" for the wrong reason.
+fresh_fixture
+_shim="$(mktemp -d)"
+# `command -v find` returns the bare word `find` when a shell FUNCTION or ALIAS
+# by that name is in scope. The shim would then re-invoke `find` through a PATH
+# whose first entry is the shim itself — unbounded recursive process creation,
+# not a test. Resolve with `-p` (the standard utility PATH, which ignores
+# functions and aliases) and accept only an ABSOLUTE path.
+_real_find="$(command -v -p find 2>/dev/null)"
+case "$_real_find" in
+    /*) ;;
+    *) _real_find="" ;;
+esac
+if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; then
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf '%s "$@"\n' "$_real_find"
+        printf 'exit 1\n'
+    } > "$_shim/find"
+    chmod 755 "$_shim/find"
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 && "$_out" == *"could not enumerate the locked directories"* ]]; then
+        assert 0 "a find that lists and THEN fails is refused by --check (status not swallowed)"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "a find that lists and THEN fails is refused by --check (status not swallowed)"
+    fi
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --update 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 && "$_out" == *"could not enumerate the locked directories"* ]]; then
+        assert 0 "↳ and --update refuses to record that listing"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "↳ and --update refuses to record that listing"
+    fi
+    rm -rf "$_shim"
+else
+    assert 1 "a find that lists and THEN fails is refused by --check (no tempdir, or no absolute find to shim)"
 fi
 
 # ── 4e. A TRACKED .pyc under a locked directory is refused ────────────────────
@@ -424,10 +471,14 @@ if [[ -n "$_sub" && -d "$_sub" ]]; then
         > "$_sub/nested/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc"
     git -C "$_sub" add -f nested/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc 2>/dev/null
     _out="$("$GATE_INTEGRITY" --root "$_sub/nested" --check 2>&1)"
-    if [[ "$_out" == *"marker_ops.cpython-314.pyc"* || "$_out" == *"TRACKED"* ]]; then
+    # The STATUS as well as the message: a --check that named the tracked bytecode
+    # and then exited 0 would violate the fail-closed contract while still matching
+    # on output alone.
+    _rc=$?
+    if [[ "$_rc" -ne 0 && ( "$_out" == *"marker_ops.cpython-314.pyc"* || "$_out" == *"TRACKED"* ) ]]; then
         assert 0 "↳ a root BELOW the repo top level is still recognised as a repository"
     else
-        printf '  ↳ output: %s\n' "$_out"
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
         assert 1 "↳ a root BELOW the repo top level is still recognised as a repository"
     fi
     rm -rf "$_sub"

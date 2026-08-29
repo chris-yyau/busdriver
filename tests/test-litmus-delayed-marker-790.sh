@@ -271,6 +271,14 @@ ln -s "pid-999999-tok790" "$R/.claude/litmus-review.lock"
 run_discard "$R"
 check "held review lock refuses discard" "$(verdict "$RC")" "refused"
 check "handoff survives a contended discard" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "present"
+# ...and it must say so in its own terms. A contended discard leaves a FAILED review's
+# arming live and nothing else retires it, so the refusal has to name the retry rather
+# than reuse the write path's "it publishes its own marker" wording (#794).
+if printf '%s' "$OUT" | grep -q "STILL ARMED"; then
+    ok "contended discard names the live arming"
+else
+    bad "contended discard does not warn the arming is still live: $OUT"
+fi
 
 echo ""
 echo "  $PASS passed, $FAIL failed"

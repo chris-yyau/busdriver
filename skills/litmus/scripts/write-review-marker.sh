@@ -100,6 +100,15 @@ GEN_FILE="$REPO_DIR/$STATE_DIR/litmus-marker-gen.local"
 # is bounded at the level #790 already accepted (a re-run), so the diagnostic below
 # NAMES the retry rather than the design changing here; waiting for the lock instead is
 # tracked in #794.
+#
+# --discard inherits that residual and is the sharper half of it: a FAILED review that
+# refuses here leaves its own arming live, where the caller-side `rm` this replaced would
+# have retired it unconditionally. Nothing else retires it, so until the retry happens
+# that arming can still be handed back to this script and mint a marker for the current
+# index despite the FAILED verdict. It is not fixed by deleting anyway on contention —
+# that is precisely the unsynchronized delete this mode exists to remove, and it can
+# destroy a newer run's pair. So the refusal is mode-aware below and says to retry, and
+# the wait-instead-of-refuse design change is tracked in #794 for both modes together.
 cd "$REPO_DIR"
 # shellcheck source=lib/review-lock.sh
 source "$SCRIPT_DIR/lib/review-lock.sh"
@@ -109,6 +118,16 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     _LOCK_PATH=$(review_lock_path)
     _LOCK_OWNER=$(review_lock_owner)
     _LOCK_STATE=$(review_lock_owner_state)
+    if [ "$DISCARD" -eq 1 ]; then
+        echo "ERROR: Could not take the review lock — handoff NOT discarded." >&2
+        echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
+        echo "       Your failed review's handoff is STILL ARMED and nothing else retires it." >&2
+        echo "       Re-run this --discard with the same prompt path once that run finishes;" >&2
+        echo "       until you do, that arming can still be handed back here and mint a marker" >&2
+        echo "       for whatever is staged, despite your FAILED verdict. (#794)" >&2
+        echo "       If that owner is NOT running, the lock is an orphan — remove it yourself." >&2
+        exit 1
+    fi
     echo "ERROR: Could not take the review lock — marker not written." >&2
     echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
     echo "       Another litmus review is in flight. If it PASSES it publishes its own" >&2

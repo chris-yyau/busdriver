@@ -26,7 +26,7 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 ## Gates
 
-Seven hook-enforced gates. Most run as PreToolUse hooks, so a block rejects the tool call itself rather than asking Claude to comply — it cannot rationalize its way past one. Blueprint review is the exception: it runs after a plan is written and never blocks that write — it arms the pre-implementation gate, which refuses the next implementation write instead.
+Eight hook-enforced gates. Most run as PreToolUse hooks, so a block rejects the tool call itself rather than asking Claude to comply — it cannot rationalize its way past one. Blueprint review is the exception: it runs after a plan is written and never blocks that write — it arms the pre-implementation gate, which refuses the next implementation write instead.
 
 Careful guard is advisory and raises a confirmation prompt instead of refusing. The refusing gates are built to fail closed, but the exact disposition of each — what happens when a hook errors, and which paths arm a gate in the first place — is a per-gate detail that belongs with the gate rather than here. Read [docs/observability.md](docs/observability.md) and `docs/adr/` before relying on a specific failure mode.
 
@@ -37,6 +37,7 @@ Careful guard is advisory and raises a confirmation prompt instead of refusing. 
 | **Blueprint review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Pre-merge** | `gh pr merge` | Blocks the merge until pr-grind declares the PR clean at its live HEAD |
+| **Ref fast-forward** | `git merge` / `git pull` on a protected branch | Blocks a fast-forward of that branch. A fast-forward creates no commit object, so the commit and PR gates never see it. One way past: an operator marker naming the exact commit, spent by `git merge --ff-only <oid>`. `git pull` there is refused outright — the commit it would land does not exist locally yet, so nothing can authorize it |
 | **Careful guard** | Destructive Bash (`rm -rf`, `git reset --hard`, …) | Raises a confirmation prompt |
 | **Freeze guard** | `.claude/freeze-scope.local` present | Restricts edits to the investigation scope during debugging |
 

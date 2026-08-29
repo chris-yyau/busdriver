@@ -729,29 +729,6 @@ fi
 
 _PROT_LIST=${PROTECTED_SET# }
 
-# The gate resolves its target BEFORE the command runs, so ANY other command in
-# the same invocation can replace what was checked: `git branch -f topic
-# <unreviewed> && git merge topic` passes the no-op exit further down, then moves
-# `topic` and fast-forwards to the unchecked oid. Enumerating which companions are
-# dangerous was tried and abandoned — `git config`, `git fast-import`, `git
-# difftool`, `git grep --open-files-in-pager=<cmd>`, `unset HOME`, a shell script
-# — so the rule is now the class: anything but a scoping `cd`.
-# Checked BEFORE the current branch is read, and deliberately so: a companion
-# can change WHICH branch is checked out. `git switch main && git merge
-# <unreviewed>` was read as ordinary feature work — HEAD said `feature` when the
-# gate looked — and fast-forwarded main a moment later. The branch the gate can
-# see is a pre-command value, so it cannot qualify this rule; the ordinary
-# `git fetch … && git merge …` therefore needs two calls on any branch now.
-if [ "$REF_WRITER" = "1" ] && [ -n "$KIND" ]; then
-    block_emit "BLOCKED: this command runs something else ALONGSIDE a merge/pull, in a repo with a protected branch ($_PROT_LIST). The gate resolves the merge target and reads git config before the command runs, so any other command in the same invocation can replace what it checked — including which branch is checked out ('git switch main && git merge <oid>') — 'git branch -f topic <oid> && git merge topic' is the shape, 'git fetch' counts because it moves FETCH_HEAD and the remote-tracking refs, and so does anything that can run a configured helper or change git's environment. The gate does not try to tell those apart from a harmless 'git status'.
-
-Run the parts as SEPARATE calls, so the gate sees the target at its final value:
-  git fetch <remote> <ref>
-  git merge --ff-only <oid>
-(A leading 'cd' is fine — it only scopes the command.)"
-    exit 0
-fi
-
 # An empty set used to exit 0 — the gate's one documented non-fail-closed point,
 # and the place every mutable-discovery finding landed: delete the remote HEAD a
 # non-conventional default was found through and the set empties, so the branch
@@ -782,6 +759,55 @@ If this repository genuinely has no protected branch, say THAT — an empty file
     exit 0
 fi
 
+# The gate resolves its target BEFORE the command runs, so ANY other command in
+# the same invocation can replace what was checked: `git branch -f topic
+# <unreviewed> && git merge topic` passes the no-op exit further down, then moves
+# `topic` and fast-forwards to the unchecked oid. Enumerating which companions are
+# dangerous was tried and abandoned — `git config`, `git fast-import`, `git
+# difftool`, `git grep --open-files-in-pager=<cmd>`, `unset HOME`, a shell script
+# — so the rule is now the class: anything but a scoping `cd`.
+# Checked BEFORE the current branch is read, and deliberately so: a companion
+# can change WHICH branch is checked out. `git switch main && git merge
+# <unreviewed>` was read as ordinary feature work — HEAD said `feature` when the
+# gate looked — and fast-forwarded main a moment later. The branch the gate can
+# see is a pre-command value, so it cannot qualify this rule; the ordinary
+# `git fetch … && git merge …` therefore needs two calls on any branch now.
+# An unknown git word could still become a merge. Two ways, and the gate can tell
+# neither from a typo: another command in the same call can define
+# `alias.<word> = merge` before it runs, and an alias set through the
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n family is stripped from this gate's
+# environment (#325 / ADR 0016) and still live for the command. Refusing a word
+# that resolves to nothing costs almost nothing — one that is neither a builtin,
+# nor a git-* on PATH, nor a config alias is one git itself would reject.
+refuse_unknown_candidates() {
+    local _cand
+    for _cand in $UNKNOWN_CANDIDATES; do
+        block_emit "BLOCKED: '$_cand' resolves to neither a git command nor a git alias that this gate can see, in a repo with a protected branch ($_PROT_LIST). Two things make it one anyway, and the gate cannot tell them apart from a typo: another command in the same call can define 'alias.$_cand = merge' before it runs, and an alias set through GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n in the session environment is stripped from this gate's environment but not from the command's. Either way it could fast-forward the protected branch after the gate has already looked. Use the underlying 'git merge' / 'git pull' directly, and run any companion as a SEPARATE call. Blocking as precaution (fail-closed)."
+        exit 0
+    done
+}
+
+# `git config alias.m merge && git switch main && git m feature` has NO literal
+# merge/pull, so the refusal below does not apply; the alias does not exist when
+# the gate looks it up; and the branch-scoped check further down saw the FEATURE
+# branch and exited. The command then created the alias, switched, and
+# fast-forwarded main. A companion means the branch the gate can see proves
+# nothing, so the unknown-word refusal has to run here too — while the
+# no-companion case stays below, where it does not over-block ordinary work.
+if [ "$REF_WRITER" = "1" ] && [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
+    refuse_unknown_candidates
+fi
+
+if [ "$REF_WRITER" = "1" ] && [ -n "$KIND" ]; then
+    block_emit "BLOCKED: this command runs something else ALONGSIDE a merge/pull, in a repo with a protected branch ($_PROT_LIST). The gate resolves the merge target and reads git config before the command runs, so any other command in the same invocation can replace what it checked — including which branch is checked out ('git switch main && git merge <oid>') — 'git branch -f topic <oid> && git merge topic' is the shape, 'git fetch' counts because it moves FETCH_HEAD and the remote-tracking refs, and so does anything that can run a configured helper or change git's environment. The gate does not try to tell those apart from a harmless 'git status'.
+
+Run the parts as SEPARATE calls, so the gate sees the target at its final value:
+  git fetch <remote> <ref>
+  git merge --ff-only <oid>
+(A leading 'cd' is fine — it only scopes the command.)"
+    exit 0
+fi
+
 # Detached HEAD moves no branch ref; a merge onto any OTHER branch is ordinary
 # feature work that the commit/PR gates already cover on its way to main.
 CURRENT=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || CURRENT=""
@@ -801,27 +827,15 @@ PROTECTED="$CURRENT"
 # looks like at gate time — the lookup above found nothing because the alias does
 # not exist yet. A candidate that IS a real git command (`git status && git
 # commit`) is none of this gate's business.
-if [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
-    # NOT qualified by $REF_WRITER. A companion is one way an unknown subcommand
-    # becomes a merge, but not the only one: the gate's own environment is
-    # sanitized (#325 / ADR 0016), so an alias defined through the GIT_CONFIG_COUNT
-    # / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n family is stripped here and still
-    # present for the command — `alias.m=merge` set that way is invisible to the
-    # lookup above, and `git m feature` reached the no-op exit as an unrecognized
-    # word. Blocking every candidate that resolves to nothing costs almost
-    # nothing, because a word that is neither a builtin, nor a git-* on PATH, nor
-    # a config alias is one git itself would reject.
-    # Already reduced above, against git's own built-in list and deliberately not
-    # `,alias`: an alias's CURRENT value proves nothing when a companion command
-    # can rewrite it first — with alias.m=status already present, `git config
-    # alias.m merge && git m topic` passed both the alias lookup (which saw
-    # `status`) and a list that contained `m`.
-    for _cand in $UNKNOWN_CANDIDATES; do
-        block_emit "BLOCKED: '$_cand' resolves to neither a git command nor a git alias that this gate can see, in a repo with a protected branch ($_PROT_LIST). Two things make it one anyway, and the gate cannot tell them apart from a typo: another command in the same call can define 'alias.$_cand = merge' before it runs, and an alias set through GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n in the session environment is stripped from this gate's environment but not from the command's. Either way it could fast-forward the protected branch after the gate has already looked. Use the underlying 'git merge' / 'git pull' directly, and run any companion as a SEPARATE call. Blocking as precaution (fail-closed)."
-        exit 0
-    done
-fi
 
+
+# No companion, so nothing in this command can change the branch: on a feature
+# branch, or in a repo with no protected branch, an unresolvable git word is
+# somebody else's business and refusing it was pure over-block. Reached only once
+# HEAD is known to be protected.
+if [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
+    refuse_unknown_candidates
+fi
 
 REMOTE=$(git_real config --get "branch.$PROTECTED.remote" 2>/dev/null) || REMOTE=""
 [ -z "$REMOTE" ] && REMOTE="origin"

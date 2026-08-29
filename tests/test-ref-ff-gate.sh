@@ -568,6 +568,13 @@ run_gate "a companion is refused off the protected branch too" \
 run_gate "...because the companion can switch ONTO the protected branch" \
     block "git switch main && git merge feature" \
     "runs something else ALONGSIDE a merge/pull"
+# The same shape with NO literal merge/pull. There is nothing for the companion
+# refusal to match, the alias does not exist when the gate looks, and the
+# branch-scoped word check sees the FEATURE branch — so this reached the no-op
+# exit and then created the alias, switched, and fast-forwarded main.
+run_gate "...and with no literal merge at all, via an alias defined en route" \
+    block "git config alias.m merge && git switch main && git m feature" \
+    "resolves to neither a git command nor a git alias"
 git -C "$REPO" checkout -q --detach
 run_gate "detached HEAD moves no branch ref" allow "git merge feature"
 git -C "$REPO" checkout -q main
@@ -754,6 +761,12 @@ run_gate "...and with the declaration gone, an unidentifiable repo BLOCKS" \
 : > "$REPO/$ISO_STATE/ref-ff-protected.local"
 run_gate "...while an empty declaration says so deliberately, and allows" \
     allow "git merge feature"
+# ...and with nothing to protect, the shape refusals have nothing to refuse FOR.
+# They existed only because a companion could reach a protected branch.
+git -C "$REPO" config alias.m status
+run_gate "...and the companion/alias refusals do not fire with none declared" \
+    allow "git status && git m"
+git -C "$REPO" config --unset alias.m
 # `#` starts a valid git branch name, so it cannot mean "comment" — a declaration
 # of `#release` names a branch and must be honoured as one.
 git -C "$REPO" branch '#release' >/dev/null 2>&1

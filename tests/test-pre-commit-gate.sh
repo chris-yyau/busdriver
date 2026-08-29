@@ -413,7 +413,7 @@ run_marker_test() {
 
     # Resolve @STAGED@ against the same expression the gate and writers use.
     local staged_hash
-    staged_hash=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    staged_hash=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     content=${content//@STAGED@/$staged_hash}
     content=${content//@NOW@/$(date +%s)}
 
@@ -561,7 +561,7 @@ mutation_test() {
         echo "modified" >> file.txt; git add file.txt
     )
     local real mutant orig repl
-    real=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    real=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     orig=${real:idx:1}
     # Flip to a different hex digit so the mutant stays a well-formed 64-hex
     # string — the point is a VALID-shaped hash for the wrong diff, not a
@@ -602,7 +602,7 @@ binary_collision_test() {
     )
     # Hash the diff for blob A — the marker a real review of A would have left.
     local hash_a
-    hash_a=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    hash_a=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     # Now swap in DIFFERENT binary content at the SAME path.
     ( cd "$tmp_dir"; printf 'ZZZZ\003\004\005YYYY' > blob.bin; git add blob.bin )
 
@@ -629,9 +629,16 @@ echo ""
 echo "── PR #577 follow-up: opt-out ordering + circuit breaker ───"
 
 # Codex P2: SKIPPED-NONE (and DEGRADED) must be honored BEFORE the staged
-# diff is hashed, so a broken diff driver cannot block the unconditional
-# operator opt-out. Force `git diff --cached` to fail via a GIT_EXTERNAL_DIFF
-# that errors out, and confirm SKIPPED-NONE still allows.
+# diff is hashed, so a broken diff configuration cannot block the unconditional
+# operator opt-out. Force `git diff --cached` to fail and confirm SKIPPED-NONE
+# still allows.
+#
+# #576 changed the injection, not the assertion. This used to force the failure
+# with GIT_EXTERNAL_DIFF=/bin/false, but the gate now hashes with --no-ext-diff
+# precisely so a hostile external driver CANNOT influence it — measured, that
+# fixture returns rc=0 today, so it would have silently stopped testing anything.
+# A bogus diff.algorithm injected via GIT_CONFIG_* still fails the pinned
+# expression (rc=128) and exercises the same ordering.
 TOTAL=$((TOTAL + 1))
 skn_tmp=$(mktemp -d)
 (
@@ -667,27 +674,29 @@ skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
 # silently swallowed as a false PASS (exactly the coverage gap the rc check
 # above now catches).
 if skn_out=$(printf '%s' "$skn_input" | \
-    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null); then
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+    bash "$GATE_SCRIPT" 2>/dev/null); then
     skn_rc=0
 else
     skn_rc=$?
 fi
 if [ "$skn_rc" -eq 0 ] && ! echo "$skn_out" | grep -q '"block"' 2>/dev/null; then
-    printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken external diff driver)\n"
+    printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken diff config)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  SKIPPED-NONE blocked by a broken diff driver (rc=%s, out: %s)\n" "$skn_rc" "$skn_out"
+    printf "  FAIL  SKIPPED-NONE blocked by a broken diff config (rc=%s, out: %s)\n" "$skn_rc" "$skn_out"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$skn_tmp"
 
-# cubic P1 (round 3 follow-up): a broken diff driver must still BLOCK, but
-# through gate_record_block_and_emit so the stuck-gate circuit breaker
+# cubic P1 (round 3 follow-up): a broken diff configuration must still BLOCK,
+# but through gate_record_block_and_emit so the stuck-gate circuit breaker
 # counts it (and its escape-hatch warning eventually fires). Reuse the same
-# GIT_EXTERNAL_DIFF=/bin/false fixture that proves SKIPPED-NONE bypasses this
+# bogus-diff.algorithm fixture that proves SKIPPED-NONE bypasses this
 # failure, but this time with a real hash marker (a shape that DOES reach
 # the STAGED_HASH assignment), and assert both that the commit is blocked
-# AND that the circuit-breaker counter incremented.
+# AND that the circuit-breaker counter incremented. (#576 swapped the
+# injection from GIT_EXTERNAL_DIFF, which --no-ext-diff now neutralizes.)
 #
 # It also asserts the marker SURVIVES. A failed hash proves nothing about the
 # marker's validity — only that we could not check it — so destroying it would
@@ -711,7 +720,8 @@ mkdir -p "$hf_tmp/.claude"
 printf '%s\n' "$(printf 'a%.0s' {1..64})" > "$hf_tmp/.claude/litmus-passed.local"
 hf_input=$(make_hook_input_cwd "git commit -m x" "$hf_tmp")
 hf_out=$(printf '%s' "$hf_input" | \
-    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null || true)
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+    bash "$GATE_SCRIPT" 2>/dev/null || true)
 hf_count=$(cat "$hf_tmp/.claude/.gate-block-count.local" 2>/dev/null || echo "")
 hf_marker_kept=no
 [[ -f "$hf_tmp/.claude/litmus-passed.local" ]] && hf_marker_kept=yes

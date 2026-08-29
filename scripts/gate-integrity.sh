@@ -79,12 +79,24 @@ done
 # Same fallback chain the rest of this repo's hashing uses: sha256sum (Linux),
 # shasum (macOS), then python3 — which is already a hard dependency of the gate
 # tooling, so this cannot end up with no hasher at all.
+#
+# The two CLI hashers read STDIN, never a filename operand. Handed a name, both
+# GNU `sha256sum` and `shasum` C-ESCAPE it — a backslash in the path prefixes the
+# whole output line with `\` (documented in `shasum --help`; `sha256sum --help`
+# notes `--zero` is what disables the escaping) — so `${out%% *}` would keep that
+# leading `\`, the 64-hex test below would reject a digest that was computed
+# perfectly well, and `hooks/gate-scripts/a\b.sh` would be unlockable by BOTH
+# `--update` and `--check`. Reading from stdin puts no filename in the output at
+# all (`<digest>  -`), so every path the enumerator accepts can actually be
+# hashed, and a leading `-` in a name likewise stops being an operand. A file
+# this shell cannot open fails the redirect, so the subshell still exits nonzero
+# and the `|| return 1` below still fires.
 sha256_of() {  # sha256_of <file>
     local out
     if command -v sha256sum >/dev/null 2>&1; then
-        out="$(sha256sum "$1")" || return 1
+        out="$(sha256sum < "$1")" || return 1
     elif command -v shasum >/dev/null 2>&1; then
-        out="$(shasum -a 256 "$1")" || return 1
+        out="$(shasum -a 256 < "$1")" || return 1
     else
         # `-I`, never bare `python3`: this runs AFTER compute_lock has cd'd INTO the
         # tree being hashed, so a repo-local `hashlib.py` would be importable and

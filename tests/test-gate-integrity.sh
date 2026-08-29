@@ -614,6 +614,41 @@ else
     assert 1 "--update records the edit as a digest change, and the check then passes (visibility, not prevention)"
 fi
 
+# ── 5b. A BACKSLASH in a locked path is hashable, not an unlockable tree ──────
+# Handed a filename operand, both GNU `sha256sum` and `shasum` C-escape it: a
+# backslash in the name prefixes the whole output line with `\`, so `${out%% *}`
+# kept that `\`, the 64-hex validation rejected a correctly computed digest, and
+# `--update` AND `--check` both died with "could not hash" on a tree that is
+# perfectly well formed. The enumeration refuses exactly ONE character class by
+# name — a NEWLINE — so every other byte it admits has to be lockable; a path
+# the producer accepts but the hasher cannot record is a tree with no reachable
+# green state. Reading the file from STDIN puts no name in the output at all.
+# Asserted in both directions: record-then-verify, then tamper-and-detect, so a
+# hasher that silently returned a constant would still fail here.
+fresh_fixture
+_bs_name='hooks/gate-scripts/back\slash.sh'
+printf '#!/usr/bin/env bash\ntrue\n' > "$_fix/$_bs_name" 2>/dev/null
+if [[ -e "$_fix/$_bs_name" ]]; then
+    _out="$("$GATE_INTEGRITY" --root "$_fix" --update 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -eq 0 ]]; then
+        assert 0 "--update records a locked path containing a backslash (no filename escaping in the digest)"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "--update records a locked path containing a backslash (no filename escaping in the digest)"
+    fi
+    "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+    assert $? "↳ and --check verifies that recorded tree"
+    printf 'tampered\n' >> "$_fix/$_bs_name"
+    "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+    assert "$(( $? == 0 ? 1 : 0 ))" "↳ and an edit to it is still DETECTED (the digest is real, not a constant)"
+    rm -f "$_fix/$_bs_name"
+else
+    assert 1 "--update records a locked path containing a backslash (fixture name unavailable)"
+    assert 1 "↳ and --check verifies that recorded tree (fixture name unavailable)"
+    assert 1 "↳ and an edit to it is still DETECTED (fixture name unavailable)"
+fi
+
 # ── 6. A missing locked DIRECTORY fails closed ────────────────────────────────
 # Deleting the directory outright, rather than a file in it, must not read as
 # "nothing to enumerate" — the same unresolvable-inputs-means-block rule.

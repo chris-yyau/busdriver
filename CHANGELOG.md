@@ -1,3 +1,10 @@
+## [2.1.3](https://github.com/chris-yyau/busdriver/compare/v2.1.2...v2.1.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **litmus:** wait for review lock before refusing marker write ([#794](https://github.com/chris-yyau/busdriver/issues/794)) ([#796](https://github.com/chris-yyau/busdriver/issues/796)) ([e2b8b1d](https://github.com/chris-yyau/busdriver/commit/e2b8b1dcc439e1968f1241e7722cfb562d39a25b))
+
 ## [2.1.2](https://github.com/chris-yyau/busdriver/compare/v2.1.1...v2.1.2) (2026-08-29)
 
 

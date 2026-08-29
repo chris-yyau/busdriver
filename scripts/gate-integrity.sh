@@ -44,8 +44,10 @@
 # invariant.
 #
 # COST, ON THE RECORD: 97 commits touched these two directories in the 90 days
-# before this landed (~1/day). Each such commit now needs `--update` in the same
-# commit. That deliberate maintenance IS the control.
+# before this landed (~1/day). Each such change now needs `--update` recorded
+# before the branch is reviewed — not necessarily in the same commit, since the
+# check compares the checked-out TREE and a regen later on the same branch still
+# verifies at HEAD. That deliberate maintenance IS the control.
 #
 #   ./scripts/gate-integrity.sh            # verify (default); rc 1 on mismatch
 #   ./scripts/gate-integrity.sh --update   # regenerate the lock
@@ -274,11 +276,20 @@ tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on que
             rm -f "$tmp"; return 1
         fi
     fi
-    while IFS= read -r -d '' f; do
-        case "$f" in *.[pP][yY][cC]) printf '%s\n' "$f" ;; esac
-    done < "$tmp" | LC_ALL=C sort -u
+    # Captured, not streamed: `rm` and a trailing `return 0` would OVERWRITE the
+    # pipeline status, so a decode or sort failure with no output would leave the
+    # caller holding an empty result and accepting tracked bytecode — the fail-open
+    # this whole function exists to prevent.
+    local found
+    if ! found="$(while IFS= read -r -d '' f; do
+                      # `(pattern)` form: inside `$( )` an unbalanced `)` ends the
+                      # substitution, so the case arm must open its own paren.
+                      case "$f" in (*.[pP][yY][cC]) printf '%s\n' "$f" ;; esac
+                  done < "$tmp" | LC_ALL=C sort -u)"; then
+        rm -f "$tmp"; return 1
+    fi
     rm -f "$tmp"
-    return 0
+    printf '%s' "$found"
 }
 
 tracked_pyc=""

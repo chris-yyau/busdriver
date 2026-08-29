@@ -75,9 +75,18 @@ GEN_FILE="$REPO_DIR/$STATE_DIR/litmus-marker-gen.local"
 # only for the write — not across the agent phase, which is what exit 3 releases it for.
 #
 # Contention is a refusal, not a wait: the other run holds the lock because it is
-# reviewing, and it will publish its own marker. The handoff is left ARMED in that
-# case (unlike the refusal below) — nothing was written, so a retry once the other run
-# finishes is the cheapest correct outcome, and the token was already armed anyway.
+# reviewing. The handoff is left ARMED in that case (unlike the refusal below) —
+# nothing was written, so a retry once the other run finishes is the cheapest correct
+# outcome, and the token was already armed anyway.
+#
+# KNOWN RESIDUAL (#794): "it will publish its own marker" holds only when that run
+# PASSES. A run that ends with findings, a timeout or an infra error publishes nothing,
+# and this already-passed review has refused too — so no marker exists and the next
+# commit is spuriously blocked until the retry above actually happens. Nothing performs
+# that retry automatically: SKILL.md's builtin flow invokes this writer once. The cost
+# is bounded at the level #790 already accepted (a re-run), so the diagnostic below
+# NAMES the retry rather than the design changing here; waiting for the lock instead is
+# tracked in #794.
 cd "$REPO_DIR"
 # shellcheck source=lib/review-lock.sh
 source "$SCRIPT_DIR/lib/review-lock.sh"
@@ -89,7 +98,11 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     _LOCK_STATE=$(review_lock_owner_state)
     echo "ERROR: Could not take the review lock — marker not written." >&2
     echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
-    echo "       Another litmus review is in flight; it publishes its own marker." >&2
+    echo "       Another litmus review is in flight. If it PASSES it publishes its own" >&2
+    echo "       marker; if it ends with findings, a timeout or an infra error it does not." >&2
+    echo "       Nothing was consumed here and the handoff is still armed, so once that run" >&2
+    echo "       finishes, re-run THIS script with the same prompt path to publish your" >&2
+    echo "       result — or re-run /litmus if the handoff is gone. (#794)" >&2
     echo "       If that owner is NOT running, the lock is an orphan — remove it yourself." >&2
     exit 1
 fi

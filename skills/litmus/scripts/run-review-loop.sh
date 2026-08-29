@@ -2490,16 +2490,33 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
     write_terminal_status setup_error
     exit 1
   fi
+  # SIDECAR FIRST, POINTER LAST. The pointer is what a marker writer looks for and
+  # claims; publishing it before its hash sidecar exists lets a concurrent writer claim
+  # a pointer whose sidecar is still missing, refuse for want of a hash, and remove the
+  # claim — after which this run creates an orphaned sidecar and reports a handoff that
+  # no longer has a pointer. Fail-closed, but a reliably lost handoff. Writing the
+  # sidecar first makes the pointer's appearance the single moment the whole handoff
+  # becomes visible.
+  #
   # Chain the two writes EXPLICITLY. `if ! ( ... )` puts the subshell in a condition
-  # context, which suspends `set -e` inside it — so without these `||`s a failed
-  # pointer write would fall through, the sidecar write would succeed, and the subshell
-  # would report success while the FIRST review still owned the pointer: reviewer A
-  # paired with hash B, the very thing this exclusivity exists to prevent. The
-  # symmetric case matters too — if the sidecar fails we must not leave a freshly
-  # created authority pointer behind, so unlink it before failing.
+  # context, which suspends `set -e` inside it — so without these `||`s a failed sidecar
+  # write would fall through, the pointer write would succeed, and the subshell would
+  # report success while no hash existed: reviewer A paired with no hash at all, or with
+  # a stale one. The symmetric case matters too — if the pointer write loses the
+  # noclobber race (another review already owns it) we must not leave this run's sidecar
+  # behind, so unlink it before failing.
   if ! ( umask 077; set -o noclobber
-         echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local" || exit 1
-         printf '%s\n' "$_handoff_hash" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || {
+         printf '%s\n' "$_handoff_hash" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || exit 1
+         echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local" || {
+             rm -f "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash"; exit 1; }
+         # Confirm the sidecar SURVIVED the pointer write. Ordering alone is not enough:
+         # require_reviewed_diff_hash() retires older builtin-review-*.hash files, and a
+         # concurrent run doing that between these two writes would publish this pointer
+         # with no sidecar behind it. Re-checking closes the pair. What remains — a
+         # retirement landing after this check — costs a lost handoff, never a bad
+         # marker: the writer refuses outright on a missing sidecar and has no re-hash
+         # fallback.
+         [ -s "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" ] || {
              rm -f "$STATE_DIR/builtin-review-prompt-path.local"; exit 1; } ) 2>/dev/null; then
     echo "❌ A builtin review handoff is already armed and unconsumed — refusing to overwrite it." >&2
     echo "   Another builtin review is in flight, or a previous one was abandoned." >&2

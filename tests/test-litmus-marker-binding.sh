@@ -908,6 +908,29 @@ else
     bad "the handoff is compared in place — a delayed writer can overwrite a newer marker"
 fi
 
+# The POINTER must be published last. It is what a marker writer looks for and claims,
+# so a pointer visible before its hash sidecar lets a concurrent writer claim it, refuse
+# for want of a hash, and remove the claim — leaving this run to create an orphaned
+# sidecar and report a handoff with no pointer. Ordering is structural: the race is real
+# but not deterministically reproducible, and a pin that always runs beats a probe that
+# sometimes does.
+sidecar_line=$(grep -n 'builtin-review-\${BUILTIN_PROMPT_FILE##\*/}.hash" || exit 1' "$PRODUCER" | head -1 | cut -d: -f1 || true)
+pointer_line=$(grep -n 'echo "\$BUILTIN_PROMPT_FILE" > "\$STATE_DIR/builtin-review-prompt-path.local"' "$PRODUCER" | head -1 | cut -d: -f1 || true)
+if [ -n "$sidecar_line" ] && [ -n "$pointer_line" ] && [ "$sidecar_line" -lt "$pointer_line" ]; then
+    ok "the handoff hash sidecar is written before the pointer that publishes it"
+else
+    bad "the handoff pointer is published before its hash sidecar — a concurrent writer can lose the handoff"
+fi
+# ...and the sidecar must be confirmed to have SURVIVED that pointer write. Ordering
+# alone leaves a window: require_reviewed_diff_hash retires older builtin-review-*.hash
+# files, so a concurrent run doing that between the two writes publishes a pointer with
+# nothing behind it.
+if grep -q '\[ -s "\$STATE_DIR/builtin-review-\${BUILTIN_PROMPT_FILE##\*/}.hash" \] ||' "$PRODUCER"; then
+    ok "the sidecar is re-confirmed after the pointer is published"
+else
+    bad "nothing re-checks the sidecar after the pointer write — a concurrent retirement strands the pointer"
+fi
+
 # Every predicate whose OUTPUT decides an authorization must be pinned, not just the
 # hashes: a constant-output driver that makes staged content look absent, or a driver
 # rigged to exit 0, would otherwise hand the excluded-only path a free pass.

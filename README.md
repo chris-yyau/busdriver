@@ -151,7 +151,7 @@ For council, fallback preserves availability but dilutes role identity (Droid fi
 | `node scripts/doctor.js` | Diagnose CLI availability and the effective reviewer for each role |
 | `scripts/design-clear.sh` | Release a pending design-review token with a durable audit event |
 | `scripts/litmus-metrics-report.sh` | Dashboard for litmus outcomes (pass rate, severity, trends) |
-| `scripts/release.sh VERSION` | Bump version across manifests, changelog, tag, push |
+| `scripts/release.sh VERSION` | Bump version across manifests, commit, tag, push (changelog is a separate step) |
 | `scripts/bump-version.sh --check` | Version drift detection (also runs in CI) |
 | `scripts/generate-changelog.sh` | Generate CHANGELOG.md from conventional commits |
 | `scripts/post-ship-doc-check.sh` | Flag stale docs after code changes |

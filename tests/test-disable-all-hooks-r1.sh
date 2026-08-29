@@ -45,7 +45,12 @@ write() {
 # read as a pass. Each case is asserted against the EXACT code it must produce.
 #
 #   0 = the key was found (paths on stdout)   1 = clean   2 = the scan failed
-scan_rc() { python3 "$SCANNER" "$1" >/dev/null 2>&1; }
+# `-I` is not decoration either. Plain `python3 script.py` puts the SCRIPT'S OWN
+# DIRECTORY first on sys.path and honours PYTHONPATH and the user site dir, so a
+# repository-controlled `tests/lib/json.py` shadows the stdlib module the scan
+# parses with — and a `loads` that returns `{}` clears every file. `-I` removes
+# all three (it implies `-E -s` and drops the script directory).
+scan_rc() { python3 -I "$SCANNER" "$1" >/dev/null 2>&1; }
 expect_rc() {
     local want="$1" root="$2" label="$3" got r
     scan_rc "$root"; got=$?
@@ -64,7 +69,7 @@ expect_not_clean() {
 
 echo "== R1: this repository never ships a hook kill switch =="
 
-_hits="$(python3 "$SCANNER" "$REPO_ROOT" 2>&1)"; _rc=$?
+_hits="$(python3 -I "$SCANNER" "$REPO_ROOT" 2>&1)"; _rc=$?
 if [[ "$_rc" -eq 1 ]]; then _r=0; else _r=1; fi
 assert "$_r" "no tracked JSON in this repo carries disableAllHooks (rc=$_rc)${_hits:+ — $_hits}"
 
@@ -219,10 +224,32 @@ write "$TMP3/clean.json" '{"permissions":{"allow":[]}}'
 must git -C "$TMP3" "${_gitopts[@]}" add -f clean.json
 must git -C "$TMP3" "${_gitopts[@]}" commit -qm clean
 GIT_DIR="$TMP3/.git" GIT_INDEX_FILE="$TMP3/.git/index" GIT_WORK_TREE="$TMP3" \
-    python3 "$SCANNER" "$TMP2" >/dev/null 2>&1
+    python3 -I "$SCANNER" "$TMP2" >/dev/null 2>&1
 _env_rc=$?
 if [[ "$_env_rc" -eq 0 ]]; then _r=0; else _r=1; fi
 assert "$_r" "an ambient GIT_DIR/GIT_INDEX_FILE cannot redirect the scan (rc=$_env_rc)"
+
+# The parser itself is a supply line. A repo-controlled `json.py` beside the
+# scanner shadows the stdlib module, and a `loads` returning `{}` clears every
+# file in the tree. Both directions are asserted, because a guard whose failure
+# has never been observed is not known to guard anything: plain `python3` IS
+# fooled by the shim, `-I` is not.
+# A regular JSON file carrying the real key, so the demonstration is about the
+# PARSER being replaced and nothing else.
+write "$TMP/config/anything.json" '{"disableAllHooks": true}'
+must g add -f config/anything.json
+must g commit -qm shimtarget
+must mkdir -p "$TMP3/shim"
+must cp "$SCANNER" "$TMP3/shim/"
+write "$TMP3/shim/json.py" 'def loads(_data): return {}'
+python3 "$TMP3/shim/scan_disable_all_hooks.py" "$TMP" >/dev/null 2>&1
+_shim_rc=$?
+if [[ "$_shim_rc" -eq 1 ]]; then _r=0; else _r=1; fi
+assert "$_r" "fixture: without -I the shadowing json.py does fool the scan (rc=$_shim_rc)"
+python3 -I "$TMP3/shim/scan_disable_all_hooks.py" "$TMP" >/dev/null 2>&1
+_iso_rc=$?
+if [[ "$_iso_rc" -eq 0 ]]; then _r=0; else _r=1; fi
+assert "$_r" "with -I the stdlib json wins and the key is still caught (rc=$_iso_rc)"
 
 echo "== the key walker is right on shapes nobody enumerated =="
 

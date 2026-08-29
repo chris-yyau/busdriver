@@ -64,16 +64,18 @@ arm_handoff() {
 }
 
 # Run the writer inside repo $1, claiming prompt path $2 (default: the armed one).
-# Sets RC and OUT.
+# Sets RC and OUT. WAIT overrides the contention wait (#794) — 0 means one attempt,
+# which is what every pre-#794 case wants so a held lock can never stall the suite.
+WAIT=0
 run_writer() {
     RC=0
-    OUT=$( (cd "$1" && bash "$WRITER" "${2-$PROMPT}") 2>&1 ) || RC=$?
+    OUT=$( (cd "$1" && BUSDRIVER_REVIEW_LOCK_WAIT="$WAIT" bash "$WRITER" "${2-$PROMPT}") 2>&1 ) || RC=$?
 }
 
 # Same, in --discard mode: retire the arming without writing a marker.
 run_discard() {
     RC=0
-    OUT=$( (cd "$1" && bash "$WRITER" --discard "${2-$PROMPT}") 2>&1 ) || RC=$?
+    OUT=$( (cd "$1" && BUSDRIVER_REVIEW_LOCK_WAIT="$WAIT" bash "$WRITER" --discard "${2-$PROMPT}") 2>&1 ) || RC=$?
 }
 
 echo "── #790 delayed builtin marker writer ───────────────────────"
@@ -153,10 +155,10 @@ rm -f "$R/.claude/litmus-passed.local"
 run_writer "$R"
 check "consumed marker: writer succeeds" "$(verdict "$RC")" "wrote"
 
-# 7. The check and the write are serialized against the ordinary PASS path: a review
-#    holding the review lock is publishing its own marker, so we refuse rather than
-#    race it. Handoff and baseline stay ARMED — nothing was written, so a retry is
-#    valid once the other run releases.
+# 7. The check and the write are serialized against the ordinary PASS path. A lock still
+#    held when the contention wait runs out (WAIT=0 here: one attempt) is a refusal.
+#    Handoff and baseline stay ARMED — nothing was written, so a retry is valid once the
+#    other run releases.
 R=$(new_repo locked)
 arm_handoff "$R"
 ln -s "pid-999999-tok790" "$R/.claude/litmus-review.lock"
@@ -263,8 +265,8 @@ check "discard refuses a re-armed handoff" "$(verdict "$RC")" "refused"
 check "re-armed handoff survives discard" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "present"
 check "re-armed baseline survives discard" "$(exists "$R/.claude/builtin-review-marker-baseline.local")" "present"
 
-# 17. Discard is serialized like the write: a held review lock refuses it too, so it can
-#     never race an exit 3 that is arming the pair while holding that lock.
+# 17. Discard is serialized like the write: a lock still held when the wait runs out
+#     refuses it too, so it can never race an exit 3 arming the pair under that lock.
 R=$(new_repo discard_locked)
 arm_handoff "$R"
 ln -s "pid-999999-tok790" "$R/.claude/litmus-review.lock"
@@ -278,6 +280,85 @@ if printf '%s' "$OUT" | grep -q "STILL ARMED"; then
     ok "contended discard names the live arming"
 else
     bad "contended discard does not warn the arming is still live: $OUT"
+fi
+
+echo ""
+echo "── #794 contention is a bounded wait ────────────────────────"
+
+# Release the lock in repo $1 after $2 seconds, in the background.
+release_after() { ( sleep "$2"; rm -f "$1/.claude/litmus-review.lock" ) & }
+
+# 18. The competing run finishes WITHOUT publishing (findings, timeout, infra error) —
+#     the motivating case. The old immediate refusal left no marker at all and the next
+#     commit was spuriously blocked. Waiting lets this already-passed review publish.
+R=$(new_repo wait_publishes)
+arm_handoff "$R"
+ln -s "pid-999999-tok794" "$R/.claude/litmus-review.lock"
+release_after "$R" 2
+WAIT=20 run_writer "$R"
+WAIT=0
+check "lock released mid-wait: writer succeeds" "$(verdict "$RC")" "wrote"
+if grep -q '^BUILTIN-[0-9a-f]\{64\}$' "$R/.claude/litmus-passed.local"; then
+    ok "marker published after waiting out the competing run"
+else
+    bad "no marker written after the lock was released"
+fi
+check "handoff consumed after a successful wait" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "gone"
+check "lock released, not left behind" "$(exists "$R/.claude/litmus-review.lock")" "gone"
+
+# 19. ...and waiting must NOT weaken #790. If the competing run PASSED and published
+#     while we waited, the generation comparison still refuses and its marker stands.
+#     This is why waiting is safe: no ordering check moved, we only retried the acquire.
+R=$(new_repo wait_then_newer)
+arm_handoff "$R"
+ln -s "pid-999999-tok794" "$R/.claude/litmus-review.lock"
+publish "$R" "publishedwhilewewaited"
+release_after "$R" 2
+WAIT=20 run_writer "$R"
+WAIT=0
+check "newer marker still refuses after a wait" "$(verdict "$RC")" "refused"
+GOT=$(cat "$R/.claude/litmus-passed.local")
+check "newer marker preserved after a wait" "$GOT" "publishedwhilewewaited"
+
+# 20. --discard waits too — the sharper half of the residual. A FAILED review that
+#     refused on contention left its own arming live, and a later call could then mint a
+#     marker off it despite the FAILED verdict.
+R=$(new_repo wait_discard)
+arm_handoff "$R"
+ln -s "pid-999999-tok794" "$R/.claude/litmus-review.lock"
+release_after "$R" 2
+WAIT=20 run_discard "$R"
+WAIT=0
+check "lock released mid-wait: discard succeeds" "$(verdict "$RC")" "wrote"
+check "discard retires the handoff after waiting" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "gone"
+check "discard retires the baseline after waiting" "$(exists "$R/.claude/builtin-review-marker-baseline.local")" "gone"
+check "discard still writes no marker" "$(exists "$R/.claude/litmus-passed.local")" "gone"
+
+# 21. A garbage BUSDRIVER_REVIEW_LOCK_WAIT must fall back to the default, not crash the
+#     comparison — bash 3.2 under set -u is unforgiving about a non-numeric operand. The
+#     lock is free here, so this returns immediately whatever the value resolves to.
+R=$(new_repo wait_garbage)
+arm_handoff "$R"
+RC=0
+OUT=$( (cd "$R" && BUSDRIVER_REVIEW_LOCK_WAIT="not-a-number" bash "$WRITER" "$PROMPT") 2>&1 ) || RC=$?
+check "garbage wait value: writer still succeeds" "$(verdict "$RC")" "wrote"
+check "garbage wait value raised no shell error" \
+    "$(printf '%s' "$OUT" | grep -c 'integer expression')" "0"
+
+# 22. The handoff vanishing mid-wait is a clean refusal, not a bare `cat` failure: the
+#     wait widens the window between the top-of-script existence check and the read.
+R=$(new_repo wait_handoff_gone)
+arm_handoff "$R"
+ln -s "pid-999999-tok794" "$R/.claude/litmus-review.lock"
+( sleep 2; rm -f "$R/.claude/builtin-review-prompt-path.local" "$R/.claude/litmus-review.lock" ) &
+WAIT=20 run_writer "$R"
+WAIT=0
+check "handoff gone mid-wait refuses" "$(verdict "$RC")" "refused"
+check "no marker minted after the handoff vanished" "$(exists "$R/.claude/litmus-passed.local")" "gone"
+if printf '%s' "$OUT" | grep -q "disappeared while waiting"; then
+    ok "vanished handoff explains itself"
+else
+    bad "vanished handoff gave no clean diagnostic: $OUT"
 fi
 
 echo ""

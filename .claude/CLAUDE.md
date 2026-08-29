@@ -65,6 +65,16 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 
 **Drift detection:** `./scripts/bump-version.sh --check` runs in CI on PRs to catch version desync.
 
+## Gate-Script Content Lock (#742)
+
+`.gate-integrity.lock` pins every file under `hooks/gate-scripts/**` and `scripts/hooks/**` by SHA-256, bar the one exemption below. **Any edit in those two directories needs `./scripts/gate-integrity.sh --update` recorded before the branch is reviewed** — the check compares the checked-out tree, so a regen in a later commit on the same branch still verifies at HEAD; what cannot happen is the branch reaching CI with the two out of sync. `tests/test-gate-integrity.sh` (first assertion) and a dedicated fail-fast `--check` step both enforce it. That is ~1 commit/day at the measured churn (97 commits touched them in the 90 days before it landed) and the maintenance IS the control.
+
+It exists because the containment suite pins the two plain-bash launcher **registrations** verbatim and nothing about their **bodies**, so `load-orchestrator.sh` or `go-post-edit.sh` could grow a `node .../blocking.js` dispatch that is named nowhere in `hooks.json` and therefore skipped by every wired-check (#737 built and refuted three in-suite fixes; the closure is the directory, so the directory is what gets pinned). `run-with-flags-shell.sh` is the same gap one directory over — its registration is shape-pinned, its body was pinned by nothing — which is why the scope is two whole directories with no extension filter. `hooks/hooks.json` is deliberately NOT locked: the containment suite's shape allowlist already owns it.
+
+Enumeration is from **disk**, not `git ls-files` (the working tree is what executes, and a `.gitignore` entry removes nothing from the lock), and it covers everything non-directory so a **symlink** parked in a locked dir is refused rather than skipped by a `-type f` filter. The one exemption is bytecode **inside** a `__pycache__` directory (Python regenerates `lib/__pycache__/` on every gate run), anchored by `-path` and not by `-name`: an unanchored `*.pyc` would exempt a **sourceless** `hooks/gate-scripts/lib/json.pyc`, which `SourcelessFileLoader` imports at `sys.path[0]` inside four gates that `sys.path.insert` that directory — shadowing stdlib `json` with no `.py` and no matching mtime needed. The pattern is fixed in the script, so widening it is itself a reviewed diff.
+
+**It is visibility, not prevention** — the same trust model as any dependency lockfile. Anyone who can edit a gate script can also run `--update`; what they cannot do is land the edit without the regen appearing in the reviewed diff. `tests/test-node-hook-containment.sh` is untouched and stays the command-side control.
+
 ## CI Workflows (`.github/workflows/`)
 
 | Workflow | Trigger | What it does |

@@ -43,7 +43,7 @@ PRODUCER_LIB="scripts/lib/exclusion-integrity.sh"
 # THE CANONICAL FORM under test. Deliberately spelled out here rather than sourced
 # from the scripts: a test that derives the expression from the code it checks
 # cannot detect the code changing. This literal is the specification.
-CANON_FLAGS='--no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index'
+CANON_FLAGS='--no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none'
 
 hash_canonical() { # $1 = repo dir
     # shellcheck disable=SC2086
@@ -331,7 +331,7 @@ fi
 # Pinning only the marker is worse than useless: a constant-output driver hides staged
 # content from the reviewer while the marker still binds the real index, so the gate
 # certifies content nobody read.
-if grep -q 'STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text' "$PRODUCER"; then
+if grep -q 'STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none' "$PRODUCER"; then
     ok "the reviewer-facing staged diff is pinned against diff drivers, not just the marker"
 else
     bad "commit-mode STAGED_DIFF is not pinned — a hostile driver can hide content from the reviewer"
@@ -340,7 +340,7 @@ fi
 # `--no-textconv` does NOT neutralize a .gitattributes `-diff` rule: a committed
 # `*.sh -diff` renders staged source as "Binary files differ", so the reviewer gets
 # nothing while the full-index-bound marker stays valid. --text forces it back.
-if grep -q 'diff --cached --no-ext-diff --no-textconv --text' "$PRODUCER"; then
+if grep -q 'diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none' "$PRODUCER"; then
     ok "reviewer-facing diffs force --text, so a \`-diff\` attribute cannot blind the reviewer"
 else
     bad "reviewer-facing diffs omit --text — a .gitattributes \`-diff\` rule hides source from review"
@@ -579,15 +579,15 @@ else
 fi
 
 # PR mode must carry the same two anti-blinding measures as commit mode.
-if grep -q 'diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}' "$PRODUCER" \
-   && grep -q 'diff --no-ext-diff --no-textconv --full-index "${mb}' "$PRODUCER"; then
+if grep -q 'diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}' "$PRODUCER" \
+   && grep -q 'diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}' "$PRODUCER"; then
     ok "PR mode forces --text for the reviewer and --full-index for its marker hash"
 else
     bad "PR mode is missing --text and/or --full-index"
 fi
 
 # ...and the pre-PR gate must agree with compute_pr_diff_hash, or every PR marker breaks.
-if grep -q 'git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD"' hooks/gate-scripts/pre-pr-gate.sh; then
+if grep -q 'git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD"' hooks/gate-scripts/pre-pr-gate.sh; then
     ok "the pre-PR gate hashes the same form as the PR marker writer"
 else
     bad "pre-PR gate and compute_pr_diff_hash disagree — every PR marker would mismatch"

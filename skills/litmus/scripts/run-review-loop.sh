@@ -252,7 +252,7 @@ compute_pr_diff_hash() {
   # own hash (hooks/gate-scripts/pre-pr-gate.sh), which is the PR-mode analogue of the
   # commit-mode four-site coupling: change one without the other and every PR marker
   # stops matching.
-  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${mb}...${tip}" 2>/dev/null) || return 1
+  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null) || return 1
   [[ -z "$diff" ]] && return 1
   printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
 }
@@ -1321,7 +1321,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # in a shell variable before any size check), then verify the capture is faithful
   # (command substitution silently drops NUL bytes, so the reviewer could be shown
   # something other than what PR_REVIEWED_DIFF_HASH binds).
-  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
     echo "❌ Could not measure the branch diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1337,7 +1337,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
     exit 2
   fi
-  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
   _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
   if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
     echo "❌ The branch diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
@@ -1409,7 +1409,7 @@ else
   # THE CANONICAL MARKER-HASH FORM — byte-identical to pre-commit-gate.sh (which
   # documents why each flag is load-bearing) and to the three sites in
   # dispatcher-commit-block.sh. Asserted by tests/test-litmus-marker-binding.sh.
-  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
+  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
     rm -f "$_INDEX_SNAPSHOT"
     echo "❌ Could not hash the staged diff — refusing to mint a review marker" >&2
     write_terminal_status setup_error
@@ -1442,7 +1442,7 @@ else
   # pipeline fails would abort the script before write_terminal_status ever ran,
   # leaving the state file stuck at PENDING with no machine-readable terminal status
   # for automated callers to read.
-  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
     echo "❌ Could not measure the staged diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1465,7 +1465,7 @@ else
     # size ceilings below behave identically). Callers key off exit 2 here.
     exit 2
   fi
-  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
     echo "❌ Could not capture the staged diff from the index snapshot — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1826,12 +1826,12 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # #576: the SAME pinned endpoints as the reviewer diff and the marker hash. This
   # decides which findings count as in-diff, so filtering against a moved ref can drop
   # real findings from a review that is bound to a different snapshot.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 else
   # #576: same pin — this drives which findings are kept as in-diff.
   # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
   # are kept as in-diff, so a blinded rendering here silently drops real findings.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re
@@ -2144,6 +2144,9 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
     # Report an honest terminal state instead, and leave no active state behind for
     # init-review-loop.sh to trip over.
     clear_iteration_history
+    # The prompt temp is already written and holds the COMPLETE PR diff; refusing
+    # without unlinking it leaks that content on every such failure.
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null
     rm -f "$STATE_FILE" 2>/dev/null
     write_terminal_status infra_failure
     exit 1

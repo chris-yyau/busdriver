@@ -280,7 +280,7 @@ MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true
 # abbreviation lets two chosen blobs share one reviewed-diff binding. This pair is the
 # PR-mode analogue of the commit-mode hash coupling: change one side only and every PR
 # marker stops matching.
-DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null || true)
 CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable

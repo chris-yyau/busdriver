@@ -413,7 +413,7 @@ run_marker_test() {
 
     # Resolve @STAGED@ against the same expression the gate and writers use.
     local staged_hash
-    staged_hash=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
+    staged_hash=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     content=${content//@STAGED@/$staged_hash}
     content=${content//@NOW@/$(date +%s)}
 
@@ -561,7 +561,7 @@ mutation_test() {
         echo "modified" >> file.txt; git add file.txt
     )
     local real mutant orig repl
-    real=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
+    real=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     orig=${real:idx:1}
     # Flip to a different hex digit so the mutant stays a well-formed 64-hex
     # string — the point is a VALID-shaped hash for the wrong diff, not a
@@ -602,7 +602,7 @@ binary_collision_test() {
     )
     # Hash the diff for blob A — the marker a real review of A would have left.
     local hash_a
-    hash_a=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
+    hash_a=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     # Now swap in DIFFERENT binary content at the SAME path.
     ( cd "$tmp_dir"; printf 'ZZZZ\003\004\005YYYY' > blob.bin; git add blob.bin )
 

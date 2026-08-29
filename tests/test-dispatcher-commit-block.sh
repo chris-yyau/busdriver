@@ -86,9 +86,9 @@ set -euo pipefail
 
 hash_staged_diff() {
     if command -v sha256sum >/dev/null 2>&1; then
-        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | sha256sum | cut -d' ' -f1
+        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1
     else
-        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | shasum -a 256 | cut -d' ' -f1
+        git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1
     fi
 }
 
@@ -1292,7 +1292,7 @@ set -euo pipefail
   printf 'exported=%s\n' "\${BUSDRIVER_REVIEW_LOCK_OWNER:-NONE}"
 } > "$lock_probe"
 mkdir -p .claude
-git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > .claude/litmus-passed.local
+git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > .claude/litmus-passed.local
 EOF
     chmod +x "$plugin_root/skills/litmus/scripts/run-review-loop.sh"
 

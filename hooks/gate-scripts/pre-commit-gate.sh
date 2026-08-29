@@ -619,6 +619,13 @@ if [ -f "$MARKER" ]; then
     #                   encodes the whole blob into the hashed stream on every
     #                   commit and every gate check; --full-index is the exact
     #                   binding at none of that cost.
+    #   --ignore-submodules=none
+    #                   `diff.ignoreSubmodules=all` is repo-controlled config, and with
+    #                   it set git OMITS staged gitlink changes from the diff entirely.
+    #                   A marker reviewed with submodule pointer A would stay valid after
+    #                   swapping it for B — the change is simply not in the hashed
+    #                   stream. Same omission blinds the reviewer-facing diffs, so they
+    #                   carry it too.
     #   -c color.ui=never -c core.quotePath=false
     #                   determinism, mirroring compute_pr_diff_hash (the PR-mode
     #                   equivalent, run-review-loop.sh:227) so both modes render
@@ -757,7 +764,7 @@ if [ -f "$MARKER" ]; then
     else
         HASH_CMD=()
     fi
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

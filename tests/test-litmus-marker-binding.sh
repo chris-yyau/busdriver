@@ -589,6 +589,22 @@ fi
 # (linking bumps it, writing bumps it, utimes cannot backdate it). This one is pinned
 # structurally rather than raced: the window is real but not deterministically
 # reproducible in a test, and a pin that always runs beats a probe that sometimes does.
+# A SYMLINK at the source path must be refused outright. O_NOFOLLOW refuses to open one,
+# and the identity comparison uses lstat rather than stat — without that, a symlink
+# planted at the source pointing back at the opened inode passes every check while the
+# real file has been renamed into the worktree, where its bytes are editable.
+ln -s "$tfd/one" "$tfd/link-to-one"
+if _excl_pin_external "$tfd/link-to-one" "$tfd/wt" "$tfd/symlink-copy" >/dev/null 2>&1; then
+    bad "a symlink was accepted as the exclusion logic source"
+else
+    ok "a symlink at the source path is refused by the pinned read"
+fi
+if grep -q 'ps = os.lstat(src)' "$PRODUCER_LIB" && ! grep -q 'ps = os.stat(src)' "$PRODUCER_LIB"; then
+    ok "the identity comparison uses lstat, so a symlink cannot stand in for its target"
+else
+    bad "the identity comparison follows symlinks — a symlink to the opened inode satisfies it"
+fi
+
 post_missing=""
 grep -q 'st2 = os.fstat(fd)' "$PRODUCER_LIB" || post_missing="$post_missing re-fstat"
 grep -q 'if st2.st_nlink != 1:' "$PRODUCER_LIB" || post_missing="$post_missing nlink"

@@ -313,14 +313,21 @@ try:
     if st.st_nlink != 1:
         sys.exit(3)
     ident = (st.st_dev, st.st_ino)
-    ps = os.stat(src)
+    # lstat, NEVER stat. os.open used O_NOFOLLOW, so the descriptor is the real file —
+    # but a following stat would accept a SYMLINK standing at src that points back at
+    # that same inode. That is a live attack, not a nicety: rename the opened file into
+    # the worktree, drop a symlink to it at src, and stat(src) still reports the matching
+    # inode while dirname(src) stays external and nlink stays 1 — every check passes for
+    # a file that is now worktree-editable. lstat describes the symlink itself, whose
+    # inode cannot match, so the swap is refused.
+    ps = os.lstat(src)
     if (ps.st_dev, ps.st_ino) != ident:
         sys.exit(4)
     real_dir = os.path.realpath(os.path.dirname(src))
     wt = wt_real.rstrip("/")
     if real_dir == wt or real_dir.startswith(wt + "/"):
         sys.exit(5)
-    ps = os.stat(src)
+    ps = os.lstat(src)
     if (ps.st_dev, ps.st_ino) != ident:
         sys.exit(6)
     with open(dst, "wb") as out:

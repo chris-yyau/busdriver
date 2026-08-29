@@ -4,11 +4,18 @@
 # repo-injected exported `cat` could return an attacker-chosen 64-hex value after the
 # index moved, making this writer emit BUILTIN-<current unreviewed diff> even though the
 # reviewer saw the earlier prompt — so this file must never run with those functions
-# imported. SKILL.md invokes it as `bash -p <script>`, which is the authoritative hop;
-# the re-exec immediately below is the fallback for any other caller, and its own `exec`
-# is shadowable. The shebang deliberately does NOT carry -p: this script is run as
-# `bash <script>`, so a shebang would not apply, and pinning /bin/bash there would
-# downgrade macOS to bash 3.2. See run-review-loop.sh for the full reasoning.
+# imported. The protection is layered OUTSIDE-IN, and only the outer layers are
+# authoritative:
+#   1. The `#!/bin/bash -p` shebang on line 1, matching the gates, the producer and the
+#      dispatcher. The kernel applies it, so nothing in the environment can shadow it —
+#      but it only takes effect when the file is EXECUTED directly.
+#   2. The explicit `-p` at the call site, which is the hop that actually happens:
+#      SKILL.md invokes this as `/bin/bash -p <script>`, which bypasses the shebang. That
+#      `-p` is authoritative and must never be dropped to a plain `bash`.
+#   3. The re-exec immediately below — a last-resort fallback for a caller that did
+#      neither. It is the WEAKEST layer: by the time it runs, bash has already processed
+#      BASH_ENV and imported exported functions, so its own `exec` is shadowable.
+# See run-review-loop.sh for the full reasoning.
 if [[ "$-" != *p* ]]; then
     # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
     # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding

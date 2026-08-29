@@ -96,7 +96,7 @@ exclusion_lexical_collapse() {
 #     any gitlink on this path is anomalous — reject fail-closed.
 # $1 = worktree root, $2 = path relative to it, $3 = noun for the error message.
 exclusion_reject_untrusted_components() {
-    local _root="$1" _rel="$2" _what="$3" _prefix="" _seg _segs _mode
+    local _root="$1" _rel="$2" _what="$3" _prefix="" _seg _segs _mode _stage_rows
     IFS=/ read -r -a _segs <<< "$_rel"
     for _seg in "${_segs[@]}"; do
         [[ -z "$_seg" || "$_seg" == "." ]] && continue
@@ -117,9 +117,20 @@ exclusion_reject_untrusted_components() {
         # (CodeRabbit, PR #282); an empty _mode from a SUCCESSFUL run (prefix has no
         # exact index entry — a normal dir or untracked component) is legitimately not
         # a gitlink.
-        if ! _mode=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null \
-                | awk -F'\t' -v p="$_prefix" '$2==p{split($1,h," "); print h[1]}'); then
+        #
+        # git and awk run as SEPARATE steps, not as a pipeline. A pipeline reports only
+        # awk's status unless the CALLER happens to have enabled `pipefail`, and this is
+        # a shared library sourced from several places — so a failing `git ls-files`
+        # would be masked by awk's success, leave _mode empty, and silently skip the
+        # gitlink check. The fail-closed intent above must not depend on a shell option
+        # set outside this file (CodeRabbit, PR #795).
+        if ! _stage_rows=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null); then
             _excl_fail "judgment" "excluded-only marker but could not verify the index mode of in-worktree path component '$_prefix' of the $_what (git ls-files failed); rejecting fail-closed"
+            return 1
+        fi
+        if ! _mode=$(printf '%s\n' "$_stage_rows" \
+                | awk -F'\t' -v p="$_prefix" '$2==p{split($1,h," "); print h[1]}'); then
+            _excl_fail "judgment" "excluded-only marker but could not verify the index mode of in-worktree path component '$_prefix' of the $_what (index-mode parse failed); rejecting fail-closed"
             return 1
         fi
         if [[ "$_mode" == "160000" ]]; then

@@ -293,10 +293,19 @@ printf 'AAAA\000\001\002BBBB' > "$t3/blob.bin"; git -C "$t3" add blob.bin
 idx_line=$(git -C "$t3" $CANON_FLAGS | grep -m1 '^index ' || echo "")
 sha_pair=${idx_line#index }
 sha_old=${sha_pair%%..*}
-if [ "${#sha_old}" -eq 40 ]; then
-    ok "a binary path's index line carries FULL 40-hex blob SHAs (abbreviation would be 7)"
+# Full-width is object-format dependent (SHA-1 = 40 hex, SHA-256 = 64). `new_repo` runs
+# a plain `git init`, so the fixture inherits the machine's `init.defaultObjectFormat`
+# and a hardcoded 40 fails on a SHA-256 host even though --full-index worked. The
+# invariant under test is "not the 7-char abbreviation" — derive the width instead
+# (CodeRabbit, PR #795). An older git without --show-object-format falls back to 40.
+case "$(git -C "$t3" rev-parse --show-object-format 2>/dev/null)" in
+    sha256) full_hex=64 ;;
+    *)      full_hex=40 ;;
+esac
+if [ "${#sha_old}" -eq "$full_hex" ]; then
+    ok "a binary path's index line carries FULL ${full_hex}-hex blob SHAs (abbreviation would be 7)"
 else
-    bad "binary index line is not full-width: '$idx_line'"
+    bad "binary index line is not full-width (expected $full_hex hex): '$idx_line'"
 fi
 mkdir -p "$t3/.claude"
 hash_canonical "$t3" > "$t3/.claude/litmus-passed.local"

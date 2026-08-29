@@ -628,6 +628,30 @@ mutation_test "...at the END blocks" 63
 echo ""
 echo "── PR #577 follow-up: opt-out ordering + circuit breaker ───"
 
+# Precondition for BOTH broken-diff-config fixtures below.
+#
+# The injection is `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`,
+# which git only honours from 2.31 onward. On an older git the variables are ignored,
+# `git diff --cached` SUCCEEDS, and both fixtures pass while exercising nothing — the
+# same silent-no-op that retired the previous `GIT_EXTERNAL_DIFF=/bin/false` injection.
+# Assert the injection actually breaks the pinned expression before relying on it, and
+# fail the suite when it does not (CodeRabbit, PR #795).
+assert_broken_diff_config() {
+    # $1 = repo dir, $2 = fixture name for the failure message
+    local _bdc_dir="$1" _bdc_what="$2" _bdc_rc=0
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+        git -C "$_bdc_dir" -c color.ui=never -c core.quotePath=false \
+        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
+        >/dev/null 2>&1 || _bdc_rc=$?
+    if [ "$_bdc_rc" -eq 0 ]; then
+        TOTAL=$((TOTAL + 1))
+        printf "  FAIL  precondition: the bogus diff.algorithm injection does NOT break the pinned diff expression for %s (git too old for GIT_CONFIG_COUNT? need >= 2.31) — the fixture would test nothing\n" "$_bdc_what"
+        FAIL=$((FAIL + 1))
+        return 1
+    fi
+    return 0
+}
+
 # Codex P2: SKIPPED-NONE (and DEGRADED) must be honored BEFORE the staged
 # diff is hashed, so a broken diff configuration cannot block the unconditional
 # operator opt-out. Force `git diff --cached` to fail and confirm SKIPPED-NONE
@@ -655,6 +679,7 @@ skn_tmp=$(mktemp -d)
 )
 mkdir -p "$skn_tmp/.claude"
 printf 'SKIPPED-NONE-1754400000\n' > "$skn_tmp/.claude/litmus-passed.local"
+assert_broken_diff_config "$skn_tmp" "SKIPPED-NONE" || true
 skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
 # cubic P3 (round 5 follow-up): assert the gate's exit status too, not just
 # the absence of "block" in its output. The SKIPPED-NONE arm exits 0 with no
@@ -718,6 +743,7 @@ hf_tmp=$(mktemp -d)
 )
 mkdir -p "$hf_tmp/.claude"
 printf '%s\n' "$(printf 'a%.0s' {1..64})" > "$hf_tmp/.claude/litmus-passed.local"
+assert_broken_diff_config "$hf_tmp" "hash-marker blocking" || true
 hf_input=$(make_hook_input_cwd "git commit -m x" "$hf_tmp")
 hf_out=$(printf '%s' "$hf_input" | \
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \

@@ -21,10 +21,18 @@ Two decisions here are load-bearing and neither is cosmetic:
 """
 
 import json
+import os
 import subprocess
 import sys
 
 KEY = "disableAllHooks"
+
+# `git -C <root>` does NOT bind git to <root>: GIT_DIR, GIT_INDEX_FILE,
+# GIT_WORK_TREE, GIT_OBJECT_DIRECTORY and their siblings all outrank it, so an
+# ambient one aims the scan at a different repository — or a different index —
+# and it reports clean about a tree it never read. Everything `GIT_*` is dropped
+# rather than enumerated, because the enumeration is the part that goes stale.
+GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
 def carries_key(node):
@@ -48,9 +56,13 @@ def carries_key(node):
 def git(root, *args):
     """Run git under `root`, raising on any non-zero so it can never look clean."""
     done = subprocess.run(
-        ["git", "-C", root, *args],
+        # `--no-replace-objects`: a refs/replace/ entry rewrites what an object
+        # id resolves to, so without it "the blob named in the index" and "what
+        # cat-file prints" are not the same content.
+        ["git", "--no-replace-objects", "-C", root, *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=GIT_ENV,
     )
     if done.returncode != 0:
         raise RuntimeError(

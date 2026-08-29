@@ -72,8 +72,14 @@ echo "== the scan actually fires (a guard never seen failing is not a guard) =="
 TMP="$(mktemp -d)"; TMP2="$(mktemp -d)"; trap 'rm -rf "$TMP" "$TMP2"' EXIT
 # Functions, not command strings: a `$G` expanded unquoted splits on a TMPDIR
 # containing a space and silently operates on some other path.
-g()  { git -C "$TMP"  -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c init.defaultBranch=main "$@"; }
-g2() { git -C "$TMP2" -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c init.defaultBranch=main "$@"; }
+# `core.hooksPath=` is not decoration: the README this branch adds recommends a
+# global one as R1's mitigation, and a global hook that rejects `disableAllHooks`
+# would abort the very fixture commits that plant it — the suite would fail in
+# exactly the environment it documents. Emptying it detaches the fixtures.
+_gitopts=(-c user.email=t@t -c user.name=t -c commit.gpgsign=false
+          -c init.defaultBranch=main -c core.hooksPath=)
+g()  { git -C "$TMP"  "${_gitopts[@]}" "$@"; }
+g2() { git -C "$TMP2" "${_gitopts[@]}" "$@"; }
 
 must g init -q .
 must mkdir -p "$TMP/.claude" "$TMP/config"
@@ -195,6 +201,22 @@ _tracked="$(g2 ls-files -- '*.json' | wc -l | tr -d ' ')"
 if [[ "$_tracked" == "0" ]]; then _r=0; else _r=1; fi
 assert "$_r" "fixture: no *.json path is tracked at all (a globbed scan sees nothing)"
 expect_rc 0 "$TMP2" "a .claude tracked as a directory symlink is not cleared"
+
+# `git -C <root>` is not a binding. GIT_DIR and GIT_INDEX_FILE outrank it, so an
+# ambient pair aimed at a clean repository would answer "clean" about a tree the
+# scan never opened — the quietest fail-open available. TMP2 is dirty; ask about
+# it while the environment points somewhere spotless.
+TMP3="$(mktemp -d)"
+must git -C "$TMP3" "${_gitopts[@]}" init -q .
+write "$TMP3/clean.json" '{"permissions":{"allow":[]}}'
+must git -C "$TMP3" "${_gitopts[@]}" add -f clean.json
+must git -C "$TMP3" "${_gitopts[@]}" commit -qm clean
+GIT_DIR="$TMP3/.git" GIT_INDEX_FILE="$TMP3/.git/index" GIT_WORK_TREE="$TMP3" \
+    python3 "$SCANNER" "$TMP2" >/dev/null 2>&1
+_env_rc=$?
+if [[ "$_env_rc" -eq 0 ]]; then _r=0; else _r=1; fi
+assert "$_r" "an ambient GIT_DIR/GIT_INDEX_FILE cannot redirect the scan (rc=$_env_rc)"
+rm -rf "$TMP3"
 
 echo "== the key walker is right on shapes nobody enumerated =="
 

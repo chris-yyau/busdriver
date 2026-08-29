@@ -527,9 +527,15 @@ decision rather than a drift:
   (`sh -c ':' <(printf 'rm -rf src')`). The splitter breaks on `(`, so a substitution
   arrives already torn off its own stage, and binding the two back together needs positional
   bookkeeping the splitter does not keep. Scoped by rarity instead: the candidate walk runs
-  only once a process substitution is present, so an ordinary command pays nothing.
+  only once a process substitution is present, so an ordinary command pays nothing. The
+  arity-free candidate test is what keeps the OTHER direction sound — an explicit script
+  operand does not un-name the shell, so `bash /dev/fd/3 3< <(payload)` is still scanned.
+  Pinned, because that is not what a reader expects an operand to do.
 - `>(...)` takes the whole command as its producer, the same trade the indirection rule
-  already makes and for the same reason.
+  already makes and for the same reason, so a write verb sitting in that command as plain
+  DATA is raw-scanned: `grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')` blocks, because
+  proving that a `-c` shell will not read stdin as a program is the arity table this module
+  refuses.
 
 `marker_check._split_with_ops` carries the backtick fix too — the same defect was verified in
 that copy (`printf '<helper>' | echo `true && bash`` classified `OK`), and the two are

@@ -3595,9 +3595,11 @@ check "...including when that operand itself ends in .py" block \
 check "the helper as the profiled script itself is still blocked" block \
     "$(bash_decision "python3 -m pdb hooks/gate-scripts/lib/lease_slot.py")"
 
-# ── #563: two transports the producer scan could not see ────────────────────
+# ── #563: one new transport, and a splitter defect that hid a known one ─────
 # Both verified EXECUTING against real bash before being fixed, and both classified as a
-# read: `is_file_mod` returned False while the removal happened.
+# read: `is_file_mod` returned False while the removal happened. Only the SECOND is a new
+# transport; the first is a splitter defect that discarded the producer of a pipe this scan
+# had recognised since #557 -- the distinction ADR 0032's corrected revisit trigger draws.
 echo "── #563: backtick spans and process-substitution producers ──"
 
 # 1. OPERATORS INSIDE A BACKTICK SUBSTITUTION are not outer pipeline separators. The
@@ -3675,6 +3677,29 @@ check "a substitution body that writes nothing stays allowed" allow \
 # named anywhere in the command puts every `<(...)` body under the raw scan.
 check "RESIDUAL over-block (accepted): a shell elsewhere in the command widens the scan" block \
     "$(bash_decision "sh -c ':' <(printf 'rm -rf src')")"
+# The SECOND documented over-block, pinned for the same reason: an output substitution takes
+# the WHOLE command as its producer, so a write verb sitting in that command as plain DATA
+# is raw-scanned. `bash -c 'wc -l'` cannot read a program from stdin, but proving that means
+# the option-arity table this module refuses everywhere -- so grep's quoted pattern blocks.
+check "RESIDUAL over-block (accepted): an output substitution scans the whole command" block \
+    "$(bash_decision "grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')")"
+# ...and it is the SHELL in the body that triggers it. Asserted against the CLASSIFIER
+# rather than the gate: the gate has its own whole-command redirect check, which blocks any
+# `>` spelling regardless, so the gate cannot show what this rule did or did not do.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+print(cmdword.is_file_mod("grep -n \047rm -rf src\047 notes.txt > >(cat -n)"))')" == "False" ]]; then
+    ok "a non-shell substitution body does not widen the scan"
+else
+    no "a non-shell substitution body does not widen the scan" "classifier returned True"
+fi
+# An input substitution bound to a NON-ZERO descriptor and named back as the script operand.
+# The candidate test is arity-free by design (ADR 0032), so the explicit `/dev/fd/3` operand
+# does not un-name the shell: the stage still says `bash`, and the body is still scanned.
+# Verified executing, and pinned because a reader of `_may_read_program_from_stdin` may
+# reasonably expect an operand to exempt the stage -- it does not, deliberately.
+check "a substitution bound to a numbered fd and named as the operand is scanned" block \
+    "$(bash_decision "bash /dev/fd/3 3< <(printf 'rm -rf src')")"
 # INDIRECTION withdraws the stage contract on this transport too, and the first cut of
 # #563 missed it: the whole-command widening was keyed on a literal `|`, which a process
 # substitution does not have -- so a NAME could hide either end of it. Both verified

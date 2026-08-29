@@ -18,9 +18,12 @@
 set -euo pipefail
 BUILTIN_PROMPT_PATH="${1:-}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
-# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
-# the "$REPO_DIR/$STATE_DIR" joins below resolve to the configured state dir.
-case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Constrain to a safe relative name (reject leading-hyphen/absolute/traversal/unsafe
+# chars) so the "$REPO_DIR/$STATE_DIR" joins below resolve to the configured state dir.
+# The pattern must stay byte-identical to run-review-loop.sh and review_lock_path: a
+# value they normalize to .claude but this script accepts (e.g. "-foo") would take the
+# .claude review lock while reading a handoff and baseline that live nowhere.
+case "$STATE_DIR" in ""|-*|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 

@@ -218,6 +218,20 @@ else
     bad "run-review-loop.sh never writes builtin-review-marker-baseline.local"
 fi
 
+# 14. BUSDRIVER_STATE_DIR normalization must agree with run-review-loop.sh and
+#     review_lock_path, which both reject a leading hyphen. A writer that accepted
+#     "-foo" while they normalized it to ".claude" would take the .claude review lock
+#     and then look for its handoff and baseline under "-foo", where nothing was ever
+#     armed — so every delayed write refuses. Behavioural, not a pattern diff: the
+#     writer must find the .claude handoff and publish the .claude marker.
+R=$(new_repo hyphenstate)
+arm_handoff "$R"
+RC=0
+OUT=$( (cd "$R" && BUSDRIVER_STATE_DIR=-foo bash "$WRITER" "$PROMPT") 2>&1 ) || RC=$?
+check "leading-hyphen state dir: writer succeeds" "$(verdict "$RC")" "wrote"
+check "marker published under .claude" "$(exists "$R/.claude/litmus-passed.local")" "present"
+check "no -foo state dir created" "$(exists "$R/-foo")" "gone"
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

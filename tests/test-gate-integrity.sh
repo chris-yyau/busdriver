@@ -439,6 +439,49 @@ else
     assert 1 "a TRACKED .pyc under a locked directory fails the check (no fixture tempdir)"
 fi
 
+# ── 4e-bis. An ORPHAN branch is a queryable repository, not a query failure ───
+# `git switch --orphan` leaves HEAD unborn while other refs still carry commits.
+# Gating the HEAD half of the tracked-bytecode query on "does the repository have
+# commits anywhere" (rev-list --all) rather than on "does HEAD resolve" made
+# `ls-tree ... HEAD` die with "Not a valid object name HEAD" and failed BOTH modes
+# on a tree with nothing wrong with it. The index half still covers this state.
+_orph="$(mktemp -d)"
+if [[ -n "$_orph" && -d "$_orph" ]]; then
+    git -C "$_orph" init -q 2>/dev/null
+    git -C "$_orph" config user.email t@t.invalid 2>/dev/null
+    git -C "$_orph" config user.name t 2>/dev/null
+    printf 'base\n' > "$_orph/base.txt"
+    git -C "$_orph" add -A 2>/dev/null
+    git -C "$_orph" commit -qm "base" 2>/dev/null
+    # After the switch: `rev-list -n1 --all` is NONEMPTY (the base commit is still
+    # reachable through the original branch) while HEAD itself is unborn. The switch
+    # also EMPTIES the working tree, so the locked directories are populated after it
+    # — an empty listing is refused for its own reasons and would not test this.
+    git -C "$_orph" switch -q --orphan fresh 2>/dev/null
+    mkdir -p "$_orph/hooks" "$_orph/scripts"
+    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_orph/hooks/gate-scripts"
+    cp -R "$REPO_ROOT/scripts/hooks" "$_orph/scripts/hooks"
+    _unborn=1
+    git -C "$_orph" rev-parse -q --verify HEAD >/dev/null 2>&1 && _unborn=0
+    [[ -n "$(git -C "$_orph" rev-list -n1 --all 2>/dev/null)" ]] || _unborn=0
+    if [[ "$_unborn" -eq 1 ]]; then
+        "$GATE_INTEGRITY" --root "$_orph" --update >/dev/null 2>&1
+        assert $? "--update succeeds on an orphan branch (unborn HEAD, commits on another ref)"
+        _out="$("$GATE_INTEGRITY" --root "$_orph" --check 2>&1)"; _rc=$?
+        if [[ "$_rc" -eq 0 ]]; then
+            assert 0 "↳ and --check verifies it rather than reporting a git query failure"
+        else
+            printf '  ↳ output: %s\n' "$_out"
+            assert 1 "↳ and --check verifies it rather than reporting a git query failure"
+        fi
+    else
+        printf '  ↳ SKIP: this git does not produce the unborn-HEAD-with-commits state\n'
+    fi
+    rm -rf "$_orph"
+else
+    assert 1 "--update succeeds on an orphan branch (no fixture tempdir)"
+fi
+
 # ── 4f. --update leaves the lock world-readable ───────────────────────────────
 # The atomic write goes through mkstemp, which creates 0600. A bare rename would
 # hand the tracked lock that mode and make it unreadable to another account in a

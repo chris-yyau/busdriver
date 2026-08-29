@@ -261,17 +261,38 @@ git_clean() {  # git_clean <args...> — git with the repo-selecting env strippe
 # reason the containment suite folds: this filesystem is case-insensitive, so `MOD.PYC`
 # loads as `mod.pyc`.
 tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on query failure
-    local r="$1" tmp f commits
-    # Any nonzero from the HEAD probe used to read as "a repository with no commits",
-    # silently swallowing a real query failure. `rev-list -n1 --all` separates them:
-    # it exits 0 with EMPTY output when there are genuinely no commits, and nonzero
-    # when the query itself failed.
-    commits="$(git_clean -C "$r" rev-list -n1 --all)" || return 1
+    local r="$1" tmp f head_ref probe_rc
+    # The HEAD half is gated on HEAD RESOLVING, not on the repository having commits
+    # SOMEWHERE. `rev-list -n1 --all` answered the second question and was read as the
+    # first: on a legitimate orphan branch (`git switch --orphan fresh`) another ref
+    # still carries commits while this HEAD is unborn, so `--all` came back nonempty
+    # and `ls-tree ... HEAD` died with "Not a valid object name HEAD" — failing both
+    # `--check` and `--update` on a perfectly queryable repository.
+    #
+    # `rev-parse -q --verify HEAD` asks about HEAD itself and still separates the two
+    # outcomes the old probe was chosen to separate: exit 1 is "HEAD does not resolve"
+    # (nothing to read), and any OTHER nonzero — an unreadable `packed-refs`, a
+    # malformed HEAD — is a real failure that must not be swallowed.
+    #
+    # Deliberately plain `HEAD`, never `HEAD^{commit}`: the peel form ALSO exits 1
+    # when the ref resolves but its object is missing, which would turn a corrupt
+    # repository into a silent skip. The plain form resolves there (exit 0), reaches
+    # `ls-tree`, and fails loudly.
+    #
+    # Exit 1 is not exclusively "unborn" — an unreadable LOOSE `refs/heads` also
+    # yields it. That is not a regression: `rev-list -n1 --all` returned exit 0 with
+    # EMPTY output in the same state, so it skipped the HEAD half there too. The
+    # index half below still runs, and `rev-parse --git-dir` has already passed.
+    head_ref="$(git_clean -C "$r" rev-parse -q --verify HEAD)" || {
+        probe_rc=$?
+        [[ $probe_rc -eq 1 ]] || return 1
+        head_ref=""
+    }
     tmp="$(mktemp)" || return 1
     if ! git_clean -C "$r" ls-files -z -- "${LOCKED_DIRS[@]}" > "$tmp"; then
         rm -f "$tmp"; return 1
     fi
-    if [[ -n "$commits" ]]; then
+    if [[ -n "$head_ref" ]]; then
         if ! git_clean -C "$r" ls-tree -r -z --name-only HEAD -- "${LOCKED_DIRS[@]}" >> "$tmp"; then
             rm -f "$tmp"; return 1
         fi

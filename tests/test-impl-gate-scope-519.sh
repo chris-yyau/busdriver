@@ -57,6 +57,29 @@ check() {   # <name> <expected: allow|block> <actual-output>
     else no "$name [check #$CHECK_N]" "expected=$expected got=$got"; fi
 }
 
+# PREFLIGHT. The forge cases hand the gate a marker-write as TEXT, and a malformed one can
+# be quoted so that THIS shell runs it instead (one was). The trap below FAILS the run if a
+# file is sitting at the marker path at exit -- which only means something if none was there
+# to begin with, so the suite refuses to start with one. It costs nothing real: a skip file
+# present here means a gate is CURRENTLY bypassed in this checkout, which is not a state to
+# run a gate suite in. `-L` as well as `-e`, so a DANGLING symlink at that path --
+# operator-controlled state that `-e` reports as absent -- does not slip past. And nothing
+# here deletes: the file is the operator, and this check only declines to proceed past it.
+#
+# ORDER IS LOAD-BEARING, twice, and observing it is what proved both. Placed after the trap
+# was installed, this check's own `exit 1` fired the trap, which back then DRAINED the
+# operator file -- destroying exactly the state the refusal protects. Placed after `$WORK`
+# was created, every refusal leaked the fixture directory, because the trap that removes it
+# is not installed yet. So it runs before both.
+if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || -L "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
+    printf "  FAIL  refusing to run: a skip file already exists at\n        %s\n" \
+           "$REPO_ROOT/.claude/skip-litmus.local" >&2
+    printf "        This suite hands the gate marker-writes as TEXT and FAILS if one\n" >&2
+    printf "        appears, so it will not start while a file is already there -- and it\n" >&2
+    printf "        never deletes it. Remove or spend it yourself, then re-run.\n" >&2
+    exit 1
+fi
+
 # ── A throwaway repo with ONE armed (pending) design-review marker ───────────
 # Everything below needs a pending review, or the gate fast-allows and proves
 # nothing. Built once and reused; each test resets the skip/lease state.
@@ -68,8 +91,6 @@ fi
 # Recorded BEFORE anything runs, so the cleanup below can leave an operator's PRE-EXISTING
 # skip file alone. It is a snapshot, not proof of ownership -- a concurrent session could
 # touch the file mid-run -- so nothing here claims the suite created what it finds.
-_MARKER_PRE=no
-[[ -e "$REPO_ROOT/.claude/skip-litmus.local" ]] && _MARKER_PRE=yes
 
 # ON EXIT, not merely at the end of the forge section. Every forge case hands the gate a
 # marker-write as TEXT; a malformed one can be quoted so that THIS shell runs it instead
@@ -78,33 +99,30 @@ _MARKER_PRE=no
 # `skip-marker-cleared` event; removal only ever makes the next gate STRICTER.
 _suite_cleanup() {
     local rc=$?
-    # THE DRAIN GOES FIRST. Deleting the fixture directory is housekeeping; removing a live
-    # gate bypass is not. With the `rm -rf` ahead of it, a deletion that hangs, is
-    # interrupted, or terminates the trap would skip the drain entirely -- in exactly the
-    # early-exit case this trap exists to cover.
-    if [[ "$_MARKER_PRE" != yes && -e "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
-        local drain_rc=0
-        bash "$REPO_ROOT/scripts/design-clear.sh" --skip skip-litmus.local --yes \
-            >/dev/null 2>&1 || drain_rc=$?
-        # VERIFIED, not assumed, and on BOTH signals. Swallowing the drain's failure here
-        # would leave the very bypass this trap exists to remove, silently and after the run
-        # -- the worst place for it. The file's absence alone is not enough either: a drain
-        # can remove the marker and still fail its AUDIT write, which leaves the removal
-        # unrecorded. Either signal failing is louder than the suite's own result and forces
-        # a non-zero exit.
-        if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || "$drain_rc" -ne 0 ]]; then
-            printf "\n  !! A bypass marker appeared during this run and the audited drain FAILED (rc=%s):\n" \
-                   "$drain_rc" >&2
-            printf "     %s\n     Check it and remove it before running any gate.\n" \
-                   "$REPO_ROOT/.claude/skip-litmus.local" >&2
-            rc=1
-        fi
+    # REPORT, NEVER DELETE. Earlier cuts drained the marker here, which meant deciding
+    # whether the file was the suite to remove -- and every ownership test failed: bare
+    # existence, then inode plus mtime, then a start-time absence check that a concurrent
+    # writer can defeat at any point AFTER it runs. The identity of a path is not something
+    # a shell script establishes, and a test that deletes operator state it cannot prove it
+    # owns is a worse failure than the one it guards against. So the check is loud instead
+    # of destructive: it names the path, forces a non-zero exit, and leaves the file for a
+    # human. The suite REFUSES TO START when one is already there (above), so this firing
+    # means one appeared during the run.
+    if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || -L "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
+        printf "\n  !! A bypass marker is present at exit:\n     %s\n" \
+               "$REPO_ROOT/.claude/skip-litmus.local" >&2
+        printf "     The suite refuses to start with one, so it appeared during this run --\n" >&2
+        printf "     most likely a test whose payload THIS shell executed. It has NOT been\n" >&2
+        printf "     removed: inspect it, then drain it with the audited helper\n" >&2
+        printf "       bash scripts/design-clear.sh --skip <name>\n" >&2
+        rc=1
     fi
     rm -rf "$WORK"
     trap - EXIT
     exit "$rc"
 }
 trap _suite_cleanup EXIT
+
 git -C "$WORK" init -q 2>/dev/null
 git -C "$WORK" config user.email t@t.t
 git -C "$WORK" config user.name t
@@ -3698,6 +3716,46 @@ check "a shell inside an output process substitution is fed too" block \
 # An unbalanced `<(` is unreadable, and unreadable fails CLOSED.
 check "an unterminated process substitution falls back to the raw scan" block \
     "$(bash_decision "bash < <(printf 'rm -rf src'")"
+# A `case` PATTERN terminator is a bare `)` with no opener, so the quote-aware paren match
+# truncates at `x)` and scans only the harmless prefix while bash hands the payload behind
+# it to the shell. Verified executing. Which `)` bash treats as the close is
+# context-sensitive, so this is not modelled -- unbalanced parens fail CLOSED, the same exit
+# `)#` and the `$(case ...)` sibling already take.
+check "...and a rebalancing paren elsewhere cannot re-open it" block \
+    "$(bash_decision "bash < <(case x in x) printf 'rm -rf src';; esac) ; : \\(")"
+check "a case pattern inside a substitution does not truncate the scan" block \
+    "$(bash_decision "bash < <(case x in x) printf 'rm -rf src';; esac)")"
+check "...while a balanced inert paren in a body stays allowed" allow \
+    "$(bash_decision 'bash < <(echo ")")')"
+# ...and a `>` after a WORD character is a comparison, not a redirect: `$((x>(bash)))` is
+# arithmetic. A leading fd is still a real redirect, which is why the test is
+# letters-and-underscore rather than alphanumeric.
+# Asserted against the CLASSIFIER: the gate has its own whole-command checks that block a
+# double-quoted `rm -rf` regardless, so only the classifier can show what this rule did.
+# EMPTY-EXPANSION CONCATENATION. Bash joins an empty expansion to a process substitution,
+# so both of these feed the payload to the shell -- verified executing. A word-boundary
+# guard in front of the operator was written to spare the arithmetic over-block below, and
+# it read the `"` and the `$` as ordinary word characters and skipped the substitution
+# entirely. It was DELETED: a guard that exists only for precision and costs a fail-open is
+# not a trade this module makes.
+check "an empty quoted prefix does not hide an output substitution" block \
+    "$(bash_decision "printf 'rm -rf src' > \"\">(bash)")"
+check "...nor an empty variable one" block \
+    "$(bash_decision "E=; printf 'rm -rf src' > \$E>(bash)")"
+# RESIDUAL over-block (accepted), which is the price of that deletion: inside arithmetic a
+# `>` is a COMPARISON, not a redirect, but telling the two apart is the guard that just
+# failed. Asserted against the CLASSIFIER because the gate blocks the double-quoted
+# `rm -rf` regardless, so only the classifier can show what this rule did.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+print(cmdword.is_file_mod("grep -n \"rm -rf src\" notes.txt $((x>(bash)))"))')" == "True" ]]; then
+    ok "RESIDUAL over-block (accepted): arithmetic comparison reads as a substitution"
+else
+    no "RESIDUAL over-block: arithmetic comparison" "classifier verdict changed"
+fi
+check "...while a numbered fd output substitution still feeds its shell" block \
+    "$(bash_decision "printf 'rm -rf src' 2> >(bash)")"
+
 # PRECISION: the scan runs only when the command names something that could run a program
 # read from stdin. An ordinary diff of two substitutions pays nothing.
 check "an ordinary diff of two substitutions stays allowed" allow \

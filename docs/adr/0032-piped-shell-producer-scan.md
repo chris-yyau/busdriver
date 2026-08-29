@@ -508,6 +508,41 @@ records, arriving once more.
   wrong: the any-word shell test never needed this (`>(true; bash)` blocked throughout),
   which is precisely why `.` and `source` are command-position-only.
 
+**Two constructs the extraction could not read, answered the way this module answers those.**
+
+- A `case` PATTERN terminator is a bare `)` with no opener, so the quote-aware paren match
+  truncated `bash < <(case x in x) printf 'rm -rf src';; esac)` at `x)` and scanned only the
+  harmless prefix while bash handed the payload behind it to the shell — verified executing,
+  and the exact construct that already defeats the `$(` sibling above. A paren-balance guard
+  closed that spelling and was itself re-balanced by an unrelated `(` elsewhere in the
+  command, which is the known bypass the sibling check already records — tolerable there,
+  where the check is a bonus, and not here, where it was the only thing closing a verified
+  fail-open.
+
+  Scoping the PRODUCER to the whole command fixed the payload half and left the extraction
+  load-bearing for the RECEIVER half, since a truncated body also hides the shell inside it
+  from the candidate test. So the raw scan gets the whole command, and the candidate test
+  gets the whole command **and** the split bodies: `whole` is what makes the extraction
+  non-load-bearing, because its any-word shell test sees a receiver the extraction truncated
+  away — but it cannot answer the COMMAND-POSITION-only names, `.` and `source`, which are
+  only ever asked of a stage's own first word. Handing it `whole` alone lost
+  `> >(true; . /dev/stdin)`, where the command begins with `printf`. With both, a wrong
+  extraction costs precision and never soundness.
+
+  The cost is the precision this rule started with: a shell named anywhere in a command
+  carrying a process substitution puts that whole command under the raw scan. That is the
+  trade the indirection rule already makes, it is scoped by rarity, and it replaces a guess
+  that was wrong twice in two different halves.
+- A word-boundary guard in front of the operator was written and then **deleted**, which is
+  the third deletion in this addendum and the clearest of them. It existed purely for
+  precision: inside arithmetic a `>` is a COMPARISON, so `$((x>(bash)))` is not a
+  substitution and reading it as one raw-scans the whole command for nothing. But bash
+  concatenates an empty expansion with a substitution, so `printf <payload> > "">(bash)` and
+  `> $E>(bash)` both feed the shell — and the guard, seeing a `"` or a `$` in front of the
+  operator, skipped them. Verified executing. **A guard that exists only for precision and
+  costs a fail-open is not a trade this module makes.** Every adjacent `<(`/`>(` counts now,
+  and the arithmetic over-block is taken and pinned.
+
 **Budget accounting, twice.**
 
 - The candidate walk was charged against `_scan_budget`, which the per-segment walk then
@@ -574,14 +609,26 @@ live bypass marker now existed. It was removed through `design-clear.sh --skip`,
 writes a `skip-marker-cleared` event, rather than a bare `rm`.
 
 Those cases went with the revert, but the tripwire stayed, because the hazard is general: a
-test that exercises a bypass can commit one. The suite records whether a marker exists
-*before* it runs, and an EXIT trap drains one that appeared during the run — on EXIT rather
-than at the end of a section, so an interrupt cannot skip it, and before the fixture cleanup,
-because deleting a temp directory is housekeeping and removing a live gate bypass is not.
-Both the drain's status and the file's absence are checked, since either alone can lie, and
-either failing forces a non-zero exit. Both branches were executed and observed — a marker
-appearing mid-run is drained, a pre-existing one survives — because a guard whose failure
-branch has never been seen is not a guard.
+test that exercises a bypass can commit one. The suite asks no ownership question, and it
+deletes nothing. Three ownership tests were tried — bare existence, inode plus mtime, then a
+start-time absence check — and each was defeated by a replacement it could not see, the last
+by any concurrent writer acting after the check ran. The identity of a path is not something
+a shell script establishes, and **a test that deletes operator state it cannot prove it owns
+is a worse failure than the one it guards against.** So it does two things and neither is a
+deletion: it **refuses to start** when a file is already at that path (`-L` as well as `-e`,
+so a dangling symlink does not read as absent), and an EXIT trap **reports** one that
+appeared during the run — naming the path, pointing at the audited drain, forcing a non-zero
+exit, and leaving the file for a human. On EXIT rather than at the end of a section, so an
+interrupt cannot skip it.
+
+
+Order is load-bearing there, and observing it is what proved it: installed after the trap,
+the refusal's own `exit 1` fired the trap, which back then *drained* the operator file —
+destroying exactly the state the refusal exists to protect. All four branches were then
+executed and observed: a pre-existing file and a dangling symlink each refuse the run and
+survive it, a file appearing mid-run is reported with a non-zero exit and left in place, and
+a clean run is silent. A guard whose failure branch has never been seen is not a guard, and
+this one was wrong until it was watched.
 
 
 ### Cost, and the two over-blocks pinned in the producer scan

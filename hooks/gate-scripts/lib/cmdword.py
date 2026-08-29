@@ -2101,6 +2101,14 @@ def _process_substitutions(s):
             in_d = True
             i += 1
             continue
+        # EVERY adjacent `<(`/`>(` counts, with no word-boundary test in front of it. One
+        # was written, to spare the over-block on arithmetic (`$((x>(bash)))`, where `>` is
+        # a COMPARISON), and it was a precision guard that opened a hole: bash concatenates
+        # an empty expansion with a substitution, so `printf <payload> > "">(bash)` and
+        # `> $E>(bash)` both feed the shell while the character in front of the `>` is a
+        # quote or a `$`. Verified executing. A guard that exists only for precision and
+        # costs a fail-open is not a trade this module makes -- the arithmetic over-block is
+        # taken instead, and pinned.
         if ch in "<>" and i + 1 < n and s[i + 1] == "(":
             j = _subst_end(s, i + 1)       # quote-aware paren match, shared with `$(`
             if j < 0:
@@ -2191,24 +2199,45 @@ def _procsub_producers(pairs, whole, subs):
         # raw-scanned whole for a walk it never ran. Over-blocking only, but it is the same
         # cross-command budget coupling this allowance was split off to remove.
         return []
-    # An OUTPUT body is a COMPOUND command, so it gets the same treatment the outer command
-    # got -- SPLIT, then every segment asked -- exactly as `_may_read_program_from_stdin`
-    # already does for a `$(...)` body, and for the same reason. Asking the body as ONE
-    # stage reads only its first command word for the COMMAND-POSITION-only names, so
-    # `printf 'rm -rf src' > >(true; . /dev/stdin)` hid the `.` behind a harmless `true`
-    # and ran the payload -- verified executing. The any-word shell test was never fooled
-    # by this (`>(true; bash)` blocked throughout); it is the `.`/`source` class, which is
-    # command-position-only on purpose, that needed the split.
-    _out_stages = []
-    for _body in outs:
+    # ONE PRODUCER, ONE CANDIDATE, and both are the WHOLE command.
+    #
+    # The first cut scoped the input direction to the substitution BODIES, which was more
+    # precise and depended on `_subst_end` extracting the right body. It does not always: a
+    # `case` PATTERN terminator is a bare `)` with no opener, so
+    # `bash < <(case x in x) printf 'rm -rf src';; esac)` truncated at `x)` -- verified
+    # executing. A paren-balance guard closed that spelling and was re-balanced by an
+    # unrelated `(`; scoping the PRODUCER to the whole command fixed the payload half but
+    # left the extraction load-bearing for the RECEIVER half, since a truncated body hides
+    # the shell inside it from the candidate test.
+    #
+    # So the extraction is not load-bearing at all now. It answers ONE question -- is there
+    # a process substitution here -- where over-reading is free, and both the candidate test
+    # and the raw scan are given the whole command, which contains every body whether or not
+    # `_subst_end` found its end. The cost is stated plainly: a shell named ANYWHERE in a
+    # command carrying a process substitution puts that whole command under the raw scan.
+    # That is the trade the indirection rule already makes, it is scoped by rarity (the walk
+    # runs only when a substitution is present), and it replaces a guess that was wrong
+    # twice in two different halves.
+    # THE WHOLE COMMAND *AND* THE BODY STAGES. `whole` is what makes the extraction
+    # non-load-bearing -- its any-word shell test sees a receiver the extraction truncated
+    # away -- but it cannot answer the COMMAND-POSITION-only names, `.` and `source`, which
+    # are only ever asked of a stage's own first word. Handing it alone therefore lost
+    # `> >(true; . /dev/stdin)`, where `whole` begins with `printf`. Both, then: the split
+    # bodies for the command-position question, `whole` for everything the split may have
+    # missed -- and the SPLIT SEGMENTS of the command, which is the third source and the
+    # one that does not depend on the extraction at all: the splitter breaks `>(` on the
+    # paren, so a receiver inside a body that `_subst_end` truncated away
+    # (`> >(case x in x) . /dev/stdin;; esac)`) still arrives here as a segment of its own,
+    # in command position, where `.` and `source` are answered. A wrong extraction now costs
+    # precision and never soundness.
+    _stages = [whole] + [seg for _op, seg in pairs]
+    for _body in ins + outs:
         _bsegs, _bok = _split_simple_commands(_body)
         if not _bok:
             return [whole]                # unsplittable body: fail CLOSED, scan it all
-        _out_stages.extend(_bsegs)
+        _stages.extend(_bsegs)
     out, seen = [], {}
-    if ins and _any_reads_program_from_stdin([seg for _op, seg in pairs], seen):
-        out.extend(ins)
-    if outs and _any_reads_program_from_stdin(_out_stages, seen):
+    if _any_reads_program_from_stdin(_stages, seen):
         out.append(whole)
     if _psub_budget[0] < 0 and whole not in out:
         # The candidate walk ran out mid-command, so what it did NOT reach is unexamined

@@ -586,12 +586,33 @@ if [ -f "$MARKER" ]; then
     # live on 2026-08-01, where a marker hours old would have authorized a diff
     # whose own review had returned structured FAIL.
     #
-    # Deliberately the BARE `git diff --cached`, byte-identical to every writer
-    # (run-review-loop.sh, litmus/scripts/write-review-marker.sh) AND to
-    # dispatcher-commit-block.sh, whose own comment already pins this coupling:
-    # "Match the marker writer's hash form exactly: bare `git diff --cached`".
-    # Four sites must agree; any one of them adding a flag makes the marker stop
-    # matching and blocks every commit.
+    # THE CANONICAL MARKER-HASH FORM (#576). Byte-identical to the producer
+    # (run-review-loop.sh's REVIEWED_DIFF_HASH capture) AND to the three sites in
+    # dispatcher-commit-block.sh, whose own comment pins the same coupling.
+    # Three files must agree; any one of them changing a flag makes every marker
+    # stop matching and blocks every commit. `tests/test-litmus-marker-binding.sh`
+    # (flag-parity case) asserts the agreement mechanically — a comment saying
+    # "keep these identical" demonstrably did not hold, which is how #576 happened.
+    #
+    # Each flag earns its place; none is cosmetic:
+    #   --no-ext-diff   GIT_EXTERNAL_DIFF / diff.external are reachable from
+    #                   repo-controlled config, and a driver emitting CONSTANT
+    #                   output collapses every distinct diff onto one hash —
+    #                   dissolving the #545 binding this comparison exists for.
+    #   --no-textconv   same collapse, via per-path textconv drivers named by a
+    #                   committed .gitattributes.
+    #   --full-index    40-hex blob SHAs on every `index` line, INCLUDING binary
+    #                   paths (measured, git 2.55.0) — a binary change renders as
+    #                   "Binary files a/x and b/x differ" and is distinguished
+    #                   ONLY by that index line, which is a 7-char abbreviation
+    #                   without this flag. `--binary` would also work but base85-
+    #                   encodes the whole blob into the hashed stream on every
+    #                   commit and every gate check; --full-index is the exact
+    #                   binding at none of that cost.
+    #   -c color.ui=never -c core.quotePath=false
+    #                   determinism, mirroring compute_pr_diff_hash (the PR-mode
+    #                   equivalent, run-review-loop.sh:227) so both modes render
+    #                   colour and non-ASCII paths alike.
     #
     # SCOPE — be precise about what "bound to the diff" means here. This runs in
     # PreToolUse, BEFORE the command executes, so it binds the marker to the
@@ -726,7 +747,7 @@ if [ -f "$MARKER" ]; then
     else
         HASH_CMD=()
     fi
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

@@ -99,6 +99,10 @@ SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 . "$SCRIPT_LIB/dispatcher-proc-state.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source dispatcher-proc-state.sh"
 
+# shellcheck source=/dev/null
+. "$SCRIPT_LIB/exclusion-integrity.sh" || \
+    emit_bail "env" "dispatcher-commit-block: failed to source exclusion-integrity.sh"
+
 FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
 ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
@@ -362,9 +366,12 @@ trap 'rm -rf "$RUN_DIR"' EXIT
 # RESULT_FIXES is injected by the parent dispatcher.
 
 # --- Step 2: Snapshot worker's staged content for litmus-auto-fix detection ---
-# Match the marker writer's hash form exactly: bare `git diff --cached`, no
-# `--binary`. The litmus marker is validated later by re-running the same form.
-PRE_LITMUS_DIFF_SHA=$(git diff --cached | hash_stdin) || \
+# Match the marker writer's hash form exactly (#576): the CANONICAL form, pinned
+# against repo-controlled diff drivers. pre-commit-gate.sh documents why each flag
+# is load-bearing; run-review-loop.sh mints with the identical expression. The
+# litmus marker is validated later by re-running the same form, so all three files
+# must agree — tests/test-litmus-marker-binding.sh asserts that mechanically.
+PRE_LITMUS_DIFF_SHA=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
     emit_bail "env" "failed to hash pre-litmus staged diff"
 PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list pre-litmus staged paths"
@@ -870,200 +877,55 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # and untracked (`??`). Any non-empty output ⇒ the policy is not the committed
     # one ⇒ bail.
     # Sanitize STATE_DIR EXACTLY as exclude-generated.sh does (reject empty /
-    # absolute / traversal / unsafe chars → .claude) so STEP 1's divergence check
-    # and STEP 2's actual policy read anchor on an IDENTICAL path — otherwise an
-    # unsafe operator-set BUSDRIVER_STATE_DIR could make the two target different
-    # files (backstop advisory, defense-in-depth).
+    # absolute / traversal / unsafe chars → .claude) so the divergence check and the
+    # actual policy read anchor on an IDENTICAL path — otherwise an unsafe
+    # operator-set BUSDRIVER_STATE_DIR could make the two target different files.
     _policy_state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
     case "$_policy_state_dir" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) _policy_state_dir=".claude" ;; esac
     _policy_rel="$_policy_state_dir/review-exclude"
-    # Reject an UNTRUSTED path component (COMMITTED symlink OR gitlink/submodule) at
-    # ANY in-worktree component (leaf OR parent dir) of the policy/logic files:
-    #   - symlink: `git status --porcelain` tracks only a symlink's target-string
-    #     blob, not its target's content, so a symlinked component (e.g. `lib/` → an
-    #     external dir) makes a leaf-only -L test pass while the later exclusion read
-    #     / `.`-source follows it to unverified, mutated content (Cursor/Cubic/Codex
-    #     + litmus, PR #280).
-    #   - gitlink: a committed submodule (mode 160000) is a directory, not a symlink,
-    #     so the -L test never fires; and `git status --porcelain -- <path-inside>`
-    #     does not descend into a submodule (its dirtiness surfaces only as
-    #     `M <submodule>`, scoped to the gitlink path), so the committed-clean check
-    #     below is blind to divergent review-exclude / logic bytes read through it
-    #     (Codex P2, issue #281). busdriver has no submodules, so any gitlink on this
-    #     path is anomalous — reject it fail-closed.
-    # Walk every prefix and bail on the first untrusted component.
-    # $1 = worktree root, $2 = path relative to it.
-    _reject_untrusted_components() {
-        local _root="$1" _rel="$2" _prefix="" _seg _segs _mode
-        IFS=/ read -r -a _segs <<< "$_rel"
-        for _seg in "${_segs[@]}"; do
-            [[ -z "$_seg" || "$_seg" == "." ]] && continue
-            _prefix="${_prefix:+$_prefix/}$_seg"
-            if [[ -L "$_root/$_prefix" ]]; then
-                emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a symlink; a symlinked component cannot be trusted since git status verifies only the symlink blob, not its target's content"
-            fi
-            # gitlink (submodule) = mode 160000 in the index. Match the EXACT index
-            # entry for this prefix ($2==p after a tab split), NOT merely the first
-            # ls-files row: for a normal directory prefix, ls-files lists its
-            # DESCENDANTS, and a gitlink descendant sorted first (e.g. `.claude/sub`
-            # before `.claude/review-exclude`) would otherwise set _mode=160000 and
-            # falsely bail a valid excluded-only commit (Codex/cubic, PR #282). A
-            # gitlink AT the prefix is the sole index entry whose path == prefix.
-            # No early awk `exit` → no SIGPIPE under set -e/pipefail (the path is
-            # unique, so awk matches at most one line while reading to EOF). Fail
-            # CLOSED on a genuine probe error — a git/awk failure must not leave
-            # _mode empty and silently skip the gitlink check (CodeRabbit, PR #282);
-            # an empty _mode from a SUCCESSFUL run (prefix has no exact index entry —
-            # a normal dir or untracked component) is legitimately not a gitlink.
-            if ! _mode=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null \
-                    | awk -F'\t' -v p="$_prefix" '$2==p{split($1,h," "); print h[1]}'); then
-                emit_bail "judgment" "excluded-only marker but could not verify the index mode of in-worktree path component '$_prefix' (git ls-files failed); rejecting fail-closed"
-            fi
-            if [[ "$_mode" == "160000" ]]; then
-                emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a gitlink/submodule (mode 160000); a submodule cannot be trusted since git status of a path inside it does not descend to verify the committed content"
-            fi
-        done
-    }
-    _reject_untrusted_components "$WORKTREE_DIR" "$_policy_rel"
-    # Distinguish "git status succeeded, output empty (clean)" from "git status
-    # FAILED": a bare `2>/dev/null || true` would collapse an error into empty and
-    # fail OPEN. Only an empty status from a SUCCESSFUL run means clean.
-    if _policy_status=$(git status --porcelain --untracked-files=all --ignored -- "$_policy_rel" 2>/dev/null); then
-        if [[ -n "$_policy_status" ]]; then
-            emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"
-        fi
-    else
-        emit_bail "judgment" "excluded-only marker but could not verify the exclusion policy ($_policy_rel) is committed-clean (git status failed); fail-closed"
-    fi
+    # #576: the whole policy guard — untrusted path components (committed symlink or
+    # gitlink), the committed-clean status probe, and materialising HEAD's committed
+    # bytes — now lives in scripts/lib/exclusion-integrity.sh so the producer enforces
+    # the IDENTICAL rule instead of a second copy that drifts. It reports through
+    # EXCL_LOGIC_ERROR* rather than bailing, so map that onto emit_bail here.
+    #
+    # The pinning matters as much as the check: verifying the live path and then letting
+    # exclude-generated.sh re-read that same live path leaves a clean -> malicious ->
+    # clean window in which widened patterns hide staged content from this re-verify.
+    # EXCL_POLICY_SOURCE is HEAD's bytes, and STEP 2 points the parser at it.
+    verify_exclusion_policy "$WORKTREE_DIR" "$_policy_state_dir" || \
+        emit_bail "$EXCL_LOGIC_ERROR_KIND" "$EXCL_LOGIC_ERROR"
     # The exclusion LOGIC (exclude-generated.sh) is the OTHER input to the filter:
     # sourcing it runs its code AND its hardcoded defaults + review-exclude parse
     # decide what counts as excluded. It is normally trusted plugin code OUTSIDE
     # the reviewed worktree (the plugin cache), but when the plugin root IS the
     # worktree (busdriver self-review) a tampered copy could redefine
     # REVIEW_EXCLUDE_ARGS (or run arbitrary code) to over-exclude real source.
-    # Decide membership LEXICALLY against WORKTREE_DIR (a trusted dispatcher input,
-    # cwd since line 81) rather than by index or physical realpath. Both prior
-    # approaches were defeatable: `git ls-files --error-unmatch` by `git rm
-    # --cached` (untracks but keeps the tamperable copy), and `pwd -P` by swapping
-    # an in-worktree path component for a symlink to an external dir. A lexical
-    # prefix check + `git status` on the tracked path sidesteps both: git reports
-    # divergence on the TRACKED path regardless of physical resolution, so a
-    # swapped-to-symlink `lib/` shows its tracked files as deleted and an
-    # rm --cached shows the copy as untracked — either way non-empty ⇒ bail. If the
-    # logic file is not lexically under the worktree (the usual plugin-cache case)
-    # this is a no-op (trusted).
-    _excl_logic_file="$LITMUS_SCRIPTS/lib/exclude-generated.sh"
-    # Strip trailing slashes from WORKTREE_DIR (an operator-supplied input): with a
-    # trailing slash the "$WORKTREE_DIR"/* pattern becomes `/repo//*` and fails to
-    # match a normal `/repo/skills/...` path, silently SKIPPING the guard. Keep "/"
-    # itself intact (degenerate root case).
-    _wt="$WORKTREE_DIR"
-    while [[ "$_wt" == */ && "$_wt" != "/" ]]; do _wt="${_wt%/}"; done
-    # Normalize to absolute: a RELATIVE plugin root (e.g. CLAUDE_PLUGIN_ROOT=.)
-    # resolves against cwd, which is WORKTREE_DIR (line 81). Without this, a
-    # relative path would fail the "$_wt"/* prefix test and skip the guard even
-    # though the file is in-worktree.
-    case "$_excl_logic_file" in
-        /*) : ;;
-        *)  _excl_logic_file="$_wt/$_excl_logic_file" ;;
-    esac
-    # Collapse ".." (and "." and duplicate "/") segments PURELY LEXICALLY
-    # (string manipulation only — no filesystem access, so this cannot be
-    # fooled by a symlink swap the way `realpath`/`pwd -P` could). A relative
-    # LITMUS_SCRIPTS containing ".." (e.g. `../external-plugin/scripts`, a
-    # legitimate trusted-external plugin root) would otherwise
-    # string-prefix-match "$_wt"/* even though it actually escapes $_wt,
-    # making the guard run `git status` on a bogus out-of-repo pathspec and
-    # fail-close every excluded-only commit for that trusted case
-    # (Cursor/Cubic, PR #280). Collapsing first makes the prefix check answer
-    # the real question: does the file resolve INSIDE $_wt?
     #
-    # Apply the IDENTICAL collapse to $_wt itself, not just $_excl_logic_file:
-    # collapsing normalizes away incidental double-slashes too (e.g. an
-    # operator-supplied WORKTREE_DIR with a trailing-slash directory
-    # component), and comparing an un-collapsed $_wt against a collapsed
-    # $_excl_logic_file would desync the prefix match even when both
-    # genuinely point at the same in-worktree file.
-    _lexical_collapse() {
-        local _path="$1" _out="" _s _parts
-        # Split on "/" WITHOUT pathname (glob) expansion. An unquoted array
-        # assignment `_parts=($_path)` under IFS=/ ALSO globs each segment, so a
-        # "*"/"?"/"[" in WORKTREE_DIR or LITMUS_SCRIPTS would expand against the
-        # filesystem and normalize to the wrong path (litmus, PR #280). `read -ra`
-        # word-splits on IFS only — no globbing. The `IFS=/` prefix scopes IFS to
-        # the read builtin, so no save/restore of the shell's IFS is needed.
-        IFS=/ read -r -a _parts <<< "$_path"
-        for _s in "${_parts[@]}"; do
-            case "$_s" in
-                ""|".") continue ;;
-                "..") _out="${_out%/*}" ;;
-                *) _out="$_out/$_s" ;;
-            esac
-        done
-        [[ -z "$_out" ]] && _out="/"
-        printf '%s' "$_out"
-    }
-    _wt=$(_lexical_collapse "$_wt")
-    _excl_logic_file=$(_lexical_collapse "$_excl_logic_file")
-    # Check-vs-use consistency (litmus, PR #280): Step 2 below MUST source the
-    # exact path the guard validated. Sourcing the ORIGINAL, un-collapsed
-    # "$LITMUS_SCRIPTS/lib/exclude-generated.sh" while validating the collapsed
-    # path lets the two diverge when the path contains ".." across a symlink
-    # component (verify one file, execute another). Pin the source to the
-    # collapsed path here so both branches (in-worktree + trusted-external) run
-    # the same file that was checked.
-    _excl_logic_source="$_excl_logic_file"
-    # Symlinked-plugin-root defense (Codex, PR #280): the LEXICAL prefix check
-    # below only classifies "$_excl_logic_file" as in-worktree when it is
-    # lexically under "$_wt". If BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT is
-    # itself a symlink whose TARGET lives inside the worktree (a self-review
-    # layout where the plugin root is symlinked to the checkout rather than
-    # set to it directly), _excl_logic_file's lexical path runs through the
-    # symlink and never matches "$_wt"/*, so the classification below falls
-    # through to "trusted-external" and skips the committed-clean guard
-    # entirely. But `. "$_excl_logic_source"` two steps down follows the
-    # symlink at execution time and loads the file's real (physical) bytes —
-    # which DO live in the mutable worktree and could carry an uncommitted or
-    # tampered redefinition of REVIEW_EXCLUDE_ARGS. This resolves the plugin
-    # root and worktree to their PHYSICAL paths ONCE, using only trusted
-    # operator/environment-set roots (not attacker-controlled path
-    # components), purely to catch that classification mismatch — it does not
-    # replace or weaken the lexical + _reject_untrusted_components defense used
-    # for the already-in-worktree case below (that stays lexical-only, per
-    # the rationale a few lines up).
-    if [[ "$_excl_logic_file" != "$_wt"/* ]]; then
-        _real_wt=$(cd "$_wt" 2>/dev/null && pwd -P) || \
-            emit_bail "env" "could not resolve real path of worktree ($_wt) to check for a symlinked plugin root"
-        _real_excl_dir=$(cd "$(dirname "$_excl_logic_file")" 2>/dev/null && pwd -P) || _real_excl_dir=""
-        if [[ -n "$_real_excl_dir" ]] && { [[ "$_real_excl_dir" == "$_real_wt" ]] || [[ "$_real_excl_dir" == "$_real_wt"/* ]]; }; then
-            emit_bail "judgment" "exclusion logic path ($_excl_logic_file) is lexically outside the worktree but physically resolves inside it ($_real_excl_dir) — the plugin root is likely a symlink into the worktree, so it cannot safely be treated as trusted-external. Point BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT at a location outside the worktree, or set it to the worktree path directly so the in-worktree guard applies."
-        fi
-    fi
-    case "$_excl_logic_file" in
-        "$_wt"/*)
-            _excl_logic_rel="${_excl_logic_file#"$_wt"/}"
-            # Reject a committed symlink or gitlink at any component of the logic path
-            # (leaf or a parent dir), same rationale as the policy check above — a
-            # leaf-only -L test misses a symlinked parent like `lib/` (litmus, PR #280)
-            # and a submodule component entirely (Codex P2, issue #281).
-            _reject_untrusted_components "$_wt" "$_excl_logic_rel"
-            # Same fail-CLOSED discipline as the policy guard: a git status error
-            # must bail, not collapse to empty (clean) via `|| true`.
-            if _excl_logic_status=$(git status --porcelain --untracked-files=all --ignored -- "$_excl_logic_rel" 2>/dev/null); then
-                if [[ -n "$_excl_logic_status" ]]; then
-                    emit_bail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) has uncommitted, untracked, or deleted changes; the logic governing an excluded-only auto-pass must be committed and reviewed"
-                fi
-            else
-                emit_bail "judgment" "excluded-only marker but could not verify the exclusion logic ($_excl_logic_rel) is committed-clean (git status failed); fail-closed"
-            fi
-            ;;
-    esac
+    # #576: the whole guard — lexical collapse, in-worktree vs trusted-external
+    # classification, the symlinked-plugin-root physical cross-check, the component
+    # walk and the committed-clean status probe — moved verbatim into
+    # scripts/lib/exclusion-integrity.sh so run-review-loop.sh enforces the IDENTICAL
+    # rule before it mints an excluded-only marker. It previously guarded only the
+    # policy file, which left the logic file as an unguarded integrity input on the
+    # producer side. EXCL_LOGIC_SOURCE is the validated, collapsed path; sourcing
+    # anything else would break the check-vs-use pinning from PR #280.
+    verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" || \
+        emit_bail "$EXCL_LOGIC_ERROR_KIND" "$EXCL_LOGIC_ERROR"
+    _excl_logic_source="$EXCL_LOGIC_SOURCE"
     # STEP 2 (policy + logic now proven committed): the staged diff filtered through
     # the SAME exclusion logic the producer used must be empty. Any non-excluded
     # staged content ⇒ stale or mismatched marker ⇒ bail.
     # shellcheck source=/dev/null
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
+    # shellcheck source=/dev/null
     . "$_excl_logic_source" || \
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
+    # For an in-worktree logic file the guard hands back a temp file holding HEAD's
+    # committed bytes (so nothing can swap it between check and use); drop it now.
+    [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"
     NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}") || \
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
     if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
@@ -1075,7 +937,8 @@ else
         emit_bail "judgment" "marker is not a valid 64-char SHA-256 hex string: '$MARKER_CONTENT'"
     fi
 
-    EXPECTED_HASH=$(git diff --cached | hash_stdin) || \
+    # #576 canonical form — must equal the minting expression in run-review-loop.sh.
+    EXPECTED_HASH=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
         emit_bail "env" "failed to hash post-litmus staged diff"
     if [[ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]]; then
         emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
@@ -1083,7 +946,8 @@ else
 fi
 
 # --- Step 6: Commit message composition + commit-type derivation ---
-POST_LITMUS_DIFF_SHA=$(git diff --cached | hash_stdin) || \
+# #576 canonical form — compared against PRE_LITMUS_DIFF_SHA, which uses it too.
+POST_LITMUS_DIFF_SHA=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index | hash_stdin) || \
     emit_bail "env" "failed to hash post-litmus staged diff for commit message"
 POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list post-litmus staged paths"

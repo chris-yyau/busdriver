@@ -164,7 +164,12 @@ if [ "$_LOCK_RC" != "0" ]; then
   echo "    lib/review-lock.sh for why a human does it.)" >&2
   exit 1
 fi
-trap 'review_lock_release' EXIT
+# Neutralise any INHERITED value before the trap can act on it. The trap unlinks
+# this path on every exit path, including ones taken long before the capture block
+# sets it, so an exported _INDEX_SNAPSHOT would turn the cleanup into a delete of
+# an attacker-chosen writable file. Env is repo-injectable (#325 / ADR 0016).
+_INDEX_SNAPSHOT=""
+trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" 2>/dev/null || true' EXIT
 # Children that take the lock themselves — init-review-loop.sh, invoked directly below
 # and again from the loop — must see this lock as theirs, not deadlock against it.
 review_lock_export_owner
@@ -1045,9 +1050,76 @@ fi
 echo "📝 Loading review prompt..."
 PROMPT=$(sed -n '/^---$/,/^---$/!p' "$STATE_FILE" | sed '1d')
 
+# #576: the pinned comparison base for commit mode (set in the capture block below).
+# Declared here so PR mode and every downstream `--cached` read can name it safely;
+# empty means "unpinned", which is correct for PR mode (it diffs base...HEAD).
+# #576: resolve the comparison base ONCE, here, BEFORE anything reads it.
+#
+# Order is load-bearing. The exclusion policy and logic are materialised from a commit,
+# and the marker hash is taken against a commit; if those are resolved independently,
+# HEAD moving in between lets exclusions from commit A filter a review whose marker
+# binds commit B — a broad policy from A hides staged paths from the review, and the
+# marker is still accepted against B. One resolution, passed to every consumer.
+#
+# Unborn HEAD (no commits yet) has no base to pin: the array stays empty, which is also
+# the correct state for PR mode, where the diff is base...HEAD rather than --cached.
+_HEAD_BASE=()
+_HEAD_SHA=""
+if _HEAD_SHA=$(git rev-parse --verify HEAD 2>/dev/null); then
+  _HEAD_BASE=("$_HEAD_SHA")
+else
+  _HEAD_SHA=""
+fi
+
 # Source auto-generated file exclusion (hardcoded defaults + .claude/review-exclude)
-# shellcheck source=lib/exclude-generated.sh
-source "$SCRIPT_DIR/lib/exclude-generated.sh"
+#
+# #576 item 3: VERIFY BEFORE USE. exclude-generated.sh decides what the reviewer is
+# never shown, so it is an integrity input, not a utility — and the check has to
+# happen HERE, before the source, not later at the excluded-only marker write. Checking
+# afterwards is checking the wrong instant: tampered logic would already have shaped
+# REVIEW_EXCLUDE_ARGS and hidden content from the reviewer, and restoring the file
+# before the later check would let it pass. Same check-vs-use ordering
+# dispatcher-commit-block.sh uses, from the shared guard so there is one copy.
+#
+# On failure we do NOT refuse the review — we review with NO exclusions. That is the
+# safer failure and the one without a lockout: refusing would make any busdriver
+# self-review that touches exclude-generated.sh unreviewable (the file is in-worktree
+# only during self-review; everywhere else it is trusted plugin code and the guard
+# returns immediately). "Cannot trust the exclusion list" ⇒ "exclude nothing" hides
+# no content by construction, and it also makes the excluded-only auto-pass branch
+# below unreachable, since STAGED_DIFF can no longer be emptied by exclusions.
+# shellcheck source=../../../scripts/lib/exclusion-integrity.sh
+if ! source "$SCRIPT_DIR/../../../scripts/lib/exclusion-integrity.sh" 2>/dev/null; then
+  echo "⚠️  Could not load the exclusion-integrity guard — reviewing with NO exclusions" >&2
+  REVIEW_EXCLUDE_ARGS=()
+else
+  _excl_worktree=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  # BOTH inputs, both before use. The policy (which patterns) and the logic (which
+  # parses them) each decide what the reviewer never sees, so verifying only one leaves
+  # the other as an unguarded lever.
+  if ! verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "${_HEAD_SHA:-HEAD}"; then
+    echo "⚠️  Exclusion policy failed its integrity check — reviewing with NO exclusions" >&2
+    echo "    $EXCL_LOGIC_ERROR" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  elif ! verify_exclusion_logic "$_excl_worktree" "$SCRIPT_DIR" "${_HEAD_SHA:-HEAD}"; then
+    echo "⚠️  Exclusion logic failed its integrity check — reviewing with NO exclusions" >&2
+    echo "    $EXCL_LOGIC_ERROR" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  else
+    # Source the path the guard VALIDATED, never the un-collapsed original (PR #280).
+    # For an in-worktree logic file that path is a temp file holding HEAD's committed
+    # bytes, so nothing can swap it between verification and use.
+    # Point the parser at the COMMITTED policy bytes the guard just materialised, so
+    # the patterns actually applied are the ones that were verified. Assigned here (not
+    # exported) immediately before the source, so any ambient value is overwritten.
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
+    # shellcheck source=lib/exclude-generated.sh
+    source "$EXCL_LOGIC_SOURCE"
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    [ -n "${EXCL_LOGIC_PINNED_TMP:-}" ] && rm -f "$EXCL_LOGIC_PINNED_TMP"
+    [ -n "${EXCL_POLICY_PINNED_TMP:-}" ] && rm -f "$EXCL_POLICY_PINNED_TMP"
+  fi
+fi
 
 # Source SAST, smart context, docs context, and markdown checker
 # shellcheck source=lib/sast-runner.sh
@@ -1075,10 +1147,171 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
   echo "📋 Capturing staged changes..."
-  ALL_STAGED_FILES=$(git diff --cached --name-only)
-  STAGED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
-  FILTERED_FILES=$(git diff --cached --name-only -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # #576: take ONE atomic snapshot of the index and derive BOTH the reviewer's material
+  # and the gate-binding hash from it.
+  #
+  # Why a snapshot and not two reads. The marker must name what the reviewer saw. Two
+  # separate `git diff --cached` calls cannot guarantee that: an index that moves
+  # between them hands the reviewer diff A while the marker records diff B, which is
+  # the unreviewed-diff authorization this whole change exists to close. Bracketing the
+  # capture with a before/after hash was the obvious patch and it is NOT sufficient
+  # either — an A -> B -> A index change leaves both hashes equal to A while
+  # STAGED_DIFF was taken from B, so a PASS for B mints a marker authorizing A.
+  #
+  # Copying the index file removes the race instead of narrowing it: git writes the
+  # index atomically (write to index.lock, then rename), so `cp` observes exactly one
+  # complete version, and every read below is pinned to it via GIT_INDEX_FILE. The
+  # reviewer's filtered diff and the marker's full-diff hash are then two projections
+  # of the SAME bytes, by construction rather than by timing.
+  _INDEX_SNAPSHOT=$(mktemp -t busdriver-index-XXXXXX) || {
+    echo "❌ Could not create an index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # Pin the comparison BASE as well. `git diff --cached` is index-vs-HEAD, and each
+  # invocation re-resolves HEAD, so a snapshot of only the index still lets an A->B->A
+  # HEAD transition make the hash and the reviewed material describe different changes.
+  # Naming the commit explicitly makes every read below compare the same two endpoints.
+  # It stays byte-identical to the gate's implicit form while HEAD is unchanged — and if
+  # HEAD did move before the commit, the gate's recomputation simply differs and blocks,
+  # which is the correct fail-closed outcome. Unborn HEAD (no commits yet) has no base
+  # to pin, so the operand is omitted there.
+  if ! cp "$(git rev-parse --git-path index)" "$_INDEX_SNAPSHOT" 2>/dev/null; then
+    rm -f "$_INDEX_SNAPSHOT"
+    echo "❌ Could not snapshot the git index — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+
+  # Pick the hash utility ONCE, by availability. `(sha256sum || shasum)` in a single
+  # pipe is a fail-OPEN: if sha256sum consumes part of stdin and then dies, shasum
+  # hashes only the unread REMAINDER and the pipeline still reports success with a
+  # valid-looking digest for a truncated stream. pre-commit-gate.sh selects by
+  # availability for exactly this reason (CodeRabbit, PR #577); the minter must match.
+  if command -v sha256sum >/dev/null 2>&1; then
+    _REVIEW_HASH_CMD=(sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    _REVIEW_HASH_CMD=(shasum -a 256)
+  else
+    rm -f "$_INDEX_SNAPSHOT"
+    echo "❌ No SHA-256 utility (sha256sum/shasum) — cannot bind a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+
+  # THE CANONICAL MARKER-HASH FORM — byte-identical to pre-commit-gate.sh (which
+  # documents why each flag is load-bearing) and to the three sites in
+  # dispatcher-commit-block.sh. Asserted by tests/test-litmus-marker-binding.sh.
+  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
+    rm -f "$_INDEX_SNAPSHOT"
+    echo "❌ Could not hash the staged diff — refusing to mint a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! ALL_STAGED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"}); then
+    echo "❌ Could not list staged files from the index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Pinned exactly like the marker hash. Pinning only the marker would be worse than
+  # useless: a diff.external/textconv driver emitting empty or constant output would
+  # hide staged content from the REVIEWER while the marker still bound the real index,
+  # so the gate would certify content nobody read.
+  # `--text` is NOT cosmetic here. `--no-textconv` does not neutralize a `.gitattributes`
+  # `-diff` (binary) rule, and a committed `*.sh -diff` renders every staged shell script
+  # as "Binary files a/x and b/x differ" — the reviewer receives NO source at all, while
+  # the marker (bound via --full-index blob SHAs) stays perfectly valid and the gate
+  # accepts it. Same blinding class as the textconv collapse, different lever. `--text`
+  # forces the textual rendering back. Measured: with `*.sh -diff` the diff shows only
+  # the Binary line; with --text the full hunk returns.
+  # --text makes a GENUINE binary render as a full textual patch, so the reviewer's
+  # diff is no longer bounded by "Binary files differ". Measure it by STREAMING into
+  # `wc -c` first — a shell variable would already hold the whole thing by the time the
+  # existing size gate (which counts numstat lines, and scores binaries as zero) got a
+  # look. Over the cap is TOO_LARGE (exit 2), the documented split path, not a silent
+  # truncation: cutting the diff would hide content from the reviewer while the marker
+  # still bound all of it, which is the blinding this change exists to stop.
+  # Guard the measurement itself: under `set -euo pipefail` a bare assignment whose
+  # pipeline fails would abort the script before write_terminal_status ever ran,
+  # leaving the state file stuck at PENDING with no machine-readable terminal status
+  # for automated callers to read.
+  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+    echo "❌ Could not measure the staged diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
+  # Digit-only is not enough: a value beyond the shell's integer range makes the
+  # `-gt` test an "integer expression expected" ERROR, and because that test is an `if`
+  # condition the failure is swallowed and the cap is skipped entirely — the whole diff
+  # then lands in STAGED_DIFF. Bound the length so the comparison can never overflow.
+  case "$_staged_diff_max" in
+    ''|*[!0-9]*) _staged_diff_max=10485760 ;;
+    ??????????????????*) _staged_diff_max=10485760 ;;
+  esac
+  if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ Staged diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
+    echo "   Split the commit, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
+    # Exit 2 deliberately writes NO terminal_status: per the skill's documented
+    # contract, TOO_LARGE is the one failure exit that does not set it (the other
+    # size ceilings below behave identically). Callers key off exit 2 here.
+    exit 2
+  fi
+  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+    echo "❌ Could not capture the staged diff from the index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Prove the capture is FAITHFUL. Bash command substitution silently drops NUL bytes,
+  # and --text can put NULs in the stream, so the reviewer could receive a quietly
+  # different rendering from the one the marker authorises — a diff that reads clean
+  # while the committed blob is not. We already measured the true byte length by
+  # streaming, so compare it against what actually landed in the variable and refuse on
+  # any shortfall beyond the single trailing newline `$( )` always strips.
+  _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
+  if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
+    echo "❌ The staged diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
+    echo "   NUL bytes in binary content cannot be represented in the review prompt, so the" >&2
+    echo "   reviewer would not see what the marker authorises. Exclude the binary via" >&2
+    echo "   $STATE_DIR/review-exclude, or split the commit." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! FILTERED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+    echo "❌ Could not list reviewable files from the index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # EXPORT it for the rest of the run rather than deleting it here. Everything
+  # downstream — the size calculation, SAST/markdown file lists, DIFF_FOR_FILTER, and
+  # above all the short-circuit path classification — also reads the index, and reading
+  # those from the LIVE index reopens the same hole one level down: an A->B->A change
+  # would let the short-circuit classify B as passive prose while the marker names A,
+  # handing active code from A a no-review PASS. One exported snapshot pins every
+  # `git diff --cached` in this process to the bytes that were actually reviewed.
+  # (Worktree-reading scanners still see live files; an index snapshot cannot fix that,
+  # and the marker binds the index, which is what the gate re-derives.) The EXIT trap
+  # removes it on every path.
+  export GIT_INDEX_FILE="$_INDEX_SNAPSHOT"
+  if [ -z "$REVIEWED_DIFF_HASH" ]; then
+    echo "❌ Empty staged-diff hash — refusing to mint a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 fi
+
+# #576: every commit-mode marker write goes through this. Fail CLOSED — a marker
+# with no reviewed-diff binding is the bearer token #545 set out to abolish, so an
+# uncaptured or malformed hash must refuse the marker, never fall back to a fresh
+# `git diff --cached` (that fallback IS the bug).
+require_reviewed_diff_hash() {
+  if [[ ! "${REVIEWED_DIFF_HASH:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "❌ no reviewed staged-diff hash was captured — refusing to write a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+}
 
 # Detect what was excluded
 EXCLUDED_FILES=""
@@ -1212,15 +1445,17 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      # The exclusion LOGIC was verified BEFORE it was sourced (see the guard above
+      # the exclude-generated.sh source). Re-checking here would be checking the wrong
+      # instant anyway: by now REVIEW_EXCLUDE_ARGS has already shaped STAGED_DIFF. If
+      # that verification had failed there would be no exclusions at all, so this
+      # excluded-only branch would be unreachable.
       mkdir -p "$STATE_DIR"
       _excluded_epoch=$(date +%s)
-      _excluded_hash=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-      if [ -z "$_excluded_hash" ]; then
-        echo "❌ excluded-only commit: could not hash the staged diff — refusing marker" >&2
-        write_terminal_status setup_error
-        exit 1
-      fi
-      printf 'PASS-EXCLUDED-%s-%s\n' "$_excluded_hash" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
+      # #576: the reviewed snapshot, not a fresh diff taken after the policy and
+      # logic checks above ran.
+      require_reviewed_diff_hash
+      printf 'PASS-EXCLUDED-%s-%s\n' "$REVIEWED_DIFF_HASH" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
     fi
     # Clean up state file and iteration history
     clear_iteration_history
@@ -1246,7 +1481,7 @@ while IFS=$'\t' read -r added removed _file; do
   [ "$removed" = "-" ] && removed=0
   ADDITION_LINES=$((ADDITION_LINES + added))
   DELETION_LINES=$((DELETION_LINES + removed))
-done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
+done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
 WEIGHTED_LINES=$(( ADDITION_LINES + DELETION_LINES / 4 ))
 echo "   Staged files: $STAGED_FILE_COUNT"
 echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELETION_LINES, weighted: $WEIGHTED_LINES)"
@@ -1337,7 +1572,7 @@ else
     while IFS=$'\t' read -r added _removed _file; do
       [ "$added" = "-" ] && added=0
       [ "$added" -gt 0 ] 2>/dev/null && FILES_WITH_ADDITIONS=$((FILES_WITH_ADDITIONS + 1))
-    done < <(git diff --cached --numstat -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null)
+    done < <(git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null)
     if [ "$FILES_WITH_ADDITIONS" -gt "$MAX_STAGED_FILES" ]; then
       TOO_LARGE=true
       TOO_LARGE_REASON="files with additions ($FILES_WITH_ADDITIONS) > $MAX_STAGED_FILES (total: $STAGED_FILE_COUNT)"
@@ -1383,7 +1618,10 @@ DIFF_FOR_FILTER=""
 if [ "$REVIEW_MODE" = "pr" ]; then
   DIFF_FOR_FILTER=$(git diff --unified=0 "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 else
-  DIFF_FOR_FILTER=$(git diff --cached --unified=0 -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  # #576: same pin — this drives which findings are kept as in-diff.
+  # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
+  # are kept as in-diff, so a blinded rendering here silently drops real findings.
+  DIFF_FOR_FILTER=$(git -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re
@@ -1497,7 +1735,9 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
   #     destination and launder the active source onto the fast path (plain
   #     `--name-only` reports only the destination — verified against real
   #     history).
-  SC_PATHS=$(git diff --cached --name-only --no-renames 2>/dev/null || true)
+  # #576: pinned base — the short-circuit decides whether ANY reviewer runs, so it
+  # must classify the same two endpoints the marker names.
+  SC_PATHS=$(git diff --cached --name-only --no-renames ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null || true)
 
   if [[ -n "$SC_PATHS" ]]; then
     set +e
@@ -1548,8 +1788,10 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
     log_review_metrics "PASS" "0" "$ITERATION" "$REVIEW_MODE" "short-circuit" '{"status":"PASS","issues":[],"short_circuit":true}'
 
     # Write commit marker (same format as normal PASS)
+    # #576: the reviewed snapshot — the short-circuit classified THOSE paths.
     mkdir -p "$STATE_DIR"
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
+    require_reviewed_diff_hash
+    printf '%s\n' "$REVIEWED_DIFF_HASH" > "$STATE_DIR/litmus-passed.local"
 
     # Audit trail — distinct event, separate from skip-bypass
     printf '{"ts":"%s","event":"short-circuit-pass","gate":"pre-commit","weighted_lines":%d}\n' \
@@ -1661,7 +1903,69 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   chmod 600 "$BUILTIN_PROMPT_FILE"
   printf '%s' "$FINAL_PROMPT" > "$BUILTIN_PROMPT_FILE"
   mkdir -p "$STATE_DIR"
-  echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local"
+  # Arm the handoff EXCLUSIVELY. `set -o noclobber` makes the redirection O_EXCL, so
+  # it fails rather than overwrites if the path already exists — and O_EXCL refuses to
+  # follow a symlink, which also closes the /tmp sidecar hijack (a predictable path
+  # next to a visible mktemp name, pre-created as a symlink by another local user, so
+  # this process writes through it). `umask 077` makes the files private from the
+  # instant they exist; a chmod AFTER the redirect leaves a world-readable window, and
+  # a chmod BEFORE it does nothing at all because the file is not there yet.
+  #
+  # Refusing on an existing pointer is the fix for the overlap the per-run keying alone
+  # could not close: run A exits 3, its reviewer starts, run B overwrites the pointer,
+  # and reviewer A's writer then consumes run B's hash — certifying diff B though
+  # reviewer A saw diff A. An un-consumed handoff now blocks the second arming instead
+  # of silently replacing the first. Stale handoff after an abandoned builtin review:
+  # delete the two files the message names.
+  # PR mode does NOT arm this handoff. The handoff exists to mint the COMMIT marker
+  # (litmus-passed.local), and a PR-mode hash describes base...HEAD, not the staged
+  # index — the commit gate could never validate it, so writing one would produce a
+  # marker that is either unusable or, worse, mistaken for a staged-diff binding.
+  # PR mode already treats a builtin (non-Codex) lead as fail-closed, so the correct
+  # outcome here is no handoff at all: the marker writer then refuses, which is the
+  # documented behaviour. This also replaces the earlier fix for naming the commit-mode
+  # variable unconditionally, which aborted PR mode on an unbound variable under `set -u`.
+  if [ "$REVIEW_MODE" = "pr" ]; then
+    echo "❌ PR mode: no external reviewer succeeded, and a builtin lead is not accepted." >&2
+    echo "   PR mode is fail-closed on a non-Codex lead, so there is no marker to write." >&2
+    # NOT exit 3: that code's contract tells the caller to dispatch the builtin reviewer
+    # and then the marker writer — which would either fail confusingly or mint a
+    # commit-mode marker from a base...HEAD hash the commit gate can never validate.
+    # Report an honest terminal state instead, and leave no active state behind for
+    # init-review-loop.sh to trip over.
+    clear_iteration_history
+    rm -f "$STATE_FILE" 2>/dev/null
+    write_terminal_status infra_failure
+    exit 1
+  fi
+  _handoff_hash="${REVIEWED_DIFF_HASH:-}"
+  if [ -z "$_handoff_hash" ]; then
+    echo "❌ No reviewed-diff hash captured for the builtin handoff — refusing to arm it." >&2
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Chain the two writes EXPLICITLY. `if ! ( ... )` puts the subshell in a condition
+  # context, which suspends `set -e` inside it — so without these `||`s a failed
+  # pointer write would fall through, the sidecar write would succeed, and the subshell
+  # would report success while the FIRST review still owned the pointer: reviewer A
+  # paired with hash B, the very thing this exclusivity exists to prevent. The
+  # symmetric case matters too — if the sidecar fails we must not leave a freshly
+  # created authority pointer behind, so unlink it before failing.
+  if ! ( umask 077; set -o noclobber
+         echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local" || exit 1
+         printf '%s\n' "$_handoff_hash" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || {
+             rm -f "$STATE_DIR/builtin-review-prompt-path.local"; exit 1; } ) 2>/dev/null; then
+    echo "❌ A builtin review handoff is already armed and unconsumed — refusing to overwrite it." >&2
+    echo "   Another builtin review is in flight, or a previous one was abandoned." >&2
+    echo "   Do NOT delete it by hand while a review may still be running: that reviewer" >&2
+    echo "   would then mint its marker against THIS run's diff. Confirm no builtin review" >&2
+    echo "   is in flight first, then remove $STATE_DIR/builtin-review-prompt-path.local" >&2
+    echo "   and its $STATE_DIR/builtin-review-*.hash sidecar." >&2
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+    write_terminal_status setup_error
+    exit 1
+  fi
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
   echo "   The litmus skill will dispatch the code-reviewer agent." >&2
@@ -1861,8 +2165,11 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
       fi
     fi
   else
-    # Commit mode: write commit marker for pre-commit gate
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
+    # Commit mode: write commit marker for pre-commit gate.
+    # #576: the hash captured BEFORE the review, not a fresh one taken now —
+    # "now" can be many minutes after the reviewer saw the diff.
+    require_reviewed_diff_hash
+    printf '%s\n' "$REVIEWED_DIFF_HASH" > "$STATE_DIR/litmus-passed.local"
   fi
 
   # Clean up temporary files

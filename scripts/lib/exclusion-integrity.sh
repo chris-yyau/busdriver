@@ -146,7 +146,7 @@ exclusion_reject_untrusted_components() {
 # .gitignore rule produces NO porcelain output while the parser reads it regardless.
 # $1 = worktree root, $2 = state dir name (relative).
 verify_exclusion_policy() {
-    local _worktree="$1" _state_dir="$2" _policy_rel _policy_status _policy_pinned
+    local _worktree="$1" _state_dir="$2" _base="${3:-HEAD}" _policy_rel _policy_status _policy_pinned
     # shellcheck disable=SC2034
     EXCL_LOGIC_ERROR=""
     # shellcheck disable=SC2034
@@ -167,7 +167,7 @@ verify_exclusion_policy() {
     # would accept a policy that HEAD carries but the worktree deleted as a clean absence,
     # short-circuiting past the committed-clean probe below and quietly contradicting this
     # function's contract that staged or unstaged deletions are refused.
-    if [[ ! -e "$_worktree/$_policy_rel" ]] && ! git -C "$_worktree" cat-file -e "HEAD:$_policy_rel" 2>/dev/null; then
+    if [[ ! -e "$_worktree/$_policy_rel" ]] && ! git -C "$_worktree" cat-file -e "$_base:$_policy_rel" 2>/dev/null; then
         if ! _policy_pinned=$(mktemp -t busdriver-excl-policy-XXXXXX); then
             _excl_fail "env" "could not create a temp file to pin the absent exclusion policy; fail-closed"
             return 1
@@ -197,7 +197,7 @@ verify_exclusion_policy() {
         _excl_fail "env" "could not create a temp file to pin the committed exclusion policy; fail-closed"
         return 1
     fi
-    if ! git -C "$_worktree" show "HEAD:$_policy_rel" > "$_policy_pinned" 2>/dev/null; then
+    if ! git -C "$_worktree" show "$_base:$_policy_rel" > "$_policy_pinned" 2>/dev/null; then
         rm -f "$_policy_pinned"
         _excl_fail "judgment" "could not read the COMMITTED exclusion policy ($_policy_rel) from HEAD; refusing to use the worktree copy instead"
         return 1
@@ -226,7 +226,7 @@ verify_exclusion_policy() {
 # swapped-to-symlink `lib/` shows its tracked files as deleted and an `rm --cached`
 # shows the copy as untracked — either way non-empty ⇒ refuse.
 verify_exclusion_logic() {
-    local _worktree="$1" _litmus_scripts="$2"
+    local _worktree="$1" _litmus_scripts="$2" _base="${3:-HEAD}"
     local _wt _excl_logic_file _excl_logic_rel _excl_logic_status _real_wt _real_excl_dir
     local _excl_target _excl_hops _excl_link _excl_nlink _excl_pinned _excl_wt_prefix
 
@@ -411,7 +411,7 @@ verify_exclusion_logic() {
                 _excl_fail "env" "could not create a temp file to pin the committed exclusion logic; fail-closed"
                 return 1
             fi
-            if ! git -C "$_wt" show "HEAD:$_excl_logic_rel" > "$_excl_pinned" 2>/dev/null; then
+            if ! git -C "$_wt" show "$_base:$_excl_logic_rel" > "$_excl_pinned" 2>/dev/null; then
                 rm -f "$_excl_pinned"
                 _excl_fail "judgment" "could not read the COMMITTED exclusion logic ($_excl_logic_rel) from HEAD; refusing to source the worktree copy instead"
                 return 1

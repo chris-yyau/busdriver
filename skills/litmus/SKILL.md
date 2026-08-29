@@ -471,7 +471,7 @@ These govern both commit and PR review modes:
 
 When `run-review-loop.sh` exits with code 3, external review paths were exhausted for this run — e.g., no CLI is available, codex failed (transient or non-transient), and any applicable droid escalation was disabled, unavailable, or also failed. Handle as follows:
 
-1. Read the prompt path from `.claude/builtin-review-prompt-path.local`
+1. Read the prompt path from `<state-dir>/builtin-review-prompt-path.local`, where `<state-dir>` is the same normalized `BUSDRIVER_STATE_DIR` that `run-review-loop.sh` and `write-review-marker.sh` resolve (default `.claude`; an unset or rejected value falls back to `.claude`). Under a customized state dir the default `.claude` path holds no handoff — or a stale one — and the path Step 5 then passes is refused by the writer. `run-review-loop.sh` also echoes the saved prompt path on stderr as it arms the handoff.
 2. Read the review prompt from that path
 3. Dispatch the `code-reviewer` agent via the Agent tool with the prompt as context. **The agent prompt MUST include:**
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."

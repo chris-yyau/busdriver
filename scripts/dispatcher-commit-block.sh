@@ -1,4 +1,28 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+
+# #576: exported shell functions must never be IMPORTED, because once they are, nothing
+# in-script can undo it — in bash a function shadows a builtin, and `unset`, `set`,
+# `builtin` and `exec` are all shadowable. Measured: with `sha256sum` and `unset`
+# exported, a plain `bash script` ran the FORGED digest and `unset -f` silently did
+# nothing. A forged hash utility emits one constant digest for every diff and defeats
+# marker binding; a forged `od` makes the exclusion pin challenge predictable.
+#
+# So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
+#   1. The shebang above is `#!/bin/bash -p`. Privileged mode makes bash ignore
+#      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
+#      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
+#      #713). The kernel applies a shebang — nothing in the environment can shadow it.
+#   2. Callers that run this as `bash <script>` bypass the shebang, so they pass -p
+#      explicitly; skills/litmus/SKILL.md does. The GATES need neither: hooks.json execs
+#      contained-launch.sh (itself `#!/bin/bash -p`), which re-execs through `env -i`,
+#      so no BASH_FUNC_* survives to reach them.
+#   3. The re-exec below is a LAST-RESORT fallback for a caller that did neither. It
+#      calls `exec`, which is itself shadowable, so it closes the ordinary case and not
+#      a hostile parent — a parent that can forge `exec` in this script's environment is
+#      the process that launched it and could replace the script outright.
+if [[ "$-" != *p* ]]; then
+    exec /bin/bash -p "$0" "$@"
+fi
 # scripts/dispatcher-commit-block.sh - orchestrated dispatcher commit block for
 # the pr-grind commit-ownership inversion. Invoked once per fix-round.
 #
@@ -57,6 +81,31 @@ set -uo pipefail
 # `GIT_NO_REPLACE_OBJECTS=1` on the grind-trailer reads below predates this and is now
 # redundant, but harmless — left in place rather than widening this diff.)
 export GIT_NO_REPLACE_OBJECTS=1
+# #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
+# integrity checks are built on. Exported functions travel through the environment —
+# the same repo-injectable channel #325 / ADR 0016 closed for env vars — and in bash a
+# function beats both a builtin and a PATH binary. Measured: with `sha256sum` and
+# `command` exported as functions, `command -v sha256sum` returned the forged function's
+# output; after this unset it returned the real /sbin/sha256sum. A forged hash utility
+# emits one constant digest for every diff and defeats marker binding outright; a forged
+# `od` makes the exclusion pin challenge predictable. `command` is listed first because
+# it is itself shadowable, which is why prefixing calls with it is not sufficient alone.
+#
+# BE PRECISE ABOUT WHAT THIS DOES NOT COVER. `unset` is a special builtin, but bash
+# outside POSIX mode still resolves a function of that name first — measured: with
+# `unset`, `set` and `builtin` all exported as functions, this line silently does
+# nothing, and `set -o posix` / `builtin unset` are defeated the same way. So this is a
+# first line of defence against the ordinary case, NOT a boundary.
+#
+# The boundary is the launcher. The gates run under hooks/gate-scripts/lib/
+# contained-launch.sh, which re-execs through `/usr/bin/env -i` and documents this exact
+# class (`BASH_FUNC_exec%%=() { … }` overriding the `exec` builtin) — an absolute path
+# cannot be a function name, so that hop is unshadowable and strips every BASH_FUNC_*
+# before the gate starts. A caller who can additionally forge `unset` in THIS script's
+# environment is the process that launched it and could replace the script outright,
+# which no in-script check can answer.
+unset -f command git sha256sum shasum od tr cut wc cp mktemp readlink stat awk grep sed 2>/dev/null || true
+
 
 emit_bootstrap_bail() {
     local category="${1:-judgment}"
@@ -942,7 +991,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # Unpredictable, same reasoning as the producer: a guessable challenge can be
     # pre-seeded into the attacker-controlled live policy to fake a pin that never
     # happened.
-    _excl_probe_rand=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "")
+    _excl_probe_rand=$(LC_ALL=C command od -An -N16 -tx1 /dev/urandom 2>/dev/null | command tr -d ' \n' || echo "")
     if [[ ${#_excl_probe_rand} -lt 32 ]]; then
         emit_bail "env" "no usable randomness for the exclusion pin probe; cannot prove the pinned policy was honoured, refusing fail-closed"
     fi

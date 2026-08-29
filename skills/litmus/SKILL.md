@@ -110,7 +110,7 @@ LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. A pass that needs longer is the unsolved case
@@ -183,7 +183,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 4. For each group:
    a. `git add <files in group>`
    b. `bash $LITMUS_SCRIPTS/init-review-loop.sh`
-   c. `bash $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   c. `bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed
@@ -261,7 +261,7 @@ Bash(command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop
 
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. If the pass needs longer, use pattern B —
@@ -410,7 +410,7 @@ git commit -m "Your message"  # Hooks will enforce review
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $LITMUS_SCRIPTS/init-review-loop.sh 10
-bash $LITMUS_SCRIPTS/run-review-loop.sh
+bash -p $LITMUS_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -436,7 +436,7 @@ git push                # Push after review passes
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $CODEX/init-review-loop.sh 10                                  # Initialize
-bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
+bash -p $CODEX/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests
 git commit -m "Message"                                             # Commit

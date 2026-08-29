@@ -616,6 +616,45 @@ else
 fi
 rm -f "$pf5" "$pf6"; rm -rf "$t1f"
 
+# EXPORTED SHELL FUNCTIONS shadow builtins and PATH binaries in bash, and travel through
+# the environment like any other repo-injectable value. A forged sha256sum emits one
+# constant digest for every diff; a forged `od` makes the pin challenge predictable.
+# Prefixing with `command` is not enough on its own, because `command` is shadowable too.
+# The ONLY thing that actually closes the exported-function class is refusing to import
+# them: in bash a function shadows a builtin, `unset`/`set`/`builtin` included, so no
+# in-script sanitising is sufficient. Every entry script must re-exec under `bash -p`.
+missing_p=""
+for f in "$PRODUCER" "$DISPATCHER" "$GATE_SCRIPT" hooks/gate-scripts/pre-pr-gate.sh; do
+    head -1 "$f" | grep -q '^#!/bin/bash -p$' || missing_p="$missing_p $f(shebang)"
+    grep -q 'exec /bin/bash -p "$0" "$@"' "$f" || missing_p="$missing_p $f(fallback)"
+done
+if [ -z "$missing_p" ]; then
+    ok "every entry script is #!/bin/bash -p and re-execs under -p as a fallback"
+else
+    bad "no privileged-mode re-exec in:$missing_p"
+fi
+
+missing_unset=""
+for f in "$PRODUCER" "$DISPATCHER" "$GATE_SCRIPT" hooks/gate-scripts/pre-pr-gate.sh; do
+    grep -q 'unset -f command git sha256sum shasum od tr' "$f" || missing_unset="$missing_unset $f"
+done
+if [ -z "$missing_unset" ]; then
+    ok "every hash-bearing script drops inherited shell functions before using them"
+else
+    bad "inherited shell functions are not dropped in:$missing_unset"
+fi
+
+# ...and the behaviour, not just the line: a forged sha256sum must not survive it.
+forged=$(bash -c 'sha256sum() { echo "0000000000000000000000000000000000000000000000000000000000000000  -"; }
+command() { echo FORGED; }
+export -f sha256sum command
+bash -c "unset -f command sha256sum 2>/dev/null || true; printf x | command sha256sum | cut -d\" \" -f1"')
+if [ "$forged" = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" ]; then
+    ok "a forged exported sha256sum does not survive the unset (real digest returned)"
+else
+    bad "forged sha256sum survived: got '$forged'"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

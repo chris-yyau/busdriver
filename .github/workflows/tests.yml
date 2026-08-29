@@ -89,6 +89,14 @@ jobs:
           shellcheck --severity=warning \
             scripts/gate-integrity.sh \
             tests/test-gate-integrity.sh
+      - name: Verify gate-integrity content lock (#742)
+        # The ENFORCEMENT, not just the lint. tests/test-gate-integrity.sh already
+        # runs `--check` as its first assertion and is discovered by the full-glob
+        # shell-tests job, but that job `needs: shellcheck` and takes ~15m — so a
+        # stale lock would only surface at the far end of the run, and the wiring
+        # would be implicit-by-glob rather than stated anywhere. This step fails
+        # fast, here, and names the one-line fix.
+        run: ./scripts/gate-integrity.sh --check
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

@@ -138,22 +138,34 @@ compute_lock() {  # compute_lock <root>
     done
     cd "$base" || return 1
 
+    # EVERY enumeration is captured and its status checked. `find` can emit a PARTIAL
+    # listing and THEN exit nonzero — an unreadable or vanishing subtree does exactly
+    # that — and with `pipefail` but no `set -e` a bare pipeline would swallow it:
+    # --update would record the partial lock and --check would accept the same partial
+    # tree. A listing this function cannot vouch for is not a listing.
+    local n_lines n_paths listing
+    n_lines="$(lockable_paths | wc -l | tr -d ' ')" \
+        || { printf 'gate-integrity: could not enumerate the locked directories\n' >&2; return 1; }
+    n_paths="$(lockable_paths -print0 | tr -dc '\0' | wc -c | tr -d ' ')" \
+        || { printf 'gate-integrity: could not enumerate the locked directories\n' >&2; return 1; }
     # A path containing a NEWLINE would split one entry into two unhashable lines
     # that --check and --update agree on — a silent pass over a smuggled file. The
     # line count and the NUL-delimited count diverge exactly when one exists, so
     # compare them and fail closed rather than record the garbage.
-    local n_lines n_paths
-    n_lines="$(lockable_paths | wc -l | tr -d ' ')"
-    n_paths="$(lockable_paths -print0 | tr -dc '\0' | wc -c | tr -d ' ')"
     if [[ "$n_lines" != "$n_paths" ]]; then
         printf 'gate-integrity: a locked path contains a newline (%s lines vs %s paths)\n' \
             "$n_lines" "$n_paths" >&2
         return 1
     fi
+    listing="$(lockable_paths | LC_ALL=C sort)" \
+        || { printf 'gate-integrity: could not enumerate the locked directories\n' >&2; return 1; }
 
     # Paths stay repo-relative so a lock recorded here verifies in any checkout.
     local digest
     while IFS= read -r f; do
+        # `<<<` on an empty listing still yields one empty line — the caller's
+        # empty-listing refusal is what reports that, with the right message.
+        [[ -z "$f" ]] && continue
         if [[ -L "$f" || ! -f "$f" ]]; then
             printf 'gate-integrity: not a regular file (symlinks and special files are not lockable): %s\n' "$f" >&2
             return 1
@@ -163,10 +175,25 @@ compute_lock() {  # compute_lock <root>
             return 1
         }
         printf '%s  %s\n' "$digest" "$f"
-    done < <(lockable_paths | LC_ALL=C sort)
+    done <<< "$listing"
 }
 
 lock_path="$root/$LOCK_NAME"
+
+# The lock is a TRACKED file, so a PR controls what it is — including making it a
+# symlink. `>` follows one, which would turn the documented `--update` into an
+# arbitrary write against any target the operator can write (`~/.ssh/authorized_keys`,
+# a shell rc). Reading through one is the mirror problem: the lock a check verifies
+# against would come from outside the tree. Refuse it in both modes; a regular file or
+# nothing are the only two states this tool handles.
+if [[ -L "$lock_path" ]]; then
+    printf 'gate-integrity: %s is a symlink — refusing to read or write through it\n' "$LOCK_NAME" >&2
+    exit 1
+fi
+if [[ -e "$lock_path" && ! -f "$lock_path" ]]; then
+    printf 'gate-integrity: %s is not a regular file\n' "$LOCK_NAME" >&2
+    exit 1
+fi
 
 if [[ "$mode" == "update" ]]; then
     computed="$(compute_lock "$root")" || exit 1
@@ -176,7 +203,8 @@ if [[ "$mode" == "update" ]]; then
     # a recordable state.
     [[ -n "$computed" ]] || { printf 'gate-integrity: refusing to record an EMPTY lock (the locked directories hold no files)\n' >&2; exit 1; }
     printf '%s\n' "$computed" > "$lock_path" || exit 1
-    printf 'gate-integrity: wrote %s (%d files)\n' "$LOCK_NAME" "$(wc -l <<< "$computed" | tr -d ' ')"
+    n_written="$(wc -l <<< "$computed")" || n_written="?"
+    printf 'gate-integrity: wrote %s (%s files)\n' "$LOCK_NAME" "${n_written// /}"
     exit 0
 fi
 
@@ -201,6 +229,7 @@ fi
 
 printf 'gate-integrity: FAIL — the hook execution surface does not match %s\n' "$LOCK_NAME" >&2
 printf '%s\n' "$diff_out" >&2
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf '\n  A `-` line is a locked file that changed or was deleted; a `+` line is its\n' >&2
 printf '  current content or a new unlocked file. Review the change, then record it:\n' >&2
 printf '    ./scripts/gate-integrity.sh --update   # and commit the lock alongside it\n' >&2

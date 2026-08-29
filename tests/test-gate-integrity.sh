@@ -61,6 +61,7 @@ assert $? "↳ control: a freshly recorded fixture tree verifies clean"
 # so the containment suite's verbatim pin still matches and the dispatched hook
 # is named nowhere — the lock is what has to see it.
 fresh_fixture
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' \
     >> "$_fix/hooks/gate-scripts/load-orchestrator.sh"
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -77,6 +78,7 @@ fi
 # the whole directory rather than a `*.js` glob precisely so this is not a
 # second, separately-argued hole.
 fresh_fixture
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' \
     >> "$_fix/scripts/hooks/run-with-flags-shell.sh"
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -92,6 +94,7 @@ fi
 # launchers executes exactly like a tracked one. Enumeration is from disk for
 # this reason, so an untracked addition is a failure rather than an invisible.
 fresh_fixture
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf 'node "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' \
     > "$_fix/hooks/gate-scripts/lib/smuggled.sh"
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -119,6 +122,7 @@ fi
 # addition shape that can be invisible rather than merely unrecorded. It must be
 # named and refused, not skipped.
 fresh_fixture
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf 'node "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' > "$_fix/outside-the-lock.sh"
 ln -s "$_fix/outside-the-lock.sh" "$_fix/hooks/gate-scripts/lib/evil.sh"
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -160,6 +164,7 @@ printf 'not really bytecode\n' > "$_fix/hooks/gate-scripts/lib/__pycache__/marke
 "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
 assert $? "a regenerated __pycache__/*.pyc does not break the check (the one exemption)"
 
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf 'node "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' \
     > "$_fix/hooks/gate-scripts/lib/__pycache__/evil.sh"
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -226,6 +231,49 @@ fresh_fixture
 "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
 assert "$(( $? == 0 ? 1 : 0 ))" "an EMPTY lock fails closed"
 
+# ── 4c. The lock file itself must be a regular file ───────────────────────────
+# `.gate-integrity.lock` is TRACKED, so a PR controls what it is — including
+# making it a symlink. `>` follows one, which turns the documented `--update`
+# into an arbitrary write against any target the operator can write; reading
+# through one sources the comparison from outside the tree. Both modes refuse.
+fresh_fixture
+_target="$_fix/would-be-overwritten"
+printf 'ORIGINAL\n' > "$_target"
+rm -f "$_fix/.gate-integrity.lock"
+ln -s "$_target" "$_fix/.gate-integrity.lock"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+assert "$(( $? == 0 ? 1 : 0 ))" "--update refuses a SYMLINKED lock (no arbitrary write through it)"
+_target_after="$(cat "$_target")"
+if [[ "$_target_after" == "ORIGINAL" ]]; then
+    assert 0 "↳ and the symlink target is untouched"
+else
+    assert 1 "↳ and the symlink target is untouched"
+fi
+"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+assert "$(( $? == 0 ? 1 : 0 ))" "↳ --check refuses to verify against a SYMLINKED lock"
+rm -f "$_fix/.gate-integrity.lock"
+
+# ── 4d. A partial enumeration is never recorded or accepted ───────────────────
+# `find` can emit a PARTIAL listing and THEN exit nonzero — an unreadable subtree
+# does exactly that. Under `pipefail` with no `set -e` a bare pipeline swallows
+# that status, so --update records the partial lock and --check accepts the same
+# partial tree: a fail-OPEN over precisely the files that could not be read.
+fresh_fixture
+chmod 000 "$_fix/hooks/gate-scripts/lib" 2>/dev/null
+if [[ ! -r "$_fix/hooks/gate-scripts/lib" ]]; then
+    "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+    assert "$(( $? == 0 ? 1 : 0 ))" "an UNREADABLE locked subtree fails closed (partial find listing not accepted)"
+    "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+    assert "$(( $? == 0 ? 1 : 0 ))" "↳ and --update refuses to record the partial listing"
+    chmod 755 "$_fix/hooks/gate-scripts/lib" 2>/dev/null
+else
+    # Running as root, or a filesystem that ignores the mode: the assertion is
+    # unprovable here, and a silent skip is what the CI runner's skip-masking
+    # guard exists to catch.
+    chmod 755 "$_fix/hooks/gate-scripts/lib" 2>/dev/null
+    assert 1 "an UNREADABLE locked subtree fails closed (could not make the fixture unreadable)"
+fi
+
 # ── 4b. Argument handling terminates and rejects ──────────────────────────────
 # A trailing bare `--root` used to leave $# at 1 and spin the parse loop forever
 # — a hang, which in CI reads as a per-test timeout rather than as a refusal.
@@ -246,6 +294,7 @@ assert "$(( _rc == 2 ? 0 : 1 ))" "an unknown argument exits 2 rather than defaul
 # would mean the producer never saw the edit.
 fresh_fixture
 _before="$(grep 'load-orchestrator\.sh$' "$_fix/.gate-integrity.lock")"
+# shellcheck disable=SC2016 # Intentional: a literal $CLAUDE_PLUGIN_ROOT / backtick, not an expansion
 printf '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/hooks/blocking.js"\n' \
     >> "$_fix/hooks/gate-scripts/load-orchestrator.sh"
 "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null

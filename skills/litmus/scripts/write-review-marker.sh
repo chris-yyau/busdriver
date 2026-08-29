@@ -23,6 +23,9 @@
 #   check would consume somebody else's handoff and compare against somebody else's
 #   baseline. NOT an anti-forgery control — a caller holding Bash can read the handoff
 #   and pass its content back; it orders concurrent writers, nothing more.
+#
+#   BUSDRIVER_REVIEW_LOCK_WAIT (seconds, default 90, 0 = one attempt) bounds how long
+#   either mode waits for a contended review lock before refusing (#794).
 set -euo pipefail
 DISCARD=0
 if [ "${1:-}" = "--discard" ]; then
@@ -87,33 +90,55 @@ GEN_FILE="$REPO_DIR/$STATE_DIR/litmus-marker-gen.local"
 # redirection below is clobbered anyway, which is the very race this closes. We hold it
 # only for the write — not across the agent phase, which is what exit 3 releases it for.
 #
-# Contention is a refusal, not a wait: the other run holds the lock because it is
-# reviewing. The handoff is left ARMED in that case (unlike the refusal below) —
-# nothing was written, so a retry once the other run finishes is the cheapest correct
-# outcome, and the token was already armed anyway.
+# Contention is a bounded WAIT, then a refusal (#794). It used to be an immediate
+# refusal, on the reasoning that the run holding the lock would publish its own marker.
+# That holds only when that run PASSES: one ending in findings, a timeout or an infra
+# error publishes nothing, and this already-passed review had refused too — so no marker
+# existed and the next commit was spuriously blocked. Nothing performed the documented
+# retry automatically, because SKILL.md's builtin flow invokes this writer once.
 #
-# KNOWN RESIDUAL (#794): "it will publish its own marker" holds only when that run
-# PASSES. A run that ends with findings, a timeout or an infra error publishes nothing,
-# and this already-passed review has refused too — so no marker exists and the next
-# commit is spuriously blocked until the retry above actually happens. Nothing performs
-# that retry automatically: SKILL.md's builtin flow invokes this writer once. The cost
-# is bounded at the level #790 already accepted (a re-run), so the diagnostic below
-# NAMES the retry rather than the design changing here; waiting for the lock instead is
-# tracked in #794.
+# Waiting is safe precisely because none of the ordering checks move: whatever the other
+# run did while we waited is caught AFTER we acquire. If it published, the generation
+# comparison below refuses and its marker stands. If it re-armed the handoff, the
+# identity check refuses and consumes nothing. If it published nothing, we publish —
+# which is the case this wait exists for. We are only retrying the acquisition.
 #
-# --discard inherits that residual and is the sharper half of it: a FAILED review that
-# refuses here leaves its own arming live, where the caller-side `rm` this replaced would
-# have retired it unconditionally. Nothing else retires it, so until the retry happens
-# that arming can still be handed back to this script and mint a marker for the current
-# index despite the FAILED verdict. It is not fixed by deleting anyway on contention —
-# that is precisely the unsynchronized delete this mode exists to remove, and it can
-# destroy a newer run's pair. So the refusal is mode-aware below and says to retry, and
-# the wait-instead-of-refuse design change is tracked in #794 for both modes together.
+# --discard waits for the same reason, in its sharper form: a FAILED review that refused
+# here left its own arming live (the caller-side `rm` this mode replaced always retired
+# it), and until the retry happened that arming could be handed back here and mint a
+# marker for the current index despite the FAILED verdict. Deleting anyway on contention
+# is still NOT the fix — that is the unsynchronized delete this mode exists to remove.
+#
+# Bounded, not unbounded: this runs inside a Bash tool call, so an unbounded wait is not
+# actually available — exceeding the caller's timeout kills the writer mid-wait, which
+# lands in the same armed-retry state as the timeout refusal but without the diagnostic.
+# The default sits under the Bash tool's own 120s default for that reason. Raising
+# BUSDRIVER_REVIEW_LOCK_WAIT past it requires raising the caller's timeout to match.
+#
+# An ORPHANED lock (owner SIGKILLed) now costs the full wait before the "remove it
+# yourself" hint. Deliberate: `kill -0` liveness is diagnostic-only by lib/review-lock.sh's
+# own doctrine — pid reuse makes it unsafe to shortcut a decision on — and the library
+# does not reclaim orphans for the same reason.
+LOCK_WAIT="${BUSDRIVER_REVIEW_LOCK_WAIT:-90}"
+# Digits only. A garbage value must fall back, not crash the comparison under `set -u`
+# / bash 3.2 arithmetic. 0 means "one attempt", i.e. the pre-#794 behaviour.
+case "$LOCK_WAIT" in ""|*[!0-9]*) LOCK_WAIT=90 ;; esac
 cd "$REPO_DIR"
 # shellcheck source=lib/review-lock.sh
 source "$SCRIPT_DIR/lib/review-lock.sh"
+# review_lock_acquire MUST run in this shell, never in `$( )` or a pipeline: it records
+# ownership in shell variables keyed to BASHPID, and a subshell claim leaves the lock
+# held but never released. Retry only rc=1 (someone holds it); rc=2 is an unusable state
+# dir, which no amount of waiting fixes.
 _LOCK_RC=0
 review_lock_acquire || _LOCK_RC=$?
+_WAITED=0
+while [ "$_LOCK_RC" -eq 1 ] && [ "$_WAITED" -lt "$LOCK_WAIT" ]; do
+    sleep 1
+    _WAITED=$((_WAITED + 1))
+    _LOCK_RC=0
+    review_lock_acquire || _LOCK_RC=$?
+done
 if [[ "$_LOCK_RC" -ne 0 ]]; then
     _LOCK_PATH=$(review_lock_path)
     _LOCK_OWNER=$(review_lock_owner)
@@ -121,6 +146,7 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     if [ "$DISCARD" -eq 1 ]; then
         echo "ERROR: Could not take the review lock — handoff NOT discarded." >&2
         echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
+        echo "       Waited ${_WAITED}s (BUSDRIVER_REVIEW_LOCK_WAIT=$LOCK_WAIT) and it is still held." >&2
         echo "       Your failed review's handoff is STILL ARMED and nothing else retires it." >&2
         echo "       Re-run this --discard with the same prompt path once that run finishes;" >&2
         echo "       until you do, that arming can still be handed back here and mint a marker" >&2
@@ -130,8 +156,7 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     fi
     echo "ERROR: Could not take the review lock — marker not written." >&2
     echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
-    echo "       Another litmus review is in flight. If it PASSES it publishes its own" >&2
-    echo "       marker; if it ends with findings, a timeout or an infra error it does not." >&2
+    echo "       Waited ${_WAITED}s (BUSDRIVER_REVIEW_LOCK_WAIT=$LOCK_WAIT) and it is still held." >&2
     echo "       Nothing was consumed here and the handoff is still armed, so once that run" >&2
     echo "       finishes, re-run THIS script with the same prompt path to publish your" >&2
     echo "       result — or re-run /litmus if the handoff is gone. (#794)" >&2
@@ -139,6 +164,14 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     exit 1
 fi
 trap 'review_lock_release' EXIT
+
+# The wait above stretches the window between the existence check at the top and the
+# read below, so re-check rather than letting `cat` die as a bare set -e failure.
+if [ ! -f "$HANDOFF_FILE" ]; then
+    echo "ERROR: The builtin handoff disappeared while waiting for the review lock." >&2
+    echo "       Nothing was written. Re-run /litmus to arm a fresh one." >&2
+    exit 1
+fi
 
 # Is the armed handoff still OURS? Both the handoff and its baseline are rewritten by
 # every exit 3, so a builtin fallback that started after ours has replaced the pair —

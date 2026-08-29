@@ -1542,6 +1542,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
     echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
     echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    write_terminal_status too_large
     exit 2
   fi
   _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))
@@ -1717,6 +1718,7 @@ else
   if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
     echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
     echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    write_terminal_status too_large
     exit 2
   fi
   _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))

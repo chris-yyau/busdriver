@@ -512,6 +512,16 @@ because each is a rule this ADR already states, missed on the NEW transport:
   the ANSWER, not merely of the charge: the charge exists to bound the walk, so skipping one
   without the other would bound nothing.
 
+A fourth round found the mirror of a lesson this document already records for `$(...)`
+bodies: an OUTPUT body is a compound command, and asking it as ONE stage reads only its
+first command word for the COMMAND-POSITION-only names. So `>(true; . /dev/stdin)` hid the
+`.` behind a harmless `true` and ran the payload — verified executing. The body is split and
+every segment asked now, exactly as `_may_read_program_from_stdin` already does for a
+`$(...)` body. Note what was NOT wrong: the any-word shell test never needed this
+(`>(true; bash)` blocked throughout), which is the whole reason `.` and `source` are
+command-position-only in the first place. Both spellings are pinned so the asymmetry stays
+visible.
+
 A third came back from the pre-commit pass, and it is the *same* mistake one layer in: the
 new backtick branch was ordered AFTER the double-quote one, so it was unreachable from a
 quoted context. Bash opens a substitution on a backtick inside double quotes, and the quotes

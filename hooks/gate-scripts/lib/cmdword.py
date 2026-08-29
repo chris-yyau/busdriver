@@ -2184,10 +2184,24 @@ def _procsub_producers(pairs, whole, subs):
     ins, outs, ok = subs
     if not ok:
         return [whole]                    # unreadable: fail CLOSED, scan it all
+    # An OUTPUT body is a COMPOUND command, so it gets the same treatment the outer command
+    # got -- SPLIT, then every segment asked -- exactly as `_may_read_program_from_stdin`
+    # already does for a `$(...)` body, and for the same reason. Asking the body as ONE
+    # stage reads only its first command word for the COMMAND-POSITION-only names, so
+    # `printf 'rm -rf src' > >(true; . /dev/stdin)` hid the `.` behind a harmless `true`
+    # and ran the payload -- verified executing. The any-word shell test was never fooled
+    # by this (`>(true; bash)` blocked throughout); it is the `.`/`source` class, which is
+    # command-position-only on purpose, that needed the split.
+    _out_stages = []
+    for _body in outs:
+        _bsegs, _bok = _split_simple_commands(_body)
+        if not _bok:
+            return [whole]                # unsplittable body: fail CLOSED, scan it all
+        _out_stages.extend(_bsegs)
     out, seen = [], {}
     if ins and _any_reads_program_from_stdin([seg for _op, seg in pairs], seen):
         out.extend(ins)
-    if outs and _any_reads_program_from_stdin(outs, seen):
+    if outs and _any_reads_program_from_stdin(_out_stages, seen):
         out.append(whole)
     if _psub_budget[0] < 0 and whole not in out:
         # The candidate walk ran out mid-command, so what it did NOT reach is unexamined

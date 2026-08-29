@@ -3693,6 +3693,19 @@ print(cmdword.is_file_mod("grep -n \047rm -rf src\047 notes.txt > >(cat -n)"))')
 else
     no "a non-shell substitution body does not widen the scan" "classifier returned True"
 fi
+# An OUTPUT body is a COMPOUND command, and asking it as ONE stage reads only its first
+# command word for the COMMAND-POSITION-only names. `.` and `source` are the whole of that
+# class, so a harmless `true` in front of one hid it -- verified executing. The any-word
+# shell test was never fooled (`>(true; bash)` blocked throughout); both are pinned so the
+# asymmetry stays visible.
+check "a command-position receiver behind a separator in an output body is found" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; . /dev/stdin)")"
+check "...in the source spelling too" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; source /dev/stdin)")"
+check "...and inside a compound in that body" block \
+    "$(bash_decision "printf 'rm -rf src' > >(if true; then . /dev/stdin; fi)")"
+check "...while the any-word shell test never needed the split" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; bash)")"
 # An input substitution bound to a NON-ZERO descriptor and named back as the script operand.
 # The candidate test is arity-free by design (ADR 0032), so the explicit `/dev/fd/3` operand
 # does not un-name the shell: the stage still says `bash`, and the body is still scanned.

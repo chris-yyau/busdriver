@@ -1217,8 +1217,15 @@ else
       printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
     fi
     if [ ${#_excl_probe_rand} -ge 32 ]; then
+      # Guard the source. As a bare command under `set -e` a failure here exits the loop
+      # immediately — before REVIEW_EXCLUDE_ARGS is cleared and before any terminal
+      # status is written, so the documented "review with no exclusions" fallback never
+      # runs and automation is left reading a stale PENDING state.
       # shellcheck source=lib/exclude-generated.sh
-      source "$EXCL_LOGIC_SOURCE"
+      if ! source "$EXCL_LOGIC_SOURCE"; then
+        echo "⚠️  Could not load the verified exclusion parser — reviewing with NO exclusions" >&2
+        REVIEW_EXCLUDE_ARGS=()
+      fi
     fi
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
     # EXACT match, and the same comparison the strip below uses. A substring test

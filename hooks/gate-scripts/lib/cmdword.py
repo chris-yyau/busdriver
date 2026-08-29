@@ -44,6 +44,7 @@ import shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
+_BQ = chr(96)
 
 # The original patterns, kept as the unparseable-command fallback.
 FILE_MOD_PATTERNS = [
@@ -556,7 +557,7 @@ def _split_with_ops(s):
     exactly the difference between `a || b` (run `||`) and `a | ; b`.
     """
     pairs, buf, op = [], [], []
-    in_s = in_d = esc = False
+    in_s = in_d = esc = in_b = False
     # Did the PREVIOUS character open a redirect -- an unquoted, unescaped `<` or `>`?
     # Tracked rather than read back off buf[-1], because the buffer cannot tell an
     # OPERATOR `<` from a literal one: bash runs `printf <payload> \<|bash` as a real
@@ -574,16 +575,50 @@ def _split_with_ops(s):
             if ch == _SQ:
                 in_s = False
             redir = False
+        elif in_b:
+            # A BACKTICK SUBSTITUTION is one word of the stage it sits in, however many
+            # control operators its body holds: bash runs `printf <payload> | echo `true &&
+            # bash`` as a TWO-stage pipeline, and the nested shell inherits the pipe. Read
+            # as outer separators, that `&&` ended the pipeline before the receiver was
+            # reached and the producer was discarded -- verified executing (#563). Tracked
+            # as STATE, exactly like the two quote states above and for the same reason: the
+            # buffer cannot say whether a character it already emitted was inside a span.
+            # The body still gets classified as code -- `_command_substitutions` extracts it
+            # and recurses -- so making it opaque HERE removes no block.
+            buf.append(ch)
+            if ch == "\\":
+                esc = True                # in_b survives the escape: only `esc` is consumed
+            elif ch == _BQ:
+                # ...and back into the double quotes if that is where the span opened:
+                # `in_d` is never cleared by the branch below, so there is no state to
+                # restore here.
+                in_b = False
+            redir = False
         elif in_d:
             buf.append(ch)
             if ch == "\\":
                 esc = True
+            elif ch == _BQ:
+                # A backtick INSIDE double quotes still opens a substitution -- bash runs
+                # `echo "`echo "x && cat"; bash`"`, and the quotes inside the body belong to
+                # the body's own command, not to the outer string. Checked BEFORE `in_d`
+                # above so the inner span wins; `in_d` is deliberately left True, so closing
+                # the span returns to the string with no saved-state bookkeeping. Ordered
+                # after `in_d` in the first cut of #563, this branch was unreachable from a
+                # quoted context: the body's second `"` read as the outer string's CLOSE,
+                # the `&&` behind it split the stage, and the producer was discarded again
+                # -- verified executing.
+                in_b = True
             elif ch == _DQ:
                 in_d = False
             redir = False
         elif ch == "\\":
             buf.append(ch)
             esc = True
+            redir = False
+        elif ch == _BQ:
+            buf.append(ch)
+            in_b = True
             redir = False
         elif ch == _SQ:
             buf.append(ch)
@@ -639,7 +674,9 @@ def _split_with_ops(s):
             buf.append(ch)
             redir = ch in "<>"
     pairs.append(("".join(op), "".join(buf)))
-    return pairs, not (in_s or in_d or esc)
+    # An unterminated backtick joins the unterminated quote and the dangling escape: the
+    # caller falls back to the wider raw scan rather than trusting a half-parse.
+    return pairs, not (in_s or in_d or esc or in_b)
 
 
 def _split_simple_commands(s):
@@ -2016,6 +2053,134 @@ def _command_substitutions(s):
     return out, True
 
 
+def _process_substitutions(s):
+    """(in_bodies, out_bodies, ok) for the `<(...)` and `>(...)` process substitutions in s.
+
+    Split by DIRECTION, because the two run the transport opposite ways and the producer
+    scan needs to know which end is which:
+
+      `<(BODY)`  BODY's stdout becomes a file the OUTER command reads -- so BODY is the
+                 producer and the outer command may be the receiver.
+      `>(BODY)`  the OUTER command writes into BODY's stdin -- so the outer command is the
+                 producer and BODY may be the receiver.
+
+    Both were verified executing (#563): `bash < <(printf 'rm -rf src')` and
+    `printf 'rm -rf src' > >(bash)` each performed the removal while `is_file_mod`
+    answered False, because `_piped_shell_producers` recognises only `|` and `|&` as
+    feeding a stage. `bash <(printf ...)` -- the substitution as a script OPERAND rather
+    than through a redirect -- runs it too, so this does not ask for a redirect character.
+
+    QUOTED regions are skipped, both kinds, unlike the `$(...)` sibling above: a process
+    substitution does NOT happen inside double quotes -- `echo "<(rm -rf q)"` prints the
+    text and removes nothing, verified against real bash -- so treating one as code there
+    would be an over-block with no shape behind it. The double-quote state is a TOGGLE
+    rather than a `find`, because a `"` may be escaped inside the string it closes; the
+    single-quote skip may be a `find`, because nothing escapes inside single quotes.
+
+    `ok` is False on an unterminated `<(` or an unterminated quote, so the caller can fall
+    back to the wider scan rather than trust a half-parse, exactly as its two siblings do.
+    """
+    ins, outs, i, n = [], [], 0, len(s)
+    in_d = False
+    while i < n:
+        ch = s[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_d:
+            in_d = ch != _DQ
+            i += 1
+            continue
+        if ch == _SQ:                      # inert: no substitution of any kind happens here
+            j = s.find(_SQ, i + 1)
+            if j < 0:
+                return ins, outs, False
+            i = j + 1
+            continue
+        if ch == _DQ:
+            in_d = True
+            i += 1
+            continue
+        if ch in "<>" and i + 1 < n and s[i + 1] == "(":
+            j = _subst_end(s, i + 1)       # quote-aware paren match, shared with `$(`
+            if j < 0:
+                return ins, outs, False
+            (ins if ch == "<" else outs).append(s[i + 2:j])
+            i = j + 1
+            continue
+        i += 1
+    return ins, outs, not in_d
+
+
+# A SECOND allowance of the same size, NOT a share of `_scan_budget`. The candidate walk
+# below covers the whole command, and `is_file_mod`'s own per-segment walk then covers it
+# again, so charging both against one counter silently HALVED the documented 4,000-token
+# limit for any command holding a `<(`: a benign 2,004-token
+# `grep -f <(echo pat) file0.txt ... file1999.txt` flipped from allow to BLOCK, with the
+# charge buying nothing (the walk emitted no producer) and the later walk failing closed on
+# a budget it had not spent. Two bounded walks are still bounded, and the branch runs only
+# when a process substitution is present: a 65KB substitution-heavy command measures 0.33s
+# against the hook's 5s timeout.
+_psub_budget = [_MAX_SCAN_TOKENS]
+
+
+def _any_reads_program_from_stdin(texts):
+    """Might any of these stages run a program it reads from stdin?
+
+    CHARGED before each call, for the reason `_piped_shell_producers` records at its own
+    charge site: the walk behind this question is the potentially quadratic one, and a hook
+    that overruns its 5s timeout writes NO decision, which the harness reads as ALLOW.
+    Exhaustion answers True, so an unfinished scan widens rather than narrows; the caller
+    turns an exhausted walk into the whole-command scan, which is the same best-effort exit
+    this module already takes for an unreadable command.
+    """
+    for t in texts:
+        _psub_budget[0] -= len(t.split())
+        if _psub_budget[0] < 0:
+            return True
+        if _may_read_program_from_stdin(t):
+            return True
+    return False
+
+
+def _procsub_producers(pairs, whole, subs):
+    """Text feeding a shell across a PROCESS SUBSTITUTION rather than a pipe (#563).
+
+    Same decision as `_piped_shell_producers` and the same fail-closed answer -- hand the
+    visible payload to the raw pre-#519 regexes -- for the transport that scan cannot see.
+    Nothing here models the language: the receiver question is the one
+    `_may_read_program_from_stdin` already answers, and what is yielded goes to the same
+    producer loop the pipe path feeds.
+
+    SCOPE, and the over-block it buys. For `<(...)` the candidate test is asked of every
+    stage of the command rather than of the stage the substitution is attached to: the
+    splitter breaks on `(` and `)`, so a substitution arrives already torn off its own
+    stage and binding the two back together means positional bookkeeping the splitter does
+    not keep. The cost is that a shell named ANYWHERE in the command puts every `<(...)`
+    body under the raw scan -- `sh -c ':' <(printf 'rm -rf src')` blocks. For `>(...)` the
+    producer is the WHOLE command, for the same reason and with the same trade, which is
+    the shape the indirection rule in `is_file_mod` already takes.
+
+    Process substitutions are RARE, so an ordinary command pays nothing: the candidate walk
+    runs only once one is present. `subs` is the caller's already-computed
+    `_process_substitutions(whole)`, which it needs anyway for the indirection trigger --
+    one walk, not two.
+    """
+    ins, outs, ok = subs
+    if not ok:
+        return [whole]                    # unreadable: fail CLOSED, scan it all
+    out = []
+    if ins and _any_reads_program_from_stdin([seg for _op, seg in pairs]):
+        out.extend(ins)
+    if outs and _any_reads_program_from_stdin(outs):
+        out.append(whole)
+    if _psub_budget[0] < 0 and whole not in out:
+        # The candidate walk ran out mid-command, so what it did NOT reach is unexamined
+        # rather than checked-and-clean. Same exit as an unreadable one above.
+        out.append(whole)
+    return out
+
+
 def _executed_operands(toks):
     """Token operands this simple command hands to a shell to EXECUTE.
 
@@ -2643,6 +2808,7 @@ def is_file_mod(cmd, _depth=0):
         return True                       # fail CLOSED -- see _MAX_CMD_CHARS
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
+        _psub_budget[0] = _MAX_SCAN_TOKENS
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
         # and the cap returns before the tokenized pass that would have run
@@ -2676,7 +2842,8 @@ def is_file_mod(cmd, _depth=0):
         if is_file_mod(body, _depth + 1):
             return True
     _paren_hash_ambiguous[0] = False
-    pairs, ok = _split_with_ops(_normalize(cmd))
+    _norm = _normalize(cmd)
+    pairs, ok = _split_with_ops(_norm)
     if not ok:
         return _regex_fallback(cmd)
     # `)#` -- the comment defuser could not tell whether that paren delimited a command, so
@@ -2695,7 +2862,11 @@ def is_file_mod(cmd, _depth=0):
     # regexes cannot see a redirect-only write, so `printf 'echo x > src/impl.py' | bash`
     # performed the write and classified as a read. The caller's own redirect check does not
     # cover it either -- it strips single-quoted text first, which is where a payload lives.
-    _producers = _piped_shell_producers(pairs)
+    # ...and the same verdict for a shell fed across a PROCESS SUBSTITUTION rather than a
+    # pipe, which the scan above recognises only `|`/`|&` as (#563).
+    _psub = _process_substitutions(_norm)
+    _psub_present = any(_psub[:2])
+    _producers = _piped_shell_producers(pairs) + _procsub_producers(pairs, _norm, _psub)
     for producer in _producers:
         if _regex_fallback(producer):
             return True
@@ -2709,7 +2880,16 @@ def is_file_mod(cmd, _depth=0):
     # that BOTH introduces indirection AND feeds a candidate stage is scanned whole.
     # Keyed on ANY pipe, not on a candidate stage: the whole point is that the receiver may
     # be a NAME (`... | f`), which no candidate test can recognise as a shell.
-    if any(_is_pipe(_o) for _o, _ in pairs) and _has_indirection(cmd):
+    #
+    # ...and on any PROCESS SUBSTITUTION for the same reason, which the first cut of #563
+    # left out: a substitution is a transport with no `|` in it, so keying this on the pipe
+    # alone let indirection hide either end of it. Both spellings were verified executing
+    # while `is_file_mod` answered False -- `f(){ printf 'rm -rf src'; }; bash < <(f)` (the
+    # producer handed to the regexes is the bare name `f`) and
+    # `f(){ bash; }; printf 'rm -rf src' > >(f)` (`f` is not recognised as a shell) -- while
+    # their pipe twin `f(){ printf 'rm -rf src'; }; f | bash` already blocked through this
+    # very rule. The transport changed; the reason the rule exists did not.
+    if (any(_is_pipe(_o) for _o, _ in pairs) or _psub_present) and _has_indirection(cmd):
         if _regex_fallback(cmd):
             return True
         if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd)):

@@ -16,6 +16,7 @@ import fnmatch, json, posixpath, re, shlex, string
 
 _SQ = chr(39)
 _DQ = chr(34)
+_BQ = chr(96)
 
 
 def _bn(t):
@@ -133,7 +134,7 @@ def _split_with_ops(s):
     # what separates `a || b` from `a | ; b`.
     # KEEP IN STEP WITH cmdword._split_with_ops.
     pairs, buf, op = [], [], []
-    in_s = in_d = esc = False
+    in_s = in_d = esc = in_b = False
     # Did the PREVIOUS character open a redirect -- an unquoted, unescaped `<` or `>`? State,
     # not inference: buf[-1] cannot say whether it was escaped, and bash runs
     # `printf <payload> \<|bash` as a real pipeline because the escaped `<` is an argument.
@@ -148,16 +149,49 @@ def _split_with_ops(s):
             if ch == _SQ:
                 in_s = False
             redir = False
+        elif in_b:
+            # A BACKTICK SUBSTITUTION is one word of the stage it sits in, however many
+            # control operators its body holds -- bash runs `printf <payload> | echo `true
+            # && bash`` as a TWO-stage pipeline and the nested shell inherits the pipe, so
+            # reading that `&&` as an outer separator ended the pipeline before the receiver
+            # and discarded the producer. Verified executing against this copy too (#563).
+            # KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            if ch == "\\":
+                esc = True                # in_b survives the escape: only `esc` is consumed
+            elif ch == _BQ:
+                # ...and back into the double quotes if that is where the span opened:
+                # `in_d` is never cleared by the branch below, so there is no state to
+                # restore here.
+                in_b = False
+            redir = False
         elif in_d:
             buf.append(ch)
             if ch == "\\":
                 esc = True
+            elif ch == _BQ:
+                # A backtick INSIDE double quotes still opens a substitution -- bash runs
+                # `echo "`echo "x && cat"; bash`"`, and the quotes inside the body belong to
+                # the body's own command, not to the outer string. Checked BEFORE `in_d`
+                # above so the inner span wins; `in_d` is deliberately left True, so closing
+                # the span returns to the string with no saved-state bookkeeping. Ordered
+                # after `in_d` in the first cut of #563, this branch was unreachable from a
+                # quoted context: the body's second `"` read as the outer string's CLOSE,
+                # the `&&` behind it split the stage, and the producer was discarded again
+                # -- verified executing.
+                # KEEP IN STEP WITH cmdword._split_with_ops.
+                in_b = True
             elif ch == _DQ:
                 in_d = False
             redir = False
         elif ch == "\\":
             buf.append(ch)
             esc = True
+            redir = False
+        elif ch == _BQ:
+            # KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            in_b = True
             redir = False
         elif ch == _SQ:
             buf.append(ch)
@@ -215,7 +249,10 @@ def _split_with_ops(s):
             buf.append(ch)
             redir = ch in "<>"
     pairs.append(("".join(op), "".join(buf)))
-    return pairs, not (in_s or in_d or esc)
+    # An unterminated backtick joins the unterminated quote and the dangling escape: the
+    # caller probes instead of trusting a half-parse. KEEP IN STEP WITH
+    # cmdword._split_with_ops.
+    return pairs, not (in_s or in_d or esc or in_b)
 
 
 def _split_simple_commands(s):

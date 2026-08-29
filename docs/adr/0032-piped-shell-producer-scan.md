@@ -459,9 +459,90 @@ That is the same call ADR 0006 made, and the containment is unchanged — an unl
 an assembled name only helps an actor who already holds Bash, and every gated write still
 needs a lease that is logged.
 
+## Addendum — #563: the revisit trigger fired twice
+
+Both were found by the chatgpt-codex-connector on PR #562, deferred as `follow-up-deferred`
+because the two functions they touch are the most heavily measured in the module, and both
+were **verified executing against real bash** before being fixed. Each is the *structural*
+half failing, exactly as the trigger below anticipated — neither is an arity question, and
+neither reopens the flag one.
+
+**1. Control operators inside a backtick substitution read as outer pipeline separators.**
+`printf 'rm -rf src' | echo `true && bash`` runs the nested `bash` on the pipeline's stdin,
+but `_split_with_ops` tracked single quotes, double quotes and escapes and *not* backtick
+spans — so that `&&` ended the pipeline one stage before the receiver and the producer was
+discarded. Fixed as STATE, the same shape as the two quote states beside it, rather than as
+a rule about `&&`. Making the span opaque to the splitter removes no block: the body is
+still extracted and classified by `_command_substitutions`, which runs first. An unterminated
+backtick now joins the unterminated quote and the dangling escape in setting `ok = False`, so
+the caller falls back to the wider raw scan.
+
+**2. A shell fed by a PROCESS SUBSTITUTION was never handed a producer.** The trigger is
+`|`/`|&`, so `bash < <(printf 'rm -rf src')`, its script-operand spelling
+`bash <(printf 'rm -rf src')`, and the reverse direction `printf 'rm -rf src' > >(bash)` all
+executed the removal while `is_file_mod` answered False. `_procsub_producers` routes them to
+the *same* producer loop the pipe path feeds — both halves of the verdict, verbs and
+redirects — and splits by direction, because the two ends swap: `<(BODY)` makes BODY the
+producer, `>(BODY)` makes the outer command the producer. Nothing new models the language;
+the receiver question is the one `_may_read_program_from_stdin` already answers. Quoted
+regions are skipped, both kinds, unlike the `$(...)` sibling: process substitution does not
+happen inside double quotes (`echo "<(rm -rf q)"` removes nothing — verified).
+
+The first cut of both fixes was reviewed and two defects came back, each worth recording
+because each is a rule this ADR already states, missed on the NEW transport:
+
+- **The indirection widening was keyed on a literal `|`.** A substitution has no pipe, so
+  `f(){ printf 'rm -rf src'; }; bash < <(f)` and `f(){ bash; }; printf 'rm -rf src' > >(f)`
+  both ran while `is_file_mod` answered False — although their pipe twin
+  `f(){ printf …; }; f | bash` had blocked through that very rule since #557. The trigger
+  now fires on a pipe **or** a process substitution. Adding a transport means asking every
+  rule keyed on the old one whether it meant the pipe or the feeding.
+- **The candidate walk was charged against `_scan_budget`, which the per-segment walk then
+  charges again** — silently halving the documented 4,000-token limit for any command
+  holding a `<(`, and flipping a benign 2,004-token
+  `grep -f <(echo pat) file0.txt … file1999.txt` from allow to block for a walk that emitted
+  no producer at all. It has its own allowance now; exhaustion takes the whole-command scan,
+  the same best-effort exit an unreadable command already takes.
+
+A third came back from the pre-commit pass, and it is the *same* mistake one layer in: the
+new backtick branch was ordered AFTER the double-quote one, so it was unreachable from a
+quoted context. Bash opens a substitution on a backtick inside double quotes, and the quotes
+inside the body belong to the body's own command — so
+`printf 'rm -rf src' | echo "`echo "x && cat"; bash`"` had its body's second `"` read as the
+outer string's CLOSE, the `&&` behind it split the stage, and the producer was discarded
+exactly as before the fix. Verified executing. The inner span is checked first now, and
+`in_d` is deliberately left set while it is open, so closing the span returns to the string
+with no saved state to restore. Three rounds, three orderings — this is the module's own
+lesson about positional state, arriving once more: **track the state explicitly; do not infer
+it from the branch you happen to be in.** *A slow guard is an open
+  guard* has a twin: a guard that spends someone else's budget is an over-blocking one.
+
+**Cost: UNMEASURED, like the launcher rule above it.** The 34,758-command corpus was already
+gone. Two over-blocks are known and pinned as *block* in the suite so changing either is a
+decision rather than a drift:
+
+- A shell named ANYWHERE in a command puts every `<(...)` body under the raw scan
+  (`sh -c ':' <(printf 'rm -rf src')`). The splitter breaks on `(`, so a substitution
+  arrives already torn off its own stage, and binding the two back together needs positional
+  bookkeeping the splitter does not keep. Scoped by rarity instead: the candidate walk runs
+  only once a process substitution is present, so an ordinary command pays nothing.
+- `>(...)` takes the whole command as its producer, the same trade the indirection rule
+  already makes and for the same reason.
+
+`marker_check._split_with_ops` carries the backtick fix too — the same defect was verified in
+that copy (`printf '<helper>' | echo `true && bash`` classified `OK`), and the two are
+documented as kept in step. Its producer scan needed no process-substitution change: the
+shapes already reach `_abandoned_scan_probe` by another path, checked rather than assumed.
+
 ## Revisit trigger
 
 A fail-open found in the *structural* half — a transport that feeds a shell its program
 without an unquoted `|` in front of it (a heredoc body, a `<` from a file, a coprocess).
 Those are payload-transport problems, not arity problems, and each should be closed on its
-own terms rather than by reopening the flag question.
+own terms rather than by reopening the flag question. It has since fired once, on a
+transport the enumeration did not name: **process substitution**, closed in the addendum
+above. The three transports actually enumerated here are all still open — a heredoc body,
+`<` from a plain FILE (unrecoverable from the command text, as the residual list states),
+and a coprocess (`coproc printf 'rm -rf src'` then `bash <&${COPROC[0]}` classifies False,
+verified). The backtick item in the addendum is not a transport at all: it is a splitter
+defect that discarded the producer of a pipe that was already recognised.

@@ -3595,6 +3595,106 @@ check "...including when that operand itself ends in .py" block \
 check "the helper as the profiled script itself is still blocked" block \
     "$(bash_decision "python3 -m pdb hooks/gate-scripts/lib/lease_slot.py")"
 
+# ── #563: two transports the producer scan could not see ────────────────────
+# Both verified EXECUTING against real bash before being fixed, and both classified as a
+# read: `is_file_mod` returned False while the removal happened.
+echo "── #563: backtick spans and process-substitution producers ──"
+
+# 1. OPERATORS INSIDE A BACKTICK SUBSTITUTION are not outer pipeline separators. The
+# substitution is one WORD of the receiving stage, and the subshell it runs inherits the
+# pipeline stdin -- so `| echo `true && bash`` is a two-stage pipeline whose second stage
+# runs the piped payload. The splitter did not track backtick spans, so that `&&` read as
+# an outer separator, the pipeline ended one stage before the shell, and the producer was
+# discarded. Tracked as STATE now, exactly like the two quote states beside it.
+check "an && inside a backtick receiver does not end the pipeline" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `true && bash`')"
+check "...nor does a ; inside one" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `:; bash`')"
+check "...nor a ||" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `false || bash`')"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo `true && bash`')"
+# Making the span opaque to the SPLITTER removes no block, because the body is still
+# classified as code by the substitution walk that runs before it.
+check "a write inside a backtick body is still a write" block \
+    "$(bash_decision 'echo `:; rm -rf src`')"
+# ...and a separator OUTSIDE the span still separates, which is the whole point of tracking
+# the span rather than suppressing operators wherever a backtick appears.
+check "a separator after a closed backtick span still splits" block \
+    "$(bash_decision 'echo `date` ; rm -rf src')"
+# PRECISION: a backtick receiver that names no shell is not fed anything to scan.
+check "a backtick receiver naming no shell stays allowed" allow \
+    "$(bash_decision 'printf "rm -rf src" | echo `true && cat`')"
+# An unterminated span is a half-parse, so the splitter says so and the caller falls back
+# to the wider raw scan -- the same answer an unterminated quote already gets.
+check "an unterminated backtick falls back to the raw scan" block \
+    "$(bash_decision 'echo `:; rm -rf src')"
+# ...and a backtick INSIDE double quotes opens a span too. The first cut ordered this
+# branch AFTER the double-quote one, so it was unreachable from a quoted context: the
+# body's own second `"` read as the outer string's CLOSE, the `&&` behind it split the
+# stage, and the producer was discarded exactly as before. Verified executing.
+check "a backtick span opened inside double quotes is still one word" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`echo "x && cat"; bash`"')"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "`echo "x && cat"; bash`"')"
+# Closing that span returns to the STRING, not to bare text -- or a separator inside the
+# rest of the quoted text would start splitting.
+check "closing a quoted backtick span returns to the string" allow \
+    "$(bash_decision 'echo "`date` ; rm -rf src"')"
+
+# 2. PROCESS SUBSTITUTION carries a program to a shell exactly as a pipe does, and
+# `_piped_shell_producers` recognises only `|` and `|&` as feeding a stage -- so the
+# visible payload was never scanned. Both directions run, and they run opposite ways:
+# `<(BODY)` makes BODY the producer, `>(BODY)` makes the outer command the producer.
+check "a process substitution feeding a shell over stdin is scanned" block \
+    "$(bash_decision "bash < <(printf 'rm -rf src')")"
+check "...and its redirect-only payload too" block \
+    "$(bash_decision "bash < <(printf 'echo x > src/impl.py')")"
+# The substitution as a script OPERAND rather than through a redirect runs it just the
+# same, so the scan does not ask for a redirect character.
+check "a process substitution as the script operand is scanned" block \
+    "$(bash_decision "bash <(printf 'rm -rf src')")"
+# The OTHER direction: here the shell is inside the substitution and the outer command is
+# what writes into it, so the producer is the whole command.
+check "a shell inside an output process substitution is fed too" block \
+    "$(bash_decision "printf 'rm -rf src' > >(bash)")"
+# An unbalanced `<(` is unreadable, and unreadable fails CLOSED.
+check "an unterminated process substitution falls back to the raw scan" block \
+    "$(bash_decision "bash < <(printf 'rm -rf src'")"
+# PRECISION: the scan runs only when the command names something that could run a program
+# read from stdin. An ordinary diff of two substitutions pays nothing.
+check "an ordinary diff of two substitutions stays allowed" allow \
+    "$(bash_decision "diff <(git show a:f) <(git show b:f)")"
+check "...including one feeding a pipeline" allow \
+    "$(bash_decision "diff <(sort a) <(sort b) | less")"
+check "a substitution body that writes nothing stays allowed" allow \
+    "$(bash_decision "bash <(cat scripts/build.sh)")"
+# DELIBERATE OVER-BLOCK, pinned so that changing it is a decision rather than a drift: the
+# candidate test is asked of every stage, not of the stage the substitution is attached to,
+# because the splitter breaks on `(` and tears a substitution off its own stage. So a shell
+# named anywhere in the command puts every `<(...)` body under the raw scan.
+check "RESIDUAL over-block (accepted): a shell elsewhere in the command widens the scan" block \
+    "$(bash_decision "sh -c ':' <(printf 'rm -rf src')")"
+# INDIRECTION withdraws the stage contract on this transport too, and the first cut of
+# #563 missed it: the whole-command widening was keyed on a literal `|`, which a process
+# substitution does not have -- so a NAME could hide either end of it. Both verified
+# executing while the classifier answered False, and their pipe twin below already blocked
+# through the same rule.
+check "a FUNCTION producer behind a process substitution blocks" block \
+    "$(bash_decision "f(){ printf 'rm -rf src'; }; bash < <(f)")"
+check "...and a FUNCTION receiver inside an output substitution" block \
+    "$(bash_decision "f(){ bash; }; printf 'rm -rf src' > >(f)")"
+check "...as the pipe twin always did" block \
+    "$(bash_decision "f(){ printf 'rm -rf src'; }; f | bash")"
+# The candidate walk has its OWN allowance. Charged against the shared one, it halved the
+# documented 4,000-token limit for every command holding a `<(` -- and this benign grep,
+# well inside that limit, flipped from allow to block for a walk that emitted no producer.
+BIG_ARGS=""
+for _i in $(seq 0 1999); do BIG_ARGS="$BIG_ARGS file${_i}.txt"; done
+check "a long benign command with a substitution keeps its full token budget" allow \
+    "$(bash_decision "grep -f <(echo pat)$BIG_ARGS")"
+unset BIG_ARGS
+
 echo "── property checks over the splitter and the producer scan ──"
 # Everything above is a FIXED case, generated or hand-written, so it only ever probes the
 # shapes someone thought of. These two properties quantify over a grammar instead, which

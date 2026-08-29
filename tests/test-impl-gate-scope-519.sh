@@ -3690,7 +3690,7 @@ check "...as the pipe twin always did" block \
 # documented 4,000-token limit for every command holding a `<(` -- and this benign grep,
 # well inside that limit, flipped from allow to block for a walk that emitted no producer.
 BIG_ARGS=""
-for _i in $(seq 0 1999); do BIG_ARGS="$BIG_ARGS file${_i}.txt"; done
+for ((_i = 0; _i < 2000; _i++)); do BIG_ARGS="$BIG_ARGS file${_i}.txt"; done
 check "a long benign command with a substitution keeps its full token budget" allow \
     "$(bash_decision "grep -f <(echo pat)$BIG_ARGS")"
 unset BIG_ARGS

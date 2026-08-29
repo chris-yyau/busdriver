@@ -459,13 +459,15 @@ That is the same call ADR 0006 made, and the containment is unchanged — an unl
 an assembled name only helps an actor who already holds Bash, and every gated write still
 needs a lease that is logged.
 
-## Addendum — #563: the revisit trigger fired twice
+## Addendum — #563: one transport, and one splitter defect that hid another
 
 Both were found by the chatgpt-codex-connector on PR #562, deferred as `follow-up-deferred`
 because the two functions they touch are the most heavily measured in the module, and both
-were **verified executing against real bash** before being fixed. Each is the *structural*
-half failing, exactly as the trigger below anticipated — neither is an arity question, and
-neither reopens the flag one.
+were **verified executing against real bash** before being fixed. Both are the *structural*
+half failing — neither is an arity question, and neither reopens the flag one — but only ONE
+of them fires the revisit trigger below: item 2 is a genuinely new transport, while item 1 is
+a splitter defect that discarded the producer of a pipe the trigger had recognised all along.
+The distinction matters for reading the trigger's own list, which is corrected at the end.
 
 **1. Control operators inside a backtick substitution read as outer pipeline separators.**
 `printf 'rm -rf src' | echo `true && bash`` runs the nested `bash` on the pipeline's stdin,

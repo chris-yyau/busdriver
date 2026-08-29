@@ -473,6 +473,8 @@ printf -v Q_STATE '%q' "$STATE_DIR"
 # do with it. BUILT-INS only, deliberately not `,alias`: an alias's current value
 # proves nothing when a companion command can rewrite it first.
 UNKNOWN_CANDIDATES=""
+ALIAS_HIT=""
+ALIAS_HIT_CAND=""
 if [ -n "$ALIAS_CANDIDATES" ]; then
     _KNOWN_CMDS=$(git_real --list-cmds=main,others 2>/dev/null) || _KNOWN_CMDS=""
     for _cand in $ALIAS_CANDIDATES; do
@@ -573,9 +575,23 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
             _name="$_first"
             [ "$_hop" = "5" ] && _hit="$_expansion"
         done
+        # A resolved-and-harmless alias is NOT recorded as safe, and that was
+        # tried. With file config `alias.lg = log` and an ambient
+        # `GIT_CONFIG_KEY_n=alias.lg` / `VALUE_n=merge`, the gate reads the file
+        # value, calls it benign, and the command runs the env one — the same
+        # invisible-config gap the pull arm was deleted for. On a protected branch
+        # the cost of over-blocking a word like `lg` is one re-typed command;
+        # the cost of trusting a config view the command does not share is the
+        # gate. Off the protected branch nothing here fires at all.
         [ -z "$_hit" ] && continue
-        block_emit "Ref fast-forward gate: '$_cand' is a git alias reaching '$_hit', so this command performs a merge or pull under a name the gate cannot verify statically. Run the underlying 'git merge' / 'git pull' directly, so the gate can see the ref and oid it would move '${PROTECTED:-the protected branch}' to. Blocking as precaution (fail-closed)."
-        exit 0
+        # NOT refused here. This runs before the protected branch is known, so
+        # refusing on the spot blocked `git m feature` on a FEATURE branch — an
+        # alias reaching merge is ordinary work anywhere else. Recorded, and
+        # refused beside the other shape refusals, which are placed to answer the
+        # question a companion command makes unanswerable.
+        ALIAS_HIT_CAND="$_cand"
+        ALIAS_HIT="$_hit"
+        break
     done
 fi
 
@@ -779,6 +795,12 @@ fi
 # environment (#325 / ADR 0016) and still live for the command. Refusing a word
 # that resolves to nothing costs almost nothing — one that is neither a builtin,
 # nor a git-* on PATH, nor a config alias is one git itself would reject.
+refuse_alias_hit() {
+    [ -z "$ALIAS_HIT" ] && return 0
+    block_emit "Ref fast-forward gate: '$ALIAS_HIT_CAND' is a git alias reaching '$ALIAS_HIT', so this command performs a merge or pull under a name the gate cannot verify statically. Run the underlying 'git merge' / 'git pull' directly, so the gate can see the ref and oid it would move '${PROTECTED:-the protected branch}' to. Blocking as precaution (fail-closed)."
+    exit 0
+}
+
 refuse_unknown_candidates() {
     local _cand
     for _cand in $UNKNOWN_CANDIDATES; do
@@ -794,9 +816,24 @@ refuse_unknown_candidates() {
 # fast-forwarded main. A companion means the branch the gate can see proves
 # nothing, so the unknown-word refusal has to run here too — while the
 # no-companion case stays below, where it does not over-block ordinary work.
-if [ "$REF_WRITER" = "1" ] && [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
+# Branch-INDEPENDENT, and not qualified by $REF_WRITER either. Both were tried
+# and both are unsound, because what this gate can see of an alias is its first
+# word in the config it can read — never its body, and never a value the
+# environment supplied:
+#   - a COMPANION can rewrite the alias, or switch branch, before it runs;
+#   - with no companion, an ambient GIT_CONFIG_KEY_n can still replace
+#     `alias.m = merge` with a `!`-shell alias whose body is
+#     `git switch main && git merge feature`, so a gate that exited because HEAD
+#     said `feature` watched main move a moment later.
+# The branch HEAD names at dispatch therefore proves nothing about the branch the
+# command will move. The cost is over-blocking a non-built-in git word anywhere in
+# a repo that HAS a protected branch, which is one re-typed command; the cost of
+# the alternative is the gate. Nothing fires in a repo with none.
+refuse_alias_hit
+if [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
     refuse_unknown_candidates
 fi
+
 
 if [ "$REF_WRITER" = "1" ] && [ -n "$KIND" ]; then
     block_emit "BLOCKED: this command runs something else ALONGSIDE a merge/pull, in a repo with a protected branch ($_PROT_LIST). The gate resolves the merge target and reads git config before the command runs, so any other command in the same invocation can replace what it checked — including which branch is checked out ('git switch main && git merge <oid>') — 'git branch -f topic <oid> && git merge topic' is the shape, 'git fetch' counts because it moves FETCH_HEAD and the remote-tracking refs, and so does anything that can run a configured helper or change git's environment. The gate does not try to tell those apart from a harmless 'git status'.
@@ -828,14 +865,6 @@ PROTECTED="$CURRENT"
 # not exist yet. A candidate that IS a real git command (`git status && git
 # commit`) is none of this gate's business.
 
-
-# No companion, so nothing in this command can change the branch: on a feature
-# branch, or in a repo with no protected branch, an unresolvable git word is
-# somebody else's business and refusing it was pure over-block. Reached only once
-# HEAD is known to be protected.
-if [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
-    refuse_unknown_candidates
-fi
 
 REMOTE=$(git_real config --get "branch.$PROTECTED.remote" 2>/dev/null) || REMOTE=""
 [ -z "$REMOTE" ] && REMOTE="origin"
@@ -888,7 +917,17 @@ authorize_or_block() {   # <target_oid> <operand as written>
     # git-hook installer this branch must not add (it belongs to #622). That is the
     # ADR 0050 deviation, recorded there rather than implied here; the marker form
     # defined here is what such a hook would consume unchanged.
-    if ! [[ "$spec" =~ ^[0-9a-fA-F]{40}$ ]] && ! [[ "$spec" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    # The property wanted is "git resolves this operand to ITSELF", and that is an
+    # equality — not a length. Testing for 40 or 64 hex characters encoded a guess
+    # about the repository's hash algorithm and was wrong in both directions: a
+    # 64-hex BRANCH NAME in a SHA-1 repo, or a 40-hex ref or abbreviation in a
+    # SHA-256 one, passed the length test while git still resolved it symbolically,
+    # so the marker bound something git would look up again. Comparing the operand
+    # to the oid it resolved to answers the actual question, at any length.
+    local _spec_lc _oid_lc
+    _spec_lc=$(printf '%s' "$spec" | tr '[:upper:]' '[:lower:]')
+    _oid_lc=$(printf '%s' "$oid" | tr '[:upper:]' '[:lower:]')
+    if [ "$_spec_lc" != "$_oid_lc" ]; then
         if [ "$_mrc" -eq 0 ]; then
             block_emit "BLOCKED: a $MARKER_REL marker is present, but this merge names '$spec' — a symbolic ref that git resolves again when the command runs, so the authorization could not be bound to the ref move it produces. Name the object id instead, which resolves to itself:
   git merge $oid

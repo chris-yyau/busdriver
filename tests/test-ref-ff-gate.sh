@@ -128,6 +128,16 @@ run_gate "...and --ff-only is the same move, not an exemption" \
     block "git merge --ff-only feature"
 run_gate "...and --no-commit still fast-forwards the ref (#779's named form)" \
     block "git merge --no-commit feature"
+# "Resolves to itself" is an equality, not a length: object-id length depends on
+# the repository's hash algorithm, so a 40- or 64-hex test accepted a REF whose
+# name happens to be hex and bound the marker to something git looks up again.
+git -C "$REPO" branch "$(printf '%064d' 0)" feature >/dev/null 2>&1
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a 64-hex BRANCH NAME is not mistaken for a self-resolving oid" \
+    block "git merge --ff-only $(printf '%064d' 0)" "a symbolic ref that git resolves again"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+git -C "$REPO" branch -D "$(printf '%064d' 0)" >/dev/null 2>&1
+
 run_gate "merge by raw oid → block (the ref name is not what binds)" \
     block "git merge $FEATURE_OID"
 # ── A pull on the protected branch is refused OUTRIGHT. It cannot have a marker
@@ -208,6 +218,21 @@ run_gate "the attached short form -c<key>=<value> counts too" \
 # An alias in a config FILE is nowhere in the command string — but the gate has
 # the repo, so it resolves the names the parser did not recognize.
 git -C "$REPO" config alias.m merge
+# A configured alias that resolves to something harmless is refused anyway, in a
+# repo that HAS a protected branch, on any branch. Two narrower placements were
+# tried and both are unsound: trusting the resolution loses to an ambient
+# GIT_CONFIG_KEY_n that overrides the file value, and scoping it to the protected
+# branch loses to a shell alias whose own body switches branch. What the gate sees
+# is a first word in the config IT can read — never the body, never the env.
+git -C "$REPO" config alias.lg log
+run_gate "a configured alias is refused on the protected branch" \
+    block "git lg -1" "resolves to neither a git command nor a git alias"
+git -C "$REPO" checkout -q feature
+run_gate "...and off it too, because the alias body could switch back" \
+    block "git lg -1" "resolves to neither a git command nor a git alias"
+git -C "$REPO" checkout -q main
+git -C "$REPO" config --unset alias.lg
+
 run_gate "a config-file alias for merge is resolved and refused" \
     block "git m feature" "is a git alias reaching"
 # Git splits an alias expansion on any whitespace, so the first WORD is what runs.

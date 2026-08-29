@@ -809,6 +809,46 @@ run_gate "a branch whose name starts with # is declarable, not a comment" \
 git -C "$REPO" checkout -q main
 git -C "$REPO" branch -D '#release' >/dev/null 2>&1
 
+# A FIFO at the declaration path must not be OPENED and waited on: the 10s hook
+# budget would kill the gate with no decision, which is a way through it.
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local"
+_rc=0; mkfifo "$REPO/$ISO_STATE/ref-ff-protected.local" 2>/dev/null || _rc=1
+assert_true "the FIFO fixture was created (not a vacuous test)" "$_rc"
+# BOUNDED deliberately, and not through run_gate: the whole point is that the
+# gate must not WAIT on the FIFO. Without O_NONBLOCK it blocks in open() forever,
+# and an unbounded assertion would hang the suite instead of failing it.
+_rc=0
+python3 - "$GATE_SCRIPT" "$REPO" <<'PYEOF' || _rc=$?
+import json, os, signal, subprocess, sys
+payload = json.dumps({"tool_name": "Bash", "cwd": sys.argv[2],
+                      "tool_input": {"command": "git merge feature"}})
+# Its own session, and the whole GROUP is killed on timeout. subprocess.run()
+# would kill only the bash it started, then block again waiting for the captured
+# pipes — which the descendant stuck on the FIFO still holds open — so the guard
+# meant to bound this test could hang in its own cleanup, and leave the blocked
+# child orphaned after the FIFO is gone.
+proc = subprocess.Popen(["bash", sys.argv[1]], stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        text=True, start_new_session=True)
+try:
+    out, _ = proc.communicate(payload, timeout=10)
+except subprocess.TimeoutExpired:
+    os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+    sys.exit(2)                       # waited on the FIFO — the bug this pins
+sys.exit(0 if "could not be read safely" in out else 1)
+PYEOF
+assert_true "a FIFO declaration is refused, not blocked on" "$_rc"
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local"
+
+# Bash DISCARDS NUL across a command substitution, so a declaration of nothing
+# but NULs arrived as an empty string — indistinguishable from the empty file
+# that deliberately says this repo has no protected branch.
+printf '\0\0\0' > "$REPO/$ISO_STATE/ref-ff-protected.local"
+run_gate "a NUL-only declaration is refused, not read as empty" \
+    block "git merge feature" "could not be read safely"
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local"
+
 # An oversized declaration is REFUSED, not truncated. A single fixed-size read
 # turned 64 KiB of blank lines followed by a real declaration into a file naming
 # no branch — which is how an operator says the repo has none, so the file

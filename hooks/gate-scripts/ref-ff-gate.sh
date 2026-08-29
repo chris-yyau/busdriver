@@ -243,7 +243,12 @@ try:
             raise SystemExit(2)
         raise SystemExit(0)
     try:
-        ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+        # O_NONBLOCK, or opening a FIFO here BLOCKS until a writer appears — the
+        # 10s hook budget then kills the gate with no decision emitted, which is
+        # a way through it rather than a hang. The flag makes the open return so
+        # the regular-file test below can refuse.
+        ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                      dir_fd=dfd)
     except FileNotFoundError:
         raise SystemExit(1)
     except OSError:
@@ -265,6 +270,12 @@ try:
             chunks.append(chunk)
             total += len(chunk)
         if total > limit:
+            raise SystemExit(2)
+        # These bytes cross back through a command substitution, and bash DISCARDS
+        # NUL. A declaration of nothing but NULs therefore arrived as an empty
+        # string — indistinguishable from the empty file that deliberately says
+        # this repo has no protected branch, so it switched the gate off.
+        if b'\0' in b''.join(chunks):
             raise SystemExit(2)
     finally:
         os.close(ffd)

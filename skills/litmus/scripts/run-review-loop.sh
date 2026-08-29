@@ -179,7 +179,12 @@ fi
 # sets it, so an exported _INDEX_SNAPSHOT would turn the cleanup into a delete of
 # an attacker-chosen writable file. Env is repo-injectable (#325 / ADR 0016).
 _INDEX_SNAPSHOT=""
-trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" 2>/dev/null || true' EXIT
+# Same blanking, same reason, for the exclusion snapshots the trap also unlinks: they
+# are created mid-run, and `source "$EXCL_LOGIC_SOURCE"` or the sentinel append can
+# exit under `set -e` before the in-flow cleanup, leaking private temp files.
+EXCL_POLICY_PINNED_TMP=""
+EXCL_LOGIC_PINNED_TMP=""
+trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" 2>/dev/null || true' EXIT
 # Children that take the lock themselves — init-review-loop.sh, invoked directly below
 # and again from the loop — must see this lock as theirs, not deadlock against it.
 review_lock_export_owner

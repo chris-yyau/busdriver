@@ -366,7 +366,7 @@ fi
 # Verifying afterwards checks the wrong instant — REVIEW_EXCLUDE_ARGS would already
 # have shaped the reviewed diff, and the file could be restored before the check.
 verify_ln=$(grep -n 'verify_exclusion_logic "$_excl_worktree"' "$PRODUCER" | head -1 | cut -d: -f1 || true)
-source_ln=$(grep -n 'source "$EXCL_LOGIC_SOURCE"' "$PRODUCER" | head -1 | cut -d: -f1 || true)
+source_ln=$(grep -n 'source "$EXCL_LOGIC_SOURCE"' "$PRODUCER" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1 || true)
 if [ -n "$verify_ln" ] && [ -n "$source_ln" ] && [ "$verify_ln" -lt "$source_ln" ]; then
     ok "exclusion logic is verified BEFORE it is sourced (line $verify_ln < $source_ln)"
 else

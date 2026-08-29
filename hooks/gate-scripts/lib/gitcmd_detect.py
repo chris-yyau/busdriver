@@ -2700,6 +2700,831 @@ def git_commit(cmd, with_untrusted_cd=False):
     return r if with_untrusted_cd else r[:3]
 
 
+# ── Ref-moving git subcommands that create NO commit object (#779) ───────────
+# A fast-forward moves a branch ref without producing a commit, so nothing in the
+# commit-oriented gates ever sees it. These two subcommands are the shapes that
+# reach it from an agent's Bash call.
+_REF_OP_SUBS = frozenset(('merge', 'pull'))
+
+# `git merge` / `git pull` options that consume a SEPARATE value token, which
+# would otherwise be read as the first operand. The list is a FALSE-POSITIVE
+# reducer, never a boundary: an option missing from it leaves its value in the
+# operand list, where it either fails to resolve as a commit (merge), fails the
+# remote-provenance test (pull), or trips the operand-count refusal — all of which
+# BLOCK. Erring by omission is therefore fail-CLOSED.
+#
+# MEASURED, not recalled: this is the set `git merge -h` and `git pull -h` show
+# taking a SEPARATE value (git 2.55.0). Options whose value is attached-optional
+# (`--log[=<n>]`, `-S[<key-id>]`, `--signoff[=…]`, `--recurse-submodules[=…]`)
+# are correctly absent — they are a single `-`-leading token the operand scan
+# already skips. `-j/--jobs[=<n>]` is in that group and was WRONGLY listed here
+# once: `git pull --jobs 4 origin` makes git read `4` as the remote and `origin`
+# as the refspec, while skipping `4` made the gate validate `origin`'s provenance
+# for a pull from somewhere else. Attached-optional options belong nowhere near
+# this set.
+# Attached-value forms (`--strategy=ours`, `-S<keyid>`) need no entry: they are a
+# single `-`-leading token the operand scan already skips.
+_REF_OP_VALUE_OPTS = frozenset((
+    '-m', '--message', '-F', '--file', '-s', '--strategy',
+    '-X', '--strategy-option', '--into-name', '--cleanup',
+    '--upload-pack', '-o', '--server-option', '--depth', '--deepen',
+    '--shallow-since', '--shallow-exclude', '--negotiation-tip',
+    '--negotiation-restrict', '--negotiation-include', '--filter',
+    '--refmap', '--submodule-prefix',
+))
+
+# `git merge` forms that move no branch ref BY FAST-FORWARD, so they fall outside
+# #779's class and this detector reports nothing for them:
+#   --abort/--continue/--quit  in-progress-merge controls, no new merge started
+#   --squash                   stages a tree, ref untouched — the `git commit`
+#                              that must follow is pre-commit-gate's to gate
+#   --no-ff                    forces a MERGE COMMIT; a commit object exists, which
+#                              is the separate class filed as #622 / #782
+_MERGE_CONTROL_OPTS = frozenset(('--abort', '--continue', '--quit'))
+# git's parse-options generates a `--no-` form for each of these, and it really
+# does cancel them: `git merge --abort --no-abort --ff-only feature` reaches the
+# merge (verified, git 2.55.0 — it fails on "No remote for the current branch",
+# i.e. past option parsing). So the controls are LAST-WINS per flag like the ff
+# and squash families, not one-way exits. There is no `--no-ff-only`.
+_MERGE_CONTROL_NEG = frozenset('--no-' + o[2:] for o in _MERGE_CONTROL_OPTS)
+
+# The two families that decide whether a merge can fast-forward at all. Both are
+# LAST-WINS in git, so neither may be read as a one-way exit: `git merge --no-ff
+# --ff-only x` fast-forwards, and `git merge --squash --no-squash x` is an
+# ordinary merge again. Reading only the first occurrence reported "no operation"
+# for both and waved them straight past the gate.
+_MERGE_FF_OPTS = frozenset(('--ff', '--no-ff', '--ff-only'))
+_MERGE_SQUASH_OPTS = frozenset(('--squash', '--no-squash'))
+
+# PRE-SUBCOMMAND git global options that move the repo, the work tree, or the
+# CONFIG the gate reads — everything in _GIT_VALUE_OPTS except `-C`, which
+# _apply_global_c resolves properly. The gate evaluates the CWD repo's refs and
+# `branch.<protected>.merge`, so any of these makes its answer describe a
+# different repository than the one git will operate on:
+#   git --git-dir=/other/.git --work-tree=/other merge feature
+#   git -c branch.main.merge=refs/heads/feature pull origin
+# Neither is resolvable from the command string, so both fail CLOSED.
+_GIT_SCOPE_OPTS = frozenset(o for o in _GIT_VALUE_OPTS if o != '-C')
+
+# Git subcommands that CANNOT write a ref or rewrite config. Everything else is
+# treated as a potential writer — a DENYLIST of safe names rather than an
+# allowlist of dangerous ones, because the dangerous set has no closed
+# enumeration: an allowlist that named branch/checkout/reset/update-ref still
+# missed `fast-import`, and would have missed the next one too. Inverting it
+# makes the omission direction fail-CLOSED.
+#
+# Why this matters: the gate resolves its merge target at PreToolUse time, so any
+# command that moves that target before the merge runs defeats the check
+# (`git branch -f topic <unreviewed> && git merge topic`;
+# `git config branch.main.merge … && git pull origin`). `fetch` is a writer too —
+# it moves FETCH_HEAD and the remote-tracking refs — so the honest advice is to
+# run the fetch and the merge as SEPARATE commands, which is what the gate says.
+#
+# `symbolic-ref` is deliberately NOT here: with a value it writes. Neither is
+# `difftool`, which exists to run a CONFIGURED external command and can therefore
+# write anything. The remaining members can still reach `core.pager`, which is
+# configurable too — but only with a TTY, which a Bash tool call does not have,
+# and setting it needs a `git config` this gate already refuses in the same
+# command. That residual is named in ref-ff-gate.sh's header.
+# A ref written WITHOUT a git subcommand at all (`echo <sha> > .git/refs/…`, a
+# python script) is outside any command-word parser — the standing residual this
+# module's docstring names, not something a bigger list could close.
+_REF_SAFE_SUBS = frozenset((
+    'blame', 'cat-file', 'check-ignore', 'check-mailmap', 'cherry',
+    'count-objects', 'describe', 'diff', 'diff-files', 'diff-index',
+    'diff-tree', 'for-each-ref', 'grep', 'help', 'log',
+    'ls-files', 'ls-remote', 'ls-tree', 'merge-base', 'name-rev', 'rev-list',
+    'rev-parse', 'shortlog', 'show', 'show-branch', 'show-ref', 'status',
+    'var', 'verify-commit', 'verify-pack', 'verify-tag', 'version', 'whatchanged',
+))
+
+# Environment assignments that redirect the repo, the work tree, or the config
+# git reads. `_command_argv` STRIPS assignment prefixes to reach the command word,
+# so without this they were invisible and the gate validated the cwd repo while
+# git operated elsewhere — and GIT_CONFIG_KEY_0=alias.m defines an alias the same
+# way `-c` does. Unlike _REF_SAFE_SUBS this IS an enumeration, because git's
+# scope/config environment is a closed documented set: matching every GIT_* would
+# drag in GIT_AUTHOR_NAME and refuse ordinary commands for nothing.
+_GIT_SCOPE_ENV_RE = re.compile(
+    r'^(?:GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_NAMESPACE|GIT_INDEX_FILE'
+    r'|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES'
+    r'|GIT_CEILING_DIRECTORIES|GIT_DISCOVERY_ACROSS_FILESYSTEM'
+    r'|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM'
+    r'|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_[0-9]+|GIT_CONFIG_VALUE_[0-9]+'
+    r'|GIT_CONFIG_PARAMETERS'
+    # Object-graph and ancestry semantics: replace refs and grafts change
+    # WHICH commits are reachable, so the gate's is-ancestor answer and
+    # git's can differ on the same two oids.
+    r'|GIT_NO_REPLACE_OBJECTS|GIT_REPLACE_REF_BASE|GIT_SHALLOW_FILE'
+    r'|GIT_GRAFT_FILE'
+    # What git EXECUTES: the transport helper decides which objects a pull
+    # actually brings back, and PATH/GIT_EXEC_PATH decide which git runs.
+    r'|GIT_EXEC_PATH|GIT_SSH|GIT_SSH_COMMAND|GIT_PROXY_COMMAND'
+    r'|GIT_ASKPASS|GIT_EXTERNAL_DIFF|PATH'
+    # The transport's trust boundary: a proxy or a disabled certificate check
+    # decides which server actually answers for `origin`, which is the whole
+    # basis of the pull path's provenance rule.
+    r'|GIT_SSL_[A-Z_]+|HTTPS?_PROXY|ALL_PROXY|NO_PROXY'
+    r'|https?_proxy|all_proxy|no_proxy'
+    # CDPATH changes where a RELATIVE `cd` lands, and a cd is what establishes
+    # the repo the gate then inspects: `CDPATH=/other cd repo && git merge x`
+    # enters /other/repo while the resolver reads `repo` from the cwd.
+    r'|CDPATH'
+    # HOME and XDG_CONFIG_HOME select which config FILES git reads, so they can
+    # supply branch.<n>.merge or an alias just as GIT_CONFIG_* can.
+    r'|HOME|XDG_CONFIG_HOME)\+?=')
+
+# _command_argv walks PAST wrappers to reach the command word, discarding their
+# options — so `env -C /other git merge topic` arrived looking like an ordinary
+# merge in the caller's repo, and `env -u HOME git pull origin` like an ordinary
+# pull while git read a different global config than the gate did. Resolving them
+# would mean re-implementing each wrapper's grammar, so an unaccounted wrapper
+# option makes the operation unresolvable instead — fail CLOSED. See
+# _is_wrapper_chdir_opt for why that test is an inversion rather than a list.
+# Wrappers that run git as ANOTHER USER, which changes HOME and therefore which
+# global config, aliases and credentials git reads — a different answer from the
+# one the gate computed, with no option needed to trigger it (`sudo git merge`).
+# Basename-matched, like _WRAPPERS.
+_IDENTITY_WRAPPERS = frozenset(('sudo', 'doas', 'su', 'runuser', 'setpriv'))
+
+# Debris `split_segments` leaves when it splits a redirection on its operators:
+# `git merge x 2>&1` yields a second segment of just `1`. Counting that as a
+# companion command blocked an ordinary redirected merge.
+_REDIR_ARTIFACT_RE = re.compile(r'^(?:\d+|[<>&|]+|\d*[<>]{1,2}&?\d*)$')
+
+# At most this many unrecognized subcommands are reported for alias resolution.
+# A command naming more than a handful is not a shape the gate needs to serve
+# precisely, and an unbounded list would be an unbounded number of `git config`
+# lookups inside a hook budget.
+REF_OP_MAX_ALIAS_CANDIDATES = 5
+
+
+def _is_git_scope_opt(tok):
+    """True for a PRE-SUBCOMMAND git global option the gate cannot account for.
+
+    Any of them, not an enumeration. Naming the ones that redirect the repo or
+    the config (`--git-dir`, `-c`) left the ones that change git's SEMANTICS —
+    `--no-replace-objects` alters which commits are reachable, so the gate's
+    ancestry answer and git's can differ — and every attached spelling
+    (`-c<key>=<value>`, `-C<path>`) had to be spelled out separately. Inverting it
+    makes the omission direction fail-CLOSED and needs no list at all.
+
+    A bare `-C` is the sole exemption: _apply_global_c resolves that one properly,
+    and its VALUE is skipped by the caller's pairing, not by this predicate."""
+    return tok.startswith('-') and tok != '-C' and tok != '-'
+
+# Emitted in place of an operand the gate must not resolve. Leading-dash so that
+# any caller which routes it through gate_classify_target() also rules it
+# unresolvable rather than treating it as a ref name.
+REF_OP_UNRESOLVABLE = '-unresolvable-ref-operand'
+
+# Appended to a pull's operands as `-ff-mode=<--ff|--no-ff|--ff-only>`, carrying
+# which fast-forward mode the command asked for. Leading-dash for the same reason
+# as REF_OP_UNRESOLVABLE — no ref resolver will mistake it for a name. The gate
+# needs both ends: `--no-ff` means the result is a merge COMMIT, and `--ff-only`
+# is what lets it authorize a pull whose post-fetch oid it cannot see.
+REF_OP_FF_PREFIX = '-ff-mode='
+
+
+_REF_OP_VALUE_LONG = tuple(o for o in _REF_OP_VALUE_OPTS if o.startswith('--'))
+_REF_OP_VALUE_SHORT = frozenset(
+    o for o in _REF_OP_VALUE_OPTS if len(o) == 2 and not o.startswith('--'))
+
+# Every long state option, for the same prefix matching. Git abbreviates these as
+# freely as it does the value-taking ones, and an exact-match test left a latched
+# flag in place: `git merge --squash --no-sq feature` is `--no-squash`, i.e. an
+# ordinary merge, but read as an unrecognized flag it stayed "out of scope" and
+# was allowed. The negated control forms are included because git generates them.
+_MERGE_STATE_LONG = tuple(sorted(
+    set(_MERGE_FF_OPTS) | set(_MERGE_SQUASH_OPTS)
+    | set(_MERGE_CONTROL_OPTS) | set(_MERGE_CONTROL_NEG)))
+
+
+def _resolve_state_opt(tok):
+    """The state option `tok` names, following unambiguous abbreviation, or ''."""
+    if tok in _MERGE_STATE_LONG:
+        return tok
+    if not tok.startswith('--') or '=' in tok:
+        return ''
+    hits = [o for o in _MERGE_STATE_LONG if o.startswith(tok)]
+    return hits[0] if len(hits) == 1 else ''
+
+
+# Short options whose argument is OPTIONAL and, when present, ATTACHED. In a
+# cluster they make the remainder unreadable: everything after the letter is its
+# value, or none of it is, and the command string does not say which.
+_REF_OP_OPTARG_SHORT = frozenset(('-S', '-r'))
+
+
+def _ambiguous_short_cluster(tok):
+    """True for a short-option cluster whose reading is not decidable here."""
+    if not tok.startswith('-') or tok.startswith('--') or len(tok) <= 2:
+        return False
+    return any('-' + ch in _REF_OP_OPTARG_SHORT for ch in tok[1:])
+
+
+def _takes_separate_value(tok):
+    """True when `tok` consumes the NEXT token as its value.
+
+    Git accepts any unambiguous ABBREVIATION of a long option, so an exact-token
+    set is evadable: `git merge --into reviewed-name feature` is `--into-name`,
+    and reading `reviewed-name` as an operand turned a one-head merge into what
+    looked like an octopus. A `--`-prefixed token that uniquely prefixes one
+    value-taking long option is treated as that option.
+
+    Abbreviations of the OUT-OF-SCOPE families (`--sq` for `--squash`, `--no-f`
+    for `--no-ff`) deliberately get no such treatment: unrecognized, they leave
+    the invocation IN scope, so the gate evaluates it instead of dismissing it —
+    the fail-closed direction."""
+    if tok in _REF_OP_VALUE_OPTS:
+        return True
+    if tok.startswith('--'):
+        if '=' in tok:
+            return False
+        return len([o for o in _REF_OP_VALUE_LONG if o.startswith(tok)]) == 1
+    # A CLUSTER of short options: git reads `-vm reviewed` as `-v -m reviewed`,
+    # so the cluster consumes the next token whenever a value-taking letter is
+    # LAST. Anywhere else the rest of the cluster is that option's attached value
+    # (`-mfoo`), and nothing separate is consumed.
+    if tok.startswith('-') and len(tok) > 2:
+        body = tok[1:]
+        for idx, ch in enumerate(body):
+            if '-' + ch in _REF_OP_VALUE_SHORT:
+                return idx == len(body) - 1
+    return False
+
+
+def _alias_candidates(chunks):
+    """Subcommand names in the command that could be config-defined aliases.
+
+    A parser cannot see an alias that lives in a config FILE (`git config
+    alias.m merge`, then `git m topic`), but the GATE can: it has the repo and can
+    ask `git config --get alias.<name>`. So the detector reports every subcommand
+    it does not recognize as read-only or as a merge/pull, and the gate resolves
+    them. Real subcommands land here too (`commit`, `push`); they simply have no
+    alias entry, so they cost one lookup and nothing else — which is why no list
+    of git's own subcommands has to be maintained.
+
+    Names are word-shaped by construction; any carrying whitespace or CR/LF is
+    dropped rather than risking the gate's line-delimited protocol. Sorted for a
+    stable emission, and capped — see REF_OP_MAX_ALIAS_CANDIDATES."""
+    out = set()
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            argv = _command_argv(seg, 'git', wrapper_operands=True)
+            if not argv or not _is_exe(argv[0], 'git'):
+                continue
+            sub = _git_subcommand(argv)[0]
+            if sub is None or sub in _REF_SAFE_SUBS or sub in _REF_OP_SUBS:
+                continue
+            if re.search(r'\s', sub):
+                continue
+            out.add(sub)
+    return sorted(out)[:REF_OP_MAX_ALIAS_CANDIDATES + 1]
+
+
+# Commands whose OPERANDS are environment names or assignments, so the whole
+# segment has to be read rather than just its leading prefix.
+# Verbs whose effect OUTLIVES their own segment — `export GIT_DIR=… && git merge`
+# reaches the merge. Split from the PREFIX forms (`env X=1 cmd`, `X=1 cmd`), whose
+# assignment applies to that one command only: treating both as whole-command
+# blocked `HOME=/tmp git status && git merge topic`, where HOME never reaches the
+# merge at all.
+_ENV_PERSIST_VERBS = frozenset(('export', 'unset', 'declare', 'typeset',
+                                'local', 'readonly', 'setenv', 'set'))
+
+
+
+def _env_assignment_toks(seg):
+    """The tokens of `seg` that are genuinely environment assignments.
+
+    Reading EVERY token was wrong in the other direction: `git merge PATH=reviewed`
+    merges a ref legitimately named `PATH=reviewed`, and matching it as an
+    assignment blocked that merge outright. A bash assignment prefix is the
+    LEADING run of assignment-shaped words; only for the env verbs does the rest
+    of the segment carry them too."""
+    toks = toks_once(seg)
+    out = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if _ASSIGN_TOK_RE.match(t) or _ENV_ASSIGN_TOK_RE.match(t):
+            out.append(t)
+            i += 1
+            continue
+        base = _bn_tok(t)
+        if base in _ENV_PERSIST_VERBS:
+            # `export`/`unset` take NAMES or assignments as operands, so the whole
+            # segment is environment. `env` deliberately does NOT: its operands
+            # after the utility name belong to that utility, and reading them all
+            # made `env git merge PATH=reviewed` treat a legitimate ref as an
+            # assignment. It falls through to the wrapper branch instead.
+            return toks
+        if base in _WRAPPERS or base in _OPERAND_WRAPPERS or t.startswith('-'):
+            # A wrapper or one of its options — `command env GIT_DIR=… git merge`
+            # is still an assignment prefix, and stopping at `command` hid it.
+            i += 1
+            continue
+        break      # the command word: anything after it is an operand
+    return out
+
+
+def _seg_env_scope(seg):
+    """True when THIS segment's own command carries a scope/config assignment
+    prefix (`GIT_DIR=… git merge x`, `env -i git merge x`)."""
+    return any(_GIT_SCOPE_ENV_RE.match(t) for t in _env_assignment_toks(seg))
+
+
+def _has_scope_change(chunks):
+    """True when the command moves the repo the gate would query.
+
+    _alias_candidates reports NAMES only, with no scope attached, and the gate
+    resolves them against one repository. `cd /other && git m topic` and
+    `git -C /other m topic` would send it to the wrong one — where a repo-local
+    `alias.m = merge` is invisible — so a scoped command is refused instead."""
+    for chunk in chunks:
+        if _all_cds(chunk):
+            return True
+        for _op, seg in split_segments(chunk):
+            argv = _command_argv(seg, 'git', wrapper_operands=True)
+            if argv and _is_exe(argv[0], 'git') \
+               and '-C' in argv[1:_git_subcommand(argv)[1]]:
+                return True
+    return False
+
+
+def _has_git_scope_env(chunks):
+    """True when a scope/config assignment OUTLIVES its own segment.
+
+    Only the persisting forms: `export GIT_DIR=/other/.git && git merge topic`
+    reaches the merge, and so does a bare `GIT_DIR=/x` statement. A PREFIX
+    assignment binds one command, so it is checked per-segment by _seg_env_scope
+    instead — reading it whole-command blocked `HOME=/tmp git status && git merge
+    topic`, where HOME never reaches the merge."""
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            toks = toks_once(seg)
+            if not toks:
+                continue
+            persists = (_bn_tok(toks[0]) in _ENV_PERSIST_VERBS
+                        or all(_ASSIGN_TOK_RE.match(t) for t in toks))
+            if persists and _seg_env_scope(seg):
+                return True
+    return False
+
+
+def _has_ref_op_candidate(chunks):
+    """True when the command carries a git invocation that IS, or could be aliased
+    to, a merge or a pull.
+
+    Anything not provably read-only counts, because an alias can put a merge
+    behind any name. Paired with _has_git_scope_env this is what keeps the
+    fail-closed refusal off ordinary inspection: `GIT_DIR=/other git log` stays
+    allowed, `GIT_CONFIG_KEY_0=alias.m … git m topic` does not."""
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            argv = _command_argv(seg, 'git', wrapper_operands=True)
+            if argv and _is_exe(argv[0], 'git') \
+               and _git_subcommand(argv)[0] not in _REF_SAFE_SUBS:
+                return True
+    return False
+
+
+def _has_unaccounted_global(argv, sub_idx):
+    """True when the pre-subcommand globals contain anything but a bare `-C`.
+
+    Walks the option region pairing `-C` with its value so the path operand is
+    not itself read as an option — `git -C /repo merge x` must stay resolvable,
+    which is the whole point of the exemption."""
+    k = 1
+    while k < sub_idx:
+        if argv[k] == '-C':
+            k += 2
+            continue
+        if _is_git_scope_opt(argv[k]):
+            return True
+        k += 1
+    return False
+
+
+def _bn_tok(tok):
+    """Basename of a possibly-path-spelled command word (/usr/bin/sudo -> sudo)."""
+    return tok.rsplit('/', 1)[-1]
+
+
+def _is_wrapper_chdir_opt(tok):
+    """True for anything in a wrapper prefix the gate cannot account for.
+
+    ANY option, not an enumeration — the same inversion as
+    _has_unaccounted_global, and for the same reason. Naming the dangerous ones
+    (`env -C`, `env -u`, `env -i`, `sudo -H`, `command -p`) meant also naming
+    every spelling of each: attached (`-C/other`), long (`--chdir=/other`), and
+    GNU's unambiguous ABBREVIATIONS (`--chd=/other`, `--igno`, `--uns=HOME`).
+    Each round closed one and left the next. A wrapper option this gate has not
+    reasoned about is unresolvable, full stop; the cost is an over-strict block on
+    a harmless `nice -n 5`, which does not appear before a protected-branch merge.
+
+    Identity wrappers are matched by NAME too: `sudo git merge` needs no option to
+    give git a different HOME, and therefore different config and aliases."""
+    if _bn_tok(tok) in _IDENTITY_WRAPPERS:
+        return True
+    return tok.startswith('-') and tok != '-'
+
+
+def _wrapper_chdir_in_prefix(seg, argv):
+    """True when a chdir-ing wrapper option precedes the git command word.
+
+    argv is a SUFFIX of the segment's tokens, so the difference in length is the
+    command word's index — the same arithmetic _torn_direct_hits relies on. Erring
+    by one token includes a neighbour, which is the fail-CLOSED direction."""
+    if not argv:
+        return False
+    toks = toks_once(seg)
+    return any(_is_wrapper_chdir_opt(t)
+               for t in toks[:max(0, len(toks) - len(argv))])
+
+
+def _ref_op_operands(argv, raw_argv, sub_idx, sub):
+    """(operands, in_scope) for the argv of a `git merge` / `git pull`.
+
+    in_scope is False for a merge form that cannot fast-forward a ref: an
+    in-progress-merge control (_MERGE_CONTROL_OPTS), a squash, or a forced merge
+    commit. The ff and squash families are read LAST-WINS, exactly as git applies
+    them, so a later flag can put an invocation back in scope — see
+    _MERGE_FF_OPTS. Operands are the non-flag words after the subcommand, with
+    each known separate-value option's value skipped.
+
+    An operand that could OPEN a live substitution is replaced by
+    REF_OP_UNRESOLVABLE. Unlike the `cd`/`-C` targets, no literal-vs-live
+    distinction is drawn here: a ref genuinely named `$(x)` does not occur, so
+    treating BOTH spellings as unresolvable costs nothing and removes the
+    quote-reconstruction surface entirely. CR/LF is rejected outright for the same
+    positional-protocol reason as _reject_crlf's other callers — the gate prints
+    these operands as lines."""
+    ops = []
+    skip = False
+    ff = ''
+    squash = False
+    controls = set()
+    unknown_long = False
+    end_of_opts = False
+    for i in range(sub_idx + 1, len(argv)):
+        a = argv[i]
+        _raw_i = _raw_spelling(raw_argv, i)
+        # A redirection is removed by the SHELL before git sees the command, so it
+        # is checked BEFORE the pending-value skip. `git merge -m >/dev/null x`
+        # gives git `-m x`, not `-m >/dev/null`; consuming the redirection as the
+        # value made `x` look like the merge head while git merged @{upstream}.
+        # Which token is the value is not readable here, so neither is assumed.
+        if skip and _raw_i is not None and _raw_i == a and _REDIR_RE.match(a):
+            ops.append(REF_OP_UNRESOLVABLE)
+            skip = False
+            continue
+        if skip:
+            skip = False
+            continue
+        # Shell syntax vs. a ref that merely LOOKS like it. Tokenization has
+        # erased quoting, so `git merge '#topic'` and `git merge '>topic'` arrive
+        # identical to a comment and a redirection — and dropping them left NO
+        # operand, which makes the gate resolve @{upstream} instead of the ref git
+        # will actually merge. Ask the raw spelling: quoted means it is a ref.
+        _raw = _raw_i
+        if _raw is None:
+            # Spellings could not be aligned, so quoted and bare are
+            # indistinguishable here. Neither reading may be assumed.
+            ops.append(REF_OP_UNRESOLVABLE)
+            continue
+        if _raw == a:
+            if a.startswith('#'):
+                break      # the rest of the segment is a comment, not operands
+            if _REDIR_RE.match(a):
+                # A redirection, plus its target when that is a separate token.
+                skip = bool(_REDIR_BARE_RE.match(a))
+                continue
+        if end_of_opts:
+            # Past `--` every word is a ref, whatever it is spelled like: a
+            # lightweight tag really can be named `--no-ff`, and reading it as
+            # the OPTION reported the merge out of scope.
+            _reject_crlf(a, 'git ref operand')
+            ops.append(REF_OP_UNRESOLVABLE if _may_be_substitution(a) else a)
+            continue
+        if a == '--':
+            end_of_opts = True
+            continue
+        if _ambiguous_short_cluster(a):
+            # A cluster carrying an option whose argument is OPTIONAL and
+            # attached: `git merge -Sm reviewed` is `-S` signing with key `m`,
+            # leaving `reviewed` as the head — but read letter-by-letter the
+            # trailing `m` is `-m` and swallows it. The two readings disagree
+            # about the merge target, so neither is used.
+            ops.append(REF_OP_UNRESOLVABLE)
+            continue
+        if _takes_separate_value(a):
+            skip = True
+            continue
+        state = _resolve_state_opt(a)
+        if state in _MERGE_CONTROL_OPTS:
+            controls.add(state)
+            continue
+        if state in _MERGE_CONTROL_NEG:
+            controls.discard('--' + state[len('--no-'):])
+            continue
+        if state in _MERGE_FF_OPTS:
+            ff = state
+            continue
+        if state in _MERGE_SQUASH_OPTS:
+            squash = (state == '--squash')
+            continue
+        if a.startswith('-') and a != '-':
+            # An AMBIGUOUS abbreviation of a state option — a `--` token with no
+            # attached value that prefixes more than one of them, which
+            # _resolve_state_opt therefore refused to resolve. The latch it might
+            # have set can no longer be trusted, so drop it and let the gate
+            # evaluate the merge: an over-strict block rather than a missed one.
+            # Scoped to that case on purpose. Setting it for EVERY unrecognized
+            # long option cancelled correct state on ordinary commands —
+            # `git merge --squash --no-commit x` and `--no-ff --strategy=ours x`
+            # are not fast-forwards and must stay out of scope.
+            if a.startswith('--') and '=' not in a \
+               and any(o.startswith(a) for o in _MERGE_STATE_LONG):
+                unknown_long = True
+            continue
+        _reject_crlf(a, 'git ref operand')
+        ops.append(REF_OP_UNRESOLVABLE if _may_be_substitution(a) else a)
+    # MERGE only. A `pull` with --squash or --no-ff still FETCHES, so it still
+    # moves FETCH_HEAD and the remote-tracking refs — dropping it from the
+    # operation set let `git pull --squash origin feature && git merge
+    # origin/feature` authorize the merge against the value the pull was about to
+    # replace. Those flags change what a pull does with the content it fetched,
+    # never whether it fetches.
+    if sub == 'merge' and not unknown_long \
+       and (controls or squash or ff == '--no-ff'):
+        return [], False
+    # A PULL stays in scope whatever its ff mode (it still fetches, see above),
+    # but the gate has to KNOW that mode: `--no-ff` makes the result a merge
+    # commit, and `--ff-only` is the only form whose outcome the gate can vouch
+    # for without seeing the post-fetch oid.
+    return ops, ((REF_OP_FF_PREFIX + ff) if ff else True)
+
+
+# ── THREAT MODEL for the ref-op detector (#779) ──────────────────────────────
+# The SAME boundary this module's docstring sets for git_commit and gh_pr, restated
+# here because the ref-op surface invites the question repeatedly.
+#
+# IN SCOPE — the routine or accidental bypass. An agent (or a person) reaches for
+# `git merge feature` / `git pull` on the protected branch because it is the
+# obvious next command, not to defeat anything. Everything the detector and gate
+# do is aimed here, and the bar is that no ordinary spelling of that operation
+# slips past: option abbreviations, negated flags, `--`, quote-splitting, `-C`,
+# a companion command, a config-file alias.
+#
+# OUT OF SCOPE — the deliberate evader with shell access, who can always win
+# against a command-string parser and does not need any of these shapes to do it:
+# an interpreter payload (`bash -c`, `python3 -c subprocess.run`), a script file,
+# a dispatcher (`xargs`, `find -exec`), process substitution, or repo/global
+# config planted by an EARLIER, separately-gated command. Closing individual
+# members of that class buys nothing — the next member is always one line away —
+# so they are ACCEPTED RESIDUALS, identically to the ones the module docstring
+# already lists. What the gate provides against such an actor is a record, not a
+# barrier: every authorization it grants is logged.
+#
+# The practical rule when a new finding arrives: reachable by a command someone
+# would type WITHOUT meaning to bypass the gate → fix it. Requires deliberate
+# evasion → it is answered by this boundary, not by more code. And prefer a fix
+# that REMOVES an enumeration (as _has_companion_command replaced a denylist of
+# ref-writing subcommands) over one that extends a list — only the former shrinks
+# the surface the next reader has to check.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _iter_ref_op(chunk, allow_cd):
+    """Yield one result tuple per `git merge` / `git pull` command word in `chunk`.
+    allow_cd=False for substitution bodies (subshell cwd untrusted).
+
+    A near-mirror of _scan_commit — read the reasoning for cd trust, torn-assignment
+    recovery and global `-C` resolution there; the only differences are the
+    subcommand set and that operands are collected instead of amend-ness.
+
+    EVERY match is yielded, not just the first, because unlike `git commit` the
+    operations in one command are not interchangeable: `git merge HEAD && git merge
+    feature` opens with a NO-OP that the gate rightly allows, and stopping there
+    let the second one fast-forward the protected branch unseen. The gate counts
+    what this yields and refuses a command carrying more than one (see
+    git_ref_op's n_ops); the first match still supplies the scope and operands."""
+    pending_cd = None
+    pending_cd_op = ''
+    # EVERY cd seen, never reset by intervening commands — see _untrusted_cd.
+    cds = []
+    for op, seg in split_segments(chunk):
+        cd = _record_cds(seg, cds)
+        if cd is not None:
+            pending_cd = cd           # strict form only: feeds the TRUSTED path
+            pending_cd_op = op
+            continue
+        argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
+                                       wrapper_operands=True)
+        # Recovery FIRST, with the same ordering, windowing and rationale as
+        # _scan_commit: a tear anywhere in the prefix makes every argv POSITION
+        # untrustworthy, so neither the repo scope nor the operands can be read.
+        # Report _TORN_SCOPE and an unresolvable operand; the gate then stalls
+        # rather than acting on a fabricated repo or ref.
+        _hits = list(_torn_direct_hits(seg, 'git', argv))
+        _all = _hits[0][0] if _hits else ()
+        _starts = [_k for _t, _k in _hits]
+        for _i, _k in enumerate(_starts):
+            _end = _starts[_i + 1] if _i + 1 < len(_starts) else len(_all)
+            _sub = _git_subcommand(_all[_k:_end])[0]
+            if _sub in _REF_OP_SUBS:
+                yield (_sub, '', [REF_OP_UNRESOLVABLE], _TORN_SCOPE, False)
+                _torn = True
+                break
+        else:
+            _torn = False
+        if _torn:
+            pending_cd = None
+            continue
+        if argv and _bn_tok(argv[0]) in _IDENTITY_WRAPPERS \
+           and any(_is_exe(t, 'git') for t in argv[1:]):
+            # `_command_argv` walks past the wrappers IT knows; runuser, setpriv
+            # and su are not among them, so `setpriv --no-new-privs git merge
+            # topic` never reached the prefix check and produced NO operation at
+            # all — a fail-OPEN, not an over-block. Their grammars are not
+            # re-implemented here, so a git command behind one is unresolvable.
+            yield ('merge', '', [REF_OP_UNRESOLVABLE], '', False)
+            pending_cd = None
+            continue
+        if not argv or not _is_exe(argv[0], 'git'):
+            pending_cd = None
+            continue
+        sub, sub_idx = _git_subcommand(argv)
+        if sub not in _REF_OP_SUBS:
+            # A config override ON THIS COMMAND LINE can spell a merge or a pull
+            # under any name, so an unrecognized subcommand there is unresolvable
+            # rather than absent. The test is the SAME scope-option set used for
+            # recognized subcommands, not an `alias.`-key match: `-c
+            # include.path=/tmp/aliases` defines the alias INDIRECTLY, and so does
+            # any --git-dir/--config-env pointing at a config that does. The kind
+            # is nominal: the gate refuses on the unresolvable operand before it
+            # ever branches on kind.
+            if sub is not None and sub not in _REF_SAFE_SUBS and (
+                    _has_unaccounted_global(argv, sub_idx)
+                    or _wrapper_chdir_in_prefix(seg, argv)
+                    or _seg_env_scope(seg)):
+                yield ('merge', '', [REF_OP_UNRESOLVABLE], '', False)
+            pending_cd = None
+            continue
+        ops, in_scope = _ref_op_operands(argv, raw_argv, sub_idx, sub)
+        if not in_scope:
+            pending_cd = None
+            continue
+        if isinstance(in_scope, str) and in_scope.startswith(REF_OP_FF_PREFIX):
+            ops = list(ops) + [in_scope]
+        # A pre-subcommand global — or a GIT_* environment assignment — that
+        # redirects the repo or rewrites the config the gate is about to read
+        # makes every answer it computes describe the WRONG repository. Report it
+        # as unresolvable rather than resolving the cwd's refs and calling that an
+        # authorization. Both option spellings are checked (`--git-dir /d` and
+        # `--git-dir=/d`), and the env form is read from the raw segment because
+        # _command_argv has already stripped it out of argv.
+        if _has_unaccounted_global(argv, sub_idx) \
+           or _wrapper_chdir_in_prefix(seg, argv) or _seg_env_scope(seg):
+            ops = [REF_OP_UNRESOLVABLE]
+        base = _trusted_cd(pending_cd, op) if allow_cd else ''
+        base, authoritative, tilde_c, nested_c = _apply_global_c(
+            argv, raw_argv, sub_idx, base,
+            _cd_authoritative(base, pending_cd_op, cds), allow_cd)
+        # 5th element is git_ref_op's nested-payload suppression flag, exactly as
+        # in _scan_commit; no caller outside this module sees it.
+        yield (sub, base, ops,
+               _commit_untrusted(cds, allow_cd, authoritative, tilde_c, nested_c),
+               authoritative)
+        pending_cd = None
+
+
+def _scan_ref_op(chunk, allow_cd):
+    """First `git merge` / `git pull` in `chunk`, or None."""
+    return next(_iter_ref_op(chunk, allow_cd), None)
+
+
+def _count_ref_ops(chunks):
+    """How many `git merge` / `git pull` operations the whole command carries.
+
+    Counted over the same chunks and with the same allow_cd split as the scan, so
+    a command whose only match sits in a substitution body is counted once, not
+    twice. The gate refuses anything above 1 — see _iter_ref_op."""
+    return (len(list(_iter_ref_op(chunks[0], True)))
+            + sum(len(list(_iter_ref_op(c, False))) for c in chunks[1:]))
+
+
+def _has_companion_command(chunks):
+    """True when the command runs anything BESIDES the merge/pull and `cd`.
+
+    Replaces an enumeration of ref-writing subcommands, which could not be
+    completed: `git branch -f`, `git config`, `git fast-import`, `git difftool`,
+    `git grep --open-files-in-pager=<cmd>`, `unset HOME`, a shell script, a
+    python one-liner — each arrived as a fresh instance of ONE fact. The gate
+    resolves its merge target and reads git config at PreToolUse time, so ANY
+    other command in the same invocation can replace what it checked before the
+    merge runs. Asking "is there another command at all" answers the class, and
+    is both smaller and complete where a denylist was neither.
+
+    `cd` is the sole exemption: it only scopes the command that follows, and the
+    resolver already accounts for it. Nested chunks count too — a substitution
+    body executes.
+
+    The cost is that `git status && git merge origin/main` must be split into two
+    calls ON THE PROTECTED BRANCH. That is the same advice the gate already gives
+    for fetch-then-merge, and it applies nowhere else."""
+    n = 0
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            if not seg.strip():
+                continue
+            if _record_cds(seg, []) is not None and not _seg_env_scope(seg):
+                # A plain `cd` only scopes the command that follows. One carrying
+                # a scope assignment (CDPATH) does more than that, so it does not
+                # get the exemption.
+                continue
+            _t = toks_once(seg)
+            if not _t or all(_REDIR_ARTIFACT_RE.match(x) for x in _t):
+                continue   # redirection debris, not a command
+            n += 1
+            if n > 1:
+                return True
+    return False
+
+
+def git_ref_op(cmd, with_untrusted_cd=False):
+    """Detect a `git merge` / `git pull` that can FAST-FORWARD a branch ref (#779).
+
+    Returns (kind, target_dir, operands), plus (untrusted_cd, n_ops, ref_writer)
+    when with_untrusted_cd=True — the same contract and the same chunk folding as
+    git_commit, extended by the two whole-command facts the gate needs. kind is
+    'merge', 'pull', or '' when neither is present.
+
+    n_ops is how many merge/pull operations the WHOLE command carries, and the
+    gate blocks above 1. git_commit's "first match wins" residual is tolerable
+    because every match there is still a `git commit` the marker check covers;
+    here the first operation can be a deliberate no-op (`git merge HEAD`) that
+    the gate allows, which would wave the real one through behind it.
+
+    ref_writer is True when the command also carries a ref-writing or
+    config-rewriting git subcommand (anything outside _REF_SAFE_SUBS); the gate
+    blocks on it, because what it resolves at PreToolUse time would be replaced
+    before the merge runs.
+
+    aliases lists the subcommand names the parser did not recognize, for the gate
+    to resolve against `git config --get alias.<name>` — the one part of the
+    alias problem a command-string parser cannot answer on its own. It is
+    populated even when kind is '', which is precisely the config-file-alias
+    case.
+
+    A fast-forward creates no commit object, so no commit-oriented gate observes
+    it; this is what lets ref-ff-gate.sh see the ref move before it happens."""
+    chunks = _all_chunks(cmd)
+    # A git scope/config override in the environment makes every repo-derived
+    # answer describe the wrong repository — and GIT_CONFIG_KEY_0=alias.m puts a
+    # merge behind a name no parser can recognize, so the subcommand word cannot
+    # be trusted either. Decided over the WHOLE command (an `export` in an earlier
+    # segment reaches the merge) and before the scan, because the scan's own
+    # recognition is what the override defeats.
+    if with_untrusted_cd and _has_git_scope_env(chunks) \
+       and _has_ref_op_candidate(chunks):
+        return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, [])
+    r = _scan_ref_op(chunks[0], True)
+    if r:
+        # See git_commit: a CURRENT-SHELL payload changes the cwd of the very chunk
+        # we matched in, and an AUTHORITATIVE target is never overridden.
+        nested = [] if r[4] else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
+        r = (r[0], r[1], r[2],
+             _untrusted_cd(([r[3]] if r[3] else []) + nested) if nested else r[3])
+    if not r:
+        for chunk in chunks[1:]:
+            r = _scan_ref_op(chunk, False)
+            if r:
+                r = (r[0], r[1], r[2],
+                     _untrusted_cd(([r[3]] if r[3] else []) + _nested_cds(chunks)))
+                break
+    if not r:
+        r = ('', '', [], '')
+    if not with_untrusted_cd:
+        return r[:3]
+    # Alias candidates are reported even when no literal merge/pull was found:
+    # that is exactly the case a config-file alias produces.
+    aliases = _alias_candidates(chunks)
+    if not r[0]:
+        if aliases and _has_scope_change(chunks):
+            # The gate resolves alias names against ONE repository; a cd or
+            # `git -C` means that may not be the repository git will use.
+            return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
+        # The companion fact matters even with no literal merge/pull: `git config
+        # alias.m merge && git m feature` has none at parse time, and the gate's
+        # alias lookup finds nothing because the command has not created the
+        # alias yet. Reporting the companion is what lets the gate refuse it.
+        return r + (0, _has_companion_command(chunks), aliases)
+    return r + (_count_ref_ops(chunks), _has_companion_command(chunks), aliases)
+
+
 def _gh_find_pr_sub(rest, subcommand):
     """Index in `rest` (argv after `gh`) of the `pr` token immediately followed by
     `subcommand`, reached past gh global flags and their values, or None. Split out

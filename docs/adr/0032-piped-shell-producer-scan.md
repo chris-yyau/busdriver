@@ -465,79 +465,130 @@ Both were found by the chatgpt-codex-connector on PR #562, deferred as `follow-u
 because the two functions they touch are the most heavily measured in the module, and both
 were **verified executing against real bash** before being fixed. Both are the *structural*
 half failing — neither is an arity question, and neither reopens the flag one — but only ONE
-of them fires the revisit trigger below: item 2 is a genuinely new transport, while item 1 is
-a splitter defect that discarded the producer of a pipe the trigger had recognised all along.
-The distinction matters for reading the trigger's own list, which is corrected at the end.
+of them fires the revisit trigger below: item 2 is a genuinely new transport, while item 1
+is a splitter defect that discarded the producer of a pipe the trigger had recognised all
+along. That distinction is why the trigger's own list is corrected at the end rather than
+shortened.
 
 **1. Control operators inside a backtick substitution read as outer pipeline separators.**
-`printf 'rm -rf src' | echo `true && bash`` runs the nested `bash` on the pipeline's stdin,
-but `_split_with_ops` tracked single quotes, double quotes and escapes and *not* backtick
-spans — so that `&&` ended the pipeline one stage before the receiver and the producer was
-discarded. Fixed as STATE, the same shape as the two quote states beside it, rather than as
-a rule about `&&`. Making the span opaque to the splitter removes no block: the body is
-still extracted and classified by `_command_substitutions`, which runs first. An unterminated
-backtick now joins the unterminated quote and the dangling escape in setting `ok = False`, so
-the caller falls back to the wider raw scan.
+A backtick substitution is one WORD of the stage it sits in, and the subshell it runs
+inherits the pipeline stdin — but `_split_with_ops` tracked single quotes, double quotes
+and escapes and *not* backtick spans, so an operator inside the body ended the pipeline one
+stage before the receiver and the producer was discarded. Fixed as STATE, the same shape as
+the two quote states beside it, rather than as a rule about `&&`. In `cmdword` this removes
+no block: `_command_substitutions` extracts every body and recurses first. An unterminated
+backtick now joins the unterminated quote and the dangling escape in setting `ok = False`.
 
 **2. A shell fed by a PROCESS SUBSTITUTION was never handed a producer.** The trigger is
 `|`/`|&`, so `bash < <(printf 'rm -rf src')`, its script-operand spelling
-`bash <(printf 'rm -rf src')`, and the reverse direction `printf 'rm -rf src' > >(bash)` all
-executed the removal while `is_file_mod` answered False. `_procsub_producers` routes them to
-the *same* producer loop the pipe path feeds — both halves of the verdict, verbs and
+`bash <(printf 'rm -rf src')`, and the reverse direction `printf 'rm -rf src' > >(bash)`
+all executed the removal while `is_file_mod` answered False. `_procsub_producers` routes
+them to the *same* producer loop the pipe path feeds — both halves of the verdict, verbs and
 redirects — and splits by direction, because the two ends swap: `<(BODY)` makes BODY the
 producer, `>(BODY)` makes the outer command the producer. Nothing new models the language;
-the receiver question is the one `_may_read_program_from_stdin` already answers. Quoted
-regions are skipped, both kinds, unlike the `$(...)` sibling: process substitution does not
-happen inside double quotes (`echo "<(rm -rf q)"` removes nothing — verified).
+the receiver question is the one `_may_read_program_from_stdin` already answers.
 
-The first cut of both fixes was reviewed and two defects came back, each worth recording
-because each is a rule this ADR already states, missed on the NEW transport:
+### What review found afterwards
 
-- **The indirection widening was keyed on a literal `|`.** A substitution has no pipe, so
-  `f(){ printf 'rm -rf src'; }; bash < <(f)` and `f(){ bash; }; printf 'rm -rf src' > >(f)`
-  both ran while `is_file_mod` answered False — although their pipe twin
-  `f(){ printf …; }; f | bash` had blocked through that very rule since #557. The trigger
-  now fires on a pipe **or** a process substitution. Adding a transport means asking every
-  rule keyed on the old one whether it meant the pipe or the feeding.
-- **The candidate walk was charged against `_scan_budget`, which the per-segment walk then
-  charges again** — silently halving the documented 4,000-token limit for any command
-  holding a `<(`, and flipping a benign 2,004-token
-  `grep -f <(echo pat) file0.txt … file1999.txt` from allow to block for a walk that emitted
-  no producer at all. It has its own allowance now; exhaustion takes the whole-command scan,
-  the same best-effort exit an unreadable command already takes. A later round found the
-  *same* double-accounting reproduced INSIDE that new allowance — the splitter tears a
+Four defects came back on the `cmdword` side, and every one is a rule this document already
+states, missed on the new transport — the same finding the sixty-seven-row table above
+records, arriving once more.
+
+**Asking the old question about the new transport.**
+
+- The indirection widening was keyed on a literal `|`, and a substitution has none, so a
+  function could hide either end of it (`f(){ printf 'rm -rf src'; }; bash < <(f)`) while
+  the pipe twin had blocked through that very rule since #557. It fires on a pipe **or** a
+  process substitution now. *Adding a transport means asking every rule keyed on the old one
+  whether it meant the pipe or the feeding.*
+- An OUTPUT body is a compound command, and asking it as ONE stage reads only its first
+  command word for the COMMAND-POSITION-only names, so `>(true; . /dev/stdin)` hid the `.`
+  behind a harmless `true`. The body is split and every segment asked, exactly as
+  `_may_read_program_from_stdin` already does for a `$(...)` body. Note what was *not*
+  wrong: the any-word shell test never needed this (`>(true; bash)` blocked throughout),
+  which is precisely why `.` and `source` are command-position-only.
+
+**Budget accounting, twice.**
+
+- The candidate walk was charged against `_scan_budget`, which the per-segment walk then
+  charges again — halving the documented 4,000-token limit for any command holding a `<(`,
+  and flipping a benign 2,004-token `grep -f <(echo pat) file0.txt … file1999.txt` to a
+  block for a walk that emitted no producer. It has its own allowance now.
+- Then the *same* double-accounting reappeared inside that allowance: the splitter tears a
   substitution body out as its own segment, so an output body is normally already in the
-  segment list the input walk covers, and charging it twice let a command carrying both
-  directions exhaust the budget while still under the limit. The two walks share a memo of
-  the ANSWER, not merely of the charge: the charge exists to bound the walk, so skipping one
-  without the other would bound nothing.
+  segment list the input walk covers. The two walks share a memo of the ANSWER, not merely
+  of the charge — the charge exists to bound the walk, so skipping one without the other
+  bounds nothing. The exhaustion exit also fired for commands holding no substitution at
+  all, since `_psub_budget` is reset only at depth 0; a command with nothing to route now
+  charges nothing and inherits nothing.
 
-A fourth round found the mirror of a lesson this document already records for `$(...)`
-bodies: an OUTPUT body is a compound command, and asking it as ONE stage reads only its
-first command word for the COMMAND-POSITION-only names. So `>(true; . /dev/stdin)` hid the
-`.` behind a harmless `true` and ran the payload — verified executing. The body is split and
-every segment asked now, exactly as `_may_read_program_from_stdin` already does for a
-`$(...)` body. Note what was NOT wrong: the any-word shell test never needed this
-(`>(true; bash)` blocked throughout), which is the whole reason `.` and `source` are
-command-position-only in the first place. Both spellings are pinned so the asymmetry stays
-visible.
+### The expensive lesson: "in step" is a claim about the splitter, not its callers
 
-A third came back from the pre-commit pass, and it is the *same* mistake one layer in: the
-new backtick branch was ordered AFTER the double-quote one, so it was unreachable from a
-quoted context. Bash opens a substitution on a backtick inside double quotes, and the quotes
-inside the body belong to the body's own command — so
-`printf 'rm -rf src' | echo "`echo "x && cat"; bash`"` had its body's second `"` read as the
-outer string's CLOSE, the `&&` behind it split the stage, and the producer was discarded
-exactly as before the fix. Verified executing. The inner span is checked first now, and
-`in_d` is deliberately left set while it is open, so closing the span returns to the string
-with no saved state to restore. Three rounds, three orderings — this is the module's own
-lesson about positional state, arriving once more: **track the state explicitly; do not infer
-it from the branch you happen to be in.** *A slow guard is an open
-  guard* has a twin: a guard that spends someone else's budget is an over-blocking one.
+`marker_check` carries a copy of `_split_with_ops`, and both copies are commented KEEP IN
+STEP. So the backtick fix was mirrored there — and it removed a block. That guard's
+unconditional marker-forge check has no `_command_substitutions` recursion; it saw a
+substitution body only because the splitter broke on `(`, `)` and every `;`, so a
+substitution wrapping a write verb arrived as a bare segment whose command word WAS the
+verb. Making the span opaque removed that accident, and a forge written inside a backtick
+went from BLOCK_MARKER to `OK|` — **a block turned into an allow**, the one thing this
+document says a change to a fail-closed classifier may never do.
 
-**Cost: UNMEASURED, like the launcher rule above it.** The 34,758-command corpus was already
-gone. Two over-blocks are known and pinned as *block* in the suite so changing either is a
-decision rather than a drift:
+The first response was to compensate: extract substitution bodies in that guard explicitly.
+**That was the wrong call, and it took eleven review rounds to admit it.** The compensation
+needed a model of shell variable scope inside a subshell, and every round found the model
+wrong in a new place — a body's assignment leaking to its parent, then to a *sibling*, then
+a prefix assignment that bash scopes to one command, then a redirect that bash persists
+past, then a process substitution that it does not, then per-command mixing that no single
+reading covers, then `+=`, then two bounds each scoped to the wrong thing. Every fix was
+correct; the sequence was the signal.
+
+**It was reverted.** `marker_check` is byte-identical to its pre-#563 state. The backtick
+fix lives only in `cmdword`, where `_command_substitutions` already extracts and recurses
+into every body, so making the span opaque there removes nothing — which is exactly the
+property the sibling lacked. The residual is stated rather than chased: `marker_check`'s
+own producer scan still reads a control operator inside a backtick span as an outer
+separator, so a helper invocation can hide behind one. That is a **pre-existing** hole in a
+different guard, unchanged by this work, and it deserves its own issue and its own measured
+rounds rather than a ride-along.
+
+Three things to carry out of it:
+
+1. **Keeping two copies in step is a claim about the SPLITTER; it is not a claim about what
+   each copy's callers compensate for.** The identical edit was neutral in one file and a
+   bypass in the other. Read the callers before mirroring a parsing change.
+2. **A compensating mechanism is not a fix.** When closing a defect requires building a new
+   model somewhere else, the new model is the change — and it needs its own scope, its own
+   measurement, and its own review budget.
+3. **Count the rounds.** This document already says a fourth heuristic on the same question
+   means the question is wrong. Eleven is not a harder version of that lesson; it is the
+   same one, ignored.
+
+### The suite must not forge what it tests
+
+The sharpest lesson here is about the TEST, not the classifier. The forge cases hand the
+gate a marker-write as TEXT. One was written inside a DOUBLE-quoted argument, where the
+literal single quotes around a backtick protect nothing — so the *test shell* ran the
+payload and created a real `.claude/skip-litmus.local` in the repo. The assertion still
+passed: the gate had correctly blocked the text it was given, and nothing in the run said a
+live bypass marker now existed. It was removed through `design-clear.sh --skip`, which
+writes a `skip-marker-cleared` event, rather than a bare `rm`.
+
+Those cases went with the revert, but the tripwire stayed, because the hazard is general: a
+test that exercises a bypass can commit one. The suite records whether a marker exists
+*before* it runs, and an EXIT trap drains one that appeared during the run — on EXIT rather
+than at the end of a section, so an interrupt cannot skip it, and before the fixture cleanup,
+because deleting a temp directory is housekeeping and removing a live gate bypass is not.
+Both the drain's status and the file's absence are checked, since either alone can lie, and
+either failing forces a non-zero exit. Both branches were executed and observed — a marker
+appearing mid-run is drained, a pre-existing one survives — because a guard whose failure
+branch has never been seen is not a guard.
+
+
+### Cost, and the two over-blocks pinned in the producer scan
+
+**UNMEASURED**, like the launcher rule above it: the 34,758-command corpus this document is
+built on was no longer available. Two over-blocks in the new scan are known and pinned as
+*block* so changing either is a decision rather than a drift:
 
 - A shell named ANYWHERE in a command puts every `<(...)` body under the raw scan
   (`sh -c ':' <(printf 'rm -rf src')`). The splitter breaks on `(`, so a substitution
@@ -548,15 +599,22 @@ decision rather than a drift:
   operand does not un-name the shell, so `bash /dev/fd/3 3< <(payload)` is still scanned.
   Pinned, because that is not what a reader expects an operand to do.
 - `>(...)` takes the whole command as its producer, the same trade the indirection rule
-  already makes and for the same reason, so a write verb sitting in that command as plain
-  DATA is raw-scanned: `grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')` blocks, because
-  proving that a `-c` shell will not read stdin as a program is the arity table this module
-  refuses.
+  already makes, so a write verb sitting in that command as plain DATA is raw-scanned:
+  `grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')` blocks, because proving that a `-c`
+  shell will not read stdin as a program is the arity table this module refuses.
 
-`marker_check._split_with_ops` carries the backtick fix too — the same defect was verified in
-that copy (`printf '<helper>' | echo `true && bash`` classified `OK`), and the two are
-documented as kept in step. Its producer scan needed no process-substitution change: the
-shapes already reach `_abandoned_scan_probe` by another path, checked rather than assumed.
+One residual is inherited rather than introduced, and it is the same one this document
+already records for the producer scan: an **assembled** marker name defeats every
+raw-substring fallback here, the two the substitution walk added included.
+`.claude/skip-litmus` plus `.local` never appears contiguously, so an unreadable body falls
+through clean. Recovering it needs an interpreter rather than a tokenizer — the same call
+made for `printf '%s%s' r 'm -rf src' | bash`, with the same containment: an assembled name
+only helps an actor who already holds Bash, and every gated write still needs a logged
+lease. Measured identical before and after, and pinned as `allow` so it stays visible.
+
+`marker_check` is deliberately UNCHANGED — see the revert above. Its producer scan needed no
+process-substitution change either: those shapes already reach `_abandoned_scan_probe` by
+another path, checked rather than assumed.
 
 ## Revisit trigger
 

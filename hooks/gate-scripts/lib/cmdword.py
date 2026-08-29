@@ -2184,6 +2184,13 @@ def _procsub_producers(pairs, whole, subs):
     ins, outs, ok = subs
     if not ok:
         return [whole]                    # unreadable: fail CLOSED, scan it all
+    if not (ins or outs):
+        # NOTHING to route, so charge nothing and INHERIT nothing. The exhaustion exit below
+        # is unconditional otherwise, and `_psub_budget` is reset only at depth 0 -- so once
+        # any nested branch exhausted it, every later sibling in the same top-level call was
+        # raw-scanned whole for a walk it never ran. Over-blocking only, but it is the same
+        # cross-command budget coupling this allowance was split off to remove.
+        return []
     # An OUTPUT body is a COMPOUND command, so it gets the same treatment the outer command
     # got -- SPLIT, then every segment asked -- exactly as `_may_read_program_from_stdin`
     # already does for a `$(...)` body, and for the same reason. Asking the body as ONE

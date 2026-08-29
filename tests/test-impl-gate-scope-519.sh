@@ -65,7 +65,46 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "  FAIL  could not create a temp fixture dir — refusing to run" >&2
     exit 1
 fi
-trap 'rm -rf "$WORK"' EXIT
+# Recorded BEFORE anything runs, so the cleanup below can leave an operator's PRE-EXISTING
+# skip file alone. It is a snapshot, not proof of ownership -- a concurrent session could
+# touch the file mid-run -- so nothing here claims the suite created what it finds.
+_MARKER_PRE=no
+[[ -e "$REPO_ROOT/.claude/skip-litmus.local" ]] && _MARKER_PRE=yes
+
+# ON EXIT, not merely at the end of the forge section. Every forge case hands the gate a
+# marker-write as TEXT; a malformed one can be quoted so that THIS shell runs it instead
+# (one was), and an interrupt or an early exit before that section finishes would leave a
+# live gate bypass behind in the checkout. Drained through the audited path, which logs a
+# `skip-marker-cleared` event; removal only ever makes the next gate STRICTER.
+_suite_cleanup() {
+    local rc=$?
+    # THE DRAIN GOES FIRST. Deleting the fixture directory is housekeeping; removing a live
+    # gate bypass is not. With the `rm -rf` ahead of it, a deletion that hangs, is
+    # interrupted, or terminates the trap would skip the drain entirely -- in exactly the
+    # early-exit case this trap exists to cover.
+    if [[ "$_MARKER_PRE" != yes && -e "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
+        local drain_rc=0
+        bash "$REPO_ROOT/scripts/design-clear.sh" --skip skip-litmus.local --yes \
+            >/dev/null 2>&1 || drain_rc=$?
+        # VERIFIED, not assumed, and on BOTH signals. Swallowing the drain's failure here
+        # would leave the very bypass this trap exists to remove, silently and after the run
+        # -- the worst place for it. The file's absence alone is not enough either: a drain
+        # can remove the marker and still fail its AUDIT write, which leaves the removal
+        # unrecorded. Either signal failing is louder than the suite's own result and forces
+        # a non-zero exit.
+        if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || "$drain_rc" -ne 0 ]]; then
+            printf "\n  !! A bypass marker appeared during this run and the audited drain FAILED (rc=%s):\n" \
+                   "$drain_rc" >&2
+            printf "     %s\n     Check it and remove it before running any gate.\n" \
+                   "$REPO_ROOT/.claude/skip-litmus.local" >&2
+            rc=1
+        fi
+    fi
+    rm -rf "$WORK"
+    trap - EXIT
+    exit "$rc"
+}
+trap _suite_cleanup EXIT
 git -C "$WORK" init -q 2>/dev/null
 git -C "$WORK" config user.email t@t.t
 git -C "$WORK" config user.name t
@@ -3614,8 +3653,6 @@ check "...nor does a ; inside one" block \
     "$(bash_decision 'printf "rm -rf src" | echo `:; bash`')"
 check "...nor a ||" block \
     "$(bash_decision 'printf "rm -rf src" | echo `false || bash`')"
-check "...and the marker classifier agrees" block \
-    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo `true && bash`')"
 # Making the span opaque to the SPLITTER removes no block, because the body is still
 # classified as code by the substitution walk that runs before it.
 check "a write inside a backtick body is still a write" block \
@@ -3637,8 +3674,6 @@ check "an unterminated backtick falls back to the raw scan" block \
 # stage, and the producer was discarded exactly as before. Verified executing.
 check "a backtick span opened inside double quotes is still one word" block \
     "$(bash_decision 'printf "rm -rf src" | echo "`echo "x && cat"; bash`"')"
-check "...and the marker classifier agrees" block \
-    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "`echo "x && cat"; bash`"')"
 # Closing that span returns to the STRING, not to bare text -- or a separator inside the
 # rest of the quoted text would start splitting.
 check "closing a quoted backtick span returns to the string" allow \

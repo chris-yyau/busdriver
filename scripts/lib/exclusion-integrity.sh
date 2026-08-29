@@ -167,7 +167,21 @@ verify_exclusion_policy() {
     # would accept a policy that HEAD carries but the worktree deleted as a clean absence,
     # short-circuiting past the committed-clean probe below and quietly contradicting this
     # function's contract that staged or unstaged deletions are refused.
-    if [[ ! -e "$_worktree/$_policy_rel" ]] && ! git -C "$_worktree" --no-replace-objects cat-file -e "$_base:$_policy_rel" 2>/dev/null; then
+    # Which INDEX this reads is the caller's choice, and both callers make it a safe one:
+    # run-review-loop.sh exports GIT_INDEX_FILE (its atomic snapshot) BEFORE calling here,
+    # so this resolves to the same bytes the reviewer and the marker are derived from;
+    # dispatcher-commit-block.sh is authorizing the live index at this instant by design,
+    # which is the index it re-verifies against a line later. Neither reads an index that
+    # something else could still be shaping.
+    #
+    # "Absent" must mean absent in the ANCHOR, the WORKTREE **and the INDEX**. Checking
+    # only the first two let a staged-but-worktree-deleted policy take this fast path and
+    # pin an empty one, so a policy nobody reviewed at the anchor would ride in with the
+    # commit and be trusted from then on. If it is in the index at all, fall through to
+    # the anchor comparisons below, which refuse it.
+    if [[ ! -e "$_worktree/$_policy_rel" ]] \
+       && ! git -C "$_worktree" --no-replace-objects cat-file -e "$_base:$_policy_rel" 2>/dev/null \
+       && ! git -C "$_worktree" ls-files --error-unmatch -- "$_policy_rel" >/dev/null 2>&1; then
         if ! _policy_pinned=$(mktemp -t busdriver-excl-policy-XXXXXX); then
             _excl_fail "env" "could not create a temp file to pin the absent exclusion policy; fail-closed"
             return 1

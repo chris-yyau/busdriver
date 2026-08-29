@@ -1964,12 +1964,30 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # #576: the SAME pinned endpoints as the reviewer diff and the marker hash. This
   # decides which findings count as in-diff, so filtering against a moved ref can drop
   # real findings from a review that is bound to a different snapshot.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null || true)
+  # NOT `|| true`. An empty DIFF_FOR_FILTER reads as "no finding falls inside the diff",
+  # so swallowing a failure here silently discards confirmed SAST findings and lets the
+  # review PASS on incomplete evidence — a fail-OPEN wearing a default's clothes.
+  if ! DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null); then
+    echo "❌ Could not compute the diff used to scope findings — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 else
   # #576: same pin — this drives which findings are kept as in-diff.
   # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
   # are kept as in-diff, so a blinded rendering here silently drops real findings.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null || true)
+  # Same reasoning as the PR-mode assignment above: a swallowed failure would empty the
+  # scope and drop confirmed findings.
+  #
+  # `--cached` here is NOT the live index: GIT_INDEX_FILE was exported at line ~1247,
+  # before the exclusion checks and long before this point, so every `--cached` read in
+  # this process resolves to the snapshot the reviewer and the marker were derived from.
+  # An index mutation after the capture therefore cannot change what gets filtered.
+  if ! DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null); then
+    echo "❌ Could not compute the diff used to scope findings — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re

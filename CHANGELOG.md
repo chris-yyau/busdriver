@@ -1,3 +1,10 @@
+## [2.1.2](https://github.com/chris-yyau/busdriver/compare/v2.1.1...v2.1.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **litmus:** close [#790](https://github.com/chris-yyau/busdriver/issues/790) — order the delayed builtin marker write against other publishers ([#792](https://github.com/chris-yyau/busdriver/issues/792)) ([b8396f7](https://github.com/chris-yyau/busdriver/commit/b8396f7b17275c8701e27ac1fec509edd4876fc3)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#794](https://github.com/chris-yyau/busdriver/issues/794) [#794](https://github.com/chris-yyau/busdriver/issues/794)
+
 ## [2.1.1](https://github.com/chris-yyau/busdriver/compare/v2.1.0...v2.1.1) (2026-08-29)
 
 

@@ -258,12 +258,16 @@ fi
 # sets it, so an exported _INDEX_SNAPSHOT would turn the cleanup into a delete of
 # an attacker-chosen writable file. Env is repo-injectable (#325 / ADR 0016).
 _INDEX_SNAPSHOT=""
+# The diff-capture temps join the trap for the same reason: several guarded exits sit
+# between their creation and their explicit removal.
+_diff_tmp=""
+_diff_rc_file=""
 # Same blanking, same reason, for the exclusion snapshots the trap also unlinks: they
 # are created mid-run, and `source "$EXCL_LOGIC_SOURCE"` or the sentinel append can
 # exit under `set -e` before the in-flow cleanup, leaking private temp files.
 EXCL_POLICY_PINNED_TMP=""
 EXCL_LOGIC_PINNED_TMP=""
-trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" 2>/dev/null || true' EXIT
+trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true' EXIT
 # Children that take the lock themselves — init-review-loop.sh, invoked directly below
 # and again from the loop — must see this lock as theirs, not deadlock against it.
 review_lock_export_owner
@@ -1416,7 +1420,15 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # #576: the PINNED tip, not the mutable HEAD ref — otherwise exclusions anchored on
   # the merge base can mix with material from a different commit, and an A->B->A
   # transition lets a review of one snapshot authorise another.
-  _PR_TIP="${_HEAD_SHA:-HEAD}"
+  # No mutable fallback, for the same reason as the base: if _HEAD_SHA never resolved,
+  # every later capture and compute_pr_diff_hash would independently re-resolve HEAD, and
+  # an A->B->A transition could show the reviewer B while binding the marker to A.
+  if [ -z "${_HEAD_SHA:-}" ]; then
+    echo "❌ Could not resolve HEAD to a commit — refusing to review against a moving tip." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _PR_TIP="$_HEAD_SHA"
   # Now that the exclusion block has resolved _PR_BASE_SHA, freeze the base ref here —
   # at the point of first use, and after the origin/ normalisation.
   #
@@ -1442,16 +1454,6 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # --text for the same reason as commit mode: --no-textconv does NOT defeat a committed
   # `.gitattributes` `-diff` rule, so a PR adding `*.sh -diff` reduces its own changed
   # source to an opaque "Binary files differ" line while the marker stays valid.
-  # Same two guards commit mode carries, for the same reasons --text creates: measure by
-  # STREAMING first (a genuine binary rendered as text would otherwise be fully resident
-  # in a shell variable before any size check), then verify the capture is faithful
-  # (command substitution silently drops NUL bytes, so the reviewer could be shown
-  # something other than what PR_REVIEWED_DIFF_HASH binds).
-  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null | wc -c | tr -d ' '); then
-    echo "❌ Could not measure the branch diff — refusing to review" >&2
-    write_terminal_status setup_error
-    exit 1
-  fi
   _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
   case "$_staged_diff_max" in
     ''|*[!0-9]*) _staged_diff_max=10485760 ;;
@@ -1464,22 +1466,86 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   if [ "$_staged_diff_max" -gt 67108864 ]; then
     _staged_diff_max=67108864
   fi
-  if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
-    echo "❌ Branch diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
-    echo "   Split the PR, or exclude the large binary via $STATE_DIR/review-exclude." >&2
-    echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
-    exit 2
-  fi
-  # Guarded like the measurement above and like commit mode: an unguarded capture that
-  # fails under `set -e` exits without write_terminal_status, stranding automation on a
-  # stale PENDING.
-  if ! STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
-    echo "❌ Could not capture the branch diff — refusing to review" >&2
+  # ONE rendering, captured to a bounded temp file — then compared against itself.
+  #
+  # The previous shape rendered the diff TWICE: once streamed into `wc -c` for the size
+  # cap, once into the variable. Comparing those two by LENGTH cannot prove they are the
+  # same bytes — mutable diff config or .gitattributes between the two renderings can
+  # produce same-length, different content, so the reviewer could read one thing while
+  # the marker authorised another. Rendering once removes the comparison instead of
+  # trying to strengthen it.
+  #
+  # `head -c` bounds the allocation by construction at one byte past the cap, which is
+  # also how "too large" is detected. The file-vs-variable byte comparison then catches
+  # what command substitution silently does to the content: it strips NUL bytes (which
+  # --text can put in the stream) and one trailing newline. Anything beyond that single
+  # newline means the reviewer would not be seeing what the marker binds.
+  #
+  # git's own status is recorded out-of-band: `|| true` would mask a real failure
+  # alongside the expected SIGPIPE when head closes the pipe. SIGPIPE (141) is accepted
+  # ONLY when the bound was actually hit.
+  _diff_tmp=$(mktemp -t busdriver-branch-diff-XXXXXX) || {
+    echo "❌ Could not create a temp file for the branch-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  _diff_rc_file=$(mktemp -t busdriver-diffrc-XXXXXX) || {
+    rm -f "$_diff_tmp"
+    echo "❌ Could not create a temp file for the branch-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # `if` form, not `{ cmd; echo $?; }`: under `set -e` a nonzero git status —
+  # including the expected SIGPIPE 141 when head reaches the bound — kills the
+  # producer group BEFORE the status is recorded, aborting the script past the
+  # exit-2/setup-error handling and leaking both temp files. An `if` condition
+  # suspends `set -e`, so the status is always captured.
+  # Every step guarded: under `set -euo pipefail` an unwritable temp, a failed `head`,
+  # or a failed read would abort the script without write_terminal_status. The temps are
+  # also on the EXIT trap, so no exit path here can leak them.
+  if ! { if git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; then echo 0 > "$_diff_rc_file"; else echo $? > "$_diff_rc_file"; fi; } | head -c "$(( _staged_diff_max + 2 ))" > "$_diff_tmp"; then
+    echo "❌ Could not capture the diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
   fi
+  if ! _diff_rc=$(cat "$_diff_rc_file"); then
+    echo "❌ Could not read the diff capture status — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_rc_file"; _diff_rc_file=""
+  if ! _staged_diff_bytes=$(wc -c < "$_diff_tmp" | tr -d ' '); then
+    echo "❌ Could not size the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! STAGED_DIFF=$(cat "$_diff_tmp"); then
+    echo "❌ Could not read the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_tmp"; _diff_tmp=""
   _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
-  if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
+  # Reject a NEGATIVE delta as well: mutable diff config can make the second rendering
+  # LARGER than the measured one, and a `> 1` test reads that growth as "fine" — after
+  # the oversized output has already been loaded into the shell, which is exactly what
+  # the streaming measurement exists to prevent. Only 0 or the single trailing newline
+  # `$( )` strips is acceptable.
+  # Hitting the bound means the second rendering exceeded the cap — TOO_LARGE, and the
+  # allocation stopped there rather than growing without limit.
+  # Only 0, or SIGPIPE at the bound, is acceptable.
+  if [ "${_diff_rc:-1}" -ne 0 ] && { [ "${_diff_rc:-1}" -ne 141 ] || [ "${_captured_bytes:-0}" -le "$_staged_diff_max" ]; }; then
+    echo "❌ The diff capture failed (git exit ${_diff_rc}) — refusing to review incomplete material." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
+    echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    exit 2
+  fi
+  _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))
+  if [ "$_capture_delta" -gt 1 ] || [ "$_capture_delta" -lt 0 ]; then
     echo "❌ The branch diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
     echo "   NUL bytes cannot be represented in the review prompt, so the reviewer would not" >&2
     echo "   see what the marker authorises. Exclude the binary, or split the PR." >&2
@@ -1559,22 +1625,6 @@ else
   # accepts it. Same blinding class as the textconv collapse, different lever. `--text`
   # forces the textual rendering back. Measured: with `*.sh -diff` the diff shows only
   # the Binary line; with --text the full hunk returns.
-  # --text makes a GENUINE binary render as a full textual patch, so the reviewer's
-  # diff is no longer bounded by "Binary files differ". Measure it by STREAMING into
-  # `wc -c` first — a shell variable would already hold the whole thing by the time the
-  # existing size gate (which counts numstat lines, and scores binaries as zero) got a
-  # look. Over the cap is TOO_LARGE (exit 2), the documented split path, not a silent
-  # truncation: cutting the diff would hide content from the reviewer while the marker
-  # still bound all of it, which is the blinding this change exists to stop.
-  # Guard the measurement itself: under `set -euo pipefail` a bare assignment whose
-  # pipeline fails would abort the script before write_terminal_status ever ran,
-  # leaving the state file stuck at PENDING with no machine-readable terminal status
-  # for automated callers to read.
-  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null | wc -c | tr -d ' '); then
-    echo "❌ Could not measure the staged diff — refusing to review" >&2
-    write_terminal_status setup_error
-    exit 1
-  fi
   _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
   # Digit-only is not enough: a value beyond the shell's integer range makes the
   # `-gt` test an "integer expression expected" ERROR, and because that test is an `if`
@@ -1591,28 +1641,86 @@ else
   if [ "$_staged_diff_max" -gt 67108864 ]; then
     _staged_diff_max=67108864
   fi
-  if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
-    echo "❌ Staged diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
-    echo "   Split the commit, or exclude the large binary via $STATE_DIR/review-exclude." >&2
-    echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
-    # Exit 2 deliberately writes NO terminal_status: per the skill's documented
-    # contract, TOO_LARGE is the one failure exit that does not set it (the other
-    # size ceilings below behave identically). Callers key off exit 2 here.
-    exit 2
-  fi
-  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
-    echo "❌ Could not capture the staged diff from the index snapshot — refusing to review" >&2
+  # ONE rendering, captured to a bounded temp file — then compared against itself.
+  #
+  # The previous shape rendered the diff TWICE: once streamed into `wc -c` for the size
+  # cap, once into the variable. Comparing those two by LENGTH cannot prove they are the
+  # same bytes — mutable diff config or .gitattributes between the two renderings can
+  # produce same-length, different content, so the reviewer could read one thing while
+  # the marker authorised another. Rendering once removes the comparison instead of
+  # trying to strengthen it.
+  #
+  # `head -c` bounds the allocation by construction at one byte past the cap, which is
+  # also how "too large" is detected. The file-vs-variable byte comparison then catches
+  # what command substitution silently does to the content: it strips NUL bytes (which
+  # --text can put in the stream) and one trailing newline. Anything beyond that single
+  # newline means the reviewer would not be seeing what the marker binds.
+  #
+  # git's own status is recorded out-of-band: `|| true` would mask a real failure
+  # alongside the expected SIGPIPE when head closes the pipe. SIGPIPE (141) is accepted
+  # ONLY when the bound was actually hit.
+  _diff_tmp=$(mktemp -t busdriver-staged-diff-XXXXXX) || {
+    echo "❌ Could not create a temp file for the staged-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  _diff_rc_file=$(mktemp -t busdriver-diffrc-XXXXXX) || {
+    rm -f "$_diff_tmp"
+    echo "❌ Could not create a temp file for the staged-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # `if` form, not `{ cmd; echo $?; }`: under `set -e` a nonzero git status —
+  # including the expected SIGPIPE 141 when head reaches the bound — kills the
+  # producer group BEFORE the status is recorded, aborting the script past the
+  # exit-2/setup-error handling and leaking both temp files. An `if` condition
+  # suspends `set -e`, so the status is always captured.
+  # Every step guarded: under `set -euo pipefail` an unwritable temp, a failed `head`,
+  # or a failed read would abort the script without write_terminal_status. The temps are
+  # also on the EXIT trap, so no exit path here can leak them.
+  if ! { if GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; then echo 0 > "$_diff_rc_file"; else echo $? > "$_diff_rc_file"; fi; } | head -c "$(( _staged_diff_max + 2 ))" > "$_diff_tmp"; then
+    echo "❌ Could not capture the diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
   fi
-  # Prove the capture is FAITHFUL. Bash command substitution silently drops NUL bytes,
-  # and --text can put NULs in the stream, so the reviewer could receive a quietly
-  # different rendering from the one the marker authorises — a diff that reads clean
-  # while the committed blob is not. We already measured the true byte length by
-  # streaming, so compare it against what actually landed in the variable and refuse on
-  # any shortfall beyond the single trailing newline `$( )` always strips.
+  if ! _diff_rc=$(cat "$_diff_rc_file"); then
+    echo "❌ Could not read the diff capture status — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_rc_file"; _diff_rc_file=""
+  if ! _staged_diff_bytes=$(wc -c < "$_diff_tmp" | tr -d ' '); then
+    echo "❌ Could not size the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! STAGED_DIFF=$(cat "$_diff_tmp"); then
+    echo "❌ Could not read the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_tmp"; _diff_tmp=""
   _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
-  if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
+  # Reject a NEGATIVE delta as well: mutable diff config can make the second rendering
+  # LARGER than the measured one, and a `> 1` test reads that growth as "fine" — after
+  # the oversized output has already been loaded into the shell, which is exactly what
+  # the streaming measurement exists to prevent. Only 0 or the single trailing newline
+  # `$( )` strips is acceptable.
+  # Hitting the bound means the second rendering exceeded the cap — TOO_LARGE, and the
+  # allocation stopped there rather than growing without limit.
+  # Only 0, or SIGPIPE at the bound, is acceptable.
+  if [ "${_diff_rc:-1}" -ne 0 ] && { [ "${_diff_rc:-1}" -ne 141 ] || [ "${_captured_bytes:-0}" -le "$_staged_diff_max" ]; }; then
+    echo "❌ The diff capture failed (git exit ${_diff_rc}) — refusing to review incomplete material." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
+    echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    exit 2
+  fi
+  _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))
+  if [ "$_capture_delta" -gt 1 ] || [ "$_capture_delta" -lt 0 ]; then
     echo "❌ The staged diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
     echo "   NUL bytes in binary content cannot be represented in the review prompt, so the" >&2
     echo "   reviewer would not see what the marker authorises. Exclude the binary via" >&2

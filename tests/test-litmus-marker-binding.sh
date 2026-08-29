@@ -331,7 +331,8 @@ fi
 # Pinning only the marker is worse than useless: a constant-output driver hides staged
 # content from the reviewer while the marker still binds the real index, so the gate
 # certifies content nobody read.
-if grep -q 'STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none' "$PRODUCER"; then
+if grep -q 'GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none' "$PRODUCER" \
+   && grep -qF 'STAGED_DIFF=$(cat "$_diff_tmp")' "$PRODUCER"; then
     ok "the reviewer-facing staged diff is pinned against diff drivers, not just the marker"
 else
     bad "commit-mode STAGED_DIFF is not pinned — a hostile driver can hide content from the reviewer"
@@ -394,10 +395,12 @@ fi
 
 # --text unbounds a genuine binary's rendering, so the size must be measured by
 # STREAMING before the diff lands in a shell variable.
-if grep -q '_staged_diff_bytes=.*| wc -c' "$PRODUCER" && grep -q 'LITMUS_MAX_DIFF_BYTES' "$PRODUCER"; then
-    ok "the text-rendered diff is size-checked by streaming before capture (TOO_LARGE, not truncation)"
+if grep -q '_staged_diff_bytes=$(wc -c < "$_diff_tmp"' "$PRODUCER" \
+   && grep -q 'head -c "$(( _staged_diff_max + 2 ))"' "$PRODUCER" \
+   && grep -q 'LITMUS_MAX_DIFF_BYTES' "$PRODUCER"; then
+    ok "the diff is rendered ONCE into a head-bounded temp file, then compared against its own capture"
 else
-    bad "no streaming size guard before capturing the --text diff"
+    bad "the diff is not rendered once into a bounded file (a second rendering cannot be proven identical)"
 fi
 
 echo ""

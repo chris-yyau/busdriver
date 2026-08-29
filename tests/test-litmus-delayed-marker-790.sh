@@ -14,6 +14,10 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Every fixture below is written under a literal .claude, so an inherited
+# BUSDRIVER_STATE_DIR would point the writer at a directory nothing was armed in and
+# fail the suite for a reason it is not testing. Case 14 sets it per invocation.
+unset BUSDRIVER_STATE_DIR
 WRITER="$PWD/skills/litmus/scripts/write-review-marker.sh"
 LOOP="$PWD/skills/litmus/scripts/run-review-loop.sh"
 

@@ -96,15 +96,14 @@ GOT=$(cat "$R/.claude/litmus-passed.local")
 check "ABA marker preserved" "$GOT" "samecontentbothtimes"
 
 # 3. Nobody published since exit 3 — overwrite this run's own marker, as before. This
-#    is the ordinary path and must stay unrefused: the writer's whole job is to mint
-#    the marker for the review that just finished, however far the index has moved
-#    since (the gate, not this script, decides whether that hash still matches).
+#    is the ordinary path and must stay unrefused: refusing here is the reverted
+#    freshness check the issue warns against re-adding. What the marker binds to is
+#    NOT asserted either way — the writer hashes the index at write time, which is
+#    pre-existing behaviour owned by #576, untouched here.
 R=$(new_repo unchanged)
 publish "$R" "markerfromanearlierrun"
 arm_handoff "$R"
 GEN_BEFORE=$(cat "$R/.claude/litmus-marker-gen.local")
-printf 'index moved after the review started\n' >> "$R/file.txt"
-git -C "$R" add file.txt
 run_writer "$R"
 check "unchanged generation: writer succeeds" "$(verdict "$RC")" "wrote"
 if grep -q '^BUILTIN-[0-9a-f]\{64\}$' "$R/.claude/litmus-passed.local"; then
@@ -193,7 +192,20 @@ run_writer "$R"
 check "no handoff still refuses" "$(verdict "$RC")" "refused"
 check "no marker minted without a handoff" "$(exists "$R/.claude/litmus-passed.local")" "gone"
 
-# 12. The producer side: EVERY marker write in run-review-loop.sh must stamp the
+# 12. The state dir is repo-controlled, so a symlink parked at the generation path must
+#     not be followed — `>` would truncate whatever it points at.
+R=$(new_repo symlinked)
+printf 'do not touch me\n' > "$WORK/victim.txt"
+arm_handoff "$R"
+ln -s "$WORK/victim.txt" "$R/.claude/litmus-marker-gen.local"
+run_writer "$R"
+check "symlinked generation: writer succeeds" "$(verdict "$RC")" "wrote"
+GOT=$(cat "$WORK/victim.txt")
+check "symlink target untouched" "$GOT" "do not touch me"
+check "generation replaced by a regular file" \
+    "$([[ -L "$R/.claude/litmus-marker-gen.local" ]] && echo symlink || echo regular)" "regular"
+
+# 13. The producer side: EVERY marker write in run-review-loop.sh must stamp the
 #     generation first, and exit 3 must snapshot it — a publisher that forgets makes
 #     its own publication invisible to the delayed writer. Static check; driving a
 #     real exit 3 needs every review CLI to be absent.

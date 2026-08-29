@@ -144,11 +144,20 @@ mkdir -p "$REPO_DIR/$STATE_DIR"
 # Since #545 the gate COMPARES this hash to the staged diff instead of merely
 # checking the marker exists, so any flag added on one side and not the others
 # stops every marker from matching and blocks every commit.
+#
+# SCOPE: this hashes the index as it stands NOW, not the diff the agent was handed at
+# exit 3, so an index that moved mid-review yields a marker for something nobody
+# reviewed. Pre-existing and deliberately untouched by #790, which is about ordering
+# this write against other publishers; minting for the REVIEWED diff is #576's change
+# and needs the reviewed hash carried through the handoff.
 HASH=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 # Stamp the generation BEFORE the marker, same ordering and reason as
 # publish_marker_gen in run-review-loop.sh: a crash between the two must leave a moved
 # token in front of an old marker (the next delayed writer refuses), never the reverse.
+# Unlink first for the same reason it does: `>` follows a symlink parked at the path
+# and truncates its target, and the state dir is repo-controlled.
 GEN_NONCE=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
+rm -f "$GEN_FILE"
 printf '%s-%s-%s\n' "$$" "$(date +%s)" "${GEN_NONCE##*/}" > "$GEN_FILE"
 echo "BUILTIN-${HASH}" > "$MARKER_FILE"
 echo "Review marker written (builtin)"

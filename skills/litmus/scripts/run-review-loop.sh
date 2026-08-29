@@ -181,10 +181,17 @@ trap 'review_lock_release' EXIT
 # like the baseline it is compared against. Every caller below holds the review lock
 # for the lifetime of its run, and the builtin writer takes that same lock, so the
 # stamp and the marker write are serialized against every other publisher.
+#
+# The unlink before the redirect is not tidiness: `>` FOLLOWS a symlink sitting at the
+# path and truncates its target, and the state dir is repo-controlled, so a committed
+# link could aim this write at any file the operator can write. Unlinking first means
+# we always create our own regular file — the same reasoning applies to the baseline
+# write at exit 3 and to the builtin writer's own stamp.
 publish_marker_gen() {
   local _gen_nonce
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   _gen_nonce=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
+  rm -f "$STATE_DIR/litmus-marker-gen.local"
   printf '%s-%s-%s\n' "$$" "$(date +%s)" "${_gen_nonce##*/}" > "$STATE_DIR/litmus-marker-gen.local"
 }
 
@@ -1700,6 +1707,7 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   else
     _BUILTIN_MARKER_BASELINE="ABSENT"
   fi
+  rm -f "$STATE_DIR/builtin-review-marker-baseline.local"
   printf '%s\n' "$_BUILTIN_MARKER_BASELINE" > "$STATE_DIR/builtin-review-marker-baseline.local"
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2

@@ -22,9 +22,11 @@
 # This is VISIBILITY, not prevention, exactly like any dependency lockfile. It
 # does not stop a malicious edit; anyone who can edit a gate script can also run
 # `--update`. What it makes impossible is landing a gate-area edit WITHOUT a
-# lockfile diff in the same commit: CI fails until the two agree, so every
-# content change to the hook execution surface arrives in review as an explicit,
-# named line rather than as a body change under an unchanged registration.
+# lockfile diff: the check compares the CHECKED-OUT TREE, so a regen in a later
+# commit on the same branch still verifies at HEAD — what cannot happen is the
+# branch reaching CI with the two out of sync. Every content change to the hook
+# execution surface therefore arrives in review as an explicit, named line
+# rather than as a body change under an unchanged registration.
 #
 # SCOPE — two whole directories, no extension filter:
 #   hooks/gate-scripts/**   every gate script and its lib/ helpers
@@ -117,9 +119,17 @@ sha256_of() {  # sha256_of <file>
 # ignore list: a `.gitignore` entry removes nothing from this enumeration (so a
 # gitignored `hooks/gate-scripts/lib/evil.sh` is still caught, and `git add -f`
 # buys nothing), and widening it means editing this file in the reviewed diff.
-# RESIDUAL, named rather than waved away: a forged `__pycache__/*.pyc` whose
-# source `.py` is unchanged and whose size and mtime match what CPython recorded
-# would execute unlocked.
+# The exemption is bounded on the side that actually matters — TRACKEDNESS. A
+# `.pyc` that reaches this repo through a PR is checked below and refused by
+# name, because PEP 552 makes an unvalidated one trivial: an UNCHECKED
+# hash-based `.pyc` (flags bit 1 clear) is loaded with NO comparison to its
+# source at all — not mtime, not size, not hash — so a tracked
+# `lib/__pycache__/marker_ops.cpython-XXX.pyc` would simply replace the locked
+# `marker_ops.py`'s behaviour while both `--check` and `--update` omitted it.
+# RESIDUAL, named rather than waved away: an UNTRACKED forged `.pyc` dropped
+# straight onto disk still executes unlocked. That needs local write access to
+# the gate directory, which already implies the ability to edit the locked
+# `.py` beside it.
 lockable_paths() {  # lockable_paths [find-args...]
     find "${LOCKED_DIRS[@]}" ! -type d ! -path '*/__pycache__/*.pyc' "$@"
 }
@@ -178,6 +188,31 @@ compute_lock() {  # compute_lock <root>
     done <<< "$listing"
 }
 
+# The other half of the `.pyc` exemption: anything the exemption skips must not be
+# able to arrive through a PR. Asked of the INDEX, not the worktree — a `.pyc` is a
+# build artifact, and a tracked one is a deliberate act, never a side effect of
+# running a gate. A non-repo `--root` (the test fixtures) has no index to ask, which
+# is why this is a separate check rather than a condition inside the enumeration.
+if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    # An UNQUERYABLE index fails CLOSED. Converting the failure to "" would report
+    # "no tracked bytecode" without having established it — and compute_lock omits
+    # these files by design, so nothing downstream would catch them.
+    if ! tracked_pyc="$(git -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
+        printf 'gate-integrity: FAIL — could not query the git index for tracked bytecode:\n' >&2
+        printf '  %s\n' "$tracked_pyc" >&2
+        exit 1
+    fi
+    if [[ -n "$tracked_pyc" ]]; then
+        printf 'gate-integrity: FAIL — bytecode is TRACKED under a locked directory:\n' >&2
+        # Quoted, line-wise: an unquoted expansion would GLOB a path containing `*`.
+        while IFS= read -r _pyc; do printf '  %s\n' "$_pyc" >&2; done <<< "$tracked_pyc"
+        printf '  A .pyc is exempt from the digest, so a tracked one executes unlocked —\n' >&2
+        printf '  PEP 552 unchecked hash-based bytecode is not validated against its source\n' >&2
+        printf '  at all. Remove it from the index (git rm --cached) and keep it ignored.\n' >&2
+        exit 1
+    fi
+fi
+
 lock_path="$root/$LOCK_NAME"
 
 # The lock is a TRACKED file, so a PR controls what it is — including making it a
@@ -202,7 +237,51 @@ if [[ "$mode" == "update" ]]; then
     # match". Both locked directories existing but empty is a disarmed tree, not
     # a recordable state.
     [[ -n "$computed" ]] || { printf 'gate-integrity: refusing to record an EMPTY lock (the locked directories hold no files)\n' >&2; exit 1; }
-    printf '%s\n' "$computed" > "$lock_path" || exit 1
+    # Write-then-rename. `>` follows a symlink, and the refusal above ran BEFORE the
+    # whole hashing pass — wide enough for the lock to be swapped for a symlink in
+    # between. rename(2) does not follow a symlink destination, so the move replaces
+    # the link itself and the target is never written through.
+    # The write goes through an OPEN FD and lands via an exact rename(2). Shell has
+    # neither primitive, and each substitute leaks the arbitrary write back in:
+    #   - `> "$lock_path"` follows a symlink at the destination;
+    #   - a predictable `$lock_path.tmp.$$` can be pre-symlinked and followed;
+    #   - `mktemp` returns a NAME, and the following `>` REOPENS it — unlink it and
+    #     drop a symlink in the gap and the redirect writes through that;
+    #   - `mv` is not rename(2): given a destination that is a symlink to a
+    #     DIRECTORY, common implementations move the file INTO it.
+    # mkstemp creates O_EXCL and hands back the fd, so the path is never reopened,
+    # and os.rename replaces a symlink at the destination rather than following it.
+    # The temp file is made in the lock's own directory to keep the rename atomic.
+    #
+    # The chmod 0644 inside is not cosmetic: mkstemp creates 0600, and handing that
+    # to a TRACKED, world-readable file makes the lock unreadable to another account
+    # in a shared checkout. It is unconditional rather than inherit-the-existing-mode
+    # because one run that had already produced a 0600 lock would perpetuate it.
+    #
+    # `python3 -I`, never bare `python3`: isolated mode drops the script directory
+    # and PYTHONPATH from sys.path, so a repo-local `tempfile.py` / `os.py` cannot
+    # be imported here to replace mkstemp or monkey-patch rename and defeat the very
+    # protection this block adds. Same reason resolve-repo-dir.sh uses `-I`/`-S`.
+    if ! printf '%s\n' "$computed" | _GI_LOCK="$lock_path" python3 -I -c '
+import os, sys, tempfile
+lock = os.environ["_GI_LOCK"]
+data = sys.stdin.read()
+fd, tmp = tempfile.mkstemp(prefix=os.path.basename(lock) + ".", dir=os.path.dirname(lock) or ".")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(data)
+    os.chmod(tmp, 0o644)
+    os.rename(tmp, lock)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+'; then
+        printf 'gate-integrity: could not write %s\n' "$LOCK_NAME" >&2
+        exit 1
+    fi
     n_written="$(wc -l <<< "$computed")" || n_written="?"
     printf 'gate-integrity: wrote %s (%s files)\n' "$LOCK_NAME" "${n_written// /}"
     exit 0
@@ -222,8 +301,8 @@ computed="$(compute_lock "$root")" || exit 1
 # One diff reports all three failure modes with the offending path named:
 # a changed digest, an added (unlocked) file, and a deleted locked file.
 if diff_out="$(diff -u "$lock_path" <(printf '%s\n' "$computed") 2>&1)"; then
-    printf 'gate-integrity: OK — %d files match %s\n' \
-        "$(wc -l < "$lock_path" | tr -d ' ')" "$LOCK_NAME"
+    n_locked="$(wc -l < "$lock_path")" || n_locked="?"
+    printf 'gate-integrity: OK — %s files match %s\n' "${n_locked// /}" "$LOCK_NAME"
     exit 0
 fi
 

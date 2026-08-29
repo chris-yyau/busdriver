@@ -274,6 +274,60 @@ else
     assert 1 "an UNREADABLE locked subtree fails closed (could not make the fixture unreadable)"
 fi
 
+# ── 4e. A TRACKED .pyc under a locked directory is refused ────────────────────
+# The `.pyc` exemption is only safe if what it skips cannot arrive through a PR.
+# PEP 552 makes that sharp: an UNCHECKED hash-based .pyc (flags bit 1 clear) is
+# loaded with NO comparison to its source — not mtime, not size, not hash — so a
+# tracked `lib/__pycache__/marker_ops.cpython-XXX.pyc` would replace the locked
+# marker_ops.py's behaviour while both --check and --update omitted it.
+_repo="$(mktemp -d)"
+if [[ -n "$_repo" && -d "$_repo" ]]; then
+    mkdir -p "$_repo/hooks" "$_repo/scripts"
+    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_repo/hooks/gate-scripts"
+    cp -R "$REPO_ROOT/scripts/hooks" "$_repo/scripts/hooks"
+    git -C "$_repo" init -q 2>/dev/null
+    git -C "$_repo" config user.email t@t.invalid 2>/dev/null
+    git -C "$_repo" config user.name t 2>/dev/null
+    "$GATE_INTEGRITY" --root "$_repo" --update >/dev/null 2>&1
+    "$GATE_INTEGRITY" --root "$_repo" --check >/dev/null 2>&1
+    assert $? "↳ control: a git-repo fixture with no tracked bytecode verifies clean"
+
+    mkdir -p "$_repo/hooks/gate-scripts/lib/__pycache__"
+    printf 'unchecked hash-based bytecode\n' \
+        > "$_repo/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc"
+    # `-f`: the exemption's whole point is that this path is gitignored, and the
+    # attack is precisely someone forcing it into the index anyway.
+    git -C "$_repo" add -f hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc 2>/dev/null
+    _out="$("$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "a TRACKED .pyc under a locked directory fails the check, by name"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "a TRACKED .pyc under a locked directory fails the check, by name"
+    fi
+    "$GATE_INTEGRITY" --root "$_repo" --update >/dev/null 2>&1
+    assert "$(( $? == 0 ? 1 : 0 ))" "↳ and --update refuses to record a tree with tracked bytecode"
+    rm -rf "$_repo"
+else
+    assert 1 "a TRACKED .pyc under a locked directory fails the check (no fixture tempdir)"
+fi
+
+# ── 4f. --update leaves the lock world-readable ───────────────────────────────
+# The atomic write goes through mkstemp, which creates 0600. A bare rename would
+# hand the tracked lock that mode and make it unreadable to another account in a
+# shared checkout — and inheriting the existing mode would perpetuate a 0600 lock
+# once one had been produced.
+fresh_fixture
+chmod 600 "$_fix/.gate-integrity.lock"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+_mode="$(python3 -c 'import os,sys;print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$_fix/.gate-integrity.lock")"
+if [[ "$_mode" == "0o644" ]]; then
+    assert 0 "--update writes a 0644 lock (mkstemp's 0600 is not handed to a tracked file)"
+else
+    printf '  ↳ mode: %s\n' "$_mode"
+    assert 1 "--update writes a 0644 lock (mkstemp's 0600 is not handed to a tracked file)"
+fi
+
 # ── 4b. Argument handling terminates and rejects ──────────────────────────────
 # A trailing bare `--root` used to leave $# at 1 and spin the parse loop forever
 # — a hang, which in CI reads as a per-test timeout rather than as a refusal.

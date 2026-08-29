@@ -1942,14 +1942,31 @@ GROUPS = [lambda p: p, lambda p: "(" + p + ")", lambda p: "{ " + p + "; }"]
 # Receiver spellings. Everything from `csh` on was missed by some earlier cut of the
 # candidate test -- literal names, grouping, a separator inside the group, an attached
 # option value, a glob, an expansion.
+# RESOLVED receiver spellings: each names a shell the reader can see, so grouping and
+# spelling must not change the verdict for them -- that is the invariant this matrix
+# exists to hold, and it is unchanged.
 RECEIVERS = ["bash", "sh", "sh -s", "bash --norc", "env sh", "(bash)", "csh", "fish",
              "{ :; bash; }", "( :; bash )", "env -S'bash -s'",
-             "env --split-string='bash -s'", "/bin/[b]ash", "$SHELL",
-             chr(96) + "printf bash" + chr(96), "$(printf bash)",
+             "env --split-string='bash -s'",
              "\nbash", "# note\nbash", "if true; then bash; fi",
              "for x in 1; do bash; done", "while read l; do bash; done",
              "case x in x) :; bash;; esac", "if true; then if true; then bash; fi; fi",
              "env -iS'bash -s'", "env -uXS'bash -s'", "yash", "posh"]
+# UNRESOLVED receiver spellings, moved out of the list above by #553. These name nothing
+# a reader can see: the shell substitutes the command word at run time, so `| $SHELL` is
+# `| rm -rf src` for any value of SHELL. They used to sit in RECEIVERS, which asserted
+# they behave like `| bash` behind an INERT producer -- and that assertion was the load
+# bearing an exemption in the classifier, which then had to be kept safe. It could not
+# be: `P='rm -rf src'; printf hello | ${P}`, `| ${P} -rf src`, `| ${P} ${O} ${T}`,
+# `| {rm,-rf,src}` and `| r*` all delete while the producer stays inert, and each was
+# found only after the previous one was patched. The invariant above is sound for
+# spellings that RESOLVE and unsound for these, so they are asserted the other way:
+# unreadable is a write, whatever the producer says.
+# `/bin/[b]ash` sits here too (#553), not with the resolved spellings: a pattern
+# yields as many words as it matches, so `ba*` is `bash baz` where both exist, and
+# a globbed shell name is an unresolved command word like any other.
+UNRESOLVED_RECEIVERS = ["$SHELL", chr(96) + "printf bash" + chr(96), "$(printf bash)",
+                        "/bin/[b]ash"]
 # ...and grouping applied to the WHOLE pipeline rather than to either end. Grouping only
 # the producer is what let `(producer | bash)` through: its pipe sat inside a group.
 WHOLE = [lambda c: c, lambda c: "(" + c + ")", lambda c: "{ " + c + "; }"]
@@ -1969,7 +1986,17 @@ for g in GROUPS:
             cmd = w(g("printf 'hello'") + " | " + r)
             if cmdword.is_file_mod(cmd):
                 bad.append("OVERBLOCK " + cmd)
-print((len(PRODUCERS) + 1) * len(GROUPS) * len(RECEIVERS) * len(WHOLE))
+# ...and the unresolved spellings block on BOTH producers (#553): the command word is
+# what cannot be read, so the producer is not what decides them.
+for p_ in PRODUCERS + ["printf 'hello'"]:
+    for g in GROUPS:
+        for r in UNRESOLVED_RECEIVERS:
+            for w in WHOLE:
+                cmd = w(g(p_) + " | " + r)
+                if not cmdword.is_file_mod(cmd):
+                    bad.append("UNDERBLOCK " + cmd)
+print((len(PRODUCERS) + 1) * len(GROUPS)
+      * (len(RECEIVERS) + len(UNRESOLVED_RECEIVERS)) * len(WHOLE))
 for b in bad[:6]:
     print("MISMATCH " + b)
 PY

@@ -1214,7 +1214,15 @@ else
       # ignored — the producer would disable every exclusion and the dispatcher would
       # reject a perfectly valid PASS-EXCLUDED marker. The extra blank line is inert;
       # the parser skips empty lines.
-      printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+      # Guarded for the same reason as the source below: an unguarded redirection that
+      # fails under `set -e` exits before the no-exclusions fallback and before any
+      # terminal status is written, stranding automation on a stale PENDING.
+      if ! printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"; then
+        echo "⚠️  Could not write the exclusion pin probe — reviewing with NO exclusions" >&2
+        REVIEW_EXCLUDE_ARGS=()
+        _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+        _excl_probe_rand=""
+      fi
     fi
     if [ ${#_excl_probe_rand} -ge 32 ]; then
       # Guard the source. As a bare command under `set -e` a failure here exits the loop

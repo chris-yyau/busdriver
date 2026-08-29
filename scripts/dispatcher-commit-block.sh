@@ -950,7 +950,8 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     if [[ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]]; then
         # Leading newline: a policy without a trailing newline would concatenate the
         # sentinel onto its last pattern, and this bail would fire on a valid marker.
-        printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+        printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE" || \
+            emit_bail "env" "could not write the exclusion pin probe; cannot prove the pinned policy was honoured, refusing fail-closed"
     fi
     # shellcheck source=/dev/null
     . "$_excl_logic_source" || \

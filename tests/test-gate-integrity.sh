@@ -323,6 +323,24 @@ if [[ -n "$_repo" && -d "$_repo" ]]; then
         printf '  ↳ output: %s\n' "$_out"
         assert 1 "↳ an exported tracked_pyc does not stand in for the index query"
     fi
+    # `GIT_INDEX_FILE` pointing at a nonexistent path leaves `rev-parse --git-dir`
+    # succeeding while `ls-files` returns EMPTY with exit 0 — a clean bill of health
+    # for a query that read nothing. Gate env is repo-injectable, so the check has to
+    # strip it rather than trust it.
+    _out="$(GIT_INDEX_FILE=/nonexistent-gate-integrity-index "$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "↳ GIT_INDEX_FILE cannot redirect the index query to an empty result"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ GIT_INDEX_FILE cannot redirect the index query to an empty result"
+    fi
+    _out="$(GIT_DIR=/nonexistent-gate-integrity-gitdir "$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "↳ nor can GIT_DIR"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ nor can GIT_DIR"
+    fi
     rm -rf "$_repo"
 else
     assert 1 "a TRACKED .pyc under a locked directory fails the check (no fixture tempdir)"

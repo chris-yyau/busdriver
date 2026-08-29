@@ -222,8 +222,24 @@ compute_lock() {  # compute_lock <root>
 # No sentinel on `tracked_pyc` either: `${tracked_pyc+x}` would have trusted INHERITED
 # shell state, so an exported `tracked_pyc=""` made a detected repository skip the
 # query entirely.
+#
+# Both queries run through `git_clean`, never bare `git`. A successful `ls-files` is
+# only proof of a real index if the environment did not choose the index: with
+# `GIT_INDEX_FILE` pointing at a nonexistent path, `rev-parse --git-dir` still
+# succeeds and `ls-files` returns EMPTY with exit 0 — a clean bill of health for a
+# query that read nothing, and every `__pycache__/*.pyc` then stays exempt. Gate env
+# is repo-injectable through a committed settings.json `env` block (#325 / ADR 0016),
+# so the location-selecting variables are stripped for these two calls.
+git_clean() {  # git_clean <args...> — git with the repo-selecting env stripped
+    env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        -u GIT_NAMESPACE -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM \
+        git "$@"
+}
+
 tracked_pyc=""
-if ! rev_parse_err="$(git -C "$root" rev-parse --git-dir 2>&1)"; then
+if ! rev_parse_err="$(git_clean -C "$root" rev-parse --git-dir 2>&1)"; then
     printf 'gate-integrity: FAIL — no queryable git repository at %s\n' "$root" >&2
     printf '  %s\n' "$rev_parse_err" >&2
     printf '  Bytecode is exempt from the digest, so the git index is its only cover:\n' >&2
@@ -233,7 +249,7 @@ if ! rev_parse_err="$(git -C "$root" rev-parse --git-dir 2>&1)"; then
     exit 1
 fi
 # An UNQUERYABLE index fails CLOSED for the same reason.
-if ! tracked_pyc="$(git -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
+if ! tracked_pyc="$(git_clean -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
     printf 'gate-integrity: FAIL — could not query the git index for tracked bytecode:\n' >&2
     printf '  %s\n' "$tracked_pyc" >&2
     exit 1

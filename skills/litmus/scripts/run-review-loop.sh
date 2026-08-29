@@ -254,7 +254,19 @@ compute_pr_diff_hash() {
   # stops matching.
   diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null) || return 1
   [[ -z "$diff" ]] && return 1
-  printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
+  # Select by availability, never `a || b` in one pipe: if sha256sum consumes part (or
+  # all) of stdin and then fails, shasum hashes only the unread remainder — after full
+  # consumption that is the constant empty-stream digest, which would collapse every PR
+  # authorization hash onto one value. Commit mode and the gate both select this way.
+  local _hash_cmd
+  if command -v sha256sum >/dev/null 2>&1; then
+    _hash_cmd=(sha256sum)
+  elif command -v shasum >/dev/null 2>&1; then
+    _hash_cmd=(shasum -a 256)
+  else
+    return 1
+  fi
+  printf '%s' "$diff" | "${_hash_cmd[@]}" | cut -d' ' -f1
 }
 
 # resolve_pr_base_branch: the origin-qualified base branch for PR mode, matching
@@ -1120,6 +1132,40 @@ fi
 # returns immediately). "Cannot trust the exclusion list" ⇒ "exclude nothing" hides
 # no content by construction, and it also makes the excluded-only auto-pass branch
 # below unreachable, since STAGED_DIFF can no longer be emptied by exclusions.
+# #576: take ONE atomic snapshot of the index BEFORE anything reads it — the exclusion
+# integrity checks included.
+#
+# Why a snapshot and not repeated reads. The marker must name what the reviewer saw.
+# Separate `git diff --cached` calls cannot guarantee that: an index that moves between
+# them hands the reviewer diff A while the marker records diff B, which is the
+# unreviewed-diff authorization this whole change exists to close. Bracketing with a
+# before/after hash is NOT sufficient either — an A->B->A change leaves both hashes
+# equal to A while the diff came from B.
+#
+# Why BEFORE the exclusion checks. Verifying the policy and logic against the live index
+# and only then snapshotting leaves a window in which a concurrent `git add` places a
+# modified .claude/review-exclude into the snapshot AFTER its integrity check passed —
+# and since that path is itself eligible for exclusion, the marker could authorize an
+# unreviewed policy that becomes trusted once committed. One snapshot, taken first,
+# means the bytes that were checked are the bytes that get reviewed and hashed.
+#
+# Copying the index file removes the race rather than narrowing it: git writes the index
+# atomically (write to index.lock, then rename), so `cp` observes exactly one complete
+# version, and every read below is pinned to it via GIT_INDEX_FILE.
+_INDEX_SNAPSHOT=$(mktemp -t busdriver-index-XXXXXX) || {
+  echo "❌ Could not create an index snapshot — refusing to review" >&2
+  write_terminal_status setup_error
+  exit 1
+}
+if ! cp "$(git rev-parse --git-path index)" "$_INDEX_SNAPSHOT" 2>/dev/null; then
+  echo "❌ Could not snapshot the git index — refusing to review" >&2
+  write_terminal_status setup_error
+  exit 1
+fi
+# Exported here, so the exclusion guards' `git status` and every later `git diff
+# --cached` read the SAME index. The EXIT trap unlinks it.
+export GIT_INDEX_FILE="$_INDEX_SNAPSHOT"
+
 # shellcheck source=../../../scripts/lib/exclusion-integrity.sh
 if ! source "$SCRIPT_DIR/../../../scripts/lib/exclusion-integrity.sh" 2>/dev/null; then
   echo "⚠️  Could not load the exclusion-integrity guard — reviewing with NO exclusions" >&2
@@ -1354,27 +1400,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
   echo "📋 Capturing staged changes..."
-  # #576: take ONE atomic snapshot of the index and derive BOTH the reviewer's material
-  # and the gate-binding hash from it.
-  #
-  # Why a snapshot and not two reads. The marker must name what the reviewer saw. Two
-  # separate `git diff --cached` calls cannot guarantee that: an index that moves
-  # between them hands the reviewer diff A while the marker records diff B, which is
-  # the unreviewed-diff authorization this whole change exists to close. Bracketing the
-  # capture with a before/after hash was the obvious patch and it is NOT sufficient
-  # either — an A -> B -> A index change leaves both hashes equal to A while
-  # STAGED_DIFF was taken from B, so a PASS for B mints a marker authorizing A.
-  #
-  # Copying the index file removes the race instead of narrowing it: git writes the
-  # index atomically (write to index.lock, then rename), so `cp` observes exactly one
-  # complete version, and every read below is pinned to it via GIT_INDEX_FILE. The
-  # reviewer's filtered diff and the marker's full-diff hash are then two projections
-  # of the SAME bytes, by construction rather than by timing.
-  _INDEX_SNAPSHOT=$(mktemp -t busdriver-index-XXXXXX) || {
-    echo "❌ Could not create an index snapshot — refusing to review" >&2
-    write_terminal_status setup_error
-    exit 1
-  }
+  # The index snapshot was taken and exported before the exclusion checks above.
   # Pin the comparison BASE as well. `git diff --cached` is index-vs-HEAD, and each
   # invocation re-resolves HEAD, so a snapshot of only the index still lets an A->B->A
   # HEAD transition make the hash and the reviewed material describe different changes.
@@ -1383,13 +1409,6 @@ else
   # HEAD did move before the commit, the gate's recomputation simply differs and blocks,
   # which is the correct fail-closed outcome. Unborn HEAD (no commits yet) has no base
   # to pin, so the operand is omitted there.
-  if ! cp "$(git rev-parse --git-path index)" "$_INDEX_SNAPSHOT" 2>/dev/null; then
-    rm -f "$_INDEX_SNAPSHOT"
-    echo "❌ Could not snapshot the git index — refusing to review" >&2
-    write_terminal_status setup_error
-    exit 1
-  fi
-
   # Pick the hash utility ONCE, by availability. `(sha256sum || shasum)` in a single
   # pipe is a fail-OPEN: if sha256sum consumes part of stdin and then dies, shasum
   # hashes only the unread REMAINDER and the pipeline still reports success with a
@@ -1490,17 +1509,12 @@ else
     write_terminal_status setup_error
     exit 1
   fi
-  # EXPORT it for the rest of the run rather than deleting it here. Everything
-  # downstream — the size calculation, SAST/markdown file lists, DIFF_FOR_FILTER, and
-  # above all the short-circuit path classification — also reads the index, and reading
-  # those from the LIVE index reopens the same hole one level down: an A->B->A change
-  # would let the short-circuit classify B as passive prose while the marker names A,
-  # handing active code from A a no-review PASS. One exported snapshot pins every
-  # `git diff --cached` in this process to the bytes that were actually reviewed.
-  # (Worktree-reading scanners still see live files; an index snapshot cannot fix that,
-  # and the marker binds the index, which is what the gate re-derives.) The EXIT trap
-  # removes it on every path.
-  export GIT_INDEX_FILE="$_INDEX_SNAPSHOT"
+  # Already exported above, before the exclusion checks. Everything downstream — the
+  # size calculation, SAST/markdown file lists, DIFF_FOR_FILTER, and above all the
+  # short-circuit path classification — therefore reads the same snapshot; from the LIVE
+  # index an A->B->A change would let the short-circuit classify B as passive prose
+  # while the marker names A. (Worktree-reading scanners still see live files; an index
+  # snapshot cannot fix that, and the marker binds the index, which the gate re-derives.)
   if [ -z "$REVIEWED_DIFF_HASH" ]; then
     echo "❌ Empty staged-diff hash — refusing to mint a review marker" >&2
     write_terminal_status setup_error

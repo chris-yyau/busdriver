@@ -138,7 +138,14 @@ if [ "${#HASH}" -ne 64 ]; then
 fi
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
-echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"
+# Guarded: the sidecar is already consumed, so if this redirection fails under `set -e`
+# the pointer would survive with no hash behind it and the producer's noclobber arming
+# would reject every later builtin handoff until someone cleaned up by hand.
+if ! echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"; then
+    rm -f "$HANDOFF_FILE"
+    echo "ERROR: Could not write the review marker — handoff released, re-run litmus." >&2
+    exit 1
+fi
 # Consume the pointer only AFTER the marker exists: releasing the turn first would let a
 # waiting review arm, finish, and have its marker overwritten by this one.
 rm -f "$HANDOFF_FILE"

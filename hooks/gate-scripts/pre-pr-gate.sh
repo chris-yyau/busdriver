@@ -281,7 +281,21 @@ MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true
 # PR-mode analogue of the commit-mode hash coupling: change one side only and every PR
 # marker stops matching.
 DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${MERGE_BASE}...HEAD" 2>/dev/null || true)
-CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+# Select by availability, matching compute_pr_diff_hash: a `sha256sum || shasum` pipe
+# lets a partially-consuming failure hash only the remainder — the empty-stream digest
+# after full consumption — collapsing distinct diffs onto one hash.
+if command -v sha256sum >/dev/null 2>&1; then
+    PR_HASH_CMD=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+    PR_HASH_CMD=(shasum -a 256)
+else
+    PR_HASH_CMD=()
+fi
+if [ ${#PR_HASH_CMD[@]} -eq 0 ]; then
+    CURRENT_HASH=""
+else
+    CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | "${PR_HASH_CMD[@]}" | cut -d' ' -f1)
+fi
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable
 # base...HEAD diff (empty merge-base, or an empty diff — e.g. a transient git

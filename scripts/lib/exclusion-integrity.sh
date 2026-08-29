@@ -146,7 +146,7 @@ exclusion_reject_untrusted_components() {
 # .gitignore rule produces NO porcelain output while the parser reads it regardless.
 # $1 = worktree root, $2 = state dir name (relative).
 verify_exclusion_policy() {
-    local _worktree="$1" _state_dir="$2" _base="${3:-HEAD}" _policy_rel _policy_status _policy_pinned
+    local _worktree="$1" _state_dir="$2" _base="${3:-HEAD}" _policy_rel _policy_pinned
     # shellcheck disable=SC2034
     EXCL_LOGIC_ERROR=""
     # shellcheck disable=SC2034
@@ -180,13 +180,27 @@ verify_exclusion_policy() {
         return 0
     fi
     exclusion_reject_untrusted_components "$_worktree" "$_policy_rel" "exclusion policy" || return 1
-    if _policy_status=$(git -C "$_worktree" status --porcelain --untracked-files=all --ignored -- "$_policy_rel" 2>/dev/null); then
-        if [[ -n "$_policy_status" ]]; then
-            _excl_fail "judgment" "the exclusion policy ($_policy_rel) has uncommitted, untracked, or ignored divergence from HEAD; the policy deciding what a reviewer never sees must itself be committed and reviewed"
-            return 1
-        fi
-    else
-        _excl_fail "judgment" "could not verify the exclusion policy ($_policy_rel) is committed-clean (git status failed); fail-closed"
+    # Compare against the ANCHOR, in both the worktree and the index (the caller has the
+    # index snapshot exported, so this reads the reviewed bytes). Anchor, not HEAD: in PR
+    # mode the anchor is the merge base, and a policy or logic change COMMITTED on the
+    # branch is identical to HEAD — it would read as clean and slip through. Since these
+    # paths are themselves eligible for exclusion, the review could then omit the very
+    # change that widened the exclusions while the full-diff marker authorises it.
+    if ! git -C "$_worktree" diff --quiet "$_base" -- "$_policy_rel" 2>/dev/null; then
+        _excl_fail "judgment" "the exclusion policy ($_policy_rel) differs from the review anchor ($_base); patterns that were never reviewed at that anchor cannot decide what a reviewer is shown"
+        return 1
+    fi
+    if ! git -C "$_worktree" diff --quiet --cached "$_base" -- "$_policy_rel" 2>/dev/null; then
+        _excl_fail "judgment" "the exclusion policy ($_policy_rel) is staged differently from the review anchor ($_base); refusing"
+        return 1
+    fi
+    # The two anchor diffs above answer "does this differ from the anchor" for anything
+    # git TRACKS. They cannot see an UNTRACKED (or ignored-and-untracked) file: there is
+    # no anchor-side entry, so the diff is empty and the file reads as clean while the
+    # parser would happily read it. `ls-files --error-unmatch` asks the direct question —
+    # is this path in the index at all.
+    if ! git -C "$_worktree" ls-files --error-unmatch -- "$_policy_rel" >/dev/null 2>&1; then
+        _excl_fail "judgment" "the exclusion policy ($_policy_rel) is untracked; the policy deciding what a reviewer never sees must itself be committed and reviewed"
         return 1
     fi
     # Hand back COMMITTED bytes for the same check-then-use reason as the logic file:
@@ -227,7 +241,7 @@ verify_exclusion_policy() {
 # shows the copy as untracked — either way non-empty ⇒ refuse.
 verify_exclusion_logic() {
     local _worktree="$1" _litmus_scripts="$2" _base="${3:-HEAD}"
-    local _wt _excl_logic_file _excl_logic_rel _excl_logic_status _real_wt _real_excl_dir
+    local _wt _excl_logic_file _excl_logic_rel _real_wt _real_excl_dir
     local _excl_target _excl_hops _excl_link _excl_nlink _excl_pinned _excl_wt_prefix
 
     # shellcheck disable=SC2034
@@ -384,19 +398,28 @@ verify_exclusion_logic() {
         "$_excl_wt_prefix"*)
             _excl_logic_rel="${_excl_logic_file#"$_excl_wt_prefix"}"
             exclusion_reject_untrusted_components "$_wt" "$_excl_logic_rel" "exclusion logic" || return 1
+            # Anchor comparison, same reasoning as the policy above: `git status` would
+            # call a branch-committed change to the exclusion LOGIC clean against HEAD.
+            if ! git -C "$_wt" diff --quiet "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
+                _excl_fail "judgment" "the exclusion logic ($_excl_logic_rel) differs from the review anchor ($_base); logic that was never reviewed at that anchor cannot decide what a reviewer is shown"
+                return 1
+            fi
+            if ! git -C "$_wt" diff --quiet --cached "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
+                _excl_fail "judgment" "the exclusion logic ($_excl_logic_rel) is staged differently from the review anchor ($_base); refusing"
+                return 1
+            fi
             # Distinguish "git status succeeded, output empty (clean)" from "git
             # status FAILED": a bare `2>/dev/null || true` would collapse an error
             # into empty and fail OPEN. Only an empty status from a SUCCESSFUL run
             # means clean. --ignored is required, not belt-and-braces: without it a
             # logic file hidden by a repo-committed .gitignore rule produces NO
             # porcelain output while it is still sourced.
-            if _excl_logic_status=$(git -C "$_wt" status --porcelain --untracked-files=all --ignored -- "$_excl_logic_rel" 2>/dev/null); then
-                if [[ -n "$_excl_logic_status" ]]; then
-                    _excl_fail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) has uncommitted, untracked, or deleted changes; the logic governing an excluded-only auto-pass must be committed and reviewed"
-                    return 1
-                fi
-            else
-                _excl_fail "judgment" "excluded-only marker but could not verify the exclusion logic ($_excl_logic_rel) is committed-clean (git status failed); fail-closed"
+            # Tracked-ness probe. The anchor diffs above already answer the divergence
+            # question for anything git tracks; this catches the untracked case they
+            # cannot see, including the `git rm --cached` copy that guard was originally
+            # written for.
+            if ! git -C "$_wt" ls-files --error-unmatch -- "$_excl_logic_rel" >/dev/null 2>&1; then
+                _excl_fail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) is untracked; the logic governing an excluded-only auto-pass must be committed and reviewed"
                 return 1
             fi
             # Hand back COMMITTED bytes, not the worktree path. Verifying the file and

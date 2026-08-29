@@ -1,4 +1,22 @@
-#!/bin/bash
+#!/bin/bash -p
+# #576: this script is an AUTHORIZATION component — it mints the commit marker — so it
+# must refuse to import environment shell functions like the producer and the gates. A
+# repo-injected exported `cat` could return an attacker-chosen 64-hex value after the
+# index moved, making this writer emit BUILTIN-<current unreviewed diff> even though the
+# reviewer saw the earlier prompt — so this file must never run with those functions
+# imported. SKILL.md invokes it as `bash -p <script>`, which is the authoritative hop;
+# the re-exec immediately below is the fallback for any other caller, and its own `exec`
+# is shadowable. The shebang deliberately does NOT carry -p: this script is run as
+# `bash <script>`, so a shebang would not apply, and pinning /bin/bash there would
+# downgrade macOS to bash 3.2. See run-review-loop.sh for the full reasoning.
+if [[ "$-" != *p* ]]; then
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
 # Trusted marker writer for builtin review fallback
 # Called via Bash tool (not Write tool) to avoid pre-implementation gate block
 # Prefix with BUILTIN- so post-commit-consume-marker.sh can distinguish

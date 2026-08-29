@@ -137,7 +137,7 @@ run_producer() {
                LITMUS_CODEX_RETRIES=1 \
                LITMUS_CODEX_RETRY_DELAY=1 \
                LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 \
-               bash "$LOOP_SCRIPT" >/dev/null 2>&1 ) || true
+               bash "$LOOP_SCRIPT" >"${LITMUS_DEBUG_LOG:-/dev/null}" 2>&1 ) || true
 }
 
 marker_is_excluded() {

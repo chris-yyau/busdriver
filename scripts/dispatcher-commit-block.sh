@@ -8,7 +8,16 @@
 # marker binding; a forged `od` makes the exclusion pin challenge predictable.
 #
 # So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
-#   1. The shebang above is `#!/bin/bash -p`. Privileged mode makes bash ignore
+#   1. The shebang, now `#!/bin/bash -p`. A direct execution therefore starts privileged,
+#      so BASH_ENV and imported functions are never processed — the kernel applies a
+#      shebang, and nothing in the environment can shadow it. Pinning /bin/bash is safe
+#      here: this file and the libs it sources use no bash-4+ construct (checked), and
+#      `/bin/bash -n` parses it clean. The gates reach the same place from the other
+#      side — hooks.json execs contained-launch.sh (`#!/bin/bash -p`), which re-execs
+#      through `env -i`, so nothing reaches them either.
+#   2. Callers that run `bash <script>` bypass the shebang, so the re-exec below covers
+#      them, using "$BASH" so the interpreter is preserved. Privileged mode makes bash
+#      ignore
 #      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
 #      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
 #      #713). The kernel applies a shebang — nothing in the environment can shadow it.
@@ -21,7 +30,12 @@
 #      a hostile parent — a parent that can forge `exec` in this script's environment is
 #      the process that launched it and could replace the script outright.
 if [[ "$-" != *p* ]]; then
-    exec /bin/bash -p "$0" "$@"
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
 # scripts/dispatcher-commit-block.sh - orchestrated dispatcher commit block for
 # the pr-grind commit-ownership inversion. Invoked once per fix-round.
@@ -1026,7 +1040,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # For an in-worktree logic file the guard hands back a temp file holding HEAD's
     # committed bytes (so nothing can swap it between check and use); drop it now.
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"
-    NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}") || \
+    NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}) || \
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
     if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
         emit_bail "judgment" "excluded-only marker ($MARKER_CONTENT) but staged diff contains non-excluded content; marker is stale or the staged diff was mutated post-PASS — review required"

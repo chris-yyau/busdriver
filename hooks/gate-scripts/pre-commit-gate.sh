@@ -8,7 +8,8 @@
 # marker binding; a forged `od` makes the exclusion pin challenge predictable.
 #
 # So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
-#   1. The shebang above is `#!/bin/bash -p`. Privileged mode makes bash ignore
+#   1. The re-exec below, using "$BASH" so the interpreter is preserved. Privileged
+#      mode makes bash ignore
 #      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
 #      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
 #      #713). The kernel applies a shebang — nothing in the environment can shadow it.
@@ -21,7 +22,12 @@
 #      a hostile parent — a parent that can forge `exec` in this script's environment is
 #      the process that launched it and could replace the script outright.
 if [[ "$-" != *p* ]]; then
-    exec /bin/bash -p "$0" "$@"
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
 # PreToolUse hook: gate git commit on review requirements
 #

@@ -8,7 +8,8 @@
 # marker binding; a forged `od` makes the exclusion pin challenge predictable.
 #
 # So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
-#   1. The shebang above is `#!/bin/bash -p`. Privileged mode makes bash ignore
+#   1. The re-exec below, using "$BASH" so the interpreter is preserved. Privileged
+#      mode makes bash ignore
 #      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
 #      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
 #      #713). The kernel applies a shebang — nothing in the environment can shadow it.
@@ -21,7 +22,12 @@
 #      a hostile parent — a parent that can forge `exec` in this script's environment is
 #      the process that launched it and could replace the script outright.
 if [[ "$-" != *p* ]]; then
-    exec /bin/bash -p "$0" "$@"
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
 # Main litmus review loop script
 # Reads state, runs review, parses results, updates state, handles iteration logic
@@ -1416,7 +1422,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # in a shell variable before any size check), then verify the capture is faithful
   # (command substitution silently drops NUL bytes, so the reviewer could be shown
   # something other than what PR_REVIEWED_DIFF_HASH binds).
-  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null | wc -c | tr -d ' '); then
     echo "❌ Could not measure the branch diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1435,7 +1441,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # Guarded like the measurement above and like commit mode: an unguarded capture that
   # fails under `set -e` exits without write_terminal_status, stranding automation on a
   # stale PENDING.
-  if ! STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+  if ! STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
     echo "❌ Could not capture the branch diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1453,7 +1459,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
   PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
-  FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"})
 else
   echo "📋 Capturing staged changes..."
   # The index snapshot was taken and exported before the exclusion checks above.
@@ -1525,7 +1531,7 @@ else
   # pipeline fails would abort the script before write_terminal_status ever ran,
   # leaving the state file stuck at PENDING with no machine-readable terminal status
   # for automated callers to read.
-  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+  if ! _staged_diff_bytes=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null | wc -c | tr -d ' '); then
     echo "❌ Could not measure the staged diff — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1548,7 +1554,7 @@ else
     # size ceilings below behave identically). Callers key off exit 2 here.
     exit 2
   fi
-  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+  if ! STAGED_DIFF=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
     echo "❌ Could not capture the staged diff from the index snapshot — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1568,7 +1574,7 @@ else
     write_terminal_status setup_error
     exit 1
   fi
-  if ! FILTERED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}"); then
+  if ! FILTERED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
     echo "❌ Could not list reviewable files from the index snapshot — refusing to review" >&2
     write_terminal_status setup_error
     exit 1
@@ -1766,7 +1772,7 @@ while IFS=$'\t' read -r added removed _file; do
   [ "$removed" = "-" ] && removed=0
   ADDITION_LINES=$((ADDITION_LINES + added))
   DELETION_LINES=$((DELETION_LINES + removed))
-done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
+done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; fi)
 WEIGHTED_LINES=$(( ADDITION_LINES + DELETION_LINES / 4 ))
 echo "   Staged files: $STAGED_FILE_COUNT"
 echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELETION_LINES, weighted: $WEIGHTED_LINES)"
@@ -1857,7 +1863,7 @@ else
     while IFS=$'\t' read -r added _removed _file; do
       [ "$added" = "-" ] && added=0
       [ "$added" -gt 0 ] 2>/dev/null && FILES_WITH_ADDITIONS=$((FILES_WITH_ADDITIONS + 1))
-    done < <(git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null)
+    done < <(git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null)
     if [ "$FILES_WITH_ADDITIONS" -gt "$MAX_STAGED_FILES" ]; then
       TOO_LARGE=true
       TOO_LARGE_REASON="files with additions ($FILES_WITH_ADDITIONS) > $MAX_STAGED_FILES (total: $STAGED_FILE_COUNT)"
@@ -1904,12 +1910,12 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # #576: the SAME pinned endpoints as the reviewer diff and the marker hash. This
   # decides which findings count as in-diff, so filtering against a moved ref can drop
   # real findings from a review that is bound to a different snapshot.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null || true)
 else
   # #576: same pin — this drives which findings are kept as in-diff.
   # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
   # are kept as in-diff, so a blinded rendering here silently drops real findings.
-  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null || true)
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re

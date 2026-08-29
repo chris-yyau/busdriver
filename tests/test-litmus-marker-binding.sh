@@ -624,12 +624,11 @@ rm -f "$pf5" "$pf6"; rm -rf "$t1f"
 # them: in bash a function shadows a builtin, `unset`/`set`/`builtin` included, so no
 # in-script sanitising is sufficient. Every entry script must re-exec under `bash -p`.
 missing_p=""
-for f in "$PRODUCER" "$DISPATCHER" "$GATE_SCRIPT" hooks/gate-scripts/pre-pr-gate.sh; do
-    head -1 "$f" | grep -q '^#!/bin/bash -p$' || missing_p="$missing_p $f(shebang)"
-    grep -q 'exec /bin/bash -p "$0" "$@"' "$f" || missing_p="$missing_p $f(fallback)"
+for f in "$PRODUCER" "$DISPATCHER" "$GATE_SCRIPT" "$MARKER_WRITER" hooks/gate-scripts/pre-pr-gate.sh; do
+    grep -q 'exec "${BASH:-/bin/bash}" -p "$0" "$@"' "$f" || missing_p="$missing_p $f"
 done
 if [ -z "$missing_p" ]; then
-    ok "every entry script is #!/bin/bash -p and re-execs under -p as a fallback"
+    ok "every entry script re-execs under -p, preserving its own interpreter"
 else
     bad "no privileged-mode re-exec in:$missing_p"
 fi

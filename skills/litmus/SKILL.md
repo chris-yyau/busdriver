@@ -110,7 +110,7 @@ LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. A pass that needs longer is the unsolved case
@@ -183,7 +183,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 4. For each group:
    a. `git add <files in group>`
    b. `bash $LITMUS_SCRIPTS/init-review-loop.sh`
-   c. `bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   c. `/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed
@@ -261,7 +261,7 @@ Bash(command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop
 
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. If the pass needs longer, use pattern B —
@@ -410,7 +410,7 @@ git commit -m "Your message"  # Hooks will enforce review
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $LITMUS_SCRIPTS/init-review-loop.sh 10
-bash -p $LITMUS_SCRIPTS/run-review-loop.sh
+/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -436,7 +436,7 @@ git push                # Push after review passes
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $CODEX/init-review-loop.sh 10                                  # Initialize
-bash -p $CODEX/run-review-loop.sh                                      # Review (auto-loops)
+/bin/bash -p $CODEX/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
@@ -477,7 +477,7 @@ When `run-review-loop.sh` exits with code 3, external review paths were exhauste
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"high|medium|low\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
 4. Parse the agent's JSON output for blocking issues: severity must be a string in the exact lowercase enum `high|medium|low`. Every other value (including `LOW` and `LoW`) fails closed and blocks. An issue blocks unless severity is exactly `low`. If parsing fails or the output is not a JSON array of issues, treat as FAIL.
-5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path you read in step 1>"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files).
+5. If no blocking issues: write the marker via `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path you read in step 1>"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files).
 
    **Pass the prompt path.** The marker is bound to the diff hash captured when *your* review was armed (#576), and that hash is looked up by the prompt file's basename. Without the argument the writer falls back to re-reading `builtin-review-prompt-path.local`, which is a single fixed name: if a second review armed a handoff while yours was running, you would consume ITS hash and certify a diff you never reviewed. Passing back the path you were handed binds the write to your own invocation.
 6. If blocking issues: report FAIL with issues, fix and re-run

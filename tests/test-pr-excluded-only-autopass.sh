@@ -223,7 +223,18 @@ git -C "$TMPREPO" commit -qm "modify review-exclude + excluded file"
 : > "$STUB_LOG"
 run_producer pr
 check "PR modifying review-exclude (excluded-only) does NOT write PASS-EXCLUDED" "no" "$(marker_is_excluded)"
-check "PR modifying review-exclude does NOT dispatch codex" "no" \
+# #576 changed HOW this is enforced, not WHAT #252 guarantees. The invariant is that an
+# unreviewed policy must never certify that nothing needs review — asserted by the
+# PASS-EXCLUDED check above, which still holds.
+#
+# It used to be enforced by refusing the run outright. Now the policy is verified
+# BEFORE its patterns are ever applied (against the MERGE BASE in PR mode, since the
+# branch is the artifact under review and must not get to widen exclusions for itself),
+# and a failed check degrades to reviewing with NO exclusions. The filtered diff is then
+# non-empty, so the excluded-only path is unreachable and codex reviews the change —
+# INCLUDING the review-exclude edit itself, which is strictly better than refusing: the
+# widened policy lands in front of a reviewer instead of blocking the developer.
+check "PR modifying review-exclude falls back to a full review (policy unreviewed at base)" "yes" \
     "$(grep -q '^invoked:' "$STUB_LOG" 2>/dev/null && echo yes || echo no)"
 
 # ── Summary ───────────────────────────────────────────────────────────

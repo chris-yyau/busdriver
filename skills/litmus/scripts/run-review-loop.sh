@@ -1094,10 +1094,35 @@ if ! source "$SCRIPT_DIR/../../../scripts/lib/exclusion-integrity.sh" 2>/dev/nul
   REVIEW_EXCLUDE_ARGS=()
 else
   _excl_worktree=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  # WHICH commit the exclusion inputs must match is mode-dependent, and getting it
+  # wrong is a self-review bypass.
+  #
+  # Commit mode: the pinned HEAD. The patterns are already-committed history, and the
+  # staged diff is what is under review.
+  #
+  # PR mode: the MERGE BASE, never the branch's own HEAD. The branch is the artifact
+  # under review, so validating its policy against its own tip only proves the PR is
+  # self-consistent — a PR that commits `*` into .claude/review-exclude would be
+  # "clean" and would then hide the rest of its own diff from the reviewer. The
+  # question is whether these patterns were reviewed BEFORE this branch, which is the
+  # merge base. An unresolvable base is not a licence to trust the branch's copy:
+  # leave it empty and let the guard refuse, which degrades to reviewing everything.
+  if [ "$REVIEW_MODE" = "pr" ]; then
+    # Against the PINNED commit, not the mutable HEAD ref: resolving the base from HEAD
+    # while the reviewed artifact is _HEAD_SHA lets a concurrent HEAD move source the
+    # exclusion inputs from a different history than the one under review — the same
+    # check-versus-use split this block exists to close.
+    _excl_base=$(git merge-base "$(resolve_pr_base_branch)" "${_HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+  else
+    _excl_base="${_HEAD_SHA:-HEAD}"
+  fi
   # BOTH inputs, both before use. The policy (which patterns) and the logic (which
   # parses them) each decide what the reviewer never sees, so verifying only one leaves
   # the other as an unguarded lever.
-  if ! verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "${_HEAD_SHA:-HEAD}"; then
+  if [ -z "$_excl_base" ]; then
+    echo "⚠️  Could not resolve a reviewed base for the exclusion inputs — reviewing with NO exclusions" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  elif ! verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "$_excl_base"; then
     echo "⚠️  Exclusion policy failed its integrity check — reviewing with NO exclusions" >&2
     echo "    $EXCL_LOGIC_ERROR" >&2
     REVIEW_EXCLUDE_ARGS=()
@@ -1116,9 +1141,14 @@ else
     # shellcheck source=lib/exclude-generated.sh
     source "$EXCL_LOGIC_SOURCE"
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
-    [ -n "${EXCL_LOGIC_PINNED_TMP:-}" ] && rm -f "$EXCL_LOGIC_PINNED_TMP"
-    [ -n "${EXCL_POLICY_PINNED_TMP:-}" ] && rm -f "$EXCL_POLICY_PINNED_TMP"
   fi
+  # Unconditional: verify_exclusion_policy can succeed (leaving a pinned temp) and
+  # verify_exclusion_logic then fail, and the source itself can fail — both paths
+  # previously leaked the policy snapshot. Cleaning here covers every branch above.
+  [ -n "${EXCL_LOGIC_PINNED_TMP:-}" ] && rm -f "$EXCL_LOGIC_PINNED_TMP"
+  [ -n "${EXCL_POLICY_PINNED_TMP:-}" ] && rm -f "$EXCL_POLICY_PINNED_TMP"
+  EXCL_LOGIC_PINNED_TMP=""
+  EXCL_POLICY_PINNED_TMP=""
 fi
 
 # Source SAST, smart context, docs context, and markdown checker

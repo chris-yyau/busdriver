@@ -356,7 +356,7 @@ fi
 
 # `--cached` re-resolves HEAD on every call, so the comparison base needs pinning too.
 if grep -q '_HEAD_BASE=("$_HEAD_SHA")' "$PRODUCER" \
-   && grep -q 'verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "${_HEAD_SHA:-HEAD}"' "$PRODUCER"; then
+   && grep -q 'verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "$_excl_base"' "$PRODUCER"; then
     ok "the comparison base is pinned once and reused by the exclusion guards and the hash"
 else
     bad "HEAD is not pinned — an A->B->A HEAD change can desync hash and reviewed material"
@@ -525,6 +525,15 @@ if [ -n "$probe_line" ] && [ -n "$probe_line2" ] && [ "$probe_line" -lt "$probe_
     ok "link-count probe tries GNU before BSD (a stray '%l' file cannot skip the check)"
 else
     bad "link-count probe order is wrong (GNU=$probe_line, BSD=$probe_line2)"
+fi
+
+# PR mode must validate the exclusion inputs against the MERGE BASE, not the branch
+# tip: the branch IS the artifact under review, so a PR that commits `*` into
+# review-exclude would otherwise be "clean" against itself and hide its own diff.
+if grep -q 'git merge-base "$(resolve_pr_base_branch)" "${_HEAD_SHA:-HEAD}"' "$PRODUCER"; then
+    ok "PR mode anchors the exclusion inputs on the merge base, not the branch tip"
+else
+    bad "PR mode validates exclusions against its own HEAD — a branch can widen them for itself"
 fi
 
 # The producer must actually call the guard — the lib being correct is worth nothing

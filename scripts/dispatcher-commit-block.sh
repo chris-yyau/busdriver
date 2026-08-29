@@ -910,8 +910,10 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # policy file, which left the logic file as an unguarded integrity input on the
     # producer side. EXCL_LOGIC_SOURCE is the validated, collapsed path; sourcing
     # anything else would break the check-vs-use pinning from PR #280.
-    verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" || \
+    verify_exclusion_logic "$WORKTREE_DIR" "$LITMUS_SCRIPTS" || {
+        [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
         emit_bail "$EXCL_LOGIC_ERROR_KIND" "$EXCL_LOGIC_ERROR"
+    }
     _excl_logic_source="$EXCL_LOGIC_SOURCE"
     # STEP 2 (policy + logic now proven committed): the staged diff filtered through
     # the SAME exclusion logic the producer used must be empty. Any non-excluded
@@ -923,6 +925,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
     [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
+    [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"
     # For an in-worktree logic file the guard hands back a temp file holding HEAD's
     # committed bytes (so nothing can swap it between check and use); drop it now.
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"

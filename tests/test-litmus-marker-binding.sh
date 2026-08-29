@@ -102,6 +102,8 @@ mkdir -p "$t1/.claude"
 # Simulate run-review-loop.sh's exit-3 handoff (both files, same moment).
 pf1=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf1" > "$t1/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1/.claude/builtin-review-marker-baseline.local"
 printf '%s\n' "$reviewed_hash" > "$t1/.claude/builtin-review-${pf1##*/}.hash"
 # THE BYPASS: the index moves while the "review" is in flight.
 printf 'SNEAKED-IN-AFTER-REVIEW\n' > "$t1/f.txt"; git -C "$t1" add f.txt
@@ -123,6 +125,8 @@ printf 'REVIEWED-CONTENT\n' > "$t1b/f.txt"; git -C "$t1b" add f.txt
 mkdir -p "$t1b/.claude"
 pf2=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf2" > "$t1b/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1b/.claude/builtin-review-marker-baseline.local"
 hash_canonical "$t1b" > "$t1b/.claude/builtin-review-${pf2##*/}.hash"
 MW_ARG="$pf2"; ( cd "$t1b" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/null 2>&1 ) || true
 check "$(gate_decision "$t1b")" "allow" "an unmoved index still commits (the fix does not block honest work)"
@@ -135,6 +139,8 @@ printf 'x\n' > "$t1c/f.txt"; git -C "$t1c" add f.txt
 mkdir -p "$t1c/.claude"
 pf3=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf3" > "$t1c/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1c/.claude/builtin-review-marker-baseline.local"
 if MW_ARG="$pf3"; ( cd "$t1c" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/null 2>&1 ); then
     bad "writer minted a marker with no reviewed-diff handoff (silent re-hash fallback)"
 else
@@ -154,11 +160,15 @@ printf 'x\n' > "$t1d/f.txt"; git -C "$t1d" add f.txt
 mkdir -p "$t1d/.claude"
 pf4=$(mktemp -t busdriver-review-XXXXXX)
 printf '%s\n' "$pf4" > "$t1d/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1d/.claude/builtin-review-marker-baseline.local"
 printf 'not-a-sha\n' > "$t1d/.claude/builtin-review-${pf4##*/}.hash"
 MW_ARG="$pf4"; ( cd "$t1d" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/null 2>&1 ) && \
     bad "writer accepted a malformed reviewed-diff hash" || \
     ok "writer refuses a malformed reviewed-diff hash"
-if [ -f "$t1d/.claude/builtin-review-prompt-path.local" ] || [ -f "$t1d/.claude/builtin-review-${pf4##*/}.hash" ]; then
+if [ -f "$t1d/.claude/builtin-review-prompt-path.local" ] \
+   || [ -f "$t1d/.claude/builtin-review-${pf4##*/}.hash" ] \
+   || [ -f "$t1d/.claude/builtin-review-marker-baseline.local" ]; then
     bad "a refused attempt left an armed handoff token behind (locks out the next review)"
 else
     ok "...and releases both handoff tokens on refusal, so the next review can arm"
@@ -199,6 +209,8 @@ victim_dir=$(mktemp -d)
 victim_hash="$victim_dir/busdriver-review-data.hash"
 printf 'precious\n' > "$victim_hash"
 printf '%s\n' "$victim_dir/busdriver-review-data" > "$t1e/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1e/.claude/builtin-review-marker-baseline.local"
 MW_ARG="$victim_dir/busdriver-review-data"; ( cd "$t1e" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/null 2>&1 ) || true
 if [ -f "$victim_hash" ]; then
     ok "a crafted handoff cannot delete a .hash file outside the state dir"
@@ -828,6 +840,8 @@ pf6=$(mktemp -t busdriver-review-XXXXXX)
 hash_canonical "$t1f" > "$t1f/.claude/builtin-review-${pf5##*/}.hash"
 # The pointer names a DIFFERENT (later) review than the one we pass.
 printf '%s\n' "$pf6" > "$t1f/.claude/builtin-review-prompt-path.local"
+# The #790 baseline is armed by the same exit 3 — the writer refuses without it.
+printf 'ABSENT\n' > "$t1f/.claude/builtin-review-marker-baseline.local"
 if ( cd "$t1f" && bash "$REPO_ROOT/$MARKER_WRITER" "$pf5" >/dev/null 2>&1 ); then
     bad "a superseded reviewer overwrote the newer review's marker"
 else
@@ -899,13 +913,17 @@ else
     bad "an older builtin handoff survives a newer review and can overwrite its marker"
 fi
 
-# The pointer must be claimed by ATOMIC RENAME, not compared in place: a read-then-write
-# leaves a window in which a newer review deletes the handoff and writes its marker, and
-# the delayed writer then overwrites it with the older hash.
-if grep -q 'mv "$HANDOFF_FILE" "$_CLAIM_FILE"' "$MARKER_WRITER"; then
-    ok "the builtin handoff is claimed by atomic rename (exactly one writer can win)"
+# The write must be SERIALIZED, not merely careful about ordering. An earlier revision
+# claimed the pointer by atomic rename, which made exactly one delayed writer win — but
+# it could not order this write against the ORDINARY pass path, which publishes markers
+# without ever touching the handoff. #790 replaced it with the review lock the ordinary
+# path already holds for its whole run, plus an equality check that the armed handoff
+# still names this caller's prompt. The lock subsumes the rename: nothing else can be
+# publishing while it is held.
+if grep -q 'review_lock_acquire' "$MARKER_WRITER" && grep -q 'HANDOFF_PATH_NOW' "$MARKER_WRITER"; then
+    ok "the builtin write is serialized by the review lock and bound to its own handoff"
 else
-    bad "the handoff is compared in place — a delayed writer can overwrite a newer marker"
+    bad "the builtin write is not serialized by the review lock — the ordinary pass path can publish underneath it"
 fi
 
 # The POINTER must be published last. It is what a marker writer looks for and claims,

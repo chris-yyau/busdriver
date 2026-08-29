@@ -1,3 +1,31 @@
+## [2.1.2](https://github.com/chris-yyau/busdriver/compare/v2.1.1...v2.1.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **litmus:** close [#790](https://github.com/chris-yyau/busdriver/issues/790) — order the delayed builtin marker write against other publishers ([#792](https://github.com/chris-yyau/busdriver/issues/792)) ([b8396f7](https://github.com/chris-yyau/busdriver/commit/b8396f7b17275c8701e27ac1fec509edd4876fc3)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#794](https://github.com/chris-yyau/busdriver/issues/794) [#794](https://github.com/chris-yyau/busdriver/issues/794)
+
+## [2.1.1](https://github.com/chris-yyau/busdriver/compare/v2.1.0...v2.1.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **grok:** close [#785](https://github.com/chris-yyau/busdriver/issues/785) — refuse at preflight when the runtime socket is a symlink ([#791](https://github.com/chris-yyau/busdriver/issues/791)) ([d02da5c](https://github.com/chris-yyau/busdriver/commit/d02da5ccf8b3502eb7960d0c63d85ce2d2b8079b))
+
+# [2.1.0](https://github.com/chris-yyau/busdriver/compare/v2.0.2...v2.1.0) (2026-08-29)
+
+
+### Features
+
+* **integrity:** pin gate-script launchers by content, not by command ([#742](https://github.com/chris-yyau/busdriver/issues/742)) ([#786](https://github.com/chris-yyau/busdriver/issues/786)) ([b623d54](https://github.com/chris-yyau/busdriver/commit/b623d5483d9513bf77a65d7ca837c7b27182c525)), closes [#737](https://github.com/chris-yyau/busdriver/issues/737) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.0.2](https://github.com/chris-yyau/busdriver/compare/v2.0.1...v2.0.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **hooks:** close [#777](https://github.com/chris-yyau/busdriver/issues/777) — document disableAllHooks as a platform limit, pin the tree clean ([#787](https://github.com/chris-yyau/busdriver/issues/787)) ([287e9e9](https://github.com/chris-yyau/busdriver/commit/287e9e9a1f0c9a1a7c5e52d41a5e7e9435afac9c)), closes [#784](https://github.com/chris-yyau/busdriver/issues/784)
+
 ## [2.0.1](https://github.com/chris-yyau/busdriver/compare/v2.0.0...v2.0.1) (2026-08-28)
 
 

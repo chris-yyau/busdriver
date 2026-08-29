@@ -736,11 +736,22 @@ else
 fi
 rm -rf "$hf_tmp"
 
-# CodeRabbit (round 4 follow-up): a hash utility that CONSUMES part of stdin
-# and then fails must not silently fall through to a fallback hasher running
-# on only the unconsumed remainder — that would hash a TRUNCATED stream while
-# the pipeline as a whole reports success (a fail-OPEN masquerading as a
-# fail-closed block). Shadow `sha256sum` on PATH with a stand-in that reads
+# #576 REPURPOSED. The original assertion (CodeRabbit, round 4) was that a hash
+# utility which consumes stdin and then fails must not fall through to a fallback
+# hasher running on the unconsumed remainder. That property still holds — the gate
+# selects ONE utility up front — but the injection used here no longer reaches it:
+# the gate now resolves sha256sum/shasum to an ABSOLUTE path inside a trusted system
+# directory, so a PATH shadow is ignored by construction (#576; macOS keeps sha256sum
+# in /sbin, which is why prepending /usr/bin:/bin was not enough on its own).
+#
+# So this now asserts the STRONGER property the hardening buys: a planted hash utility
+# on PATH cannot influence the gate at all. The marker here is 64 'a's — a well-formed
+# but WRONG hash — so the gate must compute the REAL digest with the trusted binary,
+# find a mismatch, block, count it, and DELETE the marker (the mismatch arm has proven
+# the marker wrong, unlike the could-not-compute arm which preserves it).
+#
+# Historical note on the original injection: shadow `sha256sum` on PATH with a stand-in
+# that reads
 # all of stdin then exits 1, while the REAL `shasum` remains reachable
 # further down PATH. Under the old `sha256sum || shasum` fallback this would
 # have succeeded with a wrong-but-plausible hash; the fix selects the hash
@@ -778,11 +789,11 @@ hu_marker_kept=no
 [[ -f "$hu_tmp/.claude/litmus-passed.local" ]] && hu_marker_kept=yes
 if echo "$hu_out" | grep -q '"block"' 2>/dev/null \
    && [[ "$hu_count" == "1" ]] \
-   && [[ "$hu_marker_kept" == "yes" ]]; then
-    printf "  PASS  a shadowed sha256sum that consumes stdin then fails blocks (no silent fallback to a truncated shasum hash) and preserves the marker\n"
+   && [[ "$hu_marker_kept" == "no" ]]; then
+    printf "  PASS  a PATH-planted sha256sum is ignored: the gate hashes with the trusted binary, blocks the wrong marker, counts it, and deletes it\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  shadowed-hash-utility path not blocked-and-counted-and-preserved (out: %s, count: '%s', marker kept: %s)\n" "$hu_out" "$hu_count" "$hu_marker_kept"
+    printf "  FAIL  PATH-planted hash utility influenced the gate (out: %s, count: '%s', marker kept: %s — want block/1/no)\n" "$hu_out" "$hu_count" "$hu_marker_kept"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$hu_tmp"

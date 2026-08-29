@@ -820,13 +820,14 @@ if [ -f "$MARKER" ]; then
     # predictable. The `command` builtin bypasses functions and aliases and runs the PATH
     # executable. (PATH itself is out of scope here: the gates already launch under a fixed
     # PATH, and a PATH that can forge `git` defeats every check in this file regardless.)
-    if command -v sha256sum >/dev/null 2>&1; then
-        HASH_CMD=(command sha256sum)
-    elif command -v shasum >/dev/null 2>&1; then
-        HASH_CMD=(command shasum -a 256)
-    else
-        HASH_CMD=()
-    fi
+    # Absolute path inside a trusted system directory. `command -v` walks PATH, and on
+    # macOS sha256sum lives in /sbin — a planted one earlier in PATH would otherwise win
+    # and could return a single constant digest for every diff.
+    HASH_CMD=()
+    for _hash_dir in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$_hash_dir/sha256sum" ]; then HASH_CMD=("$_hash_dir/sha256sum"); break; fi
+        if [ -x "$_hash_dir/shasum" ]; then HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
+    done
     if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"

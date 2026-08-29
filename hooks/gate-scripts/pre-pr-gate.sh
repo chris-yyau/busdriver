@@ -350,13 +350,13 @@ fi
 # Select by availability, matching compute_pr_diff_hash: a `sha256sum || shasum` pipe
 # lets a partially-consuming failure hash only the remainder — the empty-stream digest
 # after full consumption — collapsing distinct diffs onto one hash.
-if command -v sha256sum >/dev/null 2>&1; then
-    PR_HASH_CMD=(command sha256sum)
-elif command -v shasum >/dev/null 2>&1; then
-    PR_HASH_CMD=(command shasum -a 256)
-else
-    PR_HASH_CMD=()
-fi
+# Absolute path inside a trusted system directory — see pre-commit-gate.sh for why a
+# PATH lookup is not enough (macOS keeps sha256sum in /sbin).
+PR_HASH_CMD=()
+for _hash_dir in /usr/bin /bin /sbin /usr/sbin; do
+    if [ -x "$_hash_dir/sha256sum" ]; then PR_HASH_CMD=("$_hash_dir/sha256sum"); break; fi
+    if [ -x "$_hash_dir/shasum" ]; then PR_HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
+done
 if [ ${#PR_HASH_CMD[@]} -eq 0 ] || [ "$DIFF_FAILED" -eq 1 ]; then
     CURRENT_HASH=""
 else

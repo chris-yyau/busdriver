@@ -95,6 +95,21 @@ set -uo pipefail
 # `GIT_NO_REPLACE_OBJECTS=1` on the grind-trailer reads below predates this and is now
 # redundant, but harmless — left in place rather than widening this diff.)
 export GIT_NO_REPLACE_OBJECTS=1
+# #576: put the system directories FIRST so security-critical tools resolve to the real
+# binaries. Privileged mode stops exported FUNCTIONS from being imported, but it leaves
+# PATH alone — and PATH is repo-injectable the same way env is (#325 / ADR 0016). A
+# planted `git` earlier in PATH could emit benign reviewer-facing output while
+# delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
+# then accepts for content nobody reviewed.
+#
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# the SAST tools legitimately live elsewhere, and pinning PATH outright would break
+# their resolution — including the PATH stubs the test fixtures rely on. Prepending is
+# enough for the tools that matter here, because /usr/bin and /bin are the ones a
+# planted git/sha256sum/od/stat/cat would have to beat.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+
 # #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
 # integrity checks are built on. Exported functions travel through the environment —
 # the same repo-injectable channel #325 / ADR 0016 closed for env vars — and in bash a

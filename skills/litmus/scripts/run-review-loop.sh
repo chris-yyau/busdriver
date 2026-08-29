@@ -42,6 +42,30 @@ set -euo pipefail
 # all, and the explicit --no-replace-objects on the canonical hash stays as
 # documentation of the invariant.
 export GIT_NO_REPLACE_OBJECTS=1
+# #576: put the system directories FIRST so security-critical tools resolve to the real
+# binaries. Privileged mode stops exported FUNCTIONS from being imported, but it leaves
+# PATH alone — and PATH is repo-injectable the same way env is (#325 / ADR 0016). A
+# planted `git` earlier in PATH could emit benign reviewer-facing output while
+# delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
+# then accepts for content nobody reviewed.
+#
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# the SAST tools legitimately live elsewhere, and pinning PATH outright would break
+# their resolution — including the PATH stubs the test fixtures rely on.
+#
+# SCOPE, stated plainly. This makes the tools whose output the MARKER depends on resolve
+# to real binaries: git, and the hash utility, which is resolved to an absolute path in
+# a trusted directory anyway (below). It does NOT pin the review CLI itself, which is
+# resolved from PATH and operator config by design (BUSDRIVER_REVIEW_CLI,
+# scripts/lib/resolve-cli.sh) — a planted `codex` could still return a forged PASS. That
+# is the same trust question as any other tool this repo shells out to, it predates #576
+# and is unchanged by it, and pinning the reviewer belongs with the resolver, not here.
+# Tracked as #789.
+# What #576 guarantees is narrower and worth stating exactly: a marker cannot be bound
+# to a diff the reviewer was not shown.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+
 # #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
 # integrity checks are built on. Exported functions travel through the environment —
 # the same repo-injectable channel #325 / ADR 0016 closed for env vars — and in bash a
@@ -297,7 +321,7 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 compute_pr_diff_hash() {
   # $2 (optional) pins the branch tip: #576 — resolving HEAD afresh here while the
   # caller reviewed a specific commit lets the marker describe a different snapshot.
-  local base="$1" tip="${2:-HEAD}" mb diff
+  local base="$1" tip="${2:-HEAD}" mb diff _d
   [[ -z "$base" ]] && return 1
   mb=$(git merge-base "$base" "$tip" 2>/dev/null) || return 1
   [[ -z "$mb" ]] && return 1
@@ -313,14 +337,15 @@ compute_pr_diff_hash() {
   # all) of stdin and then fails, shasum hashes only the unread remainder — after full
   # consumption that is the constant empty-stream digest, which would collapse every PR
   # authorization hash onto one value. Commit mode and the gate both select this way.
-  local _hash_cmd
-  if command -v sha256sum >/dev/null 2>&1; then
-    _hash_cmd=(command sha256sum)
-  elif command -v shasum >/dev/null 2>&1; then
-    _hash_cmd=(command shasum -a 256)
-  else
-    return 1
-  fi
+  # Absolute path in a trusted system dir — see the marker-hash resolver below for why
+  # `command -v` plus a prepended PATH is not enough (macOS keeps sha256sum in /sbin).
+  local _hash_cmd _d
+  _hash_cmd=()
+  for _d in /usr/bin /bin /sbin /usr/sbin; do
+    if [ -x "$_d/sha256sum" ]; then _hash_cmd=("$_d/sha256sum"); break; fi
+    if [ -x "$_d/shasum" ]; then _hash_cmd=("$_d/shasum" -a 256); break; fi
+  done
+  [ ${#_hash_cmd[@]} -eq 0 ] && return 1
   printf '%s' "$diff" | "${_hash_cmd[@]}" | cut -d' ' -f1
 }
 
@@ -1484,13 +1509,20 @@ else
   # predictable. The `command` builtin bypasses functions and aliases and runs the PATH
   # executable. (PATH itself is out of scope here: the gates already launch under a fixed
   # PATH, and a PATH that can forge `git` defeats every check in this file regardless.)
-  if command -v sha256sum >/dev/null 2>&1; then
-    _REVIEW_HASH_CMD=(command sha256sum)
-  elif command -v shasum >/dev/null 2>&1; then
-    _REVIEW_HASH_CMD=(command shasum -a 256)
-  else
+  # #576: resolve the hash utility to an ABSOLUTE path inside a trusted directory.
+  # `command -v` walks PATH, and prepending /usr/bin:/bin is not sufficient on its own —
+  # macOS ships sha256sum in /sbin, not /usr/bin, so the lookup falls straight through to
+  # the repo-injectable tail of PATH and a planted sha256sum wins. Search the trusted
+  # system directories explicitly instead, and refuse if none of them has one: a hash we
+  # cannot trust is worse than no hash, because the whole marker binding rests on it.
+  _REVIEW_HASH_CMD=()
+  for _d in /usr/bin /bin /sbin /usr/sbin; do
+    if [ -x "$_d/sha256sum" ]; then _REVIEW_HASH_CMD=("$_d/sha256sum"); break; fi
+    if [ -x "$_d/shasum" ]; then _REVIEW_HASH_CMD=("$_d/shasum" -a 256); break; fi
+  done
+  if [ ${#_REVIEW_HASH_CMD[@]} -eq 0 ]; then
     rm -f "$_INDEX_SNAPSHOT"
-    echo "❌ No SHA-256 utility (sha256sum/shasum) — cannot bind a review marker" >&2
+    echo "❌ No SHA-256 utility in a trusted system directory — cannot bind a review marker" >&2
     write_terminal_status setup_error
     exit 1
   fi
@@ -1597,11 +1629,33 @@ fi
 # uncaptured or malformed hash must refuse the marker, never fall back to a fresh
 # `git diff --cached` (that fallback IS the bug).
 require_reviewed_diff_hash() {
+  # This run is about to mint a marker, which SUPERSEDES any builtin handoff still armed
+  # from an earlier run. Retiring it here is what stops that run's delayed writer from
+  # overwriting this marker with its older hash: the writer refuses when the pointer no
+  # longer names its own review, and a missing pointer is exactly that. Arming-side
+  # exclusivity alone could not cover this — run A exits 3 and releases the review lock,
+  # so run B reaches an ordinary PASS without ever touching A's pointer.
+  # VALIDATE FIRST, destroy second. Retiring the handoff before checking our own hash
+  # meant a run that then failed validation had already destroyed another review's valid
+  # handoff — while being unable to mint any replacement marker itself.
   if [[ ! "${REVIEWED_DIFF_HASH:-}" =~ ^[0-9a-f]{64}$ ]]; then
     echo "❌ no reviewed staged-diff hash was captured — refusing to write a review marker" >&2
     write_terminal_status setup_error
     exit 1
   fi
+  # Only now that this run can actually mint a marker does it SUPERSEDE any builtin
+  # handoff still armed from an earlier run — that is what stops the earlier run's
+  # delayed writer from overwriting this marker with its older hash (its writer refuses
+  # when the pointer no longer names its own review, and a missing pointer is exactly
+  # that). Deliberately NOT sweeping *.claim.* — a claim means a writer has already won
+  # the rename and owns the turn; deleting it would re-open the race the claim closes.
+  # RESIDUAL (#790): a writer that already holds a claim can still publish its older
+  # marker after this run publishes a newer one. Hash binding keeps that fail-closed —
+  # the gate blocks a marker that no longer matches the index — so the cost is a
+  # spurious block and a re-run, not an unreviewed commit. Ordering the two writers
+  # needs a handoff lock spanning the agent phase; out of scope for #576.
+  rm -f "$STATE_DIR/builtin-review-prompt-path.local" 2>/dev/null || true
+  rm -f "$STATE_DIR"/builtin-review-*.hash 2>/dev/null || true
 }
 
 # Detect what was excluded

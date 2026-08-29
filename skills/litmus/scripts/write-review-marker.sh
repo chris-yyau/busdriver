@@ -17,6 +17,21 @@ if [[ "$-" != *p* ]]; then
     # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
     exec "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
+# #576: put the system directories FIRST so security-critical tools resolve to the real
+# binaries. Privileged mode stops exported FUNCTIONS from being imported, but it leaves
+# PATH alone — and PATH is repo-injectable the same way env is (#325 / ADR 0016). A
+# planted `git` earlier in PATH could emit benign reviewer-facing output while
+# delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
+# then accepts for content nobody reviewed.
+#
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# the SAST tools legitimately live elsewhere, and pinning PATH outright would break
+# their resolution — including the PATH stubs the test fixtures rely on. Prepending is
+# enough for the tools that matter here, because /usr/bin and /bin are the ones a
+# planted git/sha256sum/od/stat/cat would have to beat.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+
 # Trusted marker writer for builtin review fallback
 # Called via Bash tool (not Write tool) to avoid pre-implementation gate block
 # Prefix with BUILTIN- so post-commit-consume-marker.sh can distinguish
@@ -126,8 +141,38 @@ fi
 # Deleting it unconditionally would let a delayed writer for review A destroy review B's
 # handoff, leaving B unable to complete — the mirror image of the cross-review problem
 # the argument exists to solve. Our own sidecar is always ours, so it always goes.
+# CLAIM the pointer by renaming it, then read the claim. `mv` within a directory is
+# atomic, so exactly one party can win: a comparison done by reading the pointer in
+# place is a check-then-use window — a newer review can delete the handoff and write its
+# marker between our read and our write, and we would then overwrite that newer marker
+# with this run's older hash. Whoever wins the rename owns the turn.
+_CLAIM_FILE="$HANDOFF_FILE.claim.$$"
+# PEEK before claiming. This narrows, but does NOT eliminate, the window — a newer review
+# can still replace the shared handoff between the peek and the rename, in which case this
+# writer briefly holds it and the newer writer can observe it missing and fail. That is
+# the same LIVENESS residual as the overwrite below: a spurious failure costing a re-run,
+# never a false authorization, because the marker is diff-bound. Closing it needs the
+# handoff to have its own lock spanning the agent phase — tracked as #790, deliberately
+# out of scope for #576.
+#
+# Renaming first and asking questions afterwards lets this writer
+# temporarily STEAL a handoff belonging to a newer review — that review's own writer then
+# fails on a missing pointer — and the restore afterwards could clobber a third handoff
+# armed while the shared path was briefly absent. Read it in place, refuse if it is not
+# ours, and only then claim.
 _ptr_base=$(head -n 1 "$HANDOFF_FILE" 2>/dev/null || echo "")
 _ptr_base="${_ptr_base##*/}"
+if [ "$_ptr_base" = "$PROMPT_BASE" ]; then
+    if ! mv "$HANDOFF_FILE" "$_CLAIM_FILE" 2>/dev/null; then
+        echo "ERROR: The builtin handoff is gone — another review claimed or superseded it." >&2
+        echo "       Refusing to write: this review's hash is no longer the current one." >&2
+        exit 1
+    fi
+    # Re-read after the claim: the peek above is advisory, and the rename is the only
+    # atomic step. If the file changed between the two, this is the value that counts.
+    _ptr_base=$(head -n 1 "$_CLAIM_FILE" 2>/dev/null || echo "")
+    _ptr_base="${_ptr_base##*/}"
+fi
 if [ -n "$HASH_FILE" ]; then
     rm -f "$HASH_FILE"
 fi
@@ -135,7 +180,18 @@ fi
 # review, another one has armed since — writing now would overwrite that newer review's
 # marker with this run's older hash. Refuse instead, and leave the newer pointer alone.
 if [ "$_ptr_base" != "$PROMPT_BASE" ]; then
-    # Someone else owns the turn now. Leave THEIR pointer alone.
+    # Not ours. If we did claim it (the value changed under the rename), put it back so
+    # its own writer can still find it — but NEVER over an existing handoff: one armed
+    # while the shared path was absent is newer than what we hold, and clobbering it
+    # would break that review instead. `mv -n` fails rather than overwrites; the
+    # orphaned claim is then dropped by the caller re-running litmus.
+    # `mv -n` declines silently and STILL exits 0 (measured, BSD/macOS), leaving the
+    # source in place — so the unconditional cleanup after it is what stops an orphaned
+    # claim file accumulating when the restore is refused.
+    if [ -f "$_CLAIM_FILE" ]; then
+        mv -n "$_CLAIM_FILE" "$HANDOFF_FILE" 2>/dev/null || true
+        rm -f "$_CLAIM_FILE" 2>/dev/null || true
+    fi
     echo "ERROR: The builtin handoff no longer names this review — refusing to write." >&2
     echo "       Another review armed a handoff while this one was running; writing now" >&2
     echo "       would overwrite its marker with a stale hash. Re-run litmus." >&2
@@ -148,23 +204,41 @@ esac
 if [ "${#HASH}" -ne 64 ]; then
     # Ours and unusable: release the turn so the next review can arm. Leaving it would
     # lock every later builtin fallback out of the O_EXCL arming with no way back.
-    rm -f "$HANDOFF_FILE"
+    rm -f "$_CLAIM_FILE"
     echo "ERROR: Missing or malformed reviewed-diff hash handoff — marker cannot be written." >&2
     echo "       Expected a 64-char SHA-256 in the .hash sidecar of the mktemp prompt file," >&2
     echo "       written by run-review-loop.sh at exit code 3." >&2
     exit 1
 fi
 
+# RESIDUAL, tracked as #790, and why it is not closed here. A delayed writer can still
+# overwrite a newer review's marker with this run's hash: the atomic claim above makes
+# exactly one writer own the handoff, but it cannot order this write against a marker
+# another run wrote through the ordinary PASS path.
+#
+# That overwrite has no security consequence, precisely because of what #576 makes true.
+# The marker is DIFF-BOUND, so the gate compares it to the staged diff: if the index
+# moved between the two reviews the hashes differ and the gate BLOCKS (fail-closed,
+# costing a re-run); if the index did not move both reviews name the same hash and the
+# overwrite is a no-op. A stale marker can no longer authorise anything — that is the
+# whole point of the change, and it is what turns this race from an authorisation bug
+# into at worst a spurious block.
+#
+# An earlier revision added a freshness check here that refused when the reviewed hash
+# no longer matched the current index. It was removed: it also refused in the ordinary
+# late-hash case this file exists to handle, where the correct behaviour is to mint the
+# marker for the REVIEWED diff and let the gate block the mutated one — the property
+# tests/test-litmus-marker-binding.sh asserts first.
+
 mkdir -p "$REPO_DIR/$STATE_DIR"
 # Guarded: the sidecar is already consumed, so if this redirection fails under `set -e`
 # the pointer would survive with no hash behind it and the producer's noclobber arming
 # would reject every later builtin handoff until someone cleaned up by hand.
 if ! echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"; then
-    rm -f "$HANDOFF_FILE"
+    rm -f "$_CLAIM_FILE"
     echo "ERROR: Could not write the review marker — handoff released, re-run litmus." >&2
     exit 1
 fi
-# Consume the pointer only AFTER the marker exists: releasing the turn first would let a
-# waiting review arm, finish, and have its marker overwritten by this one.
-rm -f "$HANDOFF_FILE"
+# Release the claim only AFTER the marker exists.
+rm -f "$_CLAIM_FILE"
 echo "Review marker written (builtin)"

@@ -654,6 +654,36 @@ else
     bad "forged sha256sum survived: got '$forged'"
 fi
 
+# Privileged mode stops exported FUNCTIONS but leaves PATH, which is repo-injectable the
+# same way env is. The system dirs must come first so a planted git/sha256sum/od cannot
+# win the lookup.
+missing_path=""
+for f in "$PRODUCER" "$DISPATCHER" "$MARKER_WRITER"; do
+    grep -q 'PATH="/usr/bin:/bin:$PATH"' "$f" || missing_path="$missing_path $f"
+done
+if [ -z "$missing_path" ]; then
+    ok "system directories are prepended to PATH in every marker-minting script"
+else
+    bad "PATH is not hardened in:$missing_path"
+fi
+
+# A newer successful review must retire an older builtin handoff, or that run's delayed
+# writer overwrites the newer marker with its stale hash.
+if grep -q 'rm -f "$STATE_DIR/builtin-review-prompt-path.local"' "$PRODUCER"; then
+    ok "minting a marker retires any older builtin handoff (its writer then refuses)"
+else
+    bad "an older builtin handoff survives a newer review and can overwrite its marker"
+fi
+
+# The pointer must be claimed by ATOMIC RENAME, not compared in place: a read-then-write
+# leaves a window in which a newer review deletes the handoff and writes its marker, and
+# the delayed writer then overwrites it with the older hash.
+if grep -q 'mv "$HANDOFF_FILE" "$_CLAIM_FILE"' "$MARKER_WRITER"; then
+    ok "the builtin handoff is claimed by atomic rename (exactly one writer can win)"
+else
+    bad "the handoff is compared in place — a delayed writer can overwrite a newer marker"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

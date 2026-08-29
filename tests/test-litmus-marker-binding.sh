@@ -159,9 +159,9 @@ MW_ARG="$pf4"; ( cd "$t1d" && bash "$REPO_ROOT/$MARKER_WRITER" "$MW_ARG" >/dev/n
     bad "writer accepted a malformed reviewed-diff hash" || \
     ok "writer refuses a malformed reviewed-diff hash"
 if [ -f "$t1d/.claude/builtin-review-prompt-path.local" ] || [ -f "$t1d/.claude/builtin-review-${pf4##*/}.hash" ]; then
-    bad "a refused attempt left an armed handoff token behind (retryable)"
+    bad "a refused attempt left an armed handoff token behind (locks out the next review)"
 else
-    ok "...and consumes both handoff tokens even on refusal"
+    ok "...and releases both handoff tokens on refusal, so the next review can arm"
 fi
 rm -rf "$t1d"
 
@@ -592,6 +592,29 @@ if grep -q 'git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.qu
 else
     bad "pre-PR gate and compute_pr_diff_hash disagree — every PR marker would mismatch"
 fi
+
+# The pointer doubles as a TURN token: if another review armed one while this reviewer
+# was running, writing now would overwrite that newer review's marker with a stale hash.
+# The writer must refuse — and must NOT consume the other review's pointer.
+t1f=$(new_repo)
+printf 'x\n' > "$t1f/f.txt"; git -C "$t1f" add f.txt
+mkdir -p "$t1f/.claude"
+pf5=$(mktemp -t busdriver-review-XXXXXX)
+pf6=$(mktemp -t busdriver-review-XXXXXX)
+hash_canonical "$t1f" > "$t1f/.claude/builtin-review-${pf5##*/}.hash"
+# The pointer names a DIFFERENT (later) review than the one we pass.
+printf '%s\n' "$pf6" > "$t1f/.claude/builtin-review-prompt-path.local"
+if ( cd "$t1f" && bash "$REPO_ROOT/$MARKER_WRITER" "$pf5" >/dev/null 2>&1 ); then
+    bad "a superseded reviewer overwrote the newer review's marker"
+else
+    ok "a superseded reviewer refuses to write once another review owns the handoff"
+fi
+if [ -f "$t1f/.claude/builtin-review-prompt-path.local" ]; then
+    ok "...and leaves the newer review's pointer intact"
+else
+    bad "the superseded reviewer consumed another review's handoff"
+fi
+rm -f "$pf5" "$pf6"; rm -rf "$t1f"
 
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.

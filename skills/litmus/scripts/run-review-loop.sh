@@ -1296,7 +1296,36 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # --text for the same reason as commit mode: --no-textconv does NOT defeat a committed
   # `.gitattributes` `-diff` rule, so a PR adding `*.sh -diff` reduces its own changed
   # source to an opaque "Binary files differ" line while the marker stays valid.
+  # Same two guards commit mode carries, for the same reasons --text creates: measure by
+  # STREAMING first (a genuine binary rendered as text would otherwise be fully resident
+  # in a shell variable before any size check), then verify the capture is faithful
+  # (command substitution silently drops NUL bytes, so the reviewer could be shown
+  # something other than what PR_REVIEWED_DIFF_HASH binds).
+  if ! _staged_diff_bytes=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null | wc -c | tr -d ' '); then
+    echo "❌ Could not measure the branch diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
+  case "$_staged_diff_max" in
+    ''|*[!0-9]*) _staged_diff_max=10485760 ;;
+    ??????????????????*) _staged_diff_max=10485760 ;;
+  esac
+  if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ Branch diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
+    echo "   Split the PR, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    echo "   Override with LITMUS_MAX_DIFF_BYTES." >&2
+    exit 2
+  fi
   STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
+  if [ "$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))" -gt 1 ]; then
+    echo "❌ The branch diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
+    echo "   NUL bytes cannot be represented in the review prompt, so the reviewer would not" >&2
+    echo "   see what the marker authorises. Exclude the binary, or split the PR." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.

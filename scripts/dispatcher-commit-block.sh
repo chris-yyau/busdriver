@@ -367,7 +367,10 @@ esac
 # Run dir for per-invocation artifacts (litmus output capture, etc.).
 RUN_DIR=$(mktemp -d -t dispatcher-XXXXXX) || \
     emit_bail "env" "dispatcher-commit-block: mktemp failed"
-trap 'rm -rf "$RUN_DIR"' EXIT
+# #576: the exclusion snapshots are unlinked here too. emit_bail exits, so every bail
+# taken between creating them and the explicit cleanup would otherwise leave private
+# busdriver-excl-* files behind in the temp dir.
+trap 'rm -rf "$RUN_DIR"; rm -f "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" 2>/dev/null || true' EXIT
 
 # --- Step 1: Read RESULT_FIXES (worker's intent) ---
 # RESULT_FIXES is injected by the parent dispatcher.
@@ -968,8 +971,8 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     done
     REVIEW_EXCLUDE_ARGS=(${_excl_kept[@]+"${_excl_kept[@]}"})
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    # (the EXIT trap also removes these; this is the prompt cleanup on the happy path)
     [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
-    [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"
     # For an in-worktree logic file the guard hands back a temp file holding HEAD's
     # committed bytes (so nothing can swap it between check and use); drop it now.
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"

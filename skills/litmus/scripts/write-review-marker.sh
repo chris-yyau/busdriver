@@ -110,17 +110,27 @@ fi
 # the argument exists to solve. Our own sidecar is always ours, so it always goes.
 _ptr_base=$(head -n 1 "$HANDOFF_FILE" 2>/dev/null || echo "")
 _ptr_base="${_ptr_base##*/}"
-if [ "$_ptr_base" = "$PROMPT_BASE" ]; then
-    rm -f "$HANDOFF_FILE"
-fi
 if [ -n "$HASH_FILE" ]; then
     rm -f "$HASH_FILE"
+fi
+# The pointer is also the TURN token, not just a handoff. If it no longer names this
+# review, another one has armed since — writing now would overwrite that newer review's
+# marker with this run's older hash. Refuse instead, and leave the newer pointer alone.
+if [ "$_ptr_base" != "$PROMPT_BASE" ]; then
+    # Someone else owns the turn now. Leave THEIR pointer alone.
+    echo "ERROR: The builtin handoff no longer names this review — refusing to write." >&2
+    echo "       Another review armed a handoff while this one was running; writing now" >&2
+    echo "       would overwrite its marker with a stale hash. Re-run litmus." >&2
+    exit 1
 fi
 
 case "$HASH" in
     *[!0-9a-f]* | "") HASH="" ;;
 esac
 if [ "${#HASH}" -ne 64 ]; then
+    # Ours and unusable: release the turn so the next review can arm. Leaving it would
+    # lock every later builtin fallback out of the O_EXCL arming with no way back.
+    rm -f "$HANDOFF_FILE"
     echo "ERROR: Missing or malformed reviewed-diff hash handoff — marker cannot be written." >&2
     echo "       Expected a 64-char SHA-256 in the .hash sidecar of the mktemp prompt file," >&2
     echo "       written by run-review-loop.sh at exit code 3." >&2
@@ -129,4 +139,7 @@ fi
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
 echo "BUILTIN-${HASH}" > "$REPO_DIR/$STATE_DIR/litmus-passed.local"
+# Consume the pointer only AFTER the marker exists: releasing the turn first would let a
+# waiting review arm, finish, and have its marker overwritten by this one.
+rm -f "$HANDOFF_FILE"
 echo "Review marker written (builtin)"

@@ -616,6 +616,13 @@ run_gate "a repo with more remotes than the budget allows is refused" \
     block "git merge feature" "past the 64 this gate can examine"
 setup_repo main || { printf '  FAIL  fixture re-setup (manyremotes)\n'; exit 1; }
 
+# A repo with no state dir at all has no declaration and no marker — absent, not
+# unsafe. Folding the two together refused every merge in an ordinary checkout.
+mv "$REPO/$ISO_STATE" "$TMPROOT/state-aside"
+run_gate "a repo with no state dir is not treated as unsafe" \
+    block "git merge feature" "would FAST-FORWARD the protected branch"
+mv "$TMPROOT/state-aside" "$REPO/$ISO_STATE"
+
 # ── A word from the command is never expanded against the working tree ──
 # The parser hands back space-separated names, which the gate iterates unquoted.
 # With globbing on, `git m*` in a directory containing a file called `merge`
@@ -801,6 +808,16 @@ run_gate "a branch whose name starts with # is declarable, not a comment" \
     block "git merge feature" "would FAST-FORWARD the protected branch"
 git -C "$REPO" checkout -q main
 git -C "$REPO" branch -D '#release' >/dev/null 2>&1
+
+# An oversized declaration is REFUSED, not truncated. A single fixed-size read
+# turned 64 KiB of blank lines followed by a real declaration into a file naming
+# no branch — which is how an operator says the repo has none, so the file
+# disabled the gate instead of being rejected by it.
+{ head -c 65536 /dev/zero | tr '\0' '\n'; printf 'release\n'; } \
+    > "$REPO/$ISO_STATE/ref-ff-protected.local"
+run_gate "an oversized declaration is refused, never silently truncated" \
+    block "git merge feature" "could not be read safely"
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local"
 
 # A symlink ANYWHERE in the path, not only at the leaf: a plain file test resolves
 # every component, so a symlinked state dir made the test describe one file while

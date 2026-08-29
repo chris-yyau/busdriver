@@ -196,28 +196,44 @@ is_ancestor() {   # <a> <b> → 0 yes, 1 no; BLOCKS if git could not decide
 # through every intermediate component, so a symlinked `$STATE_DIR` — or a
 # symlinked component when it is nested — makes the test describe one file while
 # the read, and the marker's removal, land on another. The state dir is
-# repo-relative and therefore repo-influenced, which is exactly the shape
-# lib/audit_append.py already walks with dir_fd + O_NOFOLLOW; reuse its walker
-# rather than restate the containment here, and open the leaf the same way.
+# repo-relative and therefore repo-influenced, so every component is walked from
+# the CWD with dir_fd + O_NOFOLLOW, the same containment lib/audit_append.py
+# applies to its writes.
 #
-# Prints the file's contents on stdout. Exit 0 = read it, 1 = not there, 2 = the
-# path is unsafe or unreadable, which every caller treats as a refusal.
+# It does NOT reuse that module's open_state_dir(), and the difference matters
+# twice: that walker CREATES missing components, because an appender must, and it
+# reports a missing directory the same way it reports a symlinked one. A reader
+# must do neither — creating `.claude` in every repo a merge happens in is a side
+# effect the gate has no business having, and folding "absent" into "unsafe" made
+# an ordinary repo with no state dir refuse every merge.
+#
+# Prints the file's contents on stdout. Exit 0 = read it, 1 = it is not there
+# (including no state dir at all), 2 = the path is unsafe, the file is not a
+# regular file, or it is larger than the gate will parse — every caller treats 2
+# as a refusal.
 state_file() {   # <read|unlink> <basename>
     local _lib
     _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
     (cd "$REPO_DIR" 2>/dev/null && PYTHONPATH="$_lib" python3 -S -c "
-import os, sys
-_gatelib = [q for q in sys.path if q.endswith('gate-scripts/lib')]
-sys.path[:] = [q for q in sys.path
-               if q not in ('', '.') and q not in _gatelib] + _gatelib
-from audit_append import open_state_dir
+import os, stat, sys
 mode, state_dir, name = sys.argv[1], sys.argv[2], sys.argv[3]
-if '/' in name or name in ('.', '..'):
+if '/' in name or name in ('.', '..') or state_dir.startswith('/'):
     raise SystemExit(2)
-dfd = open_state_dir(state_dir)
-if dfd is None:
+parts = [q for q in state_dir.split('/') if q and q != '.']
+if any(q == '..' for q in parts):
     raise SystemExit(2)
+dfd = os.open('.', os.O_RDONLY | os.O_DIRECTORY)
 try:
+    for part in parts:
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=dfd)
+        except FileNotFoundError:
+            raise SystemExit(1)       # no state dir: the file is simply absent
+        except OSError:
+            raise SystemExit(2)       # symlinked, or not a directory
+        os.close(dfd)
+        dfd = nfd
     if mode == 'unlink':
         try:
             os.unlink(name, dir_fd=dfd)
@@ -231,16 +247,28 @@ try:
     except FileNotFoundError:
         raise SystemExit(1)
     except OSError:
-        raise SystemExit(2)          # a symlink at the leaf lands here
+        raise SystemExit(2)           # a symlink at the leaf lands here
     try:
-        st = os.fstat(ffd)
-        import stat as _s
-        if not _s.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(os.fstat(ffd).st_mode):
             raise SystemExit(2)
-        data = os.read(ffd, 1 << 16)
+        # LIMIT + 1, then refuse. A single fixed-size read silently TRUNCATED a
+        # larger file, and truncation is not a parse error: 64 KiB of blank lines
+        # followed by a real declaration read back as a file naming no branch,
+        # which is how an operator says the repo has none — so an oversized file
+        # disabled the gate instead of being rejected by it.
+        limit = 1 << 16
+        chunks, total = [], 0
+        while total <= limit:
+            chunk = os.read(ffd, limit + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > limit:
+            raise SystemExit(2)
     finally:
         os.close(ffd)
-    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.write(b''.join(chunks))
     raise SystemExit(0)
 finally:
     os.close(dfd)

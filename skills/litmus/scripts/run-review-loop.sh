@@ -241,7 +241,13 @@ compute_pr_diff_hash() {
   [[ -z "$base" ]] && return 1
   mb=$(git merge-base "$base" "$tip" 2>/dev/null) || return 1
   [[ -z "$mb" ]] && return 1
-  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...${tip}" 2>/dev/null) || return 1
+  # --full-index: a binary change is distinguished ONLY by its `index` line, which is a
+  # 7-char abbreviation by default — two distinct blobs sharing a chosen prefix would
+  # reuse the same reviewed-diff binding. MUST stay byte-identical to the pre-PR gate's
+  # own hash (hooks/gate-scripts/pre-pr-gate.sh), which is the PR-mode analogue of the
+  # commit-mode four-site coupling: change one without the other and every PR marker
+  # stops matching.
+  diff=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${mb}...${tip}" 2>/dev/null) || return 1
   [[ -z "$diff" ]] && return 1
   printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
 }
@@ -1178,8 +1184,25 @@ else
     # can only appear if the parser actually read the pinned file. Absent ⇒ this logic
     # does not support pinning ⇒ its patterns came from an unverified source ⇒ use none.
     # The sentinel itself is inert (it excludes a path name nothing can have).
-    _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
-    if [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]; then
+    # UNPREDICTABLE, not merely unique. This challenge is checked against output from a
+    # parser that may be reading the attacker-controlled live policy, so a guessable
+    # value is forgeable: $$ is observable and $RANDOM is 15 bits, so a PR could list
+    # candidate probe patterns alongside a wildcard exclusion and have one of them
+    # match, "proving" a pin that never happened and keeping its malicious exclusions.
+    # 128 bits from /dev/urandom makes that infeasible; no randomness means no proof,
+    # which is a refusal.
+    _excl_probe_rand=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "")
+    _excl_probe="__busdriver_pin_probe_${_excl_probe_rand}"
+    if [ ${#_excl_probe_rand} -lt 32 ]; then
+      # DO NOT SOURCE. Clearing the pin and carrying on was a fail-open: logic predating
+      # the override would reload the attacker-controlled LIVE policy, and the emptied
+      # EXCL_POLICY_SOURCE simultaneously disabled the sentinel check that would have
+      # caught it. Without a challenge there is no way to prove the pin held, so the
+      # only safe move is to not run that parser at all.
+      echo "⚠️  No usable randomness for the exclusion pin probe — reviewing with NO exclusions" >&2
+      REVIEW_EXCLUDE_ARGS=()
+      _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    elif [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]; then
       # LEADING newline: a policy whose last line has no trailing newline would
       # otherwise have the sentinel concatenated onto that final pattern, so neither
       # caller sees a standalone :(exclude)<probe> and both conclude the pin was
@@ -1188,8 +1211,10 @@ else
       # the parser skips empty lines.
       printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
     fi
-    # shellcheck source=lib/exclude-generated.sh
-    source "$EXCL_LOGIC_SOURCE"
+    if [ ${#_excl_probe_rand} -ge 32 ]; then
+      # shellcheck source=lib/exclude-generated.sh
+      source "$EXCL_LOGIC_SOURCE"
+    fi
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
     # EXACT match, and the same comparison the strip below uses. A substring test
     # accepted an element merely CONTAINING the probe — an older parser reading the live
@@ -1200,7 +1225,9 @@ else
     for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
       [ "$_excl_arg" = ":(exclude)$_excl_probe" ] && _excl_probe_seen=yes && break
     done
-    if [ -n "${EXCL_POLICY_SOURCE:-}" ] && [ "$_excl_probe_seen" != yes ]; then
+    if [ ${#_excl_probe_rand} -lt 32 ]; then
+      : # already handled above: nothing was sourced, exclusions are empty
+    elif [ -n "${EXCL_POLICY_SOURCE:-}" ] && [ "$_excl_probe_seen" != yes ]; then
       echo "⚠️  The exclusion parser at the review anchor does not support a pinned policy" >&2
       echo "    (it would read the live, unverified one) — reviewing with NO exclusions" >&2
       REVIEW_EXCLUDE_ARGS=()
@@ -1266,7 +1293,10 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
   # reviewer actually reads.
-  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # --text for the same reason as commit mode: --no-textconv does NOT defeat a committed
+  # `.gitattributes` `-diff` rule, so a PR adding `*.sh -diff` reduces its own changed
+  # source to an opaque "Binary files differ" line while the marker stays valid.
+  STAGED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}...${_PR_TIP}" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.

@@ -275,7 +275,12 @@ PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin
 # disables a .gitattributes textconv filter (which --no-ext-diff does NOT cover);
 # color/quotePath pinned so operator git config cannot make writer/gate hashes diverge.
 MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true)
-DIFF_OUTPUT=$(git -C "$REPO_DIR" -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+# #576: --full-index, byte-identical to compute_pr_diff_hash in run-review-loop.sh.
+# A binary change is distinguished only by its `index` line, and the default 7-char
+# abbreviation lets two chosen blobs share one reviewed-diff binding. This pair is the
+# PR-mode analogue of the commit-mode hash coupling: change one side only and every PR
+# marker stops matching.
+DIFF_OUTPUT=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD" 2>/dev/null || true)
 CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable

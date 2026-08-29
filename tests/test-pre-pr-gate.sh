@@ -72,9 +72,9 @@ BACKSTOP_ART="$TMPREPO/.claude/pr-backstop-verdict.local.json"
 mkdir -p "$TMPREPO/.claude"
 
 # Compute the diff hash the exact way the gate does: explicit merge-base, then
-# `git diff "${MERGE_BASE}...HEAD"` (byte-identical to compute_pr_diff_hash).
+# the canonical PR form (byte-identical to compute_pr_diff_hash), --full-index included.
 MERGE_BASE=$(git -C "$TMPREPO" merge-base origin/main HEAD)
-REAL_DIFF=$(git -C "$TMPREPO" diff "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+REAL_DIFF=$(git -C "$TMPREPO" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD" 2>/dev/null || true)
 VALID_HASH=$(printf '%s' "$REAL_DIFF" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 STALE_HASH=$(printf '%s' "stale-marker-content" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
@@ -347,8 +347,7 @@ echo "── #438 deterministic diff hash (hostile git diff config) ──"
 assert_hostile_config_accepted() {
     local label="$1"
     local hardened_diff hardened_hash
-    hardened_diff=$(git -C "$TMPREPO" -c color.ui=never -c core.quotePath=false \
-        diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+    hardened_diff=$(git -C "$TMPREPO" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD" 2>/dev/null || true)
     if [[ -z "$hardened_diff" ]]; then
         check "deterministic diff non-empty under $label (#438)" "nonempty" "empty"
         return

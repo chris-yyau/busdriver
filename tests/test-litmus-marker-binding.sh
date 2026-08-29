@@ -569,6 +569,30 @@ else
     bad "the pin sentinel stays in REVIEW_EXCLUDE_ARGS as a live exclude pattern"
 fi
 
+# The pin challenge must be UNPREDICTABLE, not merely unique: it is checked against
+# output from a parser that may be reading the attacker-controlled live policy, so a
+# $$/$RANDOM value could be pre-seeded there to fake a pin that never happened.
+if grep -q '/dev/urandom' "$PRODUCER" && grep -q '/dev/urandom' "$DISPATCHER"; then
+    ok "the exclusion pin challenge is drawn from /dev/urandom, not \$\$/\$RANDOM"
+else
+    bad "the pin challenge is guessable — it can be pre-seeded into the live policy"
+fi
+
+# PR mode must carry the same two anti-blinding measures as commit mode.
+if grep -q 'diff --no-ext-diff --no-textconv --text "${_PR_BASE_REF}' "$PRODUCER" \
+   && grep -q 'diff --no-ext-diff --no-textconv --full-index "${mb}' "$PRODUCER"; then
+    ok "PR mode forces --text for the reviewer and --full-index for its marker hash"
+else
+    bad "PR mode is missing --text and/or --full-index"
+fi
+
+# ...and the pre-PR gate must agree with compute_pr_diff_hash, or every PR marker breaks.
+if grep -q 'git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "${MERGE_BASE}...HEAD"' hooks/gate-scripts/pre-pr-gate.sh; then
+    ok "the pre-PR gate hashes the same form as the PR marker writer"
+else
+    bad "pre-PR gate and compute_pr_diff_hash disagree — every PR marker would mismatch"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

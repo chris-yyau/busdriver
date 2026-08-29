@@ -936,7 +936,14 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
     # Same sentinel probe as the producer: the logic is sourced from the anchor commit,
     # and a version predating the pin override would silently read the live policy.
-    _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
+    # Unpredictable, same reasoning as the producer: a guessable challenge can be
+    # pre-seeded into the attacker-controlled live policy to fake a pin that never
+    # happened.
+    _excl_probe_rand=$(LC_ALL=C od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "")
+    if [[ ${#_excl_probe_rand} -lt 32 ]]; then
+        emit_bail "env" "no usable randomness for the exclusion pin probe; cannot prove the pinned policy was honoured, refusing fail-closed"
+    fi
+    _excl_probe="__busdriver_pin_probe_${_excl_probe_rand}"
     if [[ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]]; then
         # Leading newline: a policy without a trailing newline would concatenate the
         # sentinel onto its last pattern, and this bail would fire on a valid marker.
@@ -952,6 +959,14 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     if [[ -n "${EXCL_POLICY_SOURCE:-}" ]] && [[ "$_excl_probe_seen" != yes ]]; then
         emit_bail "judgment" "the exclusion logic at the review anchor does not honour a pinned policy, so its patterns would come from the live, unverified review-exclude; refusing the excluded-only marker"
     fi
+    # Strip the sentinel: left in place it is a live exclude pathspec, and this
+    # re-verify decides whether the staged diff is genuinely excluded-only.
+    _excl_kept=()
+    for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+        [[ "$_excl_arg" == ":(exclude)$_excl_probe" ]] && continue
+        _excl_kept+=("$_excl_arg")
+    done
+    REVIEW_EXCLUDE_ARGS=(${_excl_kept[@]+"${_excl_kept[@]}"})
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
     [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"

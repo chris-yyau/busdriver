@@ -67,7 +67,9 @@ printf 'line1\nline2\n' > f.txt; git add f.txt; git commit -qm change
 export LITMUS_PR_BASE=main   # resolve_pr_base_branch → origin/main
 
 # Current diff hash, computed the way the writer/gate do (capture + printf '%s').
-_D=$(git diff "$(git merge-base origin/main HEAD)...HEAD")
+# #576: must match compute_pr_diff_hash / pre-pr-gate.sh byte for byte, --full-index
+# included — a bare `git diff` abbreviates index lines and no longer agrees.
+_D=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index "$(git merge-base origin/main HEAD)...HEAD")
 CUR=$(printf '%s' "$_D" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 BS=".claude/pr-backstop-verdict.local.json"

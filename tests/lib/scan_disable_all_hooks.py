@@ -46,13 +46,9 @@ def carries_key(node):
     from being useless.
     """
     if isinstance(node, dict):
-        for key, value in node.items():
-            if key == KEY or carries_key(value):
-                return True
-    elif isinstance(node, list):
-        for value in node:
-            if carries_key(value):
-                return True
+        return any(key == KEY or carries_key(value) for key, value in node.items())
+    if isinstance(node, list):
+        return any(carries_key(value) for value in node)
     return False
 
 
@@ -73,6 +69,44 @@ def git(root, *args):
             % (" ".join(args), done.returncode, done.stderr.decode("utf-8", "replace").strip())
         )
     return done.stdout
+
+
+def classify_entry(root, entry):
+    """Classify one `git ls-files -s -z` record: a hit line, or None when clean.
+
+    Raises `RuntimeError`/`OSError` — already carrying the path — when the blob
+    cannot be read, so the caller answers 2 rather than clearing what it never saw.
+    """
+    meta, _, name = entry.partition(b"\t")
+    fields = meta.split(b" ")
+    mode = fields[0].decode()
+    blob = fields[1].decode() if len(fields) > 1 else ""
+    rel = name.decode("utf-8", "surrogateescape")
+    if mode not in ("100644", "100755"):
+        # A symlink (120000) or gitlink (160000) — anywhere, not just at a
+        # `*.json` path. What it resolves to at checkout is not in this index
+        # and not this scan's to decide, so it cannot be cleared and is
+        # reported. There are none in this tree today; the day one arrives it
+        # is a deliberate decision, which is exactly when someone should look.
+        return "%s (tracked mode %s, not a regular file — cannot clear)" % (rel, mode)
+    # Case-INsensitively: macOS and Windows resolve `.claude/settings.JSON`
+    # when Claude opens `.claude/settings.json`, so a case-sensitive suffix
+    # test clears on Linux CI exactly the file the operator's machine reads.
+    if not rel.lower().endswith(".json"):
+        return None
+    try:
+        # By SHA, not by `git show :<path>`: that spec is ambiguous for a
+        # filename beginning with a digit and a colon — `0:clean.json` reads
+        # as stage 0 of `clean.json`, so a dirty file could be cleared by a
+        # clean namesake. `ls-files -s` already handed us the exact blob.
+        content = git(root, "cat-file", "blob", blob)
+    except (RuntimeError, OSError) as exc:
+        raise RuntimeError("%s: %s" % (rel, exc)) from exc
+    try:
+        doc = json.loads(content)
+    except Exception as exc:  # noqa: BLE001 — any decode failure is "cannot clear"
+        return "%s (unparseable, cannot clear: %s)" % (rel, exc)
+    return rel if carries_key(doc) else None
 
 
 def main(argv):
@@ -124,42 +158,15 @@ def main(argv):
     for entry in listing.split(b"\0"):
         if not entry:
             continue
-        meta, _, name = entry.partition(b"\t")
-        fields = meta.split(b" ")
-        mode = fields[0].decode()
-        blob = fields[1].decode() if len(fields) > 1 else ""
-        rel = name.decode("utf-8", "surrogateescape")
-        if mode not in ("100644", "100755"):
-            # A symlink (120000) or gitlink (160000) — anywhere, not just at a
-            # `*.json` path. What it resolves to at checkout is not in this index
-            # and not this scan's to decide, so it cannot be cleared and is
-            # reported. There are none in this tree today; the day one arrives it
-            # is a deliberate decision, which is exactly when someone should look.
-            hits.append("%s (tracked mode %s, not a regular file — cannot clear)" % (rel, mode))
-            continue
-        # Case-INsensitively: macOS and Windows resolve `.claude/settings.JSON`
-        # when Claude opens `.claude/settings.json`, so a case-sensitive suffix
-        # test clears on Linux CI exactly the file the operator's machine reads.
-        if not rel.lower().endswith(".json"):
-            continue
         try:
-            # By SHA, not by `git show :<path>`: that spec is ambiguous for a
-            # filename beginning with a digit and a colon — `0:clean.json` reads
-            # as stage 0 of `clean.json`, so a dirty file could be cleared by a
-            # clean namesake. `ls-files -s` already handed us the exact blob.
-            content = git(root, "cat-file", "blob", blob)
+            hit = classify_entry(root, entry)
         except (RuntimeError, OSError) as exc:
             # A tracked path whose blob cannot be read is not evidence of
-            # anything, least of all cleanliness.
-            print("scan failed on %s: %s" % (rel, exc), file=sys.stderr)
+            # anything, least of all cleanliness. `exc` already names the path.
+            print("scan failed on %s" % exc, file=sys.stderr)
             return 2
-        try:
-            doc = json.loads(content)
-        except Exception as exc:  # noqa: BLE001 — any decode failure is "cannot clear"
-            hits.append("%s (unparseable, cannot clear: %s)" % (rel, exc))
-            continue
-        if carries_key(doc):
-            hits.append(rel)
+        if hit is not None:
+            hits.append(hit)
 
     for hit in hits:
         print(hit)

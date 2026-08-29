@@ -25,26 +25,44 @@ from scan_disable_all_hooks import KEY, carries_key  # noqa: E402
 DECOYS = ["disableallhooks", "DisableAllHooks", "disableAllHook", "xdisableAllHooks", "hooks", "é"]
 
 
-def build(rng, depth, plant):
-    """Build a random JSON document; place KEY exactly where `plant` says."""
-    if depth <= 0 or (not plant and rng.random() < 0.3):
-        leaf = rng.choice([1, "s", None, True, 1.5])
-        return {KEY: leaf} if plant else leaf
-    if rng.random() < 0.5:
-        node = {}
-        for _ in range(rng.randint(1, 4)):
-            node[rng.choice(DECOYS)] = build(rng, depth - 1, False)
-        if plant:
-            # Either the key itself, or deeper down one branch — both must be found.
-            if rng.random() < 0.5:
-                node[KEY] = build(rng, depth - 1, False)
-            else:
-                node[rng.choice(DECOYS)] = build(rng, depth - 1, True)
+def _leaf(rng, plant):
+    """A terminal node: the key with a random value under it, or a bare value."""
+    leaf = rng.choice([1, "s", None, True, 1.5])
+    return {KEY: leaf} if plant else leaf
+
+
+def _dict_node(rng, depth, plant):
+    node = {}
+    for _ in range(rng.randint(1, 4)):
+        node[rng.choice(DECOYS)] = build(rng, depth - 1, False)
+    if not plant:
         return node
+    # Either the key itself, or deeper down one branch — both must be found.
+    if rng.random() < 0.5:
+        node[KEY] = build(rng, depth - 1, False)
+    else:
+        node[rng.choice(DECOYS)] = build(rng, depth - 1, True)
+    return node
+
+
+def _list_node(rng, depth, plant):
     items = [build(rng, depth - 1, False) for _ in range(rng.randint(1, 4))]
     if plant:
         items.insert(rng.randrange(len(items) + 1), build(rng, depth - 1, True))
     return items
+
+
+def build(rng, depth, plant):
+    """Build a random JSON document; place KEY exactly where `plant` says."""
+    if depth <= 0:
+        return _leaf(rng, plant)
+    # `not plant` first, so the draw is taken only when it can decide something —
+    # a planted branch must keep descending, exactly as the single condition did.
+    if not plant and rng.random() < 0.3:
+        return _leaf(rng, plant)
+    if rng.random() < 0.5:
+        return _dict_node(rng, depth, plant)
+    return _list_node(rng, depth, plant)
 
 
 def main(argv):

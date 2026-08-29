@@ -1463,6 +1463,12 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
   # disable this guard outright. The override may LOWER the cap; it may never raise it
   # past what the guard exists to bound.
+  # Force BASE 10 before any arithmetic. A zero-padded value like `09` is all digits, so
+  # it passes the checks above, but `$(( 09 + 2 ))` is an invalid octal literal — and a
+  # bash arithmetic error is NOT catchable by the ERR trap, so it kills the script before
+  # write_terminal_status runs and strands the review in a stale PENDING. The variable is
+  # repo-injectable (#325 / ADR 0016), so that is a reliable denial, not a fluke.
+  _staged_diff_max=$((10#$_staged_diff_max))
   if [ "$_staged_diff_max" -gt 67108864 ]; then
     _staged_diff_max=67108864
   fi
@@ -1639,6 +1645,12 @@ else
   # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
   # disable this guard outright. The override may LOWER the cap; it may never raise it
   # past what the guard exists to bound.
+  # Force BASE 10 before any arithmetic. A zero-padded value like `09` is all digits, so
+  # it passes the checks above, but `$(( 09 + 2 ))` is an invalid octal literal — and a
+  # bash arithmetic error is NOT catchable by the ERR trap, so it kills the script before
+  # write_terminal_status runs and strands the review in a stale PENDING. The variable is
+  # repo-injectable (#325 / ADR 0016), so that is a reliable denial, not a fluke.
+  _staged_diff_max=$((10#$_staged_diff_max))
   if [ "$_staged_diff_max" -gt 67108864 ]; then
     _staged_diff_max=67108864
   fi

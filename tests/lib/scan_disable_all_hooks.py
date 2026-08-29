@@ -82,6 +82,24 @@ def main(argv):
     root = argv[1]
 
     try:
+        # `git -C <dir>` walks UP for repository metadata, so an ordinary
+        # subdirectory of some other repository answers happily — about that
+        # other repository. The caller asked about `root`; anything else is a
+        # different tree wearing the right name, and reporting it clean is the
+        # same fail-open as a redirected GIT_DIR. Confirm the discovered
+        # top-level IS the requested root before reading a single entry.
+        top = git(root, "rev-parse", "--show-toplevel").decode("utf-8", "surrogateescape").strip()
+    except (RuntimeError, OSError) as exc:
+        print("scan failed: %s" % exc, file=sys.stderr)
+        return 2
+    if os.path.realpath(top) != os.path.realpath(root):
+        print(
+            "scan failed: %s is not a repository root (git resolved %s)" % (root, top),
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
         # The WHOLE index, not a `*.json` pathspec, and `-s` for the mode. Both
         # narrowings are bypasses:
         #

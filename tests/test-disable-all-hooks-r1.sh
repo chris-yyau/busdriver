@@ -167,6 +167,12 @@ must g commit -qm unupcase
 # refuse — so it has to be rc 2, distinct from both verdicts.
 expect_rc 2 "$TMP/not-a-repo" "an unqueryable root fails LOUD (rc 2), never clean"
 
+# And "queryable" is not "the right tree". `git -C <dir>` walks UP for metadata,
+# so an ordinary SUBDIRECTORY answers about its parent repository — clean, about
+# a tree the caller never named. The dirty $TMP is right there above it.
+must mkdir -p "$TMP/config/sub"
+expect_rc 2 "$TMP/config/sub" "a subdirectory is refused, not answered from its parent repo"
+
 # A tracked `*.json` SYMLINK is not a JSON file. Its blob is the target path, and
 # a target named `"payload"` is itself valid JSON that decodes to a harmless
 # string — so a parser-only scan clears it while the reader follows the link to

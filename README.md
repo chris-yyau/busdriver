@@ -30,6 +30,8 @@ Six blocking gates plus one advisory guard, all hook-enforced. The six emit `{"d
 
 Careful guard is the deliberate exception. It emits `permissionDecision: ask` to raise a confirmation prompt rather than blocking, and its own `ERR` trap fails **open**, so a runtime bug inside the guard returns an empty decision instead of wedging every Bash call in the session. That guarantee is bounded by the trap: a failure *before* the trap can run — a syntax error, a missing script, a sanitized-wrapper failure — never produces a decision, so `contained-launch.sh` applies this registration's declared `closed` disposition and blocks.
 
+That fail-closed guarantee is about the *decision*, not about arming. Blueprint review only blocks once a design doc has been flagged for review, and flagging has two paths: a doc written through `Write`/`Edit`/`MultiEdit` is pre-armed inside the pre-implementation gate itself, fail-closed (#347), while a doc created through Bash redirection is not — it is left to the PostToolUse `check-design-document.sh` detector, which by design never blocks a write and exits 0 on its own error. If that detector misses a Bash-created plan, nothing is armed and later implementation is not held back. That path is a documented best-effort residual, not a closed gate.
+
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
 | **Litmus (commit)** | `git commit` | Blocks the commit until code review passes |

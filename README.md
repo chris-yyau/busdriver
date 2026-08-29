@@ -7,42 +7,62 @@
 
 The adult supervision your AI coding agent didn't ask for but desperately needs.
 
-Busdriver is a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins) that consolidates pipeline process (brainstorming, planning, TDD, verification), domain tools (language patterns, reviewers, build resolvers), and enforcement gates (code review, design review) into one unified workflow orchestrator. Claude literally cannot talk its way out of it.
+Busdriver is a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins) that turns process into enforcement. It carries a 6-phase development pipeline, the review and dispatch orchestration around it, and a set of hook-backed gates that block the tool call itself. Claude literally cannot talk its way out of it.
 
 Think of it as the designated driver for your codebase — it won't let Claude leave the bar until the code review passes.
 
 ## What it does
 
-Busdriver enforces a 6-phase development pipeline and gates every commit and PR with automated review:
-
 | Phase | What happens |
 |-------|-------------|
 | **1. Brainstorming** | Explore intent, requirements, and design before writing code |
-| **2. Planning** | Produce TDD task lists with file paths, commands, expected output |
+| **2. Planning** | Produce task lists with file paths, commands, expected output |
 | **3. Worktree** | Create isolated git worktree, verify baseline tests pass |
-| **4. Execution** | Tests (TDD ordering advisory, opt-in via `/tdd`), code review, language-specific patterns |
+| **4. Execution** | Tests (TDD ordering advisory, opt-in via `/tdd`), code review, reviewer dispatch |
 | **5. Verification** | Build + lint + tests, security scan, specialist review agents |
 | **6. Finishing** | Commit (litmus-reviewed), PR or merge, worktree cleanup |
 
 Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Everything else goes through the full pipeline.
 
-### Gates (hook-enforced, cannot bypass)
+## Gates
+
+Seven hook-enforced gates. Most run as PreToolUse hooks, so a block rejects the tool call itself rather than asking Claude to comply — it cannot rationalize its way past one. Blueprint review is the exception: it runs after a plan is written and never blocks that write — it arms the pre-implementation gate, which refuses the next implementation write instead.
+
+Careful guard is advisory and raises a confirmation prompt instead of refusing. The refusing gates are built to fail closed, but the exact disposition of each — what happens when a hook errors, and which paths arm a gate in the first place — is a per-gate detail that belongs with the gate rather than here. Read [docs/observability.md](docs/observability.md) and `docs/adr/` before relying on a specific failure mode.
 
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
-| **Litmus** | `git commit` | Blocks commit until code review passes |
-| **Litmus (deep)** | `gh pr create` | Blocks PR until a Codex deep multi-lens pass + an independent read-only Opus Security/Bugs backstop both pass; the PR marker is refused without a fresh PASS backstop artifact matching `base...HEAD` |
-| **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
-| **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
-| **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |
+| **Litmus (commit)** | `git commit` | Blocks the commit until code review passes |
+| **Litmus (PR)** | `gh pr create` | Blocks the PR until a Codex deep multi-lens pass **and** an independent read-only Opus Security/Bugs backstop both pass. The PR marker is refused without a fresh PASS backstop artifact matching `base...HEAD` |
+| **Blueprint review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
+| **Pre-implementation** | `Write`/`Edit` of code files | Blocks writes while design docs lack `<!-- design-reviewed: PASS -->` |
+| **Pre-merge** | `gh pr merge` | Blocks the merge until pr-grind declares the PR clean at its live HEAD |
+| **Careful guard** | Destructive Bash (`rm -rf`, `git reset --hard`, …) | Raises a confirmation prompt |
+| **Freeze guard** | `.claude/freeze-scope.local` present | Restricts edits to the investigation scope during debugging |
 
-Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the tool call — Claude cannot rationalize its way past these.
+### Escape hatches
 
-### Domain reviewers
+The three review gates take a skip file. Each is gitignored and meant to be created by the operator, in their own terminal:
 
-Language pattern libraries and framework guides are no longer shipped — the model covers that (ADR 0048). What remains per domain is the reviewer or build-resolver agent the pipeline dispatches:
+```bash
+touch .claude/skip-litmus.local          # commit + PR review — single-use
+touch .claude/skip-design-review.local   # pre-implementation — lease: 20 writes / 1h
+touch .claude/skip-pr-grind.local        # pre-merge — deferred; see docs/observability.md
+```
 
-| Domain | Reviewer | Build Resolver |
+Consumption is logged to `.claude/bypass-log.jsonl`. Treat that log as a record of skip-file and merge-authorization activity, not as a complete audit of every gate execution — what each gate does and does not record varies (the litmus skip paths log best-effort: a failed write does not stop the bypass, so absence of a skip-consumption event is not proof that no litmus bypass occurred), and the event taxonomy in [docs/observability.md](docs/observability.md) is the source of truth.
+
+A file younger than 30 seconds is rejected. Treat that as a **timing heuristic, not an authentication boundary**: it raises the cost of an agent arming its own bypass inside a single turn, but nothing here establishes that a human created the file. Detection, not prevention.
+
+The old environment-variable bypasses (`SKIP_LITMUS`, …) were removed in [#325](https://github.com/chris-yyau/busdriver/pull/325) / ADR 0016: a committed `settings.json` `env` block is merged into the session, which made env-based skips a PR-injectable bypass lever. Gate env is now sanitized.
+
+Full consumption semantics, the audit event taxonomy, and the per-repo opt-in files are in **[docs/observability.md](docs/observability.md)**.
+
+## Reviewers and agents
+
+40 agents and 37 skills ship with the plugin. Language pattern libraries and framework guides do not — the model covers those (ADR 0048). What remains per domain is the reviewer or build-resolver the pipeline dispatches:
+
+| Domain | Reviewer | Build resolver |
 |--------|----------|---------------|
 | Python / FastAPI | `python-reviewer`, `fastapi-reviewer` | -- |
 | TypeScript / JS | `typescript-reviewer` | `build-error-resolver` |
@@ -50,21 +70,18 @@ Language pattern libraries and framework guides are no longer shipped — the mo
 | Database / SQL | `database-reviewer` | -- |
 | Security-sensitive changes | `security-reviewer` | -- |
 
-### Specialized agents
+Plus architect, planner, TDD guide, silent-failure hunter, type-design analyzer, and a 5-voice council for ambiguous decisions. They argue with each other so you don't have to. See `agents/` and `skills/` for the full inventory.
 
-Architect, planner, TDD guide, security reviewer, language-specific reviewers, build resolvers, council (5-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
+## Install
 
-### Skills and commands
+```bash
+claude plugin marketplace add github:chris-yyau/busdriver
+claude plugin install busdriver@busdriver
+```
 
-From brainstorming and planning through review gates, PR grinding, and merge — busdriver carries the pipeline; language and framework knowledge is left to the model (ADR 0048). See `skills/` for the full inventory.
+**Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** as the host harness. OpenCode is *not* supported — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as the Auditor-role review backend (`BUSDRIVER_REVIEW_CLI=opencode` is rejected for every other role).
 
-## Requirements
-
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — the host harness (required)
-
-OpenCode is **not** a supported host harness — the `opencode/` port was removed in [#251](https://github.com/chris-yyau/busdriver/pull/251) and must not be restored. The `opencode` CLI survives only as an optional review backend for the auditor / Mechanism Witness roles via `busdriver.json`.
-
-### Review CLI (configurable)
+## Review CLI
 
 Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
@@ -75,13 +92,24 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 | `agy` | Google Antigravity (`agy`) CLI — successor to the Gemini CLI |
 | `droid` | Droid CLI |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
-| `none` | Disable review gate (logs warning on every commit) |
+| `none` | Disable the review gate (logs a warning on every commit) |
 
-**Without any external CLI:** Auto-detection falls back to the built-in code-reviewer agent. All commits are still reviewed, but by the same model that wrote the code (less independent). Run `node scripts/doctor.js` to see your effective reviewer.
+`opencode` is accepted here too, but only for the Auditor role — it always runs the fixed read-only Auditor harness and is rejected for the ordinary review gate.
+
+**Without any external CLI:** auto-detection falls back to the built-in code-reviewer agent. Commits are still reviewed, but by the same model that wrote the code — less independent. Run `node scripts/doctor.js` to see your effective reviewer.
+
+### Optional CLIs
+
+| CLI | Used by | Install |
+|-----|---------|---------|
+| **[Codex](https://github.com/openai/codex)** | Review gate (default), blueprint review, council | `npm install -g @openai/codex` |
+| **[Antigravity (agy)](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review, `agy-read` dispatch lane | See the linked docs |
+| **Grok (xAI Grok Build)** | Council Researcher (default) | See xAI Grok Build docs |
+| **[Droid](https://droid.dev)** | Council Researcher fallback, pragmatist/critic fallback, any configurable role | See https://droid.dev |
 
 ### Per-role routing (optional)
 
-By default, all features share the same CLI. For per-role control, create `.claude/busdriver.json`:
+By default every feature shares one CLI. For per-role control, create `.claude/busdriver.json`:
 
 ```json
 {
@@ -97,9 +125,7 @@ By default, all features share the same CLI. For per-role control, create `.clau
 }
 ```
 
-Each route is an array — an ordered fallback chain (first element primary, later elements tried if primary is missing). Applies uniformly across `blueprint-review`, `litmus`, and `council` roles. For council, fallback preserves availability but dilutes role identity (e.g., Droid filling in as Pragmatist is no longer "Agy's strategic lens") — accept the trade-off when resilience matters more than signal purity, or append `"none"` as the terminal entry (e.g., `["agy", "none"]`) to keep the lens pure and let the voice drop when the primary is missing. Roles not listed inherit from `defaults` (which themselves chain to droid for council pragmatist/critic), so a bare single-element array like `["agy"]` will still fall back via the role's default chain. User-level defaults go in `~/.claude/busdriver.json`.
-
-> **Migration note:** If your `busdriver.json` contains `roundtable.pragmatist` or `roundtable.critic` keys, rename them to `council.pragmatist` and `council.critic` respectively. Old keys are silently ignored.
+Each route is an ordered fallback chain — first element primary, later elements tried if the primary is missing. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
 
 **Precedence:** env var > project config > user config > defaults > auto-detect
 
@@ -112,230 +138,48 @@ Each route is an array — an ordered fallback chain (first element primary, lat
 | Council | Critic | `council.critic` | codex |
 | Council | Researcher | `council.researcher` | grok (fallback: droid) |
 
-Council architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
+Council architect, skeptic, and the design-review arbiter are not configurable — they use Claude's Agent tool.
 
-Run `node scripts/doctor.js` to see your effective CLI for each role.
+For council, fallback preserves availability but dilutes role identity (Droid filling in as Pragmatist is no longer "Agy's strategic lens"). Append `"none"` as the terminal entry — `["agy", "none"]` — to keep the lens pure and let the voice drop instead. Architect always runs in-context and Skeptic usually runs, so the council normally convenes with two or more voices even with no external CLIs installed — the second voice is guaranteed only when the Skeptic dispatch succeeds. The core commit pipeline always works.
 
-### Optional CLIs for multi-model features
-
-| CLI | Used by | Install |
-|-----|---------|---------|
-| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, council | `npm install -g @openai/codex` |
-| **[Antigravity (agy) CLI](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review | See https://antigravity.google/docs/cli/ |
-| **Grok CLI (xAI Grok Build)** | Council Researcher (default) | See xAI Grok Build documentation for install |
-| **[Droid](https://droid.dev)** | Council Researcher fallback, pragmatist/critic fallback, any configurable role | See https://droid.dev |
-
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. Blueprint-review's *legacy defaults* (no `busdriver.json` present) try `agy` for reviewer_1 and `codex` for reviewer_2 first; if those are missing, the resolver falls through to Step 5 auto-detect (codex > agy > droid), so droid CAN serve as a final fallback even without a `busdriver.json`. The example config above adds explicit `droid` fallback in the route array — that's the faster path (avoids the auto-detect loop) and the recommended pattern. The council's *legacy defaults* DO chain explicitly to droid for pragmatist/critic (`agy → droid`, `codex → droid`); this trade-off is documented in `skills/council/SKILL.md` and can be opted out of with `["agy", "none"]` route arrays. Researcher tries grok first, then droid as fallback. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
-
-## Install
-
-```bash
-claude plugin marketplace add github:chris-yyau/busdriver
-claude plugin install busdriver@busdriver
-```
-
-## How it works
-
-Busdriver registers [PreToolUse and PostToolUse hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) that intercept tool calls at the harness level. The orchestrator skill routes every task to the correct pipeline phase and domain tools.
-
-### Architecture
-
-```
-Claude Code                        Busdriver Plugin
-───────────                        ────────────────
-
-  User task ──► Orchestrator routes to pipeline phase
-                    │
-                    ├─► Phase 1-2: brainstorming / writing-plans
-                    │     └─► Blueprint Review gates plan docs
-                    │
-                    ├─► Phase 3: git worktree isolation
-                    │
-                    ├─► Phase 4: tests + domain skills + code review
-                    │     ├─► Language patterns loaded by detection
-                    │     ├─► Tests required; TDD ordering advisory (opt-in via /tdd)
-                    │     └─► {lang}-reviewer agent reviews every task
-                    │
-                    ├─► Phase 5: verification loop
-                    │     ├─► build + lint + tests
-                    │     └─► security-reviewer if auth/input/API touched
-                    │
-                    └─► Phase 6: finishing
-                          ├─► git commit ──► Litmus (fast)
-                          └─► gh pr create ──► Litmus (deep: Codex lead + 1 Opus backstop)
-
-  Gate hooks (PreToolUse):
-    ├── pre-commit gate ──► blocks until litmus review passes
-    ├── pre-PR gate ──► blocks until deep review passes
-    ├── pre-implementation gate ──► blocks code while plans unreviewed
-    └── freeze/guard ──► restricts edits during debugging
-
-  PostToolUse hooks:
-    ├── design doc detector ──► flags docs for review
-    ├── go post-edit ──► gofmt/goimports/go vet
-    └── post-commit cleanup ──► consumes review markers
-```
-
-### Skip / bypass
-
-Gates have escape hatches for when you need them:
-
-```bash
-# Skip litmus review — pre-commit + pre-PR (single-use, 30s self-bypass detection)
-touch .claude/skip-litmus.local
-
-# Skip design review — pre-implementation (LEASE: 20 uses / 3600s, 30s self-bypass detection)
-touch .claude/skip-design-review.local
-
-# Skip pr-grind — pre-merge (DEFERRED consumption: file is preserved if
-# `gh pr merge` fails, --auto queues, or output is ambiguous; consumed only
-# on confirmed merge success. The 1h expiry is anchored to the original
-# touch (the 3600s clock does NOT reset on a failed-merge release). 30s
-# self-bypass detection still applies.)
-# Note: use an EXPLICIT PR number (`gh pr merge 42`) — the auto-detect
-# path `gh pr merge` with no PR records `merge_pr=unknown`. The merge
-# still proceeds (the gate already authorized it), but confirmation
-# refuses to consume the bypass token: the audit log will show
-# `skip-pr-grind-released-mismatch` instead of `-consumed`, and the skip
-# file remains valid until 1h after the original touch.
-touch .claude/skip-pr-grind.local
-
-# NOTE: the old environment-variable bypass (`export SKIP_LITMUS=1`, etc.) was
-# REMOVED in #325 / ADR 0016. A committed `.claude/settings.json` `env` block is
-# merged into the session, so an env-based skip was a PR-injectable gate-bypass
-# lever. Gate env is now sanitized (`env -i` + allowlist at the hook entry); the
-# gitignored, operator-created `.local` skip files above are the only escape hatch.
-
-# Per-repo opt-in (NOT a skip-file — operator-consent file): treat
-# `--admin-on-approver-gap` as implicit for pr-grind when you are
-# structurally the sole approval-capable human on this repo (i.e., the
-# only non-bot collaborator with write/maintain/admin — `permissions.push
-# == true`). The merge still runs through pr-grind's full eligibility
-# check (CI green, bots ack, author admin/maintain, bypass-audit.yml
-# present) AND a live check that HUMAN_ADMIN_COUNT==1 AND you are that
-# sole approval-capable human. The opt-in self-revokes if a second
-# approval-capable human appears — a contractor with write permission
-# alone is enough to invalidate it. Logged with a distinct event.
-touch .claude/pr-grind-auto-admin-solo.local
-```
-
-`skip-litmus.local` is single-use (consumed after one bypass). `skip-design-review.local` is a **lease** (#519 / ADR 0031): one `touch` authorizes 20 gated writes within 3600s, because implementing one approved plan takes ~10 gated writes and a single-use hatch pushed operators toward deleting marker tokens instead — destroying the gate's own audit trail. Only genuinely gated operations spend a use (a read-only `ls` or an exempt write does not), every use is logged with the slot it claimed, and the lease expires. To release ONE pending design-review token with a durable audit event rather than using the hatch, run `scripts/design-clear.sh`. `skip-pr-grind.local` uses deferred consumption — it is consumed only on a merge confirmed against the GitHub API (`gh pr view <PR> --json state` = `MERGED`, the same authority pr-grind uses; CLI success patterns are the offline fallback), and preserved when the PR is not merged and the merge was not accepted: a real refusal, or an unanswerable query (#664). An accepted `--auto` queue spends it — GitHub will land that merge with no further hook event to confirm. A merge steered at another repo/host (`-R`/`--repo`/`GH_REPO=`) — which the gate's skip branch allows — cannot be confirmed from this checkout, so it spends the token rather than leaving it armed. All bypasses log to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
-
-The `pr-grind-auto-admin-solo.local` file is **not** a skip-file: it doesn't bypass any gate. It only changes pr-grind's behavior when the approver-gap detector would otherwise surface the operator-decision dialog — and only when the structural sole-admin assumption still holds at merge time. The file is durable (no single-use semantics) but **the 30s anti-self-bypass window still applies, anchored at pr-grind invocation start**: pr-grind's Step 0 writes a per-PR snapshot of the file's mtime to `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (0600 perms) ONLY when the opt-in file is already ≥30s old at that moment; the Completion auto-merge fires only when (1) the per-PR snapshot exists, (2) its recorded mtime still matches the live opt-in file's mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (so a same-NOW forge — attacker creating both files in one action — cannot satisfy the gate). The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on a shared snapshot. A mid-run touch (no snapshot) or mid-run replacement (mtime mismatch) invalidates the opt-in for that run. This defeats the "touch at start of a slow pr-grind run, exceed 30s by Completion time" attack that a flat-at-Completion check would allow. Opt in once via terminal, wait 30s, and any future pr-grind invocation honors it. **Note on scope:** the opt-in self-revokes when there is more than one approval-capable human (write/maintain/admin), not just more than one admin — a contractor with write permission alone is enough to invalidate it.
+> **Migration note:** `roundtable.pragmatist` / `roundtable.critic` were renamed to `council.*`. Old keys are silently ignored.
 
 ## Utility scripts
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/release.sh VERSION` | Bump version across manifests, generate changelog, tag, and push |
-| `scripts/bump-version.sh VERSION` | Config-driven version bump with drift detection and repo audit |
-| `scripts/generate-changelog.sh` | Generate CHANGELOG.md from conventional commits (`--full`, `--dry-run`) |
-| `scripts/post-ship-doc-check.sh` | Check for stale docs after code changes (6 heuristic rules) |
-| `scripts/litmus-metrics-report.sh` | Dashboard for litmus review outcomes (pass rate, severity, trends) |
-| `node scripts/doctor.js` | Diagnose CLI availability and effective reviewer configuration |
-
-## Observability
-
-Every gate execution writes to a persistent JSONL log per project, so you can answer questions like *"what's litmus's pass rate?"* or *"how often do I bypass and why?"* without digging through session history.
-
-| File (per project) | Who writes | What it captures |
-|--------------------|-----------|------------------|
-| `.claude/review-metrics.jsonl` | litmus | Review outcome (PASS/FAIL), issue count, severity breakdown, iteration, CLI used, mode, commit SHA, branch, diff size |
-| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). Env-var bypasses (`SKIP_LITMUS`, `SKIP_PR_GRIND`) were removed in #325 / ADR 0016 — only the audited, file-based skips remain |
-
-**Event types written to `bypass-log.jsonl`:**
-
-All three pre-merge **allow** paths (`skip-pr-grind-claimed`, `pr-grind-clean-merge`, `bootstrap-merge`) record through one helper that **fails CLOSED**: if the record cannot be appended, the gate blocks instead of authorizing an unlogged merge (#667). That is what makes the *absence* of a record meaningful. Be precise about the claim: these record **authorized attempts**, so a blocked attempt is also recordless — the gate saw it and refused. What absence shows is that the gate never *authorized* a merge. (One narrow exception in the other direction: the skip path records before writing its `.merge-bypass-pending.local` claim — deliberately, so a refused record has no unlink to roll back through a possibly-symlinked parent — so if that claim write then fails, a `skip-pr-grind-claimed` event survives for a merge the gate went on to block. Over-recording a visibly blocked attempt is the harmless direction, and nothing reads these events as authorization.) Combined with GitHub reporting the PR merged, absence means it merged without gate authorization — typically from a shell outside Claude Code, where no PreToolUse hook fires by design. Detection, not prevention: nothing here can observe an out-of-harness merge.
-
-| Event | Source | Meaning |
-|-------|--------|---------|
-| `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
-| `skip-marker-cleared` | `scripts/design-clear.sh --skip <name>` | A drainable spent skip file or consumed review artifact (`skip-litmus.local`, `skip-design-review.local`, `litmus-passed.local`, `pr-review-passed.local`, the two PR `.local.json` verdicts) was released. Removal makes the next gate STRICTER, never looser — that direction is the whole membership test for the allowlist |
-| `skip-marker-clear-failed` | `scripts/design-clear.sh --skip <name>` | The `skip-marker-cleared` event was already written (audit first, unlink second) but the removal did not complete or could not be verified — the unlink failed, or the state directory changed under the descriptor afterwards so the result is unprovable. The audit log's correction that the release did not take effect |
-| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written. (Cutover note: prior to v1.41.x, the consumed event was logged here with `gate:"pre-merge"`; from v1.41.x onward `skip-pr-grind-consumed` is logged at PostToolUse with `gate:"post-merge"`.) |
-| `skip-pr-grind-consumed` | post-merge cleanup hook (PostToolUse) | The PR is confirmed merged AND tamper checks passed — the claim was honored and the skip file was deleted. `reason` records how success was confirmed: `github-api-state-merged` (authoritative `gh pr view --json state`, the normal path since #664 — gh prints its `Squashed and merged` line only on a TTY, and its exit code is unreliable with `--delete-branch`), `cli-pattern-merged` when gh's own output confirmed it (a TTY, or stderr), `cross-repo-merge-unverifiable-token-spent` for a merge steered at another repo/host (this checkout's same-numbered PR is a different pull request, so it is not queried at all — the token is spent rather than left armed, and the operator re-touches if that merge failed), or `auto-merge-accepted-token-spent` for an accepted `--auto` queue |
-| `skip-pr-grind-released` | post-merge cleanup hook (PostToolUse) | `gh pr merge` failed AND the GitHub API does not report the PR `MERGED`; the claim was discarded and the skip file was preserved for retry. A local failure after GitHub already merged the PR (the `--delete-branch` worktree-conflict shape) does NOT hit this path — it is reclassified `success` (`reason: github-api-state-merged`) and emits `skip-pr-grind-consumed` instead |
-| `skip-pr-grind-released-auto-queued` | post-merge cleanup hook (PostToolUse) | **Retired in #664 — no longer emitted.** An accepted `gh pr merge --auto` queue now consumes the token (`reason: auto-merge-accepted-token-spent`): GitHub lands that merge with no second PostToolUse event, so nothing could ever confirm it and preserving left a spent bypass armed. Historical entries keep their original meaning (skip file was preserved) |
-| `skip-pr-grind-released-ambiguous` | post-merge cleanup hook (PostToolUse) | Tool output matched neither success nor failure pattern AND the GitHub API did not answer `MERGED` (unreachable, unauthenticated, or the PR really is not merged); fail-safe: skip file preserved |
-| `skip-pr-grind-released-tampered` | post-merge cleanup hook (PostToolUse) | The skip file disappeared, its mtime changed between claim and confirm, or it was younger than 30s at confirmation. Anti-self-bypass re-applied at consumption; skip file preserved (or absent, in the deleted case) |
-| `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim, OR either side could not be concretely identified (the auto-detect path where `gh pr merge` runs without an explicit PR number records `merge_pr=unknown` and is refused at confirmation time to prevent cross-PR token reuse via branch-switching between claim and confirm). Skip file preserved |
-| `skip-pr-grind-released-malformed` | post-merge cleanup hook (PostToolUse) | Pending claim file failed structural validation (non-numeric mtime, malformed PR number). Skip file preserved |
-| `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
-| `pr-grind-admin-on-approver-gap` | pr-grind skill (Completion) | Operator passed `--admin-on-approver-gap` to pr-grind and all eligibility gates (CI green, bots ack, author admin/maintain, `bypass-audit.yml` present) held. `gh pr merge --squash --delete-branch --admin` was run; entry captures PR, branch, author, perm, required-approver count, human approvals at decision time, and head SHA |
-| `pr-grind-admin-on-approver-gap-solo-admin-auto` | pr-grind skill (Completion) | Same merge as `pr-grind-admin-on-approver-gap`, but triggered by the per-repo `.claude/pr-grind-auto-admin-solo.local` opt-in file plus a live structural check that `HUMAN_ADMIN_COUNT==1` and the author is that sole admin. Entry additionally records `human_admin_count` so a later audit can detect if the repo's admin roster changed post-merge |
-| `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
-| `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
-| `codex-droid-fallback` | litmus CLI (`resolve-cli.sh _execute_codex`) | Codex exhausted retries on transient errors (rate-limit / network / 5xx); escalated to `droid exec` (default read-only mode) before falling back to builtin. Logged on every escalation regardless of droid outcome. Disable with `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` |
-| `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |
-| `short-circuit-pass` | litmus commit mode | Diff met all short-circuit criteria; Codex skipped |
-| `pr-fast-bypass` | litmus PR mode | `LITMUS_PR_FAST=1` skipped multi-agent review |
-| `pr-grind-clean-merge` | pre-merge gate | PR merge authorized on the normal path — a fresh `pr-grind-clean.local` for this PR, its head SHA matching the PR's live HEAD, and relevant CI green. Records `pr` and the reviewed `head` SHA. Added in #667: this path previously authorized silently, so the merge nearly every PR takes left no trace and was indistinguishable afterwards from one the gate never saw. Attempt-time, like its two siblings: it records that the gate authorized the merge, not that GitHub completed it |
-| `bootstrap-merge` | pre-merge gate | PR merge allowed via bootstrap bypass for gate-config PRs |
-| `builtin-review-accepted` | post-commit marker consumer | Builtin-agent review (not Codex) was accepted for a commit |
-| `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc) |
-| `seatbelt-skip` | seatbelt plugin (cross-tool — not emitted by busdriver itself) | Scanner skipped via `SKIP_SEATBELT` or `SKIP_<SCANNER>` (only present if the seatbelt plugin is installed) |
-
-**Dashboard for review metrics:**
-
-```bash
-# Full dashboard — pass rate, severity distribution, avg iterations, time trends
-bash scripts/litmus-metrics-report.sh
-
-# Recent runs (last N)
-bash scripts/litmus-metrics-report.sh --recent 10
-
-# Raw JSONL for custom analysis
-bash scripts/litmus-metrics-report.sh --raw
-```
-
-**Reviewing bypasses:**
-
-```bash
-# Last 10 bypass events
-tail -10 .claude/bypass-log.jsonl | jq .
-
-# Count bypasses by event type
-jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
-
-# Did the gate authorize PR 666's merge? (#667 — no output means it never did.
-# If GitHub says the PR is merged, it merged without gate authorization; check
-# whether it was merged from a shell outside Claude Code, where no PreToolUse
-# hook fires. A blocked attempt is also recordless, so absence alone does not
-# distinguish "never attempted" from "attempted and refused".)
-jq -r --arg pr 666 'select(.gate == "pre-merge" and (.pr | tostring) == $pr)
-  | "\(.ts) \(.event)"' .claude/bypass-log.jsonl
-
-# Seatbelt scanner bypasses (which scanner + env var)
-jq -r 'select(.event == "seatbelt-skip") | "\(.scanner) via \(.reason) at \(.ts)"' .claude/bypass-log.jsonl
-```
-
-Use these monthly to identify drift — scanners you keep bypassing (candidates for tuning or removal), reviews that consistently FAIL on iteration 1 (candidate for preventive feedback), or persistent short-circuit patterns (might warrant raising the threshold).
+| `node scripts/doctor.js` | Diagnose CLI availability and the effective reviewer for each role |
+| `scripts/design-clear.sh` | Release a pending design-review token with a durable audit event |
+| `scripts/litmus-metrics-report.sh` | Dashboard for litmus outcomes (pass rate, severity, trends) |
+| `scripts/release.sh VERSION` | Bump version across manifests, commit, tag, push (changelog is a separate step) |
+| `scripts/bump-version.sh --check` | Version drift detection (also runs in CI) |
+| `scripts/generate-changelog.sh` | Generate CHANGELOG.md from conventional commits |
+| `scripts/post-ship-doc-check.sh` | Flag stale docs after code changes |
 
 ## Learning system
 
-Busdriver learns from its mistakes:
-
-- **Instincts** — Observed patterns from sessions, promoted after human review
-- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Agy + Codex + Grok, with Droid as universal fallback)
-- **Lesson capture** — When review finds HIGH+ issues the plan missed, lessons are saved automatically
-- **Reflection** — Manual `/reflect` skill for capturing corrections and feedback
+- **Instincts** — patterns observed from sessions, promoted after human review
+- **Council** — 5-voice analysis (Architect, Skeptic, Pragmatist, Critic, Researcher)
+- **Lesson capture** — when review finds HIGH+ issues the plan missed, the lesson is saved automatically
+- **Reflection** — `/reflect` for capturing corrections by hand
 
 ## Credits
 
-Built on the shoulders of:
-- **[Superpowers](https://github.com/obra/superpowers)** by Jesse Vincent — the pipeline backbone
-- **[Everything Claude Code](https://github.com/affaan-m/everything-claude-code)** by Affaan Mustafa — domain tools, hooks, and agents
-- **[gstack](https://github.com/garrytan/gstack)** by Garry Tan — supplement patterns for security audit, QA, anti-sycophancy, and design quality
-- **[Ralphinho RFC Pipeline](https://github.com/humanplane)** — multi-agent DAG execution and multi-model gate review patterns
+Busdriver is built on two upstream projects, and still carries their code directly — 319 files at last count, tracked file-by-file in `.upstream-sources.json` and kept current by the `sync-upstream` tooling:
+
+- **[Superpowers](https://github.com/obra/superpowers)** (MIT) by Jesse Vincent — the pipeline backbone: brainstorming, planning, systematic debugging, worktrees, verification, skill authoring
+- **[Everything Claude Code](https://github.com/affaan-m/everything-claude-code)** (MIT) by Affaan Mustafa — agents, commands, hooks, session and install tooling
+
+Smaller borrowings are credited where they land: `skills/grill-me/` comes from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT) and is tracked in the same manifest; `careful-guard.sh` names its gstack ([garrytan/gstack](https://github.com/garrytan/gstack), MIT) origin in its header, and each supplement in `skills/supplements/` records its source in frontmatter.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+See [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

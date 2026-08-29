@@ -56,6 +56,8 @@ A file younger than 30 seconds is rejected. Treat that as a **timing heuristic, 
 
 The old environment-variable bypasses (`SKIP_LITMUS`, …) were removed in [#325](https://github.com/chris-yyau/busdriver/pull/325) / ADR 0016: a committed `settings.json` `env` block is merged into the session, which made env-based skips a PR-injectable bypass lever. Gate env is now sanitized.
 
+That closed the `env` lever, not the settings file. A committed `.claude/settings.json` can still switch the gates off wholesale: `disableAllHooks: true` is honoured from repository-controlled settings and silences every hook, exec-form registrations included (measured — see the probe table in [ADR 0049](docs/adr/0049-hook-exec-form-launch-boundary.md), where it is recorded as residual **R1**). No plugin can close it, because no hook runs to do the closing. Treat it as a **platform limit**: the mitigations are all out-of-repo — a global `core.hooksPath`, branch protection's required checks, and reading a PR's settings diff before checking the branch out. `tests/test-disable-all-hooks-r1.sh` pins busdriver's own tree clean of the key; that protects this repository, not yours.
+
 Full consumption semantics, the audit event taxonomy, and the per-repo opt-in files are in **[docs/observability.md](docs/observability.md)**.
 
 ## Reviewers and agents

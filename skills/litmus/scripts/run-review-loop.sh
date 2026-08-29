@@ -1138,9 +1138,28 @@ else
     # the patterns actually applied are the ones that were verified. Assigned here (not
     # exported) immediately before the source, so any ambient value is overwritten.
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
+    # PROVE the parser honoured the pin; do not assume it. The logic is materialised
+    # from the anchor commit, and in PR mode that is the MERGE BASE — a version that
+    # predates this override and therefore reads the branch's LIVE policy instead. A PR
+    # could then commit a wildcard exclusion, hide its own diff, and reach the
+    # excluded-only auto-pass even though the safe base policy was pinned correctly.
+    #
+    # Append a sentinel pattern to the pinned copy and look for it in the built args: it
+    # can only appear if the parser actually read the pinned file. Absent ⇒ this logic
+    # does not support pinning ⇒ its patterns came from an unverified source ⇒ use none.
+    # The sentinel itself is inert (it excludes a path name nothing can have).
+    _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
+    if [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]; then
+      printf '%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+    fi
     # shellcheck source=lib/exclude-generated.sh
     source "$EXCL_LOGIC_SOURCE"
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    if [ -n "${EXCL_POLICY_SOURCE:-}" ] && [[ " ${REVIEW_EXCLUDE_ARGS[*]-} " != *":(exclude)$_excl_probe"* ]]; then
+      echo "⚠️  The exclusion parser at the review anchor does not support a pinned policy" >&2
+      echo "    (it would read the live, unverified one) — reviewing with NO exclusions" >&2
+      REVIEW_EXCLUDE_ARGS=()
+    fi
   fi
   # Unconditional: verify_exclusion_policy can succeed (leaving a pinned temp) and
   # verify_exclusion_logic then fail, and the source itself can fail — both paths

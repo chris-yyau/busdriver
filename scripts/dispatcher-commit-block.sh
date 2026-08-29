@@ -927,9 +927,18 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # staged content ⇒ stale or mismatched marker ⇒ bail.
     # shellcheck source=/dev/null
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
+    # Same sentinel probe as the producer: the logic is sourced from the anchor commit,
+    # and a version predating the pin override would silently read the live policy.
+    _excl_probe="__busdriver_pin_probe_$$_${RANDOM}"
+    if [[ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]]; then
+        printf '%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+    fi
     # shellcheck source=/dev/null
     . "$_excl_logic_source" || \
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
+    if [[ -n "${EXCL_POLICY_SOURCE:-}" ]] && [[ " ${REVIEW_EXCLUDE_ARGS[*]-} " != *":(exclude)$_excl_probe"* ]]; then
+        emit_bail "judgment" "the exclusion logic at the review anchor does not honour a pinned policy, so its patterns would come from the live, unverified review-exclude; refusing the excluded-only marker"
+    fi
     _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
     [[ -n "${EXCL_POLICY_PINNED_TMP:-}" ]] && rm -f "$EXCL_POLICY_PINNED_TMP"
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"

@@ -549,6 +549,15 @@ else
     bad "exclusion guards do not share a pinned base (producer $prod_pol/$prod_log, dispatcher $disp_pol/$disp_log)"
 fi
 
+# The pinned policy is only worth something if the parser actually read it. The logic
+# is sourced from the ANCHOR commit, which in PR mode predates this override, so an
+# unverified live policy would be used silently. Both callers must PROVE the pin took.
+if grep -q '_excl_probe=' "$PRODUCER" && grep -q '_excl_probe=' "$DISPATCHER"; then
+    ok "both callers prove the exclusion parser honoured the pinned policy"
+else
+    bad "no sentinel probe — an older parser would silently read the live policy"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

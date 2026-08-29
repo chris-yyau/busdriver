@@ -1457,6 +1457,13 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     ''|*[!0-9]*) _staged_diff_max=10485760 ;;
     ??????????????????*) _staged_diff_max=10485760 ;;
   esac
+  # CLAMP. The variable is ENV — repo-injectable via a committed settings.json `env`
+  # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
+  # disable this guard outright. The override may LOWER the cap; it may never raise it
+  # past what the guard exists to bound.
+  if [ "$_staged_diff_max" -gt 67108864 ]; then
+    _staged_diff_max=67108864
+  fi
   if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
     echo "❌ Branch diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
     echo "   Split the PR, or exclude the large binary via $STATE_DIR/review-exclude." >&2
@@ -1577,6 +1584,13 @@ else
     ''|*[!0-9]*) _staged_diff_max=10485760 ;;
     ??????????????????*) _staged_diff_max=10485760 ;;
   esac
+  # CLAMP. The variable is ENV — repo-injectable via a committed settings.json `env`
+  # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
+  # disable this guard outright. The override may LOWER the cap; it may never raise it
+  # past what the guard exists to bound.
+  if [ "$_staged_diff_max" -gt 67108864 ]; then
+    _staged_diff_max=67108864
+  fi
   if [ "${_staged_diff_bytes:-0}" -gt "$_staged_diff_max" ]; then
     echo "❌ Staged diff is ${_staged_diff_bytes} bytes with binary content rendered as text (cap ${_staged_diff_max})." >&2
     echo "   Split the commit, or exclude the large binary via $STATE_DIR/review-exclude." >&2
@@ -2103,7 +2117,18 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
   #     history).
   # #576: pinned base — the short-circuit decides whether ANY reviewer runs, so it
   # must classify the same two endpoints the marker names.
-  SC_PATHS=$(git diff --cached --name-only --no-renames ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null || true)
+  # PINNED, and NOT `|| true`. This list decides whether any reviewer runs at all, so it
+  # has to see exactly what the marker will bind. `diff.ignoreSubmodules=all` omits a
+  # staged gitlink here while REVIEWED_DIFF_HASH deliberately includes it
+  # (--ignore-submodules=none) — so a gitlink change alongside a passive doc change would
+  # be classified as prose-only, take the no-review short-circuit, and be authorized by a
+  # marker covering content nobody saw. A failed diff emitting partial stdout produces the
+  # same incomplete scope, which is why the failure is a refusal rather than an empty list.
+  if ! SC_PATHS=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --ignore-submodules=none --name-only --no-renames ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null); then
+    echo "❌ Could not classify staged paths for the short-circuit — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 
   if [[ -n "$SC_PATHS" ]]; then
     set +e

@@ -2124,7 +2124,7 @@ def _process_substitutions(s):
 _psub_budget = [_MAX_SCAN_TOKENS]
 
 
-def _any_reads_program_from_stdin(texts):
+def _any_reads_program_from_stdin(texts, seen):
     """Might any of these stages run a program it reads from stdin?
 
     CHARGED before each call, for the reason `_piped_shell_producers` records at its own
@@ -2133,12 +2133,27 @@ def _any_reads_program_from_stdin(texts):
     Exhaustion answers True, so an unfinished scan widens rather than narrows; the caller
     turns an exhausted walk into the whole-command scan, which is the same best-effort exit
     this module already takes for an unreadable command.
+
+    `seen` MEMOIZES across the caller's two walks, and it is not an optimization. The
+    splitter tears a substitution body out as its own segment, so an OUTPUT body is
+    normally already in the segment list the INPUT walk covers -- charging it twice
+    reintroduced, inside this budget, exactly the double-accounting the budget was split
+    off to remove: a command carrying both directions could exhaust the allowance while
+    still under the documented 4,000-token limit, and the exhausted exit then raw-scans the
+    whole command. Memoizing the ANSWER, not just the charge, is what makes the dedup real:
+    the charge exists to bound `_may_read_program_from_stdin`, so skipping one without the
+    other would bound nothing.
     """
     for t in texts:
+        if t in seen:
+            if seen[t]:
+                return True
+            continue
         _psub_budget[0] -= len(t.split())
         if _psub_budget[0] < 0:
             return True
-        if _may_read_program_from_stdin(t):
+        seen[t] = _may_read_program_from_stdin(t)
+        if seen[t]:
             return True
     return False
 
@@ -2169,10 +2184,10 @@ def _procsub_producers(pairs, whole, subs):
     ins, outs, ok = subs
     if not ok:
         return [whole]                    # unreadable: fail CLOSED, scan it all
-    out = []
-    if ins and _any_reads_program_from_stdin([seg for _op, seg in pairs]):
+    out, seen = [], {}
+    if ins and _any_reads_program_from_stdin([seg for _op, seg in pairs], seen):
         out.extend(ins)
-    if outs and _any_reads_program_from_stdin(outs):
+    if outs and _any_reads_program_from_stdin(outs, seen):
         out.append(whole)
     if _psub_budget[0] < 0 and whole not in out:
         # The candidate walk ran out mid-command, so what it did NOT reach is unexamined

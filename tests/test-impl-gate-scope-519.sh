@@ -3719,6 +3719,23 @@ for ((_i = 0; _i < 2000; _i++)); do BIG_ARGS="$BIG_ARGS file${_i}.txt"; done
 check "a long benign command with a substitution keeps its full token budget" allow \
     "$(bash_decision "grep -f <(echo pat)$BIG_ARGS")"
 unset BIG_ARGS
+# ...and the two candidate walks must not charge the SAME text twice. The splitter tears a
+# substitution body out as its own segment, so an output body is normally already in the
+# segment list the input walk covers -- charging it again reintroduced the double-accounting
+# inside the very budget that was split off to remove it. Both directions, both under the
+# limit, and benign.
+# Asserted against the CLASSIFIER, for the same reason as the sibling above: the gate's own
+# whole-command redirect check blocks every `>` spelling regardless, so only the classifier
+# can show whether the budget was double-charged.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+big = " ".join("a%d" % i for i in range(1900))
+print(cmdword.is_file_mod(
+    "grep -n \047rm -rf src\047 notes.txt <(echo pat) > >(sed -n 1p " + big + ")"))')" == "False" ]]; then
+    ok "a command carrying BOTH substitution directions is charged once"
+else
+    no "a command carrying BOTH substitution directions is charged once" "classifier returned True"
+fi
 
 echo "── property checks over the splitter and the producer scan ──"
 # Everything above is a FIXED case, generated or hand-written, so it only ever probes the

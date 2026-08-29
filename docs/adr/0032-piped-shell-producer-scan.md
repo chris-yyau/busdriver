@@ -504,7 +504,13 @@ because each is a rule this ADR already states, missed on the NEW transport:
   holding a `<(`, and flipping a benign 2,004-token
   `grep -f <(echo pat) file0.txt … file1999.txt` from allow to block for a walk that emitted
   no producer at all. It has its own allowance now; exhaustion takes the whole-command scan,
-  the same best-effort exit an unreadable command already takes.
+  the same best-effort exit an unreadable command already takes. A later round found the
+  *same* double-accounting reproduced INSIDE that new allowance — the splitter tears a
+  substitution body out as its own segment, so an output body is normally already in the
+  segment list the input walk covers, and charging it twice let a command carrying both
+  directions exhaust the budget while still under the limit. The two walks share a memo of
+  the ANSWER, not merely of the charge: the charge exists to bound the walk, so skipping one
+  without the other would bound nothing.
 
 A third came back from the pre-commit pass, and it is the *same* mistake one layer in: the
 new backtick branch was ordered AFTER the double-quote one, so it was unreachable from a

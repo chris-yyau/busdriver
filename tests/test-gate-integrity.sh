@@ -47,6 +47,11 @@ fresh_fixture() {  # rebuild the fixture tree + its lock from the live tree
     mkdir -p "$_fix/hooks" "$_fix/scripts"
     cp -R "$REPO_ROOT/hooks/gate-scripts" "$_fix/hooks/gate-scripts"
     cp -R "$REPO_ROOT/scripts/hooks" "$_fix/scripts/hooks"
+    # A real repository: the script requires a queryable index rather than inferring
+    # its absence, so every fixture is one.
+    git -C "$_fix" init -q 2>/dev/null
+    git -C "$_fix" config user.email t@t.invalid 2>/dev/null
+    git -C "$_fix" config user.name t 2>/dev/null
     "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null
 }
 
@@ -307,6 +312,17 @@ if [[ -n "$_repo" && -d "$_repo" ]]; then
     fi
     "$GATE_INTEGRITY" --root "$_repo" --update >/dev/null 2>&1
     assert "$(( $? == 0 ? 1 : 0 ))" "↳ and --update refuses to record a tree with tracked bytecode"
+    # An INHERITED `tracked_pyc` must not stand in for the query: `${tracked_pyc+x}`
+    # used to gate the `git ls-files` call, so an exported empty value had a detected
+    # repository skip it. Asserted HERE, on a tree that DOES have tracked bytecode —
+    # against a clean tree the check returns OK either way and proves nothing.
+    _out="$(tracked_pyc="" "$GATE_INTEGRITY" --root "$_repo" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"marker_ops.cpython-314.pyc"* ]]; then
+        assert 0 "↳ an exported tracked_pyc does not stand in for the index query"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ an exported tracked_pyc does not stand in for the index query"
+    fi
     rm -rf "$_repo"
 else
     assert 1 "a TRACKED .pyc under a locked directory fails the check (no fixture tempdir)"
@@ -326,6 +342,85 @@ if [[ "$_mode" == "0o644" ]]; then
 else
     printf '  ↳ mode: %s\n' "$_mode"
     assert 1 "--update writes a 0644 lock (mkstemp's 0600 is not handed to a tracked file)"
+fi
+
+# A root BELOW the repository top level has no `.git` of its own, so a marker-only
+# test would read it as "not a repository" and skip the check entirely. The probe
+# is what recognises it — this is the regression that shape caused.
+_sub="$(mktemp -d)"
+if [[ -n "$_sub" && -d "$_sub" ]]; then
+    git -C "$_sub" init -q 2>/dev/null
+    git -C "$_sub" config user.email t@t.invalid 2>/dev/null
+    git -C "$_sub" config user.name t 2>/dev/null
+    mkdir -p "$_sub/nested/hooks" "$_sub/nested/scripts"
+    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_sub/nested/hooks/gate-scripts"
+    cp -R "$REPO_ROOT/scripts/hooks" "$_sub/nested/scripts/hooks"
+    mkdir -p "$_sub/nested/hooks/gate-scripts/lib/__pycache__"
+    printf 'unchecked hash-based bytecode\n' \
+        > "$_sub/nested/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc"
+    git -C "$_sub" add -f nested/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc 2>/dev/null
+    _out="$("$GATE_INTEGRITY" --root "$_sub/nested" --check 2>&1)"
+    if [[ "$_out" == *"marker_ops.cpython-314.pyc"* || "$_out" == *"TRACKED"* ]]; then
+        assert 0 "↳ a root BELOW the repo top level is still recognised as a repository"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ a root BELOW the repo top level is still recognised as a repository"
+    fi
+    rm -rf "$_sub"
+else
+    assert 1 "↳ a root BELOW the repo top level is still recognised as a repository (no tempdir)"
+fi
+
+# ── 4g. A checkout whose index cannot be queried fails closed ─────────────────
+# The tracked-bytecode check is the ONLY cover for the .pyc files the digest
+# omits, so "the git probe failed, assume not a repository" would silently retire
+# it on an absent git binary or unreadable metadata. Presence of `.git` — not the
+# probe succeeding — is what says a real checkout is here.
+fresh_fixture
+rm -rf "$_fix/.git"; printf 'not a git directory\n' > "$_fix/.git"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+if [[ $? -ne 0 && "$_out" == *"no queryable git repository"* ]]; then
+    assert 0 "a checkout with an UNQUERYABLE index fails closed (not read as 'no repository')"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "a checkout with an UNQUERYABLE index fails closed (not read as 'no repository')"
+fi
+rm -rf "$_fix/.git"
+
+# A DANGLING `.git` symlink is the same case wearing the shape `-e` cannot see:
+# `-e` follows the link and is false, so a bare `-e` test reads unqueryable
+# metadata as "no repository" and skips the check.
+rm -rf "$_fix/.git"; ln -s "$_fix/nonexistent-git-dir" "$_fix/.git"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+if [[ $? -ne 0 && "$_out" == *"no queryable git repository"* ]]; then
+    assert 0 "↳ a DANGLING .git symlink fails closed too (-e alone would miss it)"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a DANGLING .git symlink fails closed too (-e alone would miss it)"
+fi
+rm -rf "$_fix/.git"
+
+# ── 4h. A broken or absent git fails closed ───────────────────────────────────
+# With git unavailable the probe fails for a reason that proves nothing, and a root
+# below the repository top level legitimately has no `.git` marker — so a
+# probe-then-marker shape falls straight through and disables the check. `git
+# --version` covers both "not installed" and "broken binary"; a stub that exits 1
+# drives the second.
+fresh_fixture
+_stub="$(mktemp -d)"
+if [[ -n "$_stub" && -d "$_stub" ]]; then
+    printf '#!/bin/sh\nexit 1\n' > "$_stub/git"
+    chmod +x "$_stub/git"
+    _out="$(PATH="$_stub:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    if [[ $? -ne 0 && "$_out" == *"no queryable git repository"* ]]; then
+        assert 0 "a BROKEN or absent git fails closed (the tracked-bytecode check is not skipped)"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "a BROKEN or absent git fails closed (the tracked-bytecode check is not skipped)"
+    fi
+    rm -rf "$_stub"
+else
+    assert 1 "a BROKEN or absent git fails closed (no stub tempdir)"
 fi
 
 # ── 4b. Argument handling terminates and rejects ──────────────────────────────

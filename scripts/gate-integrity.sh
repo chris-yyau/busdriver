@@ -79,7 +79,11 @@ sha256_of() {  # sha256_of <file>
     elif command -v shasum >/dev/null 2>&1; then
         out="$(shasum -a 256 "$1")" || return 1
     else
-        out="$(_GI_FILE="$1" python3 -c \
+        # `-I`, never bare `python3`: this runs AFTER compute_lock has cd'd INTO the
+        # tree being hashed, so a repo-local `hashlib.py` would be importable and
+        # could forge every digest — changed files matching the old lock. Isolated
+        # mode drops the script directory and PYTHONPATH from sys.path.
+        out="$(_GI_FILE="$1" python3 -I -c \
           'import hashlib, os; print(hashlib.sha256(open(os.environ["_GI_FILE"], "rb").read()).hexdigest())')" || return 1
     fi
     out="${out%% *}"
@@ -146,7 +150,11 @@ compute_lock() {  # compute_lock <root>
     for dir in "${LOCKED_DIRS[@]}"; do
         [[ -d "$base/$dir" ]] || { printf 'gate-integrity: locked directory missing: %s\n' "$dir" >&2; return 1; }
     done
-    cd "$base" || return 1
+    # `CDPATH= cd -P --`: bare `cd` honours an exported CDPATH, so a relative --root
+    # can resolve to a DIFFERENT tree than the one `lock_path` was built from — and cd
+    # then ECHOES the path it chose, which would land in the captured listing. `--`
+    # also stops a root named `-` being read as the previous-directory operand.
+    CDPATH='' cd -P -- "$base" || return 1
 
     # EVERY enumeration is captured and its status checked. `find` can emit a PARTIAL
     # listing and THEN exit nonzero — an unreadable or vanishing subtree does exactly
@@ -193,24 +201,51 @@ compute_lock() {  # compute_lock <root>
 # build artifact, and a tracked one is a deliberate act, never a side effect of
 # running a gate. A non-repo `--root` (the test fixtures) has no index to ask, which
 # is why this is a separate check rather than a condition inside the enumeration.
-if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
-    # An UNQUERYABLE index fails CLOSED. Converting the failure to "" would report
-    # "no tracked bytecode" without having established it — and compute_lock omits
-    # these files by design, so nothing downstream would catch them.
-    if ! tracked_pyc="$(git -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
-        printf 'gate-integrity: FAIL — could not query the git index for tracked bytecode:\n' >&2
-        printf '  %s\n' "$tracked_pyc" >&2
-        exit 1
-    fi
-    if [[ -n "$tracked_pyc" ]]; then
-        printf 'gate-integrity: FAIL — bytecode is TRACKED under a locked directory:\n' >&2
-        # Quoted, line-wise: an unquoted expansion would GLOB a path containing `*`.
-        while IFS= read -r _pyc; do printf '  %s\n' "$_pyc" >&2; done <<< "$tracked_pyc"
-        printf '  A .pyc is exempt from the digest, so a tracked one executes unlocked —\n' >&2
-        printf '  PEP 552 unchecked hash-based bytecode is not validated against its source\n' >&2
-        printf '  at all. Remove it from the index (git rm --cached) and keep it ignored.\n' >&2
-        exit 1
-    fi
+# The tracked-bytecode check is the ONLY cover for the .pyc files the digest omits.
+# Four shapes were tried to decide "is there an index to ask", and each INFERRED the
+# answer, leaving a hole:
+#   - probe-only read EVERY rev-parse failure as "not a repository", so an absent git
+#     binary or unreadable metadata silently skipped the check;
+#   - marker-only (`[[ -e "$root/.git" ]]`) missed a queryable work tree with no `.git`
+#     of its own — a root BELOW the repository top level — and `-e` follows a symlink,
+#     so it was also false for the dangling `.git` that IS the broken-metadata case;
+#   - probe-then-marker fell through for a root below the top level when git was
+#     missing: probe fails, `$root/.git` legitimately absent, else branch disables it;
+#   - adding a `git --version` guard only proves git STARTS. For a root below the top
+#     level the metadata lives in an ANCESTOR, so corrupt, unreadable or
+#     ownership-rejected (`safe.directory`) state fails rev-parse with no `.git` here
+#     to notice — indistinguishable, by inference, from a plain non-repository.
+# Inference cannot separate "not a repository" from "a repository I could not
+# classify", so it is not used: a queryable repository is REQUIRED, and every
+# rev-parse failure blocks. The test fixtures `git init` for this reason.
+#
+# No sentinel on `tracked_pyc` either: `${tracked_pyc+x}` would have trusted INHERITED
+# shell state, so an exported `tracked_pyc=""` made a detected repository skip the
+# query entirely.
+tracked_pyc=""
+if ! rev_parse_err="$(git -C "$root" rev-parse --git-dir 2>&1)"; then
+    printf 'gate-integrity: FAIL — no queryable git repository at %s\n' "$root" >&2
+    printf '  %s\n' "$rev_parse_err" >&2
+    printf '  Bytecode is exempt from the digest, so the git index is its only cover:\n' >&2
+    printf '  a missing git, corrupt or unreadable metadata (including in an ANCESTOR),\n' >&2
+    printf '  a safe.directory rejection, and a plain non-repository are not\n' >&2
+    printf '  distinguishable here, so all of them refuse rather than skip the check.\n' >&2
+    exit 1
+fi
+# An UNQUERYABLE index fails CLOSED for the same reason.
+if ! tracked_pyc="$(git -C "$root" ls-files -- "${LOCKED_DIRS[@]/%//*.pyc}" 2>&1)"; then
+    printf 'gate-integrity: FAIL — could not query the git index for tracked bytecode:\n' >&2
+    printf '  %s\n' "$tracked_pyc" >&2
+    exit 1
+fi
+if [[ -n "$tracked_pyc" ]]; then
+    printf 'gate-integrity: FAIL — bytecode is TRACKED under a locked directory:\n' >&2
+    # Quoted, line-wise: an unquoted expansion would GLOB a path containing `*`.
+    while IFS= read -r _pyc; do printf '  %s\n' "$_pyc" >&2; done <<< "$tracked_pyc"
+    printf '  A .pyc is exempt from the digest, so a tracked one executes unlocked —\n' >&2
+    printf '  PEP 552 unchecked hash-based bytecode is not validated against its source\n' >&2
+    printf '  at all. Remove it from the index (git rm --cached) and keep it ignored.\n' >&2
+    exit 1
 fi
 
 lock_path="$root/$LOCK_NAME"

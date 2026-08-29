@@ -1,3 +1,10 @@
+## [2.1.1](https://github.com/chris-yyau/busdriver/compare/v2.1.0...v2.1.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **grok:** close [#785](https://github.com/chris-yyau/busdriver/issues/785) — refuse at preflight when the runtime socket is a symlink ([#791](https://github.com/chris-yyau/busdriver/issues/791)) ([d02da5c](https://github.com/chris-yyau/busdriver/commit/d02da5ccf8b3502eb7960d0c63d85ce2d2b8079b))
+
 # [2.1.0](https://github.com/chris-yyau/busdriver/compare/v2.0.2...v2.1.0) (2026-08-29)
 
 

@@ -684,6 +684,20 @@ else
     bad "the handoff is compared in place — a delayed writer can overwrite a newer marker"
 fi
 
+# Every predicate whose OUTPUT decides an authorization must be pinned, not just the
+# hashes: a constant-output driver that makes staged content look absent, or a driver
+# rigged to exit 0, would otherwise hand the excluded-only path a free pass.
+unpinned=""
+grep -q 'NON_EXCLUDED_DIFF=$(git --no-replace-objects .* --no-ext-diff --no-textconv --ignore-submodules=none' "$DISPATCHER" \
+    || unpinned="$unpinned non-excluded-diff"
+[ "$(grep -c 'diff --quiet .*--no-ext-diff --no-textconv --ignore-submodules=none' "$PRODUCER_LIB")" -ge 4 ] \
+    || unpinned="$unpinned anchor-quiet-diffs"
+if [ -z "$unpinned" ]; then
+    ok "the excluded-only predicates are pinned against diff drivers too, not just the hashes"
+else
+    bad "unpinned authorization predicates:$unpinned"
+fi
+
 # The producer must actually call the guard — the lib being correct is worth nothing
 # if run-review-loop.sh never invokes it before minting an excluded-only marker.
 if grep -q 'verify_exclusion_logic' "$PRODUCER"; then

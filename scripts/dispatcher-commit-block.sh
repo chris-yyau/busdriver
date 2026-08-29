@@ -1055,7 +1055,11 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # For an in-worktree logic file the guard hands back a temp file holding HEAD's
     # committed bytes (so nothing can swap it between check and use); drop it now.
     [[ -n "${EXCL_LOGIC_PINNED_TMP:-}" ]] && rm -f "$EXCL_LOGIC_PINNED_TMP"
-    NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}) || \
+    # #576: PINNED like every other diff whose OUTPUT decides an authorization. This
+    # predicate is what says "nothing non-excluded is staged"; a constant/empty-output
+    # external or textconv driver, or an ignored gitlink, could make real staged content
+    # look absent and hand the excluded-only path an authorization it never earned.
+    NON_EXCLUDED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --ignore-submodules=none --no-color -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}) || \
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
     if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
         emit_bail "judgment" "excluded-only marker ($MARKER_CONTENT) but staged diff contains non-excluded content; marker is stale or the staged diff was mutated post-PASS — review required"

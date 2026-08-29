@@ -180,17 +180,22 @@ verify_exclusion_policy() {
         return 0
     fi
     exclusion_reject_untrusted_components "$_worktree" "$_policy_rel" "exclusion policy" || return 1
+    # PINNED against repo-controlled diff config, same as every other authorization
+    # predicate (#576): a trusted external driver rigged to exit 0 would otherwise make a
+    # CHANGED policy report as identical to the anchor, and since these paths can
+    # themselves be excluded, that change could then widen exclusions unreviewed.
+    #
     # Compare against the ANCHOR, in both the worktree and the index (the caller has the
     # index snapshot exported, so this reads the reviewed bytes). Anchor, not HEAD: in PR
     # mode the anchor is the merge base, and a policy or logic change COMMITTED on the
     # branch is identical to HEAD — it would read as clean and slip through. Since these
     # paths are themselves eligible for exclusion, the review could then omit the very
     # change that widened the exclusions while the full-diff marker authorises it.
-    if ! git -C "$_worktree" diff --quiet "$_base" -- "$_policy_rel" 2>/dev/null; then
+    if ! git -C "$_worktree" --no-replace-objects diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none "$_base" -- "$_policy_rel" 2>/dev/null; then
         _excl_fail "judgment" "the exclusion policy ($_policy_rel) differs from the review anchor ($_base); patterns that were never reviewed at that anchor cannot decide what a reviewer is shown"
         return 1
     fi
-    if ! git -C "$_worktree" diff --quiet --cached "$_base" -- "$_policy_rel" 2>/dev/null; then
+    if ! git -C "$_worktree" --no-replace-objects diff --quiet --cached --no-ext-diff --no-textconv --ignore-submodules=none "$_base" -- "$_policy_rel" 2>/dev/null; then
         _excl_fail "judgment" "the exclusion policy ($_policy_rel) is staged differently from the review anchor ($_base); refusing"
         return 1
     fi
@@ -400,11 +405,11 @@ verify_exclusion_logic() {
             exclusion_reject_untrusted_components "$_wt" "$_excl_logic_rel" "exclusion logic" || return 1
             # Anchor comparison, same reasoning as the policy above: `git status` would
             # call a branch-committed change to the exclusion LOGIC clean against HEAD.
-            if ! git -C "$_wt" diff --quiet "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
+            if ! git -C "$_wt" --no-replace-objects diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
                 _excl_fail "judgment" "the exclusion logic ($_excl_logic_rel) differs from the review anchor ($_base); logic that was never reviewed at that anchor cannot decide what a reviewer is shown"
                 return 1
             fi
-            if ! git -C "$_wt" diff --quiet --cached "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
+            if ! git -C "$_wt" --no-replace-objects diff --quiet --cached --no-ext-diff --no-textconv --ignore-submodules=none "$_base" -- "$_excl_logic_rel" 2>/dev/null; then
                 _excl_fail "judgment" "the exclusion logic ($_excl_logic_rel) is staged differently from the review anchor ($_base); refusing"
                 return 1
             fi

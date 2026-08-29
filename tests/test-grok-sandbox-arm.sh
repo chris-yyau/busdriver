@@ -783,6 +783,64 @@ deny = []' > "$tmp/commented.toml"
   else
     fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"
   fi
+  # #785: the runtime-socket refusal. Behavioural and host-independent — the
+  # check sits outside the real-run branch precisely so it can be driven with a
+  # VALID fixture profile plus a socket path, which is the only way CI (no
+  # ~/.grok) can reach it at all. $2 is its socket-path override, the same
+  # test-only seam as $1. good.toml is the accepted fixture asserted above, so a
+  # refusal here can only be the socket.
+  _sock_probe=""
+  if ! _sock_probe="$(mktemp -d)" || [[ -z "$_sock_probe" || ! -d "$_sock_probe" ]]; then
+    fail "could not create a temp dir for the runtime-socket fixtures"
+    _sock_probe=""
+  fi
+  if [[ -n "$_sock_probe" ]]; then
+    : > "$_sock_probe/real"
+    ln -s "$_sock_probe/real" "$_sock_probe/link"
+    # A negative case treats ANY refusal as success, so prove the fixture is
+    # really a symlink first — same discipline as link.toml above.
+    [[ -L "$_sock_probe/link" ]] || fail "the runtime-socket fixture is not a symlink — its case would pass for the wrong reason"
+    _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/link" 2>/dev/null)"
+    if [[ "$_sock_out" == "WHY=runtime-socket" ]]; then
+      pass "preflight refuses WHY=runtime-socket when the runtime socket is a symlink (#785)"
+    else
+      fail "a symlinked runtime socket produced '${_sock_out:-<empty>}' instead of WHY=runtime-socket — grok would be dispatched, die applying strict's runtime-socket deny, and the slot would read runtime-failed"
+    fi
+    # ...and it must fire on a SYMLINK only, or every host loses the lane. The
+    # accept direction is asserted whole: with a compliant profile and a
+    # non-symlink socket the preflight must still SUCCEED.
+    for _s in real absent; do
+      if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/$_s" 2>/dev/null)" \
+         && [[ "$_sock_out" == HOME=* ]]; then
+        pass "the runtime-socket check does not fire on a $_s socket path"
+      else
+        fail "a $_s socket path was refused ('${_sock_out:-<empty>}') — the check must fire on a symlink only, or it refuses the lane on every host"
+      fi
+    done
+    # The seam must stay a seam: with no $2 the fixture path is unaffected, so
+    # the ~40 profile-body cases above never touch the host's real socket.
+    if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" 2>/dev/null)" \
+       && [[ "$_sock_out" == HOME=* ]]; then
+      pass "a fixture run with no socket override is unaffected by the host's real socket"
+    else
+      fail "the fixture path now consults the host runtime socket — every profile-body case would refuse on a Docker Desktop Mac"
+    fi
+    rm -rf "$_sock_probe"
+  fi
+
+  # Production callers pass no $2, so the real-run DEFAULT is the check.
+  if /usr/bin/grep -q 'sock=/var/run/docker.sock' "$CHILD"; then
+    pass "the runtime-socket check defaults to the path grok names in its refusal"
+  else
+    fail "the runtime-socket default path changed — production passes no \$2, so a changed default silently disables the #785 check"
+  fi
+  # ...and only in real-run mode, or the default would leak into the fixtures.
+  if /usr/bin/grep -q '\[\[ "\$realrun" == 1 \]\] && sock=' "$CHILD"; then
+    pass "the socket default applies to real runs only, never under a fixture"
+  else
+    fail "the socket default is no longer conditioned on real-run mode"
+  fi
+
   [[ -e "$tmp/missing.toml" ]] && fail "missing.toml exists — the missing-file case is not testing what it claims"
 
   _cases=(
@@ -878,6 +936,8 @@ if declare -F grok_preflight_hint >/dev/null; then
   _h_identity="$(grok_preflight_hint)"
   _GROK_PREFLIGHT_WHY=profile
   _h_profile="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=runtime-socket
+  _h_socket="$(grok_preflight_hint)"
   unset _GROK_PREFLIGHT_WHY
 
   if [[ "$_h_containment" == *"INSIDE the checkout"* ]]; then
@@ -899,6 +959,13 @@ if declare -F grok_preflight_hint >/dev/null; then
     pass "the profile refusal names the file to install"
   else
     fail "the profile refusal no longer names docs/examples/grok-sandbox.toml"
+  fi
+  # #785's hint must NOT send the operator to the example profile: the failing
+  # deny is grok's built-in strict base, and no profile edit can fix it.
+  if [[ "$_h_socket" == *"docker.sock"* && "$_h_socket" != *"docs/examples/grok-sandbox.toml"* ]]; then
+    pass "the runtime-socket refusal names the socket, not the example profile"
+  else
+    fail "the runtime-socket refusal reuses the generic profile message — it would send the operator to edit a profile that cannot fix a host symlink"
   fi
 else
   fail "grok_preflight_hint is not defined — the refusal messages have no source"

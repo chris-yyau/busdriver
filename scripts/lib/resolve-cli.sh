@@ -83,7 +83,26 @@ is_cli_available() {
 # (including a shell with no BASH_SOURCE, which resolves the child to /dev/null)
 # refuses, so grok reads as unavailable and the route continues to droid.
 _grok_available() {
-  grok_sandbox_preflight ""
+  grok_sandbox_preflight "" && return 0
+  # #785: a refusal here is otherwise SILENT. The route simply walks on to
+  # droid and the slot is recorded `resolve-droid-fallback`, which names the
+  # fallback but never the cause — and `grok_preflight_hint` prints only at
+  # DISPATCH time, which a route-time fallback never reaches.
+  #
+  # Only `runtime-socket` is surfaced, and that is a scoping decision, not an
+  # oversight. The other reasons all mean "grok is not set up on this host",
+  # where falling through to droid IS the documented behaviour and a warning on
+  # every council/blueprint run would be noise. `runtime-socket` is the one
+  # where grok is fully installed and configured and still cannot run, for a
+  # host reason the operator can fix in one step — the case that had #785's
+  # owner re-running FULL coverage against a machine, not a review.
+  #
+  # Once per process: availability is probed per role and per iteration.
+  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket && -z "${_GROK_SOCKET_WARNED:-}" ]]; then
+    _GROK_SOCKET_WARNED=1
+    grok_preflight_hint >&2
+  fi
+  return 1
 }
 
 get_cli_version() {
@@ -2438,9 +2457,10 @@ grok_sandbox_preflight() {
 }
 
 # The hint is chosen by the child's reason code, because "install the example
-# profile" is wrong advice for four of the five ways this refuses.
+# profile" is wrong advice for five of the six ways this refuses.
 grok_preflight_hint() {
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == runtime-socket ]] && printf '%s\n' "Error: grok dispatch refused — /var/run/docker.sock is a SYMLINK, and grok's built-in 'strict' base (which this profile extends) refuses to start when it cannot resolve that runtime-socket deny path (#785). Nothing in the sandbox profile can fix it. Remove the symlink, or turn off Docker Desktop's default-socket option that creates it, and retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == configdir ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok is missing, or is a symlink. A symlinked config directory can be pointed into the reviewed tree, which would hand the branch both the sandbox profile and the grok binary. Replace it with a real directory." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0

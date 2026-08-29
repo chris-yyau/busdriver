@@ -8,7 +8,15 @@
 # the builtin fallback by checking for the handoff file it creates (exit 3).
 # The handoff file is consumed after use (single-use token).
 #
-# Usage: write-review-marker.sh <prompt-path>
+# Usage: write-review-marker.sh [--discard] <prompt-path>
+#   --discard retires this arming WITHOUT writing a marker — for a builtin review that
+#   FAILED, or that is being abandoned. Nothing else retires it: the writer is not
+#   invoked on that path, so the handoff would stay armed indefinitely and a later call
+#   could mint a marker off a review that never passed. It lives here, not in the
+#   caller's cleanup step, because a check-then-delete in the caller is not atomic
+#   against a concurrent exit 3 re-arming the pair — the disarm has to hold the review
+#   lock, exactly like the write.
+#
 #   <prompt-path> is the path the caller read from the handoff file and reviewed.
 #   It identifies WHICH arming this write belongs to (#790): the handoff lives at one
 #   fixed path, so a later exit 3 re-arms it, and a delayed agent that skipped this
@@ -16,6 +24,11 @@
 #   baseline. NOT an anti-forgery control — a caller holding Bash can read the handoff
 #   and pass its content back; it orders concurrent writers, nothing more.
 set -euo pipefail
+DISCARD=0
+if [ "${1:-}" = "--discard" ]; then
+    DISCARD=1
+    shift
+fi
 BUILTIN_PROMPT_PATH="${1:-}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject leading-hyphen/absolute/traversal/unsafe
@@ -120,6 +133,14 @@ if [[ "$HANDOFF_PATH_NOW" != "$BUILTIN_PROMPT_PATH" ]]; then
     echo "       You reviewed: $BUILTIN_PROMPT_PATH" >&2
     echo "       That review publishes its own marker. Re-run /litmus if yours must land." >&2
     exit 1
+fi
+
+# --discard: the arming is ours and this review is not going to publish. Retire the pair
+# under the lock and stop — no marker, no generation stamp, nothing for the gate to read.
+if [ "$DISCARD" -eq 1 ]; then
+    rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
+    echo "Builtin review handoff discarded (no marker written)"
+    exit 0
 fi
 
 # No baseline means the handoff was armed by a version that did not record one, or it

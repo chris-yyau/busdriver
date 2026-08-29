@@ -66,6 +66,12 @@ run_writer() {
     OUT=$( (cd "$1" && bash "$WRITER" "${2-$PROMPT}") 2>&1 ) || RC=$?
 }
 
+# Same, in --discard mode: retire the arming without writing a marker.
+run_discard() {
+    RC=0
+    OUT=$( (cd "$1" && bash "$WRITER" --discard "${2-$PROMPT}") 2>&1 ) || RC=$?
+}
+
 echo "── #790 delayed builtin marker writer ───────────────────────"
 
 # 1. A marker published by another run AFTER the handoff was armed is NOT overwritten.
@@ -231,6 +237,36 @@ OUT=$( (cd "$R" && BUSDRIVER_STATE_DIR=-foo bash "$WRITER" "$PROMPT") 2>&1 ) || 
 check "leading-hyphen state dir: writer succeeds" "$(verdict "$RC")" "wrote"
 check "marker published under .claude" "$(exists "$R/.claude/litmus-passed.local")" "present"
 check "no -foo state dir created" "$(exists "$R/-foo")" "gone"
+
+# 15. --discard retires a FAILED review's own arming — nothing else does, and an arming
+#     left behind lets a later call mint a marker off a review that never passed.
+R=$(new_repo discard)
+arm_handoff "$R"
+run_discard "$R"
+check "discard succeeds" "$(verdict "$RC")" "wrote"
+check "discard consumes the handoff" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "gone"
+check "discard consumes the baseline" "$(exists "$R/.claude/builtin-review-marker-baseline.local")" "gone"
+check "discard writes no marker" "$(exists "$R/.claude/litmus-passed.local")" "gone"
+check "discard stamps no generation" "$(exists "$R/.claude/litmus-marker-gen.local")" "gone"
+
+# 16. ...and it must not retire somebody else's. A caller doing read-then-delete itself
+#     cannot make that check atomic against a concurrent exit 3; --discard holds the
+#     review lock and refuses on identity, exactly as the write path does.
+R=$(new_repo discard_rearmed)
+arm_handoff "$R" "/tmp/busdriver-review-laterrun"
+run_discard "$R"
+check "discard refuses a re-armed handoff" "$(verdict "$RC")" "refused"
+check "re-armed handoff survives discard" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "present"
+check "re-armed baseline survives discard" "$(exists "$R/.claude/builtin-review-marker-baseline.local")" "present"
+
+# 17. Discard is serialized like the write: a held review lock refuses it too, so it can
+#     never race an exit 3 that is arming the pair while holding that lock.
+R=$(new_repo discard_locked)
+arm_handoff "$R"
+ln -s "pid-999999-tok790" "$R/.claude/litmus-review.lock"
+run_discard "$R"
+check "held review lock refuses discard" "$(verdict "$RC")" "refused"
+check "handoff survives a contended discard" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "present"
 
 echo ""
 echo "  $PASS passed, $FAIL failed"

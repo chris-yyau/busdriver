@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/chris-yyau/busdriver/compare/v2.0.2...v2.1.0) (2026-08-29)
+
+
+### Features
+
+* **integrity:** pin gate-script launchers by content, not by command ([#742](https://github.com/chris-yyau/busdriver/issues/742)) ([#786](https://github.com/chris-yyau/busdriver/issues/786)) ([b623d54](https://github.com/chris-yyau/busdriver/commit/b623d5483d9513bf77a65d7ca837c7b27182c525)), closes [#737](https://github.com/chris-yyau/busdriver/issues/737) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [2.0.2](https://github.com/chris-yyau/busdriver/compare/v2.0.1...v2.0.2) (2026-08-29)
 
 

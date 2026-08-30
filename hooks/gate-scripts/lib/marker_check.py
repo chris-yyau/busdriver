@@ -2098,24 +2098,6 @@ def _is_digit_negation_only_segment(seg):
     return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
 
 
-def _scrub_digit_negation_globs(text):
-    """Replace whole-token digit-negation globs with a bare star (#776).
-
-    Abandoned-scan only. The token is not helper evidence: `_class_variants` rewrites it
-    into a letter class that matches every helper, which over-blocked ordinary POSIX
-    numeric validation (including inside unparseable heredocs). Scrubbing before that
-    expansion is the same residual as a bare star (#573) — `eval`/`python3` with only
-    this glob in abandoned text may allow, while structured `_glob_helper` still blocks
-    `python3` with this operand in command position.
-    """
-    parts = []
-    for w in re.split(r"([\s;&|()<>]+)", text):
-        if not w:
-            continue
-        parts.append("*" if _DIGIT_NEGATION_ONLY_RE.match(w) else w)
-    return "".join(parts)
-
-
 # A function definition, an alias definition, or eval can re-point a command name, so a
 # helper sitting in an operand may be what actually runs. See _helper_invoked.
 #
@@ -3675,8 +3657,6 @@ def _abandoned_scan_probe(text):
     hit = _names_helper(text)
     if hit:
         return hit
-    # #776: context-aware scrub before class expansion — see _scrub_digit_negation_globs.
-    text = _scrub_digit_negation_globs(text)
     # One decision for the whole scan, not one per candidate: a short command gets the full
     # reading family on every word it yields, while a payload built to be expensive gets the
     # base reading only. Deciding it here keeps the cost tied to what arrived rather than to

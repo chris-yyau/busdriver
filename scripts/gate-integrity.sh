@@ -347,10 +347,11 @@ tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on que
 # Two independent refusals, both required:
 #   1. PEP 552 flags at bytes 4-8 (little-endian): `flags & 3 == 1` is the
 #      UNCHECKED hash-based cache — loaded with no source comparison at all.
-#   2. Body match: the marshaled code after the 16-byte header must equal a
-#      compile of the sibling `.py` (filename-normalized). Timestamp and
-#      checked-hash modes only authenticate the source's metadata/hash, so a
-#      spliced header+malicious-body cache would otherwise pass.
+#   2. Body match: the bytes after the 16-byte header must equal a
+#      py_compile of the sibling `.py` under an allowlisted co_filename
+#      (temp pyc, compare bodies). Timestamp and checked-hash modes only
+#      authenticate the source's metadata/hash, so a spliced
+#      header+malicious-body cache would otherwise pass.
 #
 # Everything else under the exemption is refused too, not skipped: a header this
 # cannot read, a file too short to hold one, a missing/unreadable sibling source,
@@ -378,109 +379,53 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
             printf 'gate-integrity: could not enumerate the locked directories\n' >&2
             exit 1
         fi
-        # marshal.loads is intentional and compare-only: CPython's import does the
-        # same decode on these files, we never exec the result, and a malformed
-        # body is refused. Raw-body compare cannot work — co_filename embeds the
-        # path used at compile time, so a cache from import and a fresh
-        # py_compile of the same source disagree in the bytes after the header.
-        # Optimize level is taken from the PEP 3147 name (`.opt-N`), not from
-        # this interpreter: the classifier always runs under `python3 -I`
-        # (optimize 0), while a gate that ran under `-O`/`-OO` writes `.opt-1`
-        # / `.opt-2` caches whose bodies only match a compile at that level.
+        # Never marshal.loads attacker .pyc bodies. Authenticate by asking the
+        # same py_compile path CPython uses to write caches: compile the trusted
+        # sibling under each allowlisted co_filename (dfile=) into a temp pyc and
+        # compare bodies after the 16-byte header. That covers code, consts
+        # (incl. signed zero / sharing), line tables, and co_filename without
+        # deserializing the candidate. Optimize level comes from the PEP 3147
+        # name (`.opt-N`), not from this interpreter. Trees using
+        # -X no_debug_ranges must clear __pycache__ before --check.
         # shellcheck disable=SC2016  # python source, not a shell expansion
         python3 -I -c '
-import importlib.util, marshal, os, re, sys, warnings
+import importlib.util, os, py_compile, re, sys, tempfile, warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 HEADER = 16
-# Fields CodeType == considers, PLUS co_stacksize. Line tables (co_linetable /
-# co_lnotab) are omitted: they do not change executable behaviour, and Pythons
-# -X no_debug_ranges produces legitimate caches whose line tables diverge while
-# co_code matches. Non-code constants use marshal.dumps so cases == collapses
-# (0.0 vs -0.0) still diverge. Tuples, frozensets, and nested code objects also
-# track identity so a forge that breaks sharing (A is f()) while keeping equal
-# values cannot pass. co_filename must be an exact allowlisted spelling of the
-# sibling source. Reads of both the cache and the sibling source are size-bounded.
-_CODE_FIELDS = (
-    "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
-    "co_stacksize", "co_flags", "co_code", "co_names", "co_varnames",
-    "co_freevars", "co_cellvars", "co_name", "co_qualname", "co_firstlineno",
-    "co_exceptiontable",
-)
 _MAX_PYC_BYTES = 8 * 1024 * 1024
 _MAX_SRC_BYTES = _MAX_PYC_BYTES
 
-def same_const(a, b, memo, rev):
-    a_code, b_code = hasattr(a, "co_code"), hasattr(b, "co_code")
-    if a_code or b_code:
-        return a_code and b_code and same_code(a, b, memo, rev)
-    if isinstance(a, tuple) and isinstance(b, tuple):
-        ia, ib = id(a), id(b)
-        if ia in memo:
-            return memo[ia] == ib
-        if ib in rev:
-            return False
-        memo[ia] = ib
-        rev[ib] = ia
-        if len(a) != len(b):
-            return False
-        return all(same_const(x, y, memo, rev) for x, y in zip(a, b))
-    if isinstance(a, frozenset) and isinstance(b, frozenset):
-        ia, ib = id(a), id(b)
-        if ia in memo:
-            return memo[ia] == ib
-        if ib in rev:
-            return False
-        memo[ia] = ib
-        rev[ib] = ia
-        if len(a) != len(b):
-            return False
-        # Unordered: match each element of a to one unused element of b under
-        # the same memo (so shared inners elsewhere in the graph stay linked).
-        unused = list(b)
-        for ea in a:
-            for i, eb in enumerate(unused):
-                memo_s, rev_s = dict(memo), dict(rev)
-                if same_const(ea, eb, memo_s, rev_s):
-                    memo.clear(); memo.update(memo_s)
-                    rev.clear(); rev.update(rev_s)
-                    unused.pop(i)
-                    break
-            else:
-                return False
-        return True
-    # Atoms (str/bytes/int/float/complex/...) also participate in identity:
-    # a shared bytes/str across nested code objects must stay shared.
-    ia, ib = id(a), id(b)
-    if ia in memo:
-        return memo[ia] == ib
-    if ib in rev:
-        return False
-    memo[ia] = ib
-    rev[ib] = ia
+def read_nofollow(path, max_bytes):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    # O_NONBLOCK: a FIFO/socket planted as *.pyc must not block the gate.
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    fd = os.open(path, flags)
     try:
-        return marshal.dumps(a) == marshal.dumps(b)
-    except Exception:
-        return False
-
-def same_code(a, b, memo=None, rev=None):
-    if memo is None:
-        memo, rev = {}, {}
-    if type(a) is not type(b) or not hasattr(a, "co_code"):
-        return False
-    ia, ib = id(a), id(b)
-    if ia in memo:
-        return memo[ia] == ib
-    if ib in rev:
-        return False
-    memo[ia] = ib
-    rev[ib] = ia
-    for f in _CODE_FIELDS:
-        if getattr(a, f, None) != getattr(b, f, None):
-            return False
-    if len(a.co_consts) != len(b.co_consts):
-        return False
-    return all(same_const(x, y, memo, rev) for x, y in zip(a.co_consts, b.co_consts))
+        st = os.fstat(fd)
+        import stat as _stat
+        if _stat.S_ISLNK(st.st_mode):
+            raise OSError(0, "symlink")
+        if not _stat.S_ISREG(st.st_mode):
+            raise OSError(0, "not a regular file")
+        if st.st_size > max_bytes:
+            raise OSError(0, "too large")
+        chunks = []
+        left = st.st_size
+        while left > 0:
+            chunk = os.read(fd, left)
+            if not chunk:
+                raise OSError(0, "size changed underfoot")
+            chunks.append(chunk)
+            left -= len(chunk)
+        if os.read(fd, 1):
+            raise OSError(0, "size changed underfoot")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 def allowed_filenames(src):
     # Exact lexical allowlist — not realpath-of-anything. That rejects ./ ../
@@ -509,18 +454,48 @@ def allowed_filenames(src):
                 pass
     return out
 
-def filenames_ok(code, allowed):
-    name = code.co_filename
-    # Reject non-canonical spellings before allowlist lookup — normpath would
-    # otherwise collapse ./ and ../ aliases into an allowed name.
-    if not name or name != os.path.normpath(name):
-        return False
-    if name not in allowed:
-        return False
-    return all(
-        filenames_ok(c, allowed) if hasattr(c, "co_code") else True
-        for c in code.co_consts
-    )
+def trusted_bodies(src_bytes, names, optimize):
+    # Compile the immutable snapshot, not a re-open of the sibling path
+    # (closes the TOCTOU between the size-bounded read and py_compile).
+    bodies = []
+    mode = py_compile.PycInvalidationMode.TIMESTAMP
+    fd_s, spath = tempfile.mkstemp(suffix=".py")
+    try:
+        n = 0
+        while n < len(src_bytes):
+            w = os.write(fd_s, src_bytes[n:])
+            if w <= 0:
+                raise OSError(0, "short write")
+            n += w
+        os.close(fd_s)
+        fd_s = -1
+        for name in names:
+            fd, tpath = tempfile.mkstemp(suffix=".pyc")
+            os.close(fd)
+            try:
+                py_compile.compile(
+                    spath, cfile=tpath, dfile=name, doraise=True,
+                    optimize=optimize, invalidation_mode=mode,
+                )
+                data = read_nofollow(tpath, _MAX_PYC_BYTES)
+                if len(data) >= HEADER:
+                    bodies.append(data[HEADER:])
+            finally:
+                try:
+                    os.unlink(tpath)
+                except OSError:
+                    pass
+    finally:
+        if fd_s >= 0:
+            try:
+                os.close(fd_s)
+            except OSError:
+                pass
+        try:
+            os.unlink(spath)
+        except OSError:
+            pass
+    return bodies
 
 def optimize_level(path):
     m = re.search(r"\.opt-(\d+)\.pyc$", path, re.IGNORECASE)
@@ -530,28 +505,22 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
     if not raw:
         continue
     p = os.fsdecode(raw)
-    if os.path.islink(p):
-        print(p + "  (symlink — CPython never writes one into __pycache__)")
-        continue
     try:
-        size = os.stat(p).st_size
+        data = read_nofollow(p, _MAX_PYC_BYTES)
     except OSError as exc:
-        print(p + "  (unreadable: %s)" % (exc.strerror or exc))
+        import errno as _errno
+        msg = exc.strerror or str(exc)
+        if "too large" in msg:
+            print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
+        elif "symlink" in msg or getattr(exc, "errno", None) in (_errno.ELOOP, getattr(_errno, "EMLINK", -1)):
+            print(p + "  (symlink — CPython never writes one into __pycache__)")
+        elif "not a regular file" in msg:
+            print(p + "  (not a regular file — CPython never writes one into __pycache__)")
+        else:
+            print(p + "  (unreadable: %s)" % msg)
         continue
-    if size < HEADER:
+    if len(data) < HEADER:
         print(p + "  (too short to hold a PEP 552 header)")
-        continue
-    if size > _MAX_PYC_BYTES:
-        print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
-        continue
-    try:
-        with open(p, "rb") as fh:
-            data = fh.read(size + 1)
-    except OSError as exc:
-        print(p + "  (unreadable: %s)" % (exc.strerror or exc))
-        continue
-    if len(data) != size:
-        print(p + "  (size changed underfoot while reading)")
         continue
     flags = int.from_bytes(data[4:8], "little")
     if flags & 3 == 1:
@@ -568,39 +537,25 @@ for raw in sys.stdin.buffer.read().split(b"\0"):
     except ValueError:
         print(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
         continue
-    if not src or not os.path.isfile(src) or os.path.islink(src):
+    if not src:
         print(p + "  (no regular sibling source to authenticate against)")
         continue
     try:
-        src_size = os.stat(src).st_size
+        src_bytes = read_nofollow(src, _MAX_SRC_BYTES)
     except OSError as exc:
-        print(p + "  (unreadable source: %s)" % (exc.strerror or exc))
-        continue
-    if src_size > _MAX_SRC_BYTES:
-        print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
+        msg = exc.strerror or str(exc)
+        if "too large" in msg:
+            print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
+        else:
+            print(p + "  (no regular sibling source to authenticate against)")
         continue
     try:
-        with open(src, "rb") as fh:
-            src_bytes = fh.read(src_size + 1)
-        if len(src_bytes) != src_size:
-            print(p + "  (source size changed underfoot while reading)")
-            continue
-        expected = compile(
-            src_bytes, "<locked>", "exec", dont_inherit=True,
-            optimize=optimize_level(p),
-        )
-        got = marshal.loads(data[HEADER:])
-    except OSError as exc:
-        print(p + "  (unreadable source: %s)" % (exc.strerror or exc))
-        continue
+        trusted = trusted_bodies(src_bytes, allowed_filenames(src), optimize_level(p))
     except Exception as exc:
-        print(p + "  (bytecode body unreadable: %s)" % exc.__class__.__name__)
+        print(p + "  (trusted sibling source failed to compile: %s)" % exc.__class__.__name__)
         continue
-    if not same_code(got, expected):
+    if data[HEADER:] not in trusted:
         print(p + "  (bytecode body does not match a compile of the locked source beside it)")
-        continue
-    if not filenames_ok(got, allowed_filenames(src)):
-        print(p + "  (co_filename does not name the locked source beside it)")
 ' <"$tmp"
         local st=$?
         rm -f "$tmp"

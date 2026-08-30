@@ -327,7 +327,7 @@ with open(path, "wb") as fh:
 '
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
 _rc=$?
-if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
     assert 0 "↳ a cache whose only mutation is co_filename still fails"
 else
     printf '  ↳ output: %s\n' "$_out"
@@ -417,11 +417,9 @@ else
     assert 1 "↳ a cache whose only mutation is a +0.0→-0.0 const still fails"
 fi
 
-# co_lnotab / co_linetable are intentionally NOT compared (line tables do not
-# change executable behaviour; -X no_debug_ranges would otherwise false-fail).
-# Keep a smoke that a linetable-only mutation still passes --check.
+# Line tables are compared: frame.f_lineno / tracing observe them.
 compile_pyc TIMESTAMP
-assert $? "↳ fixture: wrote a TIMESTAMP cache for the linetable-only mutation"
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the linetable forgery"
 _PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
 _PYC="$_PYC" python3 -c '
 import marshal, os
@@ -435,8 +433,14 @@ forged = code.replace(co_linetable=code.co_linetable + b"\x00")
 with open(path, "wb") as fh:
     fh.write(data[:16] + marshal.dumps(forged))
 '
-"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
-assert $? "↳ a cache whose only mutation is co_linetable still passes (line tables not compared)"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a cache whose only mutation is co_linetable still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose only mutation is co_linetable still fails"
+fi
 
 # samefile would accept a hardlink alias; the allowlist must not.
 compile_pyc TIMESTAMP
@@ -458,7 +462,7 @@ with open(path, "wb") as fh:
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
 _rc=$?
 rm -f "$_alias"
-if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
     assert 0 "↳ a cache whose co_filename is only a hardlink alias of the source still fails"
 else
     printf '  ↳ output: %s\n' "$_out"
@@ -482,7 +486,7 @@ with open(path, "wb") as fh:
 '
 _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
 _rc=$?
-if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
     assert 0 "↳ a cache whose co_filename uses a ./ alias of the source still fails"
 else
     printf '  ↳ output: %s\n' "$_out"
@@ -509,62 +513,51 @@ else
     assert 1 "↳ a cache exceeding the classifier size bound fails closed"
 fi
 
-# Shared-tuple identity is enforced by same_code memoization; prove the
-# helper rejects a graph that only breaks sharing (values equal, identity not).
-# Kept as an in-process probe so it does not depend on inventing a new locked
-# .py (which would fail the digest before the body check runs).
-python3 -c '
-import marshal
-
-def same_const(a, b, memo, rev):
-    a_code, b_code = hasattr(a, "co_code"), hasattr(b, "co_code")
-    if a_code or b_code:
-        return a_code and b_code and same_code(a, b, memo, rev)
-    if isinstance(a, tuple) and isinstance(b, tuple):
-        ia, ib = id(a), id(b)
-        if ia in memo:
-            return memo[ia] == ib
-        if ib in rev:
-            return False
-        memo[ia] = ib
-        rev[ib] = ia
-        return len(a) == len(b) and all(same_const(x, y, memo, rev) for x, y in zip(a, b))
-    return marshal.dumps(a) == marshal.dumps(b)
-
-def same_code(a, b, memo=None, rev=None):
-    if memo is None:
-        memo, rev = {}, {}
-    if type(a) is not type(b) or not hasattr(a, "co_code"):
-        return False
-    ia, ib = id(a), id(b)
-    if ia in memo:
-        return memo[ia] == ib
-    if ib in rev:
-        return False
-    memo[ia] = ib
-    rev[ib] = ia
-    if a.co_code != b.co_code or a.co_names != b.co_names:
-        return False
-    if len(a.co_consts) != len(b.co_consts):
-        return False
-    return all(same_const(x, y, memo, rev) for x, y in zip(a.co_consts, b.co_consts))
-
-mod = compile("def f():\n    return (1, 2)\n", "<locked>", "exec", dont_inherit=True)
-inner = next(c for c in mod.co_consts if hasattr(c, "co_code"))
+# Trusted py_compile body equality preserves constant identity: a body that
+# only breaks sharing (values equal, identity not) must fail --check.
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+_share_src="$_fix/hooks/gate-scripts/lib/marker_ops.py"
+cp "$_share_src" "$_share_src.bak"
+printf 'X = ((1, 2), (1, 2))\n' > "$_share_src"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the shared-tuple forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+mod = marshal.loads(data[16:])
+# Module consts include X=((1,2),(1,2)) with the inner tuple shared. Replace
+# X with equal values but distinct tuple objects so marshal REFs diverge.
 t = (1, 2)
-inner_s = inner.replace(co_consts=tuple(t if x == (1, 2) else x for x in inner.co_consts))
-shared = mod.replace(co_consts=tuple(
-    (t if c is None else (inner_s if hasattr(c, "co_code") else c)) for c in mod.co_consts
-))
-dup = tuple(list(t))
-inner_b = inner_s.replace(co_consts=tuple(dup if x is t else x for x in inner_s.co_consts))
-broken = shared.replace(co_consts=tuple(
-    inner_b if hasattr(c, "co_code") else c for c in shared.co_consts
-))
-ok = same_code(shared, shared) and not same_code(broken, shared)
-raise SystemExit(0 if ok else 1)
+broken_x = (tuple(list(t)), tuple(list(t)))
+new_consts = []
+for c in mod.co_consts:
+    if isinstance(c, tuple) and len(c) == 2 and c[0] == (1, 2) and c[1] == (1, 2) and c[0] is c[1]:
+        new_consts.append(broken_x)
+    else:
+        new_consts.append(c)
+broken = mod.replace(co_consts=tuple(new_consts))
+assert any(
+    isinstance(c, tuple) and len(c) == 2 and c[0] == (1, 2) and c[0] is not c[1]
+    for c in broken.co_consts
+), "forge did not break sharing"
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(broken))
 '
-assert $? "↳ same_code rejects broken shared-tuple identity (values equal, identity not)"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+mv "$_share_src.bak" "$_share_src"
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a cache that only breaks shared-tuple identity still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache that only breaks shared-tuple identity still fails"
+fi
 
 # Sibling source size bound: a huge .py next to a small cache must refuse.
 compile_pyc TIMESTAMP
@@ -656,6 +649,35 @@ else
     printf '  ↳ output: %s\n' "$_out"
     assert 1 "↳ a SYMLINKED .pyc inside __pycache__ fails, by name (never classified by its target)"
 fi
+
+# A FIFO planted as *.pyc must refuse quickly — not block forever on open/read.
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+mkdir -p "$_fix/hooks/gate-scripts/lib/__pycache__"
+_tag="$(python3 -c 'import sys; print("".join(str(x) for x in sys.version_info[:2]))')"
+_fifo="$_fix/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-${_tag}.pyc"
+mkfifo "$_fifo"
+_fifo_out="$(
+    GATE_INTEGRITY="$GATE_INTEGRITY" FIX="$_fix" python3 - <<'PY'
+import os, subprocess, sys
+cmd = [os.environ["GATE_INTEGRITY"], "--root", os.environ["FIX"], "--check"]
+try:
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+except subprocess.TimeoutExpired:
+    print("TIMEOUT")
+    sys.exit(99)
+sys.stdout.write(p.stdout)
+sys.stdout.write(p.stderr)
+sys.exit(p.returncode)
+PY
+)"
+_fifo_rc=$?
+if [[ "$_fifo_rc" -ne 0 && "$_fifo_rc" -ne 99 && "$_fifo_out" == *"marker_ops"* && "$_fifo_out" == *"regular file"* ]]; then
+    assert 0 "↳ a FIFO planted as *.pyc fails closed without hanging"
+else
+    printf '  ↳ rc=%s output: %s\n' "$_fifo_rc" "$_fifo_out"
+    assert 1 "↳ a FIFO planted as *.pyc fails closed without hanging"
+fi
+rm -f "$_fifo"
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────
 # `printf '%s\n' ""` writes a lone newline: 1 byte, which clears a `-s` test and

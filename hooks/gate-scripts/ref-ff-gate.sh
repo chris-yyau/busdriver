@@ -59,15 +59,29 @@
 #   was deleted — and in the pull arm the same ref is only a precondition, where
 #   poisoning it can at most let through a pull whose content still comes from the
 #   real remote.
-#   RESIDUAL, downstream execution. The gate authorizes ONE ref move and cannot
-#   see what git itself runs afterwards. `git merge` invokes `post-merge`, and
-#   with `core.hooksPath` pointing inside the working tree the content the
-#   fast-forward just landed can BE that hook and move the ref again immediately.
-#   Refusing an in-tree hooksPath was considered and rejected: `.githooks/` in the
-#   repo is a common, legitimate layout, so the block would fire mostly on honest
-#   setups. Same for the command's own resolution of `git` -- ambient PATH,
-#   BASH_ENV and exported shell functions belong to the session shell, not to this
-#   gate, which the contained launch (`#!/bin/bash -p`) hardens only for ITSELF.
+#   CLOSED for the marker route, downstream execution. The gate authorizes ONE
+#   ref move and cannot see what git itself runs afterwards. `git merge` invokes
+#   `post-merge`, and with `core.hooksPath` pointing inside the working tree the
+#   content the fast-forward just landed can BE that hook and move the ref again
+#   immediately. Refusing an in-tree hooksPath was once considered and rejected
+#   as too noisy (`.githooks/` is a common layout) -- that judgement was WRONG and
+#   is no longer what this file does. The marker route now asks git which
+#   directory it will run hooks from and refuses when the answer lands in the
+#   working tree; see the block near the marker check for how, and ADR 0050 for
+#   what remains open. The command's own resolution of `git` is still a residual:
+#   ambient PATH, BASH_ENV and exported shell functions belong to the session
+#   shell, not to this gate, which the contained launch (`#!/bin/bash -p`)
+#   hardens only for ITSELF.
+#   RESIDUAL, the gate's own deadline. The hook runs under a 10s outer timeout
+#   whose expiry is NOT a block -- the runner kills the process before anything
+#   can be emitted, so a gate that runs long is a gate that is not there. The
+#   bounds in this file (payload size, remote listing bytes and count,
+#   declaration length) exist to keep the work under that deadline, and each was
+#   added because an unbounded read was reachable from repo-controlled state.
+#   They do not make the deadline safe: git itself parses config, and a
+#   sufficiently pathological repository can be slow before this script gets to
+#   decide anything. Fixing that means the RUNNER treating hook timeout as a
+#   block, which is not something a hook can do for itself.
 #   RESIDUAL, non-regression: every operation these residuals permit was permitted
 #   before this gate existed. They bound what it ADDS; none of them weakens a case
 #   it does block, and each needs an actor who already has arbitrary shell.

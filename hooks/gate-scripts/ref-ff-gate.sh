@@ -221,10 +221,22 @@ is_ancestor() {   # <a> <b> → 0 yes, 1 no; BLOCKS if git could not decide
 # regular file, or it is larger than the gate will parse — every caller treats 2
 # as a refusal.
 state_file() {   # <read|unlink> <basename>
+    # PYTHONSAFEPATH because this runs with the CWD set to the repository: with
+    # `-c` the interpreter would otherwise put that directory first on sys.path
+    # and import a repo-controlled os.py/stat.py from it. -I would also do it,
+    # but -I implies -E and this payload needs PYTHONPATH for the gate's lib.
+    # The payload scrubs sys.path itself as well, because PYTHONSAFEPATH is
+    # honoured only from python 3.11 and an older one would ignore it silently.
     local _lib
     _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-    (cd "$REPO_DIR" 2>/dev/null && PYTHONPATH="$_lib" python3 -S -c "
-import os, stat, sys
+    (cd "$REPO_DIR" 2>/dev/null && PYTHONSAFEPATH=1 PYTHONPATH="$_lib" python3 -S -c "
+import sys
+# BEFORE anything shadowable is imported. sys itself is built in, so it cannot
+# be. This is the half that does not depend on the interpreter's version -
+# PYTHONSAFEPATH is only honoured from 3.11, and on an older python the CWD
+# would still be sys.path[0] here, with the CWD being the repository.
+sys.path[:] = [q for q in sys.path if q not in ('', '.')]
+import os, stat
 mode, state_dir, name = sys.argv[1], sys.argv[2], sys.argv[3]
 if '/' in name or name in ('.', '..') or state_dir.startswith('/'):
     raise SystemExit(2)
@@ -304,7 +316,7 @@ finally:
 audit_ref_ff() {   # <branch> <oid> <via>
     local _branch="$1" _oid="$2" _via="$3" _lib
     _lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-    if ! (cd "$REPO_DIR" 2>/dev/null && PYTHONPATH="$_lib" python3 -S -c "
+    if ! (cd "$REPO_DIR" 2>/dev/null && PYTHONSAFEPATH=1 PYTHONPATH="$_lib" python3 -S -c "
 import sys
 _gatelib = [q for q in sys.path if q.endswith('gate-scripts/lib')]
 sys.path[:] = [q for q in sys.path
@@ -371,7 +383,7 @@ esac
 # pre-commit-gate.sh, including its refusal of any emitted field containing a
 # newline (which would shift every field after it and forge the frame).
 _GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONSAFEPATH=1 PYTHONPATH="$_GATE_LIB" python3 -S -c "
 import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
@@ -1073,46 +1085,247 @@ The marker must then read: PASS-FF refs/heads/$PROTECTED $oid"
             # follow-up once #622 lands an installer. Non-regression holds
             # meanwhile: every one of those was equally possible before this gate
             # existed, and each needs a hook symlink planted in advance.
-            _hp=$(git_real config --get core.hooksPath 2>/dev/null) || _hp=""
-            _hp_safe=0
-            if [ -z "$_hp" ]; then
-                _hp_safe=1
-            else
-                _repo_phys=$(cd "$REPO_DIR" 2>/dev/null && pwd -P) || _repo_phys=""
-                _hp_phys=$(cd "$REPO_DIR" 2>/dev/null && cd "$_hp" 2>/dev/null && pwd -P) || _hp_phys=""
-                if [ -n "$_repo_phys" ] && [ -n "$_hp_phys" ]; then
-                    case "$_hp_phys" in
-                        "$_repo_phys"|"$_repo_phys"/*) ;;
-                        *) _hp_safe=1 ;;
-                    esac
-                else
-                    # It did not resolve. Two very different reasons, and only one
-                    # is dangerous. A SYMLINK that cannot be followed may be
-                    # `/tmp/hooks -> <repo>/future-hooks`, dangling now and inside
-                    # the tree the moment this merge creates the target -- not
-                    # provably outside, so it refuses. A path that is simply
-                    # ABSENT and is not a link points nowhere git can execute
-                    # from; when its spelling is absolute and outside the tree it
-                    # is safe, which is the ordinary case of a configured global
-                    # hooks directory that happens not to exist.
-                    case "$_hp" in
-                        /*) _hp_probe="$_hp" ;;
-                        *)  _hp_probe="$REPO_DIR/$_hp" ;;
-                    esac
-                    if [ ! -L "$_hp_probe" ]; then
-                        case "$_hp" in
-                            /*) case "$_hp" in
-                                    "$REPO_DIR"|"$REPO_DIR"/*) ;;
-                                    *) _hp_safe=1 ;;
-                                esac ;;
-                        esac
-                    fi
-                fi
+            # WHICH FILE WILL GIT EXECUTE. `git merge` runs `post-merge` the
+            # moment it completes, so if that file lives in the WORKING TREE the
+            # content this fast-forward checks out can BE the hook that then runs
+            # -- one authorization, two actions, and needing no shell access at
+            # all, only control of the incoming content.
+            #
+            # Asked as a path question and answered with realpath, because every
+            # spelling-based version leaked. Earlier rounds produced: a path equal
+            # to the repo root matching no `<root>/*` prefix; a relative path
+            # needing joining; `.githooks -> hooks` hiding the change from a diff
+            # on the configured spelling; a DANGLING link whose target the merge
+            # itself creates; a nested `.githooks/post-merge -> ../scripts/...`
+            # moving the real file out of the directory; an ANCESTOR component
+            # being a link; and pathspec syntax like `:(exclude)`. realpath
+            # resolves all of them at once, and resolves partially through a
+            # dangling link, which is what catches the not-yet-created target.
+            #
+            # Containment is "inside the worktree but NOT inside the git dir":
+            # `.git/hooks/post-merge` as a regular file is ordinary and safe, the
+            # merge cannot touch it; the same name as a SYMLINK into the tree is
+            # the documented escalation and is refused.
+            # `set -euf` is in force, and BOTH of these are expected to fail in
+            # ordinary use: rev-parse outside a repository, and `config --get`
+            # for an unset core.hooksPath - which is the common case. Their
+            # status is the answer here, not an error, so errexit is exactly
+            # what must not apply; each is handled on the spot below.
+            # The COMMON dir, not --absolute-git-dir: in a linked worktree the
+            # latter is <common>/worktrees/<name>, while the hooks git runs live
+            # in <common> itself. Everything the merge cannot rewrite sits under
+            # the common dir, including that per-worktree directory, so it is
+            # the right root for the exemption.
+            # shellcheck disable=SC2310  # status is consumed, not masked
+            _gitdir=$(git_real rev-parse --git-common-dir 2>/dev/null) || _gitdir=""
+            # git's OWN answer for which directory it will run hooks from. It
+            # honours core.hooksPath (measured) and it is correct in a linked
+            # worktree, where composing <git dir>/hooks by hand names a path that
+            # does not exist - which then looks safely outside the tree while the
+            # real shared hook, possibly a symlink into it, is never inspected.
+            # shellcheck disable=SC2310  # an empty result is handled below
+            _hookdir=$(git_real rev-parse --git-path hooks 2>/dev/null) || _hookdir=""
+            _hp_set=0
+            # shellcheck disable=SC2310  # a nonzero status IS the unset answer
+            _hp=$(git_real config --get core.hooksPath 2>/dev/null) || _hp_set=1
+            if [[ "$_hp_set" == "0" ]] && [[ -z "$_hp" ]]; then
+                # SET to the empty string is not the same as unset, and git does
+                # not fall back to the default hooks directory for it. Whatever it
+                # does mean, this gate cannot name the file git will run.
+                block_emit "BLOCKED: core.hooksPath is set to an EMPTY value, so the gate cannot name the post-merge hook git would run for this merge, and cannot show that it lives outside the working tree. Unset it, or point it at a directory outside the tree:
+  git -C $Q_REPO config --unset core.hooksPath"
+                exit 0
             fi
-            if [ "$_hp_safe" != "1" ]; then
-                block_emit "BLOCKED: core.hooksPath is '$_hp', which this gate cannot prove resolves outside the working tree. git runs the post-merge hook from there the moment this merge completes, so a fast-forward could land the very file that then executes - a second, unreviewed action this authorization does not cover, and one needing no shell access at all, only control of the incoming content.
+            # Command substitution strips EVERY trailing newline, so a value
+            # spelled `/outside/hooks\n` in the config arrives here as
+            # `/outside/hooks` - a different name, and possibly an absent one,
+            # while git runs the hook under the real newline-suffixed path. Do
+            # not try to carry the newline through; count them in the raw value
+            # and refuse. `-z` so git terminates with NUL rather than adding a
+            # newline of its own, and the count is of the VALUE's own bytes.
+            # shellcheck disable=SC2310  # a nonzero status means unset, handled above
+            _hp_nl=$(git_real config -z --get core.hooksPath 2>/dev/null | tr -d '\000' | wc -l) || _hp_nl=0
+            if [[ "${_hp_nl//[[:space:]]/}" != "0" ]]; then
+                block_emit "BLOCKED: core.hooksPath contains a NEWLINE, so the gate cannot name the post-merge hook git would run for this merge, and cannot show that it lives outside the working tree. A hooks path with a newline in it is refused rather than guessed at. Set it to a plain path outside the tree, or unset it:
+  git -C $Q_REPO config --unset core.hooksPath"
+                exit 0
+            fi
+            # -I, not just -S: with `-c` the interpreter puts the CURRENT
+            # DIRECTORY first on sys.path, and that directory is the repository
+            # this merge is about. A tracked unicodedata.py would then be
+            # imported and run here - measured: it returns whatever it likes
+            # from normalize(), which is enough to fold every path together and
+            # make the check pass. -I drops that entry (it also implies -E/-s,
+            # which costs nothing: this payload reads no PYTHONPATH).
+            _hp_verdict=$(python3 -I -S -c "
+import os, sys, unicodedata
+repo, hookdir, gitdir = sys.argv[1], sys.argv[2], sys.argv[3]
+if not repo or not gitdir or not hookdir:
+    print('block'); raise SystemExit(0)
+def absol(p):
+    # git may answer relatively (it runs with -C at the worktree root, and a
+    # relative core.hooksPath is rooted at the top of the working tree).
+    return p if os.path.isabs(p) else os.path.join(repo, p)
+base = absol(hookdir)
+repo_r = os.path.realpath(repo)
+git_r = os.path.realpath(absol(gitdir))
+def ident(p):
+    # dev+inode is the filesystem's own answer to are-these-the-same-directory,
+    # and unlike a name it survives every aliasing scheme. It is EXACT, so it is
+    # safe in both directions - it can neither over- nor under-match.
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+repo_id = ident(repo_r)
+git_id = ident(git_r)
+def under_id(p, root_id):
+    # Climb by identity rather than by name: realpath resolves symlinks but does
+    # NOT collapse a macOS firmlink, so /Volumes/Work and
+    # /System/Volumes/Data/Volumes/Work keep different spellings while sharing
+    # one dev+inode (measured). A hooksPath written in the alternate spelling
+    # would otherwise read as safely outside the tree it is actually inside.
+    # A path that does not exist yet climbs to the nearest ancestor that does,
+    # which is the right answer: this merge is what would create it.
+    # RESIDUAL, stated rather than half-closed: this climbs to the worktree
+    # ROOT, so a second mount of an in-tree SUBDIRECTORY (a bind mount of
+    # <repo>/.githooks at /mnt/hooks) shares that subdirectory's inode and never
+    # the root's, and reads as outside. Finding it would mean scanning the tree
+    # for a matching inode on every check. It sits with the ambient-environment
+    # residuals in ADR 0050: it is machine state the gate cannot see, not
+    # something the incoming content can arrange.
+    if root_id is None:
+        return False
+    cur = os.path.realpath(p)
+    for _ in range(4096):
+        if ident(cur) == root_id:
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            # The filesystem root, reached without meeting the root asked about.
+            # That IS the answer: the path is not under it.
+            return False
+        cur = parent
+    # The bound ran out, so this climb decided nothing, and undecided means
+    # inside. Belt and braces rather than a hole being closed: the caller walks
+    # EVERY component from the filesystem root down, so the shallowest in-tree
+    # one -- the worktree root itself -- is reached after a climb of zero and
+    # refuses long before depth matters. Measured: with the bound at 256 and
+    # this answer inverted, a 300-component in-tree hooksPath still refuses.
+    # An undecidable climb must still not read as proof of being outside.
+    return True
+    return False
+def strict(p, root):
+    # rstrip so a root of / does not build the prefix //, which matched nothing
+    # and classified every path as outside the worktree.
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
+def fold(p):
+    # macOS compares filenames case-insensitively AND treats the canonically
+    # equivalent NFC and NFD spellings as the same file; neither is equal as a
+    # Python string. casefold, not lower: lower leaves the Greek final sigma
+    # distinct from the medial one, which the filesystem does not. NFC again
+    # afterwards because casefolding can denormalize what it folds.
+    return unicodedata.normalize('NFC', unicodedata.normalize('NFC', p).casefold())
+def loose(p, root):
+    # Used ONLY where over-matching REFUSES -- deciding inside-the-worktree, and
+    # the git-dir-ancestor guard. Never for the git-dir exemption, where
+    # over-matching would EXEMPT a distinct path: on a case-sensitive volume
+    # /repo/.GIT/hooks is not /repo/.git, and folding them together would wave a
+    # tracked hook through.
+    return strict(p, root) or strict(fold(p), fold(root))
+dot_git = os.path.join(repo_r, '.git')
+def gitdir_beyond_reach():
+    # The exemption says a hook living in the git dir is safe because the merge
+    # cannot write there. That is true in exactly two shapes. Outside the
+    # worktree: nothing checked out can reach it. Or the reserved name .git,
+    # which git will never check content into. A git dir INSIDE the worktree
+    # under any other name -- a separate common dir at <worktree>/control, say
+    # -- is ordinary tracked space, and this very merge can land
+    # control/hooks/post-merge in it.
+    if not (loose(git_r, repo_r) or under_id(git_r, repo_id)):
+        return True
+    # By NAME, and only by name. What makes .git safe is that git refuses to
+    # track a path spelled that way -- nothing about the directory it happens to
+    # be. An identity test here reads through a .git SYMLINK and would declare
+    # the ordinary in-tree directory behind it reserved, which is the bypass
+    # this branch exists to close.
+    # EXACT, not folded: on a case-sensitive volume .GIT is an ordinary tracked
+    # directory that git will happily check content into, and folding it onto
+    # .git would hand it the reservation. The other way round costs only a
+    # refusal on a repo whose git dir is spelled unusually, which is the safe
+    # direction to be wrong in.
+    return git_r == dot_git
+if loose(repo_r, git_r) or under_id(repo_r, git_id) or not gitdir_beyond_reach():
+    # The exemption below rests on the git dir being somewhere the merge does
+    # not check out into. If the git dir IS the worktree, or an ANCESTOR of it
+    # (core.worktree, or a separately-located git dir), then every tracked path
+    # is inside it too and the exemption would swallow the whole check. That
+    # layout cannot be proven safe here, so it refuses.
+    # loose(), not strict(): here over-matching REFUSES, so the case/Unicode
+    # fold is the safe direction. realpath resolves symlinks but keeps the
+    # spelling it was given, so on a case-insensitive volume a git dir recorded
+    # as /x/GD and a worktree resolving to /x/gd/wt are the SAME directory and
+    # differ only as Python strings. Missing that ancestry would then let a
+    # hooksPath spelled with the git dir's casing take the exemption and wave a
+    # tracked in-tree post-merge hook through.
+    print('block'); raise SystemExit(0)
+def refuse(p):
+    # The worktree ROOT itself is every in-tree path's ancestor and git cannot
+    # replace it, so reaching it is not by itself a finding; anything strictly
+    # below it is content this merge can rewrite.
+    # By name only, for the same reason the git-dir exemption is: an identity
+    # test follows symlinks, and a tracked .jump pointing AT the worktree root
+    # would inherit the root's un-replaceability while being, itself,
+    # ordinary tracked space this merge can turn into a directory of its own.
+    if fold(p) == fold(repo_r):
+        return False
+    inside = loose(p, repo_r) or under_id(p, repo_id)
+    # The exemption is decided on the path's OWN LOCATION, by name only. Neither
+    # the case fold nor the identity climb belongs here: both would EXEMPT a
+    # distinct path, and over-matching in this direction is a bypass rather than
+    # a false alarm. The fold, because on a case-sensitive volume /repo/.GIT is
+    # its own tracked path. The identity climb, because it resolves the
+    # candidate first -- a tracked /repo/.githooks symlinked at .git/hooks lives
+    # in the WORKTREE, and this merge can replace it with a directory of its own.
+    exempt = strict(p, git_r)
+    return inside and not exempt
+# EVERY COMPONENT, judged where it LIVES before it is followed. Resolving the
+# whole parent chain first was wrong: with core.hooksPath=.links/current/hooks
+# and a tracked .links pointing outside today, the resolved path looks safely
+# external, and this very merge can replace .links with an in-tree directory
+# holding post-merge. So each component is checked against the worktree in the
+# canonical spelling of its own parent, and only then followed -- which also
+# lands the resolved endpoint, catching a link whose target the merge creates.
+parts = os.path.join(base, 'post-merge').split(os.sep)
+cur = os.sep
+for comp in parts:
+    if not comp or comp == os.curdir:
+        continue
+    cand = os.path.join(cur, comp)
+    try:
+        # realpath is non-strict and leaves a symlink LOOP unresolved, returning
+        # a spelling that can look safely outside. stat raises ELOOP on one, so
+        # an entry that cannot be stat'ed for any reason other than absence is
+        # not provably outside.
+        os.stat(cand)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        print('block'); raise SystemExit(0)
+    res = os.path.realpath(cand)
+    # A pardir component names no entry of its own; only where it lands counts.
+    if comp != os.pardir and refuse(cand):
+        print('block'); raise SystemExit(0)
+    if refuse(res):
+        print('block'); raise SystemExit(0)
+    cur = res
+print('ok')
+" "$REPO_DIR" "$_hookdir" "$_gitdir" 2>/dev/null) || _hp_verdict="block"
+            if [[ "$_hp_verdict" != "ok" ]]; then
+                block_emit "BLOCKED: the post-merge hook git would run for this merge resolves INSIDE the working tree (core.hooksPath is '$_hp'; empty means the default hooks directory). git runs that hook the moment the merge completes, so this fast-forward could land the very file that then executes - a second, unreviewed action the authorization does not cover, and one needing no shell access at all, only control of the incoming content.
 
-The gate does not try to work out whether THIS merge touches that directory, and it treats an unresolvable path as inside: deciding what git will execute means resolving repo-root paths, relative paths, symlinks, DANGLING symlinks whose target the merge itself creates, symlinks nested inside the hooks directory, and pathspec syntax - and every narrowing of that check missed another case.
+Resolution follows symlinks at every level, so a link in the hooks directory, a link to a tracked file, or one whose target this merge creates all count. A hook file that lives in the git directory itself is fine - the merge cannot touch it.
 
 Point core.hooksPath at a directory outside the working tree, or land the change through a PR:
   git -C $Q_REPO config core.hooksPath <path outside the repo>"

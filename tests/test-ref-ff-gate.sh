@@ -19,10 +19,18 @@
 # Usage: bash tests/test-ref-ff-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
 
+# SC2310 warns that a function called in an `||` condition has `set -e`
+# suppressed for it. This suite never enables `set -e` (see below - `-uo
+# pipefail` only), so the warning's premise does not hold anywhere in the file,
+# and the `|| { ...; exit 1; }` fixture idiom it fires on IS the explicit
+# handling it asks for. Scoped to this file, and to that one check.
+# shellcheck disable=SC2310
+
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 GATE_SCRIPT="$REPO_ROOT/hooks/gate-scripts/ref-ff-gate.sh"
+_REAL_HOME="$HOME"
 
 PASS=0
 FAIL=0
@@ -93,7 +101,11 @@ run_gate() {  # <name> <expected: allow|block> <command> [reason substring]
 import json, sys
 print(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
                   "tool_input": {"command": sys.argv[2]}}))' "$REPO" "$cmd")
-    output=$(printf '%s' "$payload" | bash "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
+    # The gate is normally driven from the suite's own directory, which is where
+    # it already runs. $GATE_CWD exists for the one case that is ABOUT the
+    # process's working directory - in real use the hook runs inside the repo
+    # being merged in, and that directory is content this merge controls.
+    output=$(cd "${GATE_CWD:-$REPO_ROOT}" && printf '%s' "$payload" | bash "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
     got="allow"
     if [[ "$exit_code" -ne 0 ]] && [[ -z "$output" ]]; then
         got="crash"
@@ -1051,6 +1063,59 @@ write_marker "PASS-FF refs/heads/main $FEATURE_OID"
 run_gate "a dangling absolute hooksPath symlink is not provably outside" \
     block "git merge --ff-only $FEATURE_OID" "core.hooksPath"
 rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$TMPROOT/dangling-hooks"
+# The path'''s OWN LOCATION counts, not only where it resolves today: a tracked
+# in-tree entry spelled ABSOLUTELY, pointing safely outside right now, can be
+# replaced by this very merge with a directory holding post-merge.
+ln -s /tmp "$REPO/.githooks-abs"
+git -C "$REPO" config core.hooksPath "$REPO/.githooks-abs"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an absolute in-tree hooksPath spelling refuses too" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.githooks-abs"
+# An INTERMEDIATE in-tree component counts as much as the final one. `.links` is
+# tracked content pointing safely outside today, so the fully-resolved path looks
+# external - and this very merge can replace `.links` with a directory holding
+# post-merge. Each component must be judged where it LIVES, before it is followed.
+ln -s /tmp "$REPO/.links"
+git -C "$REPO" config core.hooksPath "$REPO/.links/current/hooks"
+_rc=0; [[ -L "$REPO/.links" ]] || _rc=1
+assert_true "the nested-symlink hooksPath fixture was created" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an in-tree symlink COMPONENT refuses, though the path resolves outside" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.links"
+git -C "$REPO" config --unset core.hooksPath
+# SET-to-empty is not unset, and git does not fall back to the default for it.
+git -C "$REPO" config core.hooksPath ""
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an empty core.hooksPath value is not treated as the default" \
+    block "git merge --ff-only $FEATURE_OID" "EMPTY value"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+git -C "$REPO" config --unset core.hooksPath
+
+# A symlink LOOP leaves realpath non-strict and returns a spelling that can look
+# safely outside, so an entry that cannot be stat'''ed for any reason other than
+# absence is not provably outside.
+ln -s "$TMPROOT/loop-b" "$TMPROOT/loop-a"
+ln -s "$TMPROOT/loop-a" "$TMPROOT/loop-b"
+git -C "$REPO" config core.hooksPath "$TMPROOT/loop-a"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a symlink loop in hooksPath is not provably outside" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$TMPROOT/loop-a" "$TMPROOT/loop-b"
+git -C "$REPO" config --unset core.hooksPath
+
+# A RELATIVE hooksPath never passes: it is rooted in the working tree, so this
+# merge can replace any component of it - including a tracked `.githooks` symlink
+# that resolves OUTSIDE today and becomes an in-tree directory once the merge
+# lands. Resolving the pre-merge filesystem cannot see that coming.
+ln -s /tmp "$REPO/.githooks-out"
+git -C "$REPO" config core.hooksPath .githooks-out
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a relative hooksPath resolving outside today still refuses" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.githooks-out"
+git -C "$REPO" config --unset core.hooksPath
 # ...while a plainly ABSENT absolute path is harmless: it is not a link, so it
 # points nowhere git can execute from. This is the ordinary global-hooks case.
 git -C "$REPO" config core.hooksPath "$TMPROOT/no-such-hooks-dir"
@@ -1059,6 +1124,392 @@ run_gate "...while an absent non-symlink absolute hooksPath is fine" \
     allow "git merge --ff-only $FEATURE_OID"
 git -C "$REPO" config --unset core.hooksPath
 setup_repo main || { printf '  FAIL  fixture re-setup (dangling hookspath)\n'; exit 1; }
+
+# The DEFAULT hooks directory counts too, and this is the case a hooksPath-only
+# check missed entirely: no core.hooksPath is set, but .git/hooks/post-merge is a
+# SYMLINK to a tracked file, so the merge replaces the very file git then runs.
+# A plain regular file there is fine - it lives in the git dir, which the merge
+# cannot touch - so this pins both directions.
+_gd=$(git -C "$REPO" rev-parse --absolute-git-dir)
+mkdir -p "$_gd/hooks"
+# The operator may have a GLOBAL core.hooksPath, which would mask the default and
+# make this test exercise nothing. Name the git dir's own hooks explicitly.
+git -C "$REPO" config core.hooksPath "$_gd/hooks"
+# An actual regular file, not an absent one: the exemption being asserted is that
+# a REAL hook living in the git dir is fine, and an empty directory would assert
+# nothing.
+printf '#!/bin/sh\nexit 0\n' > "$_gd/hooks/post-merge"
+chmod +x "$_gd/hooks/post-merge"
+_rc=0; { [[ -f "$_gd/hooks/post-merge" ]] && [[ ! -L "$_gd/hooks/post-merge" ]]; } || _rc=1
+assert_true "the default post-merge hook fixture is a regular file" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a plain default post-merge hook file does not block" \
+    allow "git merge --ff-only $FEATURE_OID"
+rm -f "$_gd/hooks/post-merge"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+ln -sf ../../tracked-hook "$_gd/hooks/post-merge"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "...but a default post-merge SYMLINK into the tree refuses" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$_gd/hooks/post-merge"
+git -C "$REPO" config --unset core.hooksPath
+setup_repo main || { printf '  FAIL  fixture re-setup (default hooks)\n'; exit 1; }
+
+# ...and with core.hooksPath UNSET - the ordinary case, and the one with no
+# coverage until now. `git config --get` exits nonzero for an unset key, so a
+# gate under `set -euf` can die here before deciding anything; run_gate scores
+# that as a crash rather than an allow, which is what makes this test bite.
+# The operator may have a GLOBAL core.hooksPath, which would mask the unset case
+# and leave this testing nothing. GIT_CONFIG_GLOBAL cannot neutralize it: the
+# gate runs every git through `env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM`
+# deliberately, so it re-reads the operator's real config. HOME is the lever that
+# does reach it, and the precondition below is asserted through the SAME env the
+# gate uses, so it cannot claim coverage the gate does not actually see.
+git -C "$REPO" config --unset-all core.hooksPath >/dev/null 2>&1 || true
+_EMPTY_HOME="$TMPROOT/empty-home"; mkdir -p "$_EMPTY_HOME"
+export HOME="$_EMPTY_HOME"
+_rc=0
+env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM git -C "$REPO" config --get core.hooksPath >/dev/null 2>&1 && _rc=1
+assert_true "no core.hooksPath is visible to the gate for the unset fixture" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an unset core.hooksPath decides normally, it does not abort the gate" \
+    allow "git merge --ff-only $FEATURE_OID"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+export HOME="$_REAL_HOME"
+setup_repo main || { printf '  FAIL  fixture re-setup (unset hooks)\n'; exit 1; }
+
+# ── A value git stores faithfully but `$(...)` cannot carry: command
+#    substitution strips every trailing newline, so `/tmp/hooks\n` reaches the
+#    gate as `/tmp/hooks`. That trimmed name is outside the tree (and need not
+#    exist at all), while git runs the hook under the real newline-suffixed
+#    path. Measured: git writes the value escaped and hands it back intact.
+#    The gate refuses rather than guessing which name it is judging. ──────────
+git -C "$REPO" config core.hooksPath '/tmp/hooks
+'
+_nl_count=$(git -C "$REPO" config -z --get core.hooksPath | tr -d '\000' | wc -l | tr -d ' ')
+_rc=0; [[ "$_nl_count" == "1" ]] || _rc=1
+assert_true "the newline-valued hooksPath fixture really holds a newline" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a core.hooksPath containing a NEWLINE is refused, not silently trimmed" \
+    block "git merge --ff-only $FEATURE_OID" "contains a NEWLINE"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+git -C "$REPO" config --unset core.hooksPath
+
+# ── The containment check is a `python3 -c` payload, and `-c` puts the
+#    process's CURRENT DIRECTORY first on sys.path. In real use that directory
+#    is the repository being merged in, so a unicodedata.py sitting there is
+#    imported instead of the stdlib one - measured: it then returns whatever it
+#    likes from normalize(), which folds every path to one value and turns this
+#    refusal into an allow. The control case first, so the second assertion is
+#    known to be about the module and not about the fixture. ─────────────────
+mkdir -p "$REPO/.githooks-in-tree"
+git -C "$REPO" config core.hooksPath "$REPO/.githooks-in-tree"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an in-tree hooksPath refuses (control for the hostile-module case)" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+# Not a constant: folding EVERY path together also makes the worktree look like
+# it sits inside the git dir, and the gate refuses that outright - a block for
+# the wrong reason, which would leave this test asserting nothing. This one
+# leaves git-dir paths alone and collapses the rest, so the worktree-root
+# exemption swallows the hooks path while the ancestor guard stays quiet.
+printf 'def normalize(form, s):\n    if s.endswith(".git") or "/.git/" in s:\n        return s\n    return "X"\n' > "$REPO/unicodedata.py"
+_rc=0; [[ -f "$REPO/unicodedata.py" ]] || _rc=1
+assert_true "the repo-controlled unicodedata.py fixture is in place" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+GATE_CWD="$REPO"
+run_gate "...and a repo-controlled unicodedata.py cannot make it allow" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+unset GATE_CWD
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/unicodedata.py"
+rmdir "$REPO/.githooks-in-tree"
+git -C "$REPO" config --unset core.hooksPath
+
+# ── The git-dir exemption ("a hook that lives inside the git dir is out of the
+#    merge's reach") holds only while the git dir is NOT an ancestor of the
+#    worktree. `git init --separate-git-dir` builds exactly that layout, and it
+#    is constructible - measured, not assumed. In it EVERY tracked path is
+#    inside the git dir too, so an exemption keyed on "inside the git dir"
+#    would swallow the whole post-merge check and wave the merge through. The
+#    layout cannot be proven safe here, so it refuses. ────────────────────────
+_SAVED_REPO="$REPO"
+_ANC="$TMPROOT/anc"
+rm -rf "$_ANC"
+(
+    set -e
+    git init -q -b main --separate-git-dir="$_ANC/gd" "$_ANC/gd/wt"
+    cd "$_ANC/gd/wt"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    echo base > f; git add f; git commit -qm base
+    git checkout -q -b feature
+    echo more > f; git add f; git commit -qm more
+    git checkout -q main
+) || { printf '  FAIL  fixture setup (gitdir-ancestor)\n'; FAIL=$((FAIL + 1)); }
+REPO="$_ANC/gd/wt"
+mkdir -p "$REPO/$ISO_STATE"
+# This fixture has no remote, so protected-branch discovery would fall through
+# to init.defaultBranch - operator config the suite does not control. Declare it
+# instead, so the test turns on the git-dir layout and nothing else.
+printf 'main\n' > "$REPO/$ISO_STATE/ref-ff-protected.local"
+_ANC_OID=$(git -C "$REPO" rev-parse feature 2>/dev/null) || _ANC_OID=""
+# pwd -P on both sides: the gate compares realpath'd roots, and $TMPROOT is under
+# /var, a symlink to /private/var on macOS.
+_anc_tl_raw=$(git -C "$REPO" rev-parse --show-toplevel)
+_anc_gd_raw=$(git -C "$REPO" rev-parse --absolute-git-dir)
+_anc_tl=$(cd "$_anc_tl_raw" && pwd -P)
+_anc_gd=$(cd "$_anc_gd_raw" && pwd -P)
+_rc=1; case "$_anc_tl" in "$_anc_gd"/*) _rc=0 ;; esac
+assert_true "the fixture's git dir really is an ANCESTOR of its worktree" "$_rc"
+write_marker "PASS-FF refs/heads/main $_ANC_OID"
+run_gate "a git dir that is an ANCESTOR of the worktree refuses the merge" \
+    block "git merge --ff-only $_ANC_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/$ISO_STATE/ref-ff-protected.local"
+REPO="$_SAVED_REPO"
+rm -rf "$_ANC"
+
+# ...and the SAME layout spelled in a different case. realpath resolves symlinks
+# but keeps the spelling it is handed, so on a case-insensitive volume a git dir
+# recorded as .../GD and a worktree at .../gd/wt are ONE directory that no plain
+# string comparison relates - and a core.hooksPath spelled with the git dir's
+# casing would then take the exemption and wave a tracked in-tree post-merge
+# hook through.
+#
+# Two spellings, because they discriminate different things. gd/GD is plain
+# ASCII and any lowercasing catches it. The Greek pair does not: `lower()` maps
+# the medial sigma but leaves the FINAL sigma alone, while the filesystem folds
+# them together (measured on this volume) - so only real case FOLDING sees that
+# ancestry. Each pair is built only where the alias actually exists; on a
+# case-sensitive volume the two names are different directories and there is
+# nothing to alias.
+for _pair in "gd:GD" "σ:ς"; do
+    _low="${_pair%%:*}"; _alias="${_pair##*:}"
+    rm -rf "$TMPROOT/case-probe"; mkdir -p "$TMPROOT/case-probe/$_alias"
+    [[ -d "$TMPROOT/case-probe/$_low" ]] || continue
+    _SAVED_REPO="$REPO"
+    _ANC2="$TMPROOT/anc2"
+    rm -rf "$_ANC2"; mkdir -p "$_ANC2"
+    # Physical from the start: $TMPROOT sits under /var, a symlink to /private/var
+    # on macOS, and a prefix test that missed for THAT reason would prove nothing
+    # about casing.
+    _ANC2_P=$(cd "$_ANC2" && pwd -P)
+    (
+        set -e
+        git init -q -b main --separate-git-dir="$_ANC2_P/$_low" "$_ANC2_P/$_low/wt"
+        cd "$_ANC2_P/$_low/wt"
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false; git config tag.gpgsign false
+        echo base > f; git add f; git commit -qm base
+        git checkout -q -b feature
+        echo more > f; git add f; git commit -qm more
+        git checkout -q main
+        # Re-point the worktree at the ALIASED spelling of that very directory.
+        # Written by hand deliberately - git normalizes its own spelling.
+        printf 'gitdir: %s\n' "$_ANC2_P/$_alias" > "$_ANC2_P/$_low/wt/.git"
+    ) || { printf '  FAIL  fixture setup (case-aliased gitdir-ancestor %s)\n' "$_pair"; FAIL=$((FAIL + 1)); }
+    REPO="$_ANC2_P/$_low/wt"
+    mkdir -p "$REPO/$ISO_STATE"
+    printf 'main\n' > "$REPO/$ISO_STATE/ref-ff-protected.local"
+    _ANC2_OID=$(git -C "$REPO" rev-parse feature 2>/dev/null) || _ANC2_OID=""
+    _anc2_tl=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) || _anc2_tl=""
+    _anc2_gd=$(git -C "$REPO" rev-parse --absolute-git-dir 2>/dev/null) || _anc2_gd=""
+    # The alias only bites if a PLAIN prefix test misses the ancestry while the
+    # directory is genuinely there. That is the pre-fix behaviour being pinned.
+    _rc=0
+    case "$_anc2_tl" in "$_anc2_gd"/*) _rc=1 ;; esac
+    { [[ -n "$_anc2_gd" ]] && [[ -d "$_anc2_gd" ]]; } || _rc=1
+    assert_true "the $_pair fixture hides its ancestry from a plain prefix test" "$_rc"
+    write_marker "PASS-FF refs/heads/main $_ANC2_OID"
+    run_gate "...and a CASE-ALIASED ($_pair) ancestor git dir refuses too" \
+        block "git merge --ff-only $_ANC2_OID" "post-merge hook"
+    rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/$ISO_STATE/ref-ff-protected.local"
+    REPO="$_SAVED_REPO"
+    rm -rf "$_ANC2"
+done
+rm -rf "$TMPROOT/case-probe"
+
+# ── A second spelling that realpath does NOT collapse: macOS firmlinks give
+#    /x and /System/Volumes/Data/x the same dev+inode under different names, so
+#    a hooksPath written the other way reads as safely outside the very tree it
+#    is inside. Built only where the alias actually resolves to the same
+#    directory - it is a macOS data-volume layout, not a portable one. ────────
+_ALIAS_PREFIX=/System/Volumes/Data
+_repo_phys=$(cd "$REPO" && pwd -P)
+_alias_repo="$_ALIAS_PREFIX$_repo_phys"
+_id_a=$(stat -f '%d:%i' "$_repo_phys" 2>/dev/null) || _id_a=""
+_id_b=$(stat -f '%d:%i' "$_alias_repo" 2>/dev/null) || _id_b=""
+if [[ -n "$_id_a" ]] && [[ "$_id_a" == "$_id_b" ]]; then
+    mkdir -p "$REPO/.githooks-alias"
+    # The ALIAS spelling, which shares no prefix with the repo path git reports.
+    git -C "$REPO" config core.hooksPath "$_alias_repo/.githooks-alias"
+    _rc=0
+    case "$_alias_repo" in "$_repo_phys"/*|"$_repo_phys") _rc=1 ;; esac
+    assert_true "the firmlink alias spelling shares no prefix with the repo path" "$_rc"
+    write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+    run_gate "an in-tree hooksPath spelled through a firmlink alias refuses too" \
+        block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+    rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+    rmdir "$REPO/.githooks-alias"
+    # ...and DEEP, through the same alias, where the plain-prefix test is blind
+    # and every verdict rests on the identity climb. This does NOT discriminate
+    # the climb's bound: measured, a 300-component path still refuses with the
+    # bound at 256 and its exhausted answer inverted, because the walk reaches
+    # the worktree root - a climb of zero - long before depth matters. It is
+    # kept as coverage of the deep-alias shape itself, not as a bound test.
+    _deep=""
+    for _i in $(seq 1 300); do _deep="$_deep/d"; done
+    mkdir -p "$REPO$_deep"
+    git -C "$REPO" config core.hooksPath "$_alias_repo$_deep"
+    _rc=0; [[ -d "$REPO$_deep" ]] || _rc=1
+    assert_true "the 300-component in-tree hooks directory was created" "$_rc"
+    write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+    run_gate "a DEEP in-tree hooksPath through the alias refuses too" \
+        block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+    rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+    rm -rf "$REPO/d"
+    git -C "$REPO" config --unset core.hooksPath
+fi
+
+# ── The containment payload lives inside a shell "..." string, so a `$`, a
+#    backtick or a double quote anywhere in it - a COMMENT included - is
+#    expanded rather than read as text. Every time that has happened the gate
+#    silently blocked everything, which is a fail-closed direction but still a
+#    dead gate. Pin it structurally; prose has not held. ──────────────────────
+_pay_start=$(grep -n 'python3 -I -S -c "' "$GATE_SCRIPT" | cut -d: -f1)
+_pay_end=$(grep -n '^" "\$REPO_DIR" "\$_hookdir" "\$_gitdir"' "$GATE_SCRIPT" | cut -d: -f1)
+_rc=0
+{ [[ -n "$_pay_start" ]] && [[ -n "$_pay_end" ]] && [[ "$_pay_end" -gt "$_pay_start" ]]; } || _rc=1
+assert_true "the embedded containment payload was located in the gate" "$_rc"
+if [[ "$_rc" -eq 0 ]]; then
+    _bad=$(awk -v a="$_pay_start" -v b="$_pay_end" 'NR>a && NR<b' "$GATE_SCRIPT" | grep -c '[$`"\\]')
+    _rc=0; [[ "${_bad//[[:space:]]/}" == "0" ]] || _rc=1
+    assert_true "the embedded payload carries no shell-active character" "$_rc"
+fi
+
+# ── An in-tree component that RESOLVES to the worktree root. The root itself is
+#    exempt because git cannot replace it - but a tracked `.jump -> $REPO` is
+#    not the root, it is ordinary space this merge can turn into a directory of
+#    its own. Spelled with a `..` after it the path resolves OUTSIDE the tree
+#    today, so only judging the component where it lives catches it. ──────────
+ln -s "$REPO" "$REPO/.jump"
+git -C "$REPO" config core.hooksPath "$REPO/.jump/../hooks"
+_rc=0; [[ -L "$REPO/.jump" ]] || _rc=1
+assert_true "the self-referencing .jump symlink fixture was created" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an in-tree component resolving to the worktree ROOT is not exempt either" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.jump"
+git -C "$REPO" config --unset core.hooksPath
+
+# ── A git dir INSIDE the worktree under an ordinary name. `.git` is reserved -
+#    git will never check content into it - but a separate common dir at
+#    <worktree>/control is plain tracked space, so an incoming commit can add
+#    control/hooks/post-merge and the exemption would wave it through. The
+#    layout cannot be proven safe, so the marker route refuses it. ────────────
+_SAVED_REPO="$REPO"
+_CTL="$TMPROOT/ctl"
+rm -rf "$_CTL"; mkdir -p "$_CTL"
+_CTL_P=$(cd "$_CTL" && pwd -P)
+(
+    set -e
+    git init -q -b main --separate-git-dir="$_CTL_P/wt/control" "$_CTL_P/wt"
+    cd "$_CTL_P/wt"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    echo base > f; git add f; git commit -qm base
+    git checkout -q -b feature
+    echo more > f; git add f; git commit -qm more
+    git checkout -q main
+) || { printf '  FAIL  fixture setup (in-tree git dir)\n'; FAIL=$((FAIL + 1)); }
+REPO="$_CTL_P/wt"
+mkdir -p "$REPO/$ISO_STATE"
+printf 'main\n' > "$REPO/$ISO_STATE/ref-ff-protected.local"
+_ctl_oid=$(git -C "$REPO" rev-parse feature 2>/dev/null) || _ctl_oid=""
+_ctl_common=$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null) || _ctl_common=""
+_ctl_tl=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) || _ctl_tl=""
+# It has to be genuinely INSIDE the worktree and genuinely not named .git,
+# or the case under test is not the case being built.
+_rc=0
+case "$_ctl_common" in "$_ctl_tl"/*) : ;; *) _rc=1 ;; esac
+case "$_ctl_common" in */.git) _rc=1 ;; esac
+assert_true "the in-tree git dir fixture sits in the worktree under a plain name" "$_rc"
+write_marker "PASS-FF refs/heads/main $_ctl_oid"
+run_gate "a git dir inside the worktree under a plain name is not exempt space" \
+    block "git merge --ff-only $_ctl_oid" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/$ISO_STATE/ref-ff-protected.local"
+printf 'main\n' > "$REPO/$ISO_STATE/ref-ff-protected.local"
+# ...and the same layout reached through a .git SYMLINK. What makes .git safe is
+# that git will not track a path spelled that way - nothing about the directory
+# behind it. A test that asked whether .git and the git dir are the same
+# DIRECTORY would follow the link and call the tracked `control` reserved.
+rm -f "$REPO/.git"
+ln -s control "$REPO/.git"
+_rc=0
+{ [[ -L "$REPO/.git" ]] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; } || _rc=1
+assert_true "the .git-symlink fixture is a symlink git still resolves" "$_rc"
+write_marker "PASS-FF refs/heads/main $_ctl_oid"
+run_gate "...and a .git SYMLINK onto it does not make it reserved either" \
+    block "git merge --ff-only $_ctl_oid" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/$ISO_STATE/ref-ff-protected.local"
+REPO="$_SAVED_REPO"
+rm -rf "$_CTL"
+# The reservation is granted to the EXACT name `.git` and to no other spelling,
+# because that is the name git refuses to track. The `.GIT` variant of this case
+# is only constructible on a case-SENSITIVE volume - here the two names are one
+# file, so a fixture cannot hold both - and a test that could only ever skip is
+# not coverage. The two cases above pin the same rule with names that do exist.
+
+# ── An in-tree component that currently POINTS INTO the git dir. Its target is
+#    exempt, but the component itself lives in the worktree, and this merge can
+#    replace it with a directory of its own holding post-merge. The exemption
+#    therefore has to be decided on where a path LIVES, never on where it
+#    resolves - the mirror image of the nested-symlink case above. ────────────
+ln -s .git/hooks "$REPO/.githooks-into-gitdir"
+git -C "$REPO" config core.hooksPath "$REPO/.githooks-into-gitdir"
+_rc=0; [[ -L "$REPO/.githooks-into-gitdir" ]] || _rc=1
+assert_true "the into-the-git-dir symlink fixture was created" "$_rc"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "an in-tree symlink INTO the git dir does not inherit its exemption" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.githooks-into-gitdir"
+git -C "$REPO" config --unset core.hooksPath
+
+# ── A LINKED worktree. --absolute-git-dir there is <common>/worktrees/<name>,
+#    but git runs hooks from <common>/hooks - so composing the default by hand
+#    names a directory that does not exist, reads as safely outside, and never
+#    inspects the shared hook that actually fires. Ask git instead. The default
+#    only matters with core.hooksPath unset, and the operator may have a GLOBAL
+#    one that would mask it, so HOME is emptied exactly as in the unset case
+#    above. ──────────────────────────────────────────────────────────────────
+setup_repo lworktree || { printf '  FAIL  fixture setup (linked worktree)\n'; exit 1; }
+_SAVED_REPO="$REPO"
+_LW="$TMPROOT/lw"
+rm -rf "$_LW"
+git -C "$REPO" checkout -q feature
+git -C "$REPO" worktree add -q "$_LW" main >/dev/null 2>&1
+mkdir -p "$REPO/.git/hooks"
+# A symlink from the SHARED hooks dir into the linked worktree: content this
+# merge lands, executed the moment it completes.
+ln -sf "$_LW/tracked-hook" "$REPO/.git/hooks/post-merge"
+_lw_abs=$(git -C "$_LW" rev-parse --absolute-git-dir 2>/dev/null) || _lw_abs=""
+_lw_common=$(git -C "$_LW" rev-parse --git-common-dir 2>/dev/null) || _lw_common=""
+_rc=0
+{ [[ -n "$_lw_abs" ]] && [[ "$_lw_abs" != "$_lw_common" ]]; } || _rc=1
+assert_true "the linked-worktree fixture really has a per-worktree git dir" "$_rc"
+REPO="$_LW"
+mkdir -p "$REPO/$ISO_STATE"
+export HOME="$_EMPTY_HOME"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+GATE_CWD="$REPO"
+run_gate "the SHARED post-merge hook of a linked worktree is the one inspected" \
+    block "git merge --ff-only $FEATURE_OID" "post-merge hook"
+unset GATE_CWD
+export HOME="$_REAL_HOME"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+REPO="$_SAVED_REPO"
+git -C "$REPO" worktree remove --force "$_LW" >/dev/null 2>&1
+rm -rf "$_LW"
+setup_repo main || { printf '  FAIL  fixture re-setup (linked worktree)\n'; exit 1; }
 
 # ── No remote-tracking ref: the pull arm CANNOT hold, so the marker is the
 #    only way through. Keying an allow on the repo's shape would be a

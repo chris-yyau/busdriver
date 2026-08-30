@@ -987,6 +987,74 @@ run_gate "a marker created moments ago is refused (anti-self-bypass)" \
     block "git merge --ff-only $FEATURE_OID" "was created moments ago"
 rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
 
+# A fast-forward that lands a POST-MERGE HOOK is not one ref move: git runs
+# post-merge immediately, so with core.hooksPath in the working tree the content
+# being checked out executes. This needs NO shell access, only control of the
+# incoming content — exactly what the gate distrusts.
+git -C "$REPO" config core.hooksPath .githooks
+git -C "$REPO" checkout -q feature
+mkdir -p "$REPO/.githooks"
+printf '#!/bin/sh\necho pwned\n' > "$REPO/.githooks/post-merge"
+chmod +x "$REPO/.githooks/post-merge"
+git -C "$REPO" add .githooks/post-merge >/dev/null 2>&1
+git -C "$REPO" commit -qm "add post-merge hook" >/dev/null 2>&1
+HOOK_OID=$(git -C "$REPO" rev-parse 'feature^{commit}')
+git -C "$REPO" checkout -q main
+write_marker "PASS-FF refs/heads/main $HOOK_OID"
+run_gate "a fast-forward that lands a post-merge hook is refused" \
+    block "git merge --ff-only $HOOK_OID" "core.hooksPath"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+# ...and the refusal does NOT depend on this merge touching that directory. The
+# narrow "only if it changes" check was tried and abandoned: deciding what git
+# will execute means resolving repo-root paths, relative paths, symlinks,
+# DANGLING symlinks, symlinks nested inside the hooks dir, and pathspec magic
+# like `:(exclude)` — and each fix revealed the next hole.
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "...and an in-tree hooksPath refuses the route regardless" \
+    block "git merge --ff-only $FEATURE_OID" "core.hooksPath"
+git -C "$REPO" config --unset core.hooksPath
+setup_repo main || { printf '  FAIL  fixture re-setup (hookspath)\n'; exit 1; }
+
+# ...and the configured spelling is not the directory git reaches. With
+# `.githooks -> hooks`, a change to `hooks/post-merge` produces no diff under
+# `.githooks`, yet git follows the link and runs the changed hook. Containment is
+# therefore resolved physically, and both spellings are passed as pathspecs.
+git -C "$REPO" checkout -q feature
+mkdir -p "$REPO/hooks"
+printf '#!/bin/sh\necho pwned\n' > "$REPO/hooks/post-merge"
+chmod +x "$REPO/hooks/post-merge"
+git -C "$REPO" add hooks/post-merge >/dev/null 2>&1
+git -C "$REPO" commit -qm "add hook via symlinked dir" >/dev/null 2>&1
+SYM_OID=$(git -C "$REPO" rev-parse 'feature^{commit}')
+git -C "$REPO" checkout -q main
+ln -s hooks "$REPO/.githooks"
+git -C "$REPO" config core.hooksPath .githooks
+write_marker "PASS-FF refs/heads/main $SYM_OID"
+run_gate "a symlinked hooksPath is resolved, not taken literally" \
+    block "git merge --ff-only $SYM_OID" "core.hooksPath"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$REPO/.githooks"
+git -C "$REPO" config --unset core.hooksPath
+setup_repo main || { printf '  FAIL  fixture re-setup (symlink hookspath)\n'; exit 1; }
+
+# An ABSOLUTE hooksPath outside the tree is not safe just because it is spelled
+# that way: a dangling `/tmp/... -> <repo>/future-hooks` resolves INTO the tree
+# the moment this merge creates the target. A link that cannot be followed is not
+# provably outside, so it refuses.
+ln -s "$REPO/future-hooks" "$TMPROOT/dangling-hooks"
+git -C "$REPO" config core.hooksPath "$TMPROOT/dangling-hooks"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "a dangling absolute hooksPath symlink is not provably outside" \
+    block "git merge --ff-only $FEATURE_OID" "core.hooksPath"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local" "$TMPROOT/dangling-hooks"
+# ...while a plainly ABSENT absolute path is harmless: it is not a link, so it
+# points nowhere git can execute from. This is the ordinary global-hooks case.
+git -C "$REPO" config core.hooksPath "$TMPROOT/no-such-hooks-dir"
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "...while an absent non-symlink absolute hooksPath is fine" \
+    allow "git merge --ff-only $FEATURE_OID"
+git -C "$REPO" config --unset core.hooksPath
+setup_repo main || { printf '  FAIL  fixture re-setup (dangling hookspath)\n'; exit 1; }
+
 # ── No remote-tracking ref: the pull arm CANNOT hold, so the marker is the
 #    only way through. Keying an allow on the repo's shape would be a
 #    fail-OPEN reachable by deleting a remote. ─────────────────────────

@@ -59,9 +59,18 @@
 #   was deleted — and in the pull arm the same ref is only a precondition, where
 #   poisoning it can at most let through a pull whose content still comes from the
 #   real remote.
+#   RESIDUAL, downstream execution. The gate authorizes ONE ref move and cannot
+#   see what git itself runs afterwards. `git merge` invokes `post-merge`, and
+#   with `core.hooksPath` pointing inside the working tree the content the
+#   fast-forward just landed can BE that hook and move the ref again immediately.
+#   Refusing an in-tree hooksPath was considered and rejected: `.githooks/` in the
+#   repo is a common, legitimate layout, so the block would fire mostly on honest
+#   setups. Same for the command's own resolution of `git` -- ambient PATH,
+#   BASH_ENV and exported shell functions belong to the session shell, not to this
+#   gate, which the contained launch (`#!/bin/bash -p`) hardens only for ITSELF.
 #   RESIDUAL, non-regression: every operation these residuals permit was permitted
 #   before this gate existed. They bound what it ADDS; none of them weakens a case
-#   it does block.
+#   it does block, and each needs an actor who already has arbitrary shell.
 #
 # THREAT MODEL. In scope is the ROUTINE or accidental bypass — the merge or pull
 # someone reaches for because it is the obvious next command. Out of scope is the
@@ -1004,6 +1013,111 @@ The marker must then read: PASS-FF refs/heads/$PROTECTED $oid"
         # tests/test-pre-commit-gate.sh).
         content="$_mcontent"
         if [ "$content" = "$expected" ]; then
+            # AN IN-TREE core.hooksPath REFUSES THE ROUTE. `git merge` runs
+            # `post-merge` immediately, so a hooks directory inside the working
+            # tree means the content this merge checks out can BE the hook that
+            # runs -- needing no shell access at all, only control of the incoming
+            # content, which is precisely what this gate exists to distrust.
+            #
+            # This started as the narrow check "block only if the merge CHANGES
+            # something under that path", and that check was abandoned rather
+            # than extended. Deciding what git will execute means resolving what
+            # git will reach, and one review round produced four separate ways to
+            # miss it: a path equal to the repo root matched no `<root>/*` prefix;
+            # a relative path needed joining; `.githooks -> hooks` made a diff on
+            # the configured spelling see nothing; a DANGLING link (the target
+            # arrives with the merge) resolved to nothing at all; a nested
+            # `.githooks/post-merge -> ../scripts/post-merge` moved the real file
+            # outside the directory entirely; and the paths went to `git diff` as
+            # PATHSPECS, where a directory honestly named `:(exclude).githooks`
+            # inverts the test. Every fix found the next hole, which is the
+            # signature of an enumeration that cannot be completed -- the same
+            # signature that retired the remote-provenance and pull routes above.
+            #
+            # So the rule is the class: hooks directory in the tree, no marker
+            # route. It costs an operator with `.githooks/` one config change or
+            # one PR, and it needs no diff -- which also removes the fail-OPEN
+            # that a `git diff` error would otherwise have introduced.
+            # The rule is stated POSITIVELY, because the negative form kept
+            # leaking: only a hooksPath that RESOLVES, and resolves OUTSIDE the
+            # working tree, is safe. Anything else refuses the route.
+            #
+            # "Unresolvable" has to land on the refusing side, and that is not
+            # theoretical: an absolute `/tmp/hooks -> <repo>/future-hooks` that
+            # dangles today resolves INTO the tree the moment this merge creates
+            # `future-hooks`, and a spelling test would have called it outside.
+            # A path that cannot be resolved cannot be proven outside.
+            #
+            # WHAT THIS CHECK IS, EXACTLY. It closes the routine, config-visible
+            # case: a hooks directory the gate can see resolving into the working
+            # tree. It is NOT a proof that nothing executes, and the difference is
+            # worth stating because the narrow version of this check leaked
+            # repeatedly before it was widened to the rule above.
+            #
+            # Still open, and NOT closable here:
+            #   - the DEFAULT `.git/hooks/post-merge` when it is itself a symlink
+            #     to a tracked file: hooksPath is unset, so nothing above fires,
+            #     and the merge replaces the file git is about to run;
+            #   - a hooksPath outside the tree that CONTAINS such a symlink;
+            #   - a spelling whose ANCESTOR is a symlink, or which reaches the
+            #     tree through `..`, so the final component is not itself a link;
+            #   - an ambient GIT_CONFIG_KEY_n=core.hooksPath, invisible to this
+            #     gate and live for the command (ADR 0049 R3 / #777).
+            #
+            # Chasing those means resolving every path git might execute from,
+            # through arbitrary symlinks, at a layer that runs BEFORE the command
+            # -- the same uncompletable enumeration that retired the
+            # remote-provenance and pull routes. The layer that can decide it is
+            # git's own `reference-transaction` hook, which sees the ref update
+            # after git has resolved everything; ADR 0050 records that as the
+            # follow-up once #622 lands an installer. Non-regression holds
+            # meanwhile: every one of those was equally possible before this gate
+            # existed, and each needs a hook symlink planted in advance.
+            _hp=$(git_real config --get core.hooksPath 2>/dev/null) || _hp=""
+            _hp_safe=0
+            if [ -z "$_hp" ]; then
+                _hp_safe=1
+            else
+                _repo_phys=$(cd "$REPO_DIR" 2>/dev/null && pwd -P) || _repo_phys=""
+                _hp_phys=$(cd "$REPO_DIR" 2>/dev/null && cd "$_hp" 2>/dev/null && pwd -P) || _hp_phys=""
+                if [ -n "$_repo_phys" ] && [ -n "$_hp_phys" ]; then
+                    case "$_hp_phys" in
+                        "$_repo_phys"|"$_repo_phys"/*) ;;
+                        *) _hp_safe=1 ;;
+                    esac
+                else
+                    # It did not resolve. Two very different reasons, and only one
+                    # is dangerous. A SYMLINK that cannot be followed may be
+                    # `/tmp/hooks -> <repo>/future-hooks`, dangling now and inside
+                    # the tree the moment this merge creates the target -- not
+                    # provably outside, so it refuses. A path that is simply
+                    # ABSENT and is not a link points nowhere git can execute
+                    # from; when its spelling is absolute and outside the tree it
+                    # is safe, which is the ordinary case of a configured global
+                    # hooks directory that happens not to exist.
+                    case "$_hp" in
+                        /*) _hp_probe="$_hp" ;;
+                        *)  _hp_probe="$REPO_DIR/$_hp" ;;
+                    esac
+                    if [ ! -L "$_hp_probe" ]; then
+                        case "$_hp" in
+                            /*) case "$_hp" in
+                                    "$REPO_DIR"|"$REPO_DIR"/*) ;;
+                                    *) _hp_safe=1 ;;
+                                esac ;;
+                        esac
+                    fi
+                fi
+            fi
+            if [ "$_hp_safe" != "1" ]; then
+                block_emit "BLOCKED: core.hooksPath is '$_hp', which this gate cannot prove resolves outside the working tree. git runs the post-merge hook from there the moment this merge completes, so a fast-forward could land the very file that then executes - a second, unreviewed action this authorization does not cover, and one needing no shell access at all, only control of the incoming content.
+
+The gate does not try to work out whether THIS merge touches that directory, and it treats an unresolvable path as inside: deciding what git will execute means resolving repo-root paths, relative paths, symlinks, DANGLING symlinks whose target the merge itself creates, symlinks nested inside the hooks directory, and pathspec syntax - and every narrowing of that check missed another case.
+
+Point core.hooksPath at a directory outside the working tree, or land the change through a PR:
+  git -C ${REPO_DIR:-.} config core.hooksPath <path outside the repo>"
+                exit 0
+            fi
             audit_ref_ff "$PROTECTED" "$oid" "marker"
             # Consumed HERE, not in a PostToolUse hook: single-use is the point,
             # and a fast-forward that then fails locally must not leave a live

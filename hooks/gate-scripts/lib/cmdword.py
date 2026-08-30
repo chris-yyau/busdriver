@@ -2170,6 +2170,10 @@ _VERSIONED_INTERP_SCAN_RE = re.compile(r"(?<![A-Za-z0-9_.:@=+#-])"
 # as ANY word they are the test this ADR measured at 100 over-blocks for `.` alone and
 # rejected; asked HERE they keep the anchor that made them safe: `grep -n 'rm -rf src'
 # <(printf source)` puts `printf` in command position, not `source`, and stays allowed.
+# `(`, `)`, `{` and `}` are separators here, so a command WORD built by an expansion is torn
+# in half -- `ba{s..s}h` into `ba` and `s..s`, `{s..s}ource` into `s..s` and `ource`. That is
+# deliberate and answered INSIDE the walk, not here: only the walk knows whether the torn
+# word was in command position. See the cut check and the run-tail check below.
 _CMDPOS_RUN_RE = re.compile(r"(?:^|[;&|(){}\n])([^;&|(){}\n]*)")
 # `>&`, `<&`, `>|` and `&>` -- the spellings whose `&`/`|` belongs to the redirect rather
 # than to the pipeline. Folded to a bare operator before the run walk; see the note there.
@@ -2182,6 +2186,121 @@ _REDIR_FOLD_RE = re.compile(r"(?<!\\)([<>])[&|]|(?<!\\)&(?=>)")
 
 def _redir_fold(m):
     return m.group(1) or ""
+
+
+# A BRACE EXPANSION opening a command word. `ba{s..s}h` is caught by the cut check -- the
+# run ends with `ba` glued to the brace -- but a command word that BEGINS with one leaves
+# nothing attached for that check to see, and the run regex hands the walk `s..s` and
+# `ource` as two ordinary runs holding no receiver name. `{b..b}ash` survives only because
+# `bash` is in the quote-blind name scan; `source` is command-position-only and deliberately
+# outside it, so behind the quote pads `| {s..s}ource /dev/stdin` was a verified fail-OPEN.
+#
+# Spelled narrowly on purpose, because `{` also opens a GROUP COMMAND: an expansion has no
+# whitespace and carries a `,` or a `..`, so `; { cat file; }` does not match and a
+# read-only group is not refused.
+# A BRACE EXPANSION is FOLDED OUT of the text before the run walk, exactly as a redirect
+# operator is. A command word that BEGINS with one -- `{s..s}ource`, which bash expands to
+# `source` -- leaves nothing attached in front of the brace for the cut check to see, and
+# the run regex hands the walk `s..s` and `ource`, neither of them a name. `{b..b}ash` hid
+# that for a while, because `bash` is in the quote-blind name scan and blocks wherever it
+# sits; `source` is command-position-only by design, so behind the quote pads nothing else
+# could answer and it was a verified fail-OPEN.
+#
+# Folding rather than a second command-position test, and that IS the lesson of the round:
+# asking "is this empty run a command position?" needed a guard for a closer, then a guard
+# for the group-command `{`, then a guard for a closer that ends an expansion inside a
+# PREFIX -- four rounds, each fixing the previous one's opposite defect, which is this
+# document's own signal to stop refining. An expansion is not a boundary at all; it is part
+# of the word around it. Replaced by `*` -- already in `_UNRESOLVED_CW_CHARS` -- the word
+# stays ONE word and the ordinary walk decides it: unresolvable in command position, an
+# operand anywhere else. `X=$(true) {source,/dev/stdin}` blocks, `grep -n 'rm -rf src'
+# {a,b}file <(echo pat)` does not, and neither needed a rule of its own.
+# What ENDS a candidate span, unescaped: WHITESPACE, because an expansion is part of one
+# word and a word ends there (`| X={a,b source /dev/stdin }` is an assignment prefix and
+# then a receiver, and swallowing the spaces ate it); and a RUN SEPARATOR, because folding
+# one away deletes a real pipeline boundary -- `printf <payload>{a,|bash>x}` is a pipe into
+# a shell, and the redirect makes `bash` a genuine command name rather than `bash}`.
+#
+# Aborting a span does NOT take back the `*` already written for its opener, and that is
+# what lets both halves hold at once. A QUOTED separator (`{s,";"x}ource`) is a stop here --
+# telling it from a real one is the lexed question this walk exists because it cannot ask --
+# but the word keeps its `*`, stays unresolvable, and blocks in command position anyway.
+_BRACE_FOLD_STOP = frozenset(" \t\n\r;&|()")
+# The characters that DELIMIT the `{` reserved word, i.e. that make it a GROUP command
+# rather than the first character of a word.
+_BRACE_FOLD_DELIM = frozenset(" \t\n\r<>;&|()")
+
+
+def _fold_brace_expansions(text):
+    """Replace each brace EXPANSION with `*`, leaving group commands and operators alone.
+
+    ONE left-to-right pass, deliberately: the regex spelling of this -- an opening brace, two
+    lazy non-space runs and a closing brace --
+    carries two overlapping lazy scans and was measured at 6.29s on a 4.5KB command of
+    stacked `({` and `a,` -- past the hook's 5s timeout, which writes no decision and reads
+    as ALLOW, so it was a bypass rather than a slowdown. Bounding the scans would have made
+    a long expansion the bypass instead.
+
+    A GROUP command is excluded by the same fact bash uses to tell them apart: `{` must be
+    delimited to be the reserved word, so whitespace and the operators that delimit it end
+    a candidate span. `;`, `&`, `|` and the parens are on that list for a second reason too
+    -- they are run separators, and folding across one would erase a pipeline boundary, the
+    mistake the redirect fold already learned from an escaped redirect character.
+
+    The OUTERMOST opener pairs with the FIRST close, which is what makes one pass enough for
+    a nested word: `{X=,{b..b}ash}` folds to `*ash}`, still one unresolvable word.
+    """
+    if "{" not in text:
+        return text
+    out = []
+    open_i = open_out = -1                 # source index of the opener, and its slot in `out`
+    esc = False
+    for i, ch in enumerate(text):
+        if esc:
+            # A BACKSLASH-ESCAPED character is data, never an operator -- the same fact the
+            # redirect fold learned from `\>`. So an escaped space or `;` stays INSIDE the
+            # span, and an escaped `}` does not close it.
+            esc = False
+            out.append(ch)
+            continue
+        if ch == chr(92):
+            esc = True
+        elif ch in _BRACE_FOLD_STOP:
+            open_i = -1
+        elif ch == "{":
+            # ...and a GROUP command is left alone. Bash's own rule: `{` is the reserved
+            # word only when what follows DELIMITS it, so `{ cat file; }` and `{>&1 x; }`
+            # are groups -- real separators the walk must keep seeing as such -- while
+            # `{a,b}` is the first character of a WORD.
+            #
+            # A word-opening `{` is replaced even when no close is ever found. It is not a
+            # boundary either way, and the run regex splits on it: `| X={a,b source
+            # /dev/stdin }` handed the walk a run STARTING at `a,b`, which it read as the
+            # command and stopped there, never reaching the receiver behind it.
+            # EVERY word-opening `{` is replaced, not only the one that opens the span.
+            # A nested one emitted verbatim survives an ABORTED span as a run separator,
+            # and `| X={a{b source /dev/stdin }` -- one brace deeper than the shape above,
+            # and live under real bash -- split into `X=*a` and `b source ...`, so the walk
+            # read `b` as the command. Inside a span that does fold, the extra `*` is
+            # discarded with the rest of it. Do not make this conditional again: it is what
+            # keeps an aborted span's word whole, which is the only thing standing behind
+            # the quoting shapes this walk cannot lex.
+            nxt = text[i + 1:i + 2]
+            if nxt and nxt not in _BRACE_FOLD_DELIM:
+                if open_i < 0:
+                    open_i, open_out = i, len(out)
+                out.append("*")
+                continue
+        elif ch == "}" and open_i >= 0:
+            body = text[open_i + 1:i]
+            if "," in body or ".." in body:
+                del out[open_out:]         # the span was emitted verbatim; take it back
+                out.append("*")
+                open_i = -1
+                continue
+            open_i = -1
+        out.append(ch)
+    return "".join(out)
 _CMDPOS_RECEIVERS = frozenset(("source", ".")) | _LAUNCHER_SHELLS
 
 # RESIDUAL over-block, stated: the separator class is quote-blind, so punctuation inside a
@@ -2231,6 +2350,9 @@ def _cmdpos_receiver_in_raw(text):
     # needs -- it only has to recognise the word as a REDIRECTION so the prefix run
     # continues past it. `>>` carries no `&`/`|` and is untouched.
     text = _REDIR_FOLD_RE.sub(_redir_fold, text)
+    # ...and a BRACE EXPANSION is not a boundary either -- it is part of the word around it.
+    # Folded to `*` so `{s..s}ource` stays ONE unresolvable word; see `_fold_brace_expansions`.
+    text = _fold_brace_expansions(text)
     for _m in _CMDPOS_RUN_RE.finditer(text):
         # Does this run end because an EXPANSION character was glued to its last word?
         # `(` and `{` are separators to the run regex, so `ba{s..s}h` and `/bin/ba+(s)h` --

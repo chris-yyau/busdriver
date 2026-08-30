@@ -669,6 +669,62 @@ expansion character was glued to its last word, and was that word in command pos
 neither. A BACKSLASH joins words exactly as a quote does (`X=foo\ bar`), so it takes the same
 exit.
 
+That cut check answers an expansion glued to a run's LAST word, and one round later the
+review found the half it cannot see: a command word that BEGINS with an expansion leaves
+nothing attached in front of the brace, so `| {s..s}ource /dev/stdin` arrives as the two
+ordinary runs `s..s` and `ource` and neither holds a name. `{b..b}ash` had hidden it —
+`bash` is in the quote-blind name scan and blocks wherever it sits — but `source` is
+command-position-only by design, so behind the quote pads nothing else could answer and it
+was a fail-OPEN.
+
+The first fix asked *is this empty run a command position?*, and four rounds of review took
+it apart one guard at a time — each round fixing the previous round's opposite defect, which
+is this document's own signal to stop refining:
+
+| round | defect | guard added |
+|---|---|---|
+| 1 | `grep -n 'rm -rf src' f{1,2} {a,b} <(echo pat)` blocked — the run between two expansions looks identical | a run opened by `)` or `}` is inside the command already running |
+| 2 | `grep -n 'rm -rf src' {{a,b},c} <(echo pat)` blocked — a nested expansion opens with `{`, not a closer | a `{` opens a GROUP only when bash's required space follows |
+| 3 | `\| {>&1 source /dev/stdin; }` allowed — a redirection delimits the reserved word too, and folding leaves the run starting `>1` | `<` and `>` join whitespace as group delimiters |
+| 4 | `\| X=$(true) {source,/dev/stdin}` allowed — the `)` closed an expansion inside a PREFIX, not a command | — |
+
+The answer was to delete the question. **An expansion is not a boundary at all; it is part of
+the word around it**, so it is FOLDED OUT of the text before the walk, exactly as a redirect
+operator already is — replaced by `*`, which `_UNRESOLVED_CW_CHARS` already carries. The word
+stays one word and the ordinary walk decides it: unresolvable in command position, an operand
+anywhere else. Every row above then answers itself with no rule of its own, `{s..s}ource` and
+`ba{s..s}h` become the same shape, and the guard stack is gone.
+
+Two details are load-bearing. The fold is ONE left-to-right pass rather than a regex: the
+regex spelling carries two overlapping lazy scans and was measured at **6.29s** on a 4.5KB
+command of stacked `({` and `a,` — past the 5s timeout, so a bypass rather than a slowdown,
+the sixth in this family — and bounding those scans would only have made a long expansion the
+bypass instead. 0.005s now. And the two ends of a span answer different questions, which one round
+conflated: what tells a GROUP command from an expansion is the delimiter bash requires
+IMMEDIATELY after the `{` (whitespace or a redirect operator — `{ cat file; }` and
+`{>&1 …; }` are groups), while what ENDS a span is only a run separator or a newline, so the
+fold can never erase a pipeline boundary — the mistake the redirect fold learned from an
+escaped `\>`. Escapes are honoured throughout for the same reason — an escaped space or
+`;` is data, and an escaped `}` does not close.
+
+That whitespace boundary took one more round in each direction, and the resolution is one
+principle rather than another guard. Over-folding first: a span that swallowed unquoted
+spaces ate `| X={a,b source /dev/stdin }`, where bash tokenizes `X={a,b` as an assignment
+word and then runs the receiver. Under-folding at the same time: cancelling a span on a
+`;` missed `| {s,";"x}ource`, where the separator is quoted — the lexed question again. And
+a span may not simply fold a separator through, either: `printf <payload>{a,|bash>x}` is a
+pipe into a shell (the redirect ends the command name, so it really is `bash`), and
+swallowing that `|` would erase the boundary.
+
+What resolves all three is not a third rule but the shape of the fold. **Every** word-opening
+`{` becomes `*` immediately — nested ones and ones that never close included — and aborting
+a span does not take that `*` back. So a stop can stay conservative (unescaped whitespace or
+a run separator, never crossed) while the word it interrupted still carries an unresolvable
+character, which is all command position needs: the quoted-separator spelling blocks on the
+`*` rather than on a fold that never happened — `| X={a{b source
+/dev/stdin }` is live, and a literal `{` left behind by an aborted span went on splitting
+runs, which is the whole defect in miniature.
+
 The prefix walk needed BASENAMES, not bare words — `/usr/bin/time` and `/usr/bin/env` are
 the same prefixes their unqualified spellings are, and Homebrew's `genv` is `env` — and the
 unmatched-`<(` path had to STOP rather than continue: re-running the quote-aware paren match

@@ -315,17 +315,94 @@ for _payload in ("printf " + chr(39) + "rm -rf src" + chr(39),
         bad.append("allowed active (line-continuation substitution): " + _payload)
 
 # A COMMAND-POSITION WORD THAT BEGINS WITH AN EXPANSION. The run regex treats `{` as a
-# separator, so `{b..b}ash` starts a run with nothing attached before the brace and `_cut`
-# -- which asks whether an expansion was glued to a run's LAST word -- cannot see it. It
-# blocks anyway, plain and behind the quote pads, because the receiver question has more
-# than one answer: the quote-blind name scan and the unresolved-character test both reach
-# it. Pinned because reading `_cut` alone suggests a gap.
-for _wrap in (lambda x: x, lambda x: PAD + "; " + x + "; " + PAD):
+# separator, so `{b..b}ash` starts a run with NOTHING attached before the brace, and `_cut`
+# -- which asks whether an expansion was glued to a run's LAST word -- cannot see it: the
+# word arrives as the two ordinary runs `b..b` and `ash`, neither of them a receiver.
+#
+# `{b..b}ash` blocked anyway, because the quote-blind name scan reaches `bash` wherever it
+# sits. `{s..s}ource` did NOT: `source` is command-position-only and deliberately outside
+# that scan, so behind the quote pads -- where the lexed path is already defeated -- nothing
+# else could answer, and it was a verified fail-OPEN. The run-tail check answers both.
+#
+# A PREFIX SEPARATED FROM THE BRACE BY WHITESPACE is the same shape once more. The
+# assignment/redirection exemption -- an expansion in a prefix's VALUE says nothing about
+# what runs -- holds only while the brace is GLUED to that prefix; separated, it is the next
+# command word and bash expands it before one exists. All three spellings were fail-opens.
+for _recv, _tail in (("{b..b}ash", ""), ("{s..s}ource", " /dev/stdin"),
+                     ("env {s..s}ource", " /dev/stdin"),
+                     ("X=1 {s..s}ource", " /dev/stdin"),
+                     ("2>/dev/null {s..s}ource", " /dev/stdin"),
+                     ("> /tmp/x {s..s}ource", " /dev/stdin"),
+                     ("( {s..s}ource", " /dev/stdin )"),
+                     # NESTED and comma spellings of the same word. The narrow expansion
+                     # pattern does not match `{X=,{b..b}ash}`, and does not need to: the
+                     # inner braces leave fragments that the walk's other tests answer.
+                     # Pinned so the pattern is never widened on the assumption it must.
+                     ("{X=,{b..b}ash}", ""), ("{x,{s..s}}ource", " /dev/stdin"),
+                     ("{{s..s},s}ource", " /dev/stdin"),
+                     ("{b..b}{a..a}{s..s}{h..h}", ""),
+                     # ...and a GROUP command really does open command position, so the
+                     # fold must not swallow one. A REDIRECTION delimits the reserved word
+                     # exactly as a space does, and `{>&1 ...; }` was verified running the
+                     # payload under real bash.
+                     ("{ {s..s}ource", " /dev/stdin; }"),
+                     ("{>&1 {s..s}ource", " /dev/stdin; }"),
+                     # ...and a CLOSER can end an expansion inside a PREFIX rather than a
+                     # command, so it says nothing about what follows it.
+                     ("X=$(true) {source,/dev/stdin}", ""),
+                     ("X={a,b} {source,/dev/stdin}", ""),
+                     # ...and an ESCAPED separator inside the expansion is DATA, so it
+                     # neither ends the word nor ends the span. Verified under real bash.
+                     ("{source,/dev/stdin," + chr(92) + " }", ""),
+                     ("{source," + chr(92) + ";,/dev/stdin}", ""),
+                     ("{sou" + chr(92) + "rce,/dev/stdin}", ""),
+                     # ...and a QUOTED separator inside the word does not end it either.
+                     # Quoting is the lexed question this walk exists because it cannot
+                     # ask, so cancelling the fold there left the receiver unseen.
+                     ('{s,' + DQ + ';' + DQ + 'x}ource', " /dev/stdin"),
+                     # ...and an UNCLOSED word-opening brace is still not a boundary: the
+                     # run regex split `X={a,b source /dev/stdin }` so the walk began at
+                     # `a,b`, read that as the command and stopped before the receiver.
+                     ("X={a,b source /dev/stdin }", ""),
+                     ("{a,b source /dev/stdin }", ""),
+                     ("X={a,b {s..s}ource /dev/stdin }", ""),
+                     # ...one brace deeper, which is where a NESTED opener emitted verbatim
+                     # survived an aborted span and went on splitting runs.
+                     ("X={a{b source /dev/stdin }", ""),
+                     ("{a{b source /dev/stdin }", "")):
+    for _wrap in (lambda x: x, lambda x: PAD + "; " + x + "; " + PAD):
+        n += 1
+        _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
+                 + ";) | " + _recv + _tail)
+        if not cmdword.is_file_mod(_wrap(_live)):
+            bad.append("allowed active (brace-leading receiver): " + _live)
+
+# ...and at the START of the text, where the run consumed no separator at all.
+n += 1
+if not cmdword.is_file_mod("{s..s}ource /dev/stdin < <(printf rm" + chr(92) + " -rf"
+                           + chr(92) + " src)"):
+    bad.append("allowed active (brace-leading receiver at start of text)")
+
+# ...while the same shape in OPERAND position stays allowed. Four rounds of review took
+# apart the first fix -- which asked whether the empty run BETWEEN the expansions was a
+# command position -- one guard at a time, each round undoing the previous one's opposite
+# defect. These are the cases that did it; they pass now because an expansion is folded into
+# the word around it rather than treated as a boundary at all.
+for _inert in ("grep -n 'rm -rf src' f{1,2} {a,b} <(echo pat)",
+               "grep -n 'rm -rf src' <(echo pat) ; { cat file; }",
+               "< <(printf pat) grep -n 'rm -rf src' <(echo x)",
+               ">/tmp/out{a,b} grep -n 'rm -rf src' <(echo pat)",
+               # a SEPARATED redirect target is the target, not a command word
+               "< {a,b} grep -n 'rm -rf src' <(echo pat)",
+               # ...and a `{` GLUED to what follows opened an expansion rather than a
+               # group, so the empty run between two openers is inside an OPERAND
+               "grep -n 'rm -rf src' {{a,b},c} <(echo pat)",
+               # ...while a group command holding a comma is still a GROUP: parens and `;`
+               # end a candidate span, the same characters bash uses to delimit `{`
+               "grep -n 'rm -rf src' <(echo pat); {((x=1,2));}"):
     n += 1
-    _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
-             + ";) | {b..b}ash")
-    if not cmdword.is_file_mod(_wrap(_live)):
-        bad.append("allowed active (brace-leading receiver): " + _live)
+    if cmdword.is_file_mod(_inert):
+        bad.append("blocked inert (brace-expansion operand): " + _inert)
 
 # BUDGET EXHAUSTION FAILS CLOSED FOR BOTH HALVES. When the substitution walk runs out it
 # yields the whole command as a producer, and the producer loop applies the verb regexes AND
@@ -360,6 +437,22 @@ _esc = ("printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92) + "; " + chr
         + "> | source /dev/stdin <(echo pat)")
 if not cmdword.is_file_mod(PAD + "; " + _esc + "; " + PAD):
     bad.append("allowed active (escaped redirect then real pipe)")
+
+# THE FOLD MUST NEVER DELETE A RUN SEPARATOR. `printf <payload>{a,|bash>x}` is a pipe into
+# a shell -- the redirect ends the command name, so it really is `bash` and not `bash}` --
+# and a span that swallowed the `|` erased the boundary. Asserted on the fold itself: the
+# whole-command answer for that shape is unchanged from before this feature, so it would
+# pin nothing.
+n += 1
+if "|" not in cmdword._fold_brace_expansions("printf x{a,|bash>y}"):
+    bad.append("the fold deleted a pipeline operator")
+n += 1
+if ";" not in cmdword._fold_brace_expansions("printf x{a,;bash>y}"):
+    bad.append("the fold deleted a command separator")
+# ...but an ESCAPED one is data, so it stays inside the span and the span still folds.
+n += 1
+if cmdword._fold_brace_expansions("x{a," + chr(92) + ";b}") != "x*":
+    bad.append("the fold stopped at an escaped separator")
 
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))

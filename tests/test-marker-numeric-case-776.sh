@@ -35,13 +35,42 @@ else
 fi
 
 
-# Structured operand keeps _glob_helper strict (abandoned scrub must not leak here).
+# Structured operand still blocks (producer filter must not weaken command-position).
 STRUCT_CMD=$(python3 -c 's=chr(42);print("cd hooks/gate-scripts/lib && python3 "+s+"[!0-9]"+s)')
 got=$(verdict "$STRUCT_CMD")
 if [[ "$got" == BLOCK_* ]]; then
   ok "#776 digit-negation glob as python operand still blocks"
 else
   no "#776 digit-negation glob as python operand still blocks" "got=${got:-<empty>}"
+fi
+
+# Abandoned/eval path still fail-closed (interpreter-adjacent globs are kept).
+EVAL_CMD=$(python3 -c 's=chr(42);print("eval \"cd hooks/gate-scripts/lib && python3 "+s+"[!0-9]"+s+"\"")')
+got=$(verdict "$EVAL_CMD")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 eval digit-negation glob still blocks"
+else
+  no "#776 eval digit-negation glob still blocks" "got=${got:-<empty>}"
+fi
+
+# Unparseable heredoc containing the same case shape must allow (abandoned fallback).
+# shellcheck disable=SC2016  # $X must remain literal in generated case subject
+HEREDOC_CMD=$(python3 -c 'q=chr(39);dq=chr(34);s=chr(42);print("cat <<EOF\nit isn"+q+"t\nX=1; case "+dq+"$X"+dq+" in "+q+q+"|"+s+"[!0-9]"+s+") : ;; "+s+") : ;; esac\nEOF")')
+got=$(verdict "$HEREDOC_CMD")
+if [[ "$got" == "OK|" ]]; then
+  ok "#776 heredoc numeric-validation case -> allowed"
+else
+  no "#776 heredoc numeric-validation case -> allowed" "got=${got:-<empty>}"
+fi
+
+
+# Inert interpreter-looking text in a heredoc is data, not an invocation.
+HEREDOC_PY_CMD=$(python3 -c 'q=chr(39);s=chr(42);print("cat <<EOF\nit isn"+q+"t\npython3 "+s+"[!0-9]"+s+"\nEOF")')
+got=$(verdict "$HEREDOC_PY_CMD")
+if [[ "$got" == "OK|" ]]; then
+  ok "#776 heredoc inert python3 digit-negation -> allowed"
+else
+  no "#776 heredoc inert python3 digit-negation -> allowed" "got=${got:-<empty>}"
 fi
 
 echo ""

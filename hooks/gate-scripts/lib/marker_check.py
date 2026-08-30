@@ -2093,18 +2093,25 @@ def _glob_helper_targeted(word, deep=None):
 _DIGIT_NEGATION_ONLY_RE = re.compile(r"^\*?\[(?:!|\^)0-9\]\*?$")
 
 
+def _is_digit_negation_only_segment(seg):
+    """True when `seg` is only a digit-negation glob (POSIX numeric-validation pattern)."""
+    return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
+
+
 def _scrub_digit_negation_globs(text):
     """Replace whole-token digit-negation globs with a bare star (#776).
 
-    Abandoned-scan only. `_class_variants` rewrites a digit-negation class into a
-    letter/punct class that still matches every helper, so ordinary POSIX numeric
-    validation inside a mis-split case pattern was reported as a helper call. Scrubbing
-    before that expansion is the same residual as a bare star (#573): it cannot name a
-    helper specifically. Structured `_glob_helper` is untouched, so a digit-negation
-    glob as a python operand still blocks.
+    Abandoned-scan only. The token is not helper evidence: `_class_variants` rewrites it
+    into a letter class that matches every helper, which over-blocked ordinary POSIX
+    numeric validation (including inside unparseable heredocs). Scrubbing before that
+    expansion is the same residual as a bare star (#573) — `eval`/`python3` with only
+    this glob in abandoned text may allow, while structured `_glob_helper` still blocks
+    `python3` with this operand in command position.
     """
     parts = []
     for w in re.split(r"([\s;&|()<>]+)", text):
+        if not w:
+            continue
         parts.append("*" if _DIGIT_NEGATION_ONLY_RE.match(w) else w)
     return "".join(parts)
 
@@ -3374,7 +3381,11 @@ def _piped_shell_producers(pairs):
             pass                          # a normalized newline/comment between | and the shell
         else:
             if last is not None:
-                out.append(" ; ".join(p[1] for p in pairs[start:last]))
+                # #776: omit digit-negation-only segments — case-pattern residue after a `|`
+                # mis-split, not an executable glob. Abandoned scan of producers stays
+                # fail-closed for real helper text; eval/python paths are untouched.
+                out.append(" ; ".join(p[1] for p in pairs[start:last]
+                                  if not _is_digit_negation_only_segment(p[1])))
             start, last, fed = i, None, False
         _words = seg.split()
         bare = _carries_no_command(seg)
@@ -3578,7 +3589,8 @@ def _piped_shell_producers(pairs):
                     last = i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
-        out.append(" ; ".join(p[1] for p in pairs[start:last]))
+        out.append(" ; ".join(p[1] for p in pairs[start:last]
+                                  if not _is_digit_negation_only_segment(p[1])))
     return out
 
 
@@ -3663,7 +3675,7 @@ def _abandoned_scan_probe(text):
     hit = _names_helper(text)
     if hit:
         return hit
-    # #776: scrub digit-negation tokens before class expansion — see helper above.
+    # #776: context-aware scrub before class expansion — see _scrub_digit_negation_globs.
     text = _scrub_digit_negation_globs(text)
     # One decision for the whole scan, not one per candidate: a short command gets the full
     # reading family on every word it yields, while a payload built to be expensive gets the

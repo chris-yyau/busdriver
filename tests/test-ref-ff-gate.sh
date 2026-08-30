@@ -105,7 +105,10 @@ print(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
     # it already runs. $GATE_CWD exists for the one case that is ABOUT the
     # process's working directory - in real use the hook runs inside the repo
     # being merged in, and that directory is content this merge controls.
-    output=$(cd "${GATE_CWD:-$REPO_ROOT}" && printf '%s' "$payload" | bash "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
+    # $GATE_BASH exists for the one case that is ABOUT the interpreter: the hook
+    # registration names /bin/bash, while everything else here uses whatever
+    # `bash` PATH resolves to.
+    output=$(cd "${GATE_CWD:-$REPO_ROOT}" && printf '%s' "$payload" | "${GATE_BASH:-bash}" "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
     got="allow"
     if [[ "$exit_code" -ne 0 ]] && [[ -z "$output" ]]; then
         got="crash"
@@ -1419,6 +1422,26 @@ if [[ -n "$_id_a" ]] && [[ "$_id_a" == "$_id_b" ]]; then
     rm -rf "$REPO/d"
     git -C "$REPO" config --unset core.hooksPath
 fi
+
+# ── The interpreter the REGISTRATION names. hooks.json launches this gate with
+#    /bin/bash, which on macOS is 3.2; the rest of this suite runs it with
+#    whatever `bash` PATH resolves to, which on a developer machine is 5.x. So a
+#    bash-4-only construct passes every test here and aborts in production —
+#    where an aborting gate emits no decision, and the launcher turns that into
+#    a refusal of every command it guards. Measured: process substitution
+#    containing a parenthesised comment does exactly that under 3.2.
+#    Both directions, so this proves the gate DECIDES there rather than merely
+#    failing in the direction that happens to look like a pass. ───────────────
+_rc=0; [[ -x /bin/bash ]] || _rc=1
+assert_true "the interpreter named by the registration exists" "$_rc"
+GATE_BASH=/bin/bash
+write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+run_gate "under /bin/bash the gate still ALLOWS an authorized fast-forward" \
+    allow "git merge --ff-only $FEATURE_OID"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+run_gate "...and still BLOCKS an unauthorized one, so it is deciding, not aborting" \
+    block "git merge $FEATURE_OID" "would FAST-FORWARD the protected branch"
+unset GATE_BASH
 
 # ── The containment payload lives inside a shell "..." string, so a `$`, a
 #    backtick or a double quote anywhere in it - a COMMENT included - is

@@ -72,16 +72,22 @@
 #   ambient PATH, BASH_ENV and exported shell functions belong to the session
 #   shell, not to this gate, which the contained launch (`#!/bin/bash -p`)
 #   hardens only for ITSELF.
-#   RESIDUAL, the gate's own deadline. The hook runs under a 10s outer timeout
-#   whose expiry is NOT a block -- the runner kills the process before anything
-#   can be emitted, so a gate that runs long is a gate that is not there. The
-#   bounds in this file (payload size, remote listing bytes and count,
-#   declaration length) exist to keep the work under that deadline, and each was
-#   added because an unbounded read was reachable from repo-controlled state.
-#   They do not make the deadline safe: git itself parses config, and a
-#   sufficiently pathological repository can be slow before this script gets to
-#   decide anything. Fixing that means the RUNNER treating hook timeout as a
-#   block, which is not something a hook can do for itself.
+#   RESIDUAL, the runner's deadline. The hook runs under a 10s outer timeout
+#   whose expiry is NOT a decision -- the runner kills the process before
+#   anything reaches stdout, so a gate that runs long is a gate that is not
+#   there. The bounds in this file (payload size, remote listing bytes and
+#   count, declaration length) keep the work short, and each was added because
+#   an unbounded read was reachable from repo-controlled state, but none of them
+#   bounds a single git call that HANGS.
+#   A self-deadline was BUILT and then REMOVED from this branch, deliberately;
+#   the reasoning is recorded in ADR 0050 so it is not reproposed blind. In
+#   short: it is a property of all seven gates, not of this one, so fixing it
+#   here would be both partial and duplicated; and it is a process killer inside
+#   a security gate, which review found four separate defects in -- one of them
+#   a bash-4-only construct that aborted this gate on EVERY command under the
+#   /bin/bash 3.2 the registration actually names. It belongs with the launcher,
+#   next to #777, with its own review. The `/bin/bash` execution test in
+#   tests/test-ref-ff-gate.sh is what that round left behind, and it stays.
 #   RESIDUAL, non-regression: every operation these residuals permit was permitted
 #   before this gate existed. They bound what it ADDS; none of them weakens a case
 #   it does block, and each needs an actor who already has arbitrary shell.

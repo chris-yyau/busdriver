@@ -459,9 +459,464 @@ That is the same call ADR 0006 made, and the containment is unchanged — an unl
 an assembled name only helps an actor who already holds Bash, and every gated write still
 needs a lease that is logged.
 
+## Addendum — #563: one transport, and one splitter defect that hid another
+
+Both were found by the chatgpt-codex-connector on PR #562, deferred as `follow-up-deferred`
+because the two functions they touch are the most heavily measured in the module, and both
+were **verified executing against real bash** before being fixed. Both are the *structural*
+half failing — neither is an arity question, and neither reopens the flag one — but only ONE
+of them fires the revisit trigger below: item 2 is a genuinely new transport, while item 1
+is a splitter defect that discarded the producer of a pipe the trigger had recognised all
+along. That distinction is why the trigger's own list is corrected at the end rather than
+shortened.
+
+**1. Control operators inside a backtick substitution read as outer pipeline separators.**
+A backtick substitution is one WORD of the stage it sits in, and the subshell it runs
+inherits the pipeline stdin — but `_split_with_ops` tracked single quotes, double quotes
+and escapes and *not* backtick spans, so an operator inside the body ended the pipeline one
+stage before the receiver and the producer was discarded. Fixed as STATE, the same shape as
+the two quote states beside it, rather than as a rule about `&&`. In `cmdword` this removes
+no block: `_command_substitutions` extracts every body and recurses first. An unterminated
+backtick now joins the unterminated quote and the dangling escape in setting `ok = False`.
+
+**2. A shell fed by a PROCESS SUBSTITUTION was never handed a producer.** The trigger is
+`|`/`|&`, so `bash < <(printf 'rm -rf src')`, its script-operand spelling
+`bash <(printf 'rm -rf src')`, and the reverse direction `printf 'rm -rf src' > >(bash)`
+all executed the removal while `is_file_mod` answered False. `_procsub_producers` routes
+them to the *same* producer loop the pipe path feeds — both halves of the verdict, verbs and
+redirects — and splits by direction, because the two ends swap: `<(BODY)` makes BODY the
+producer, `>(BODY)` makes the outer command the producer. Nothing new models the language;
+the receiver question is the one `_may_read_program_from_stdin` already answers.
+
+### What review found afterwards
+
+Four defects came back on the `cmdword` side, and every one is a rule this document already
+states, missed on the new transport — the same finding the sixty-seven-row table above
+records, arriving once more.
+
+**Asking the old question about the new transport.**
+
+- The indirection widening was keyed on a literal `|`, and a substitution has none, so a
+  function could hide either end of it (`f(){ printf 'rm -rf src'; }; bash < <(f)`) while
+  the pipe twin had blocked through that very rule since #557. It fires on a pipe **or** a
+  process substitution now. *Adding a transport means asking every rule keyed on the old one
+  whether it meant the pipe or the feeding.*
+- An OUTPUT body is a compound command, and asking it as ONE stage reads only its first
+  command word for the COMMAND-POSITION-only names, so `>(true; . /dev/stdin)` hid the `.`
+  behind a harmless `true`. The body is split and every segment asked, exactly as
+  `_may_read_program_from_stdin` already does for a `$(...)` body. Note what was *not*
+  wrong: the any-word shell test never needed this (`>(true; bash)` blocked throughout),
+  which is precisely why `.` and `source` are command-position-only.
+
+**Two constructs the extraction could not read, answered the way this module answers those.**
+
+- A `case` PATTERN terminator is a bare `)` with no opener, so the quote-aware paren match
+  truncated `bash < <(case x in x) printf 'rm -rf src';; esac)` at `x)` and scanned only the
+  harmless prefix while bash handed the payload behind it to the shell — verified executing,
+  and the exact construct that already defeats the `$(` sibling above. A paren-balance guard
+  closed that spelling and was itself re-balanced by an unrelated `(` elsewhere in the
+  command, which is the known bypass the sibling check already records — tolerable there,
+  where the check is a bonus, and not here, where it was the only thing closing a verified
+  fail-open.
+
+  Scoping the PRODUCER to the whole command fixed the payload half and left the extraction
+  load-bearing for the RECEIVER half, since a truncated body also hides the shell inside it
+  from the candidate test. So the raw scan gets the whole command, and the candidate test
+  gets the whole command **and** the split bodies: `whole` is what makes the extraction
+  non-load-bearing, because its any-word shell test sees a receiver the extraction truncated
+  away — but it cannot answer the COMMAND-POSITION-only names, `.` and `source`, which are
+  only ever asked of a stage's own first word. Handing it `whole` alone lost
+  `> >(true; . /dev/stdin)`, where the command begins with `printf`. With both, a wrong
+  extraction costs precision and never soundness.
+
+  The cost is the precision this rule started with: a shell named anywhere in a command
+  carrying a process substitution puts that whole command under the raw scan. That is the
+  trade the indirection rule already makes, it is scoped by rarity, and it replaces a guess
+  that was wrong twice in two different halves.
+
+  Its budget is charged **once, for the whole command**, and in **stages as well as words**.
+  Charging per text double-counted twice over — a body is normally already one of the
+  segments, and the segments PARTITION the very command also passed as a stage — so a
+  2,004-token command spent about 4,008 against the 4,000 ceiling. And words alone ignore
+  shell punctuation, which is what carries the cost: a 64KB command of repeated `env;`
+  segments splits into ~16,000 stages, charged FIVE tokens, and measured **8.86s** against
+  the hook's 5s timeout — the third time in this family that an under-charged scan was a
+  bypass rather than a slowdown. 0.04s now, pinned with a wall-clock assertion.
+
+  One more candidate source was added after the grid below found the lexed views defeatable:
+  a **quote-blind name scan**, over every `_shell_variants` spelling and over the
+  version-qualified family as well. Adversarial quoting can make `shlex` pair its quotes
+  differently and swallow the receiver — a matched pair of `: "$(printf '"')"` pads around
+  `cat < <(payload) | bash` left every lexed view without the word `bash`, verified
+  executing — an escaped `b\a\s\h` carries no contiguous name at all, and
+  `/usr/bin/perl5.34` is in a set whose pattern is END-anchored, so searching it across a
+  command matched nothing (the unanchored twin is derived from that pattern rather than
+  restated, so the two cannot drift). The boundary is deliberately not `\b`: that treats a
+  filename suffix as a word, so `sh` matched `notes.sh` and turned a quoted-operand grep into
+  a block — exactly the false positive #519 exists to have removed. `.` and `-` join the word
+  characters, and `/` is ASYMMETRIC — a name AFTER a slash can be the program
+  (`/bin/bash`), a name BEFORE one is a directory (`bash/notes.txt`,
+  `logs/python3.12/output`) and never the command word.
+
+  It covers PROGRAM NAMES only — `_STDIN_SHELLS` and the version-qualified family — because
+  the pipe path already matches those as ANY word, so asking them here is consistent rather
+  than a widening. The command-position-only classes get their own anchored walk instead;
+  see the section below for why an unanchored pass over them failed.
+
+  It also asks only the **dequoted** variants. Against the raw text, a quote or a backslash
+  acts as a name boundary that the shell deletes before it resolves anything — `bash".log"`,
+  `bash\.log` and `python3".12.log"` are ordinary filenames, and each matched and turned a
+  read-only grep into a block. Squeezed they are `bash.log` and `python3.12.log`, which the
+  boundary correctly refuses, while the shapes the scan exists for squeeze down to the bare
+  name and still match.
+
+### Adversarial quoting: closed by the anchor, after two unanchored fixes failed
+
+A command can be built so `shlex` pairs its quotes differently — a matched pair of
+`: "$(printf '"')"` pads is the shape — and every lexed view then loses the receiver. The
+quote-blind name scan covers that for anything spelled with a program NAME. What it cannot
+cover is a receiver with no usable name in the text:
+
+| face | example | what the first fix cost |
+|---|---|---|
+| **assembled** | `\| b$(printf as)h`, `\| $SHELL` | no spelling contains `bash`. Selecting the whole-command scan on any `$` or backtick closed it, and blocked `grep -n "rm -rf src" "$file" "<(x)"` — a quoted substitution, an unrelated variable, `rm` only as a grep PATTERN |
+| **command-position** | `\| source /dev/stdin`, `\| unshare`, `. <(payload)` | the name IS there, but as an ordinary English word. Matching it quote-blind ANYWHERE is the any-word test measured at 100 over-blocks for `.` alone; it blocked `grep -n 'rm -rf src' <(printf source)` and its `unshare` and `lldb-19` twins |
+
+Both fixes were withdrawn on measurement, and the reason they failed is the same in each
+case: **they asked a command-position question of the whole command.** A `$` and the word
+`source` are ordinary anywhere else in a command; they mean *receiver* only in command
+position, which is precisely why the lexed path anchors them — and precisely what adversarial
+quoting takes away.
+
+So the anchor was rebuilt without the lexer. The word after a pipeline or grouping operator
+is the next command word, and that is true of the RAW text whatever the quoting does to
+`shlex`. `_cmdpos_receiver_in_raw` walks those positions and asks the three questions the
+lexed path asks of a stage's first word — a command-position-only receiver name, a
+dash-versioned interpreter, or an UNRESOLVABLE word built by an expansion. Both faces close,
+and every over-block that sank the earlier attempts stays allowed, because in each of them
+the word in question is an operand rather than a command: `grep -n 'rm -rf src'
+<(printf source)` puts `printf` in command position, not `source`, and
+`grep -n "rm -rf src" "$file" "<(x)"` puts the variable in an argument.
+
+Worth stating as the rule this document keeps re-deriving: **when a test is safe only in
+command position, do not widen it to any position — rebuild the position test in whatever
+terms still work.** The structural one costs no lexer and cannot be defeated by quoting.
+
+Command position is a RUN, not the token after the operator, and the grid is what enforced
+that: bash allows assignments, redirections, prefix words and wrappers-with-options in front
+of the real command, so `| X=1 $SHELL`, `| >/dev/null $SHELL`, `| command $SHELL` and
+`| env source /dev/stdin` each put something harmless where the receiver would be. The walk
+skips that run — the same peel `_leads_with_launcher` makes on the lexed side — and `env` was
+found by the generated cases rather than by review. A SEPARATED redirection target belongs to
+the run too (`| > /dev/null source /dev/stdin` put `/dev/null` where the walk was looking and
+it stopped there), which is why a word that is nothing but the operator consumes the word
+after it. And the unresolvable test uses the module's whole `_UNRESOLVED_CW_CHARS` set rather
+than a subset: `$` and a backtick were asked for, and `/bin/ba[s]h` — a glob bash expands to
+a real shell before a command word exists — was not.
+
+Two more shapes of the same run followed, and both are the whitespace assumption rather than
+the grammar: a QUOTED prefix value carries whitespace, so `X="a b" source /dev/stdin` and
+`> "/tmp/a b" source /dev/stdin` fragment under a plain split and the walk stops on the
+tail — quote parity carries it across now; and RESERVED words open or connect a compound
+command, so `| if true; then source /dev/stdin; fi` puts `then` where the walk was looking.
+The keyword set is the module's own, so adding a keyword extends both this walk and the
+lexed one.
+
+Then three more, and each is the same shape as its predecessor rather than a new grammar:
+a QUOTE inside the prefix run makes it **unresolved** (a parity counter over both quote
+kinds was tried and defeated at once by `X="'a b'"`, whose aggregate parity is even while
+the value still spans two fragments — knowing which quote is open is the LEXED question, and
+being defeated at it is why this walk exists); an OPTION in command position marks the run
+unresolved rather than being stepped over (`env -u X $SHELL` put the operand of `-u` where
+the command word goes — the arity table again, and the same answer the launcher walk already
+gives); and an unmatched `<(` is recorded **bodiless** rather than failing the whole parse,
+because an unterminated one inside an inert quoted operand is ordinary text and
+`grep -n 'rm -rf src <(' notes.txt` went from allow to block. Bodiless keeps the receiver
+tests running, so a real substitution whose end cannot be found still blocks when a receiver
+is named.
+
+The quote refusal is scoped to words already identified as PREFIX, and that scoping was
+itself a fix: the run regex splits on `(`, so an ordinary operand leaves quote fragments
+behind — `grep -n 'rm -rf src <(' notes.txt` yields a bare `'` run — and refusing on those
+blocked a read-only grep.
+
+Two smaller corrections came with them. A redirection needs no whitespace, so
+`source</dev/stdin` and `command>/dev/null source …` arrive as ONE word and the name test saw
+the redirect glued to the receiver; the attached redirect is cut off first now. And `:`, `@`
+and `=` belong to a WORD rather than to a boundary, so `foo:bash`, `foo@python3.12` and
+`--label=bash` were matching as receivers — they join `.`, `-` and `_` in the word class.
+(`--label=bash` still blocks, through a different route: `_stage_words` peels a long option's
+value, so the command genuinely does name a shell. That is the "named anywhere" cost already
+stated above, and it is pinned.)
+
+The budget needed one more dimension too. Neither words nor stages bound the LEXER: a 60KB
+command of repeated `su<a>` fragments is four words and one stage, produced ~48,000 tokens,
+and took **14.0s** — the fourth time in this family that an under-charged scan was a bypass
+rather than a slowdown. Redirect characters make tokens without making whitespace, so the
+charge takes the command's LENGTH as a floor. 0.05s now.
+
+Two more receiver shapes closed after that, and both are the run regex meeting the grammar
+rather than a new idea. An OPERAND-taking wrapper (`flock FILE CMD`, `chroot ROOT CMD`) puts
+a positional operand between itself and the command, so the walk stopped on the operand and
+never reached the receiver — which wrappers take one, and how many, is the arity table again,
+so the run is refused instead. And an EXTGLOB command word (`/bin/ba+(s)h`) is split by the
+run regex before `_UNRESOLVED_CW_CHARS` can be asked of it, because `(` is a separator there;
+and BRACE expansion (`ba{s..s}h`) is split the same way by `{`. Both are answered INSIDE the
+walk, not by a regex over the text: only the walk knows whether the truncated word was in
+command position. An anchored regex made `grep -n 'rm -rf src' file{1,2} <(echo pat)` a
+receiver and an unanchored one made every operand one; asking *did this run end because an
+expansion character was glued to its last word, and was that word in command position* costs
+neither. A BACKSLASH joins words exactly as a quote does (`X=foo\ bar`), so it takes the same
+exit.
+
+That cut check answers an expansion glued to a run's LAST word, and one round later the
+review found the half it cannot see: a command word that BEGINS with an expansion leaves
+nothing attached in front of the brace, so `| {s..s}ource /dev/stdin` arrives as the two
+ordinary runs `s..s` and `ource` and neither holds a name. `{b..b}ash` had hidden it —
+`bash` is in the quote-blind name scan and blocks wherever it sits — but `source` is
+command-position-only by design, so behind the quote pads nothing else could answer and it
+was a fail-OPEN.
+
+The first fix asked *is this empty run a command position?*, and four rounds of review took
+it apart one guard at a time — each round fixing the previous round's opposite defect, which
+is this document's own signal to stop refining:
+
+| round | defect | guard added |
+|---|---|---|
+| 1 | `grep -n 'rm -rf src' f{1,2} {a,b} <(echo pat)` blocked — the run between two expansions looks identical | a run opened by `)` or `}` is inside the command already running |
+| 2 | `grep -n 'rm -rf src' {{a,b},c} <(echo pat)` blocked — a nested expansion opens with `{`, not a closer | a `{` opens a GROUP only when bash's required space follows |
+| 3 | `\| {>&1 source /dev/stdin; }` allowed — a redirection delimits the reserved word too, and folding leaves the run starting `>1` | `<` and `>` join whitespace as group delimiters |
+| 4 | `\| X=$(true) {source,/dev/stdin}` allowed — the `)` closed an expansion inside a PREFIX, not a command | — |
+
+The answer was to delete the question. **An expansion is not a boundary at all; it is part of
+the word around it**, so it is FOLDED OUT of the text before the walk, exactly as a redirect
+operator already is — replaced by `*`, which `_UNRESOLVED_CW_CHARS` already carries. The word
+stays one word and the ordinary walk decides it: unresolvable in command position, an operand
+anywhere else. Every row above then answers itself with no rule of its own, `{s..s}ource` and
+`ba{s..s}h` become the same shape, and the guard stack is gone.
+
+Two details are load-bearing. The fold is ONE left-to-right pass rather than a regex: the
+regex spelling carries two overlapping lazy scans and was measured at **6.29s** on a 4.5KB
+command of stacked `({` and `a,` — past the 5s timeout, so a bypass rather than a slowdown,
+the sixth in this family — and bounding those scans would only have made a long expansion the
+bypass instead. 0.005s now. And the two ends of a span answer different questions, which one round
+conflated: what tells a GROUP command from an expansion is the delimiter bash requires
+IMMEDIATELY after the `{` (whitespace or a redirect operator — `{ cat file; }` and
+`{>&1 …; }` are groups), while what ENDS a span is only a run separator or a newline, so the
+fold can never erase a pipeline boundary — the mistake the redirect fold learned from an
+escaped `\>`. Escapes are honoured throughout for the same reason — an escaped space or
+`;` is data, and an escaped `}` does not close.
+
+That whitespace boundary took one more round in each direction, and the resolution is one
+principle rather than another guard. Over-folding first: a span that swallowed unquoted
+spaces ate `| X={a,b source /dev/stdin }`, where bash tokenizes `X={a,b` as an assignment
+word and then runs the receiver. Under-folding at the same time: cancelling a span on a
+`;` missed `| {s,";"x}ource`, where the separator is quoted — the lexed question again. And
+a span may not simply fold a separator through, either: `printf <payload>{a,|bash>x}` is a
+pipe into a shell (the redirect ends the command name, so it really is `bash`), and
+swallowing that `|` would erase the boundary.
+
+What resolves all three is not a third rule but the shape of the fold. **Every** word-opening
+`{` becomes `*` immediately — nested ones and ones that never close included — and aborting
+a span does not take that `*` back. So a stop can stay conservative (unescaped whitespace or
+a run separator, never crossed) while the word it interrupted still carries an unresolvable
+character, which is all command position needs: the quoted-separator spelling blocks on the
+`*` rather than on a fold that never happened — `| X={a{b source
+/dev/stdin }` is live, and a literal `{` left behind by an aborted span went on splitting
+runs, which is the whole defect in miniature.
+
+The prefix walk needed BASENAMES, not bare words — `/usr/bin/time` and `/usr/bin/env` are
+the same prefixes their unqualified spellings are, and Homebrew's `genv` is `env` — and the
+unmatched-`<(` path had to STOP rather than continue: re-running the quote-aware paren match
+over the remaining suffix for every later opener is quadratic, and 12,000 `<(` sequences
+inside one quoted operand measured **5.76s** against the 5s timeout. One bodiless entry is
+enough to say a substitution is present, so nothing is lost by stopping. 0.08s.
+
+One over-block is **accepted and pinned**: the separator class is quote-blind, so punctuation
+inside a quoted OPERAND reads as a boundary and the word behind it as a command —
+`grep -n "rm -rf src; $file" <(echo pat)` and `grep -n "rm -rf src | source" <(echo pat)`
+block. Telling a quoted `;` from a real one is the lexed question, and being defeated at it
+is the entire reason this walk exists; a second quote parser here would be defeated the same
+way. The shape needs a write verb inside a quoted pattern, punctuation inside that same
+pattern, AND a process substitution — narrow, and the direction this module chooses.
+
+The expansion half is asked of the RAW variants and the name half of the squeezed ones,
+because squeezing deletes the `$` that is the expansion signal while quotes and backslashes
+are exactly what must be deleted before a name is read. Both are cheap, so both are asked
+rather than chosen between.
+- A word-boundary guard in front of the operator was written and then **deleted**, which is
+  the third deletion in this addendum and the clearest of them. It existed purely for
+  precision: inside arithmetic a `>` is a COMPARISON, so `$((x>(bash)))` is not a
+  substitution and reading it as one raw-scans the whole command for nothing. But bash
+  concatenates an empty expansion with a substitution, so `printf <payload> > "">(bash)` and
+  `> $E>(bash)` both feed the shell — and the guard, seeing a `"` or a `$` in front of the
+  operator, skipped them. Verified executing. **A guard that exists only for precision and
+  costs a fail-open is not a trade this module makes.** Every adjacent `<(`/`>(` counts now,
+  and the arithmetic over-block is taken and pinned.
+
+**Budget accounting, twice.**
+
+- The candidate walk was charged against `_scan_budget`, which the per-segment walk then
+  charges again — halving the documented 4,000-token limit for any command holding a `<(`,
+  and flipping a benign 2,004-token `grep -f <(echo pat) file0.txt … file1999.txt` to a
+  block for a walk that emitted no producer. It has its own allowance now.
+- Then the *same* double-accounting reappeared inside that allowance: the splitter tears a
+  substitution body out as its own segment, so an output body is normally already in the
+  segment list the input walk covers. The two walks share a memo of the ANSWER, not merely
+  of the charge — the charge exists to bound the walk, so skipping one without the other
+  bounds nothing. The exhaustion exit also fired for commands holding no substitution at
+  all, since `_psub_budget` is reset only at depth 0; a command with nothing to route now
+  charges nothing and inherits nothing.
+
+### The expensive lesson: "in step" is a claim about the splitter, not its callers
+
+`marker_check` carries a copy of `_split_with_ops`, and both copies are commented KEEP IN
+STEP. So the backtick fix was mirrored there — and it removed a block. That guard's
+unconditional marker-forge check has no `_command_substitutions` recursion; it saw a
+substitution body only because the splitter broke on `(`, `)` and every `;`, so a
+substitution wrapping a write verb arrived as a bare segment whose command word WAS the
+verb. Making the span opaque removed that accident, and a forge written inside a backtick
+went from BLOCK_MARKER to `OK|` — **a block turned into an allow**, the one thing this
+document says a change to a fail-closed classifier may never do.
+
+The first response was to compensate: extract substitution bodies in that guard explicitly.
+**That was the wrong call, and it took eleven review rounds to admit it.** The compensation
+needed a model of shell variable scope inside a subshell, and every round found the model
+wrong in a new place — a body's assignment leaking to its parent, then to a *sibling*, then
+a prefix assignment that bash scopes to one command, then a redirect that bash persists
+past, then a process substitution that it does not, then per-command mixing that no single
+reading covers, then `+=`, then two bounds each scoped to the wrong thing. Every fix was
+correct; the sequence was the signal.
+
+**It was reverted.** `marker_check` is byte-identical to its pre-#563 state. The backtick
+fix lives only in `cmdword`, where `_command_substitutions` already extracts and recurses
+into every body, so making the span opaque there removes nothing — which is exactly the
+property the sibling lacked. The residual is stated rather than chased: `marker_check`'s
+own producer scan still reads a control operator inside a backtick span as an outer
+separator, so a helper invocation can hide behind one. That is a **pre-existing** hole in a
+different guard, unchanged by this work, and it deserves its own issue and its own measured
+rounds rather than a ride-along.
+
+Three things to carry out of it:
+
+1. **Keeping two copies in step is a claim about the SPLITTER; it is not a claim about what
+   each copy's callers compensate for.** The identical edit was neutral in one file and a
+   bypass in the other. Read the callers before mirroring a parsing change.
+2. **A compensating mechanism is not a fix.** When closing a defect requires building a new
+   model somewhere else, the new model is the change — and it needs its own scope, its own
+   measurement, and its own review budget.
+3. **Count the rounds.** This document already says a fourth heuristic on the same question
+   means the question is wrong. Eleven is not a harder version of that lesson; it is the
+   same one, ignored.
+
+Five rounds of one-spelling-at-a-time is what the sixty-seven-row table above is made of, so
+the suite gained a **generated grid** rather than a sixth example: transports (stdin
+redirect, script operand, a pipe fed by one, an escaped receiver, both output directions, the
+empty-quote concatenation, and two version-qualified interpreters) crossed with seven
+wrappers (bare, separators either side, brace and paren groups, an `if`, and the
+quoted-`$(...)` pad pair that defeated every lexed view), asserted in BOTH directions, plus
+assembled receivers (`b$(printf as)h`, `$SHELL`, the backtick spelling), and explicit
+the command-position receiver classes and the sourced-substitution form, precision cases for
+`.sh`, `.log`, `.perl5.34`, directory-component operands and those same class words appearing
+as DATA, boundary-placement operands (`bash".log"`, `bash\.log`, `python3".12.log"`), and
+five receiver spellings behind the quote pads, five command-position PREFIX shapes, and the
+quoted-punctuation over-block pins. Every active composition must block and every inert one
+stay allowed. The grid is what found the quoting defeat above; two hand-picked cases had not.
+
+No case count is quoted here on purpose: the fixture prints its own total and the number
+moves with every round, so a figure copied into prose is stale by the next one — this
+document already carries a whole section on numbers that were true once and cited after.
+
+Two entries in that set are **over-block pins, not transports**, and the fixture says so:
+`2> >(receiver)` redirects stderr while the payload is written on stdout, and
+`payload >(receiver)` passes the substitution PATHNAME as an argument — in neither does the
+payload actually reach the receiver. They block because `>(...)` takes the whole command as
+its producer, which is conservative and correct, but calling them active cases would have
+claimed the transport invariant was exercised when it was not.
+
+It carries a **seeded property** as well, for the reason the whole sixty-seven-row table
+exists: every defect here was a COMPOSITION nobody had enumerated, and a fixed table only
+holds the ones someone thought of. 2,000 random compositions of transport × receiver ×
+prefix × wrapper × pad, each of which really feeds a shell, all of which must block; the seed
+is fixed so a failure reproduces exactly. It found two gaps within a minute of being written
+— an expansion behind a prefix word, and `'' in "({"` being *true* in Python, so a run ending
+at end-of-text read as truncated — neither of which the enumerated cases reached. The whole
+fixture runs in about 0.2s.
+
+### The suite must not forge what it tests
+
+The sharpest lesson here is about the TEST, not the classifier. The forge cases hand the
+gate a marker-write as TEXT. One was written inside a DOUBLE-quoted argument, where the
+literal single quotes around a backtick protect nothing — so the *test shell* ran the
+payload and created a real `.claude/skip-litmus.local` in the repo. The assertion still
+passed: the gate had correctly blocked the text it was given, and nothing in the run said a
+live bypass marker now existed. It was removed through `design-clear.sh --skip`, which
+writes a `skip-marker-cleared` event, rather than a bare `rm`.
+
+Those cases went with the revert, but the tripwire stayed, because the hazard is general: a
+test that exercises a bypass can commit one. The suite asks no ownership question, and it
+deletes nothing. Three ownership tests were tried — bare existence, inode plus mtime, then a
+start-time absence check — and each was defeated by a replacement it could not see, the last
+by any concurrent writer acting after the check ran. The identity of a path is not something
+a shell script establishes, and **a test that deletes operator state it cannot prove it owns
+is a worse failure than the one it guards against.** So it does two things and neither is a
+deletion: it **refuses to start** when a file is already at that path (`-L` as well as `-e`,
+so a dangling symlink does not read as absent), and an EXIT trap **reports** one that
+appeared during the run — naming the path, pointing at the audited drain, forcing a non-zero
+exit, and leaving the file for a human. On EXIT rather than at the end of a section, so an
+interrupt cannot skip it.
+
+
+Order is load-bearing there, and observing it is what proved it: installed after the trap,
+the refusal's own `exit 1` fired the trap, which back then *drained* the operator file —
+destroying exactly the state the refusal exists to protect. All four branches were then
+executed and observed: a pre-existing file and a dangling symlink each refuse the run and
+survive it, a file appearing mid-run is reported with a non-zero exit and left in place, and
+a clean run is silent. A guard whose failure branch has never been seen is not a guard, and
+this one was wrong until it was watched.
+
+
+### Cost, and the two over-blocks pinned in the producer scan
+
+**UNMEASURED**, like the launcher rule above it: the 34,758-command corpus this document is
+built on was no longer available. Two over-blocks in the new scan are known and pinned as
+*block* so changing either is a decision rather than a drift:
+
+- A shell named ANYWHERE in a command puts every `<(...)` body under the raw scan
+  (`sh -c ':' <(printf 'rm -rf src')`). The splitter breaks on `(`, so a substitution
+  arrives already torn off its own stage, and binding the two back together needs positional
+  bookkeeping the splitter does not keep. Scoped by rarity instead: the candidate walk runs
+  only once a process substitution is present, so an ordinary command pays nothing. The
+  arity-free candidate test is what keeps the OTHER direction sound — an explicit script
+  operand does not un-name the shell, so `bash /dev/fd/3 3< <(payload)` is still scanned.
+  Pinned, because that is not what a reader expects an operand to do.
+- `>(...)` takes the whole command as its producer, the same trade the indirection rule
+  already makes, so a write verb sitting in that command as plain DATA is raw-scanned:
+  `grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')` blocks, because proving that a `-c`
+  shell will not read stdin as a program is the arity table this module refuses.
+
+One residual is inherited rather than introduced, and it is the same one this document
+already records for the producer scan: an **assembled** marker name defeats every
+raw-substring fallback here, the two the substitution walk added included.
+`.claude/skip-litmus` plus `.local` never appears contiguously, so an unreadable body falls
+through clean. Recovering it needs an interpreter rather than a tokenizer — the same call
+made for `printf '%s%s' r 'm -rf src' | bash`, with the same containment: an assembled name
+only helps an actor who already holds Bash, and every gated write still needs a logged
+lease. Measured identical before and after, and pinned as `allow` so it stays visible.
+
+`marker_check` is deliberately UNCHANGED — see the revert above. Its producer scan needed no
+process-substitution change either: those shapes already reach `_abandoned_scan_probe` by
+another path, checked rather than assumed.
+
 ## Revisit trigger
 
 A fail-open found in the *structural* half — a transport that feeds a shell its program
 without an unquoted `|` in front of it (a heredoc body, a `<` from a file, a coprocess).
 Those are payload-transport problems, not arity problems, and each should be closed on its
-own terms rather than by reopening the flag question.
+own terms rather than by reopening the flag question. It has since fired once, on a
+transport the enumeration did not name: **process substitution**, closed in the addendum
+above. The three transports actually enumerated here are all still open — a heredoc body,
+`<` from a plain FILE (unrecoverable from the command text, as the residual list states),
+and a coprocess (`coproc printf 'rm -rf src'` then `bash <&${COPROC[0]}` classifies False,
+verified). The backtick item in the addendum is not a transport at all: it is a splitter
+defect that discarded the producer of a pipe that was already recognised.

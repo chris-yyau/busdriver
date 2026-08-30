@@ -1,3 +1,10 @@
+## [2.1.4](https://github.com/chris-yyau/busdriver/compare/v2.1.3...v2.1.4) (2026-08-30)
+
+
+### Bug Fixes
+
+* **litmus:** hash the reviewed bytes and pin all four marker sites ([#576](https://github.com/chris-yyau/busdriver/issues/576)) ([#795](https://github.com/chris-yyau/busdriver/issues/795)) ([a48ae82](https://github.com/chris-yyau/busdriver/commit/a48ae82865db40dee1832dd4c47ba7c3ab85cdc8)), closes [280/#281](https://github.com/chris-yyau/busdriver/issues/281) [#545](https://github.com/chris-yyau/busdriver/issues/545) [#252](https://github.com/chris-yyau/busdriver/issues/252) [#713](https://github.com/chris-yyau/busdriver/issues/713) [#252](https://github.com/chris-yyau/busdriver/issues/252) [#790](https://github.com/chris-yyau/busdriver/issues/790) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [2.1.3](https://github.com/chris-yyau/busdriver/compare/v2.1.2...v2.1.3) (2026-08-29)
 
 

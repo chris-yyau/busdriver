@@ -1010,5 +1010,107 @@ check "...and inside a find -exec payload" block \
     "$(armed 'find . -exec no-match-* sed -i s/a/b/ f ;')"
 unset _v
 
+# ── THE INTERPRETER DECOY ──
+# A python-shaped word can PRECEDE the real interpreter, and choosing between them is not
+# decidable from the text: `env python3 python3 <helper>` is either a decoy in front of an
+# interpreter or an interpreter running a script NAMED `python3`, and the two spell the
+# same. The SHAPE is what decides — a word `env` would read as an assignment is not the
+# interpreter — and the rules that tried to decide it another way each traded a false block
+# for a miss: skipping by env-name adjacency (an option breaks it, and the region walk is
+# quadratic), advancing to the first non-flag operand (promotes a `-c` PROGRAM), a `.py`
+# test (calls `python3.py` a script), an interpreter-shaped name test (loses
+# `python-local`), and an additive re-ask of the skipped word (blocks every script behind a
+# decoy). Ten rounds; the four spellings below are closed here and open at origin/main.
+check "an assignment-shaped decoy in front of the interpreter blocks" block \
+    "$(clean "env python3=decoy python3 -I $HELPER .claude fake 1")"
+check "...with an option breaking the adjacency" block \
+    "$(clean "env -i python3=decoy python3 -I $HELPER .claude fake 1")"
+check "...with a second assignment between them" block \
+    "$(clean "env python3=decoy X=1 python3 -I $HELPER .claude fake 1")"
+check "...and for a dash-suffixed interpreter name" block \
+    "$(clean "env python3=decoy python-local -I $HELPER .claude fake 1")"
+
+# The MENTION half of the same undecidable pair, which every candidate-choosing rule broke.
+check "an interpreter running a script named python3 stays a mention" allow \
+    "$(clean "env python3 python3 $HELPER")"
+check "...as does a python-prefixed SCRIPT with an argument" allow \
+    "$(clean "env python3 python_tool.py $HELPER")"
+check "...extensionless too" allow "$(clean "env python3 python_tool $HELPER")"
+check "...and a -c program is not read as an interpreter" allow \
+    "$(clean "env python3 -c python_code=1 $HELPER")"
+check "...and a script behind a decoy keeps its argument an argument" allow \
+    "$(clean "env python3=decoy python3 safe.py $HELPER")"
+
+# What the shape rule COSTS, pinned rather than described: a wrapper that does NOT read
+# assignments can run a PATH entry literally named `python3=shim`. origin/main blocks this
+# and this branch does not — the one trade in the family. Closing it means knowing which
+# wrappers interpret `NAME=value`, which is the per-flag arity table this suite's subject
+# refuses to carry, and every attempt above reopened one of the mention cases.
+check "RESIDUAL: a literal assignment-shaped program name behind timeout" allow \
+    "$(clean "timeout 5 python3=shim -I $HELPER .claude fake 1")"
+
+# ...and the grid generated rather than enumerated, because the spellings that got through
+# during review were combinations nobody had written out — a path-qualified
+# assignment-shaped name (`./python3=real`), a free-threaded `t` suffix, an option between
+# the decoy and the interpreter. Run IN PROCESS like the sweeps above: 110 gate subprocesses
+# would add about a minute to a suite CI caps at 180 seconds.
+#
+# The block arm is SPLIT by what the wrapper does with `NAME=value`. `env` reads it as an
+# assignment, so the decoy really is one and the interpreter behind it really runs — those
+# are correct blocks, and open at origin/main. `timeout`, `sudo` and `nice` do NOT, so they
+# execute a program literally named `python3=decoy` and the helper is only an argument:
+# those block too, and that is the ACCEPTED OVER-BLOCK the shape rule costs, the same trade
+# as the RESIDUAL above but pointing the safe way. Asserting them together would have
+# claimed the second group was correct.
+if DECOY_OUT="$(GATE_LIB="${REPO_ROOT}/hooks/gate-scripts/lib" HELPER="$HELPER" python3 - <<'PY'
+import itertools, os, sys
+sys.path.insert(0, os.environ["GATE_LIB"])
+import marker_check
+
+H = os.environ["HELPER"]
+blocked = lambda c: marker_check._helper_invoked(c) not in (None, "OK")
+
+ENV_WRAP = ["", "env ", "env -i "]
+OTHER_WRAP = ["timeout 5 ", "sudo ", "nice -n 5 "]
+DECOY = ["python3=decoy ", "python3=decoy X=1 "]
+INTERP = ["python3", "python3.12", "python3.13t", "pythonw", "/usr/bin/python3",
+          "./python3=real", "python-local"]
+SCRIPT = ["python_tool.py", "python_tool", "python3.py", "safe.py"]
+
+bad = []
+# 1. behind an env-like wrapper the decoy is an assignment: the interpreter behind it runs.
+for w, d, i in itertools.product(ENV_WRAP, DECOY, INTERP):
+    c = w + d + i + " -I " + H + " .claude fake 1"
+    if not blocked(c):
+        bad.append("DECOY-MISS " + repr(c))
+# 2. behind a wrapper that does NOT read assignments the decoy is the program, so the
+#    helper is an argument. These block anyway -- the accepted over-block, pinned so a
+#    later change cannot quietly turn it into a MISS instead.
+for w, d, i in itertools.product(OTHER_WRAP, DECOY, INTERP):
+    c = w + d + i + " -I " + H + " .claude fake 1"
+    if not blocked(c):
+        bad.append("OVERBLOCK-LOST " + repr(c))
+# 3. the mention control: a SCRIPT in interpreter position keeps its argument an argument.
+for w, d, s in itertools.product(ENV_WRAP + OTHER_WRAP, DECOY, SCRIPT):
+    c = w + d + "python3 " + s + " " + H
+    if blocked(c):
+        bad.append("MENTION-BLOCKED " + repr(c))
+# SENTINEL-DELIMITED: the module under test writes its own diagnostics to stdout, so
+# a bare capture reads one of those as a finding. Only the text after the marker
+# is ours.
+print("DECOY-RESULT:" + ("|".join(bad[:8]) if bad else "clean"))
+PY
+)"; then
+    DECOY_OUT="${DECOY_OUT##*DECOY-RESULT:}"
+    if [[ "$DECOY_OUT" == clean ]]; then
+        ok "generated: 84 decoy spellings block, 96 script spellings stay mentions"
+    else
+        no "generated decoy grid" "$DECOY_OUT"
+    fi
+else
+    no "generated decoy grid" "harness failed to run"
+fi
+unset DECOY_OUT
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

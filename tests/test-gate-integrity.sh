@@ -163,9 +163,26 @@ fi
 # Python writes `lib/__pycache__/*.pyc` the first time a gate imports a locked
 # module — including while this very suite runs — so that bytecode is exempt or
 # the check fails on an otherwise untouched tree.
+#
+# The fixture is a REAL cache written by python3, not a stub with a `.pyc` name:
+# since #797 the exemption covers only caches Python revalidates against their
+# source, so a stub would no longer be exempt and would prove nothing about the
+# tree that has merely run the gates.
+compile_pyc() {  # compile_pyc <TIMESTAMP|CHECKED_HASH|UNCHECKED_HASH>
+    # Status is load-bearing: without `set -e`, a failed compile leaves an empty
+    # __pycache__ and the next --check passes for the wrong reason. Callers must
+    # assert $? (and we refuse to report success unless a .pyc actually exists).
+    rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+    _PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" _PYC_MODE="$1" python3 -c '
+import os, py_compile
+py_compile.compile(os.environ["_PYC_SRC"], doraise=True,
+                   invalidation_mode=py_compile.PycInvalidationMode[os.environ["_PYC_MODE"]])'         || return 1
+    find "$_fix/hooks/gate-scripts/lib/__pycache__" -name '*.pyc' ! -type d | grep -q .
+}
+
 fresh_fixture
-mkdir -p "$_fix/hooks/gate-scripts/lib/__pycache__"
-printf 'not really bytecode\n' > "$_fix/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc"
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: python3 wrote a real timestamp cache into lib/__pycache__"
 "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
 assert $? "a regenerated __pycache__/*.pyc does not break the check (the one exemption)"
 
@@ -196,6 +213,448 @@ if [[ $? -ne 0 && "$_out" == *"json.pyc"* ]]; then
 else
     printf '  ↳ output: %s\n' "$_out"
     assert 1 "↳ a SOURCELESS .pyc beside the locked modules fails, by name (exemption is -path-anchored)"
+fi
+
+# ── 2d-bis. #797: an UNTRACKED unchecked-hash .pyc inside __pycache__ ────────
+# The exemption used to be bounded on TRACKEDNESS alone: a `.pyc` arriving
+# through a PR is refused by name, but one dropped straight onto disk was
+# neither hashed nor refused, so it produced no lockfile diff and `--check`
+# still succeeded. PEP 552 is what makes that matter — an UNCHECKED hash-based
+# cache (flags bit 0 set, bit 1 clear) is loaded with NO comparison to its
+# source at all, not mtime, not size, not hash — so it replaces a locked
+# module's behaviour inside a blocking gate. The asymmetry is the whole point:
+# editing the locked `.py` is DETECTED, dropping the `.pyc` beside it was not.
+fresh_fixture
+compile_pyc UNCHECKED_HASH
+assert $? "↳ fixture: wrote an UNCHECKED_HASH cache"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+if [[ $? -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"UNCHECKED"* ]]; then
+    assert 0 "an UNTRACKED unchecked-hash .pyc inside __pycache__ fails the check, by name"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "an UNTRACKED unchecked-hash .pyc inside __pycache__ fails the check, by name"
+fi
+
+# `--update` refuses it too. The classification runs BEFORE the mode dispatch,
+# so the forgery cannot be laundered by recording a fresh lock over the tree
+# holding it — and the operator is told to delete regenerable bytecode instead.
+_out="$("$GATE_INTEGRITY" --root "$_fix" --update 2>&1)"
+if [[ $? -ne 0 && "$_out" == *"marker_ops"* ]]; then
+    assert 0 "↳ --update refuses it as well (classification precedes the mode dispatch)"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ --update refuses it as well (classification precedes the mode dispatch)"
+fi
+
+# The narrowing is on UNVALIDATED content, not on hash-based caches: a
+# checked-hash cache is rehashed against the `.py` beside it, which IS locked,
+# so it stays exempt exactly like the timestamp cache in 2d.
+compile_pyc CHECKED_HASH
+assert $? "↳ fixture: wrote a CHECKED_HASH cache"
+"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+assert $? "↳ a CHECKED-hash cache still passes (the exemption is narrowed, not removed)"
+
+# Header flags alone are not authentication: PEP 552's timestamp / checked-hash
+# modes only bind the SOURCE's metadata or hash, so a valid header spliced onto
+# a malicious marshal body still loads. The body-match half of the classifier
+# is what closes that — prove it with a real splice, not a stub name.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the splice"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+if [[ -n "$_PYC" && -f "$_PYC" ]]; then
+    assert 0 "↳ fixture: located the timestamp cache to splice"
+else
+    assert 1 "↳ fixture: located the timestamp cache to splice"
+fi
+_evil_src="$_fix/hooks/gate-scripts/lib/__spliced_evil.py"
+_evil_pyc="$_fix/hooks/gate-scripts/lib/__pycache__/__spliced_evil.pyc"
+printf 'x = 999\n' > "$_evil_src"
+E="$_evil_src" P="$_evil_pyc" python3 -c \
+    'import os, py_compile; py_compile.compile(os.environ["E"], cfile=os.environ["P"], doraise=True)'
+G="$_PYC" E="$_evil_pyc" O="$_PYC" python3 -c '
+import os
+good, evil, out = os.environ["G"], os.environ["E"], os.environ["O"]
+with open(good, "rb") as fh: hdr = fh.read(16)
+with open(evil, "rb") as fh: body = fh.read()[16:]
+with open(out, "wb") as fh: fh.write(hdr + body)
+'
+rm -f "$_evil_src" "$_evil_pyc"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a TIMESTAMP header spliced onto a foreign bytecode body fails, by name"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a TIMESTAMP header spliced onto a foreign bytecode body fails, by name"
+fi
+
+# CodeType == ignores co_stacksize; a body that only inflates it must still fail.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the stacksize forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os, types
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+fat = code.replace(co_stacksize=2147483647)
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(fat))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a cache whose only mutation is co_stacksize still fails (structural compare includes co_stacksize)"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose only mutation is co_stacksize still fails (structural compare includes co_stacksize)"
+fi
+
+# co_filename is observable at runtime; a body that only retargets it must fail.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the co_filename forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+forged = code.replace(co_filename="/attacker/chosen.py")
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+    assert 0 "↳ a cache whose only mutation is co_filename still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose only mutation is co_filename still fails"
+fi
+
+# A consts-only mutation (same shape, different value) must fail too.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the consts forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+# Flip a string constant if present; otherwise append a sentinel.
+consts = list(code.co_consts)
+for i, c in enumerate(consts):
+    if isinstance(c, str) and c:
+        consts[i] = c + "/forged"
+        break
+else:
+    consts.append("__forged__")
+forged = code.replace(co_consts=tuple(consts))
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a cache whose only mutation is a co_consts string still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose only mutation is a co_consts string still fails"
+fi
+
+# 0.0 == -0.0 under Python ==, but math.copysign diverges — marshal.dumps must
+# catch a signbit-only const mutation. Use a dedicated module that ALREADY
+# contains a +0.0 literal so the flip is length-preserving (appending a const
+# would fail same_code on length alone and miss the signed-zero path).
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+mkdir -p "$_fix/hooks/gate-scripts/lib/__pycache__"
+printf 'X = 0.0\n' > "$_fix/hooks/gate-scripts/lib/signed_zero.py"
+_tag="$(python3 -c 'import sys; print("".join(str(x) for x in sys.version_info[:2]))')"
+_zero_pyc="$_fix/hooks/gate-scripts/lib/__pycache__/signed_zero.cpython-${_tag}.pyc"
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/signed_zero.py" _ZERO="$_zero_pyc" python3 -c '
+import os, py_compile
+py_compile.compile(os.environ["_PYC_SRC"], cfile=os.environ["_ZERO"], doraise=True,
+                   invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)'
+assert $? "↳ fixture: wrote a signed-zero module cache"
+_ZERO="$_zero_pyc" python3 -c '
+import marshal, os, math
+path = os.environ["_ZERO"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+assert any(isinstance(c, float) and c == 0.0 for c in code.co_consts), "fixture lacks +0.0"
+
+def flip(obj):
+    if isinstance(obj, float) and obj == 0.0 and not math.copysign(1.0, obj) < 0:
+        return -0.0
+    if isinstance(obj, tuple):
+        return tuple(flip(x) for x in obj)
+    if hasattr(obj, "co_code"):
+        return obj.replace(co_consts=tuple(flip(c) for c in obj.co_consts))
+    return obj
+
+forged = flip(code)
+assert forged.co_consts != code.co_consts or any(
+    isinstance(a, float) and isinstance(b, float) and a == b == 0.0
+    and math.copysign(1.0, a) != math.copysign(1.0, b)
+    for a, b in zip(forged.co_consts, code.co_consts)
+)
+# Length preserved — only the signbit changed.
+assert len(forged.co_consts) == len(code.co_consts)
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+rm -f "$_fix/hooks/gate-scripts/lib/signed_zero.py"
+if [[ "$_rc" -ne 0 && "$_out" == *"signed_zero"* && "$_out" == *"body"* ]]; then
+    assert 0 "↳ a cache whose only mutation is a +0.0→-0.0 const still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose only mutation is a +0.0→-0.0 const still fails"
+fi
+
+# co_lnotab / co_linetable are intentionally NOT compared (line tables do not
+# change executable behaviour; -X no_debug_ranges would otherwise false-fail).
+# Keep a smoke that a linetable-only mutation still passes --check.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the linetable-only mutation"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+if not hasattr(code, "co_linetable") or not code.co_linetable:
+    raise SystemExit(0)
+forged = code.replace(co_linetable=code.co_linetable + b"\x00")
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+assert $? "↳ a cache whose only mutation is co_linetable still passes (line tables not compared)"
+
+# samefile would accept a hardlink alias; the allowlist must not.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the hardlink alias forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_alias="$_fix/hooks/gate-scripts/lib/marker_ops.alias.py"
+ln "$_fix/hooks/gate-scripts/lib/marker_ops.py" "$_alias" 2>/dev/null \
+    || cp "$_fix/hooks/gate-scripts/lib/marker_ops.py" "$_alias"
+_PYC="$_PYC" _ALIAS="$_alias" python3 -c '
+import marshal, os
+path, alias = os.environ["_PYC"], os.environ["_ALIAS"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+forged = code.replace(co_filename=alias)
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+rm -f "$_alias"
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+    assert 0 "↳ a cache whose co_filename is only a hardlink alias of the source still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose co_filename is only a hardlink alias of the source still fails"
+fi
+
+# Non-canonical ./ spelling that still realpaths to the source must fail.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for the ./ co_filename forgery"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_PYC="$_PYC" python3 -c '
+import marshal, os
+path = os.environ["_PYC"]
+with open(path, "rb") as fh:
+    data = fh.read()
+code = marshal.loads(data[16:])
+alias = os.path.dirname(code.co_filename) + "/./" + os.path.basename(code.co_filename)
+forged = code.replace(co_filename=alias)
+with open(path, "wb") as fh:
+    fh.write(data[:16] + marshal.dumps(forged))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"co_filename"* ]]; then
+    assert 0 "↳ a cache whose co_filename uses a ./ alias of the source still fails"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache whose co_filename uses a ./ alias of the source still fails"
+fi
+
+# Oversized cache: refuse by bound rather than attempting to decode it.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache before the oversized case"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+P="$_PYC" python3 -c '
+import os
+path = os.environ["P"]
+with open(path, "wb") as fh:
+    fh.write(b"\0" * 16)
+    fh.write(b"x" * (8 * 1024 * 1024 + 1))
+'
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"bound"* ]]; then
+    assert 0 "↳ a cache exceeding the classifier size bound fails closed"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a cache exceeding the classifier size bound fails closed"
+fi
+
+# Shared-tuple identity is enforced by same_code memoization; prove the
+# helper rejects a graph that only breaks sharing (values equal, identity not).
+# Kept as an in-process probe so it does not depend on inventing a new locked
+# .py (which would fail the digest before the body check runs).
+python3 -c '
+import marshal
+
+def same_const(a, b, memo, rev):
+    a_code, b_code = hasattr(a, "co_code"), hasattr(b, "co_code")
+    if a_code or b_code:
+        return a_code and b_code and same_code(a, b, memo, rev)
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        ia, ib = id(a), id(b)
+        if ia in memo:
+            return memo[ia] == ib
+        if ib in rev:
+            return False
+        memo[ia] = ib
+        rev[ib] = ia
+        return len(a) == len(b) and all(same_const(x, y, memo, rev) for x, y in zip(a, b))
+    return marshal.dumps(a) == marshal.dumps(b)
+
+def same_code(a, b, memo=None, rev=None):
+    if memo is None:
+        memo, rev = {}, {}
+    if type(a) is not type(b) or not hasattr(a, "co_code"):
+        return False
+    ia, ib = id(a), id(b)
+    if ia in memo:
+        return memo[ia] == ib
+    if ib in rev:
+        return False
+    memo[ia] = ib
+    rev[ib] = ia
+    if a.co_code != b.co_code or a.co_names != b.co_names:
+        return False
+    if len(a.co_consts) != len(b.co_consts):
+        return False
+    return all(same_const(x, y, memo, rev) for x, y in zip(a.co_consts, b.co_consts))
+
+mod = compile("def f():\n    return (1, 2)\n", "<locked>", "exec", dont_inherit=True)
+inner = next(c for c in mod.co_consts if hasattr(c, "co_code"))
+t = (1, 2)
+inner_s = inner.replace(co_consts=tuple(t if x == (1, 2) else x for x in inner.co_consts))
+shared = mod.replace(co_consts=tuple(
+    (t if c is None else (inner_s if hasattr(c, "co_code") else c)) for c in mod.co_consts
+))
+dup = tuple(list(t))
+inner_b = inner_s.replace(co_consts=tuple(dup if x is t else x for x in inner_s.co_consts))
+broken = shared.replace(co_consts=tuple(
+    inner_b if hasattr(c, "co_code") else c for c in shared.co_consts
+))
+ok = same_code(shared, shared) and not same_code(broken, shared)
+raise SystemExit(0 if ok else 1)
+'
+assert $? "↳ same_code rejects broken shared-tuple identity (values equal, identity not)"
+
+# Sibling source size bound: a huge .py next to a small cache must refuse.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache before the oversized-source case"
+_PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
+_src="$_fix/hooks/gate-scripts/lib/marker_ops.py"
+cp "$_src" "$_src.bak"
+# Keep the file readable but oversized; body decode is never reached.
+dd if=/dev/zero of="$_src" bs=1024 count=$((8 * 1024 + 1)) 2>/dev/null
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+mv "$_src.bak" "$_src"
+if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"source exceeds"* ]]; then
+    assert 0 "↳ a sibling source exceeding the classifier size bound fails closed"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a sibling source exceeding the classifier size bound fails closed"
+fi
+
+# Optimization level is part of the cache identity (PEP 3147 `.opt-N`). The
+# classifier always runs under `python3 -I` (optimize 0); a gate that ran under
+# `-O` writes `.opt-1` caches whose bodies only match a compile at that level.
+# Compile one directly to the opt-1 name and require --check to still pass.
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+mkdir -p "$_fix/hooks/gate-scripts/lib/__pycache__"
+_tag="$(python3 -c 'import sys; print("".join(str(x) for x in sys.version_info[:2]))')"
+_opt1="$_fix/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-${_tag}.opt-1.pyc"
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" _OPT1="$_opt1" python3 -c '
+import os, py_compile
+py_compile.compile(os.environ["_PYC_SRC"], cfile=os.environ["_OPT1"], doraise=True,
+                   optimize=1, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)'
+assert $? "↳ fixture: wrote an .opt-1 cache"
+if [[ -f "$_opt1" ]]; then
+    assert 0 "↳ fixture: .opt-1 cache path exists"
+else
+    assert 1 "↳ fixture: .opt-1 cache path exists"
+fi
+"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+assert $? "↳ an .opt-1 cache still passes (optimize level taken from the PEP 3147 name)"
+
+# Compact matrix over the three PEP 552 invalidation modes + a truncated header:
+# each mode's expected outcome, without a separate property-testing dependency.
+for _mode in TIMESTAMP CHECKED_HASH UNCHECKED_HASH; do
+    compile_pyc "$_mode"
+    assert $? "↳ fixture: matrix wrote $_mode cache"
+    _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    case "$_mode" in
+        UNCHECKED_HASH)
+            if [[ "$_rc" -ne 0 && "$_out" == *"UNCHECKED"* ]]; then
+                assert 0 "↳ matrix: $_mode refused"
+            else
+                printf '  ↳ output: %s\n' "$_out"
+                assert 1 "↳ matrix: $_mode refused"
+            fi
+            ;;
+        *)
+            if [[ "$_rc" -eq 0 ]]; then
+                assert 0 "↳ matrix: $_mode accepted"
+            else
+                printf '  ↳ output: %s\n' "$_out"
+                assert 1 "↳ matrix: $_mode accepted"
+            fi
+            ;;
+    esac
+done
+printf 'x' > "$_fix/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-${_tag}.pyc"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"too short"* ]]; then
+    assert 0 "↳ matrix: truncated header refused"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ matrix: truncated header refused"
+fi
+
+# A SYMLINK parked in __pycache__ is refused rather than classified by whatever
+# its target's header says — CPython never writes one there, and compute_lock
+# refuses symlinks everywhere else in the locked trees.
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache before the symlink case"
+ln -s "$_fix/hooks/gate-scripts/lib/marker_ops.py" \
+    "$_fix/hooks/gate-scripts/lib/__pycache__/smuggled.cpython-314.pyc"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+if [[ "$_rc" -ne 0 && "$_out" == *"smuggled.cpython-314.pyc"* ]]; then
+    assert 0 "↳ a SYMLINKED .pyc inside __pycache__ fails, by name (never classified by its target)"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a SYMLINKED .pyc inside __pycache__ fails, by name (never classified by its target)"
 fi
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────
@@ -530,8 +989,8 @@ else
 fi
 
 # ── 4g. A checkout whose index cannot be queried fails closed ─────────────────
-# The tracked-bytecode check is the ONLY cover for the .pyc files the digest
-# omits, so "the git probe failed, assume not a repository" would silently retire
+# The tracked-bytecode check is the only cover against a TRACKED .pyc, which the
+# digest omits, so "the git probe failed, assume not a repository" would silently retire
 # it on an absent git binary or unreadable metadata. Presence of `.git` — not the
 # probe succeeding — is what says a real checkout is here.
 fresh_fixture

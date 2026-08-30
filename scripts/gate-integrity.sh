@@ -60,6 +60,10 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK_NAME=".gate-integrity.lock"
 LOCKED_DIRS=(hooks/gate-scripts scripts/hooks)
+# The bytecode exemption, as ONE pattern: `lockable_paths` skips exactly what
+# `unvalidated_bytecode` classifies, so no future edit can widen one without
+# widening the other and leave a file exempt from both.
+PYC_EXEMPT_PATH='*/__pycache__/*.pyc'
 
 mode="check"
 root="$REPO_ROOT"
@@ -142,19 +146,28 @@ sha256_of() {  # sha256_of <file>
 # ignore list: a `.gitignore` entry removes nothing from this enumeration (so a
 # gitignored `hooks/gate-scripts/lib/evil.sh` is still caught, and `git add -f`
 # buys nothing), and widening it means editing this file in the reviewed diff.
-# The exemption is bounded on the side that actually matters — TRACKEDNESS. A
-# `.pyc` that reaches this repo through a PR is checked below and refused by
-# name, because PEP 552 makes an unvalidated one trivial: an UNCHECKED
-# hash-based `.pyc` (flags bit 1 clear) is loaded with NO comparison to its
-# source at all — not mtime, not size, not hash — so a tracked
-# `lib/__pycache__/marker_ops.cpython-XXX.pyc` would simply replace the locked
-# `marker_ops.py`'s behaviour while both `--check` and `--update` omitted it.
-# RESIDUAL, named rather than waved away: an UNTRACKED forged `.pyc` dropped
-# straight onto disk still executes unlocked. That needs local write access to
-# the gate directory, which already implies the ability to edit the locked
-# `.py` beside it.
+# The exemption is bounded on BOTH ways a `.pyc` can arrive, because PEP 552
+# makes an unvalidated one trivial: an UNCHECKED hash-based `.pyc` (flags bit 0
+# set, bit 1 clear) is loaded with NO comparison to its source at all — not
+# mtime, not size, not hash — so `lib/__pycache__/marker_ops.cpython-XXX.pyc`
+# replaces the locked `marker_ops.py`'s behaviour while both `--check` and
+# `--update` omit it. Through a PR: `tracked_bytecode` below refuses it by name.
+# Dropped straight onto disk: `unvalidated_bytecode` below refuses it too (#797).
+# That asymmetry WAS the gap — editing the locked `.py` is DETECTED, dropping
+# the `.pyc` beside it was not, which is strictly the more useful move for the
+# local-write attacker this lock exists to make noisy.
+#
+# Header flags alone are not enough. PEP 552's timestamp and checked-hash modes
+# authenticate the SOURCE (mtime/size or a source hash), not the marshaled
+# body: splicing a valid header onto malicious bytecode still loads, and
+# `--check` would pass. So the classifier also compiles the sibling `.py` and
+# requires the cache's body to match — which is exactly what a cache written by
+# merely running the gates is, and what a forgery is not. Unchecked-hash is
+# still refused by flags even when the body currently matches: CPython never
+# writes that mode by default, and it would keep executing after every later
+# edit to the locked source.
 lockable_paths() {  # lockable_paths [find-args...]
-    find "${LOCKED_DIRS[@]}" ! -type d ! -path '*/__pycache__/*.pyc' "$@"
+    find "${LOCKED_DIRS[@]}" ! -type d ! -path "$PYC_EXEMPT_PATH" "$@"
 }
 
 # The ONE producer. `--check` and `--update` both call it, so the two can never
@@ -220,7 +233,8 @@ compute_lock() {  # compute_lock <root>
 # build artifact, and a tracked one is a deliberate act, never a side effect of
 # running a gate. A non-repo `--root` (the test fixtures) has no index to ask, which
 # is why this is a separate check rather than a condition inside the enumeration.
-# The tracked-bytecode check is the ONLY cover for the .pyc files the digest omits.
+# The tracked-bytecode check is the only cover against a TRACKED .pyc (the untracked
+# ones are `unvalidated_bytecode`'s, below), and the digest omits both.
 # Four shapes were tried to decide "is there an index to ask", and each INFERRED the
 # answer, leaving a hole:
 #   - probe-only read EVERY rev-parse failure as "not a repository", so an absent git
@@ -325,11 +339,281 @@ tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on que
     printf '%s' "$found"
 }
 
+# The UNTRACKED half of the same exemption (#797). Trackedness covers a `.pyc`
+# that arrives through a PR; one dropped straight onto disk is neither hashed nor
+# refused, so it produces no lock diff at all. Classified from DISK for the same
+# reason the digest is: the working tree is what executes.
+#
+# Two independent refusals, both required:
+#   1. PEP 552 flags at bytes 4-8 (little-endian): `flags & 3 == 1` is the
+#      UNCHECKED hash-based cache — loaded with no source comparison at all.
+#   2. Body match: the marshaled code after the 16-byte header must equal a
+#      compile of the sibling `.py` (filename-normalized). Timestamp and
+#      checked-hash modes only authenticate the source's metadata/hash, so a
+#      spliced header+malicious-body cache would otherwise pass.
+#
+# Everything else under the exemption is refused too, not skipped: a header this
+# cannot read, a file too short to hold one, a missing/unreadable sibling source,
+# a body that will not marshal, and a SYMLINK (`compute_lock` refuses those
+# everywhere else in the locked trees, and CPython never writes one into
+# `__pycache__`). The exempt set is the one place nothing is hashed, so "could
+# not prove it is the locked source's bytecode" has to mean refuse.
+unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, nonzero on failure
+    # Find status is checked BEFORE the classifier reads anything. A bare
+    # `find | python` with pipefail would still fail closed here, but it would
+    # report as a classifier failure and mask compute_lock's enumeration guard
+    # — the same "lists then exits nonzero" shape #742 refuses by name. Capture
+    # the listing first (NUL bytes need a file; a bash variable cannot hold them),
+    # and reuse that guard's message so a PATH-shimmed find cannot change which
+    # check appears to have fired.
+    (
+        CDPATH='' cd -P -- "$1" || exit 1
+        local tmp
+        tmp="$(mktemp)" || exit 1
+        # `! -type d` mirrors lockable_paths: a DIRECTORY named `x.pyc` inside
+        # `__pycache__` is not lockable and not importable, and opening it would
+        # report a false offender.
+        if ! find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 >"$tmp"; then
+            rm -f "$tmp"
+            printf 'gate-integrity: could not enumerate the locked directories\n' >&2
+            exit 1
+        fi
+        # marshal.loads is intentional and compare-only: CPython's import does the
+        # same decode on these files, we never exec the result, and a malformed
+        # body is refused. Raw-body compare cannot work — co_filename embeds the
+        # path used at compile time, so a cache from import and a fresh
+        # py_compile of the same source disagree in the bytes after the header.
+        # Optimize level is taken from the PEP 3147 name (`.opt-N`), not from
+        # this interpreter: the classifier always runs under `python3 -I`
+        # (optimize 0), while a gate that ran under `-O`/`-OO` writes `.opt-1`
+        # / `.opt-2` caches whose bodies only match a compile at that level.
+        # shellcheck disable=SC2016  # python source, not a shell expansion
+        python3 -I -c '
+import importlib.util, marshal, os, re, sys, warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+HEADER = 16
+# Fields CodeType == considers, PLUS co_stacksize. Line tables (co_linetable /
+# co_lnotab) are omitted: they do not change executable behaviour, and Pythons
+# -X no_debug_ranges produces legitimate caches whose line tables diverge while
+# co_code matches. Non-code constants use marshal.dumps so cases == collapses
+# (0.0 vs -0.0) still diverge. Tuples, frozensets, and nested code objects also
+# track identity so a forge that breaks sharing (A is f()) while keeping equal
+# values cannot pass. co_filename must be an exact allowlisted spelling of the
+# sibling source. Reads of both the cache and the sibling source are size-bounded.
+_CODE_FIELDS = (
+    "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
+    "co_stacksize", "co_flags", "co_code", "co_names", "co_varnames",
+    "co_freevars", "co_cellvars", "co_name", "co_qualname", "co_firstlineno",
+    "co_exceptiontable",
+)
+_MAX_PYC_BYTES = 8 * 1024 * 1024
+_MAX_SRC_BYTES = _MAX_PYC_BYTES
+
+def same_const(a, b, memo, rev):
+    a_code, b_code = hasattr(a, "co_code"), hasattr(b, "co_code")
+    if a_code or b_code:
+        return a_code and b_code and same_code(a, b, memo, rev)
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        ia, ib = id(a), id(b)
+        if ia in memo:
+            return memo[ia] == ib
+        if ib in rev:
+            return False
+        memo[ia] = ib
+        rev[ib] = ia
+        if len(a) != len(b):
+            return False
+        return all(same_const(x, y, memo, rev) for x, y in zip(a, b))
+    if isinstance(a, frozenset) and isinstance(b, frozenset):
+        ia, ib = id(a), id(b)
+        if ia in memo:
+            return memo[ia] == ib
+        if ib in rev:
+            return False
+        memo[ia] = ib
+        rev[ib] = ia
+        if len(a) != len(b):
+            return False
+        # Unordered: match each element of a to one unused element of b under
+        # the same memo (so shared inners elsewhere in the graph stay linked).
+        unused = list(b)
+        for ea in a:
+            for i, eb in enumerate(unused):
+                memo_s, rev_s = dict(memo), dict(rev)
+                if same_const(ea, eb, memo_s, rev_s):
+                    memo.clear(); memo.update(memo_s)
+                    rev.clear(); rev.update(rev_s)
+                    unused.pop(i)
+                    break
+            else:
+                return False
+        return True
+    # Atoms (str/bytes/int/float/complex/...) also participate in identity:
+    # a shared bytes/str across nested code objects must stay shared.
+    ia, ib = id(a), id(b)
+    if ia in memo:
+        return memo[ia] == ib
+    if ib in rev:
+        return False
+    memo[ia] = ib
+    rev[ib] = ia
+    try:
+        return marshal.dumps(a) == marshal.dumps(b)
+    except Exception:
+        return False
+
+def same_code(a, b, memo=None, rev=None):
+    if memo is None:
+        memo, rev = {}, {}
+    if type(a) is not type(b) or not hasattr(a, "co_code"):
+        return False
+    ia, ib = id(a), id(b)
+    if ia in memo:
+        return memo[ia] == ib
+    if ib in rev:
+        return False
+    memo[ia] = ib
+    rev[ib] = ia
+    for f in _CODE_FIELDS:
+        if getattr(a, f, None) != getattr(b, f, None):
+            return False
+    if len(a.co_consts) != len(b.co_consts):
+        return False
+    return all(same_const(x, y, memo, rev) for x, y in zip(a.co_consts, b.co_consts))
+
+def allowed_filenames(src):
+    # Exact lexical allowlist — not realpath-of-anything. That rejects ./ ../
+    # spellings, hardlink aliases, and paths reached through a symlinked parent
+    # while still accepting the relative source_from_cache name and the
+    # absolute / realpath spellings CPython embeds. The macOS /private alias is
+    # added only when that spelling exists and resolves to the same source.
+    names = {src, os.path.abspath(src), os.path.realpath(src)}
+    out = set()
+    for n in names:
+        n = os.path.normpath(n)
+        out.add(n)
+        if n.startswith("/private/"):
+            alt = "/" + n[len("/private/"):]
+            try:
+                if os.path.exists(alt) and os.path.realpath(alt) == os.path.realpath(n):
+                    out.add(os.path.normpath(alt))
+            except OSError:
+                pass
+        elif n.startswith("/") and not n.startswith("/private/"):
+            alt = os.path.normpath("/private" + n)
+            try:
+                if os.path.exists(alt) and os.path.realpath(alt) == os.path.realpath(n):
+                    out.add(alt)
+            except OSError:
+                pass
+    return out
+
+def filenames_ok(code, allowed):
+    name = code.co_filename
+    # Reject non-canonical spellings before allowlist lookup — normpath would
+    # otherwise collapse ./ and ../ aliases into an allowed name.
+    if not name or name != os.path.normpath(name):
+        return False
+    if name not in allowed:
+        return False
+    return all(
+        filenames_ok(c, allowed) if hasattr(c, "co_code") else True
+        for c in code.co_consts
+    )
+
+def optimize_level(path):
+    m = re.search(r"\.opt-(\d+)\.pyc$", path, re.IGNORECASE)
+    return int(m.group(1)) if m else 0
+
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if not raw:
+        continue
+    p = os.fsdecode(raw)
+    if os.path.islink(p):
+        print(p + "  (symlink — CPython never writes one into __pycache__)")
+        continue
+    try:
+        size = os.stat(p).st_size
+    except OSError as exc:
+        print(p + "  (unreadable: %s)" % (exc.strerror or exc))
+        continue
+    if size < HEADER:
+        print(p + "  (too short to hold a PEP 552 header)")
+        continue
+    if size > _MAX_PYC_BYTES:
+        print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
+        continue
+    try:
+        with open(p, "rb") as fh:
+            data = fh.read(size + 1)
+    except OSError as exc:
+        print(p + "  (unreadable: %s)" % (exc.strerror or exc))
+        continue
+    if len(data) != size:
+        print(p + "  (size changed underfoot while reading)")
+        continue
+    flags = int.from_bytes(data[4:8], "little")
+    if flags & 3 == 1:
+        print(p + "  (PEP 552 UNCHECKED hash-based: never validated against its source)")
+        continue
+    # Foreign-magic caches cannot be authenticated against this interpreter.
+    # Skipping them would reopen #797 whenever a gate later resolves a different
+    # python3 from PATH that CAN load the planted cache.
+    if data[:4] != importlib.util.MAGIC_NUMBER:
+        print(p + "  (foreign-interpreter cache cannot be authenticated)")
+        continue
+    try:
+        src = importlib.util.source_from_cache(p)
+    except ValueError:
+        print(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
+        continue
+    if not src or not os.path.isfile(src) or os.path.islink(src):
+        print(p + "  (no regular sibling source to authenticate against)")
+        continue
+    try:
+        src_size = os.stat(src).st_size
+    except OSError as exc:
+        print(p + "  (unreadable source: %s)" % (exc.strerror or exc))
+        continue
+    if src_size > _MAX_SRC_BYTES:
+        print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
+        continue
+    try:
+        with open(src, "rb") as fh:
+            src_bytes = fh.read(src_size + 1)
+        if len(src_bytes) != src_size:
+            print(p + "  (source size changed underfoot while reading)")
+            continue
+        expected = compile(
+            src_bytes, "<locked>", "exec", dont_inherit=True,
+            optimize=optimize_level(p),
+        )
+        got = marshal.loads(data[HEADER:])
+    except OSError as exc:
+        print(p + "  (unreadable source: %s)" % (exc.strerror or exc))
+        continue
+    except Exception as exc:
+        print(p + "  (bytecode body unreadable: %s)" % exc.__class__.__name__)
+        continue
+    if not same_code(got, expected):
+        print(p + "  (bytecode body does not match a compile of the locked source beside it)")
+        continue
+    if not filenames_ok(got, allowed_filenames(src)):
+        print(p + "  (co_filename does not name the locked source beside it)")
+' <"$tmp"
+        local st=$?
+        rm -f "$tmp"
+        exit "$st"
+    )
+}
+
 tracked_pyc=""
 if ! rev_parse_err="$(git_clean -C "$root" rev-parse --git-dir 2>&1)"; then
     printf 'gate-integrity: FAIL — no queryable git repository at %s\n' "$root" >&2
     printf '  %s\n' "$rev_parse_err" >&2
-    printf '  Bytecode is exempt from the digest, so the git index is its only cover:\n' >&2
+    printf '  Bytecode is exempt from the digest, so the git index is the only cover\n' >&2
+    printf '  against a TRACKED one:\n' >&2
     printf '  a missing git, corrupt or unreadable metadata (including in an ANCESTOR),\n' >&2
     printf '  a safe.directory rejection, and a plain non-repository are not\n' >&2
     printf '  distinguishable here, so all of them refuse rather than skip the check.\n' >&2
@@ -348,6 +632,31 @@ if [[ -n "$tracked_pyc" ]]; then
     printf '  A .pyc is exempt from the digest, so a tracked one executes unlocked —\n' >&2
     printf '  PEP 552 unchecked hash-based bytecode is not validated against its source\n' >&2
     printf '  at all. Remove it from the index (git rm --cached) and keep it ignored.\n' >&2
+    exit 1
+fi
+
+# Same refusal, for the bytecode no index can see. Placed AFTER the tracked check so
+# a tracked offender still reports as TRACKED, and BEFORE the mode dispatch so
+# `--update` cannot record a lock over a tree holding one.
+if ! unvalidated_pyc="$(unvalidated_bytecode "$root" 2>&1)"; then
+    # Enumeration failures already carry compute_lock's message; pass them
+    # through so #797 cannot rename the #742 find-status guard.
+    if [[ "$unvalidated_pyc" == *"could not enumerate the locked directories"* ]]; then
+        printf '%s\n' "$unvalidated_pyc" >&2
+    else
+        printf 'gate-integrity: FAIL — could not classify the exempt bytecode:\n' >&2
+        printf '  %s\n' "$unvalidated_pyc" >&2
+    fi
+    exit 1
+fi
+if [[ -n "$unvalidated_pyc" ]]; then
+    printf 'gate-integrity: FAIL — unvalidated bytecode under a locked directory:\n' >&2
+    # Quoted, line-wise: an unquoted expansion would GLOB a path containing `*`.
+    while IFS= read -r _pyc; do printf '  %s\n' "$_pyc" >&2; done <<< "$unvalidated_pyc"
+    printf '  A .pyc is exempt from the digest only while its body matches a compile of\n' >&2
+    printf '  the locked source beside it (and is not an unchecked-hash cache), so these\n' >&2
+    printf '  execute unlocked. Bytecode is regenerable: delete the files above (the\n' >&2
+    printf '  next import rewrites them).\n' >&2
     exit 1
 fi
 

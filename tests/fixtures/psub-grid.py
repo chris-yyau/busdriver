@@ -310,6 +310,29 @@ for _payload in ("printf " + chr(39) + "rm -rf src" + chr(39),
     if not cmdword.is_file_mod("bash < <" + chr(92) + chr(10) + "(" + _payload + ")"):
         bad.append("allowed active (line-continuation substitution): " + _payload)
 
+# A COMMAND-POSITION WORD THAT BEGINS WITH AN EXPANSION. The run regex treats `{` as a
+# separator, so `{b..b}ash` starts a run with nothing attached before the brace and `_cut`
+# -- which asks whether an expansion was glued to a run's LAST word -- cannot see it. It
+# blocks anyway, plain and behind the quote pads, because the receiver question has more
+# than one answer: the quote-blind name scan and the unresolved-character test both reach
+# it. Pinned because reading `_cut` alone suggests a gap.
+for _wrap in (lambda x: x, lambda x: PAD + "; " + x + "; " + PAD):
+    n += 1
+    _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
+             + ";) | {b..b}ash")
+    if not cmdword.is_file_mod(_wrap(_live)):
+        bad.append("allowed active (brace-leading receiver): " + _live)
+
+# BUDGET EXHAUSTION FAILS CLOSED FOR BOTH HALVES. When the substitution walk runs out it
+# yields the whole command as a producer, and the producer loop applies the verb regexes AND
+# `_RAW_WRITE_REDIR_RE` -- so a redirect-only payload past the allowance still blocks. Pinned
+# because "exhaustion returns [whole]" invites the assumption that only the verb half runs.
+n += 1
+_huge = ("bash <(printf x) " * 5000 + " ; printf " + chr(39) + "echo x > src/impl.py"
+         + chr(39) + " | bash")[:64000]
+if not cmdword.is_file_mod(_huge):
+    bad.append("allowed active (budget exhaustion + redirect-only payload)")
+
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))
     for b in bad[:6]:

@@ -969,5 +969,35 @@ check "...and stays unscanned-free in the helper guard" allow \
     "$(clean "$_many $_pipe")"
 unset _many _pipe _i
 
+# A `${` inside a COMMENT opens nothing, and taking it as the frame opener nested the real
+# expansion under a phantom one — so prefixing a comment turned a blocked command into an
+# allowed one, in both layers. Comments are blanked (length preserved, since the candidate
+# closers are indices) before the readings are built (codex, #553).
+check "a braced opener inside a comment does not hide the one after it" block \
+    "$(armed "$(printf ': # ${\nX=${Y:-a;b} /bin/@(rm) -rf src')")"
+check "...and the helper guard reads it the same way" block \
+    "$(clean "$(printf ': # ${\nprintf %%s\\40 ${X:-python3${IFS}-I${IFS}'"$HELPER"'${IFS}.claude${IFS}fake${IFS}1;true} | bash')")"
+
+# An ARITHMETIC expansion's inner parens do not close the opaque region early — reported as
+# a bypass, verified as a block (codex, #553, round 35).
+check "arithmetic parens do not expose the extglob behind them" block \
+    "$(armed "X=\$(( (1) + 2 )) /bin/@(r)m -rf src")"
+# The RESIDUAL of that blanking, pinned as HEAD PARITY rather than left in prose — these
+# are what origin/main misses too. A comment can still carry a phantom opener when it is
+# written after the first real `${`, or opened after a `)`. Each was closed in a review
+# round and each closure opened the next spelling: counting `)` as word position made
+# `$(true)#` blank the REAL expansion and drop the reading, which REMOVES a block, and
+# that this pass may never do. So it answers only the part it can answer safely.
+check "PARITY: a comment opened after a paren still hides one" allow \
+    "$(armed "$(printf '(true)# ${\nX=${Y:-a;b} /bin/@(rm) -rf src')")"
+check "PARITY: a comment after the first opener still hides one" allow \
+    "$(armed "$(printf 'X=${A:-ok} : # ${\nY=${B:-a;b} /bin/rm -rf src')")"
+check "...while a substitution's ) leaves an ordinary read a read" allow \
+    "$(armed 'echo $(true)#x')"
+# A `#` INSIDE an expansion is literal text to bash, so the blanking stops at the first
+# real opener. Blanking past it deleted the command word behind the expansion outright.
+check "a hash inside the expansion does not blank the command behind it" block \
+    "$(armed 'X=${Y:-a;b #x} /bin/rm -rf src')"
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

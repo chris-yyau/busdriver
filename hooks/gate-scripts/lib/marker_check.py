@@ -334,6 +334,74 @@ def _expansion_joined_pairs(s, close_at=None):
 _MAX_EXPANSION_READINGS = 64
 
 
+def _blank_comments(s):
+    """Every character of a shell COMMENT replaced by a space, LENGTH PRESERVED.
+
+    For the expansion-aware readings only. A `${` inside a comment opens nothing, but the
+    scanners below took the first one they met as the frame opener, so `: # ${` on its own
+    line nested the REAL expansion under a phantom frame and the reading that would have
+    exposed the command word was never built -- prefixing that comment turned a blocked
+    command into an allowed one (codex, #553). KEEP IN STEP WITH cmdword._blank_comments.
+
+    Length is preserved because the candidate closers are INDICES into this string. Blanking
+    rather than deleting for the same reason _defuse_comments does it: the readings are
+    additive, and HEAD's split still sees the comment exactly as it always did, so nothing
+    a comment contains can lose a block here.
+
+    _normalize has already blanked the separators INSIDE a comment and rewritten the
+    newline that ends it to `;`, so in normalized text a comment runs to the next `;`.
+
+    RESIDUAL, deliberate, and at HEAD PARITY -- origin/main misses every one of these too,
+    so none is a regression this closes or reopens. A comment that is not blanked can still
+    hold a phantom opener: one written AFTER the first real `${` (the scan stops there --
+    see the loop), and one opened after a `)` (not word position -- see the loop). Each was
+    closed in a review round and each closure opened the next spelling, which is the
+    signature _defuse_comments already names for this exact question. The scan therefore
+    answers only the part it can answer WITHOUT ever removing a reading, and the rest stays
+    parity rather than becoming a fifth guess (codex, #553, four rounds).
+    """
+    out = list(s)
+    i, n, q, word = 0, len(s), "", True
+    while i < n:
+        ch = s[i]
+        if not q and ch == "$" and s[i + 1:i + 2] == "{" and _dollar_run_is_even(s, i):
+            # STOP at the first REAL opener. Everything this pass exists to fix happens
+            # before it -- a phantom `${` in a comment being taken as the frame opener --
+            # and a `#` INSIDE an expansion is literal text to bash, so blanking past here
+            # deleted the command word out of `X=${Y:-a;b #x} /bin/rm -rf src` (codex,
+            # #553). A comment further right can only add a spurious candidate `}`, which
+            # is one more additive reading and costs nothing.
+            break
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+            word = False
+        elif ch == chr(92):
+            i += 1
+            word = False
+        elif ch in (_SQ, _DQ):
+            q = ch
+            word = False
+        elif ch == "#" and word:
+            # Word position only -- bash reads `a#b` and `sed 's#a#b#'` as ordinary text.
+            while i < n and s[i] != ";":
+                out[i] = " "
+                i += 1
+            continue
+        else:
+            # `)` DOES NOT COUNT, exactly as in _defuse_comments, which refuses to guess
+            # whether the paren delimited a command. Counting it was tried: it closed
+            # `(true)# ${` and opened `printf ... $(true)# "${Y:-...}" | bash`, where a
+            # substitution's `)` leaves the `#` mid-word, so blanking from there DELETED
+            # the real expansion and dropped the only reading that exposed the verb. That
+            # direction removes blocks, which this pass may never do -- so the guess is
+            # not made, and `)#` stays the HEAD-parity residual named above (codex, #553).
+            word = ch.isspace() or ch in ";|&("
+        i += 1
+    return "".join(out)
+
 def _expansion_readings(s):
     """(readings, truncated) -- every expansion-aware reading of `s`, deduplicated.
 
@@ -4061,7 +4129,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     if "${" in _nf.replace(chr(92) + chr(10), ""):     # ...plus the expansion-aware
         _nf = _nf.replace(chr(92) + chr(10), "")       # readings, which only ADD
         _amb = _paren_hash_ambiguous[0]
-        _readings, _cut = _expansion_readings(_nf)
+        _readings, _cut = _expansion_readings(_blank_comments(_nf))
         if _cut:
             return _HELPER_UNSCANNED  # cap exceeded: unresolvable -> fail CLOSED
         # The SEGMENT walk takes the union; the transport probes below read each reading

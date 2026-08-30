@@ -16,6 +16,7 @@ verdict() {
 }
 
 # Exact POSIX shape from issue #776 (empty-alt + digit-negation glob + catch-all).
+# shellcheck disable=SC2016  # $X must remain literal inside the generated case subject
 CASE_CMD=$(python3 -c 'q=chr(39);dq=chr(34);s=chr(42);print("X=abc; case "+dq+"$X"+dq+" in "+q+q+"|"+s+"[!0-9]"+s+") echo "+dq+"a"+dq+" ;; "+s+") echo "+dq+"b"+dq+" ;; esac")')
 got=$(verdict "$CASE_CMD")
 if [[ "$got" == "OK|" ]]; then
@@ -31,6 +32,16 @@ if [[ "$got" == BLOCK_* ]]; then
   ok "#776 real helper invocation still blocks"
 else
   no "#776 real helper invocation still blocks" "got=${got:-<empty>}"
+fi
+
+
+# Structured operand keeps _glob_helper strict (abandoned scrub must not leak here).
+STRUCT_CMD=$(python3 -c 's=chr(42);print("cd hooks/gate-scripts/lib && python3 "+s+"[!0-9]"+s)')
+got=$(verdict "$STRUCT_CMD")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 digit-negation glob as python operand still blocks"
+else
+  no "#776 digit-negation glob as python operand still blocks" "got=${got:-<empty>}"
 fi
 
 echo ""

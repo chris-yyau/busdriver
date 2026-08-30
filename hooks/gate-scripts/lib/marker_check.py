@@ -2093,9 +2093,128 @@ def _glob_helper_targeted(word, deep=None):
 _DIGIT_NEGATION_ONLY_RE = re.compile(r"^\*?\[(?:!|\^)0-9\]\*?$")
 
 
-def _is_digit_negation_only_segment(seg):
+def _is_digit_negation_only_segment(seg) -> bool:
     """True when `seg` is only a digit-negation glob (POSIX numeric-validation pattern)."""
     return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
+
+
+def _case_pattern_list_head(pairs, i):
+    """Index of the first segment in the `|`-joined alternative list containing pairs[i]."""
+    j = i
+    while j > 0 and pairs[j][0] == "|":
+        j -= 1
+    return j
+
+
+# Empty-string case alternatives (#776): one or more empty quotes as a whole alt, or after in.
+_EMPTY_ALT_SEG_RE = re.compile(r"^\s*(?:''|\"\")+\s*$")
+_EMPTY_ALT_AFTER_IN_RE = re.compile(
+    r"(?<![\w-])in(?![\w-])(?:\s+#[^\n]*)?\s*(?:''|\"\")+\s*$"
+)
+_IN_WORD_RE = re.compile(r"(?<![\w-])in(?![\w-])")
+
+# Where a `case` is, as PARSER STATE rather than as text nearby (#776).
+_CASE_CLOSED, _CASE_HEADER, _CASE_PATTERN, _CASE_BODY = 0, 1, 2, 3
+
+
+def _case_pattern_segments(pairs):
+    """Per-segment flags: is pairs[k] inside a `case ... in` PATTERN list?
+
+    Searching a fixed window of earlier segments for the WORDS `case` and `in` was both
+    unsound and incomplete. Unsound: `printf case in; ('' | *[!0-9]*) | bash` supplied
+    both words as printf OPERANDS, so a real subshell pipeline read as a case pattern and
+    its digit-negation stage was dropped -- a fail-OPEN. Incomplete: the window needed a
+    bound, and any bound mis-blocks a valid case with more comment lines than the bound.
+    Both go away by tracking the construct instead of guessing at it: a keyword counts
+    only in COMMAND position -- the leading word of a segment -- which is the same rule,
+    for the same reason, that `_group_delta` already applies to compound keywords.
+    Between `in` and the pattern-closing `)` bash executes NOTHING, so a segment flagged
+    here cannot be a real pipeline stage. Every unrecognized op drops the state, so the
+    unreadable shape keeps its text and stays fail-CLOSED.
+    """
+    # ponytail: no nesting stack -- an inner `esac` closes the outer case too, so arms of
+    # an OUTER case following a nested one over-block. That is the fail-CLOSED direction;
+    # add a stack only if a real command needs it.
+    flags = [False] * len(pairs)
+    state = _CASE_CLOSED
+    for k, (op, seg) in enumerate(pairs):
+        if state == _CASE_PATTERN:
+            if op == ")":
+                state = _CASE_BODY            # pattern list closed; the BODY runs
+            elif op not in (";", "|", "("):
+                # `;` is a normalized newline, `|` joins alternatives, `(` opens the item.
+                state = _CASE_CLOSED
+        elif state == _CASE_BODY and op in (";;", ";&", ";;&"):
+            state = _CASE_PATTERN             # next arm -- `;&` / `;;&` fall through
+        words = seg.split()
+        lead = words[0] if words else ""
+        if lead == "esac":
+            state = _CASE_CLOSED
+        elif lead == "case" and state in (_CASE_CLOSED, _CASE_BODY):
+            # Only where a command may START. `case case in case) ...` is valid bash, and
+            # honouring the PATTERN-list `case` reopened the header -- then a body operand
+            # `in` re-entered pattern state and dropped a real pipeline stage (fail-OPEN).
+            state = _CASE_HEADER
+        if state == _CASE_HEADER and _IN_WORD_RE.search(seg):
+            state = _CASE_PATTERN             # `in` may share the segment or follow it
+        flags[k] = state == _CASE_PATTERN
+    return flags
+
+
+def _has_empty_string_case_alt(pairs, i, head=None):
+    """True when the `|`-list containing pairs[i] includes an empty-string alternative."""
+    if head is None:
+        head = _case_pattern_list_head(pairs, i)
+    for k in range(head, i + 1):
+        seg = pairs[k][1]
+        if _EMPTY_ALT_SEG_RE.match(seg) or _EMPTY_ALT_AFTER_IN_RE.search(seg):
+            return True
+    return False
+
+
+def _in_empty_alt_case_pattern(pairs, i, flags):
+    """True for #776 case-pattern residue: an empty alt in a real case pattern list."""
+    if pairs[i][0] != "|" or not flags[i]:
+        return False
+    return _has_empty_string_case_alt(pairs, i, _case_pattern_list_head(pairs, i))
+
+
+def _join_piped_producer_segments(pairs, start, last, flags_box):
+    """Join producer text for pairs[start:last], omitting case-pattern digit-negation residue.
+
+    #776: `''|` + digit-negation inside case is misread as a pipe. Omit a
+    digit-negation-only segment only when the prior op is `|`, the segment really sits in
+    a `case ... in` pattern list, that `|`-list has an empty-string alternative, and a
+    later list op closes the pattern with `)`. Real pipelines -- including one wearing the
+    words `case` and `in` as operands -- keep the glob and stay fail-closed.
+    """
+    parts = []
+    for i in range(start, last):
+        op, seg = pairs[i]
+        if _is_digit_negation_only_segment(seg):
+            # ONCE per command, and only if a candidate shows up: this scan is O(pairs),
+            # and running it per emitted producer made a command of many short pipeline
+            # stages quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out
+            # hook writes NO decision, which the harness reads as ALLOW. Same reason, and
+            # the same shape of fix, as the once-per-command probe in _herestring_shell_payloads.
+            if not flags_box:
+                flags_box.append(_case_pattern_segments(pairs))
+            if _in_empty_alt_case_pattern(pairs, i, flags_box[0]):
+                j = i
+                omit = False
+                while j + 1 < len(pairs):
+                    next_op = pairs[j + 1][0]
+                    if next_op.startswith(")"):
+                        omit = True
+                        break
+                    if next_op == "|":
+                        j += 1
+                        continue
+                    break
+                if omit:
+                    continue
+        parts.append(seg)
+    return " ; ".join(parts)
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
@@ -3343,6 +3462,8 @@ def _piped_shell_producers(pairs):
     # `)` with no opener, so a single counter let it cancel the `case` keyword depth and the
     # `;;` behind it then discarded the producer.
     out, start, last, fed, bare = [], 0, None, False, False
+    # One-element cache for the case-pattern flags, filled on first use (#776).
+    case_flags = []
     pdepth = kdepth = 0
     for i, (op, seg) in enumerate(pairs):
         pdepth = max(0, pdepth + op.count("(") - op.count(")"))
@@ -3363,15 +3484,10 @@ def _piped_shell_producers(pairs):
             pass                          # a normalized newline/comment between | and the shell
         else:
             if last is not None:
-                # #776: omit digit-negation-only segments. A `|` inside a case pattern is
-                # misread as a pipe; when a later pure-star catch-all extends `last`, the
-                # digit-negation alternative is joined into producer TEXT and class-expanded
-                # into a helper match. A segment that is ONLY that glob cannot carry a
-                # helper-name literal — abandoning it removes false evidence, not real
-                # invocations (`printf <helper> | …` keeps the printf segment). Marker-check
-                # helper path only; cmdword has no abandoned helper twin for this residue.
-                out.append(" ; ".join(p[1] for p in pairs[start:last]
-                                  if not _is_digit_negation_only_segment(p[1])))
+                # #776: omit digit-negation-only segments in an empty-alt case-pattern
+                # `|`...`)` list. Spoofed words / real pipelines keep the glob and stay
+                # fail-closed. Marker-check helper path only.
+                out.append(_join_piped_producer_segments(pairs, start, last, case_flags))
             start, last, fed = i, None, False
         _words = seg.split()
         bare = _carries_no_command(seg)
@@ -3575,8 +3691,7 @@ def _piped_shell_producers(pairs):
                     last = i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
-        out.append(" ; ".join(p[1] for p in pairs[start:last]
-                                  if not _is_digit_negation_only_segment(p[1])))
+        out.append(_join_piped_producer_segments(pairs, start, last, case_flags))
     return out
 
 

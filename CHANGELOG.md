@@ -1,3 +1,10 @@
+## [2.1.5](https://github.com/chris-yyau/busdriver/compare/v2.1.4...v2.1.5) (2026-08-30)
+
+
+### Bug Fixes
+
+* **gates:** close the backtick and process-substitution producer-scan gaps ([#563](https://github.com/chris-yyau/busdriver/issues/563)) ([#798](https://github.com/chris-yyau/busdriver/issues/798)) ([8e37c50](https://github.com/chris-yyau/busdriver/commit/8e37c5072359117405eafee17d52b26c34753fb5)), closes [#562](https://github.com/chris-yyau/busdriver/issues/562) [#742](https://github.com/chris-yyau/busdriver/issues/742)
+
 ## [2.1.4](https://github.com/chris-yyau/busdriver/compare/v2.1.3...v2.1.4) (2026-08-30)
 
 

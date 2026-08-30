@@ -2247,7 +2247,7 @@ def _cmdpos_receiver_in_raw(text):
                 # redirect operator is never a truncated command word.
                 _skip_target = _seen_prefix = True
                 continue
-            _bare = re.split(r"[<>]", w, 1)[0]        # `command>/dev/null` is a prefix too
+            _bare = re.split(r"[<>]", w, maxsplit=1)[0]        # `command>/dev/null` is a prefix too
             if (_ASSIGN_RE.match(w) or _REDIR_RE.match(w)
                     or _basename(_bare) in _CMD_PREFIX_WORDS
                     or w in _CMD_PREFIX_WORDS
@@ -2299,7 +2299,7 @@ def _cmdpos_receiver_in_raw(text):
                     return True
                 _seen_prefix = True
                 continue
-            if _basename(re.split(r"[<>]", w, 1)[0]) in _OPERAND_WRAPPERS:
+            if _basename(re.split(r"[<>]", w, maxsplit=1)[0]) in _OPERAND_WRAPPERS:
                 return True               # see the operand-wrapper note above
             if _seen_prefix and w.startswith("-"):
                 # AN OPTION IN COMMAND POSITION marks the run unresolved rather than being
@@ -2318,7 +2318,7 @@ def _cmdpos_receiver_in_raw(text):
             # ...with any ATTACHED redirect cut off first. A redirection needs no
             # whitespace, so `source</dev/stdin` and `lldb-19</dev/stdin` arrive as ONE
             # word and the name test saw the redirect glued to the receiver.
-            b = _basename(re.split(r"[<>]", w, 1)[0])
+            b = _basename(re.split(r"[<>]", w, maxsplit=1)[0])
             if b in _CMDPOS_RECEIVERS or _CMDPOS_INTERP_RE.fullmatch(b):
                 return True
             if _cut and _i == _last_i:
@@ -3174,6 +3174,16 @@ def is_file_mod(cmd, _depth=0):
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
     if not subst_ok:
+        # RESIDUAL, stated: this is verb patterns only, so a redirect-only write behind an
+        # unparseable command (`printf 'echo x > src/impl.py' | bash` with an unterminated
+        # backtick) is not seen -- the producer scan that would see it is skipped whenever a
+        # parser bails. Adding the redirect half here was tried twice and withdrawn both
+        # times: raw, it read an INERT redirect inside a comment as a write (this path runs
+        # BEFORE comment defusing, and a comment's stray apostrophe is often what made the
+        # command unparseable in the first place); gated on `#` being absent, the gate became
+        # a bypass primitive -- append a quoted `#` and the redirect half switches off.
+        # Deciding which `#` opens a comment needs the quote state that is by definition
+        # broken here. Refusing to guess is the same exit `)#` already takes.
         return _regex_fallback(cmd)
     for body in bodies:
         if is_file_mod(body, _depth + 1):
@@ -3182,7 +3192,7 @@ def is_file_mod(cmd, _depth=0):
     _norm = _normalize(cmd)
     pairs, ok = _split_with_ops(_norm)
     if not ok:
-        return _regex_fallback(cmd)
+        return _regex_fallback(cmd)      # same residual as the substitution path above
     # `)#` -- the comment defuser could not tell whether that paren delimited a command, so
     # it refused to guess and said so. Unresolved is the fail-CLOSED case here exactly as it
     # is for an unparseable command above: fall back to the raw whole-command scan.
@@ -3244,6 +3254,8 @@ def is_file_mod(cmd, _depth=0):
             # This one segment is unparseable. Decide the WHOLE command by the regex
             # fallback rather than silently dropping the segment — dropping it is the
             # only outcome here that could be a fail-OPEN.
+            #
+            # Same residual as the two paths above: verb patterns only.
             return _regex_fallback(cmd)
         # Charge before scanning: the O(tokens^2) walk is what this bounds.
         _scan_budget[0] -= len(toks)

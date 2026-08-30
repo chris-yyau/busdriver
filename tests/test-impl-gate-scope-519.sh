@@ -3742,6 +3742,63 @@ check "an empty quoted prefix does not hide an output substitution" block \
     "$(bash_decision "printf 'rm -rf src' > \"\">(bash)")"
 check "...nor an empty variable one" block \
     "$(bash_decision "E=; printf 'rm -rf src' > \$E>(bash)")"
+# QUOTING RESTARTS inside a `$(...)` body, so ONE global double-quote state cannot skip
+# quoted regions: two valid quoted substitutions on either side made the detector skip the
+# real substitution between them and still report success. Quote tracking was DELETED --
+# the detector over-detects instead, which costs a whole-command scan on a command that
+# also names a shell, and never a miss. Asserted against the CLASSIFIER: escaped spaces
+# keep the gate raw fallback from seeing a contiguous payload, which is the point.
+# BOTH SIDES, and that is the whole point: with only the left one the broken quote state
+# ends UNBALANCED, the old code reported `ok=False`, and its fail-closed fallback blocked --
+# so a one-sided case passes against the very implementation it is meant to catch. The
+# matching pair leaves the state balanced and `ok=True`, which is the fail-OPEN.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+q, sq = chr(34), chr(39)
+pad = ": %s$(printf %s%s%s)%s" % (q, sq, q, sq, q)
+print(cmdword.is_file_mod(
+    pad + "; printf rm\\ -rf\\ src > >(bash); " + pad))')" == "True" ]]; then
+    ok "matched quoted substitutions cannot hide a process substitution between them"
+else
+    no "matched quoted substitutions cannot hide a process substitution" "classifier allowed it"
+fi
+# ...and the budget must track the dimension the WORK grows in. Words alone ignore shell
+# punctuation, and punctuation is what carries the cost: ~16,000 `env;` stages charged five
+# tokens and measured 8.86s against the hook 5s timeout, which writes no decision and reads
+# as ALLOW. Wall-clock asserted, because "correct but too slow" is indistinguishable from
+# wrong at this boundary.
+PSUB_T0=$(python3 -c 'import time; print(time.time())')
+PSUB_OUT="$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+cmd = ("env;" * 16000 + " printf \047rm -rf src\047 > >(cat)")[:64997]
+print(cmdword.is_file_mod(cmd))')"
+PSUB_DT=$(python3 -c "import sys,time; print(round(time.time()-float(sys.argv[1]), 2))" "$PSUB_T0")
+if [[ "$PSUB_OUT" == "True" ]] && (( $(python3 -c "import sys; print(1 if float(sys.argv[1]) < $HOOK_TIMING_BUDGET else 0)" "$PSUB_DT") )); then
+    ok "a punctuation-heavy substitution command stays inside the hook budget (${PSUB_DT}s)"
+else
+    no "punctuation-heavy substitution command" "verdict=$PSUB_OUT elapsed=${PSUB_DT}s budget=${HOOK_TIMING_BUDGET}s"
+fi
+unset PSUB_T0 PSUB_OUT PSUB_DT
+
+# ── generated: transport x wrapper, in BOTH directions ──────────────────────
+# Hand-picked examples are what let five successive rounds each close one spelling and open
+# another. This crosses the axes the rule actually touches -- six transports (stdin redirect,
+# script operand, a pipe fed by one, both output directions, and the empty-quote
+# concatenation) against seven wrappers (bare, separators either side, brace and paren
+# groups, a `if`, and a pair of quoted `$(...)` pads whose quoting defeated every lexed view
+# of the command). Every ACTIVE composition must block; every inert twin must stay allowed,
+# which is the arm that catches a rule widened until it blocks everything.
+PSUB_GRID="$(python3 "$REPO_ROOT/tests/fixtures/psub-grid.py" 2>&1)"
+case "$PSUB_GRID" in
+    "PSUB ok "*) ok "generated: process-substitution transport x wrapper grid (${PSUB_GRID#PSUB ok })" ;;
+    *) no "generated: process-substitution grid" "$PSUB_GRID" ;;
+esac
+unset PSUB_GRID
+# ...and an inert one inside a string is over-detected, which is that deletion's price. It
+# only costs anything when the command ALSO names a shell, so an ordinary grep is untouched.
+check "an inert substitution in a grep pattern stays allowed" allow \
+    "$(bash_decision 'grep -n "<(x)" notes.txt')"
+
 # RESIDUAL over-block (accepted), which is the price of that deletion: inside arithmetic a
 # `>` is a COMPARISON, not a redirect, but telling the two apart is the guard that just
 # failed. Asserted against the CLASSIFIER because the gate blocks the double-quoted

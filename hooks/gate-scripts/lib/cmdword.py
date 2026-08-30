@@ -2413,7 +2413,11 @@ def _cmdpos_receiver_in_raw(text):
                     # `| if true; then source /dev/stdin; fi` splits on the `;`, so the run
                     # holding the receiver begins with `then`. Derived from the keyword sets
                     # rather than hand-listed, so adding a keyword extends both walks.
-                    or w in _COMPOUND_WORDS):
+                    # ...asked of `_bare`, like the prefix test above it. A redirection
+                    # needs no whitespace, so `then>/dev/null` is ONE word; asked of `w` it
+                    # was an ordinary command and the walk stopped on it, one word before
+                    # the receiver.
+                    or _bare in _COMPOUND_WORDS):
                 # A QUOTE INSIDE THE PREFIX RUN makes it unresolved, and that is the exit
                 # rather than a fix: whitespace-splitting cuts a quoted value in two
                 # (`X="a b" source /dev/stdin`), and a parity counter over both quote kinds

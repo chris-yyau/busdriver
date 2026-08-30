@@ -77,10 +77,11 @@ for _live in ("cat < <(printf 'system \"rm -rf src\"') | /usr/bin/perl5.34",
     if not cmdword.is_file_mod(PAD + "; " + _live + "; " + PAD):
         bad.append("allowed active: " + _live)
 
-# COMMAND-POSITION-only receiver classes, asserted WITHOUT the pads -- which is where they
-# are answered, by the lexed path that anchors them to command position. Behind the pads
-# they join the adversarial-quoting residual pinned below: matching them quote-blind is the
-# any-word test ADR 0032 measured at 100 over-blocks for `.` alone and rejected.
+# COMMAND-POSITION-only receiver classes, asserted without the pads -- where the LEXED path
+# answers them, anchored to command position. Matching them quote-blind at ANY position is
+# the any-word test ADR 0032 measured at 100 over-blocks for `.` alone and rejected, so
+# behind the pads they are answered by `_cmdpos_receiver_in_raw` instead, which rebuilds the
+# same anchor without a lexer. The padded spellings are asserted throughout the file below.
 for _recv in ("source /dev/stdin", ". /dev/stdin", "unshare", "script -q /dev/null",
               "lldb-19", "su"):
     n += 1
@@ -257,8 +258,11 @@ if not cmdword.is_file_mod("grep -n 'rm -rf src' --label=bash <(echo pat)"):
 # ── SEEDED PROPERTY, over the grammar rather than the list ───────────────────
 # Every defect this rule shipped was a COMPOSITION nobody had enumerated, and a fixed table
 # can only ever hold the ones someone thought of. This quantifies instead: 2,000 random
-# compositions of transport x receiver x prefix x wrapper x pad, each of which really feeds
-# a shell, all of which must block. The seed is fixed, so a failure reproduces exactly.
+# compositions of transport x receiver x prefix x wrapper x pad, all of which must block.
+# Most really do feed a shell; two transports in the set are the OVER-BLOCK pins labelled at
+# the top of this file (`2> >(receiver)` and `payload >(receiver)`), which the classifier
+# must still answer conservatively but which do not exercise the transport invariant. The
+# seed is fixed, so a failure reproduces exactly.
 import random                                                          # noqa: E402
 
 RNG = random.Random(20260830)
@@ -453,6 +457,19 @@ if ";" not in cmdword._fold_brace_expansions("printf x{a,;bash>y}"):
 n += 1
 if cmdword._fold_brace_expansions("x{a," + chr(92) + ";b}") != "x*":
     bad.append("the fold stopped at an escaped separator")
+
+# A RESERVED WORD carries an attached redirect like any other: `then>/dev/null` is ONE word,
+# and asking the compound-word set about the raw word rather than the redirect-stripped one
+# let the walk stop on it, one word before the receiver.
+for _kw in ("then>/dev/null ", "then</dev/null ", "then>&2 "):
+    n += 1
+    _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
+             + ";) | if true; " + _kw + "source /dev/stdin; fi")
+    if not cmdword.is_file_mod(PAD + "; " + _live + "; " + PAD):
+        bad.append("allowed active (reserved word + attached redirect): " + _kw)
+n += 1
+if cmdword.is_file_mod("grep -n 'rm -rf src' then>/dev/null <(echo pat)"):
+    bad.append("blocked inert: a `then` OPERAND with an attached redirect")
 
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))

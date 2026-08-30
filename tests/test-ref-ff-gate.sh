@@ -402,6 +402,11 @@ run_gate "...and three-plus operands are refused rather than guessed at" \
 # ...so it reaches the gate as a TARGET. It still blocks — a ref spelled like an
 # option is one the gate cannot resolve — but as an unresolvable target rather
 # than by being read as --no-ff and dismissed as out of scope.
+# A ref may be spelled like the fast-forward METADATA the emitter appends to the
+# same operand list, and after `--` git accepts it. Sharing that namespace let the
+# only operand be stripped as metadata and read as a bare merge of @{upstream}.
+run_gate "a ref spelled like the ff-mode sentinel is unresolvable" \
+    block "git merge -- -ff-mode=--ff-only" "cannot be resolved"
 run_gate "a ref named --no-ff after -- is a target, not an option" \
     block "git merge -- --no-ff" "merge target cannot be resolved statically"
 

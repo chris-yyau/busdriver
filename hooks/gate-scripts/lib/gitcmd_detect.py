@@ -3580,8 +3580,15 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
             # lightweight tag really can be named `--no-ff`, and reading it as
             # the OPTION reported the merge out of scope.
             _reject_crlf(a, 'git ref operand')
+            # A ref may legally be spelled like the fast-forward METADATA the
+            # emitter appends to this same list, and after `--` git accepts it.
+            # `git merge -- -ff-mode=--ff-only` then had its only operand stripped
+            # as metadata and read as a bare merge of @{upstream}. Sharing a
+            # namespace is the bug; refusing the collision is the fix, and a ref
+            # actually named that is pathological.
             ops.append(REF_OP_UNRESOLVABLE
-                       if _may_be_substitution(a) or _word_may_split(a, _raw_i)
+                       if (_may_be_substitution(a) or _word_may_split(a, _raw_i)
+                           or a.startswith(REF_OP_FF_PREFIX))
                        else a)
             continue
         if a == '--':
@@ -3627,7 +3634,8 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
             continue
         _reject_crlf(a, 'git ref operand')
         ops.append(REF_OP_UNRESOLVABLE
-                   if _may_be_substitution(a) or _word_may_split(a, _raw_i)
+                   if (_may_be_substitution(a) or _word_may_split(a, _raw_i)
+                       or a.startswith(REF_OP_FF_PREFIX))
                    else a)
     # MERGE only. A `pull` with --squash or --no-ff still FETCHES, so it still
     # moves FETCH_HEAD and the remote-tracking refs — dropping it from the

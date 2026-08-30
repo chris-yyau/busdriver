@@ -42,15 +42,28 @@ _fix="$(mktemp -d)"
 [[ -n "$_fix" && -d "$_fix" ]] || { printf '  FAIL %s\n' "fixture tempdir created"; exit 1; }
 trap 'rm -rf "$_fix"' EXIT
 
+# Every fixture gets the two locked directories WITHOUT host bytecode.
+# `.pyc` is exempt from the digest only while its body matches a compile of the
+# sibling source, and the co_filename allowlist is built from the FIXTURE's
+# spellings. Caches written by earlier suites in the same CI job carry the real
+# checkout's absolute path instead, so a raw `cp -R` hands the classifier
+# bytecode that cannot authenticate here and the tree fails for a reason the
+# case is not about. Invisible on a dev machine, which usually has no
+# `__pycache__` under those directories at all — b15eca6e fixed fresh_fixture
+# alone and CI kept failing on the three fixtures that copied by hand, so the
+# strip lives with the copy now and a new fixture cannot forget it.
+copy_locked_dirs() {  # copy_locked_dirs <dest-root>
+    local dest="$1"
+    mkdir -p "$dest/hooks" "$dest/scripts"
+    cp -R "$REPO_ROOT/hooks/gate-scripts" "$dest/hooks/gate-scripts"
+    cp -R "$REPO_ROOT/scripts/hooks" "$dest/scripts/hooks"
+    find "$dest/hooks/gate-scripts" "$dest/scripts/hooks" \
+        -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+}
+
 fresh_fixture() {  # rebuild the fixture tree + its lock from the live tree
     rm -rf "${_fix:?}/hooks" "${_fix:?}/scripts" "${_fix:?}/.gate-integrity.lock"
-    mkdir -p "$_fix/hooks" "$_fix/scripts"
-    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_fix/hooks/gate-scripts"
-    cp -R "$REPO_ROOT/scripts/hooks" "$_fix/scripts/hooks"
-    # Host __pycache__ from earlier suite tests must not ride into the fixture —
-    # those caches are authenticated against THIS check's python, and a polluted
-    # live tree would make every control look like a body mismatch.
-    find "$_fix/hooks/gate-scripts" "$_fix/scripts/hooks" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    copy_locked_dirs "$_fix"
     # A real repository: the script requires a queryable index rather than inferring
     # its absence, so every fixture is one.
     git -C "$_fix" init -q 2>/dev/null
@@ -1453,9 +1466,7 @@ fi
 # marker_ops.py's behaviour while both --check and --update omitted it.
 _repo="$(mktemp -d)"
 if [[ -n "$_repo" && -d "$_repo" ]]; then
-    mkdir -p "$_repo/hooks" "$_repo/scripts"
-    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_repo/hooks/gate-scripts"
-    cp -R "$REPO_ROOT/scripts/hooks" "$_repo/scripts/hooks"
+    copy_locked_dirs "$_repo"
     git -C "$_repo" init -q 2>/dev/null
     git -C "$_repo" config user.email t@t.invalid 2>/dev/null
     git -C "$_repo" config user.name t 2>/dev/null
@@ -1577,9 +1588,7 @@ if [[ -n "$_orph" && -d "$_orph" ]]; then
     # also EMPTIES the working tree, so the locked directories are populated after it
     # — an empty listing is refused for its own reasons and would not test this.
     git -C "$_orph" switch -q --orphan fresh 2>/dev/null
-    mkdir -p "$_orph/hooks" "$_orph/scripts"
-    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_orph/hooks/gate-scripts"
-    cp -R "$REPO_ROOT/scripts/hooks" "$_orph/scripts/hooks"
+    copy_locked_dirs "$_orph"
     _unborn=1
     git -C "$_orph" rev-parse -q --verify HEAD >/dev/null 2>&1 && _unborn=0
     [[ -n "$(git -C "$_orph" rev-list -n1 --all 2>/dev/null)" ]] || _unborn=0
@@ -1625,9 +1634,7 @@ if [[ -n "$_sub" && -d "$_sub" ]]; then
     git -C "$_sub" init -q 2>/dev/null
     git -C "$_sub" config user.email t@t.invalid 2>/dev/null
     git -C "$_sub" config user.name t 2>/dev/null
-    mkdir -p "$_sub/nested/hooks" "$_sub/nested/scripts"
-    cp -R "$REPO_ROOT/hooks/gate-scripts" "$_sub/nested/hooks/gate-scripts"
-    cp -R "$REPO_ROOT/scripts/hooks" "$_sub/nested/scripts/hooks"
+    copy_locked_dirs "$_sub/nested"
     mkdir -p "$_sub/nested/hooks/gate-scripts/lib/__pycache__"
     printf 'unchecked hash-based bytecode\n' \
         > "$_sub/nested/hooks/gate-scripts/lib/__pycache__/marker_ops.cpython-314.pyc"

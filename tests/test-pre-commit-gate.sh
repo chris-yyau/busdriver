@@ -413,7 +413,7 @@ run_marker_test() {
 
     # Resolve @STAGED@ against the same expression the gate and writers use.
     local staged_hash
-    staged_hash=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    staged_hash=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     content=${content//@STAGED@/$staged_hash}
     content=${content//@NOW@/$(date +%s)}
 
@@ -561,7 +561,7 @@ mutation_test() {
         echo "modified" >> file.txt; git add file.txt
     )
     local real mutant orig repl
-    real=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    real=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     orig=${real:idx:1}
     # Flip to a different hex digit so the mutant stays a well-formed 64-hex
     # string — the point is a VALID-shaped hash for the wrong diff, not a
@@ -602,7 +602,7 @@ binary_collision_test() {
     )
     # Hash the diff for blob A — the marker a real review of A would have left.
     local hash_a
-    hash_a=$(git -C "$tmp_dir" diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+    hash_a=$(git -C "$tmp_dir" -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d" " -f1)
     # Now swap in DIFFERENT binary content at the SAME path.
     ( cd "$tmp_dir"; printf 'ZZZZ\003\004\005YYYY' > blob.bin; git add blob.bin )
 
@@ -628,10 +628,41 @@ mutation_test "...at the END blocks" 63
 echo ""
 echo "── PR #577 follow-up: opt-out ordering + circuit breaker ───"
 
+# Precondition for BOTH broken-diff-config fixtures below.
+#
+# The injection is `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`,
+# which git only honours from 2.31 onward. On an older git the variables are ignored,
+# `git diff --cached` SUCCEEDS, and both fixtures pass while exercising nothing — the
+# same silent-no-op that retired the previous `GIT_EXTERNAL_DIFF=/bin/false` injection.
+# Assert the injection actually breaks the pinned expression before relying on it, and
+# fail the suite when it does not (CodeRabbit, PR #795).
+assert_broken_diff_config() {
+    # $1 = repo dir, $2 = fixture name for the failure message
+    local _bdc_dir="$1" _bdc_what="$2" _bdc_rc=0
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+        git -C "$_bdc_dir" -c color.ui=never -c core.quotePath=false \
+        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
+        >/dev/null 2>&1 || _bdc_rc=$?
+    if [ "$_bdc_rc" -eq 0 ]; then
+        TOTAL=$((TOTAL + 1))
+        printf "  FAIL  precondition: the bogus diff.algorithm injection does NOT break the pinned diff expression for %s (git too old for GIT_CONFIG_COUNT? need >= 2.31) — the fixture would test nothing\n" "$_bdc_what"
+        FAIL=$((FAIL + 1))
+        return 1
+    fi
+    return 0
+}
+
 # Codex P2: SKIPPED-NONE (and DEGRADED) must be honored BEFORE the staged
-# diff is hashed, so a broken diff driver cannot block the unconditional
-# operator opt-out. Force `git diff --cached` to fail via a GIT_EXTERNAL_DIFF
-# that errors out, and confirm SKIPPED-NONE still allows.
+# diff is hashed, so a broken diff configuration cannot block the unconditional
+# operator opt-out. Force `git diff --cached` to fail and confirm SKIPPED-NONE
+# still allows.
+#
+# #576 changed the injection, not the assertion. This used to force the failure
+# with GIT_EXTERNAL_DIFF=/bin/false, but the gate now hashes with --no-ext-diff
+# precisely so a hostile external driver CANNOT influence it — measured, that
+# fixture returns rc=0 today, so it would have silently stopped testing anything.
+# A bogus diff.algorithm injected via GIT_CONFIG_* still fails the pinned
+# expression (rc=128) and exercises the same ordering.
 TOTAL=$((TOTAL + 1))
 skn_tmp=$(mktemp -d)
 (
@@ -648,6 +679,7 @@ skn_tmp=$(mktemp -d)
 )
 mkdir -p "$skn_tmp/.claude"
 printf 'SKIPPED-NONE-1754400000\n' > "$skn_tmp/.claude/litmus-passed.local"
+assert_broken_diff_config "$skn_tmp" "SKIPPED-NONE" || true
 skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
 # cubic P3 (round 5 follow-up): assert the gate's exit status too, not just
 # the absence of "block" in its output. The SKIPPED-NONE arm exits 0 with no
@@ -667,27 +699,29 @@ skn_input=$(make_hook_input_cwd "git commit -m x" "$skn_tmp")
 # silently swallowed as a false PASS (exactly the coverage gap the rc check
 # above now catches).
 if skn_out=$(printf '%s' "$skn_input" | \
-    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null); then
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+    bash "$GATE_SCRIPT" 2>/dev/null); then
     skn_rc=0
 else
     skn_rc=$?
 fi
 if [ "$skn_rc" -eq 0 ] && ! echo "$skn_out" | grep -q '"block"' 2>/dev/null; then
-    printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken external diff driver)\n"
+    printf "  PASS  SKIPPED-NONE still allows when git diff --cached would fail (broken diff config)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  SKIPPED-NONE blocked by a broken diff driver (rc=%s, out: %s)\n" "$skn_rc" "$skn_out"
+    printf "  FAIL  SKIPPED-NONE blocked by a broken diff config (rc=%s, out: %s)\n" "$skn_rc" "$skn_out"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$skn_tmp"
 
-# cubic P1 (round 3 follow-up): a broken diff driver must still BLOCK, but
-# through gate_record_block_and_emit so the stuck-gate circuit breaker
+# cubic P1 (round 3 follow-up): a broken diff configuration must still BLOCK,
+# but through gate_record_block_and_emit so the stuck-gate circuit breaker
 # counts it (and its escape-hatch warning eventually fires). Reuse the same
-# GIT_EXTERNAL_DIFF=/bin/false fixture that proves SKIPPED-NONE bypasses this
+# bogus-diff.algorithm fixture that proves SKIPPED-NONE bypasses this
 # failure, but this time with a real hash marker (a shape that DOES reach
 # the STAGED_HASH assignment), and assert both that the commit is blocked
-# AND that the circuit-breaker counter incremented.
+# AND that the circuit-breaker counter incremented. (#576 swapped the
+# injection from GIT_EXTERNAL_DIFF, which --no-ext-diff now neutralizes.)
 #
 # It also asserts the marker SURVIVES. A failed hash proves nothing about the
 # marker's validity — only that we could not check it — so destroying it would
@@ -709,9 +743,11 @@ hf_tmp=$(mktemp -d)
 )
 mkdir -p "$hf_tmp/.claude"
 printf '%s\n' "$(printf 'a%.0s' {1..64})" > "$hf_tmp/.claude/litmus-passed.local"
+assert_broken_diff_config "$hf_tmp" "hash-marker blocking" || true
 hf_input=$(make_hook_input_cwd "git commit -m x" "$hf_tmp")
 hf_out=$(printf '%s' "$hf_input" | \
-    GIT_EXTERNAL_DIFF="/bin/false" bash "$GATE_SCRIPT" 2>/dev/null || true)
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.algorithm GIT_CONFIG_VALUE_0=bogus \
+    bash "$GATE_SCRIPT" 2>/dev/null || true)
 hf_count=$(cat "$hf_tmp/.claude/.gate-block-count.local" 2>/dev/null || echo "")
 hf_marker_kept=no
 [[ -f "$hf_tmp/.claude/litmus-passed.local" ]] && hf_marker_kept=yes
@@ -726,11 +762,22 @@ else
 fi
 rm -rf "$hf_tmp"
 
-# CodeRabbit (round 4 follow-up): a hash utility that CONSUMES part of stdin
-# and then fails must not silently fall through to a fallback hasher running
-# on only the unconsumed remainder — that would hash a TRUNCATED stream while
-# the pipeline as a whole reports success (a fail-OPEN masquerading as a
-# fail-closed block). Shadow `sha256sum` on PATH with a stand-in that reads
+# #576 REPURPOSED. The original assertion (CodeRabbit, round 4) was that a hash
+# utility which consumes stdin and then fails must not fall through to a fallback
+# hasher running on the unconsumed remainder. That property still holds — the gate
+# selects ONE utility up front — but the injection used here no longer reaches it:
+# the gate now resolves sha256sum/shasum to an ABSOLUTE path inside a trusted system
+# directory, so a PATH shadow is ignored by construction (#576; macOS keeps sha256sum
+# in /sbin, which is why prepending /usr/bin:/bin was not enough on its own).
+#
+# So this now asserts the STRONGER property the hardening buys: a planted hash utility
+# on PATH cannot influence the gate at all. The marker here is 64 'a's — a well-formed
+# but WRONG hash — so the gate must compute the REAL digest with the trusted binary,
+# find a mismatch, block, count it, and DELETE the marker (the mismatch arm has proven
+# the marker wrong, unlike the could-not-compute arm which preserves it).
+#
+# Historical note on the original injection: shadow `sha256sum` on PATH with a stand-in
+# that reads
 # all of stdin then exits 1, while the REAL `shasum` remains reachable
 # further down PATH. Under the old `sha256sum || shasum` fallback this would
 # have succeeded with a wrong-but-plausible hash; the fix selects the hash
@@ -768,11 +815,11 @@ hu_marker_kept=no
 [[ -f "$hu_tmp/.claude/litmus-passed.local" ]] && hu_marker_kept=yes
 if echo "$hu_out" | grep -q '"block"' 2>/dev/null \
    && [[ "$hu_count" == "1" ]] \
-   && [[ "$hu_marker_kept" == "yes" ]]; then
-    printf "  PASS  a shadowed sha256sum that consumes stdin then fails blocks (no silent fallback to a truncated shasum hash) and preserves the marker\n"
+   && [[ "$hu_marker_kept" == "no" ]]; then
+    printf "  PASS  a PATH-planted sha256sum is ignored: the gate hashes with the trusted binary, blocks the wrong marker, counts it, and deletes it\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  shadowed-hash-utility path not blocked-and-counted-and-preserved (out: %s, count: '%s', marker kept: %s)\n" "$hu_out" "$hu_count" "$hu_marker_kept"
+    printf "  FAIL  PATH-planted hash utility influenced the gate (out: %s, count: '%s', marker kept: %s — want block/1/no)\n" "$hu_out" "$hu_count" "$hu_marker_kept"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$hu_tmp"

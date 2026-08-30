@@ -29,6 +29,8 @@ write_default_plugin_root() {
     ln -s "$REPO_ROOT/scripts/lib/staged-diff-hash.sh" "$plugin_root/scripts/lib/staged-diff-hash.sh"
     ln -s "$REPO_ROOT/scripts/lib/dispatcher-proc-state.sh" \
         "$plugin_root/scripts/lib/dispatcher-proc-state.sh"
+    ln -s "$REPO_ROOT/scripts/lib/exclusion-integrity.sh" \
+        "$plugin_root/scripts/lib/exclusion-integrity.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
     # Real exclusion logic — dispatcher sources this to re-verify excluded-only
     # PASS-EXCLUDED markers (#278).
@@ -84,9 +86,9 @@ set -euo pipefail
 
 hash_staged_diff() {
     if command -v sha256sum >/dev/null 2>&1; then
-        git diff --cached | sha256sum | cut -d' ' -f1
+        git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1
     else
-        git diff --cached | shasum -a 256 | cut -d' ' -f1
+        git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1
     fi
 }
 
@@ -1290,7 +1292,16 @@ set -euo pipefail
   printf 'exported=%s\n' "\${BUSDRIVER_REVIEW_LOCK_OWNER:-NONE}"
 } > "$lock_probe"
 mkdir -p .claude
-git diff --cached | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > .claude/litmus-passed.local
+# Same shape as the default fixture above (and as staged-diff-hash.sh): pick the hash
+# utility with \`command -v\` rather than a \`sha256sum || shasum\` pipe. pre-pr-gate.sh
+# rejects that pipe outright — a partially-consuming failure hashes only the remainder
+# and collapses distinct diffs onto one digest — so a fixture guarding marker binding
+# must not itself be built out of it (CodeRabbit, PR #795).
+if command -v sha256sum >/dev/null 2>&1; then
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | sha256sum | cut -d' ' -f1 > .claude/litmus-passed.local
+else
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | shasum -a 256 | cut -d' ' -f1 > .claude/litmus-passed.local
+fi
 EOF
     chmod +x "$plugin_root/skills/litmus/scripts/run-review-loop.sh"
 

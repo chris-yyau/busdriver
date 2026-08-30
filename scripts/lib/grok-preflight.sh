@@ -19,12 +19,22 @@
 #
 # Contract: prints `HOME=<home>` and `PATH=<pinned>` and exits 0 when the
 # operator's sandbox profile is present and meets the contract; otherwise
-# prints `WHY=<identity|configdir|containment|binary|profile>` and exits 1.
-# The caller turns that reason into a remediation message.
+# prints `WHY=<identity|runtime-socket|configdir|containment|binary|profile>`
+# and exits 1. The caller turns that reason into a remediation message.
+#
+# $1 overrides the profile path and $2 the runtime-socket path; BOTH exist ONLY
+# for tests, and production callers pass neither.
 
 set -u
 PATH=/usr/bin:/bin
 file="${1:-}"
+# Whether this is a REAL run, captured before the branch below reassigns $file
+# to the derived profile path. The #785 socket check at the bottom needs to know
+# the mode, and by the time it runs `-z "$file"` no longer answers that — which
+# is not hypothetical: written that way, the check silently stopped defaulting
+# and a live run on the reproducing host exited 0.
+realrun=0
+[[ -z "$file" ]] && realrun=1
 
 # Every refusal names its CAUSE. One generic "profile is missing" for all of
 # them sent operators to copy an example file that cannot fix a symlinked
@@ -372,6 +382,42 @@ done
 if [[ -e "$home/.netrc" ]]; then
   printf '%s\n' "$deny" | /usr/bin/grep -qF "\"$home/.netrc\"" || why profile
 fi
+
+# #785. This profile sets `extends = "strict"`, and grok's built-in strict base
+# resolves a runtime-socket deny for /var/run/docker.sock. When that path is a
+# SYMLINK grok refuses to start at all:
+#   warning: sandbox could not be applied: runtime-socket deny resolution
+#   failed: could not resolve runtime-socket deny path /var/run/docker.sock:
+#   endpoint is a symlink
+#   error: could not apply the 'busdriver-review' sandbox profile; ... Refusing
+#   to start with its protections missing.
+# Docker Desktop on macOS creates exactly that symlink. NOTHING in the operator
+# profile can fix it -- the failing deny is grok's, not ours -- so without this
+# check the preflight passes, grok is dispatched, exits 1 having produced no
+# review JSON, and the slot is recorded `runtime-failed`: indistinguishable from
+# a transient failure, which is what had the owner re-running FULL coverage
+# against a host condition. Refuse HERE instead, as a named static reason,
+# before any prompt -- or the repo content quoted in it -- is committed to grok.
+#
+# `-L` alone is the whole predicate: grok refuses the symlink itself, so where
+# it points does not matter, and a dangling one is refused too. An absent or
+# real socket passes. Kept to the ONE path grok named; if another runtime socket
+# ever produces this, it will arrive with its own measured stderr.
+#
+# LAST, deliberately. This is the only refusal that means "grok is fully set up
+# here and still cannot run", and `_grok_available` warns on exactly that
+# reason. Checked before the binary arm it would claim the socket on every host
+# that has Docker Desktop and no grok at all -- mislabelling a plain
+# not-installed as a host defect, and printing that warning on every council and
+# blueprint run for operators who never had the lane.
+#
+# It sits OUTSIDE the real-run branch so the body harness can drive it: with no
+# $2 it is skipped under a fixture, so the profile-body fixtures are untouched,
+# while a fixture PLUS a socket path exercises both directions on any host --
+# including CI, which has no ~/.grok for the real-run branch to walk.
+sock="${2:-}"
+[[ -z "$sock" ]] && [[ "$realrun" == 1 ]] && sock=/var/run/docker.sock
+[[ -n "$sock" ]] && [[ -L "$sock" ]] && why runtime-socket
 
 printf 'HOME=%s\n' "$home"
 printf 'PATH=%s\n' "$pinned"

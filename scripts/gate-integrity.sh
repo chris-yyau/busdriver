@@ -439,6 +439,11 @@ _trusted_memo = {}
 _trusted_compile_bytes = 0
 _inode_bytes = {}
 _inode_digest = {}
+# Hardlinks make the per-inode I/O budget free to multiply: 4096 aliases of ONE
+# valid near-8-MiB cache stay inside the path, I/O and compile bounds while every
+# alias re-hashes and re-compares the same bytes. Memoize the classification work
+# on the inode too, not just the read, so aliasing cannot stall a blocking gate.
+_body_memo = {}
 _io_bytes = 0
 _pyc_paths = 0
 _offenders = []
@@ -467,7 +472,7 @@ def read_nofollow(path, max_bytes):
         if cached is not None:
             if len(cached) > max_bytes:
                 raise OSError(0, "too large")
-            return cached, _inode_digest[key]
+            return cached, _inode_digest[key], key
         chunks = []
         left = st.st_size
         while left > 0:
@@ -491,7 +496,7 @@ def read_nofollow(path, max_bytes):
         digest = hashlib.sha256(data).digest()
         _inode_bytes[key] = data
         _inode_digest[key] = digest
-        return data, digest
+        return data, digest, key
     finally:
         os.close(fd)
 
@@ -581,7 +586,7 @@ try:
             )
             continue
         try:
-            data, _ = read_nofollow(p, _MAX_PYC_BYTES)
+            data, pyc_digest, pyc_key = read_nofollow(p, _MAX_PYC_BYTES)
         except OSError as exc:
             import errno as _errno
             msg = exc.strerror or str(exc)
@@ -616,7 +621,7 @@ try:
             _offenders.append(p + "  (no regular sibling source to authenticate against)")
             continue
         try:
-            src_bytes, src_digest = read_nofollow(src, _MAX_SRC_BYTES)
+            src_bytes, src_digest, _src_key = read_nofollow(src, _MAX_SRC_BYTES)
         except OSError as exc:
             msg = exc.strerror or str(exc)
             if "too large" in msg:
@@ -648,15 +653,22 @@ try:
         if kind != "ok":
             _offenders.append(p + "  (trusted sibling source failed to compile: %s)" % payload)
             continue
-        if data[HEADER:] not in payload:
+        # memoryview: a plain `data[HEADER:]` COPIES the body once per alias.
+        # The memo covers the compare itself, which is O(size) precisely when it
+        # succeeds — the aliased-valid-cache case.
+        _body_key = (pyc_key, memo_key)
+        _matched = _body_memo.get(_body_key)
+        if _matched is None:
+            _matched = memoryview(data)[HEADER:] in payload
+            _body_memo[_body_key] = _matched
+        if not _matched:
             _offenders.append(p + "  (bytecode body does not match a compile of the locked source beside it)")
             continue
         # Record source + cache digests for the shell bind below (stdout-framed
         # after the loop so no named tempfile or cross-process pipe FD is needed).
-        _auth_recs.append((
-            hashlib.sha256(src_bytes).hexdigest(), src,
-            hashlib.sha256(data).hexdigest(), p,
-        ))
+        # read_nofollow already hashed both, once per inode — re-hashing here is
+        # what let aliases multiply the work past the byte budgets.
+        _auth_recs.append((src_digest.hex(), src, pyc_digest.hex(), p))
 
     if _offenders:
         for _line in _offenders:
@@ -814,6 +826,7 @@ fi
 if [[ -n "$_auth_blob" ]]; then
     # Records travel on stdin (not the environment) so an 8 MiB auth blob cannot
     # hit ARG_MAX; one Python pass avoids per-record grep.
+    # shellcheck disable=SC2016  # python source, not a shell expansion
     {
         printf '%s\n' "$computed"
         printf '%s\n' '--GATE_INTEGRITY_AUTH_BIND--'

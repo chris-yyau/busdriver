@@ -1158,10 +1158,10 @@ sys.stdout.write("evil" + {
     fi
     rm -rf "${_fix:?}/hooks/gate-scripts/$_head"
 done
-assert $_sep_fixture_bad "line-separator fixtures are creatable (the case is not vacuous)"
-assert $_sep_check_bad "a locked path holding any non-LF splitlines separator fails --check"
-assert $_sep_msg_bad "↳ and names the offending path as a line-break refusal"
-assert $_sep_update_bad "↳ and --update refuses it too, so the forged name is never recorded"
+assert "$_sep_fixture_bad" "line-separator fixtures are creatable (the case is not vacuous)"
+assert "$_sep_check_bad" "a locked path holding any non-LF splitlines separator fails --check"
+assert "$_sep_msg_bad" "↳ and names the offending path as a line-break refusal"
+assert "$_sep_update_bad" "↳ and --update refuses it too, so the forged name is never recorded"
 "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
 assert $? "↳ and the same fixture passes once the name is gone (the guard does not false-fire)"
 
@@ -1252,6 +1252,69 @@ if [[ "$_inode_ok" -eq 1 && "$_memo_ok" -eq 1 ]]; then
     assert 0 "hardlinked accepted caches still verify (bind inode memo)"
 else
     assert 1 "hardlinked accepted caches still verify (bind inode memo)"
+fi
+
+# ── The classifier's body-compare memo is INODE-scoped, not name-scoped ───────
+# Hardlinks make the per-inode I/O budget free to multiply: aliases of one valid
+# near-8-MiB cache stay inside the path, I/O and compile bounds while each alias
+# re-hashes both files and re-compares the body — and the compare is O(size)
+# exactly when it SUCCEEDS, which is the aliased-valid-cache case. The classifier
+# therefore memoizes the compare result on (cache inode, trusted-compile key).
+# A memo keyed on anything coarser would be a soundness hole, so assert both
+# halves: every alias of a good cache is still accepted, and a DIFFERENT inode
+# holding a forged body is still refused while those aliases are present — the
+# memo must not hand its positive to a file that never earned one.
+fresh_fixture
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" \
+    python3 -c 'import os, py_compile; py_compile.compile(os.environ["_PYC_SRC"], doraise=True)'
+_cache_dir="$_fix/hooks/gate-scripts/lib/__pycache__"
+_base_pyc="$(find "$_cache_dir" -name 'marker_ops*.pyc' ! -type d ! -name '*.opt-*' | head -1)"
+_alias_ok=0
+_alias_forge_ok=0
+if [[ -n "$_base_pyc" && -f "$_base_pyc" ]]; then
+    # Extra PEP 3147 cache tags for the SAME sibling source: source_from_cache
+    # strips the tag, so every alias resolves to marker_ops.py at optimize 0 —
+    # one inode, one compile key, many paths.
+    _linked=0
+    for _tag in 900 901 902 903 904 905; do
+        if ln "$_base_pyc" "$_cache_dir/marker_ops.cpython-$_tag.pyc" 2>/dev/null; then
+            _linked=$((_linked + 1))
+        fi
+    done
+    if [[ "$_linked" -ge 2 ]]; then
+        "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+        "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1 && _alias_ok=1
+        # A separate file (its own inode) carrying a forged body, alongside the
+        # accepted aliases. Copy-then-mutate, never mutate a link: writing through
+        # any alias would change the accepted inode itself and prove nothing.
+        _forged="$_cache_dir/marker_ops.cpython-910.pyc"
+        if cp "$_base_pyc" "$_forged" 2>/dev/null \
+            && _GI_F="$_forged" python3 -I -c '
+import os
+p = os.environ["_GI_F"]
+d = bytearray(open(p, "rb").read())
+d[-1] ^= 0xFF          # body only; the 16-byte header stays valid
+open(p, "wb").write(bytes(d))'; then
+            _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; _rc=$?
+            if [[ "$_rc" -ne 0 && "$_out" == *"does not match a compile of the locked source"* ]]; then
+                _alias_forge_ok=1
+            else
+                printf '  ↳ output: %s\n' "$_out"
+            fi
+        fi
+    else
+        printf '  ↳ refuse: could not hardlink cache aliases (linked=%s)\n' "$_linked"
+    fi
+fi
+if [[ "$_alias_ok" -eq 1 ]]; then
+    assert 0 "many hardlinked aliases of one valid cache are all accepted (classifier body memo)"
+else
+    assert 1 "many hardlinked aliases of one valid cache are all accepted (classifier body memo)"
+fi
+if [[ "$_alias_forge_ok" -eq 1 ]]; then
+    assert 0 "↳ and a forged body on its OWN inode is still refused beside them"
+else
+    assert 1 "↳ and a forged body on its OWN inode is still refused beside them"
 fi
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────

@@ -1,4 +1,44 @@
-#!/bin/bash
+#!/bin/bash -p
+# #576: this script is an AUTHORIZATION component — it mints the commit marker — so it
+# must refuse to import environment shell functions like the producer and the gates. A
+# repo-injected exported `cat` could return an attacker-chosen 64-hex value after the
+# index moved, making this writer emit BUILTIN-<current unreviewed diff> even though the
+# reviewer saw the earlier prompt — so this file must never run with those functions
+# imported. The protection is layered OUTSIDE-IN, and only the outer layers are
+# authoritative:
+#   1. The `#!/bin/bash -p` shebang on line 1, matching the gates, the producer and the
+#      dispatcher. The kernel applies it, so nothing in the environment can shadow it —
+#      but it only takes effect when the file is EXECUTED directly.
+#   2. The explicit `-p` at the call site, which is the hop that actually happens:
+#      SKILL.md invokes this as `/bin/bash -p <script>`, which bypasses the shebang. That
+#      `-p` is authoritative and must never be dropped to a plain `bash`.
+#   3. The re-exec immediately below — a last-resort fallback for a caller that did
+#      neither. It is the WEAKEST layer: by the time it runs, bash has already processed
+#      BASH_ENV and imported exported functions, so its own `exec` is shadowable.
+# See run-review-loop.sh for the full reasoning.
+if [[ "$-" != *p* ]]; then
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# #576: put the system directories FIRST so security-critical tools resolve to the real
+# binaries. Privileged mode stops exported FUNCTIONS from being imported, but it leaves
+# PATH alone — and PATH is repo-injectable the same way env is (#325 / ADR 0016). A
+# planted `git` earlier in PATH could emit benign reviewer-facing output while
+# delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
+# then accepts for content nobody reviewed.
+#
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# the SAST tools legitimately live elsewhere, and pinning PATH outright would break
+# their resolution — including the PATH stubs the test fixtures rely on. Prepending is
+# enough for the tools that matter here, because /usr/bin and /bin are the ones a
+# planted git/sha256sum/od/stat/cat would have to beat.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+
 # Trusted marker writer for builtin review fallback
 # Called via Bash tool (not Write tool) to avoid pre-implementation gate block
 # Prefix with BUILTIN- so post-commit-consume-marker.sh can distinguish
@@ -144,13 +184,36 @@ if [[ "$_LOCK_RC" -ne 0 ]]; then
     _LOCK_OWNER=$(review_lock_owner)
     _LOCK_STATE=$(review_lock_owner_state)
     if [ "$DISCARD" -eq 1 ]; then
+        # Before refusing, make the arming UNUSABLE. Documenting "re-run this later" is
+        # not a cleanup mechanism: until that retry happens, a FAILED review's arming can
+        # still be handed to the normal write path and mint a marker for whatever is
+        # staged. Retiring the #576 hash sidecar closes that without reintroducing the
+        # unsynchronized delete this mode exists to remove — the sidecar is keyed to THIS
+        # prompt's basename (a per-run mktemp name), so it is ours alone and cannot be a
+        # newer run's, whereas the handoff and baseline live at shared fixed paths and
+        # must not be touched without the lock. With no sidecar the writer refuses for
+        # want of a reviewed hash, which is the fail-CLOSED direction; the pair itself is
+        # still retired by the retry below (#794).
+        _DC_BASE="${BUILTIN_PROMPT_PATH##*/}"
+        case "$_DC_BASE" in
+            busdriver-review-?*) : ;;
+            *) _DC_BASE="" ;;
+        esac
+        case "$_DC_BASE" in
+            */*|*..*|*'
+'*) _DC_BASE="" ;;
+        esac
+        if [ -n "$_DC_BASE" ]; then
+            rm -f "$REPO_DIR/$STATE_DIR/builtin-review-${_DC_BASE}.hash"
+        fi
         echo "ERROR: Could not take the review lock — handoff NOT discarded." >&2
         echo "       Lock: $_LOCK_PATH (owner pid $_LOCK_OWNER, $_LOCK_STATE)" >&2
         echo "       Waited ${_WAITED}s (BUSDRIVER_REVIEW_LOCK_WAIT=$LOCK_WAIT) and it is still held." >&2
         echo "       Your failed review's handoff is STILL ARMED and nothing else retires it." >&2
-        echo "       Re-run this --discard with the same prompt path once that run finishes;" >&2
-        echo "       until you do, that arming can still be handed back here and mint a marker" >&2
-        echo "       for whatever is staged, despite your FAILED verdict. (#794)" >&2
+        echo "       Its reviewed-diff hash HAS been retired, so the handoff can no longer" >&2
+        echo "       mint a marker — but re-run this --discard with the same prompt path once" >&2
+        echo "       that run finishes, or the pair stays armed and blocks the next review" >&2
+        echo "       from arming its own. (#794)" >&2
         echo "       If that owner is NOT running, the lock is an orphan — remove it yourself." >&2
         exit 1
     fi
@@ -187,9 +250,23 @@ if [[ "$HANDOFF_PATH_NOW" != "$BUILTIN_PROMPT_PATH" ]]; then
     exit 1
 fi
 
-# --discard: the arming is ours and this review is not going to publish. Retire the pair
+# --discard: the arming is ours and this review is not going to publish. Retire the set
 # under the lock and stop — no marker, no generation stamp, nothing for the gate to read.
 if [ "$DISCARD" -eq 1 ]; then
+    # The #576 hash sidecar belongs to this arming too — leaving it behind would strand
+    # a private temp file naming a diff nothing will ever mint a marker for.
+    _DISCARD_BASE="${BUILTIN_PROMPT_PATH##*/}"
+    case "$_DISCARD_BASE" in
+        busdriver-review-?*) : ;;
+        *) _DISCARD_BASE="" ;;
+    esac
+    case "$_DISCARD_BASE" in
+        */*|*..*|*'
+'*) _DISCARD_BASE="" ;;
+    esac
+    if [ -n "$_DISCARD_BASE" ]; then
+        rm -f "$REPO_DIR/$STATE_DIR/builtin-review-${_DISCARD_BASE}.hash"
+    fi
     rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
     echo "Builtin review handoff discarded (no marker written)"
     exit 0
@@ -228,18 +305,63 @@ fi
 rm -f "$HANDOFF_FILE" "$BASELINE_FILE"
 
 mkdir -p "$REPO_DIR/$STATE_DIR"
-# Bare `git diff --cached` — must stay byte-identical to pre-commit-gate.sh's
-# STAGED_HASH, the writes in run-review-loop.sh, and dispatcher-commit-block.sh.
-# Since #545 the gate COMPARES this hash to the staged diff instead of merely
-# checking the marker exists, so any flag added on one side and not the others
-# stops every marker from matching and blocks every commit.
+# #576 closes the SCOPE caveat #790 left open here. This used to re-hash the index as
+# it stood NOW — but everything between exit 3 and this line IS the builtin review, so
+# the recomputed hash described whatever was staged when the agent FINISHED, not what
+# it was asked to review. A marker minted for diff A would name diff B, and since #545
+# the gate compares marker to staged diff: that mismatch stopped blocking and started
+# certifying. The reviewed hash travels through the handoff instead, in a sidecar
+# written beside the prompt at exit 3.
 #
-# SCOPE: this hashes the index as it stands NOW, not the diff the agent was handed at
-# exit 3, so an index that moved mid-review yields a marker for something nobody
-# reviewed. Pre-existing and deliberately untouched by #790, which is about ordering
-# this write against other publishers; minting for the REVIEWED diff is #576's change
-# and needs the reviewed hash carried through the handoff.
-HASH=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+# Fail CLOSED, with no fall back to a fresh diff: a missing or malformed sidecar means
+# this is not the handoff the review started from, and re-deriving the hash here would
+# reinstate exactly that bug. Refusing costs a re-run; a forged binding costs an
+# unreviewed commit.
+#
+# The sidecar is keyed to the PER-RUN mktemp prompt basename, and the path is rebuilt
+# inside the state dir we already own rather than trusted from the handoff. The handoff
+# is a state file, so its content is UNTRUSTED INPUT — and this script both reads and
+# unlinks the sidecar derived from it. Validating an absolute path by prefix is not
+# enough: the prefix constrains only the last component, so "/anywhere/
+# busdriver-review-data.hash" would pass and the unlink would reach outside the state
+# dir. (Anyone able to write the handoff can already write the marker directly, so this
+# is not the last line of defence — it just refuses to lend them a delete primitive.)
+PROMPT_BASE="${BUILTIN_PROMPT_PATH##*/}"
+# Match the template's PREFIX, not a fixed width: `mktemp -t busdriver-review-XXXXXX`
+# yields different basenames per platform — BSD/macOS keeps the literal XXXXXX and
+# appends its own random suffix, GNU substitutes the X's. A fixed-width pattern
+# silently rejects every real handoff on one of them.
+case "$PROMPT_BASE" in
+    busdriver-review-?*) : ;;
+    *) PROMPT_BASE="" ;;
+esac
+# Belt and braces after the basename strip: no separator, no traversal, no newline.
+case "$PROMPT_BASE" in
+    */*|*..*|*'
+'*) PROMPT_BASE="" ;;
+esac
+HASH=""
+if [ -n "$PROMPT_BASE" ]; then
+    HASH_FILE="$REPO_DIR/$STATE_DIR/builtin-review-${PROMPT_BASE}.hash"
+    # Refuse a symlink: run-review-loop.sh creates the sidecar with O_EXCL, which never
+    # follows one, so a symlink here means somebody else made it.
+    if [ ! -L "$HASH_FILE" ] && [ -f "$HASH_FILE" ]; then
+        HASH=$(cat "$HASH_FILE" 2>/dev/null || echo "")
+    fi
+    # Consumed like the handoff and baseline above: single-use, spent by every attempt,
+    # so a malformed hash costs a litmus re-run rather than leaving a sidecar armed for
+    # a second try.
+    rm -f "$HASH_FILE"
+fi
+case "$HASH" in
+    *[!0-9a-f]* | "") HASH="" ;;
+esac
+if [ "${#HASH}" -ne 64 ]; then
+    echo "ERROR: Missing or malformed reviewed-diff hash handoff — marker cannot be written." >&2
+    echo "       Expected a 64-char SHA-256 in the .hash sidecar of the mktemp prompt file," >&2
+    echo "       written by run-review-loop.sh at exit code 3. Re-run /litmus." >&2
+    exit 1
+fi
 # Stamp the generation BEFORE the marker, same ordering and reason as
 # publish_marker_gen in run-review-loop.sh: a crash between the two must leave a moved
 # token in front of an old marker (the next delayed writer refuses), never the reverse.

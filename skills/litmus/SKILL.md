@@ -110,7 +110,7 @@ LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. A pass that needs longer is the unsolved case
@@ -183,7 +183,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 4. For each group:
    a. `git add <files in group>`
    b. `bash $LITMUS_SCRIPTS/init-review-loop.sh`
-   c. `bash $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   c. `/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed
@@ -261,7 +261,7 @@ Bash(command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop
 
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. If the pass needs longer, use pattern B —
@@ -410,7 +410,7 @@ git commit -m "Your message"  # Hooks will enforce review
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $LITMUS_SCRIPTS/init-review-loop.sh 10
-bash $LITMUS_SCRIPTS/run-review-loop.sh
+/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -436,7 +436,7 @@ git push                # Push after review passes
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $CODEX/init-review-loop.sh 10                                  # Initialize
-bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
+/bin/bash -p $CODEX/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
@@ -477,10 +477,10 @@ When `run-review-loop.sh` exits with code 3, external review paths were exhauste
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"high|medium|low\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
 4. Parse the agent's JSON output for blocking issues: severity must be a string in the exact lowercase enum `high|medium|low`. Every other value (including `LOW` and `LoW`) fails closed and blocks. An issue blocks unless severity is exactly `low`. If parsing fails or the output is not a JSON array of issues, treat as FAIL.
-5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path from step 1>"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files). The path argument is **required**: it says which handoff this review belongs to, so a delayed write cannot claim a handoff a later review armed (#790). The writer also exits non-zero without writing if another litmus run published a marker while this review was in flight — that marker stands; do not retry the review, re-run `/litmus` only if the commit is actually blocked. A third non-zero case is lock contention (another review in flight). The writer now WAITS for that lock — up to `BUSDRIVER_REVIEW_LOCK_WAIT` seconds, default 90 — and publishes if the other run ended without publishing a marker (#794); only if the wait runs out does it exit non-zero, and then nothing is consumed and the handoff stays armed, so re-run the writer with the same prompt path once that run finishes rather than re-reviewing. Raising the env var past ~110s means raising the Bash call's own timeout to match, or the tool kills the writer mid-wait.
+5. If no blocking issues: write the marker via `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path from step 1>"` — the `-p` is the **authoritative** hop and must not be dropped to a plain `bash` (#576). The script re-execs itself under `-p`, but that is only a fallback for other callers: by the time it runs, bash has already processed `BASH_ENV` and imported exported functions, either of which can run repo-controlled startup code or shadow the very `exec` that was meant to fix it. This script mints the commit marker, so it is an authorization component (NOT via Write tool — the pre-implementation gate blocks Write to marker files). The path argument is **required** for two reasons, not one. It says which handoff this review belongs to, so a delayed write cannot claim a handoff a later review armed (#790); and the marker is bound to the diff hash captured when *your* review was armed (#576), which is looked up by that prompt file's basename — so without the argument there is no reviewed hash to mint from and the writer refuses rather than re-hashing whatever is staged now. The writer also exits non-zero without writing if another litmus run published a marker while this review was in flight — that marker stands; do not retry the review, re-run `/litmus` only if the commit is actually blocked. A third non-zero case is lock contention (another review in flight). The writer WAITS for that lock — up to `BUSDRIVER_REVIEW_LOCK_WAIT` seconds, default 90 — and publishes if the other run ended without publishing a marker (#794); only if the wait runs out does it exit non-zero, and then nothing is consumed and the handoff stays armed, so re-run the writer with the same prompt path once that run finishes rather than re-reviewing. Raising the env var past ~110s means raising the Bash call's own timeout to match, or the tool kills the writer mid-wait.
 6. If blocking issues: report FAIL with issues, fix and re-run — and **disarm this arming** as in Step 7, because nothing else will: the writer is never invoked on this path, so the handoff would otherwise stay armed indefinitely.
 7. Clean up: always remove the temp prompt file. Then the handoff path file and its `builtin-review-marker-baseline.local` snapshot, which are **one pair — never delete one without the other**:
-   - **The review FAILED (Step 6), or you are abandoning it without calling the writer** — retire the pair with `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" --discard "<the prompt path from step 1>"`. Do **not** delete the two files yourself: your own read-then-delete is not atomic against a concurrent exit 3 re-arming them, so it can destroy a newer review's state; `--discard` takes the review lock and refuses if the handoff no longer names your path. `--discard` waits for a contended lock exactly like the write path does (#794). **If it still refuses after the wait runs out, the arming is still live and nothing else retires it — re-run the same `--discard` once that run finishes**; until then a later call could mint a marker off a review that failed. Re-run `/litmus` to arm a fresh one.
+   - **The review FAILED (Step 6), or you are abandoning it without calling the writer** — retire the pair with `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" --discard "<the prompt path from step 1>"` — the `-p` for the same reason as Step 5, and it matters at least as much here: this invocation decides whether a FAILED review stays able to mint a marker, so startup code reached through a plain `bash` could drop the `--discard` and take the ordinary write path instead. Do **not** delete the two files yourself: your own read-then-delete is not atomic against a concurrent exit 3 re-arming them, so it can destroy a newer review's state; `--discard` takes the review lock and refuses if the handoff no longer names your path. `--discard` waits for a contended lock exactly like the write path does (#794). **If the wait runs out it still retires the reviewed-diff hash, so the arming can no longer mint a marker** — but the pair itself survives and nothing else retires it, so re-run the same `--discard` once that run finishes or it blocks the next review from arming its own. Re-run `/litmus` to arm a fresh one.
    - **You called the writer (Step 5)** — leave the pair alone whatever it exited: `write-review-marker.sh` owns their lifecycle from that point. It consumes them itself on a write and on a superseded-marker refusal, and deliberately preserves them in the two cases where deleting would break a later run — when the contention wait runs out the handoff stays armed so the write can be retried, and when a newer review has re-armed the handoff it consumes nothing because the pair belongs to that run's agent.
 
 ## Enhanced Review Features

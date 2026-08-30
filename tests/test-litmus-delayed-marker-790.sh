@@ -56,6 +56,14 @@ publish() {
 # $2 overrides the prompt path, standing in for a LATER run re-arming the handoff.
 arm_handoff() {
     printf '%s\n' "${2:-$PROMPT}" > "$1/.claude/builtin-review-prompt-path.local"
+    # #576: exit 3 also hands over the hash of the diff the agent is being asked to
+    # review, in a sidecar keyed to the prompt basename. The writer mints from THAT
+    # rather than re-hashing the index at write time, and refuses without it — so an
+    # arming fixture that omits it is arming a handoff run-review-loop.sh never
+    # produces.
+    local _p="${2:-$PROMPT}"
+    ( cd "$1" && git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 ) \
+        > "$1/.claude/builtin-review-${_p##*/}.hash"
     if [[ -f "$1/.claude/litmus-marker-gen.local" ]]; then
         cp "$1/.claude/litmus-marker-gen.local" "$1/.claude/builtin-review-marker-baseline.local"
     else
@@ -252,6 +260,7 @@ run_discard "$R"
 check "discard succeeds" "$(verdict "$RC")" "wrote"
 check "discard consumes the handoff" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "gone"
 check "discard consumes the baseline" "$(exists "$R/.claude/builtin-review-marker-baseline.local")" "gone"
+check "discard consumes the #576 hash sidecar" "$(exists "$R/.claude/builtin-review-${PROMPT##*/}.hash")" "gone"
 check "discard writes no marker" "$(exists "$R/.claude/litmus-passed.local")" "gone"
 check "discard stamps no generation" "$(exists "$R/.claude/litmus-marker-gen.local")" "gone"
 
@@ -273,6 +282,14 @@ ln -s "pid-999999-tok790" "$R/.claude/litmus-review.lock"
 run_discard "$R"
 check "held review lock refuses discard" "$(verdict "$RC")" "refused"
 check "handoff survives a contended discard" "$(exists "$R/.claude/builtin-review-prompt-path.local")" "present"
+# ...but the arming must be made UNUSABLE even though the pair survives. Advising a
+# retry is not a cleanup mechanism: until it happens, a FAILED review could still hand
+# its arming to the normal write path and mint a marker for whatever is staged now.
+# Retiring the #576 hash sidecar is safe under contention precisely because it is keyed
+# to THIS prompt per-run basename — it can never belong to a newer run — whereas the
+# handoff and baseline live at shared fixed paths and must not be touched without the
+# lock.
+check "contended discard retires the reviewed hash" "$(exists "$R/.claude/builtin-review-${PROMPT##*/}.hash")" "gone"
 # ...and it must say so in its own terms. A contended discard leaves a FAILED review's
 # arming live and nothing else retires it, so the refusal has to name the retry rather
 # than reuse the write path's "it publishes its own marker" wording (#794).
@@ -281,6 +298,12 @@ if printf '%s' "$OUT" | grep -q "STILL ARMED"; then
 else
     bad "contended discard does not warn the arming is still live: $OUT"
 fi
+# The disarm is not just a filesystem fact — prove the consequence. Handing the same
+# arming to the normal write path must now be refused, so a FAILED review cannot mint a
+# marker while its pair waits for the retry.
+run_writer "$R"
+check "...so the failed arming can no longer mint a marker" "$(verdict "$RC")" "refused"
+check "...and no marker was written" "$(exists "$R/.claude/litmus-passed.local")" "gone"
 
 echo ""
 echo "── #794 contention is a bounded wait ────────────────────────"

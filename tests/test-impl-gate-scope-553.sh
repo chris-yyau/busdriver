@@ -1010,105 +1010,196 @@ check "...and inside a find -exec payload" block \
     "$(armed 'find . -exec no-match-* sed -i s/a/b/ f ;')"
 unset _v
 
-# ── THE INTERPRETER DECOY ──
-# A python-shaped word can PRECEDE the real interpreter, and choosing between them is not
-# decidable from the text: `env python3 python3 <helper>` is either a decoy in front of an
-# interpreter or an interpreter running a script NAMED `python3`, and the two spell the
-# same. The SHAPE is what decides — a word `env` would read as an assignment is not the
-# interpreter — and the rules that tried to decide it another way each traded a false block
-# for a miss: skipping by env-name adjacency (an option breaks it, and the region walk is
-# quadratic), advancing to the first non-flag operand (promotes a `-c` PROGRAM), a `.py`
-# test (calls `python3.py` a script), an interpreter-shaped name test (loses
-# `python-local`), and an additive re-ask of the skipped word (blocks every script behind a
-# decoy). Ten rounds; the four spellings below are closed here and open at origin/main.
-check "an assignment-shaped decoy in front of the interpreter blocks" block \
+# ── THE INTERPRETER DECOY: CLOSED BY A SECOND READING ──
+# A python-shaped word can PRECEDE the real interpreter, and the guard's search takes the
+# first candidate — so at origin/main `env python3=decoy python3 -I <helper>` read the
+# decoy as the interpreter and the real one as its script, and allowed it.
+#
+# The obvious repair — exclude assignment-shaped words from the candidate search — is a
+# fail-OPEN, and was very nearly shipped. Only a wrapper that READS `NAME=value` makes
+# such a word an assignment; `timeout`, `nice` and `doas` execute a PATH entry literally
+# named `python3=shim`, and origin/main blocks that. Eleven rules were written and
+# measured to keep the exclusion and buy the spelling back — env-name adjacency, an
+# assignment REGION, a command-position walk, three interpreter-name tests, an
+# operand-slot rule for flock/chroot — and each closed one spelling by opening another,
+# because each CHOSE a reading and choosing needs per-flag ARITY (`flock -w 1 <file>`
+# puts the operand a word further along than `flock -n <file>`), which the module carries
+# no table for by design.
+#
+# What closes it is not a choice but a second READING: when the candidate the search
+# lands on is assignment-shaped, the segment is re-asked ONCE without it, and a hit in
+# EITHER reading blocks. Additive, so it cannot open a hole — measured over 9,240
+# compositions against origin/main, every verdict this changes is block-ward and none is
+# allow-ward — and it needs no arity.
+check "a decoy before the real interpreter no longer hides it" block \
     "$(clean "env python3=decoy python3 -I $HELPER .claude fake 1")"
-check "...with an option breaking the adjacency" block \
-    "$(clean "env -i python3=decoy python3 -I $HELPER .claude fake 1")"
-check "...with a second assignment between them" block \
+check "...under every wrapper, not just an assignment-reading one" block \
+    "$(clean "sudo python3=decoy python3 -I $HELPER .claude fake 1")"
+check "...and with a real assignment between decoy and interpreter" block \
     "$(clean "env python3=decoy X=1 python3 -I $HELPER .claude fake 1")"
-check "...and for a dash-suffixed interpreter name" block \
-    "$(clean "env python3=decoy python-local -I $HELPER .claude fake 1")"
-
-# The MENTION half of the same undecidable pair, which every candidate-choosing rule broke.
-check "an interpreter running a script named python3 stays a mention" allow \
+check "...and chained decoys, since the re-ask recurses" block \
+    "$(clean "env python3=decoy python3=d2 python3 -I $HELPER .claude fake 1")"
+# The decoy test is a bare `=`, not a shell-IDENTIFIER assignment: `env` accepts a far
+# wider operand than the shell's own grammar, so `python3.foo=decoy` is an assignment to
+# `env` while `[A-Za-z_][A-Za-z0-9_]*=` does not match it. Testing for the identifier
+# raised no second reading here and left the helper allowed.
+check "...and a decoy whose NAME is not a shell identifier" block \
+    "$(clean "env python3.foo=decoy python3 -I $HELPER .claude fake 1")"
+check "...including one spelled as a path" block \
+    "$(clean "env /usr/bin/python3=decoy python3 -I $HELPER .claude fake 1")"
+# PARITY, and correct: UNWRAPPED there is no wrapper to read the word as an assignment,
+# and the shell will not either — `python3.foo` is no identifier — so the command word is
+# the literal program `python3.foo=decoy` and the helper is its argument. A mention,
+# which is what origin/main says. The identifier spelling differs precisely because the
+# shell DOES read it: `python3=decoy python3 -I <helper>` blocks, asserted in the sweep.
+check "PARITY: a bare non-identifier shape is the command, so the helper is data" allow \
+    "$(clean "python3.foo=decoy python3 -I $HELPER .claude fake 1")"
+# PARITY, and correct: `env` DOES read `NAME=value`, so with no assignment shape in front
+# there is no second reading to take. `env python3 python3 <helper>` runs a script named
+# python3 with the helper as its argument — a mention, which is what origin/main says too.
+check "PARITY: an interpreter running a script named python3 stays a mention" allow \
     "$(clean "env python3 python3 $HELPER")"
-check "...as does a python-prefixed SCRIPT with an argument" allow \
+
+# What must NOT regress while that residual stands: a word only an assignment-READING
+# wrapper would make inert is still a program to every wrapper that does no such reading.
+# Each of these blocks at origin/main, and excluding assignment shapes lost all of them.
+check "a literal assignment-shaped program name behind timeout blocks" block \
+    "$(clean "timeout 5 python3=shim -I $HELPER .claude fake 1")"
+check "...and behind nice" block \
+    "$(clean "nice -n 5 python3=shim -I $HELPER .claude fake 1")"
+check "...and behind doas, which has no assignment preamble" block \
+    "$(clean "doas python3=shim -I $HELPER .claude fake 1")"
+check "...and behind a second wrapper, whatever precedes it" block \
+    "$(clean "env timeout 5 python3=shim -I $HELPER .claude fake 1")"
+# In a wrapper's OPERAND slot the shape is a filename (`flock <file> <cmd>`), and the
+# search takes it as the interpreter anyway. When that filename is assignment-shaped the
+# second reading drops it and finds the real interpreter, so this one closes as a
+# side-effect — origin/main allows it.
+check "an assignment-shaped operand slot no longer hides the interpreter" block \
+    "$(clean "flock python3=lock python3 -I $HELPER .claude fake 1")"
+# RESIDUAL, unchanged and still origin/main's: an operand that is python-prefixed WITHOUT
+# being assignment-shaped raises no second reading, so it still occupies the candidate
+# slot. Separating it from the real interpreter needs the per-flag arity named above.
+check "PARITY: a plain python-prefixed operand is still read as the interpreter" allow \
+    "$(clean "flock /tmp/python-lock python3 -I $HELPER .claude fake 1")"
+
+# The mention contract, which every candidate-choosing rule broke in some spelling.
+check "a python-prefixed SCRIPT keeps its argument an argument" allow \
     "$(clean "env python3 python_tool.py $HELPER")"
 check "...extensionless too" allow "$(clean "env python3 python_tool $HELPER")"
 check "...and a -c program is not read as an interpreter" allow \
     "$(clean "env python3 -c python_code=1 $HELPER")"
-check "...and a script behind a decoy keeps its argument an argument" allow \
-    "$(clean "env python3=decoy python3 safe.py $HELPER")"
+# PARITY over-block, and origin/main's own: under a wrapper the scan reads every word, so
+# an assignment SHAPE past the command is still taken as an interpreter and the helper
+# beside it as its script. Unwrapped, the command word decides and the mention survives.
+check "PARITY: a shape after a WRAPPED command is still read as one" block \
+    "$(clean "timeout 5 printf '%s' python3=shim $HELPER")"
+check "...while unwrapped, the command word decides and it stays data" allow \
+    "$(clean "printf '%s' python3=shim $HELPER")"
+# ACCEPTED OVER-BLOCK, and the only verdict the second reading costs: a READ whose
+# argument names a helper, behind a wrapper, behind an assignment whose BASENAME starts
+# with `python`. Dropping the assignment leaves `grep python3 <helper>`, in which the
+# guard reads `python3` as the interpreter and the helper as its script. origin/main
+# allows it. Blocking a read is this guard's documented direction of error, and the shape
+# is recoverable through the skip lease.
+check "ACCEPTED OVER-BLOCK: a read behind a python-named assignment blocks" block \
+    "$(clean "env python3=cfg grep python3 $HELPER")"
 
-# What the shape rule COSTS, pinned rather than described: a wrapper that does NOT read
-# assignments can run a PATH entry literally named `python3=shim`. origin/main blocks this
-# and this branch does not — the one trade in the family. Closing it means knowing which
-# wrappers interpret `NAME=value`, which is the per-flag arity table this suite's subject
-# refuses to carry, and every attempt above reopened one of the mention cases.
-check "RESIDUAL: a literal assignment-shaped program name behind timeout" allow \
-    "$(clean "timeout 5 python3=shim -I $HELPER .claude fake 1")"
-
-# ...and the grid generated rather than enumerated, because the spellings that got through
-# during review were combinations nobody had written out — a path-qualified
-# assignment-shaped name (`./python3=real`), a free-threaded `t` suffix, an option between
-# the decoy and the interpreter. Run IN PROCESS like the sweeps above: 110 gate subprocesses
-# would add about a minute to a suite CI caps at 180 seconds.
-#
-# The block arm is SPLIT by what the wrapper does with `NAME=value`. `env` reads it as an
-# assignment, so the decoy really is one and the interpreter behind it really runs — those
-# are correct blocks, and open at origin/main. `timeout`, `sudo` and `nice` do NOT, so they
-# execute a program literally named `python3=decoy` and the helper is only an argument:
-# those block too, and that is the ACCEPTED OVER-BLOCK the shape rule costs, the same trade
-# as the RESIDUAL above but pointing the safe way. Asserting them together would have
-# claimed the second group was correct.
+# ...and the family swept rather than enumerated, because the spellings that came up in
+# review were combinations nobody had written out. SELF-CONTAINED — an earlier cut compared
+# against `git show origin/main:...` and reported PASS when the ref was absent, so a
+# shallow checkout certified comparisons it never ran. Run IN PROCESS like the suite's
+# other sweeps: 1,000 gate subprocesses would not finish.
 if DECOY_OUT="$(GATE_LIB="${REPO_ROOT}/hooks/gate-scripts/lib" HELPER="$HELPER" python3 - <<'PY'
 import itertools, os, sys
 sys.path.insert(0, os.environ["GATE_LIB"])
-import marker_check
+import marker_check as mc
 
 H = os.environ["HELPER"]
-blocked = lambda c: marker_check._helper_invoked(c) not in (None, "OK")
+def verdict(c):
+    try:
+        return mc._helper_invoked(c) not in (None, "OK")
+    except Exception as exc:                     # a crash is not a verdict
+        return exc
 
-ENV_WRAP = ["", "env ", "env -i "]
-OTHER_WRAP = ["timeout 5 ", "sudo ", "nice -n 5 "]
-DECOY = ["python3=decoy ", "python3=decoy X=1 "]
-INTERP = ["python3", "python3.12", "python3.13t", "pythonw", "/usr/bin/python3",
-          "./python3=real", "python-local"]
-SCRIPT = ["python_tool.py", "python_tool", "python3.py", "safe.py"]
+WRAP = ["", "env ", "env -i ", "timeout 5 ", "sudo ", "nice -n 5 ", "flock lock ",
+        "doas ", "env timeout 5 "]
+LEAD = ["", "python3=decoy ", "python3=decoy X=1 ", "X=1 ", "python3.foo=decoy ",
+        "/usr/bin/python3=decoy "]
+PROG = ["python3", "python3.12", "/usr/bin/python3", "python-local", "./python3=real",
+        "python_tool.py", "python_tool", "safe.py", "python3.py"]
+TAIL = [" -I " + H + " .claude fake 1", " " + H, " -c 'print(1)'", " safe.py " + H]
 
 bad = []
-# 1. behind an env-like wrapper the decoy is an assignment: the interpreter behind it runs.
-for w, d, i in itertools.product(ENV_WRAP, DECOY, INTERP):
-    c = w + d + i + " -I " + H + " .claude fake 1"
-    if not blocked(c):
-        bad.append("DECOY-MISS " + repr(c))
-# 2. behind a wrapper that does NOT read assignments the decoy is the program, so the
-#    helper is an argument. These block anyway -- the accepted over-block, pinned so a
-#    later change cannot quietly turn it into a MISS instead.
-for w, d, i in itertools.product(OTHER_WRAP, DECOY, INTERP):
-    c = w + d + i + " -I " + H + " .claude fake 1"
-    if not blocked(c):
-        bad.append("OVERBLOCK-LOST " + repr(c))
-# 3. the mention control: a SCRIPT in interpreter position keeps its argument an argument.
-for w, d, s in itertools.product(ENV_WRAP + OTHER_WRAP, DECOY, SCRIPT):
-    c = w + d + "python3 " + s + " " + H
-    if blocked(c):
+# 1. EVERY composition yields a decision. The guard is unconditional, so an exception is
+#    a crashed hook, which writes no decision at all and reads as ALLOW.
+for w, l, p, tl in itertools.product(WRAP, LEAD, PROG, TAIL):
+    if isinstance(verdict(w + l + p + tl), Exception):
+        bad.append("CRASH " + repr(w + l + p + tl))
+
+# 2. A word only an assignment-READING wrapper would make inert is a PROGRAM to every
+#    wrapper that does no such reading. This is what the fail-open repair would have lost.
+for w in ["timeout 5 ", "nice -n 5 ", "doas ", "env timeout 5 ", "timeout -k 1 5 ",
+          "sudo timeout 5 "]:
+    c = w + "python3=shim -I " + H + " .claude fake 1"
+    if verdict(c) is not True:
+        bad.append("LITERAL-MISS " + repr(c))
+
+# 2b. The decoy family is CLOSED, under every wrapper: the second reading drops the
+#     assignment-shaped candidate and finds the interpreter behind it.
+#     Only the WRAPPED spellings, for the two decoys whose name is not a shell
+#     identifier: unwrapped, `python3.foo=decoy python3 -I <helper>` is not an assignment
+#     to the shell at all -- it RUNS a program literally named `python3.foo=decoy`, and
+#     the helper is that program's argument. origin/main reads it the same way.
+for w, d in itertools.product([x for x in WRAP if x],
+                              ["python3=decoy ", "python3.foo=decoy ",
+                               "/usr/bin/python3=decoy ", "python3=d python3=e "]):
+    c = w + d + "python3 -I " + H + " .claude fake 1"
+    if verdict(c) is not True:
+        bad.append("DECOY-OPEN " + repr(c))
+for d in ["python3.foo=decoy ", "/usr/bin/python3=decoy "]:
+    c = d + "python3 -I " + H + " .claude fake 1"
+    if verdict(c) is not False:
+        bad.append("BARE-NONIDENT-BLOCKED " + repr(c))
+
+# 3. A BARE assignment prefix is the shell's own grammar, so the command is the word after
+#    it: the helper as that command's script blocks, as its argument does not.
+if verdict("python3=decoy python3 -I " + H + " .claude fake 1") is not True:
+    bad.append("BARE-PREFIX-MISS")
+if verdict("python3=decoy python3 safe.py " + H) is not False:
+    bad.append("BARE-PREFIX-FALSE")
+
+# 4. The MENTION contract: a python-prefixed script keeps its argument an argument, and a
+#    shape appearing past the command is data.
+for w, s in itertools.product(WRAP, ["python_tool.py", "python_tool", "safe.py"]):
+    c = w + "python3 " + s + " " + H
+    if verdict(c) is not False:
         bad.append("MENTION-BLOCKED " + repr(c))
-# SENTINEL-DELIMITED: the module under test writes its own diagnostics to stdout, so
-# a bare capture reads one of those as a finding. Only the text after the marker
-# is ours.
-print("DECOY-RESULT:" + ("|".join(bad[:8]) if bad else "clean"))
+# ...and UNWRAPPED, where the command word decides, a trailing shape is plain data.
+for s in ["printf '%s' ", "echo ", "cat "]:
+    c = s + "python3=shim " + H
+    if verdict(c) is not False:
+        bad.append("TRAILING-SHAPE-BLOCKED " + repr(c))
+
+# 5. ...and the guard's core contract is untouched by any of it.
+for c, want in ((("python3 -I " + H + " .claude fake 1"), True),
+                (("${P} -I " + H + " .claude fake 1"), True),
+                (("cat " + H), False),
+                ("$EDITOR notes.txt", False)):
+    if verdict(c) is not want:
+        bad.append("CORE " + repr(c))
+
+print("DECOY-RESULT:" + ("|".join(bad[:6]) if bad else "clean"))
 PY
 )"; then
     DECOY_OUT="${DECOY_OUT##*DECOY-RESULT:}"
     if [[ "$DECOY_OUT" == clean ]]; then
-        ok "generated: 84 decoy spellings block, 96 script spellings stay mentions"
+        ok "generated: 1296 decoy compositions decide, and the family's invariants hold"
     else
-        no "generated decoy grid" "$DECOY_OUT"
+        no "generated decoy sweep" "$DECOY_OUT"
     fi
 else
-    no "generated decoy grid" "harness failed to run"
+    no "generated decoy sweep" "harness failed to run"
 fi
 unset DECOY_OUT
 

@@ -4321,8 +4321,70 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             # an interpreter named as another script's ARGUMENT both block). It needs
             # per-flag arity, which this file does not carry, and it involves no
             # expansion, so it is not #553's to close (codex, #553).
+            # ...and this search is origin/main's, UNFILTERED, which is a decision rather
+            # than an omission. Excluding assignment-shaped words looked free -- an
+            # assignment is not an interpreter -- but only a wrapper that READS
+            # `NAME=value` makes one, and `timeout`, `nice` and `doas` execute a PATH entry
+            # literally named `python3=shim`. Excluding them was therefore a fail-OPEN, and
+            # a NEW one: origin/main blocks that spelling.
+            #
+            # Eleven rules were written and measured to keep the exclusion and buy the
+            # spelling back -- skipping by env-name adjacency, bounding it to an assignment
+            # REGION, walking to command position, three interpreter-name tests, an
+            # operand-slot rule for `flock`/`chroot`, and re-asking both readings -- and
+            # each closed one spelling by opening another. Every one of them CHOSE a
+            # reading, and choosing needs per-flag ARITY (`flock -w 1 <file>` puts the
+            # operand a word further along than `flock -n <file>`), which this file
+            # carries no table for by design. The choice is not decidable from the text
+            # either: `env python3 python3 <helper>` is a decoy in front of an
+            # interpreter or an interpreter running a script NAMED `python3`, spelled
+            # identically -- so no rule that picks one of them can be right.
+            #
+            # What closes the decoy is therefore not a better CHOICE but a second
+            # READING, the same answer this file gives expansions: when the candidate
+            # the search lands on is ASSIGNMENT-SHAPED -- the only shape a decoy can
+            # wear and still be mistaken for an interpreter -- the segment is re-asked
+            # ONCE without it. Neither reading is preferred and a hit in either blocks,
+            # so the ambiguity resolves fail-CLOSED and no arity is needed:
+            # `env python3=decoy python3 -I <helper>` blocks through the second reading
+            # while `timeout 5 python3=shim -I <helper>` -- where the assignment shape is
+            # a real PATH entry that `timeout` executes literally -- still blocks through
+            # the first. Excluding the shape outright, which was the other way to answer
+            # the decoy, loses that second command entirely: it is a NEW fail-open on a
+            # spelling origin/main blocks.
+            #
+            # Strictly ADDITIVE, so it cannot open a hole -- every verdict it changes is
+            # block-ward -- and bounded: it fires only on an assignment-shaped candidate,
+            # drops exactly one word, and is charged to the same token budget as any
+            # other re-entry.
+            #
+            # ACCEPTED OVER-BLOCK, and the only one it costs: a READ whose argument names
+            # a helper, behind a wrapper, behind an assignment whose basename starts with
+            # `python` -- `env python3=cfg grep python3 <helper>` blocks where
+            # origin/main allows. That is the trade this guard takes everywhere else and
+            # the direction it is documented to prefer.
+            #
+            # NOT a candidate LOOP over every python-shaped word. That is the
+            # per-candidate script repair the residual above already records as tried and
+            # withdrawn: it breaks the execution-versus-mention contract on `python3 -c x`
+            # and on an interpreter named as another script's ARGUMENT. One conditional
+            # re-ask closes the decoy without reopening either (codex, #553).
             pyi = next((i for i, t in enumerate(words)
-                        if _bn(t).startswith("python") and not _skippable(t)), None)
+                        if _bn(t).startswith("python")), None)
+            if pyi is not None and "=" in words[pyi]:
+                # A bare `=` test, NOT `_skippable`. `_skippable` recognises only a shell
+                # IDENTIFIER assignment (`[A-Za-z_][A-Za-z0-9_]*=`), and `env` accepts a
+                # far wider operand -- `env python3.foo=decoy python3 -I <helper>` sets a
+                # variable named `python3.foo` and runs the real interpreter, and the
+                # narrower test raised no second reading for it (codex, #553). What makes
+                # a word a decoy here is that a wrapper MIGHT read it as an assignment,
+                # and every such word carries an `=`. Widening can only add readings, and
+                # a reading can only add a block.
+                _alt = " ".join(shlex.quote(_t) for _i, _t in enumerate(words)
+                                if _i != pyi)
+                _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
         else:
             if cw is not None and _bn(cw).startswith("python"):
                 pyi = words.index(cw)

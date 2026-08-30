@@ -2221,8 +2221,12 @@ def _cmdpos_receiver_in_raw(text):
                 and _m.group(1) and not _m.group(1)[-1].isspace())
         _skip_target = _seen_prefix = False
         _words = _m.group(1).split()
-        _last_word = _words[-1] if _words else None
-        for w in _words:
+        # BY INDEX, not by identity. `w is _last_word` looked right and was not: CPython
+        # interns short strings, so a leading `!` and a trailing `!` are the SAME object and
+        # the cut check fired on the wrong word -- `! grep -n 'rm -rf src' !{a,b} <(echo pat)`
+        # matched on the leading `!` prefix and blocked a read-only grep.
+        _last_i = len(_words) - 1
+        for _i, w in enumerate(_words):
             # A BACKSLASH counts with the quotes: bash joins `X=foo\ bar` into ONE
             # assignment word, and whitespace-splitting cuts it in two exactly as a quoted
             # value is cut. Same exit, same reason -- knowing where the word really ends is
@@ -2237,6 +2241,10 @@ def _cmdpos_receiver_in_raw(text):
                     return True               # `> "/tmp/a b"` -- see the note below
                 continue
             if _REDIR_RE.fullmatch(w):
+                # NO CUT CHECK HERE. A process substitution ends its own run in a bare `<`
+                # or `>` followed by `(` BY CONSTRUCTION, so testing it here fired on every
+                # such command -- `grep -n 'rm -rf src' file{1,2} <(echo pat)` included. A
+                # redirect operator is never a truncated command word.
                 _skip_target = _seen_prefix = True
                 continue
             _bare = re.split(r"[<>]", w, 1)[0]        # `command>/dev/null` is a prefix too
@@ -2272,6 +2280,23 @@ def _cmdpos_receiver_in_raw(text):
                 # refusing on that blocked a read-only grep.
                 if _quoted:
                     return True
+                if (_cut and _i == _last_i
+                        and not _ASSIGN_RE.match(w) and not _REDIR_RE.match(w)):
+                    # ...and the CUT check belongs here too, not only past the branches. A
+                    # truncated command word can look like a prefix: `/tmp/only-shell/!(nope)`
+                    # is cut to `/tmp/only-shell/!`, whose basename `!` IS a prefix word, so
+                    # the walk continued past it and never asked whether the run ended in an
+                    # expansion. With extglob on, bash resolves that word to whatever the
+                    # directory holds.
+                    #
+                    # NOT for an ASSIGNMENT or a REDIRECTION, though. Neither is ever the
+                    # command word, so an expansion in its value or target says nothing
+                    # about what runs: `X=foo{a,b} grep -n 'rm -rf src' <(echo pat)` and
+                    # `</tmp/${name} grep -n 'rm -rf src' <(echo pat)` are read-only greps,
+                    # and firing here blocked both. A truncated command word never starts
+                    # with `<` or `>`, so the exemption cannot hide one. The command is
+                    # whatever follows, and the walk goes on to ask about that.
+                    return True
                 _seen_prefix = True
                 continue
             if _basename(re.split(r"[<>]", w, 1)[0]) in _OPERAND_WRAPPERS:
@@ -2296,7 +2321,7 @@ def _cmdpos_receiver_in_raw(text):
             b = _basename(re.split(r"[<>]", w, 1)[0])
             if b in _CMDPOS_RECEIVERS or _CMDPOS_INTERP_RE.fullmatch(b):
                 return True
-            if _cut and w is _last_word:
+            if _cut and _i == _last_i:
                 return True               # the command word ran into an expansion
             break
     return False

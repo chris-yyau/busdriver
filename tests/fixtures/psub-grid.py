@@ -102,7 +102,23 @@ for _live in ("source</dev/stdin", ".</dev/stdin", "lldb-19</dev/stdin",
     if not cmdword.is_file_mod(PAD + "; " + _cmd + "; " + PAD):
         bad.append("allowed active (attached redirect): " + _cmd)
 
-for _inert in ("grep -n 'rm -rf src' foo:bash <(echo pat)",
+# IDENTITY vs INDEX: CPython interns short strings, so a leading `!` prefix and a trailing
+# truncated `!` are the SAME object. `w is _last_word` fired on the leading one and blocked
+# a read-only grep; the check compares positions now.
+#
+# This case DOES discriminate, measured rather than assumed: rebuilding the module with the
+# identity comparison restored classifies it True, the index comparison False. (Comparing
+# against the pre-feature commit proves nothing -- the cut check does not exist there at
+# all, so it allows for an unrelated reason.)
+#
+# ...and an ASSIGNMENT is never the command word, so an expansion in its VALUE says nothing
+# about what runs.
+for _inert in ("! grep -n 'rm -rf src' !{a,b} <(echo pat)",
+               "! grep -n 'rm -rf src' <(echo pat)",
+               "X=foo{a,b} grep -n 'rm -rf src' <(echo pat)",
+               "</tmp/${name} grep -n 'rm -rf src' <(echo pat)",
+               "2>/tmp/${name} grep -n 'rm -rf src' <(echo pat)",
+               "grep -n 'rm -rf src' foo:bash <(echo pat)",
                "grep -n 'rm -rf src' foo@python3.12 <(echo pat)",
                # a `${VAR}` reference is not a brace EXPANSION -- no `..` and no `,`
                'grep -n "rm -rf src" "${notes}" <(echo pat)',
@@ -205,6 +221,12 @@ for _inert in ("grep -n 'rm -rf src' bash/notes.txt <(echo pat)",
 # OPERAND-TAKING WRAPPERS put a positional operand between themselves and the command, and
 # EXTGLOB command words expand to a shell before one exists -- the run regex splits on `(`,
 # so it cannot see the second at all.
+# ...while an expansion in the COMMAND word behind an assignment prefix still counts.
+n += 1
+if not cmdword.is_file_mod("cat < <(printf rm" + chr(92) + " -rf" + chr(92)
+                           + " src) | X=1 ba{s..s}h"):
+    bad.append("allowed active: assignment prefix before a brace-expanded receiver")
+
 for _live in ("flock /tmp/l unshare", "chroot /r unshare",
               "su root -c :", "/bin/ba+(s)h", "/bin/ba@(s)h",
               # BRACE EXPANSION, which the run regex also splits before the unresolved
@@ -232,7 +254,11 @@ if not cmdword.is_file_mod("grep -n 'rm -rf src' --label=bash <(echo pat)"):
 import random                                                          # noqa: E402
 
 RNG = random.Random(20260830)
-TRANSPORT_F = ["%s < <(%%s)", "%s <(%%s)", "cat < <(%%s) | %s", "cat < <(%%s) |%s"]
+# BOTH DIRECTIONS. `%s` is the receiver, `%%s` the payload -- and for the output forms the
+# payload is the OUTER command, which is what makes them the mirror image rather than a
+# spelling of the same thing.
+TRANSPORT_F = ["%s < <(%%s)", "%s <(%%s)", "cat < <(%%s) | %s", "cat < <(%%s) |%s",
+               "%%s > >(%s)", "%%s 2> >(%s)", '%%s > "">(%s)', "%%s >(%s)"]
 RECEIVERS = ["bash", "sh", "python3", "perl5.34", "source /dev/stdin", ". /dev/stdin",
              "unshare", "lldb-19", "$SHELL", "b$(printf as)h", "/bin/ba[s]h",
              "/bin/ba+(s)h", "ba{s..s}h", "b" + chr(92) + "a" + chr(92) + "s"
@@ -248,8 +274,16 @@ prop_bad = []
 for _ in range(2000):
     recv, pre, wrap = RNG.choice(RECEIVERS), RNG.choice(PREFIXES), RNG.choice(WRAPS)
     tf = RNG.choice(TRANSPORT_F)
-    # a prefix only makes sense in front of a command, i.e. on the piped forms
-    cmd = (tf % (pre + recv)) % PAYLOAD if "|" in tf else (tf % recv) % PAYLOAD
+    # a prefix only makes sense in front of a command word, i.e. on the piped and output
+    # forms; the input forms put the receiver first, where a prefix would be the command.
+    #
+    # The direction is read from where `%s` SITS, not from `tf.split("%s")[0]`: every
+    # template also carries the escaped payload placeholder `%%s`, and splitting on `"%s"`
+    # matches inside THAT first, returning `"%"` for every output template -- so they never
+    # contained a `>` by this test and `pre` was silently dropped, leaving prefixed output
+    # receivers unexercised while the comment claimed otherwise.
+    _recv = (pre + recv) if ("|" in tf or tf.rstrip().endswith(">(%s)")) else recv
+    cmd = (tf % _recv) % PAYLOAD
     cmd = wrap % cmd
     if not cmdword.is_file_mod(cmd):
         prop_bad.append(cmd)

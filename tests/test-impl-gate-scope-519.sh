@@ -95,8 +95,8 @@ fi
 # ON EXIT, not merely at the end of the forge section. Every forge case hands the gate a
 # marker-write as TEXT; a malformed one can be quoted so that THIS shell runs it instead
 # (one was), and an interrupt or an early exit before that section finishes would leave a
-# live gate bypass behind in the checkout. Drained through the audited path, which logs a
-# `skip-marker-cleared` event; removal only ever makes the next gate STRICTER.
+# live gate bypass behind in the checkout with nothing said about it. The check REPORTS and
+# never deletes -- see the note inside `_suite_cleanup` for why every ownership test failed.
 _suite_cleanup() {
     local rc=$?
     # REPORT, NEVER DELETE. Earlier cuts drained the marker here, which meant deciding

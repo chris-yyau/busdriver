@@ -2086,7 +2086,29 @@ def _glob_helper_targeted(word, deep=None):
     # whose discarded directory is a literal naming the folder both helpers live in.
     if word and all(c == "*" for c in word):
         return None
+    # #776: digit-negation-only glob is not helper evidence (abandoned scan).
+    if word and _DIGIT_NEGATION_ONLY_RE.match(word):
+        return None
     return _glob_helper(word, deep)
+
+
+# Whole-word POSIX/bash digit-negation globs (#776). Optional stars either side.
+_DIGIT_NEGATION_ONLY_RE = re.compile(r"^\*?\[(?:!|\^)0-9\]\*?$")
+
+
+def _scrub_digit_negation_globs(text):
+    """Replace whole-token digit-negation globs with a bare star (#776).
+
+    `_class_variants` rewrites [!0-9] into a letter/punct class that still matches every
+    helper, so a whole-word release in `_glob_helper_targeted` is not enough once the
+    abandoned probe expands classes. Scrubbing before that expansion leaves the same
+    residual as a bare star (#573): structured `_glob_helper` is untouched.
+    """
+    parts = []
+    # Keep delimiters so token boundaries survive; only a complete token is scrubbed.
+    for w in re.split(r"([\s;&|()<>]+)", text):
+        parts.append("*" if _DIGIT_NEGATION_ONLY_RE.match(w) else w)
+    return "".join(parts)
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
@@ -3643,6 +3665,8 @@ def _abandoned_scan_probe(text):
     hit = _names_helper(text)
     if hit:
         return hit
+    # #776: scrub before class expansion — see _scrub_digit_negation_globs.
+    text = _scrub_digit_negation_globs(text)
     # One decision for the whole scan, not one per candidate: a short command gets the full
     # reading family on every word it yields, while a payload built to be expensive gets the
     # base reading only. Deciding it here keeps the cost tied to what arrived rather than to

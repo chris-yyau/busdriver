@@ -586,7 +586,10 @@ try:
         optimize = optimize_level(p)
         memo_key = (src_digest, frozenset(names), optimize)
         if memo_key not in _trusted_memo:
-            if _trusted_compile_bytes + len(src_bytes) > _MAX_TRUSTED_COMPILE_BYTES:
+            # trusted_bodies compiles once per allowlisted co_filename, so charge
+            # source bytes * name count — not a single pass — against the budget.
+            compile_charge = len(src_bytes) * max(len(names), 1)
+            if _trusted_compile_bytes + compile_charge > _MAX_TRUSTED_COMPILE_BYTES:
                 sys.stderr.write(
                     "gate-integrity: FAIL — trusted sibling compile input exceeds %d-byte bound\n"
                     % _MAX_TRUSTED_COMPILE_BYTES
@@ -594,7 +597,7 @@ try:
                 raise SystemExit(1)
             # Charge and memoize before/through failure so a syntax-error source
             # cannot be recompiled unpaid across thousands of cache paths.
-            _trusted_compile_bytes += len(src_bytes)
+            _trusted_compile_bytes += compile_charge
             try:
                 _trusted_memo[memo_key] = ("ok", trusted_bodies(src_bytes, names, optimize))
             except Exception as exc:

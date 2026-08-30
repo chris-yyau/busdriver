@@ -1048,7 +1048,7 @@ authorize_or_block() {   # <target_oid> <operand as written>
     if [ "$_spec_lc" != "$_oid_lc" ]; then
         if [ "$_mrc" -eq 0 ]; then
             block_emit "BLOCKED: a $MARKER_REL marker is present, but this merge names '$spec' — a symbolic ref that git resolves again when the command runs, so the authorization could not be bound to the ref move it produces. Name the object id instead, which resolves to itself:
-  git merge $oid
+  git merge --ff-only $oid
 The marker must then read: PASS-FF refs/heads/$PROTECTED $oid"
             exit 0
         fi

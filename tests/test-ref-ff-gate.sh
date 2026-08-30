@@ -195,8 +195,15 @@ git -C "$REPO" config --unset pull.ff
 # as assurance they cannot give; this pins the measurement behind the first.
 git -C "$REPO" remote add fork "$ORIGIN" >/dev/null 2>&1
 git -C "$REPO" fetch -q fork >/dev/null 2>&1
-_rc=0; git -C "$REPO" symbolic-ref --short refs/remotes/fork/HEAD >/dev/null 2>&1 || _rc=1
-assert_true "a plain fetch gives a new remote its own HEAD (so it declares main)" "$_rc"
+# Ask the remote for its published HEAD explicitly rather than relying on fetch
+# to write it: `fetch` only began creating refs/remotes/<name>/HEAD in git 2.46,
+# and this repository declares no git minimum, so an older git would fail this
+# measurement rather than make it. `set-head --auto` queries the same published
+# HEAD on every version, which is the thing being measured.
+git -C "$REPO" remote set-head fork --auto >/dev/null 2>&1
+_head=$(git -C "$REPO" symbolic-ref --short refs/remotes/fork/HEAD 2>/dev/null || true)
+_rc=0; [[ "$_head" == "fork/main" ]] || _rc=1
+assert_true "a fork publishes the same HEAD as origin (it declares main too)" "$_rc"
 git -C "$REPO" remote remove fork >/dev/null 2>&1
 
 # Two operations in one command: the opener is a NO-OP the gate would rightly

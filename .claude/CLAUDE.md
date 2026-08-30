@@ -30,7 +30,7 @@ docs/            Reference docs and examples
 
 ## Enforcement Gates (Hook-Driven)
 
-Seven gates enforced by PreToolUse hooks. All fail-CLOSED **on error** — an unresolvable input, an unparseable command, a failed check all block. That is a guarantee about the decisions a gate reaches, not — for most of them — about it reaching one: the runner kills a hook that exceeds its timeout, and a killed hook emits nothing, so the command proceeds. All seven rely on staying comfortably inside that budget, and bound their own work to do so. Making the deadline itself a block belongs with the launcher rather than in each gate — ADR 0050 records a self-deadline that was built inside one gate and removed, and why. Escape hatches use `.local` files.
+Eight gates enforced by PreToolUse hooks. All fail-CLOSED **on error** — an unresolvable input, an unparseable command, a failed check all block. That is a guarantee about the decisions a gate reaches, not — for most of them — about it reaching one: the runner kills a hook that exceeds its timeout, and a killed hook emits nothing, so the command proceeds. All eight rely on staying comfortably inside that budget, and bound their own work to do so. Making the deadline itself a block belongs with the launcher rather than in each gate — ADR 0050 records a self-deadline that was built inside one gate and removed, and why. Escape hatches use `.local` files.
 
 | Gate | Hook Script | Blocks | Skip With |
 |------|------------|--------|-----------|

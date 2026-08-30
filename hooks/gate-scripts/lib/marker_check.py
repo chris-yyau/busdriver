@@ -3363,9 +3363,13 @@ def _piped_shell_producers(pairs):
             pass                          # a normalized newline/comment between | and the shell
         else:
             if last is not None:
-                # #776: omit digit-negation-only segments — case-pattern residue after a `|`
-                # mis-split, not an executable glob. Abandoned scan of producers stays
-                # fail-closed for real helper text; eval/python paths are untouched.
+                # #776: omit digit-negation-only segments. A `|` inside a case pattern is
+                # misread as a pipe; when a later pure-star catch-all extends `last`, the
+                # digit-negation alternative is joined into producer TEXT and class-expanded
+                # into a helper match. A segment that is ONLY that glob cannot carry a
+                # helper-name literal — abandoning it removes false evidence, not real
+                # invocations (`printf <helper> | …` keeps the printf segment). Marker-check
+                # helper path only; cmdword has no abandoned helper twin for this residue.
                 out.append(" ; ".join(p[1] for p in pairs[start:last]
                                   if not _is_digit_negation_only_segment(p[1])))
             start, last, fed = i, None, False

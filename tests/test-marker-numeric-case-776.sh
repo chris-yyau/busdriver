@@ -41,6 +41,15 @@ else
   no "#776 digit-negation glob as python operand still blocks" "got=${got:-<empty>}"
 fi
 
+
+# Producer text that names a helper still blocks when the receiver is digit-negation-only.
+PIPE_CMD=$(python3 -c 's=chr(42);h="lease"+"_"+"slot"+".py";print("printf \"python3 hooks/gate-scripts/lib/"+h+" x\" | "+s+"[!0-9]"+s)')
+got=$(verdict "$PIPE_CMD")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 printf helper | digit-negation receiver still blocks"
+else
+  no "#776 printf helper | digit-negation receiver still blocks" "got=${got:-<empty>}"
+fi
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

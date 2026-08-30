@@ -910,6 +910,16 @@ run_gate "unproven cd to another repo → cannot tell which repo → block" \
 # the oid. A symbolic ref would be re-resolved when the command runs, leaving the
 # authorization bound to the gate's observation rather than the ref move.
 write_marker "PASS-FF refs/heads/main $FEATURE_OID"
+# Arithmetic in a merge option value reads as a COMPANION and is refused, even on
+# the authorized route. Deliberate, not an oversight: `$( (cmd) )` is a command
+# substitution wrapping a subshell and is spelled `$((cmd))` without the space, so
+# skipping every `$((` would stop scanning a real command body. An over-count
+# blocks; an under-count is a bypass. `--message` has no effect on a fast-forward
+# anyway, so the refusal costs nothing real.
+run_gate "arithmetic in a merge option value is refused as a companion" \
+    block "git merge --ff-only --message=\"\$((1+2))\" $FEATURE_OID" \
+    "runs something else ALONGSIDE a merge/pull"
+
 run_gate "a marker without --ff-only does not authorize the merge" \
     block "git merge $FEATURE_OID" "does not carry --ff-only"
 run_gate "exact PASS-FF <ref> <oid> marker authorizes the fast-forward" \

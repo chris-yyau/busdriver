@@ -1550,7 +1550,18 @@ def _is_sub_opener(cmd, i, n):
     live process sub (fail-OPEN, verified) — strictly worse for a gate (mirrors the
     strip_continuations tradeoff). The immediate '(' also separates a process sub
     from a plain '>'/'<' redirect (a redirect is followed by a filename or space).
-    Split out of _command_substitutions purely to reduce its branch count."""
+    Split out of _command_substitutions purely to reduce its branch count.
+
+    `$((` is DELIBERATELY read as a substitution opener too, though it is usually
+    arithmetic. The two are genuinely ambiguous in this position: `$( (cmd) )` is a
+    command substitution wrapping a subshell and is spelled `$((cmd))` when written
+    without the space, so a rule that skipped every `$((` would stop scanning a
+    real command body. Counting arithmetic as a substitution only ever OVER-counts,
+    and this module's standing tradeoff applies -- an over-count BLOCKS, an
+    under-count is a bypass. The visible cost is that arithmetic inside a merge
+    option value reads as a companion command and is refused; `--message` has no
+    effect on a fast-forward in the first place, so nothing real is lost.
+    """
     if not (i + 1 < n and cmd[i + 1] == '('):
         return False
     c = cmd[i]

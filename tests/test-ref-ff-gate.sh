@@ -49,6 +49,11 @@ setup_repo() {
         git init -q -b main "$ORIGIN"
         cd "$ORIGIN"
         git config user.email t@t; git config user.name t
+        # HERMETIC: the operator's global config may sign commits and tags
+        # with an SSH key. Signing prompts for a passphrase, which fails in a
+        # non-interactive run, and the fixture then builds an empty repo whose
+        # every later assertion is meaningless. Nothing here is testing signing.
+        git config commit.gpgsign false; git config tag.gpgsign false
         echo base > f; git add f; git commit -qm base
         # One more commit on origin/main — the "already landed through the gated
         # PR pipeline" content the pull arm must let through.
@@ -57,6 +62,11 @@ setup_repo() {
         git clone -q "$ORIGIN" "$REPO"
         cd "$REPO"
         git config user.email t@t; git config user.name t
+        # HERMETIC: the operator's global config may sign commits and tags
+        # with an SSH key. Signing prompts for a passphrase, which fails in a
+        # non-interactive run, and the fixture then builds an empty repo whose
+        # every later assertion is meaningless. Nothing here is testing signing.
+        git config commit.gpgsign false; git config tag.gpgsign false
         # Put local main one commit BEHIND origin/main so a pull/merge from it is
         # a genuine fast-forward rather than a no-op.
         git reset -q --hard HEAD~1
@@ -560,6 +570,227 @@ run_gate "HOME on a read-only command is not this gate's business" \
     allow "HOME=/tmp/x git log"
 run_gate "merge --squash moves no ref (pre-commit-gate owns the commit)" \
     allow "git merge --squash feature"
+# An option this parser could not read may be the one that decides the shape, so
+# the out-of-scope exit must not swallow it: `MODE=--ff-only` is applied LAST by
+# git, turning a merge-commit shape back into a fast-forward.
+# shellcheck disable=SC2016  # the literal $MODE IS the input under test
+run_gate "an unreadable option beside --no-ff does not settle the shape" \
+    block 'git merge --no-ff $MODE feature' "cannot be resolved"
+# A skipped option VALUE that may expand is not one word: `MSG='note B'` makes
+# git see two heads, reduce them, and fast-forward somewhere the marker never
+# named.
+# shellcheck disable=SC2016  # the literal $MSG IS the input under test
+run_gate "a value that may expand poisons the operand list" \
+    block 'git merge --ff-only --message $MSG feature' "cannot be resolved"
+# ...in the ATTACHED spelling too, and through brace expansion, which carries no
+# substitution character at all.
+# shellcheck disable=SC2016  # the literal $MSG IS the input under test
+run_gate "...and its attached spelling" \
+    block 'git merge --ff-only --message=$MSG feature' "cannot be resolved"
+run_gate "...and a brace expansion, which has no \$ to notice" \
+    block 'git merge --ff-only --message {note,B} feature' "cannot be resolved"
+run_gate "...and its SEQUENCE form, which the comma pattern missed" \
+    block 'git merge --ff-only --message {A..B} feature' "cannot be resolved"
+run_gate "...and pathname expansion, illegal in a ref name anyway" \
+    block 'git merge --ff-only --message * feature' "cannot be resolved"
+# An ORDINARY operand can brace-expand into OPTIONS, so the out-of-scope exit
+# must not trust the shape it read either.
+run_gate "an operand that may expand into options is unresolvable" \
+    block 'git merge --no-ff {--ff-only,--no-edit} feature' "cannot be resolved"
+# ...and a PARTIALLY quoted word is not a quoted one: bash still expands the bare
+# braces in front of the empty quotes.
+run_gate "a partially quoted brace word still expands" \
+    block 'git merge --no-ff {--ff-only,--no-edit}"" feature' "cannot be resolved"
+# With extglob on, @(...) expands to a matching pathname, so the word can BECOME
+# an option the parser never saw.
+run_gate "an extglob word is unresolvable too" \
+    block 'git merge --no-ff @(--ff-only) feature' "cannot be resolved"
+# ...while a value bash will NOT expand is one word, and an out-of-scope --no-ff
+# merge stays out of scope. Quoting and escaping both count, and neither
+# "raw == token" nor "wholly quoted" gets all three of these right.
+# shellcheck disable=SC2016  # the literal $MSG IS the input under test
+run_gate "a double-quoted substitution value does not split" \
+    allow 'git merge --no-ff --message="$MSG" feature'
+run_gate "...nor does a quoted glob" \
+    allow 'git merge --no-ff --message "*" feature'
+run_gate "...nor an escaped one" \
+    allow 'git merge --no-ff --message \* feature'
+# shellcheck disable=SC2016  # the literal $'note' IS the input under test
+run_gate "...nor ANSI-C quoting, whose \$ opens a quote rather than a value" \
+    allow "git merge --no-ff --message \$'note' feature"
+# The exception to "quoted means one word": "\$@" and "\${arr[@]}" expand to as
+# many words as there are elements, so a value that LOOKS safely quoted still
+# adds merge heads.
+# shellcheck disable=SC2016  # the literal "$@" IS the input under test
+run_gate 'a "$@" value splits despite the quotes' \
+    block 'git merge --no-ff --message "$@" feature' "cannot be resolved"
+# shellcheck disable=SC2016  # the literal "${arr[@]}" IS the input under test
+run_gate '...as does "${arr[@]}"' \
+    block 'git merge --no-ff --message "${arr[@]}" feature' "cannot be resolved"
+# shellcheck disable=SC2016  # the literal "${@}" IS the input under test
+run_gate '...and the braced spellings "${@}" / "${@:2}"' \
+    block 'git merge --no-ff --message "${@}" feature' "cannot be resolved"
+# ...but [@] counts only as the parameter's own SUBSCRIPT. This is one word
+# whatever MSG holds, and a pattern that looked for [@] anywhere refused it.
+# shellcheck disable=SC2016  # the literal "${MSG:-note[@]}" IS the input under test
+run_gate '...while "${MSG:-note[@]}" is one word, not an array' \
+    allow 'git merge --no-ff --message "${MSG:-note[@]}" feature'
+# EVERY indirection is plural, the plain-looking "${!name}" included — see the
+# case below. These two are the explicit spellings.
+# shellcheck disable=SC2016  # the literal "${!P@}" IS the input under test
+run_gate '...and the indirections "${!P@}" / "${!arr[@]}"' \
+    block 'git merge --no-ff --message "${!P@}" feature' "cannot be resolved"
+# shellcheck disable=SC2016  # the literal "${!arr[@]}" IS the input under test
+run_gate '...including its subscript spelling' \
+    block 'git merge --no-ff --message "${!arr[@]}" feature' "cannot be resolved"
+# ...and the plain-looking one is plural TOO, because indirection picks its
+# target at run time: name='arr[@]' makes "${!name}" an array expansion, and the
+# gate cannot see that value.
+# shellcheck disable=SC2016  # the literal "${!name}" IS the input under test
+run_gate '...and "${!name}", whose target is chosen at run time' \
+    block 'git merge --no-ff --message "${!name}" feature' "cannot be resolved"
+# ANSI-C quoting PROCESSES backslash escapes, so an escaped quote does not close
+# it. Read as ordinary single quoting, the scanner closed at the escaped quote and
+# opened a fictitious one at the real close, hiding the unquoted $MODE behind
+# what looked like a quoted tail.
+# shellcheck disable=SC2016  # the literal escape IS the input under test
+run_gate "an escaped quote inside ANSI-C quoting does not close it" \
+    block "git merge --no-ff --message \$'a\\''\$MODE feature" "cannot be resolved"
+
+# A brace group expands when its OWN depth holds the delimiter, so nesting does
+# not hide it. Both of these expand; a flat pattern matched neither.
+run_gate "a nested brace expansion still expands" \
+    block 'git merge --ff-only --message {note,{B}} feature' "cannot be resolved"
+run_gate "...whichever side the nesting is on" \
+    block 'git merge --ff-only --message {{A},B} feature' "cannot be resolved"
+# ...but a metacharacter is not an expansion. Bash leaves an unmatched bracket,
+# a bare extglob paren and an endpoint-less sequence literal, and flagging every
+# occurrence blocked ordinary one-word arguments.
+# A `..` is a SEQUENCE only in bash's grammar for one: integer..integer or
+# char..char, with an optional integer increment. The rest stay literal.
+run_gate "a real sequence expands" \
+    block 'git merge --ff-only --message {1..5} feature' "cannot be resolved"
+run_gate "...and its character form" \
+    block 'git merge --ff-only --message {a..z} feature' "cannot be resolved"
+run_gate "...and one with an increment" \
+    block 'git merge --ff-only --message {1..9..2} feature' "cannot be resolved"
+# Removing quoted material must not make its NEIGHBOURS adjacent: bash leaves
+# these one literal word, and deleting the quotes synthesised `{a..b}`.
+run_gate "quoted material does not fuse the punctuation around it" \
+    allow 'git merge --no-ff --message {a."".b} feature'
+run_gate "...even when the quotes contain the dot" \
+    allow 'git merge --no-ff --message {a.".".b} feature'
+# Bash allows at most ONE sign in a sequence endpoint or increment.
+run_gate "a double-signed endpoint is not a sequence" \
+    allow 'git merge --no-ff --message {--1..2} feature'
+run_gate "...nor a double-signed increment" \
+    allow 'git merge --no-ff --message {1..3..--1} feature'
+# `$((...))` is ARITHMETIC — one word, and it runs nothing.
+# shellcheck disable=SC2016  # the literal $((1+2)) IS the input under test
+run_gate 'arithmetic expansion is not a command substitution' \
+    allow 'git merge --no-ff --message="$((1+2))" feature'
+
+run_gate "...while a multi-character range is literal" \
+    allow 'git merge --no-ff --message {ab..cd} feature'
+run_gate "...as is a non-ASCII character range" \
+    allow 'git merge --no-ff --message {é..ê} feature'
+# `${!}` is the braced spelling of `$!`, a special parameter, not an indirection.
+# shellcheck disable=SC2016  # the literal "${!}" IS the input under test
+run_gate 'the braced last-background-PID is one word' \
+    allow 'git merge --no-ff --message "${!}" feature'
+run_gate "...as is a mixed range" \
+    allow 'git merge --no-ff --message {1..x} feature'
+run_gate "...and a non-numeric increment" \
+    allow 'git merge --no-ff --message {1..3..x} feature'
+# ANSI-C quoting is literal too, substitutions included.
+run_gate "a substitution inside ANSI-C quoting is literal" \
+    allow "git merge --no-ff --message \$'\`x\`' feature"
+# The STAR indirections join on IFS — one word, like "\$*".
+# shellcheck disable=SC2016  # the literal "${!P*}" IS the input under test
+run_gate 'the star indirections are single words' \
+    allow 'git merge --no-ff --message "${!P*}" feature'
+# shellcheck disable=SC2016  # the literal "${!arr[*]}" IS the input under test
+run_gate '...including the subscript spelling' \
+    allow 'git merge --no-ff --message "${!arr[*]}" feature'
+
+# Any `[` with a later `]` is a glob. MEASURED on bash 3.2 with nullglob: `[]`,
+# `[!]` and `[z-a]` all expand to ZERO words, exactly like `*` — "matches
+# nothing" is not "is not a glob", because an unmatched pattern REMOVES its word.
+run_gate "an empty bracket class is still a glob" \
+    block 'git merge --ff-only --message [] feature' "cannot be resolved"
+run_gate "...as is a negated empty one" \
+    block 'git merge --ff-only --message [!] feature' "cannot be resolved"
+run_gate "...and a reversed range" \
+    block 'git merge --ff-only --message [z-a] feature' "cannot be resolved"
+# Arithmetic is one numeric word wherever it appears, quoted or not.
+# QUOTED arithmetic is one word. UNQUOTED is not: its result is a field like any
+# other and undergoes IFS splitting, so with IFS=1 the innocuous $((212)) becomes
+# the two words `2` and `2` — a second merge head.
+# shellcheck disable=SC2016  # the literal $((1+2)) IS the input under test
+run_gate 'quoted arithmetic expansion does not split' \
+    allow 'git merge --no-ff --message="$((1+2))" feature'
+# shellcheck disable=SC2016  # the literal $((212)) IS the input under test
+run_gate '...but the unquoted form is IFS-split' \
+    block 'git merge --ff-only --message $((212)) feature' "cannot be resolved"
+# ...but parentheses inside a nested parameter expansion are TEXT, not arithmetic
+# syntax, so the balance never closes; skipping to it swallowed the trailing $MSG.
+# shellcheck disable=SC2016  # the literal expansion IS the input under test
+run_gate 'an unbalanced arithmetic run is unreadable, not one word' \
+    block 'git merge --no-ff --message $((${X:-"("}))$MSG feature' "cannot be resolved"
+# ...and a QUOTED closer later in the word must not satisfy that balance either:
+# `${Y:+")"}` closes nothing, and counting it skipped past the real end.
+# shellcheck disable=SC2016  # the literal expansions ARE the input under test
+run_gate 'a quoted paren does not close an arithmetic run' \
+    block 'git merge --no-ff --message $((${X:-"("}))$MSG${Y:+")"} feature' \
+    "cannot be resolved"
+# `${!#}` indirects through a COUNT, so it names exactly one positional parameter.
+# shellcheck disable=SC2016  # the literal "${!#}" IS the input under test
+run_gate 'the count indirection is one word' \
+    allow 'git merge --no-ff --message "${!#}" feature'
+run_gate "...while a real class expands" \
+    block 'git merge --ff-only --message [ab] feature' "cannot be resolved"
+run_gate "...negated too" \
+    block 'git merge --ff-only --message [!a] feature' "cannot be resolved"
+run_gate "...and a forward range" \
+    block 'git merge --ff-only --message [a-z] feature' "cannot be resolved"
+
+run_gate "an unmatched bracket is literal, not a glob" \
+    allow 'git merge --no-ff --message [ feature'
+run_gate "...as is a bare paren with no extglob prefix" \
+    allow 'git merge --no-ff --message ( feature'
+run_gate "...and a sequence missing an endpoint" \
+    allow 'git merge --no-ff --message {a..} feature'
+
+# An option can betray the parser without changing the word COUNT: `--"$MODE"`
+# stays one word while becoming a DIFFERENT option, and with MODE=ff-only bash
+# hands git a later --ff-only that fast-forwards the merge reported out of scope.
+# shellcheck disable=SC2016  # the literal $MODE IS the input under test
+run_gate "an expansion in the option NAME is unresolvable" \
+    block 'git merge --no-ff --"$MODE" feature' "cannot be resolved"
+# A COMMAND SUBSTITUTION ends the analysis wherever it sits: its body is a whole
+# shell command, quotes included, so the inner quotes here close the outer one and
+# a single-state scanner reads the trailing $MSG as quoted.
+# shellcheck disable=SC2016  # the literal substitutions ARE the input under test
+run_gate "a command substitution makes the whole word unreadable" \
+    block 'git merge --no-ff --message="$(x='"'"'"'"'"')"$MSG"$(y='"'"'"'"'"')" feature' \
+    "cannot be resolved"
+
+# ...but only where bash would RUN it: single quotes make it a literal message.
+run_gate "a single-quoted substitution is a literal, not a command" \
+    allow "git merge --no-ff --message '\$(echo note)' feature"
+run_gate "...and so is a single-quoted backtick" \
+    allow "git merge --no-ff --message '\`date\`' feature"
+# A pending option VALUE is not an option NAME, however it is spelled. Checking
+# the name first read the literal value '-\$MSG' of --message as a dynamic option.
+run_gate "a value beginning with a dash is still a value" \
+    allow "git merge --no-ff --message '-\$MSG' feature"
+
+run_gate "...including its ANSI-C spelling" \
+    block "git merge --no-ff --\$'ff-only' feature" "cannot be resolved"
+# ...while QUOTING the WHOLE word disables both expansions, so it is a ref name.
+run_gate "a quoted brace word is a ref, not an expansion" \
+    block "git merge --ff-only '{note,B}'" "cannot resolve the merge target"
+
 run_gate "merge --no-ff makes a COMMIT — #622/#782's class, not this gate's" \
     allow "git merge --no-ff feature"
 # Unrecognized long options must not cancel correctly-read state: these are still

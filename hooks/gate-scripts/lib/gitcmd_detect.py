@@ -796,6 +796,328 @@ def _may_be_substitution(operand):
     return bool(operand) and ('$' in operand or '`' in operand)
 
 
+def _glob_expands(active):
+    """True iff `active` holds pathname expansion bash will actually perform.
+
+    The metacharacter alone is not the expansion. Bash leaves an UNMATCHED `[`
+    literal, and `(` opens an extglob group only behind one of `?*+@!` — so
+    `--message [` and `--message (` are ordinary one-word arguments, and flagging
+    every occurrence blocked them. `*` and `?` need no partner and always match.
+    """
+    if '*' in active or '?' in active:
+        return True
+    # The LAST closer is found once. Searching the remainder per opening character
+    # is quadratic on a word full of unmatched brackets, and this runs inside a
+    # 10s budget.
+    # The last closer of each kind, found ONCE. A `[` needs some `]` after it and
+    # an extglob `(` needs some `)`; searching the remainder per opening character
+    # is quadratic on a word of nothing but openers, inside a 10s budget.
+    #
+    # For brackets that IS the whole rule. Narrower ones were tried — requiring a
+    # non-empty class, rejecting a reversed range — on the reasoning that `[]`,
+    # `[!]` and `[z-a]` match nothing. MEASURED on bash 3.2 with `shopt -s
+    # nullglob`, all three expand to ZERO words, exactly like `*` and `?`:
+    #     []  argc=0     [!]  argc=0     [z-a]  argc=0
+    #     [   argc=1     (    argc=1     {a..}  argc=1
+    # "Matches nothing" is not "is not a glob": an unmatched pattern REMOVES its
+    # word, changing the operand count as surely as an extra match would. Only a
+    # `[` with no `]` after it is literal.
+    last_bracket = active.rfind(']')
+    last_paren = active.rfind(')')
+    for i, c in enumerate(active):
+        if c == '[' and last_bracket > i:
+            return True
+        if c == '(' and i and active[i - 1] in '?*+@!' and last_paren > i:
+            return True
+    return False
+
+
+_INT_RE = re.compile(r'[+-]?[0-9]+')
+
+
+def _is_brace_sequence(body):
+    """True iff `body` is a bash brace SEQUENCE: `{1..5}`, `{a..z}`, `{1..9..2}`.
+
+    Bash expands only integer-to-integer and single-ASCII-letter ranges, with an
+    optional integer increment. `{ab..cd}`, `{1..x}`, `{1..3..x}`, `{--1..2}` and
+    `{é..ê}` all stay literal — measured, argc=1 each — and accepting any `..`
+    between non-empty endpoints refused every one of them.
+    """
+    parts = body.split('..')
+    if len(parts) not in (2, 3):
+        return False
+    lo, hi = parts[0], parts[1]
+
+    # ASCII, at most ONE sign: `lstrip('-+')` accepted `--1`, which bash leaves
+    # literal, and `isdigit()` accepts non-ASCII digits bash does not.
+    def _int(v):
+        return bool(_INT_RE.fullmatch(v))
+
+    if len(parts) == 3 and not _int(parts[2]):
+        return False
+    if _int(lo) and _int(hi):
+        return True
+    return (len(lo) == 1 and len(hi) == 1 and lo.isascii() and hi.isascii()
+            and lo.isalpha() and hi.isalpha())
+
+
+def _brace_expands(active):
+    """True iff `active` contains a brace EXPANSION rather than literal braces.
+
+    The rule, not a pattern: a `{...}` group expands when its OWN nesting depth
+    holds a `,` or a `..`. Two flat regexes were tried and each missed the next
+    nesting — `{note,{B}}` and `{{A},B}` both expand, and neither matches a
+    pattern written for `{[^{}]*,[^{}]*}`. Depth-tracking ends that class instead
+    of extending it, and it keeps `@{upstream}` literal, which no ref-name test
+    could afford to lose.
+    """
+    open_at = []                       # per open brace: (index, comma?, `..` index)
+    i, n = 0, len(active)
+    while i < n:
+        c = active[i]
+        if c == '{':
+            if open_at:
+                open_at[-1][3] = True  # the parent now holds a nested brace
+            open_at.append([i, False, None, False])
+        elif c == '}':
+            if open_at:
+                start, comma, dots, nested = open_at.pop()
+                if comma:
+                    return True
+                # A sequence has single-token endpoints, so a frame containing a
+                # nested brace is never one. Skipping it also keeps this linear:
+                # slicing and splitting every frame's body made a word like
+                # `{..{..{..x}}}` quadratic inside a bounded budget.
+                if nested:
+                    pass               # NOT `continue`: the index advances below
+                # A SEQUENCE needs valid endpoints: bash leaves `{a..}`, `{..b}`
+                # and `{ab..cd}` literal, and accepting any closed group with a
+                # `..` blocked them. `{,a}` by contrast really does expand, so the
+                # comma form above takes no such check.
+                elif dots is not None and _is_brace_sequence(active[start + 1:i]):
+                    return True
+        elif open_at:
+            if c == ',':
+                open_at[-1][1] = True
+            elif c == '.' and i + 1 < n and active[i + 1] == '.':
+                open_at[-1][2] = i
+                i += 1
+        i += 1
+    return False
+
+
+def _quoted_multiword(raw, i):
+    """True iff the expansion at `raw[i]` yields MORE THAN ONE word even inside
+    double quotes.
+
+    The `@` forms do: `"$@"`, `"${@}"`, `"${@:2}"`, `"${arr[@]}"`. So does EVERY
+    `${!...}` indirection, including the plain-looking `"${!name}"` — its target
+    is chosen at run time, and `name='arr[@]'` makes it an array expansion. The
+    gate cannot see that value, so it does not guess: `"$*"` joins on IFS and
+    scalar forms are one word, but an indirection is treated as plural.
+
+    `[@]` counts ONLY as the parameter's own subscript. A pattern that looked for
+    it anywhere flagged `"${MSG:-note[@]}"`, which is one word whatever MSG holds.
+
+    Indexed rather than sliced: this runs at every `$` inside a quoted token, and
+    slicing the remainder each time made a token full of dollar signs quadratic —
+    a 64 KiB word is bounded, but copying it thousands of times is not free, and
+    the gate has a 10s budget to answer in.
+    """
+    n = len(raw)
+    if raw.startswith('$@', i):
+        return True
+    if not raw.startswith('${', i):
+        return False
+    j = i + 2
+    # `${!}` is the braced spelling of `$!`, the last background PID — a special
+    # parameter, not an indirection, and always one word.
+    if raw.startswith('${!}', i):
+        return False
+    if j < n and raw[j] == '!':
+        # `${!P*}` and `${!arr[*]}` join on IFS inside double quotes — one word,
+        # like `"$*"`. Every other indirection is plural or picks its target at
+        # run time (`name='arr[@]'` makes `"${!name}"` an array), so it is not.
+        j += 1
+        # `${!#}` indirects through `$#`, a count — always exactly one positional
+        # parameter, so one word.
+        if raw.startswith('#}', j):
+            return False
+        name = j
+        while j < n and (raw[j].isalnum() or raw[j] == '_'):
+            j += 1
+        if j > name and (raw.startswith('[*]', j) or raw.startswith('*}', j)):
+            return False
+        return True
+    if j < n and raw[j] == '@':
+        return True                    # ${@}, ${@:2}
+    name = j
+    while j < n and (raw[j].isalnum() or raw[j] == '_'):
+        j += 1
+    return j > name and raw.startswith('[@]', j)   # ${arr[@]}
+
+
+# Stands in for material bash will NOT expand — a quoted run, or an escaped
+# character — so that what surrounded it does not become adjacent. Deleting it
+# outright turned the literal `{a."".b}` into `{a..b}` and reported a sequence.
+# Any character outside every grammar this module inspects will do.
+_INERT = '\x01'
+
+
+def _active_spelling(raw):
+    """(active, splits_inside_quotes, command_substitution) for a RAW spelling.
+
+    `active` is the part bash will still expand: unquoted and unescaped. Neither
+    "raw == token" nor _quoted_literal answers that. The first calls a PARTIALLY
+    quoted word safe — `{--ff-only,--no-edit}""` differs from its token while bash
+    expands the bare braces in front of the empty quotes. The second calls
+    anything short of one enclosing pair unsafe, which flags the ordinary
+    `--message "*"` and `--message \\*`.
+
+    `splits_inside_quotes` is the exception to "quoted means one word" — see
+    _quoted_multiword.
+
+    `$'...'` and `$"..."` are QUOTE OPENERS, not substitutions; reading their `$`
+    as active flagged the perfectly ordinary `--message $'note'`.
+
+    `command_substitution` is `$(...)` or a backtick reached OUTSIDE single quotes,
+    where bash runs it — `'$(echo note)'` is a literal message and must not be
+    confused with one.
+
+    `None` raw (stream unavailable or unaligned -- see _raw_tokens) yields
+    (None, False, False), and callers read that as "assume active", the
+    fail-CLOSED direction.
+    """
+    if raw is None:
+        return None, False, False
+    out = []
+    multi = False
+    cmdsub = False
+    i, n, quote = 0, len(raw), None
+    while i < n:
+        c = raw[i]
+        # Inside ordinary single quotes a backslash is literal; everywhere else —
+        # unquoted, double-quoted, and inside $'...' — it escapes the next
+        # character. Treating $'...' as plain single quoting closed it at the
+        # ESCAPED quote in `$'a\\''$MODE`, then opened a fictitious quote at the
+        # real one, hiding an unquoted $MODE behind what looked like a quoted tail.
+        if quote != "'" and c == '\\':
+            if quote is None:
+                out.append(_INERT)
+            i += 2
+            continue
+        if quote is None and c == '$' and i + 1 < n and raw[i + 1] in '\'"':
+            # $'...' is ANSI-C quoting, its own state. $"..." is locale
+            # translation, which then behaves exactly like double quotes — so it
+            # keeps the double-quote state, expansions and all.
+            quote = "$'" if raw[i + 1] == "'" else '"'
+            i += 2
+            continue
+        if quote is None and c in '\'"':
+            quote = c
+            i += 1
+            continue
+        if quote is not None and c == quote[-1]:
+            quote = None
+            out.append(_INERT)
+            i += 1
+            continue
+        # BOTH single-quote states: bash runs no substitution inside `'...'` or
+        # inside `$'...'` either, so `$'`x`'` is a literal message.
+        if quote not in ("'", "$'"):
+            # `$((1+2))` is arithmetic expansion: one word, and it runs nothing.
+            # Matching the `$(` prefix refused it along with the real thing.
+            if raw.startswith('$((', i):
+                # Arithmetic: one numeric word, and it runs nothing. Masked out
+                # entirely — leaving its `$` in `active` made the generic
+                # substitution branch call the unquoted `$((1+2))` a split.
+                # Parentheses inside a nested parameter expansion are TEXT:
+                # `$((${X:-"("}))` opens nothing and `${Y:+")"}` closes nothing.
+                # Counting raw characters let a quoted `)` satisfy an outstanding
+                # depth and skip past the real end of the expansion, swallowing a
+                # trailing unquoted `$MSG` with it. Only unquoted parens count.
+                depth, k, q2 = 0, i + 1, None
+                while k < n:
+                    ck = raw[k]
+                    if q2 != "'" and ck == '\\':
+                        k += 2
+                        continue
+                    if q2 is None and ck in '\'"':
+                        q2 = ck
+                    elif q2 is not None and ck == q2:
+                        q2 = None
+                    elif q2 is None:
+                        if ck == '(':
+                            depth += 1
+                        elif ck == ')':
+                            depth -= 1
+                            if depth == 0:
+                                break
+                    k += 1
+                if k >= n:
+                    # Never balanced. Parentheses inside a nested parameter
+                    # expansion — `$((${X:-"("}))` — are text, not arithmetic
+                    # syntax, so the count can run past the end; skipping to it
+                    # swallowed a trailing unquoted `$MSG` with it. Unreadable is
+                    # not one word.
+                    cmdsub = True
+                    break
+                # QUOTED arithmetic is one word; UNQUOTED is not. Its result is
+                # a field like any other and undergoes IFS splitting, so with
+                # `IFS=1` the innocuous `$((212))` becomes the two words `2` and
+                # `2` — a second merge head. Masking both alike made the unquoted
+                # form look inert. `$` here re-enters the splitting branch below;
+                # inside quotes nothing is emitted, which is the one-word answer.
+                if quote is None:
+                    out.append('$')
+                i = k + 1
+                continue
+            if c == '`' or (c == '$' and raw.startswith('$(', i)):
+                cmdsub = True
+        if quote == '"' and c == '$' and _quoted_multiword(raw, i):
+            multi = True
+        if quote is None:
+            out.append(c)
+        i += 1
+    return ''.join(out), multi, cmdsub
+
+
+def _word_may_split(token, raw=None):
+    """True iff `token` could expand into a different NUMBER of words.
+
+    Every operand of a merge is a head, so a token the parser discards — or reads
+    as ONE operand — must be one word, or the operand COUNT it thought it saw is
+    wrong, and a marker minted for the head it saw authorizes the commit it did
+    not. All of these produce extra heads with `MSG='note B'`, a matching
+    directory entry, or two positional parameters: `--message $MSG`,
+    `--message=$MSG`, `--message {note,B}`, `--message {A..B}`, `--message *`,
+    `--message @(x)` under extglob, and `--message "$@"`.
+
+    This is a WORD-COUNT question, not the value question `_may_be_substitution`
+    answers, and the two differ on quoting. `"$MSG"` hides its value but is always
+    one word; `{a,b}` splits while carrying no substitution character at all. So
+    an operand needs both tests and a discarded option token needs only this one.
+    """
+    # A COMMAND SUBSTITUTION ends the analysis, wherever it sits. Its body is a
+    # complete shell command, quotes included, so a scanner with one quote state
+    # cannot find where it ends: in
+    # `--message="$(x='"')"$MSG"$(y='"')"` the inner quotes close the outer one and
+    # the scanner reads the trailing `$MSG` as quoted, reporting a one-word value
+    # for a word bash expands into several. Tracking nested substitution contexts
+    # would mean writing a bash parser here; refusing the construct costs a merge
+    # option nobody spells this way.
+    active, multi, cmdsub = _active_spelling(raw)
+    if multi or cmdsub:
+        return True
+    if active is None:
+        active = token or ''
+    if not active:
+        return False
+    if '$' in active or '`' in active:
+        return True                    # unquoted: splits on IFS
+    return _brace_expands(active) or _glob_expands(active)
+
+
 def _spelled_live(operand, raw_spelling):
     """True iff `raw_spelling` is a spelling bash actually RUNS the substitution for
     -- the bare operand, or its exactly-double-quoted form.
@@ -3171,6 +3493,14 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
     for i in range(sub_idx + 1, len(argv)):
         a = argv[i]
         _raw_i = _raw_spelling(raw_argv, i)
+        # BEFORE any option handling, because every branch below that recognizes
+        # an option ends in `continue` — and a discarded token that can become
+        # more than one word takes the operand COUNT with it. The separate-value
+        # form is not the only one: `--message=$MSG` and `-m$MSG` carry the value
+        # attached, and `--message {note,B}` splits through brace expansion with
+        # no substitution character at all. Each turns a one-head merge into two
+        # heads git reduces, so a marker minted for the head the parser saw
+        # authorizes the commit it did not.
         # A redirection is removed by the SHELL before git sees the command, so it
         # is checked BEFORE the pending-value skip. `git merge -m >/dev/null x`
         # gives git `-m x`, not `-m >/dev/null`; consuming the redirection as the
@@ -3181,6 +3511,39 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
             skip = False
             continue
         if skip:
+            skip = False
+            # A value that may be a substitution is not one word. Skipped
+            # silently, `git merge --ff-only --message $MSG A` looked like a
+            # one-head merge of A, while `MSG='note B'` makes git see the heads
+            # B and A, reduce them to B, and fast-forward there — spending a
+            # marker minted for A on a commit nobody authorized. Poison the
+            # invocation instead: the operand list is no longer knowable.
+            if _word_may_split(a, _raw_i):
+                ops.append(REF_OP_UNRESOLVABLE)
+            continue
+        # AFTER the pending-value branch above, which consumes an option's value
+        # whatever it is spelled like. Running first, this read the literal value
+        # `-$MSG` of `--message` as an option NAME and poisoned an out-of-scope
+        # merge that was never in question.
+        # `_word_may_split` asks whether the word COUNT can change. An option has a
+        # second way to betray the parser: `--"$MODE"` and `--$'ff-only'` stay one
+        # word while becoming a DIFFERENT OPTION — with MODE=ff-only bash hands git
+        # a later `--ff-only`, and the merge this parser reported out of scope
+        # fast-forwards. Only the name matters, so the test stops at the first
+        # `=`: `--message=$MSG` names `--message` whatever the value expands to.
+        # The NAME stops where the value starts, in both spellings. Splitting
+        # only on `=` left a short option's ATTACHED value inside the name, so
+        # `-m"$MSG"` — a static `-m` with a quoted one-word value — read as a
+        # dynamic option and blocked an ordinary non-fast-forward merge. The
+        # attached form is recognised only for the short options this parser
+        # knows TAKE a value; anything else keeps the whole token as its name,
+        # so `-v$X`, where the expansion could add option letters, still counts.
+        _optname = a.split('=', 1)[0]
+        if len(a) > 2 and a[1] != '-' and a[:2] in _REF_OP_VALUE_SHORT:
+            _optname = a[:2]
+        if not end_of_opts and a.startswith('-') and a != '-' \
+           and (_word_may_split(a, _raw_i) or _may_be_substitution(_optname)):
+            ops.append(REF_OP_UNRESOLVABLE)
             skip = False
             continue
         # Shell syntax vs. a ref that merely LOOKS like it. Tokenization has
@@ -3206,7 +3569,9 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
             # lightweight tag really can be named `--no-ff`, and reading it as
             # the OPTION reported the merge out of scope.
             _reject_crlf(a, 'git ref operand')
-            ops.append(REF_OP_UNRESOLVABLE if _may_be_substitution(a) else a)
+            ops.append(REF_OP_UNRESOLVABLE
+                       if _may_be_substitution(a) or _word_may_split(a, _raw_i)
+                       else a)
             continue
         if a == '--':
             end_of_opts = True
@@ -3250,14 +3615,22 @@ def _ref_op_operands(argv, raw_argv, sub_idx, sub):
                 unknown_long = True
             continue
         _reject_crlf(a, 'git ref operand')
-        ops.append(REF_OP_UNRESOLVABLE if _may_be_substitution(a) else a)
+        ops.append(REF_OP_UNRESOLVABLE
+                   if _may_be_substitution(a) or _word_may_split(a, _raw_i)
+                   else a)
     # MERGE only. A `pull` with --squash or --no-ff still FETCHES, so it still
     # moves FETCH_HEAD and the remote-tracking refs — dropping it from the
     # operation set let `git pull --squash origin feature && git merge
     # origin/feature` authorize the merge against the value the pull was about to
     # replace. Those flags change what a pull does with the content it fetched,
     # never whether it fetches.
-    if sub == 'merge' and not unknown_long \
+    # ...and only when every operand was readable. The out-of-scope exit reports
+    # NO operation, which discards the unresolvable sentinel with it: `git merge
+    # --no-ff $MODE feature` looked like a plain merge-commit shape, while an
+    # ambient `MODE=--ff-only` is applied LAST by git and fast-forwards the
+    # protected branch. An option this parser could not read may be the one that
+    # decides the shape, so the shape is not decided here.
+    if sub == 'merge' and REF_OP_UNRESOLVABLE not in ops and not unknown_long \
        and (controls or squash or ff == '--no-ff'):
         return [], False
     # A PULL stays in scope whatever its ff mode (it still fetches, see above),

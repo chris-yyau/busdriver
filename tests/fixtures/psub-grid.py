@@ -512,5 +512,10 @@ if bad:
     print("PSUB fail %d/%d" % (len(bad), n))
     for b in bad[:6]:
         print("   " + b)
+    # The 519 suite matches on the `PSUB ok ` prefix, so it already reports the failure.
+    # This is for every OTHER runner -- a bare `python3 tests/fixtures/psub-grid.py`, or a
+    # CI step that checks only the status -- which would otherwise read a failing grid as
+    # a pass.
+    sys.exit(1)
 else:
     print("PSUB ok %d" % n)

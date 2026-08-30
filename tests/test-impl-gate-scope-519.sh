@@ -3819,7 +3819,7 @@ print(cmdword.is_file_mod("grep -n \"rm -rf src\" notes.txt $((x>(bash)))"))')" 
 else
     no "RESIDUAL over-block: arithmetic comparison" "classifier verdict changed"
 fi
-check "...while a numbered fd output substitution still feeds its shell" block \
+check "RESIDUAL over-block (accepted): a numbered fd output substitution is scanned anyway" block \
     "$(bash_decision "printf 'rm -rf src' 2> >(bash)")"
 
 # PRECISION: the scan runs only when the command names something that could run a program

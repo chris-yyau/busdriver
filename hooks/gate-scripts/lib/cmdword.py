@@ -2633,24 +2633,23 @@ def _procsub_producers(pairs, whole, subs):
     # reason, at a measured cost of 100 over-blocks for `.` alone. `_STDIN_SHELLS` and the
     # version-qualified family are different: the pipe path already matches those as ANY
     # word, so asking them here is consistent rather than a widening.
-    # THE SQUEEZED VARIANTS ONLY -- the ones with quoting, escapes and `$` removed, which is
-    # what `_shell_variants` produces after its first two entries. Asked of the RAW text as
-    # well, a quote or a backslash acts as a name boundary that the shell will delete before
-    # it resolves anything: `bash".log"`, `bash\.log` and `python3".12.log"` are ordinary
-    # filenames, and each matched, turning read-only commands into blocks. Squeezed, they are
-    # `bash.log` and `python3.12.log`, which the boundary correctly refuses -- while the
-    # shapes this scan exists for (`b\a\s\h`, a name behind the quote pads) squeeze down to
-    # the bare name and still match.
-    _variants = _shell_variants(whole)
+    # THE SQUEEZED VARIANTS ONLY -- the ones with quoting, escapes and `$` removed, which
+    # `_squeezed_variants` names so this does not have to count them. Asked of the RAW text
+    # as well, a quote or a backslash acts as a name boundary that the shell will delete
+    # before it resolves anything: `bash".log"`, `bash\.log` and `python3".12.log"` are
+    # ordinary filenames, and each matched, turning read-only commands into blocks. Squeezed,
+    # they are `bash.log` and `python3.12.log`, which the boundary correctly refuses -- while
+    # the shapes this scan exists for (`b\a\s\h`, a name behind the quote pads) squeeze down
+    # to the bare name and still match.
     if any(_STDIN_SHELL_RE.search(v) or _VERSIONED_INTERP_SCAN_RE.search(v)
-           for v in _variants[2:]):
+           for v in _squeezed_variants(whole)):
         return [whole]
     # ...and the command-position walk over EVERY variant, squeezed and not. The name half
     # of it wants the squeezed text for the same reason the scan above does; the EXPANSION
     # half wants the raw, because squeezing deletes the `$` that is the whole signal --
     # `b$(printf as)h` squeezes to `b(printf as)h` and names nothing. Both are cheap, so
     # both are asked rather than choosing.
-    if any(_cmdpos_receiver_in_raw(v) for v in _variants):
+    if any(_cmdpos_receiver_in_raw(v) for v in _shell_variants(whole)):
         return [whole]
     # ADVERSARIAL QUOTING, and how it is answered. A command can be built so `shlex` pairs
     # its quotes differently -- a matched pair of `: "$(printf '"')"` pads is the shape --
@@ -3514,6 +3513,23 @@ def _ansi_c(text):
     return _decode_escapes(text).replace("$" + _SQ, _SQ)
 
 
+def _squeezed_variants(text):
+    """Only the variants with quoting, escapes and the `$` prefix DELETED.
+
+    A named half of `_shell_variants` rather than a slice off its end: a caller that
+    wants the squeezed set only -- because a quote or a backslash acts as a name
+    boundary the shell deletes, so `bash".log"` must not read as `bash` -- says which
+    set it means instead of counting how many unsqueezed entries come first.
+    """
+    out = []
+    for base in (text, _decode_escapes(text)):
+        squeezed = base.replace(chr(92) + chr(10), "")
+        for _ch in (_SQ, _DQ, chr(92), "$"):
+            squeezed = squeezed.replace(_ch, "")
+        out.append(squeezed)
+    return out
+
+
 def _shell_variants(text):
     """The text as written, and as the shell will have rewritten it before running it.
 
@@ -3521,14 +3537,12 @@ def _shell_variants(text):
     all removed by the shell before it resolves the command word; ANSI-C escapes are
     DECODED by it, so `g$'\\x69't` is `git`. Every variant is additive -- matching any of
     them blocks -- so this only ever adds a block.
+
+    Built FROM `_squeezed_variants` so the two cannot drift: adding an unsqueezed base
+    here without adding it there is the only way to desynchronize them, and that shows
+    up as a missing squeezed twin rather than as a silently wrong slice index.
     """
-    out = [text, _decode_escapes(text)]
-    for base in list(out):
-        squeezed = base.replace(chr(92) + chr(10), "")
-        for _ch in (_SQ, _DQ, chr(92), "$"):
-            squeezed = squeezed.replace(_ch, "")
-        out.append(squeezed)
-    return out
+    return [text, _decode_escapes(text)] + _squeezed_variants(text)
 
 
 def _demo():

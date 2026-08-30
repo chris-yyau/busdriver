@@ -857,10 +857,39 @@ git -C "$REPO" checkout -q main
 # decision — so an unbounded walk is a way THROUGH the gate. Remotes are
 # repo-controlled and free to add.
 setup_repo manyremotes || { printf '  FAIL  fixture setup (manyremotes)\n'; exit 1; }
-for _i in $(seq 1 70); do
-    git -C "$REPO" remote add "r$_i" "$ORIGIN" >/dev/null 2>&1
-done
+# MANY and LONG, both deliberately. The gate bounds its read with `head`, and a
+# listing of 70 short names fits the pipe buffer whole - the reader closes early
+# but git has already finished writing, so nothing is signalled. Only a listing
+# far larger than head will ever consume leaves git blocked mid-write when the
+# pipe closes, which is what raises SIGPIPE and, under `pipefail`, fails the
+# whole pipeline on exactly the oversized list this guard exists for. Written
+# straight into the config: 500 `git remote add` calls would dominate the run.
+_LONGNAME=$(printf 'x%.0s' $(seq 1 1000))
+for _i in $(seq 1 500); do
+    printf '[remote "r%s%s"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/r%s%s/*\n' \
+        "$_i" "$_LONGNAME" "$ORIGIN" "$_i" "$_LONGNAME"
+done >> "$REPO/.git/config"
+_rc=0
+_remote_bytes=$(git -C "$REPO" remote | wc -c | tr -d ' ')
+[[ "$_remote_bytes" -gt 262144 ]] || _rc=1
+assert_true "the many-remotes listing outruns the pipe buffer ($_remote_bytes bytes)" "$_rc"
 run_gate "a repo with more remotes than the budget allows is refused" \
+    block "git merge feature" "past the 64 this gate can examine"
+setup_repo hugeremotes || { printf '  FAIL  fixture setup (hugeremotes)\n'; exit 1; }
+# FEW remotes, ENORMOUS names. A line bound says nothing about how much there is
+# to read: ten names of 100 KiB each are ten lines and a megabyte, so counting
+# lines alone would walk them all and spend the budget the count exists to save.
+_HUGENAME=$(printf 'y%.0s' $(seq 1 100000))
+for _i in $(seq 1 10); do
+    printf '[remote "h%s%s"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/h%s%s/*\n' \
+        "$_i" "$_HUGENAME" "$ORIGIN" "$_i" "$_HUGENAME"
+done >> "$REPO/.git/config"
+_rc=0
+_huge_n=$(git -C "$REPO" remote | wc -l | tr -d ' ')
+_huge_b=$(git -C "$REPO" remote | wc -c | tr -d ' ')
+{ [[ "$_huge_n" -le 64 ]] && [[ "$_huge_b" -gt 65536 ]]; } || _rc=1
+assert_true "the huge-names fixture is under the NAME bound ($_huge_n) and over the BYTE one ($_huge_b)" "$_rc"
+run_gate "...and so is a listing that is few names but far too many bytes" \
     block "git merge feature" "past the 64 this gate can examine"
 setup_repo main || { printf '  FAIL  fixture re-setup (manyremotes)\n'; exit 1; }
 
@@ -993,6 +1022,19 @@ run_gate "a marker naming a different REF does not authorize this branch" \
 
 write_marker "$(printf 'PASS-FF refs/heads/main %s\nrm -rf /' "$FEATURE_OID")"
 run_gate "a well-formed first line with trailing garbage is NOT honoured" \
+    block "git merge --ff-only $FEATURE_OID"
+
+# ...and trailing BLANK lines are trailing garbage too - the shape a whole-file
+# compare misses, because command substitution strips every trailing newline and
+# the two strings then compare equal. Written directly rather than through
+# write_marker: passing it through `$(...)` would strip the very newlines under
+# test and leave this asserting nothing.
+printf 'PASS-FF refs/heads/main %s\n\n\n' "$FEATURE_OID" \
+    > "$REPO/$ISO_STATE/ref-ff-authorized.local"
+touch -t 200001010000 "$REPO/$ISO_STATE/ref-ff-authorized.local"
+_rc=0; [[ "$(grep -c '^' "$REPO/$ISO_STATE/ref-ff-authorized.local")" == "3" ]] || _rc=1
+assert_true "the trailing-blank-line marker fixture really has 3 lines" "$_rc"
+run_gate "...as are trailing BLANK lines, which a stripped compare reads as equal" \
     block "git merge --ff-only $FEATURE_OID"
 
 write_marker "PASS-MERGE-1754400000"

@@ -669,15 +669,41 @@ _CANDIDATES=""
 # shape as the oversized-payload case above. Remotes are repo-controlled and cost
 # nothing to add. Count first, and refuse rather than start a walk that might not
 # finish: 64 is far past any real remote list and far short of a budget problem.
-_NREMOTES=$(git_real remote 2>/dev/null | grep -c '^' 2>/dev/null) || _NREMOTES=0
-if [ "$_NREMOTES" -gt 64 ]; then
-    block_emit "Ref fast-forward gate: ${REPO_DIR:-.} has $_NREMOTES remotes, past the 64 this gate can examine inside its 10s budget. Discovery reads each remote's published HEAD to learn which branch is protected, and a walk that outruns the budget is killed without emitting a decision — which would let the command through unexamined. Name the protected branches directly instead, one per line:
+# `head` so the READ is bounded too, not only the walk it guards: reading an
+# unbounded list to find out it is unbounded spends the same budget the check
+# exists to protect.
+# ONE bound, on BYTES, and the name count is taken from what it read. A line
+# bound alone says nothing about how much there is to read -- ten names of
+# 100 KiB each are ten lines and a megabyte -- and chaining a second `head` to
+# add one is worse than useless: whichever of the two fills first closes the
+# pipe on the other, so the pipeline reports 141 and the generic ERR block fires
+# instead of the message that explains what to do. 64 KiB holds any real remote
+# list many times over; reaching it, or counting more than 64 names inside it,
+# is the same answer: a listing this gate will not walk.
+# The `|| true` is load-bearing under `pipefail`. head closing the pipe kills
+# git with SIGPIPE on exactly the oversized list this guards against, and a
+# failed pipeline would fall through to a zero count and wave that case
+# through -- a fail-OPEN reachable by adding remotes. Swallowing git's status
+# keeps the answer head's: what was read is what is judged.
+# shellcheck disable=SC2310  # git's status is deliberately not the answer here
+_RLIST=$( { git_real remote 2>/dev/null || true; } | head -c 65536 && printf X)
+_RLIST="${_RLIST%X}"
+# grep -c counts lines; a listing of none exits nonzero, which is the count 0.
+# shellcheck disable=SC2310  # no match IS the zero answer
+_NREMOTES=$(printf '%s' "$_RLIST" | grep -c '^') || _NREMOTES=0
+_RBYTES=$(printf '%s' "$_RLIST" | wc -c | tr -d ' ')
+if [ "$_NREMOTES" -gt 64 ] || [ "$_RBYTES" -ge 65536 ]; then
+    block_emit "Ref fast-forward gate: ${REPO_DIR:-.} has a remote listing this gate cannot examine inside its 10s budget — $_NREMOTES names in $_RBYTES bytes read, past the 64 this gate can examine (and past the 64 KiB it will read to count them). Discovery reads each remote's published HEAD to learn which branch is protected, and a walk that outruns the budget is killed without emitting a decision — which would let the command through unexamined. Name the protected branches directly instead, one per line:
   echo main > $Q_STATE/ref-ff-protected.local"
     exit 0
 fi
 # EVERY remote's HEAD, not just origin's: a repo whose remote is named `upstream`
 # has no refs/remotes/origin/HEAD at all, and reading only that one left the set
 # empty and the gate disabled — a fail-OPEN on the very branch it exists to guard.
+# The SNAPSHOT the count was taken from, not a second `git remote`. Two reads are
+# two lists: the one that was measured and found small, and the one actually
+# walked. Walking a list nobody bounded is the budget hole the count exists to
+# close, whatever moved the config in between.
 while IFS= read -r _r; do
     [ -z "$_r" ] && continue
     # Strip the REMOTE'S OWN name, not "everything up to the first slash": a
@@ -688,7 +714,7 @@ while IFS= read -r _r; do
     _h=${_h#"$_r/"}
     [ -n "$_h" ] && _CANDIDATES="$_CANDIDATES $_h"
 done <<EOF
-$(git_real remote 2>/dev/null)
+$_RLIST
 EOF
 # The repo's configured default, and the conventional names. `trunk`/`develop`
 # are as much a default branch as `main`, and omitting them disabled the gate
@@ -951,8 +977,20 @@ authorize_or_block() {   # <target_oid> <operand as written>
     local _q_line _q_marker
     printf -v _q_line '%q' "PASS-FF refs/heads/$PROTECTED $1"
     printf -v _q_marker '%q' "$MARKER"
-    local _mrc=0 _mcontent
-    _mcontent=$(state_file read ref-ff-authorized.local) || _mrc=$?
+    local _mrc=0 _mcontent _mraw
+    # ONE read. The marker sits at a mutable path, so a second read is a second
+    # file: deciding on content from one and shape from the other would honour a
+    # marker that never existed as a whole.
+    # The trailing X is what makes one read enough. Command substitution strips
+    # EVERY trailing newline, so the expected line followed by a run of blank
+    # ones would arrive here identical to the expected line and a whole-file
+    # compare would honour it. A sentinel byte after the content means nothing
+    # of the file's own is at the end to be stripped.
+    _mraw=$(state_file read ref-ff-authorized.local && printf X) || _mrc=$?
+    _mcontent="${_mraw%X}"
+    # Exactly ONE trailing newline is allowed - the one a text editor leaves.
+    # A second survives this and fails the compare, which is the point.
+    _mcontent="${_mcontent%$'\n'}"
     if [ "$_mrc" -eq 2 ]; then
         block_emit "BLOCKED: $MARKER_REL could not be read safely — it is a symlink, sits behind a symlinked path component, or is not a regular file. The authorization token is honoured only as a regular file the operator wrote in place."
         exit 0

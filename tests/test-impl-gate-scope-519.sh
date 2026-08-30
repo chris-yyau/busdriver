@@ -97,6 +97,15 @@ fi
 # (one was), and an interrupt or an early exit before that section finishes would leave a
 # live gate bypass behind in the checkout with nothing said about it. The check REPORTS and
 # never deletes -- see the note inside `_suite_cleanup` for why every ownership test failed.
+#
+# WHAT THIS IS AND IS NOT. It samples the path at two moments -- refuse to start, report at
+# exit -- so it is DETECTION, not containment. A marker created and then consumed BETWEEN
+# those samples (by the gate under test, by a concurrent session, or inside a single case)
+# is not seen, and neither is one a surviving child writes after the trap has run. Closing
+# that would take a filesystem watch, which is far out of proportion to a suite whose cases
+# hand the gate marker-writes as text and evaluate nothing in the repo root by design. The
+# residual is stated rather than papered over: passing this suite is not evidence that no
+# bypass marker ever existed during the run.
 _suite_cleanup() {
     local rc=$?
     # REPORT, NEVER DELETE. Earlier cuts drained the marker here, which meant deciding

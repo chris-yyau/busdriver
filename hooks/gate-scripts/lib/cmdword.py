@@ -2448,6 +2448,17 @@ def _cmdpos_receiver_in_raw(text):
                     # whatever follows, and the walk goes on to ask about that.
                     return True
                 _seen_prefix = True
+                # ...and if the word ENDS in a redirect operator, its target is the NEXT
+                # word. `command>/dev/null` is one word and needs nothing, but
+                # `command> /dev/null source /dev/stdin` put `/dev/null` where the walk was
+                # looking and it stopped there -- the same defect the bare-operator branch
+                # already answers, reached through a prefix, a reserved word or an
+                # assignment instead. `>>`, `<<`, `<<<` and `<>` end in a redirect character
+                # too, and a folded `2>1` does not. `<<-` is the ONE spelling that ends in
+                # something else, and it takes a separated delimiter word like any other
+                # target: `command<<- EOF source <(payload)` runs `command source
+                # <(payload)`, and the walk took `EOF` for the program.
+                _skip_target = w.endswith(("<", ">", "<<-"))
                 continue
             if _basename(re.split(r"[<>]", w, maxsplit=1)[0]) in _OPERAND_WRAPPERS:
                 return True               # see the operand-wrapper note above

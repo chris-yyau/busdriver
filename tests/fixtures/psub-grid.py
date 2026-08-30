@@ -413,8 +413,12 @@ for _inert in ("grep -n 'rm -rf src' f{1,2} {a,b} <(echo pat)",
 # `_RAW_WRITE_REDIR_RE` -- so a redirect-only payload past the allowance still blocks. Pinned
 # because "exhaustion returns [whole]" invites the assumption that only the verb half runs.
 n += 1
-_huge = ("bash <(printf x) " * 5000 + " ; printf " + chr(39) + "echo x > src/impl.py"
+# The repeat count is chosen so the SUFFIX SURVIVES the 64,000-character cap that the gate
+# itself applies -- at 5000 the prefix alone was ~85,000 and the slice removed the very
+# payload this pins, so it passed through unrelated behaviour.
+_huge = ("bash <(printf x) " * 3000 + " ; printf " + chr(39) + "echo x > src/impl.py"
          + chr(39) + " | bash")[:64000]
+assert "src/impl.py" in _huge, "the exhaustion pin sliced away its own payload"
 if not cmdword.is_file_mod(_huge):
     bad.append("allowed active (budget exhaustion + redirect-only payload)")
 
@@ -461,7 +465,20 @@ if cmdword._fold_brace_expansions("x{a," + chr(92) + ";b}") != "x*":
 # A RESERVED WORD carries an attached redirect like any other: `then>/dev/null` is ONE word,
 # and asking the compound-word set about the raw word rather than the redirect-stripped one
 # let the walk stop on it, one word before the receiver.
-for _kw in ("then>/dev/null ", "then</dev/null ", "then>&2 "):
+# ...and a SEPARATED target belongs to it just as it does to a bare operator: `command>`,
+# `env>`, `then>` and `X=1>` each leave the filename as the next word, and the walk stopped
+# on that filename one word before the receiver.
+for _pre in ("command> /dev/null ", "env> /dev/null ", "X=1> /dev/null ",
+             "command>> /tmp/x ", "env< /dev/null ",
+             # `<<-` is the one redirect operator that does NOT end in `<` or `>`
+             "command<<- EOF ", "env<<- EOF ", "command<<< x ", "command<> /tmp/x "):
+    n += 1
+    _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
+             + ";) | " + _pre + "source /dev/stdin")
+    if not cmdword.is_file_mod(PAD + "; " + _live + "; " + PAD):
+        bad.append("allowed active (separated target after a prefix): " + _pre)
+
+for _kw in ("then>/dev/null ", "then</dev/null ", "then>&2 ", "then> /dev/null "):
     n += 1
     _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
              + ";) | if true; " + _kw + "source /dev/stdin; fi")

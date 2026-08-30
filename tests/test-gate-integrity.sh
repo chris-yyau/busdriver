@@ -764,20 +764,28 @@ case "$_real_find" in
     *) _real_find="" ;;
 esac
 if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; then
+    # Bash writer (not a Python find): real find exits 141 on SIGPIPE; a Python
+    # shim raises BrokenPipeError and exits 1, which wrongly renames the bound.
+    # Long paths so the 8 MiB listing bound fires before the 4096 path-count cap.
+    _long="hooks/gate-scripts/lib/__pycache__/$(python3 -I -c 'print("x"*4000)').pyc"
     {
         printf '%s\n' '#!/usr/bin/env bash'
-        # Endless exempt-path listing so the reader hits the bound mid-stream.
-        printf '%s\n' 'while :; do printf "%s\0" "hooks/gate-scripts/lib/__pycache__/pad.cpython-312.pyc"; done'
+        printf '%s\n' "long=$(printf '%q' "$_long")"
+        # Intentional: $long expands in the generated shim, not here.
+        # shellcheck disable=SC2016
+        printf '%s\n' 'while :; do printf "%s\0" "$long"; done'
     } > "$_shim/find"
     chmod 755 "$_shim/find"
     _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
     _rc=$?
-    if [[ "$_rc" -ne 0 \
-       && "$_out" == *"listing exceeds 8 MiB bound"* \
-       && "$_out" != *"could not enumerate the locked directories"* ]]; then
+    # Output can be huge (paths yielded before the byte bound trips); match via grep.
+    if [[ "$_rc" -ne 0 ]] \
+       && grep -q "listing exceeds 8 MiB bound" <<<"$_out" \
+       && ! grep -q "could not enumerate the locked directories" <<<"$_out"; then
         assert 0 "an oversized exempt listing keeps the 8 MiB diagnostic (SIGPIPE not renamed to enumeration)"
     else
-        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        _tail="$(printf '%s' "$_out" | tail -c 400)" || _tail=""
+        printf '  ↳ rc=%s tail: %s\n' "$_rc" "$_tail"
         assert 1 "an oversized exempt listing keeps the 8 MiB diagnostic (SIGPIPE not renamed to enumeration)"
     fi
     rm -rf "$_shim"
@@ -814,6 +822,34 @@ if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; the
     rm -rf "$_shim"
 else
     assert 1 "find exit 141 with a successful classifier still fails closed (no tempdir, or no absolute find to shim)"
+fi
+
+# Path-count bound: listing bytes alone allow thousands of tiny paths that would
+# each trigger sibling compile work. Fail closed at 4096 paths.
+fresh_fixture
+_shim="$(mktemp -d)"
+_real_find="$(command -v -p find 2>/dev/null)"
+case "$_real_find" in
+    /*) ;;
+    *) _real_find="" ;;
+esac
+if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; then
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'python3 -I -c "import sys; p=b\"hooks/gate-scripts/lib/__pycache__/pad.cpython-312.pyc\\0\"; sys.stdout.buffer.write(p * 4097)"'
+    } > "$_shim/find"
+    chmod 755 "$_shim/find"
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 && "$_out" == *"path count exceeds 4096 bound"* ]]; then
+        assert 0 "exempt bytecode path count above 4096 fails closed"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "exempt bytecode path count above 4096 fails closed"
+    fi
+    rm -rf "$_shim"
+else
+    assert 1 "exempt bytecode path count above 4096 fails closed (no tempdir, or no absolute find to shim)"
 fi
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────

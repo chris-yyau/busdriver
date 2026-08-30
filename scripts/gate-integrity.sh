@@ -385,7 +385,7 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
         # shellcheck disable=SC2016  # python source, not a shell expansion
         find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 \
         | python3 -I -c '
-import importlib.machinery, importlib.util, os, re, sys, warnings
+import hashlib, importlib.machinery, importlib.util, os, re, sys, warnings
 # source_to_code may emit SyntaxWarning while still succeeding; stderr is
 # captured with stdout by the shell caller, so an unfiltered warning would
 # false-fail.
@@ -396,8 +396,22 @@ HEADER = 16
 _MAX_PYC_BYTES = 8 * 1024 * 1024
 _MAX_SRC_BYTES = _MAX_PYC_BYTES
 _MAX_LISTING_BYTES = _MAX_PYC_BYTES
+# Listing bytes alone do not bound classifier work: many caches can share one
+# large sibling (or many unique siblings). Cap path count, unique compile
+# input, and unique inode I/O so a tree inside the listing bound cannot
+# exhaust CPU/memory via retags or hardlinks of the same source.
+_MAX_PYC_PATHS = 4096
+_MAX_TRUSTED_COMPILE_BYTES = 32 * 1024 * 1024
+_MAX_IO_BYTES = 64 * 1024 * 1024
+_trusted_memo = {}
+_trusted_compile_bytes = 0
+_inode_bytes = {}
+_inode_digest = {}
+_io_bytes = 0
+_pyc_paths = 0
 
 def read_nofollow(path, max_bytes):
+    global _io_bytes
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -414,6 +428,12 @@ def read_nofollow(path, max_bytes):
             raise OSError(0, "not a regular file")
         if st.st_size > max_bytes:
             raise OSError(0, "too large")
+        key = (st.st_dev, st.st_ino)
+        cached = _inode_bytes.get(key)
+        if cached is not None:
+            if len(cached) > max_bytes:
+                raise OSError(0, "too large")
+            return cached, _inode_digest[key]
         chunks = []
         left = st.st_size
         while left > 0:
@@ -424,7 +444,20 @@ def read_nofollow(path, max_bytes):
             left -= len(chunk)
         if os.read(fd, 1):
             raise OSError(0, "size changed underfoot")
-        return b"".join(chunks)
+        data = b"".join(chunks)
+        if _io_bytes + len(data) > _MAX_IO_BYTES:
+            sys.stderr.write(
+                "gate-integrity: FAIL — classifier I/O exceeds %d-byte bound\n"
+                % _MAX_IO_BYTES
+            )
+            raise SystemExit(1)
+        # Charge and memoize by inode so retagged/hardlinked caches cannot
+        # re-read or re-hash the same sibling thousands of times.
+        _io_bytes += len(data)
+        digest = hashlib.sha256(data).digest()
+        _inode_bytes[key] = data
+        _inode_digest[key] = digest
+        return data, digest
     finally:
         os.close(fd)
 
@@ -497,9 +530,16 @@ try:
     for raw in iter_nul_paths(_MAX_LISTING_BYTES):
         if not raw:
             continue
+        _pyc_paths += 1
+        if _pyc_paths > _MAX_PYC_PATHS:
+            sys.stderr.write(
+                "gate-integrity: FAIL — exempt bytecode path count exceeds %d bound\n"
+                % _MAX_PYC_PATHS
+            )
+            raise SystemExit(1)
         p = os.fsdecode(raw)
         try:
-            data = read_nofollow(p, _MAX_PYC_BYTES)
+            data, _ = read_nofollow(p, _MAX_PYC_BYTES)
         except OSError as exc:
             import errno as _errno
             msg = exc.strerror or str(exc)
@@ -534,7 +574,7 @@ try:
             print(p + "  (no regular sibling source to authenticate against)")
             continue
         try:
-            src_bytes = read_nofollow(src, _MAX_SRC_BYTES)
+            src_bytes, src_digest = read_nofollow(src, _MAX_SRC_BYTES)
         except OSError as exc:
             msg = exc.strerror or str(exc)
             if "too large" in msg:
@@ -542,12 +582,28 @@ try:
             else:
                 print(p + "  (no regular sibling source to authenticate against)")
             continue
-        try:
-            trusted = trusted_bodies(src_bytes, allowed_filenames(src), optimize_level(p))
-        except Exception as exc:
-            print(p + "  (trusted sibling source failed to compile: %s)" % exc.__class__.__name__)
+        names = allowed_filenames(src)
+        optimize = optimize_level(p)
+        memo_key = (src_digest, frozenset(names), optimize)
+        if memo_key not in _trusted_memo:
+            if _trusted_compile_bytes + len(src_bytes) > _MAX_TRUSTED_COMPILE_BYTES:
+                sys.stderr.write(
+                    "gate-integrity: FAIL — trusted sibling compile input exceeds %d-byte bound\n"
+                    % _MAX_TRUSTED_COMPILE_BYTES
+                )
+                raise SystemExit(1)
+            # Charge and memoize before/through failure so a syntax-error source
+            # cannot be recompiled unpaid across thousands of cache paths.
+            _trusted_compile_bytes += len(src_bytes)
+            try:
+                _trusted_memo[memo_key] = ("ok", trusted_bodies(src_bytes, names, optimize))
+            except Exception as exc:
+                _trusted_memo[memo_key] = ("err", exc.__class__.__name__)
+        kind, payload = _trusted_memo[memo_key]
+        if kind != "ok":
+            print(p + "  (trusted sibling source failed to compile: %s)" % payload)
             continue
-        if data[HEADER:] not in trusted:
+        if data[HEADER:] not in payload:
             print(p + "  (bytecode body does not match a compile of the locked source beside it)")
 except OSError as exc:
     msg = exc.strerror or str(exc)

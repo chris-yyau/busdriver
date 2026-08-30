@@ -47,6 +47,10 @@ fresh_fixture() {  # rebuild the fixture tree + its lock from the live tree
     mkdir -p "$_fix/hooks" "$_fix/scripts"
     cp -R "$REPO_ROOT/hooks/gate-scripts" "$_fix/hooks/gate-scripts"
     cp -R "$REPO_ROOT/scripts/hooks" "$_fix/scripts/hooks"
+    # Host __pycache__ from earlier suite tests must not ride into the fixture —
+    # those caches are authenticated against THIS check's python, and a polluted
+    # live tree would make every control look like a body mismatch.
+    find "$_fix/hooks/gate-scripts" "$_fix/scripts/hooks" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
     # A real repository: the script requires a queryable index rather than inferring
     # its absence, so every fixture is one.
     git -C "$_fix" init -q 2>/dev/null

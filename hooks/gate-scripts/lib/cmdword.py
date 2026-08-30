@@ -2171,6 +2171,17 @@ _VERSIONED_INTERP_SCAN_RE = re.compile(r"(?<![A-Za-z0-9_.:@=+#-])"
 # rejected; asked HERE they keep the anchor that made them safe: `grep -n 'rm -rf src'
 # <(printf source)` puts `printf` in command position, not `source`, and stays allowed.
 _CMDPOS_RUN_RE = re.compile(r"(?:^|[;&|(){}\n])([^;&|(){}\n]*)")
+# `>&`, `<&`, `>|` and `&>` -- the spellings whose `&`/`|` belongs to the redirect rather
+# than to the pipeline. Folded to a bare operator before the run walk; see the note there.
+# ESCAPED redirect characters are NOT folded: a `\>` is a literal argument, so the `|`
+# after it is a REAL pipeline operator and folding it away destroyed the boundary --
+# `printf <payload> \> | source /dev/stdin` then hid its receiver. Same lesson the
+# splitter learned for `printf <payload> \<|bash`.
+_REDIR_FOLD_RE = re.compile(r"(?<!\\)([<>])[&|]|(?<!\\)&(?=>)")
+
+
+def _redir_fold(m):
+    return m.group(1) or ""
 _CMDPOS_RECEIVERS = frozenset(("source", ".")) | _LAUNCHER_SHELLS
 
 # RESIDUAL over-block, stated: the separator class is quote-blind, so punctuation inside a
@@ -2207,6 +2218,19 @@ def _cmdpos_receiver_in_raw(text):
     # is split before `_UNRESOLVED_CW_CHARS` can be asked of it. The opener is a finite
     # two-character shape, and an ordinary operand carrying one is rare enough that refusing
     # the whole text costs a raw scan on a command that also holds a substitution.
+    # A `&` or `|` that BELONGS TO A REDIRECTION is not a command separator. The run regex
+    # splits on both characters unconditionally, so `| 2>&1 source /dev/stdin` broke into a
+    # run ending `2>` and a run starting `1 source`: the pending target was lost, the walk
+    # took `1` for the command word and never reached `source`. `>|` split the same way.
+    # Behind the quote pads -- where the lexed candidate path is already defeated and the
+    # command-position names are deliberately outside the quote-blind name scan -- that is a
+    # fail-OPEN, verified.
+    #
+    # Normalised rather than parsed: the descriptor-duplication and clobber forms are folded
+    # to a bare redirect (`2>&1` -> `2>1`, `>|` -> `>`, `&>` -> `>`), which is all this walk
+    # needs -- it only has to recognise the word as a REDIRECTION so the prefix run
+    # continues past it. `>>` carries no `&`/`|` and is untouched.
+    text = _REDIR_FOLD_RE.sub(_redir_fold, text)
     for _m in _CMDPOS_RUN_RE.finditer(text):
         # Does this run end because an EXPANSION character was glued to its last word?
         # `(` and `{` are separators to the run regex, so `ba{s..s}h` and `/bin/ba+(s)h` --

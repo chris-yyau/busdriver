@@ -1,7 +1,11 @@
 """Generated coverage for the #563 process-substitution rule, over the axes the parser
 actually touches: transport x wrapper x quoting/escaping, in BOTH directions.
 
-ACTIVE compositions must block: each one really feeds a shell a program.
+ACTIVE compositions must block. Most really do feed a shell a program; two spellings in the
+set do NOT and are labelled where they appear -- `2> >(receiver)` redirects stderr while the
+payload goes to stdout, and `payload >(receiver)` passes the substitution pathname as an
+argument. They are kept as OVER-BLOCK pins: the classifier must still answer them
+conservatively, but they do not demonstrate the transport invariant.
 INERT twins must stay allowed: same shape, harmless body, no write verb anywhere -- this is
 the arm that catches a rule widened until it blocks everything.
 
@@ -332,6 +336,30 @@ _huge = ("bash <(printf x) " * 5000 + " ; printf " + chr(39) + "echo x > src/imp
          + chr(39) + " | bash")[:64000]
 if not cmdword.is_file_mod(_huge):
     bad.append("allowed active (budget exhaustion + redirect-only payload)")
+
+# A `&` or `|` BELONGING TO A REDIRECTION is not a command separator. The run regex split on
+# both unconditionally, losing the pending target and stopping the walk on it -- a fail-open
+# behind the quote pads, where the lexed path is already defeated.
+for _pre in ("2>&1 ", ">| /tmp/t ", "&>/dev/null ", "2>&1 >| /tmp/t "):
+    n += 1
+    _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92) + ";) | "
+             + _pre + "source /dev/stdin")
+    if not cmdword.is_file_mod(PAD + "; " + _live + "; " + PAD):
+        bad.append("allowed active (redirect-operator prefix): " + _live)
+
+# ...and a prefix in front of a brace-leading receiver, which `_cut` also cannot see.
+n += 1
+if not cmdword.is_file_mod(PAD + "; cat < <(printf rm" + chr(92) + " -rf" + chr(92)
+                           + " src" + chr(92) + ";) | env {b..b}ash; " + PAD):
+    bad.append("allowed active: env {b..b}ash")
+
+# ...but an ESCAPED redirect character must NOT be folded: `\>` is a literal argument, so
+# the `|` after it is a real pipeline operator and folding it destroyed the boundary.
+n += 1
+_esc = ("printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92) + "; " + chr(92)
+        + "> | source /dev/stdin <(echo pat)")
+if not cmdword.is_file_mod(PAD + "; " + _esc + "; " + PAD):
+    bad.append("allowed active (escaped redirect then real pipe)")
 
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))

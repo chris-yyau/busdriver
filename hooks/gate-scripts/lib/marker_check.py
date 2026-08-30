@@ -126,17 +126,22 @@ def _is_redir(t):
     return len(t) > 0 and all(c in "<>|&" for c in t) and ("<" in t or ">" in t)
 
 
-def _dollar_run_is_even(buf):
-    """Parity of the `$` run at the end of `buf`, counted BACKWARDS.
+def _dollar_run_is_even(buf, end=None):
+    """Parity of the `$` run ending at `buf[end]` (or at the end of `buf`), BACKWARDS.
+
+    `end` lets a caller ask about a position inside a longer string without slicing it:
+    slicing copied the whole growing prefix once per candidate, which is quadratic on a
+    line of many `$${` (codex, #553).
 
     `$$` is the PID, so `$${` is a PID and a literal brace while `$$${` is a PID and a
     real `${`. Joining the whole prefix to measure that made the split quadratic on a
     line of many expansions -- 13k of them took ~1.1s against 0.004s (codex, #553).
     """
-    k = len(buf)
+    stop = len(buf) if end is None else end
+    k = stop
     while k and buf[k - 1] == "$":
         k -= 1
-    run = len(buf) - k
+    run = stop - k
     # A `$` the shell was told to take LITERALLY is not part of the run: in `\$$${X}` the
     # first is escaped, so the two that follow are the PID and no expansion opens
     # (codex, #553). Backslashes are counted for parity -- `\\$` is an active `$`.
@@ -363,7 +368,7 @@ def _expansion_readings(s):
         elif _c == _DQ:
             _q = _c
         elif (_c == "$" and s[_k + 1:_k + 2] == "{"
-                and _dollar_run_is_even(list(s[:_k]))):
+                and _dollar_run_is_even(s, _k)):
             first = _k
             break
         _k += 1
@@ -389,7 +394,10 @@ def _expansion_readings(s):
             if seg not in seen:
                 seen.add(seg)
                 out.append((op, seg))
-    return out, len(cands) > _MAX_EXPANSION_READINGS
+    # `cands` carries the balanced reading as a leading None, which is not a candidate:
+    # counting it made exactly _MAX_EXPANSION_READINGS real braces read as truncated and
+    # fail closed on a command the scanner had finished (codex, #553).
+    return out, len(cands) - 1 > _MAX_EXPANSION_READINGS
 
 
 

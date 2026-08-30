@@ -612,6 +612,12 @@ check "...and \$\${ opens no frame for the expansion readings either" allow \
 check "...nor does it start the candidate scan" allow \
     "$(armed "$(python3 -c 'print("echo \$\${x}; " + "{ :; }; " * 63 + "ls")')")"
 # ...while a continuation between the `$` and the `{` does not hide a real one.
+# PROCESS substitution is a WORD to the raw scan, not a redirect: reading its `<` as an
+# operator skipped into the body and lost the command word behind it.
+check "a process substitution in an assignment is one word" block \
+    "$(armed 'X=<(echo x) /bin/@(r)m -rf src')"
+check "...while the same shape running a read stays a read" allow \
+    "$(armed 'X=<(echo x) ls')"
 check "a continuation inside the opener does not hide the expansion" block \
     "$(armed "$(printf 'X=$\\\n{Y:-a;b} /bin/@(rm) -rf src')")"
 check "...and one behind eight quoted braces" block \
@@ -883,6 +889,32 @@ check "unresolved command word NAMING a helper, no review pending" block \
 # The read/mention contract survives on the resolved side: naming a helper is still a
 # read when the command word says what runs.
 check "reading a helper with a named program" allow "$(clean "cat $HELPER")"
+
+# A WRAPPER NAME sitting inside expansion TEXT costs the segment. This block is NEW on
+# this branch — HEAD allows it — so it is recorded as an accepted cost, not as parity.
+#
+# The mechanism is the tokenizer, not the rule: shlex splits `X=${Y:-a env b}` into
+# `X=${Y:-a`, `env`, `b}`, the first is an assignment, so `env` becomes the apparent
+# command word and engages the WRAPPED regime. That regime scans every token, and the
+# expansion's own fragments carry `${` and `}` — unresolved. The extglob spelling below
+# is incidental; the plain one blocks for the same reason.
+#
+# Narrowing it means deriving `wrapped` from the raw pieces inside _runs_mod_verb, which
+# is shared with the find `-exec` payload path where no segment text corresponds. That is
+# the same precision trade this file has already refused eight times, and every previous
+# attempt bought a false block back with a MISS. Widening a conservative scan on text the
+# shell may yet turn into a real wrapper is the safe direction; narrowing it is not.
+#
+# The cost is narrow: it needs the expansion in an ASSIGNMENT PREFIX *and* a wrapper name
+# as a whitespace-separated word inside it. Both companions below stay allowed.
+check "a wrapper name inside expansion text costs the segment" block \
+    "$(armed 'X=${Y:-a env b} ls src')"
+check "...the extglob spelling is the same block, not a second one" block \
+    "$(armed 'X=${Y:-a env b} ls /bin/@(r)m -rf src')"
+check "...an expansion with no wrapper name in it stays allowed" allow \
+    "$(armed 'X=${Y:-a b} ls src')"
+check "...and so does the same expansion away from command position" allow \
+    "$(armed 'ls ${Y:-a env b} src')"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

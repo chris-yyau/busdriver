@@ -471,7 +471,12 @@ if cmdword._fold_brace_expansions("x{a," + chr(92) + ";b}") != "x*":
 for _pre in ("command> /dev/null ", "env> /dev/null ", "X=1> /dev/null ",
              "command>> /tmp/x ", "env< /dev/null ",
              # `<<-` is the one redirect operator that does NOT end in `<` or `>`
-             "command<<- EOF ", "env<<- EOF ", "command<<< x ", "command<> /tmp/x "):
+             "command<<- EOF ", "env<<- EOF ", "command<<< x ", "command<> /tmp/x ",
+             # ...and a target that itself ends in a redirect operator takes the word after
+             # IT, so consuming exactly one and clearing the flag stopped the walk on the
+             # second filename
+             "command> /dev/null> /tmp/x ", "> /dev/null> /tmp/x ",
+             "command> /dev/null> /tmp/x> /tmp/y "):
     n += 1
     _live = ("cat < <(printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92)
              + ";) | " + _pre + "source /dev/stdin")
@@ -487,6 +492,21 @@ for _kw in ("then>/dev/null ", "then</dev/null ", "then>&2 ", "then> /dev/null "
 n += 1
 if cmdword.is_file_mod("grep -n 'rm -rf src' then>/dev/null <(echo pat)"):
     bad.append("blocked inert: a `then` OPERAND with an attached redirect")
+
+# REFUTED, and pinned so it stays refuted: a review round claimed that redirect-DENSE text
+# just under the budget's `len // 8` character charge could still overrun the 5s hook timeout
+# -- the shape that once measured 14.0s at 60KB, before the length floor was added to the
+# charge. Measured at ~31KB across ten dense spellings, the worst is about a tenth of a
+# second. Two of them are asserted here at a generous ceiling; this pins the CLAIM, not a
+# performance target, so the ceiling is deliberately far above the observed times.
+import time                                                            # noqa: E402
+
+for _dense in ("su<a>" * 6200, "<(x)" * 7750 + " bash", "su|" * 10000 + " <(printf x)"):
+    n += 1
+    _t0 = time.time()
+    cmdword.is_file_mod(_dense)
+    if time.time() - _t0 > 2.0:
+        bad.append("dense redirect text near the budget cutoff took over 2s")
 
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))

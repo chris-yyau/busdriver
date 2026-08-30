@@ -2382,7 +2382,12 @@ def _cmdpos_receiver_in_raw(text):
                 # the operand of a BARE redirection operator, which is a filename and never
                 # the command: `| > /dev/null source /dev/stdin` put `/dev/null` where the
                 # walk was looking and it stopped there.
-                _skip_target = False
+                # ...and the target may itself END in another redirect operator, in which
+                # case the word after IT is the next target: bash reads
+                # `command> /dev/null> /tmp/x source /dev/stdin` as two redirections and
+                # then the receiver, while clearing the flag unconditionally left the walk
+                # stopping on `/tmp/x`. Same test as the prefix branch, same reason.
+                _skip_target = w.endswith(("<", ">", "<<-"))
                 if _quoted:
                     return True               # `> "/tmp/a b"` -- see the note below
                 continue

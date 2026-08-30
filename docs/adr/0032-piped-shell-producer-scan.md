@@ -764,9 +764,19 @@ the command-position receiver classes and the sourced-substitution form, precisi
 `.sh`, `.log`, `.perl5.34`, directory-component operands and those same class words appearing
 as DATA, boundary-placement operands (`bash".log"`, `bash\.log`, `python3".12.log"`), and
 five receiver spellings behind the quote pads, five command-position PREFIX shapes, and the
-quoted-punctuation over-block pins — **165 enumerated cases plus a 2,000-composition seeded property**, every active composition blocking and
-every inert one allowed. The grid is what found the quoting
-defeat above; two hand-picked cases had not.
+quoted-punctuation over-block pins. Every active composition must block and every inert one
+stay allowed. The grid is what found the quoting defeat above; two hand-picked cases had not.
+
+No case count is quoted here on purpose: the fixture prints its own total and the number
+moves with every round, so a figure copied into prose is stale by the next one — this
+document already carries a whole section on numbers that were true once and cited after.
+
+Two entries in that set are **over-block pins, not transports**, and the fixture says so:
+`2> >(receiver)` redirects stderr while the payload is written on stdout, and
+`payload >(receiver)` passes the substitution PATHNAME as an argument — in neither does the
+payload actually reach the receiver. They block because `>(...)` takes the whole command as
+its producer, which is conservative and correct, but calling them active cases would have
+claimed the transport invariant was exercised when it was not.
 
 It carries a **seeded property** as well, for the reason the whole sixty-seven-row table
 exists: every defect here was a COMPOSITION nobody had enumerated, and a fixed table only
@@ -774,8 +784,8 @@ holds the ones someone thought of. 2,000 random compositions of transport × rec
 prefix × wrapper × pad, each of which really feeds a shell, all of which must block; the seed
 is fixed so a failure reproduces exactly. It found two gaps within a minute of being written
 — an expansion behind a prefix word, and `'' in "({"` being *true* in Python, so a run ending
-at end-of-text read as truncated — neither of which the enumerated cases reached. 0.2s for
-all 2,165.
+at end-of-text read as truncated — neither of which the enumerated cases reached. The whole
+fixture runs in about 0.2s.
 
 ### The suite must not forge what it tests
 

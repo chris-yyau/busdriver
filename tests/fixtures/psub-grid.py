@@ -26,7 +26,11 @@ TRANSPORTS = [
     ("cat < <(%s) | b" + chr(92) + "a" + chr(92) + "s" + chr(92) + "h",
      "printf rm" + chr(92) + " -rf" + chr(92) + " src", "printf hello"),
     ("printf 'rm -rf src' > >(%s)", "bash", "cat -n"),
-    ("printf 'rm -rf src' 2> >(%s)", "bash", "cat -n"),
+    # RESIDUAL over-block, not a transport: `2>` redirects STDERR while printf writes on
+    # stdout, so the payload never reaches the receiver. It blocks because `>(...)` takes
+    # the whole command as its producer -- conservative, and worth pinning as such rather
+    # than dressing up as an active case.
+    ("printf 'rm -rf src' 2> >(%s)", "bash", None),
     # ACTIVE-ONLY: its inert twin still carries a `> ""` write redirect, which really is
     # a write -- the classifier is right to block it, so it is not a precision case.
     ("printf 'rm -rf src' > %s%s>(%s)" % (DQ, DQ, "%s"), "bash", None),
@@ -258,7 +262,7 @@ RNG = random.Random(20260830)
 # payload is the OUTER command, which is what makes them the mirror image rather than a
 # spelling of the same thing.
 TRANSPORT_F = ["%s < <(%%s)", "%s <(%%s)", "cat < <(%%s) | %s", "cat < <(%%s) |%s",
-               "%%s > >(%s)", "%%s 2> >(%s)", '%%s > "">(%s)', "%%s >(%s)"]
+               "%%s > >(%s)", "%%s 2> >(%s)", '%%s > "">(%s)', "%%s >(%s)"]   # arg form: see note below
 RECEIVERS = ["bash", "sh", "python3", "perl5.34", "source /dev/stdin", ". /dev/stdin",
              "unshare", "lldb-19", "$SHELL", "b$(printf as)h", "/bin/ba[s]h",
              "/bin/ba+(s)h", "ba{s..s}h", "b" + chr(92) + "a" + chr(92) + "s"
@@ -268,6 +272,10 @@ PREFIXES = ["", "X=1 ", "> /dev/null ", ">/dev/null ", "command ", "env ", "env 
             + " b ", 'X="a b" ']
 WRAPS = ["%s", "true; %s", "%s; true", "{ %s; }", "( %s )", "if true; then %s; fi",
          PAD + "; %s; " + PAD]
+# NOTE on `%%s >(%s)`: this passes the substitution PATHNAME as an argument rather than
+# redirecting into it, so the payload does not reach the receiver either. It is kept in the
+# randomised set because the classifier must still answer it conservatively -- but like the
+# `2>` case above it is an over-block pin, not a demonstration of the transport invariant.
 PAYLOAD = "printf rm" + chr(92) + " -rf" + chr(92) + " src" + chr(92) + ";"
 
 prop_bad = []
@@ -291,6 +299,16 @@ n += 2000
 if prop_bad:
     bad.append("property: %d/2000 compositions allowed, first: %s"
                % (len(prop_bad), prop_bad[0]))
+
+# A LINE CONTINUATION between `<` and `(` is removed by bash before parsing, and
+# `_normalize` removes it before the scanner runs -- so the substitution is seen. Pinned
+# because reading `_process_substitutions` alone suggests otherwise: its backslash skip
+# would step over the pair if the continuation ever reached it.
+for _payload in ("printf " + chr(39) + "rm -rf src" + chr(39),
+                 "printf " + chr(39) + "echo x > src/impl.py" + chr(39)):
+    n += 1
+    if not cmdword.is_file_mod("bash < <" + chr(92) + chr(10) + "(" + _payload + ")"):
+        bad.append("allowed active (line-continuation substitution): " + _payload)
 
 if bad:
     print("PSUB fail %d/%d" % (len(bad), n))

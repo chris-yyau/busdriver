@@ -348,10 +348,11 @@ tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on que
 #   1. PEP 552 flags at bytes 4-8 (little-endian): `flags & 3 == 1` is the
 #      UNCHECKED hash-based cache — loaded with no source comparison at all.
 #   2. Body match: the bytes after the 16-byte header must equal a
-#      py_compile of the sibling `.py` under an allowlisted co_filename
-#      (temp pyc, compare bodies). Timestamp and checked-hash modes only
-#      authenticate the source's metadata/hash, so a spliced
-#      header+malicious-body cache would otherwise pass.
+#      compile of the sibling `.py` under an allowlisted co_filename
+#      (in-memory SourceFileLoader.source_to_code, compare marshal
+#      bodies). Timestamp and checked-hash modes only authenticate the
+#      source's metadata/hash, so a spliced header+malicious-body cache
+#      would otherwise pass.
 #
 # Everything else under the exemption is refused too, not skipped: a header this
 # cannot read, a file too short to hold one, a missing/unreadable sibling source,
@@ -379,22 +380,37 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
             printf 'gate-integrity: could not enumerate the locked directories\n' >&2
             exit 1
         fi
-        # Never marshal.loads attacker .pyc bodies. Authenticate by asking the
-        # same py_compile path CPython uses to write caches: compile the trusted
-        # sibling under each allowlisted co_filename (dfile=) into a temp pyc and
-        # compare bodies after the 16-byte header. That covers code, consts
-        # (incl. signed zero / sharing), line tables, and co_filename without
-        # deserializing the candidate. Optimize level comes from the PEP 3147
-        # name (`.opt-N`), not from this interpreter. Trees using
+        # Bound the NUL listing before the classifier allocates against it.
+        # Per-file 8 MiB caps do not constrain a tree of many small .pyc paths.
+        local list_bytes
+        list_bytes="$(wc -c <"$tmp" | tr -d '[:space:]')" || list_bytes=
+        if [[ -z "$list_bytes" || "$list_bytes" -gt $((8 * 1024 * 1024)) ]]; then
+            rm -f "$tmp"
+            printf 'gate-integrity: FAIL — exempt bytecode listing exceeds 8 MiB bound\n' >&2
+            exit 1
+        fi
+        # Never marshal.loads attacker .pyc bodies. Authenticate by compiling the
+        # trusted sibling bytes in-memory the same way py_compile does
+        # (SourceFileLoader.source_to_code) under each allowlisted co_filename,
+        # then comparing marshal bodies after the 16-byte header. That covers
+        # code, consts (incl. signed zero / sharing), line tables, and
+        # co_filename without deserializing the candidate or writing a temp
+        # source an adversary could mutate. Optimize level comes from the
+        # PEP 3147 name (`.opt-N`), not from this interpreter. Trees using
         # -X no_debug_ranges must clear __pycache__ before --check.
         # shellcheck disable=SC2016  # python source, not a shell expansion
         python3 -I -c '
-import importlib.util, os, py_compile, re, sys, tempfile, warnings
+import importlib.machinery, importlib.util, os, re, sys, warnings
+# source_to_code may emit SyntaxWarning while still succeeding; stderr is
+# captured with stdout by the shell caller, so an unfiltered warning would
+# false-fail.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 HEADER = 16
 _MAX_PYC_BYTES = 8 * 1024 * 1024
 _MAX_SRC_BYTES = _MAX_PYC_BYTES
+_MAX_LISTING_BYTES = _MAX_PYC_BYTES
 
 def read_nofollow(path, max_bytes):
     flags = os.O_RDONLY
@@ -455,53 +471,44 @@ def allowed_filenames(src):
     return out
 
 def trusted_bodies(src_bytes, names, optimize):
-    # Compile the immutable snapshot, not a re-open of the sibling path
-    # (closes the TOCTOU between the size-bounded read and py_compile).
-    bodies = []
-    mode = py_compile.PycInvalidationMode.TIMESTAMP
-    fd_s, spath = tempfile.mkstemp(suffix=".py")
-    try:
-        n = 0
-        while n < len(src_bytes):
-            w = os.write(fd_s, src_bytes[n:])
-            if w <= 0:
-                raise OSError(0, "short write")
-            n += w
-        os.close(fd_s)
-        fd_s = -1
-        for name in names:
-            fd, tpath = tempfile.mkstemp(suffix=".pyc")
-            os.close(fd)
-            try:
-                py_compile.compile(
-                    spath, cfile=tpath, dfile=name, doraise=True,
-                    optimize=optimize, invalidation_mode=mode,
-                )
-                data = read_nofollow(tpath, _MAX_PYC_BYTES)
-                if len(data) >= HEADER:
-                    bodies.append(data[HEADER:])
-            finally:
-                try:
-                    os.unlink(tpath)
-                except OSError:
-                    pass
-    finally:
-        if fd_s >= 0:
-            try:
-                os.close(fd_s)
-            except OSError:
-                pass
-        try:
-            os.unlink(spath)
-        except OSError:
-            pass
-    return bodies
+    # Compile the immutable src_bytes snapshot in-memory — never stage it on a
+    # named path a same-UID writer could open and mutate. Serialize with the
+    # same helper py_compile uses so marshal FLAG_REF matches on-disk caches.
+    import importlib._bootstrap_external as _be
+    loader = importlib.machinery.SourceFileLoader("<gate-integrity>", "<memory>")
+    # Keep every code object alive until dumps finish; marshal FLAG_REF bits
+    # are refcount-sensitive and a single-ref dump can diverge from py_compile.
+    codes = [
+        loader.source_to_code(src_bytes, name, _optimize=optimize)
+        for name in names
+    ]
+    return [_be._code_to_timestamp_pyc(code)[HEADER:] for code in codes]
 
 def optimize_level(path):
     m = re.search(r"\.opt-(\d+)\.pyc$", path, re.IGNORECASE)
     return int(m.group(1)) if m else 0
 
-for raw in sys.stdin.buffer.read().split(b"\0"):
+def iter_nul_paths(max_bytes):
+    pending = b""
+    total = 0
+    while True:
+        chunk = sys.stdin.buffer.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes or len(pending) + len(chunk) > max_bytes:
+            raise OSError(0, "listing too large")
+        pending += chunk
+        while True:
+            i = pending.find(b"\0")
+            if i < 0:
+                break
+            yield pending[:i]
+            pending = pending[i + 1:]
+    if pending:
+        yield pending
+
+for raw in iter_nul_paths(_MAX_LISTING_BYTES):
     if not raw:
         continue
     p = os.fsdecode(raw)

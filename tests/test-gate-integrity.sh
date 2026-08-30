@@ -679,6 +679,71 @@ else
 fi
 rm -f "$_fifo"
 
+# A source that triggers SyntaxWarning must still authenticate — warnings go to
+# stderr, which the gate captures with stdout, so an unfiltered warning would
+# false-fail a valid TIMESTAMP cache.
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+_share_src="$_fix/hooks/gate-scripts/lib/marker_ops.py"
+cp "$_share_src" "$_share_src.bak"
+printf 'X = 1 is 1\n' > "$_share_src"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null
+compile_pyc TIMESTAMP
+assert $? "↳ fixture: wrote a TIMESTAMP cache for a SyntaxWarning source"
+_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+_rc=$?
+mv "$_share_src.bak" "$_share_src"
+rm -rf "$_fix/hooks/gate-scripts/lib/__pycache__"
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null
+if [[ "$_rc" -eq 0 ]]; then
+    assert 0 "↳ a valid cache beside a SyntaxWarning source still passes"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "↳ a valid cache beside a SyntaxWarning source still passes"
+fi
+
+# NUL-listing streamer bounds: empty records, chunk-spanning separators,
+# unterminated trailing record, exact limit, and limit-plus-one.
+python3 - <<'PY'
+import io, sys
+
+def iter_nul_paths(buf, max_bytes):
+    pending = b""
+    total = 0
+    while True:
+        chunk = buf.read(4)  # small chunks to hit span cases
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes or len(pending) + len(chunk) > max_bytes:
+            raise OSError(0, "listing too large")
+        pending += chunk
+        while True:
+            i = pending.find(b"\0")
+            if i < 0:
+                break
+            yield pending[:i]
+            pending = pending[i + 1:]
+    if pending:
+        yield pending
+
+def take(data, limit):
+    return list(iter_nul_paths(io.BytesIO(data), limit))
+
+assert take(b"", 8) == []
+assert take(b"\0", 8) == [b""]
+assert take(b"a\0b\0", 8) == [b"a", b"b"]
+assert take(b"abcd\0ef", 8) == [b"abcd", b"ef"]  # span + unterminated
+assert take(b"12345678", 8) == [b"12345678"]  # exact limit, no NUL
+try:
+    take(b"123456789", 8)
+except OSError as e:
+    assert "listing too large" in (e.strerror or str(e))
+else:
+    raise SystemExit("limit-plus-one did not raise")
+print("nul-stream bounds ok")
+PY
+assert $? "↳ NUL-listing streamer covers empty/span/unterminated/limit bounds"
+
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────
 # `printf '%s\n' ""` writes a lone newline: 1 byte, which clears a `-s` test and
 # has a gate surface holding ZERO scripts certify as "OK — 1 files match".

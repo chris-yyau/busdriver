@@ -210,6 +210,38 @@ compute_lock() {  # compute_lock <root>
     listing="$(lockable_paths | LC_ALL=C sort)" \
         || { printf 'gate-integrity: could not enumerate the locked directories\n' >&2; return 1; }
 
+    # LF is not the only separator that splits a line. `str.splitlines()` also
+    # splits on VT, FF, CR, FS, GS, RS and — decoded — NEL, LS and PS, and the auth
+    # binder below parses this listing with it. A name carrying one keeps
+    # n_lines == n_paths (the guard above only sees LF), yet
+    # `<digest>  hooks/gate-scripts/x<VT><64 hex>  <locked>.py` splits into TWO
+    # binder lines, the second a forged `computed` membership for a source the
+    # classifier never hashed — which is the one thing that bind exists to refuse.
+    # The same split also forges the `--GATE_INTEGRITY_AUTH_BIND--` separator
+    # itself, and `.index()` takes the FIRST one. Refuse the NAME here instead:
+    # then no parser downstream can be confused by one, and neither the binder
+    # nor the classifier has to carry half of the argument.
+    #
+    # Split on b"\n" only, which is exact BECAUSE the count guard above already
+    # proved no path holds an LF — keep that ordering. One pass over the captured
+    # listing, not one interpreter per path: at 67 locked files the per-path form
+    # cost 1.2s of a 1.6s `--check`. `-I` for the reason sha256_of documents: this
+    # runs after the `cd` into the tree being hashed.
+    if ! printf '%s' "$listing" | python3 -I -c '
+import os, sys
+for raw in sys.stdin.buffer.read().split(b"\n"):
+    if not raw:
+        continue
+    p = os.fsdecode(raw)
+    if p.splitlines() != [p]:
+        sys.stderr.write(
+            "gate-integrity: a locked path contains a line-break character: %s\n" % p
+        )
+        raise SystemExit(1)
+'; then
+        return 1
+    fi
+
     # Paths stay repo-relative so a lock recorded here verifies in any checkout.
     local digest
     while IFS= read -r f; do
@@ -409,6 +441,8 @@ _inode_bytes = {}
 _inode_digest = {}
 _io_bytes = 0
 _pyc_paths = 0
+_offenders = []
+_auth_recs = []
 
 def read_nofollow(path, max_bytes):
     global _io_bytes
@@ -538,49 +572,57 @@ try:
             )
             raise SystemExit(1)
         p = os.fsdecode(raw)
+        # Any splitlines() separator (not only LF/CR) or auth framing token in a
+        # path would let an offender forge the stdout auth frame; refuse before
+        # classify/print. splitlines() matches the auth parsers below.
+        if (p.splitlines() != [p]) or ("###GATE_INTEGRITY_AUTH_V1" in p):
+            _offenders.append(
+                "<unsafe-exempt-path>  (path contains newline or auth framing token)"
+            )
+            continue
         try:
             data, _ = read_nofollow(p, _MAX_PYC_BYTES)
         except OSError as exc:
             import errno as _errno
             msg = exc.strerror or str(exc)
             if "too large" in msg:
-                print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
+                _offenders.append(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
             elif "symlink" in msg or getattr(exc, "errno", None) in (_errno.ELOOP, getattr(_errno, "EMLINK", -1)):
-                print(p + "  (symlink — CPython never writes one into __pycache__)")
+                _offenders.append(p + "  (symlink — CPython never writes one into __pycache__)")
             elif "not a regular file" in msg:
-                print(p + "  (not a regular file — CPython never writes one into __pycache__)")
+                _offenders.append(p + "  (not a regular file — CPython never writes one into __pycache__)")
             else:
-                print(p + "  (unreadable: %s)" % msg)
+                _offenders.append(p + "  (unreadable: %s)" % msg)
             continue
         if len(data) < HEADER:
-            print(p + "  (too short to hold a PEP 552 header)")
+            _offenders.append(p + "  (too short to hold a PEP 552 header)")
             continue
         flags = int.from_bytes(data[4:8], "little")
         if flags & 3 == 1:
-            print(p + "  (PEP 552 UNCHECKED hash-based: never validated against its source)")
+            _offenders.append(p + "  (PEP 552 UNCHECKED hash-based: never validated against its source)")
             continue
         # Foreign-magic caches cannot be authenticated against this interpreter.
         # Skipping them would reopen #797 whenever a gate later resolves a different
         # python3 from PATH that CAN load the planted cache.
         if data[:4] != importlib.util.MAGIC_NUMBER:
-            print(p + "  (foreign-interpreter cache cannot be authenticated)")
+            _offenders.append(p + "  (foreign-interpreter cache cannot be authenticated)")
             continue
         try:
             src = importlib.util.source_from_cache(p)
         except ValueError:
-            print(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
+            _offenders.append(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
             continue
         if not src:
-            print(p + "  (no regular sibling source to authenticate against)")
+            _offenders.append(p + "  (no regular sibling source to authenticate against)")
             continue
         try:
             src_bytes, src_digest = read_nofollow(src, _MAX_SRC_BYTES)
         except OSError as exc:
             msg = exc.strerror or str(exc)
             if "too large" in msg:
-                print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
+                _offenders.append(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
             else:
-                print(p + "  (no regular sibling source to authenticate against)")
+                _offenders.append(p + "  (no regular sibling source to authenticate against)")
             continue
         names = allowed_filenames(src)
         optimize = optimize_level(p)
@@ -604,10 +646,29 @@ try:
                 _trusted_memo[memo_key] = ("err", exc.__class__.__name__)
         kind, payload = _trusted_memo[memo_key]
         if kind != "ok":
-            print(p + "  (trusted sibling source failed to compile: %s)" % payload)
+            _offenders.append(p + "  (trusted sibling source failed to compile: %s)" % payload)
             continue
         if data[HEADER:] not in payload:
-            print(p + "  (bytecode body does not match a compile of the locked source beside it)")
+            _offenders.append(p + "  (bytecode body does not match a compile of the locked source beside it)")
+            continue
+        # Record source + cache digests for the shell bind below (stdout-framed
+        # after the loop so no named tempfile or cross-process pipe FD is needed).
+        _auth_recs.append((
+            hashlib.sha256(src_bytes).hexdigest(), src,
+            hashlib.sha256(data).hexdigest(), p,
+        ))
+
+    if _offenders:
+        for _line in _offenders:
+            print(_line)
+    elif _auth_recs:
+        # Distinctive framing: offender lines are "path  (reason)" and never use
+        # this exact token as the sole line content from the classifier itself.
+        print("###GATE_INTEGRITY_AUTH_V1###")
+        for _sh, _sp, _ph, _pp in _auth_recs:
+            print("%s  %s" % (_sh, _sp))
+            print("%s  %s" % (_ph, _pp))
+        print("###GATE_INTEGRITY_AUTH_V1_END###")
 except OSError as exc:
     msg = exc.strerror or str(exc)
     if "listing too large" in msg:
@@ -666,16 +727,47 @@ fi
 # Same refusal, for the bytecode no index can see. Placed AFTER the tracked check so
 # a tracked offender still reports as TRACKED, and BEFORE the mode dispatch so
 # `--update` cannot record a lock over a tree holding one.
-if ! unvalidated_pyc="$(unvalidated_bytecode "$root" 2>&1)"; then
+# Auth digests are framed on the classifier's stdout (no named tempfile / no
+# cross-process pipe FD). Offenders and auth framing are mutually exclusive.
+_auth_blob=""
+if ! _cls_out="$(unvalidated_bytecode "$root" 2>&1)"; then
     # Enumeration failures already carry compute_lock's message; pass them
     # through so #797 cannot rename the #742 find-status guard.
-    if [[ "$unvalidated_pyc" == *"could not enumerate the locked directories"* ]]; then
-        printf '%s\n' "$unvalidated_pyc" >&2
+    if [[ "$_cls_out" == *"could not enumerate the locked directories"* ]]; then
+        printf '%s\n' "$_cls_out" >&2
     else
         printf 'gate-integrity: FAIL — could not classify the exempt bytecode:\n' >&2
-        printf '  %s\n' "$unvalidated_pyc" >&2
+        printf '  %s\n' "$_cls_out" >&2
     fi
     exit 1
+fi
+_auth_start="###GATE_INTEGRITY_AUTH_V1###"
+_auth_end="###GATE_INTEGRITY_AUTH_V1_END###"
+if [[ -n "$_cls_out" && "$_cls_out" == "$_auth_start"$'\n'* && "$_cls_out" == *$'\n'"$_auth_end" ]]; then
+    # Byte-length bound (wc -c), not ${#var} character count.
+    _cls_bytes="$(printf '%s' "$_cls_out" | wc -c | tr -d ' ')"
+    if [[ "$_cls_bytes" -gt $((8 * 1024 * 1024)) ]]; then
+        printf 'gate-integrity: FAIL — bytecode auth digest record exceeds 8 MiB bound\n' >&2
+        exit 1
+    fi
+    _auth_blob="$(printf '%s\n' "$_cls_out" | AUTH_START="$_auth_start" AUTH_END="$_auth_end" python3 -I -c '
+import os, sys
+start, end = os.environ["AUTH_START"], os.environ["AUTH_END"]
+lines = sys.stdin.read().splitlines()
+if len(lines) < 2 or lines[0] != start or lines[-1] != end:
+    raise SystemExit(2)
+body = lines[1:-1]
+if len(body) % 2 != 0:
+    raise SystemExit(2)
+sys.stdout.write("\n".join(body))
+if body:
+    sys.stdout.write("\n")
+')" || { printf 'gate-integrity: FAIL — malformed bytecode auth digest record\n' >&2; exit 1; }
+    unvalidated_pyc=""
+elif [[ -n "$_cls_out" ]]; then
+    unvalidated_pyc="$_cls_out"
+else
+    unvalidated_pyc=""
 fi
 if [[ -n "$unvalidated_pyc" ]]; then
     printf 'gate-integrity: FAIL — unvalidated bytecode under a locked directory:\n' >&2
@@ -705,13 +797,122 @@ if [[ -e "$lock_path" && ! -f "$lock_path" ]]; then
     exit 1
 fi
 
+# Shared content snapshot for --update write and --check compare, and for binding
+# bytecode auth digests to the same bytes the lock hashes.
+computed="$(compute_lock "$root")" || exit 1
+if [[ -z "$computed" ]]; then
+    if [[ "$mode" == "update" ]]; then
+        printf 'gate-integrity: refusing to record an EMPTY lock (the locked directories hold no files)\n' >&2
+    else
+        printf 'gate-integrity: FAIL — the locked directories hold no files\n' >&2
+    fi
+    exit 1
+fi
+# Every source used to accept a .pyc must still be what compute_lock hashed, and
+# every accepted cache must still be the bytes that passed classification.
+# One Python pass (not per-record grep) keeps work inside the classifier bounds.
+if [[ -n "$_auth_blob" ]]; then
+    # Records travel on stdin (not the environment) so an 8 MiB auth blob cannot
+    # hit ARG_MAX; one Python pass avoids per-record grep.
+    {
+        printf '%s\n' "$computed"
+        printf '%s\n' '--GATE_INTEGRITY_AUTH_BIND--'
+        printf '%s' "$_auth_blob"
+        # Ensure the auth section ends with a newline so splitlines keeps the last record.
+        [[ "$_auth_blob" == *$'\n' ]] || printf '\n'
+    } | ROOT="$root" python3 -I -c '
+import hashlib, os, stat, sys
+
+def fail(msg):
+    sys.stderr.write(msg + "\n")
+    raise SystemExit(1)
+
+# split("\n"), never splitlines(): compute_lock frames this on LF alone, and
+# splitlines() ALSO breaks on VT/FF/CR/FS/GS/RS/NEL/LS/PS — one such name would
+# split its own line into a forged `computed` membership, or forge the separator
+# below (`.index()` takes the FIRST). compute_lock refuses those names outright;
+# parsing exactly is the second half of that invariant, kept here so the binder
+# does not depend on the enumerator to be unambiguous. The trailing "" from the
+# final newline never reaches `computed` (it sits after the separator) and is
+# filtered out of the record list.
+raw = sys.stdin.read().split("\n")
+try:
+    sep = raw.index("--GATE_INTEGRITY_AUTH_BIND--")
+except ValueError:
+    fail("gate-integrity: FAIL — malformed bytecode auth digest record")
+computed = set(raw[:sep])
+lines = [ln for ln in raw[sep + 1:] if ln]
+root = os.environ["ROOT"]
+# Match the classifier: charge unique-inode re-reads so hardlinked aliases of one
+# near-8-MiB cache cannot multiply into multi-GiB bind I/O. Per-file reads stay
+# capped at 8 MiB (individual); cumulative unique-inode bytes at 64 MiB.
+_MAX_BIND_IO = 64 * 1024 * 1024
+_inode_digest = {}
+_io_bytes = 0
+if len(lines) % 2 != 0:
+    fail("gate-integrity: FAIL — truncated bytecode auth digest record")
+for i in range(0, len(lines), 2):
+    src_line, pyc_line = lines[i], lines[i + 1]
+    for line in (src_line, pyc_line):
+        if "  " not in line:
+            fail("gate-integrity: FAIL — malformed bytecode auth digest record")
+        hx, path = line.split("  ", 1)
+        if len(hx) != 64 or any(c not in "0123456789abcdef" for c in hx) or not path or hx == path:
+            fail("gate-integrity: FAIL — malformed bytecode auth digest record")
+        # A record path must be one line by str.splitlines() too, not just by LF:
+        # the membership compare below is exact-string, so a path that splits
+        # under either rule cannot be reasoned about here.
+        if path.splitlines() != [path]:
+            fail("gate-integrity: FAIL — unsafe path in bytecode auth digest record")
+    sh, sp = src_line.split("  ", 1)
+    ph, pp = pyc_line.split("  ", 1)
+    if src_line not in computed:
+        fail("gate-integrity: FAIL — sibling source changed underfoot during bytecode auth: %s" % sp)
+    path = os.path.join(root, pp)
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        fd = os.open(path, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError("not regular")
+            if st.st_size > 8 * 1024 * 1024:
+                raise OSError("too large")
+            key = (st.st_dev, st.st_ino)
+            cached = _inode_digest.get(key)
+            if cached is not None:
+                data, digest_hex = cached
+            else:
+                chunks = []
+                left = st.st_size
+                while left > 0:
+                    chunk = os.read(fd, left)
+                    if not chunk:
+                        raise OSError("size changed")
+                    chunks.append(chunk)
+                    left -= len(chunk)
+                if os.read(fd, 1):
+                    raise OSError("size changed")
+                data = b"".join(chunks)
+                if _io_bytes + len(data) > _MAX_BIND_IO:
+                    fail("gate-integrity: FAIL — bytecode auth bind I/O exceeds %d-byte bound" % _MAX_BIND_IO)
+                _io_bytes += len(data)
+                digest_hex = hashlib.sha256(data).hexdigest()
+                _inode_digest[key] = (data, digest_hex)
+        finally:
+            os.close(fd)
+    except OSError:
+        fail("gate-integrity: FAIL — accepted bytecode changed underfoot during auth: %s" % pp)
+    if digest_hex != ph:
+        fail("gate-integrity: FAIL — accepted bytecode changed underfoot during auth: %s" % pp)
+' || exit 1
+fi
+
 if [[ "$mode" == "update" ]]; then
-    computed="$(compute_lock "$root")" || exit 1
-    # An empty listing would write a lone newline — 1 byte, which clears the `-s`
-    # guard below and has a zero-script gate surface certify as "OK — 1 files
-    # match". Both locked directories existing but empty is a disarmed tree, not
-    # a recordable state.
-    [[ -n "$computed" ]] || { printf 'gate-integrity: refusing to record an EMPTY lock (the locked directories hold no files)\n' >&2; exit 1; }
     # Write-then-rename. `>` follows a symlink, and the refusal above ran BEFORE the
     # whole hashing pass — wide enough for the lock to be swapped for a symlink in
     # between. rename(2) does not follow a symlink destination, so the move replaces
@@ -770,9 +971,6 @@ if [[ ! -f "$lock_path" || ! -s "$lock_path" ]]; then
     exit 1
 fi
 
-computed="$(compute_lock "$root")" || exit 1
-# Same refusal on the checking side — see --update above.
-[[ -n "$computed" ]] || { printf 'gate-integrity: FAIL — the locked directories hold no files\n' >&2; exit 1; }
 # One diff reports all three failure modes with the offending path named:
 # a changed digest, an added (unlocked) file, and a deleted locked file.
 if diff_out="$(diff -u "$lock_path" <(printf '%s\n' "$computed") 2>&1)"; then

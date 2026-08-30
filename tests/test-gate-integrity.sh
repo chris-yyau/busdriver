@@ -777,7 +777,9 @@ if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; the
         printf '%s\n' "long=$(printf '%q' "$_long")"
         # Intentional: $long expands in the generated shim, not here.
         # shellcheck disable=SC2016
-        printf '%s\n' 'while :; do printf "%s\0" "$long"; done'
+        # Exit 141 on EPIPE so a SIGPIPE-ignored writer cannot hang after the
+        # classifier closes stdin at the 8 MiB listing bound (real find -> 141).
+        printf '%s\n' 'while :; do printf "%s\0" "$long" || exit 141; done'
     } > "$_shim/find"
     chmod 755 "$_shim/find"
     _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
@@ -854,6 +856,402 @@ if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; the
     rm -rf "$_shim"
 else
     assert 1 "exempt bytecode path count above 4096 fails closed (no tempdir, or no absolute find to shim)"
+fi
+
+# Auth-digest binding: (1) production path with a real validated .pyc must still
+# verify; (2) a source digest absent from compute_lock fails closed; (3) a pyc
+# digest that no longer matches the on-disk cache fails closed. The oversized
+# listing shim above is the hang regression for "do not run compute_lock under
+# an endless PATH find before the bounded classifier".
+fresh_fixture
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" \
+    python3 -c 'import os, py_compile; py_compile.compile(os.environ["_PYC_SRC"], doraise=True)'
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+if _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; then
+    assert 0 "production auth-digest path: validated __pycache__ tree still verifies"
+else
+    printf '  ↳ output: %s\n' "$_out"
+    assert 1 "production auth-digest path: validated __pycache__ tree still verifies"
+fi
+
+# Same-UID source swap underfoot: PATH-shim find so the *second* find (compute_lock)
+# mutates the sibling after classifier auth recorded the old digest. Must invoke
+# gate-integrity.sh — a mock loop would stay green if the production bind were removed.
+# Shim lives under ${ _fix:? } only (no bare mktemp / system tmp).
+_shim_find="${_fix:?}/.bd-797-underfoot-find-shim"
+_real_find="$(command -v -p find 2>/dev/null)"
+case "$_real_find" in
+    /*) ;;
+    *) _real_find="" ;;
+esac
+_src_swap="$_fix/hooks/gate-scripts/lib/marker_ops.py"
+_underfoot_find_ok=0
+if [[ -n "$_real_find" && -x "$_real_find" && -f "$_src_swap" ]]; then
+    if [[ -e "$_shim_find" ]]; then
+        printf '  ↳ refuse: shim path already exists: %s\n' "$_shim_find"
+    elif ! mkdir -m 700 "$_shim_find"; then
+        printf '  ↳ refuse: mkdir failed for %s\n' "$_shim_find"
+    else
+        {
+            printf '%s\n' '#!/usr/bin/env bash'
+            printf '%s\n' "REAL_FIND=$(printf '%q' "$_real_find")"
+            printf '%s\n' "SWAP_SRC=$(printf '%q' "$_src_swap")"
+            printf '%s\n' 'COUNT_FILE="'"$_fix"'/.bd-797-find-count"'
+            # Intentional: $COUNT_FILE expands in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'n=0; if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi'
+            # Intentional: $COUNT_FILE expands in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'echo $((n+1)) >"$COUNT_FILE"'
+            # Intentional: $n / $SWAP_SRC expand in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'if [[ "$n" -ge 1 ]]; then printf "swapped-underfoot = 1\n" >"$SWAP_SRC"; fi'
+            # Intentional: $REAL_FIND / $@ expand in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'exec "$REAL_FIND" "$@"'
+        } > "$_shim_find/find"
+        if ! chmod 755 "$_shim_find/find"; then
+            printf '  ↳ refuse: chmod failed for %s/find\n' "$_shim_find"
+        else
+            _out="$(PATH="$_shim_find:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; _rc=$?
+            # The STATUS is the control; matching the diagnostic alone would stay
+            # green if the gate printed it and still exited 0.
+            if [[ "$_rc" -ne 0 && "$_out" == *"sibling source changed underfoot"* ]]; then
+                _underfoot_find_ok=1
+            else
+                printf '  ↳ output: %s\n' "$_out"
+            fi
+        fi
+        # Cleanup only after exact prefix/realpath containment under $_fix.
+        _fix_real="$(CDPATH='' cd -P -- "${_fix:?}" && pwd -P)" || _fix_real=""
+        _shim_real=""
+        if [[ -d "$_shim_find" ]]; then
+            _shim_real="$(CDPATH='' cd -P -- "$_shim_find" && pwd -P)" || _shim_real=""
+        fi
+        case "$_fix_real" in
+            ""|.) ;;
+            *)
+                case "$_shim_real" in
+                    "$_fix_real"/.bd-797-underfoot-find-shim)
+                        rm -f "$_shim_find/find" "$_fix/.bd-797-find-count"
+                        rmdir "$_shim_find" 2>/dev/null || true
+                        ;;
+                esac
+                ;;
+        esac
+    fi
+fi
+if [[ "$_underfoot_find_ok" -eq 1 ]]; then
+    assert 0 "auth sibling digest missing from compute_lock snapshot fails closed (underfoot swap)"
+else
+    assert 1 "auth sibling digest missing from compute_lock snapshot fails closed (underfoot swap)"
+fi
+
+# Same-UID cache swap underfoot: PATH-shim python3 so the bind invocation (whose
+# -c source mentions the underfoot diagnostic) mutates the accepted .pyc before
+# the re-read — again through gate-integrity.sh, not a reimplemented verifier.
+fresh_fixture
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" \
+    python3 -c 'import os, py_compile; py_compile.compile(os.environ["_PYC_SRC"], doraise=True)'
+"$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1
+_pyc_path="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -1)"
+_shim_py="${_fix:?}/.bd-797-underfoot-python-shim"
+_real_py="$(command -v -p python3 2>/dev/null)"
+case "$_real_py" in
+    /*) ;;
+    *) _real_py="" ;;
+esac
+_underfoot_py_ok=0
+if [[ -n "$_real_py" && -x "$_real_py" && -n "$_pyc_path" && -f "$_pyc_path" ]]; then
+    if [[ -e "$_shim_py" ]]; then
+        printf '  ↳ refuse: shim path already exists: %s\n' "$_shim_py"
+    elif ! mkdir -m 700 "$_shim_py"; then
+        printf '  ↳ refuse: mkdir failed for %s\n' "$_shim_py"
+    else
+        {
+            printf '%s\n' '#!/usr/bin/env bash'
+            printf '%s\n' "REAL_PY=$(printf '%q' "$_real_py")"
+            printf '%s\n' "SWAP_PYC=$(printf '%q' "$_pyc_path")"
+            # Intentional: $* / $SWAP_PYC expand in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'if [[ "$*" == *accepted\ bytecode\ changed\ underfoot* ]]; then printf "forged-underfoot-cache\n" >"$SWAP_PYC"; fi'
+            # Intentional: $REAL_PY / $@ expand in the generated shim, not here.
+            # shellcheck disable=SC2016
+            printf '%s\n' 'exec "$REAL_PY" "$@"'
+        } > "$_shim_py/python3"
+        if ! chmod 755 "$_shim_py/python3"; then
+            printf '  ↳ refuse: chmod failed for %s/python3\n' "$_shim_py"
+        else
+            _out="$(PATH="$_shim_py:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; _rc=$?
+            if [[ "$_rc" -ne 0 && "$_out" == *"accepted bytecode changed underfoot"* ]]; then
+                _underfoot_py_ok=1
+            else
+                printf '  ↳ output: %s\n' "$_out"
+            fi
+        fi
+        _fix_real="$(CDPATH='' cd -P -- "${_fix:?}" && pwd -P)" || _fix_real=""
+        _shim_real=""
+        if [[ -d "$_shim_py" ]]; then
+            _shim_real="$(CDPATH='' cd -P -- "$_shim_py" && pwd -P)" || _shim_real=""
+        fi
+        case "$_fix_real" in
+            ""|.) ;;
+            *)
+                case "$_shim_real" in
+                    "$_fix_real"/.bd-797-underfoot-python-shim)
+                        rm -f "$_shim_py/python3"
+                        rmdir "$_shim_py" 2>/dev/null || true
+                        ;;
+                esac
+                ;;
+        esac
+    fi
+fi
+if [[ "$_underfoot_py_ok" -eq 1 ]]; then
+    assert 0 "auth pyc digest mismatch against on-disk cache fails closed (underfoot swap)"
+else
+    assert 1 "auth pyc digest mismatch against on-disk cache fails closed (underfoot swap)"
+fi
+
+# Framing tokens in an exempt path must refuse (not spoof auth stdout).
+fresh_fixture
+_bad="$_fix/hooks/gate-scripts/lib/__pycache__"
+mkdir -p "$_bad"
+_tok="$_bad/###GATE_INTEGRITY_AUTH_V1###.cpython-312.pyc"
+printf 'x' > "$_tok" 2>/dev/null || true
+if [[ -f "$_tok" ]]; then
+    _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; _rc=$?
+    if [[ "$_rc" -ne 0 ]] \
+        && [[ "$_out" == *unsafe-exempt-path* || "$_out" == *"unvalidated bytecode"* || "$_out" == *"auth framing"* ]]; then
+        assert 0 "exempt path containing auth framing token fails closed"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "exempt path containing auth framing token fails closed"
+    fi
+else
+    assert 0 "exempt path containing auth framing token fails closed (skipped: could not create token filename)"
+fi
+
+# Property checks over the auth framing/bind record protocol (legal path bytes,
+# truncation, reordering, duplicates). Exercises the same splitlines/pair rules
+# the production stdin bind uses — not a reimplementation of digest compare.
+python3 -I - <<'PY' || { assert 1 "auth framing/bind record protocol property checks"; }
+import random, string
+
+def parse_bind(raw_lines):
+    try:
+        sep = raw_lines.index("--GATE_INTEGRITY_AUTH_BIND--")
+    except ValueError:
+        raise ValueError("no sep")
+    computed = set(raw_lines[:sep])
+    lines = [ln for ln in raw_lines[sep + 1:] if ln]
+    if len(lines) % 2 != 0:
+        raise ValueError("truncated")
+    out = []
+    for i in range(0, len(lines), 2):
+        src_line, pyc_line = lines[i], lines[i + 1]
+        for line in (src_line, pyc_line):
+            if "  " not in line:
+                raise ValueError("malformed")
+            hx, path = line.split("  ", 1)
+            if len(hx) != 64 or any(c not in "0123456789abcdef" for c in hx) or not path or hx == path:
+                raise ValueError("malformed")
+            if path.splitlines() != [path]:
+                raise ValueError("unsafe-path")
+        out.append((src_line, pyc_line))
+    return computed, out
+
+rng = random.Random(797)
+alphabet = string.ascii_letters + string.digits + "._-/"
+
+def hex64():
+    return "".join(rng.choice("0123456789abcdef") for _ in range(64))
+
+def legal_path():
+    while True:
+        p = "hooks/" + "".join(rng.choice(alphabet) for _ in range(rng.randint(3, 40)))
+        if p.splitlines() == [p] and "###GATE_INTEGRITY_AUTH_V1" not in p:
+            return p
+
+for _ in range(40):
+    sp, pp = legal_path(), legal_path() + ".pyc"
+    src = "%s  %s" % (hex64(), sp)
+    pyc = "%s  %s" % (hex64(), pp)
+    computed = {src, "%s  other" % hex64()}
+    raw = list(computed) + ["--GATE_INTEGRITY_AUTH_BIND--", src, pyc]
+    c2, pairs = parse_bind(raw)
+    assert pairs == [(src, pyc)] and src in c2
+
+try:
+    parse_bind(["--GATE_INTEGRITY_AUTH_BIND--", "%s  a.py" % hex64()])
+    raise SystemExit("truncation accepted")
+except ValueError as e:
+    assert str(e) == "truncated"
+
+src = "%s  %s" % (hex64(), legal_path())
+pyc = "%s  %s" % (hex64(), legal_path() + ".pyc")
+c2, pairs = parse_bind([src, "--GATE_INTEGRITY_AUTH_BIND--", pyc, src])
+assert pairs == [(pyc, src)]
+
+src = "%s  %s" % (hex64(), legal_path())
+pyc = "%s  %s" % (hex64(), legal_path() + ".pyc")
+c2, pairs = parse_bind([src, "--GATE_INTEGRITY_AUTH_BIND--", src, pyc, src, pyc])
+assert pairs == [(src, pyc), (src, pyc)]
+
+bad = "%s  hooks/a\nb.py" % hex64()
+try:
+    parse_bind(["--GATE_INTEGRITY_AUTH_BIND--", bad, "%s  x.pyc" % hex64()])
+    raise SystemExit("newline path accepted")
+except ValueError as e:
+    assert str(e) in ("unsafe-path", "malformed")
+
+print("auth framing/bind properties ok")
+PY
+assert $? "auth framing/bind record protocol property checks"
+
+# ── A locked path bearing a NON-LF line separator (#797) ──────────────────────
+# `compute_lock`'s LF-vs-NUL count guard sees only LF. `str.splitlines()` — which
+# the auth binder parses the listing with — also splits on VT, FF, CR, FS, GS, RS
+# and, decoded, NEL, LS and PS. A name carrying one keeps n_lines == n_paths and
+# sails past that guard, yet splits its own listing line in two.
+#
+# The payload is a DIRECTORY CHAIN, not a filename: the forged entry needs `/`,
+# which a single component cannot hold, but only the LEADING component needs the
+# separator and the rest are ordinary directories. So
+# `hooks/gate-scripts/evil<VT><64 hex>  hooks/gate-scripts/lib/marker_ops.py`
+# emits one listing line that splitlines() reads as TWO — the second a forged
+# `<64 hex>  hooks/gate-scripts/lib/marker_ops.py` membership binding an
+# attacker-chosen digest to a real locked source that nothing ever hashed. That
+# is precisely the `src_line not in computed` refusal the bytecode bind exists to
+# make, so a name that manufactures the entry defeats the bind. The same split
+# also forges a `--GATE_INTEGRITY_AUTH_BIND--` line, and `.index()` takes the
+# FIRST. Refusing the NAME closes all of it in one place, so no downstream parser
+# has to carry half the argument.
+#
+# `--update` must refuse too, not just `--check`: recording the forged name is
+# what would make it permanent.
+_sep_check_bad=0
+_sep_update_bad=0
+_sep_msg_bad=0
+_sep_fixture_bad=0
+fresh_fixture
+for _sep in VT FF CR FS GS RS NEL LS PS; do
+    _head="$(_GI_SEP="$_sep" python3 -I -c '
+import os, sys
+sys.stdout.write("evil" + {
+    "VT": "\x0b", "FF": "\x0c", "CR": "\r", "FS": "\x1c", "GS": "\x1d",
+    "RS": "\x1e", "NEL": "\x85", "LS": " ", "PS": " ",
+}[os.environ["_GI_SEP"]] + "a" * 64 + "  hooks")')"
+    _chain="$_fix/hooks/gate-scripts/$_head/gate-scripts/lib"
+    # A filesystem that rejects the byte must not let this case pass vacuously.
+    if ! mkdir -p "$_chain" 2>/dev/null || ! : > "$_chain/marker_ops.py"; then
+        _sep_fixture_bad=1
+        rm -rf "${_fix:?}/hooks/gate-scripts/$_head"
+        continue
+    fi
+    if "$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>"$_fix/sep.err"; then
+        _sep_check_bad=1
+    fi
+    grep -q 'contains a line-break character' "$_fix/sep.err" || _sep_msg_bad=1
+    if "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1; then
+        _sep_update_bad=1
+    fi
+    rm -rf "${_fix:?}/hooks/gate-scripts/$_head"
+done
+assert $_sep_fixture_bad "line-separator fixtures are creatable (the case is not vacuous)"
+assert $_sep_check_bad "a locked path holding any non-LF splitlines separator fails --check"
+assert $_sep_msg_bad "↳ and names the offending path as a line-break refusal"
+assert $_sep_update_bad "↳ and --update refuses it too, so the forged name is never recorded"
+"$GATE_INTEGRITY" --root "$_fix" --check >/dev/null 2>&1
+assert $? "↳ and the same fixture passes once the name is gone (the guard does not false-fire)"
+
+# Hardlinked accepted caches: same-package PEP 3147 base + .opt-0 alias.
+# optimize_level(.opt-0)=0 matches the unmarked cache; source_from_cache resolves
+# the same sibling. Hardlink the two cache basenames so both accepted paths share
+# one inode. Bind memo must hashlib the body once (PATH python3 shim on
+# _MAX_BIND_IO); require cache-miss count exactly 1.
+fresh_fixture
+_PYC_SRC="$_fix/hooks/gate-scripts/lib/marker_ops.py" \
+    python3 -c 'import os, py_compile; py_compile.compile(os.environ["_PYC_SRC"], doraise=True)'
+_pyc_a="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d ! -name '*.opt-*' | head -1)"
+_inode_ok=0
+_memo_ok=0
+if [[ -n "$_pyc_a" && -f "$_pyc_a" ]]; then
+    _pyc_base="$(basename -- "$_pyc_a")"
+    _pyc_b="$(dirname -- "$_pyc_a")/${_pyc_base%.pyc}.opt-0.pyc"
+    if [[ "$_pyc_b" != "$_pyc_a" && ! -e "$_pyc_b" ]] \
+        && ln "$_pyc_a" "$_pyc_b" 2>/dev/null; then
+        _ino_a="$(python3 -I -c 'import os,sys; s=os.stat(sys.argv[1]); print("%d:%d"%(s.st_dev,s.st_ino))' "$_pyc_a")"
+        _ino_b="$(python3 -I -c 'import os,sys; s=os.stat(sys.argv[1]); print("%d:%d"%(s.st_dev,s.st_ino))' "$_pyc_b")"
+        if [[ "$_ino_a" == "$_ino_b" && -n "$_ino_a" ]]; then
+            _inode_ok=1
+        fi
+        _stats="${_fix:?}/.bd-797-bind-sha-count"
+        _shim_stats="${_fix:?}/.bd-797-bind-stats-shim"
+        _real_py="$(command -v -p python3 2>/dev/null)"
+        case "$_real_py" in
+            /*) ;;
+            *) _real_py="" ;;
+        esac
+        if [[ "$_inode_ok" -eq 1 && -n "$_real_py" && -x "$_real_py" && ! -e "$_shim_stats" ]] \
+            && mkdir -m 700 "$_shim_stats"; then
+            {
+                printf '%s\n' '#!/usr/bin/env bash'
+                printf '%s\n' "REAL_PY=$(printf '%q' "$_real_py")"
+                printf '%s\n' "STATS=$(printf '%q' "$_stats")"
+                # Intentional: $1/$2/$3 expand in the generated shim, not here.
+                # shellcheck disable=SC2016
+                printf '%s\n' 'if [[ "$1" == "-I" && "$2" == "-c" && "$3" == *_MAX_BIND_IO* ]]; then'
+                # Intentional: $STATS expands in the generated shim, not here.
+                # shellcheck disable=SC2016
+                printf '%s\n' '  export BD797_BIND_SHA_STATS="$STATS"'
+                # Prepend counter: hashlib.sha256(data) runs only on bind cache-miss reads.
+                printf '%s\n' '  patch=$'"'"'import atexit,hashlib as _hl,os\n_p=os.environ["BD797_BIND_SHA_STATS"]\n_n=[0]\n_o=_hl.sha256\ndef _sha(data=b"",**k):\n    if data: _n[0]+=1\n    return _o(data,**k)\n_hl.sha256=_sha\natexit.register(lambda: open(_p,"w",encoding="utf-8").write("%d\\n"%_n[0]))\n'"'"''
+                # Intentional: $REAL_PY / $patch / $3 expand in the generated shim, not here.
+                # shellcheck disable=SC2016
+                printf '%s\n' '  exec "$REAL_PY" -I -c "$patch$3"'
+                printf '%s\n' 'fi'
+                # Intentional: $REAL_PY / $@ expand in the generated shim, not here.
+                # shellcheck disable=SC2016
+                printf '%s\n' 'exec "$REAL_PY" "$@"'
+            } > "$_shim_stats/python3"
+            if chmod 755 "$_shim_stats/python3"; then
+                if PATH="$_shim_stats:$PATH" "$GATE_INTEGRITY" --root "$_fix" --update >/dev/null 2>&1 \
+                    && _out="$(PATH="$_shim_stats:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"; then
+                    _sha_n="$(cat "$_stats" 2>/dev/null || printf '')"
+                    if [[ "$_sha_n" == "1" ]]; then
+                        _memo_ok=1
+                    else
+                        printf '  ↳ bind sha256 cache-miss count=%s (want 1 for one inode)\n' "$_sha_n"
+                        printf '  ↳ output: %s\n' "$_out"
+                    fi
+                else
+                    printf '  ↳ output: %s\n' "${_out:-update/check failed}"
+                fi
+            fi
+            _fix_real="$(CDPATH='' cd -P -- "${_fix:?}" && pwd -P)" || _fix_real=""
+            _shim_real=""
+            if [[ -d "$_shim_stats" ]]; then
+                _shim_real="$(CDPATH='' cd -P -- "$_shim_stats" && pwd -P)" || _shim_real=""
+            fi
+            case "$_fix_real" in
+                ""|.) ;;
+                *)
+                    case "$_shim_real" in
+                        "$_fix_real"/.bd-797-bind-stats-shim)
+                            rm -f "$_shim_stats/python3" "$_stats"
+                            rmdir "$_shim_stats" 2>/dev/null || true
+                            ;;
+                    esac
+                    ;;
+            esac
+        fi
+    fi
+fi
+if [[ "$_inode_ok" -eq 1 && "$_memo_ok" -eq 1 ]]; then
+    assert 0 "hardlinked accepted caches still verify (bind inode memo)"
+else
+    assert 1 "hardlinked accepted caches still verify (bind inode memo)"
 fi
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────

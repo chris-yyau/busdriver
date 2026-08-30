@@ -999,5 +999,16 @@ check "...while a substitution's ) leaves an ordinary read a read" allow \
 check "a hash inside the expansion does not blank the command behind it" block \
     "$(armed 'X=${Y:-a;b #x} /bin/rm -rf src')"
 
+# A LEADING pattern that can vanish under nullglob is refused on the command word itself,
+# before any promotion walk has to decide what it promotes — reported as a routing gap in
+# the promoted verdict, verified as a block for every verb class (codex, #553, round 36).
+# origin/main allows the first three.
+for _v in 'sed -i s/a/b/ src/file' 'rm -rf src' 'find . -delete'; do
+    check "a vanishing pattern in front of: $_v" block "$(armed "no-match-* $_v")"
+done
+check "...and inside a find -exec payload" block \
+    "$(armed 'find . -exec no-match-* sed -i s/a/b/ f ;')"
+unset _v
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

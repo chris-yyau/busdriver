@@ -421,25 +421,34 @@ fi
 compile_pyc TIMESTAMP
 assert $? "↳ fixture: wrote a TIMESTAMP cache for the linetable forgery"
 _PYC="$(find "$_fix/hooks/gate-scripts/lib/__pycache__" -name 'marker_ops*.pyc' ! -type d | head -n1)"
-_PYC="$_PYC" python3 -c '
-import marshal, os
+_mut_out="$(_PYC="$_PYC" python3 -c '
+import marshal, os, sys
 path = os.environ["_PYC"]
 with open(path, "rb") as fh:
     data = fh.read()
 code = marshal.loads(data[16:])
-if not hasattr(code, "co_linetable") or not code.co_linetable:
+if hasattr(code, "co_linetable") and code.co_linetable:
+    forged = code.replace(co_linetable=code.co_linetable + b"\x00")
+elif hasattr(code, "co_lnotab") and code.co_lnotab:
+    forged = code.replace(co_lnotab=code.co_lnotab + b"\x00")
+else:
+    sys.stdout.write("SKIP")
     raise SystemExit(0)
-forged = code.replace(co_linetable=code.co_linetable + b"\x00")
 with open(path, "wb") as fh:
     fh.write(data[:16] + marshal.dumps(forged))
-'
-_out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
-_rc=$?
-if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
-    assert 0 "↳ a cache whose only mutation is co_linetable still fails"
+sys.stdout.write("MUTATED")
+')"
+if [[ "$_mut_out" == "SKIP" ]]; then
+    assert 0 "↳ a cache whose only mutation is co_linetable still fails (skipped: no line table on this Python)"
 else
-    printf '  ↳ output: %s\n' "$_out"
-    assert 1 "↳ a cache whose only mutation is co_linetable still fails"
+    _out="$("$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 && "$_out" == *"marker_ops"* && "$_out" == *"body"* ]]; then
+        assert 0 "↳ a cache whose only mutation is co_linetable still fails"
+    else
+        printf '  ↳ output: %s\n' "$_out"
+        assert 1 "↳ a cache whose only mutation is co_linetable still fails"
+    fi
 fi
 
 # samefile would accept a hardlink alias; the allowlist must not.
@@ -743,6 +752,69 @@ else:
 print("nul-stream bounds ok")
 PY
 assert $? "↳ NUL-listing streamer covers empty/span/unterminated/limit bounds"
+
+# Oversized listing end-to-end: the classifier closes stdin at 8 MiB while find
+# is still writing, so find gets SIGPIPE (141). That must keep the listing-bound
+# diagnostic — not rename it to #742's enumeration message via PIPESTATUS[0].
+fresh_fixture
+_shim="$(mktemp -d)"
+_real_find="$(command -v -p find 2>/dev/null)"
+case "$_real_find" in
+    /*) ;;
+    *) _real_find="" ;;
+esac
+if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; then
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        # Endless exempt-path listing so the reader hits the bound mid-stream.
+        printf '%s\n' 'while :; do printf "%s\0" "hooks/gate-scripts/lib/__pycache__/pad.cpython-312.pyc"; done'
+    } > "$_shim/find"
+    chmod 755 "$_shim/find"
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 \
+       && "$_out" == *"listing exceeds 8 MiB bound"* \
+       && "$_out" != *"could not enumerate the locked directories"* ]]; then
+        assert 0 "an oversized exempt listing keeps the 8 MiB diagnostic (SIGPIPE not renamed to enumeration)"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "an oversized exempt listing keeps the 8 MiB diagnostic (SIGPIPE not renamed to enumeration)"
+    fi
+    rm -rf "$_shim"
+else
+    assert 1 "an oversized exempt listing keeps the 8 MiB diagnostic (no tempdir, or no absolute find to shim)"
+fi
+
+# The converse: a PATH-shimmed find that exits 141 after a short/empty listing
+# must NOT be trusted when the classifier reaches EOF successfully — that would
+# accept omitted bytecode. Only 141 paired with a nonzero classifier exit keeps
+# the classifier diagnostic (listing bound above).
+fresh_fixture
+_shim="$(mktemp -d)"
+_real_find="$(command -v -p find 2>/dev/null)"
+case "$_real_find" in
+    /*) ;;
+    *) _real_find="" ;;
+esac
+if [[ -n "$_shim" && -d "$_shim" && -n "$_real_find" && -x "$_real_find" ]]; then
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' '# Partial listing then pretend SIGPIPE — must fail closed.'
+        printf '%s\n' 'exit 141'
+    } > "$_shim/find"
+    chmod 755 "$_shim/find"
+    _out="$(PATH="$_shim:$PATH" "$GATE_INTEGRITY" --root "$_fix" --check 2>&1)"
+    _rc=$?
+    if [[ "$_rc" -ne 0 && "$_out" == *"could not enumerate the locked directories"* ]]; then
+        assert 0 "find exit 141 with a successful classifier still fails closed (no omitted-bytecode trust)"
+    else
+        printf '  ↳ rc=%s output: %s\n' "$_rc" "$_out"
+        assert 1 "find exit 141 with a successful classifier still fails closed (no omitted-bytecode trust)"
+    fi
+    rm -rf "$_shim"
+else
+    assert 1 "find exit 141 with a successful classifier still fails closed (no tempdir, or no absolute find to shim)"
+fi
 
 # ── 2e. Empty locked directories are a disarmed tree, not a recordable one ────
 # `printf '%s\n' ""` writes a lone newline: 1 byte, which clears a `-s` test and

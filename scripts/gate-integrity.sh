@@ -361,34 +361,18 @@ tracked_bytecode() {  # tracked_bytecode <root> — prints paths, nonzero on que
 # `__pycache__`). The exempt set is the one place nothing is hashed, so "could
 # not prove it is the locked source's bytecode" has to mean refuse.
 unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, nonzero on failure
-    # Find status is checked BEFORE the classifier reads anything. A bare
-    # `find | python` with pipefail would still fail closed here, but it would
-    # report as a classifier failure and mask compute_lock's enumeration guard
-    # — the same "lists then exits nonzero" shape #742 refuses by name. Capture
-    # the listing first (NUL bytes need a file; a bash variable cannot hold them),
-    # and reuse that guard's message so a PATH-shimmed find cannot change which
-    # check appears to have fired.
+    # Stream find's NUL listing straight into the classifier — never mktemp and
+    # reopen by name (the lock-write path already documents that TOCTOU). A bare
+    # pipeline exit would mask compute_lock's enumeration guard as a classifier
+    # failure; PIPESTATUS[0] keeps #742's "lists then exits nonzero" message.
+    # The Python reader bounds the stream at 8 MiB so a tree of tiny .pyc paths
+    # cannot OOM the gate.
     (
         CDPATH='' cd -P -- "$1" || exit 1
-        local tmp
-        tmp="$(mktemp)" || exit 1
+        local find_rc py_rc pipe_rc
         # `! -type d` mirrors lockable_paths: a DIRECTORY named `x.pyc` inside
         # `__pycache__` is not lockable and not importable, and opening it would
         # report a false offender.
-        if ! find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 >"$tmp"; then
-            rm -f "$tmp"
-            printf 'gate-integrity: could not enumerate the locked directories\n' >&2
-            exit 1
-        fi
-        # Bound the NUL listing before the classifier allocates against it.
-        # Per-file 8 MiB caps do not constrain a tree of many small .pyc paths.
-        local list_bytes
-        list_bytes="$(wc -c <"$tmp" | tr -d '[:space:]')" || list_bytes=
-        if [[ -z "$list_bytes" || "$list_bytes" -gt $((8 * 1024 * 1024)) ]]; then
-            rm -f "$tmp"
-            printf 'gate-integrity: FAIL — exempt bytecode listing exceeds 8 MiB bound\n' >&2
-            exit 1
-        fi
         # Never marshal.loads attacker .pyc bodies. Authenticate by compiling the
         # trusted sibling bytes in-memory the same way py_compile does
         # (SourceFileLoader.source_to_code) under each allowlisted co_filename,
@@ -399,7 +383,8 @@ unvalidated_bytecode() {  # unvalidated_bytecode <root> — prints offenders, no
         # PEP 3147 name (`.opt-N`), not from this interpreter. Trees using
         # -X no_debug_ranges must clear __pycache__ before --check.
         # shellcheck disable=SC2016  # python source, not a shell expansion
-        python3 -I -c '
+        find "${LOCKED_DIRS[@]}" ! -type d -path "$PYC_EXEMPT_PATH" -print0 \
+        | python3 -I -c '
 import importlib.machinery, importlib.util, os, re, sys, warnings
 # source_to_code may emit SyntaxWarning while still succeeding; stderr is
 # captured with stdout by the shell caller, so an unfiltered warning would
@@ -508,65 +493,87 @@ def iter_nul_paths(max_bytes):
     if pending:
         yield pending
 
-for raw in iter_nul_paths(_MAX_LISTING_BYTES):
-    if not raw:
-        continue
-    p = os.fsdecode(raw)
-    try:
-        data = read_nofollow(p, _MAX_PYC_BYTES)
-    except OSError as exc:
-        import errno as _errno
-        msg = exc.strerror or str(exc)
-        if "too large" in msg:
-            print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
-        elif "symlink" in msg or getattr(exc, "errno", None) in (_errno.ELOOP, getattr(_errno, "EMLINK", -1)):
-            print(p + "  (symlink — CPython never writes one into __pycache__)")
-        elif "not a regular file" in msg:
-            print(p + "  (not a regular file — CPython never writes one into __pycache__)")
-        else:
-            print(p + "  (unreadable: %s)" % msg)
-        continue
-    if len(data) < HEADER:
-        print(p + "  (too short to hold a PEP 552 header)")
-        continue
-    flags = int.from_bytes(data[4:8], "little")
-    if flags & 3 == 1:
-        print(p + "  (PEP 552 UNCHECKED hash-based: never validated against its source)")
-        continue
-    # Foreign-magic caches cannot be authenticated against this interpreter.
-    # Skipping them would reopen #797 whenever a gate later resolves a different
-    # python3 from PATH that CAN load the planted cache.
-    if data[:4] != importlib.util.MAGIC_NUMBER:
-        print(p + "  (foreign-interpreter cache cannot be authenticated)")
-        continue
-    try:
-        src = importlib.util.source_from_cache(p)
-    except ValueError:
-        print(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
-        continue
-    if not src:
-        print(p + "  (no regular sibling source to authenticate against)")
-        continue
-    try:
-        src_bytes = read_nofollow(src, _MAX_SRC_BYTES)
-    except OSError as exc:
-        msg = exc.strerror or str(exc)
-        if "too large" in msg:
-            print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
-        else:
+try:
+    for raw in iter_nul_paths(_MAX_LISTING_BYTES):
+        if not raw:
+            continue
+        p = os.fsdecode(raw)
+        try:
+            data = read_nofollow(p, _MAX_PYC_BYTES)
+        except OSError as exc:
+            import errno as _errno
+            msg = exc.strerror or str(exc)
+            if "too large" in msg:
+                print(p + "  (exceeds %d-byte classifier bound)" % _MAX_PYC_BYTES)
+            elif "symlink" in msg or getattr(exc, "errno", None) in (_errno.ELOOP, getattr(_errno, "EMLINK", -1)):
+                print(p + "  (symlink — CPython never writes one into __pycache__)")
+            elif "not a regular file" in msg:
+                print(p + "  (not a regular file — CPython never writes one into __pycache__)")
+            else:
+                print(p + "  (unreadable: %s)" % msg)
+            continue
+        if len(data) < HEADER:
+            print(p + "  (too short to hold a PEP 552 header)")
+            continue
+        flags = int.from_bytes(data[4:8], "little")
+        if flags & 3 == 1:
+            print(p + "  (PEP 552 UNCHECKED hash-based: never validated against its source)")
+            continue
+        # Foreign-magic caches cannot be authenticated against this interpreter.
+        # Skipping them would reopen #797 whenever a gate later resolves a different
+        # python3 from PATH that CAN load the planted cache.
+        if data[:4] != importlib.util.MAGIC_NUMBER:
+            print(p + "  (foreign-interpreter cache cannot be authenticated)")
+            continue
+        try:
+            src = importlib.util.source_from_cache(p)
+        except ValueError:
+            print(p + "  (not a PEP 3147 cache name — no sibling source to authenticate against)")
+            continue
+        if not src:
             print(p + "  (no regular sibling source to authenticate against)")
-        continue
-    try:
-        trusted = trusted_bodies(src_bytes, allowed_filenames(src), optimize_level(p))
-    except Exception as exc:
-        print(p + "  (trusted sibling source failed to compile: %s)" % exc.__class__.__name__)
-        continue
-    if data[HEADER:] not in trusted:
-        print(p + "  (bytecode body does not match a compile of the locked source beside it)")
-' <"$tmp"
-        local st=$?
-        rm -f "$tmp"
-        exit "$st"
+            continue
+        try:
+            src_bytes = read_nofollow(src, _MAX_SRC_BYTES)
+        except OSError as exc:
+            msg = exc.strerror or str(exc)
+            if "too large" in msg:
+                print(p + "  (sibling source exceeds %d-byte classifier bound)" % _MAX_SRC_BYTES)
+            else:
+                print(p + "  (no regular sibling source to authenticate against)")
+            continue
+        try:
+            trusted = trusted_bodies(src_bytes, allowed_filenames(src), optimize_level(p))
+        except Exception as exc:
+            print(p + "  (trusted sibling source failed to compile: %s)" % exc.__class__.__name__)
+            continue
+        if data[HEADER:] not in trusted:
+            print(p + "  (bytecode body does not match a compile of the locked source beside it)")
+except OSError as exc:
+    msg = exc.strerror or str(exc)
+    if "listing too large" in msg:
+        sys.stderr.write("gate-integrity: FAIL — exempt bytecode listing exceeds 8 MiB bound\n")
+        raise SystemExit(1)
+    raise
+'
+        # Snapshot in one assignment: each ${PIPESTATUS[n]} read is itself a
+        # command that resets the array under bash, which would unbound [1]
+        # under `set -u`. `local` is also a command — declare pipe_rc above.
+        pipe_rc=("${PIPESTATUS[@]}")
+        find_rc=${pipe_rc[0]}
+        py_rc=${pipe_rc[1]:-1}
+        # find 141 (SIGPIPE) is only the classifier closing stdin early when the
+        # classifier ALSO failed (e.g. 8 MiB listing bound). A PATH-shimmed find
+        # that emits a partial listing and exits 141 while Python reaches EOF
+        # successfully must still refuse — otherwise omitted bytecode is trusted.
+        if [[ "$find_rc" -ne 0 ]]; then
+            if [[ "$find_rc" -eq 141 && "$py_rc" -ne 0 ]]; then
+                exit "$py_rc"
+            fi
+            printf 'gate-integrity: could not enumerate the locked directories\n' >&2
+            exit 1
+        fi
+        exit "$py_rc"
     )
 }
 

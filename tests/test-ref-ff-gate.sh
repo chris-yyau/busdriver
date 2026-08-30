@@ -992,8 +992,12 @@ assert_true "...as a well-formed JSONL record" "$_rc"
 # used one, so the branch was never created and the assertion passed vacuously.
 # Hence the explicit creation check below: a fixture that failed to build must
 # fail the test, not silently satisfy it.
+# The payload writes inside the suite's OWN temp tree, never a fixed /tmp name.
+# The cleanup below removes whatever sits at that path, and a suite must not
+# delete a file it did not create.
+_PWN="$TMPROOT/ref-ff-pwn"
 # shellcheck disable=SC2016  # the literal ${IFS} IS the payload under test
-_HOSTILE='x'"'"';touch${IFS}/tmp/ref-ff-pwn;#'
+_HOSTILE='x'"'"';touch${IFS}'"$_PWN"';#'
 _rc=0; git -C "$REPO" checkout -q -b "$_HOSTILE" 2>/dev/null || _rc=1
 assert_true "the hostile-name fixture is a real branch (not a vacuous test)" "$_rc"
 printf '%s\n' "$_HOSTILE" > "$REPO/$ISO_STATE/ref-ff-protected.local"
@@ -1006,7 +1010,11 @@ _out=$(printf '%s' "$_payload" | bash "$GATE_SCRIPT" 2>/dev/null || true)
 # Raw interpolation produced exactly this byte sequence; printf %q cannot.
 _rc=0; grep -qF "PASS-FF refs/heads/$_HOSTILE" <<<"$_out" && _rc=1
 assert_true "a hostile branch name is shell-quoted in the block message" "$_rc"
-rm -f "$REPO/$ISO_STATE/ref-ff-protected.local" /tmp/ref-ff-pwn
+# The message is printed, never run - so this is a backstop, not the main
+# assertion. It costs one stat and would catch any future path that did execute.
+_rc=0; [[ -e "$_PWN" ]] && _rc=1
+assert_true "...and nothing executed the payload the name carries" "$_rc"
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local" "$_PWN"
 git -C "$REPO" checkout -q main
 git -C "$REPO" branch -D "$_HOSTILE" >/dev/null 2>&1
 

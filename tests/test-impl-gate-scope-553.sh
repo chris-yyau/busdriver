@@ -916,5 +916,58 @@ check "...an expansion with no wrapper name in it stays allowed" allow \
 check "...and so does the same expansion away from command position" allow \
     "$(armed 'ls ${Y:-a env b} src')"
 
+# ORDER INDEPENDENCE of the expansion-aware readings. A `;` inside `${...}` is literal,
+# so `X=${Y:-a;b} bash` is one assignment and a shell reading stdin — which the ordinary
+# split cannot see, because it splits at that semicolon. The extra reading restores it,
+# and _piped_shell_producers then pairs the receiver with the producer BESIDE it.
+#
+# Deduplicating individual segments broke that adjacency: two pipelines whose receivers
+# spell the same collapsed to one entry sitting beside the FIRST producer, so the verdict
+# depended on whether the dangerous half came first. Readings are now deduplicated whole.
+check "a shell receiver hidden by a semicolon inside an expansion" block \
+    "$(armed "printf 'rm -rf src' | X=\${Y:-a;b} bash")"
+check "...still blocks when an INERT pipeline is written first" block \
+    "$(armed "printf hello | X=\${Y:-a;b} bash; printf 'rm -rf src' | X=\${Y:-a;b} bash")"
+check "...and when the dangerous one is" block \
+    "$(armed "printf 'rm -rf src' | X=\${Y:-a;b} bash; printf hello | X=\${Y:-a;b} bash")"
+
+# A bare grouping paren inside a command substitution does not close its frame early.
+# _raw_pieces stacks the closer, so the extglob after it is still judged in command
+# position rather than being hidden behind a stray `)` (codex, #553, round 32 — reported
+# as a bypass, verified as a block).
+check "a grouped substitution does not hide the extglob behind it" block \
+    "$(armed "X=\$( ( : ) ) /bin/@(r)m -rf src")"
+
+# The helper guard carries the same reading machinery, so it carries the same order
+# dependence until the twin is fixed too. An inert pipeline written FIRST, with a
+# receiver spelled exactly like the dangerous one, used to collapse the two entries and
+# leave the guard's receiver beside the harmless producer (codex, #553).
+check "the helper guard is order-independent across identical receivers" block \
+    "$(clean "printf hello | X=\${Y:-a;b} bash; printf '%s ' python3\${IFS}-I\${IFS}$HELPER\${IFS}.claude\${IFS}fake\${IFS}1 | X=\${Y:-a;b} bash")"
+
+# ...and adjacency must not be bought by MULTIPLYING the segments. Emitting every
+# reading's segments into one list made a 520-character read produce 2,144 pairs, which
+# exhausted the fail-closed scan budget in the classifier and the token budget in the
+# guard — so a harmless command blocked in a CLEAN repo, which is where the guard is
+# unconditional and an over-block is permanent. Readings are kept whole for the
+# adjacency-sensitive transport scan and unioned for the per-segment scan (codex, #553).
+_many="X=\${Y:-;} ;"
+for _i in $(seq 1 63); do _many="$_many echo };"; done
+_many="$_many echo"
+check "a candidate closer per brace does not exhaust the budget" allow "$(armed "$_many")"
+check "...and does not exhaust the helper guard's either" allow "$(clean "$_many")"
+
+# ...and the same with a PIPELINE in it, which is the shape that pays twice: every reading
+# re-walks that pipeline's stages, so the stage decision — and the budget charge for it —
+# is made once per distinct stage rather than once per reading. Both layers block a real
+# piped payload (asserted above); neither may block this one.
+_pipe="printf hello | echo"
+for _i in $(seq 1 60); do _pipe="$_pipe w$_i"; done
+check "a pipeline beside many candidate closers stays a read" allow \
+    "$(armed "$_many $_pipe")"
+check "...and stays unscanned-free in the helper guard" allow \
+    "$(clean "$_many $_pipe")"
+unset _many _pipe _i
+
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

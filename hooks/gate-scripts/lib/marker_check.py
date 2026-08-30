@@ -389,11 +389,16 @@ def _expansion_readings(s):
         elif ch == "}" and i > first >= 0:
             cands.append(i)
         i += 1
+    # One entry per READING, kept WHOLE and deduplicated whole -- KEEP IN STEP WITH
+    # cmdword._expansion_readings, which carries the reasoning for both flattenings that
+    # were tried and withdrawn: a per-segment dedup made the verdict turn on which
+    # pipeline was written first, and a flatten without it multiplied the segment count by
+    # the candidate count and exhausted the scan budget on a harmless read (codex, #553).
     for k in cands:
-        for op, seg in _expansion_joined_pairs(s, k):
-            if seg not in seen:
-                seen.add(seg)
-                out.append((op, seg))
+        reading = tuple(_expansion_joined_pairs(s, k))
+        if reading and reading not in seen:
+            seen.add(reading)
+            out.append(reading)
     # `cands` carries the balanced reading as a leading None, which is not a candidate:
     # counting it made exactly _MAX_EXPANSION_READINGS real braces read as truncated and
     # fail closed on a command the scanner had finished (codex, #553).
@@ -1744,6 +1749,10 @@ _HELPER_ALPHABET = set("".join(_MUTATING_HELPERS))
 # all, and nothing at all is the fail-CLOSED case.
 _HELPER_MAX_TOKENS = 4000
 _helper_budget = [0]
+# What each distinct pipeline stage decided in this scan, cleared beside the budget above.
+# The expansion-aware readings re-walk the same stages; deciding one twice is neither work
+# worth doing nor work worth charging -- see _piped_shell_producers (#553).
+_stage_recv = {}
 # Set by _defuse_comments on a `)#`, whose meaning it refuses to guess. Read by
 # _helper_invoked, which answers it by fail-CLOSED probe.
 _paren_hash_ambiguous = [False]
@@ -3585,6 +3594,22 @@ def _piped_shell_producers(pairs):
         _words = seg.split()
         bare = _carries_no_command(seg)
         if fed:
+            # WHETHER A FED STAGE RECEIVES IS A PURE FUNCTION OF ITS TEXT, so it is decided
+            # ONCE per distinct stage. The expansion-aware readings re-walk the same stages
+            # -- up to _MAX_EXPANSION_READINGS times -- and deciding each one afresh took a
+            # 64 KiB command from 0.7s to 8.0s, past the 5s hook timeout after which no
+            # decision is written and the harness reads ALLOW. That is a fail-OPEN bought
+            # with repeated work, so the repetition is what goes (codex, #553).
+            #
+            # The memo also carries the BUDGET: an answer that costs a dict lookup is not
+            # the walk the budget bounds, and charging it spent the whole 4,000 tokens on a
+            # 663-character command naming no helper -- UNSCANNABLE in a clean repo, where
+            # this guard is unconditional and that block is permanent.
+            if seg in _stage_recv:
+                if _stage_recv[seg]:
+                    last = i
+                kdepth = max(0, kdepth + _group_delta(_words))
+                continue
             try:
                 lex = shlex.shlex(seg, posix=True, punctuation_chars=True)
                 lex.whitespace_split = True
@@ -3646,6 +3671,7 @@ def _piped_shell_producers(pairs):
                    or _runs_cmdpos_receiver(_strip_time_prefix(toks)) \
                    or _launcher_in_any_simple_command(seg):
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 # A SUBSTITUTION is executed, so an unresolved word inside one is an
@@ -3728,11 +3754,13 @@ def _piped_shell_producers(pairs):
                     _sub_unres = True
                 if _sub_unres:
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 # The EXTGLOB spelling, resolved, in front of the same name test.
                 if _EXTGLOB_NEG_RE.search(seg):
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 _deglob = _EXTGLOB_RE.sub(r"\1", seg)
@@ -3741,6 +3769,7 @@ def _piped_shell_producers(pairs):
                     # and iterating to a fixed point is a slower guess at a grammar. Same
                     # exit the negation and the alternation take -- unresolved, fail CLOSED.
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 if _deglob != seg:
@@ -3759,6 +3788,7 @@ def _piped_shell_producers(pairs):
                        or any(_is_shell_name(_bn(w)) for w in _stage_words(_dtoks)) \
                        or _runs_cmdpos_receiver(_strip_time_prefix(_dtoks)):
                         last = i
+                        _stage_recv[seg] = True
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
                 _tokp, _strp = _exec_payloads(toks)
@@ -3782,6 +3812,9 @@ def _piped_shell_producers(pairs):
                    or any(_cmdpos_receiver_in_any_simple_command(p) for p in _progs) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
+            # The fall-through arm: every other exit above recorded itself before jumping.
+            if seg not in _stage_recv:
+                _stage_recv[seg] = last == i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
         out.append(" ; ".join(p[1] for p in pairs[start:last]))
@@ -3934,6 +3967,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     _whole = cmd if _full is None else _full
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
         _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
@@ -4021,15 +4055,24 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
     # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
     _nf = _norm_for_scan(cmd)
+    _readings, _base_pairs = [], _pairs
     # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
     # the opener from the raw command, and bash removes it before parsing (codex, #553).
     if "${" in _nf.replace(chr(92) + chr(10), ""):     # ...plus the expansion-aware
         _nf = _nf.replace(chr(92) + chr(10), "")       # readings, which only ADD
         _amb = _paren_hash_ambiguous[0]
-        _extra, _cut = _expansion_readings(_nf)
+        _readings, _cut = _expansion_readings(_nf)
         if _cut:
             return _HELPER_UNSCANNED  # cap exceeded: unresolvable -> fail CLOSED
-        _pairs = _pairs + _extra
+        # The SEGMENT walk takes the union; the transport probes below read each reading
+        # whole. Same split as cmdword.is_file_mod, and for the same two reasons.
+        _seen_seg = set(_s for _o, _s in _pairs)
+        _pairs = list(_pairs)
+        for _rd in _readings:
+            for _op, _seg in _rd:
+                if _seg not in _seen_seg:
+                    _seen_seg.add(_seg)
+                    _pairs.append((_op, _seg))
         _paren_hash_ambiguous[0] = _amb or _paren_hash_ambiguous[0]
     # `)#` -- the comment defuser could not tell whether that paren delimited a command and
     # said so instead of guessing. Unresolved is the fail-CLOSED case, the same as an
@@ -4050,19 +4093,32 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # `VAR='<helper>' sh -c 'sh <<< "$VAR"'` classify OK -- the nested scan saw the
         # unresolved operand but not the assignment, which lives only in the outer command.
         # Same variable every sibling call site here already threads through for this reason.
-        for _prod in _herestring_shell_payloads(_pairs, _whole):
-            _hit = _abandoned_scan_probe(_prod)
-            if _hit:
-                return _hit
-        for _prod in _piped_shell_producers(_pairs):
-            # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes
-            # GLOB characters, so a payload naming `lease_slo?.py` -- which the shell
-            # expands to the helper while the text names none literally -- is caught. The
-            # sibling call sites already used the probe; this one did not, and a glob in a
-            # PIPED payload walked through.
-            _hit = _abandoned_scan_probe(_prod)
-            if _hit:
-                return _hit
+        #
+        # Each reading is walked ON ITS OWN, never as part of the union `_pairs`: these two
+        # are the consumers that turn on adjacency, and a union built by segment dedup
+        # pairs a receiver with whichever producer came first (codex, #553).
+        #
+        # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes GLOB
+        # characters, so a payload naming `lease_slo?.py` -- which the shell expands to the
+        # helper while the text names none literally -- is caught. The sibling call sites
+        # already used the probe; the piped one did not, and a glob in a PIPED payload
+        # walked through.
+        #
+        # Here-strings stay ahead of pipes across ALL readings rather than per reading, so
+        # which helper NAME a multi-transport command reports does not move.
+        #
+        # Charged ONCE per distinct stage, not once per reading -- see the debit site.
+        _seen_prod = set()
+        for _here in (True, False):
+            for _seq in [_base_pairs] + _readings:
+                for _prod in (_herestring_shell_payloads(_seq, _whole) if _here
+                              else _piped_shell_producers(_seq)):
+                    if _prod in _seen_prod:
+                        continue
+                    _seen_prod.add(_prod)
+                    _hit = _abandoned_scan_probe(_prod)
+                    if _hit:
+                        return _hit
     if not ok:
         # Unparseable -- most often a Bash-VALID heredoc whose BODY contains an
         # apostrophe, which this segmenter models as shell source (a known limitation the

@@ -278,6 +278,11 @@ _MAX_CMD_CHARS = 65536
 # runs as a one-shot subprocess and the test suite drives it through is_file_mod().
 _scan_budget = [0]
 
+# Per-segment memo for the stdin-reader test inside _piped_shell_producers, cleared beside
+# the budget above. The expansion-aware readings re-walk the same stages, and repeating a
+# pure text test on identical text is not work worth charging -- see the call site (#553).
+_stdin_memo = {}
+
 # Set by _defuse_comments when it meets a `#` immediately after a `)` -- see there.
 # Read and cleared by is_file_mod, which answers the ambiguity by fail-CLOSED fallback
 # rather than by a fourth guess about what the paren was.
@@ -751,10 +756,13 @@ _MAX_EXPANSION_READINGS = 64
 def _expansion_readings(s):
     """(readings, truncated) -- every expansion-aware reading of `s`, deduplicated.
 
-    One per candidate `}` for the first frame, plus the balanced default. Additive: the
-    caller classifies these ALONGSIDE the ordinary split, so a wrong reading can only
-    fail to add a block. `truncated` says the cap cut the candidate list, which the
-    caller must treat as unresolvable (codex, #553).
+    A READING is a whole (op, segment) sequence, one per candidate `}` for the first
+    frame, plus the balanced default. Additive: the caller classifies these ALONGSIDE the
+    ordinary split, so a wrong reading can only fail to add a block. `truncated` says the
+    cap cut the candidate list, which the caller must treat as unresolvable (codex, #553).
+
+    Readings are NOT flattened into one sequence -- see the loop below for what each of
+    the two flattenings cost.
     """
     out, seen = [], set()
     # Candidates are the UNQUOTED `}` at or after the first `${`. Taking them from the
@@ -803,11 +811,23 @@ def _expansion_readings(s):
         elif ch == "}" and i > first >= 0:
             cands.append(i)
         i += 1
+    # One entry per READING, kept WHOLE and deduplicated whole -- never flattened here.
+    # Flattening with a per-segment dedup was order-dependent and lost blocks: two
+    # pipelines whose receivers spell the same
+    # (`printf hello | X=${Y:-a;b} bash; printf 'rm -rf src' | X=${Y:-a;b} bash`) collapse
+    # to ONE receiver entry, which then sits beside the FIRST producer, so the command
+    # blocked when the dangerous half came first and not when it came second. Flattening
+    # WITHOUT that dedup fixed the order but multiplied the segment count by the candidate
+    # count -- 63 harmless `echo };` commands became 2,144 pairs and exhausted the
+    # fail-closed scan budget on a 520-character read (codex, #553, both directions).
+    #
+    # So the two consumers are separated instead: adjacency is read per reading, and the
+    # segment scan takes the union. Neither cost is multiplied.
     for k in cands:
-        for op, seg in _expansion_joined_pairs(s, k):
-            if seg not in seen:
-                seen.add(seg)
-                out.append((op, seg))
+        reading = tuple(_expansion_joined_pairs(s, k))
+        if reading and reading not in seen:
+            seen.add(reading)
+            out.append(reading)
     # `cands` carries the balanced reading as a leading None, which is not a candidate:
     # counting it made exactly _MAX_EXPANSION_READINGS real braces read as truncated and
     # fail closed on a command the scanner had finished (codex, #553).
@@ -2198,10 +2218,21 @@ def _piped_shell_producers(pairs):
             # hook it backs has a 5s timeout after which NO decision is written, which the
             # harness reads as ALLOW. Overrunning leaves the budget negative, so the charge
             # downstream fails CLOSED. The gate copy already charged here.
-            _scan_budget[0] -= len(seg.split())
-            if _scan_budget[0] < 0:
-                break
-            if _may_read_program_from_stdin(seg):
+            #
+            # MEMOIZED across the expansion-aware readings, which re-walk the very same
+            # stages: charging each reading separately spent a 4,000-token budget on a
+            # 663-character read whose one pipeline was simply seen 64 times (codex, #553).
+            # Answering from the memo is not work, so it is not charged; a MISS pays in
+            # full, which keeps the bound on the walk this budget exists to bound.
+            if seg in _stdin_memo:
+                _reads_stdin = _stdin_memo[seg]
+            else:
+                _scan_budget[0] -= len(seg.split())
+                if _scan_budget[0] < 0:
+                    break
+                _reads_stdin = _may_read_program_from_stdin(seg)
+                _stdin_memo[seg] = _reads_stdin
+            if _reads_stdin:
                 last = i
         bare = _carries_no_command(seg)
         # Counted loosely, and safe BECAUSE of the ordering above. A literal `{` argument
@@ -3581,6 +3612,7 @@ def is_file_mod(cmd, _depth=0):
         return True                       # fail CLOSED -- see _MAX_CMD_CHARS
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
+        _stdin_memo.clear()
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
         # and the cap returns before the tokenized pass that would have run
@@ -3623,13 +3655,23 @@ def is_file_mod(cmd, _depth=0):
     _norm = _normalize(cmd)
     # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
     # the opener from the raw command, and bash removes it before parsing (codex, #553).
+    _readings, _base_pairs = [], pairs
     if "${" in _norm.replace(chr(92) + chr(10), ""):   # ...plus the expansion-aware
         _norm = _norm.replace(chr(92) + chr(10), "")   # readings, which only ADD
         _amb = _paren_hash_ambiguous[0]
-        _extra, _cut = _expansion_readings(_norm)
+        _readings, _cut = _expansion_readings(_norm)
         if _cut:
             return True               # cap exceeded: unresolvable -> fail CLOSED
-        pairs = pairs + _extra
+        # The SEGMENT scan takes the union, because a segment's verdict is a pure function
+        # of its text and re-classifying a repeat buys nothing but budget. The PRODUCER
+        # scan below reads each reading whole, because that one turns on adjacency.
+        _seen_seg = set(_s for _o, _s in pairs)
+        pairs = list(pairs)
+        for _rd in _readings:
+            for _op, _seg in _rd:
+                if _seg not in _seen_seg:
+                    _seen_seg.add(_seg)
+                    pairs.append((_op, _seg))
         _paren_hash_ambiguous[0] = _amb or _paren_hash_ambiguous[0]
     # `)#` -- the comment defuser could not tell whether that paren delimited a command, so
     # it refused to guess and said so. Unresolved is the fail-CLOSED case here exactly as it
@@ -3647,12 +3689,24 @@ def is_file_mod(cmd, _depth=0):
     # regexes cannot see a redirect-only write, so `printf 'echo x > src/impl.py' | bash`
     # performed the write and classified as a read. The caller's own redirect check does not
     # cover it either -- it strips single-quoted text first, which is where a payload lives.
-    _producers = _piped_shell_producers(pairs)
-    for producer in _producers:
-        if _regex_fallback(producer):
-            return True
-        if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(producer)):
-            return True
+    #
+    # Each reading is walked ON ITS OWN, never as part of the union above: this is the one
+    # consumer that turns on adjacency, and a union built by segment dedup pairs a receiver
+    # with whichever producer happened to be written first (codex, #553).
+    #
+    # Charged ONCE per distinct stage, not once per reading -- see the memo at the debit
+    # site. Resetting the budget per reading instead was measured at 3.9s on a 64 KiB
+    # command, against the 5s hook timeout the budget exists to stay inside (#553).
+    _seen_prod = set()
+    for _seq in [_base_pairs] + _readings:
+        for producer in _piped_shell_producers(_seq):
+            if producer in _seen_prod:
+                continue
+            _seen_prod.add(producer)
+            if _regex_fallback(producer):
+                return True
+            if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(producer)):
+                return True
     # INDIRECTION WITHDRAWS THE STAGE CONTRACT, the same way it does in the helper guard.
     # A NAME can stand for either end of the transport: `f(){ bash; }; printf <payload> | f`
     # hides the shell, and `g(){ printf <payload>; }; g | bash` hides the payload -- and the

@@ -1115,7 +1115,7 @@ The marker must then read: PASS-FF refs/heads/$PROTECTED $oid"
 The gate does not try to work out whether THIS merge touches that directory, and it treats an unresolvable path as inside: deciding what git will execute means resolving repo-root paths, relative paths, symlinks, DANGLING symlinks whose target the merge itself creates, symlinks nested inside the hooks directory, and pathspec syntax - and every narrowing of that check missed another case.
 
 Point core.hooksPath at a directory outside the working tree, or land the change through a PR:
-  git -C ${REPO_DIR:-.} config core.hooksPath <path outside the repo>"
+  git -C $Q_REPO config core.hooksPath <path outside the repo>"
                 exit 0
             fi
             audit_ref_ff "$PROTECTED" "$oid" "marker"

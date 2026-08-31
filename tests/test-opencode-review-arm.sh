@@ -886,7 +886,12 @@ if ( # shellcheck disable=SC1090,SC2016  # source target is a variable; '$u' is 
 else
   fail "username allowlist: a tilde-stack or metacharacter name passed validation"
 fi
-if grep -qF '[[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1' "$RC"; then
+# #789 round 4: the validator moved off shadowable `return` (an exported
+# BASH_FUNC_return%% made an all-digit username pass and let the shadow write
+# _trusted_operator_home's globals), so the tilde-stack regex now sits on an
+# `elif`. Same regex, same rejection — the behavioural assertion above proves the
+# semantics; this pin only proves the guard is still PRESENT.
+if grep -qF 'elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then' "$RC"; then
   pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
 else
   fail "resolve-cli.sh: allowlist does not reject tilde stack forms"

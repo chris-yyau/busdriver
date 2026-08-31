@@ -168,7 +168,7 @@ ags_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for ags_cwd"; exit 1
 # Backstop cleanup: the sections below exit early on assertion failure only via
 # the `fail` path (no early exit), but a fatal dispatch/probe failure would
 # leak the dirs. `${var:-}` keeps this set -u safe when 5c has not run yet.
-trap 'rm -rf "$tmp_home" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}"' EXIT
+trap 'rm -rf "$tmp_home" "${ags_stub:-}" "${ags_cwd:-}" "${er_cwd:-}" "${er_stub:-}" "${er_ng:-}"' EXIT
 cat > "$ags_stub/agy" <<'STUB'
 #!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
@@ -199,18 +199,27 @@ rm -rf "$ags_stub" "$ags_cwd"
 # scripts/lib/resolve-cli.sh, which builds its OWN argv. Both of its agy
 # transports must carry `--add-dir "$PWD"` — a reviewer of record must resolve
 # the tree under review, not agy's remembered workspace (#686).
-er_sites="$(grep -cE '^[[:space:]]+agy --sandbox --add-dir "\$PWD"' "$RESOLVE")"
+# argv0 is the trust-resolved ABSOLUTE binary ("$_agy_bin"), not a bare `agy`
+# token: #789 made the reviewer of record execute the path _resolve_trusted_cli_bin
+# returned rather than whatever PATH offers. Pin that form — matching a bare `agy`
+# here would silently pass again if the arm ever regressed to PATH resolution.
+er_sites="$(grep -cE '^[[:space:]]+"\$_bd_agy_bin" --sandbox --add-dir "\$PWD"' "$RESOLVE")"
 if [[ "$er_sites" == "2" ]]; then
   pass "execute_review agy arm passes --add-dir \"\$PWD\" on both transports"
 else
   fail "execute_review agy arm must pass --add-dir \"\$PWD\" on both transports (found $er_sites/2)"
 fi
 
-# Behavioral: stub agy prints its argv; source resolve-cli.sh and run
-# execute_review from a DISTINCTIVE cwd; assert the reviewer child was scoped
-# to it.
+# Behavioral, part 1 — SUCCESSFUL review dispatch. The reviewer path resolves agy
+# through _resolve_trusted_cli_bin, which is fail-CLOSED in BOTH directions: it
+# refuses unless it can establish the reviewed checkout AND place the binary
+# outside it. So the success fixture must be a real Git checkout — the condition
+# every real review runs under — with the stub in a sibling directory outside it.
+# A bare mktemp cwd exercises the refusal path instead, which part 2 now asserts
+# on purpose rather than leaving it as an accident of the fixture (#789).
 er_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_cwd"; exit 1; }
 er_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_stub"; exit 1; }
+git -C "$er_cwd" init -q -b main >/dev/null 2>&1 || { echo "FAIL — git init failed for er_cwd"; exit 1; }
 cat > "$er_stub/agy" <<'STUB'
 #!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi
@@ -225,7 +234,21 @@ if [[ "$out" == *"ER_ARGV:"* && "$out" == *"--add-dir $er_cwd"* ]]; then
 else
   fail "execute_review agy must pass --add-dir \"\$PWD\" (out: $out)"
 fi
-rm -rf "$er_cwd" "$er_stub"
+
+# Behavioral, part 2 — the PRESERVED fail-CLOSED contract, asserted by name. With
+# no checkout to verify a binary against, the reviewer path must refuse and must
+# NOT reach the stub. Same stub, same PATH as part 1; only the cwd differs, so a
+# pass here can only come from the missing checkout.
+er_ng="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_ng"; exit 1; }
+out_ng="$(cd "$er_ng" && REPO_ROOT="$REPO_ROOT" PATH="$er_stub:$PATH" bash -c '
+  . "$REPO_ROOT/scripts/lib/resolve-cli.sh" 2>/dev/null
+  execute_review agy "review" 10 2>&1')"
+if [[ "$out_ng" == *"refusing review dispatch"* && "$out_ng" != *"ER_ARGV:"* ]]; then
+  pass "execute_review agy refuses fail-CLOSED outside a Git checkout (no dispatch)"
+else
+  fail "execute_review agy outside a checkout must refuse without dispatching (out: $out_ng)"
+fi
+rm -rf "$er_cwd" "$er_stub" "$er_ng"
 
 # ── 7. the read lane never escalates to droid ───────────────────
 # The desugar rewrites CLI to plain "agy", so \$name is "agy" in the fallback

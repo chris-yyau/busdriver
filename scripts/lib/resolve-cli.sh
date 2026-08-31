@@ -1071,6 +1071,33 @@ should_escalate_to_droid() {
   return 1
 }
 
+# Classify a droid escalation attempt after Codex failed.
+# Args: droid_exit_code droid_stdout
+# Prints one of: ok | timeout | no-output | failed
+#
+# Distinguishes a silent refusal (empty stdout well inside the budget) from a
+# spent-budget kill (exit 124). Callers that set timed_out from Codex must clear
+# it on no-output so BUILTIN_FALLBACK (rc 3) is not misreported as timeout 124
+# (#804). Spent-budget 124 stays timeout.
+_classify_droid_escalation_outcome() {
+  local droid_exit="$1"
+  local droid_out="$2"
+  if [[ "$droid_exit" -eq 0 && -n "$droid_out" ]]; then
+    echo "ok"
+    return 0
+  fi
+  if [[ "$droid_exit" -eq 124 ]]; then
+    echo "timeout"
+    return 0
+  fi
+  if [[ -z "$droid_out" ]]; then
+    echo "no-output"
+    return 0
+  fi
+  echo "failed"
+  return 0
+}
+
 # ── Per-role CLI resolution with config + fallback chain ─────
 # Usage: resolve_role_cli "council.critic"
 # Precedence: env var > project config > user config > defaults > auto-detect
@@ -2146,11 +2173,20 @@ _execute_codex() {
       # escalating from. See execute_review droid case for PR #97 historical context.
       droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
 
-      # Require both clean exit AND non-empty output — droid killed by signal
-      # can exit 0 with empty stdout, which would surface as a successful but
-      # blank review verdict downstream.
+      # Classify before the post-escalation timed_out check: empty stdout inside
+      # budget is a refusal/no-output, not a timeout (#804). Spent-budget 124
+      # stays timeout so the caller can still react (split the diff).
+      local _droid_outcome
+      _droid_outcome=$(_classify_droid_escalation_outcome "$droid_exit" "$droid_out")
       local _droid_ok=0
-      [[ "$droid_exit" -eq 0 ]] && [[ -n "$droid_out" ]] && _droid_ok=1
+      [[ "$_droid_outcome" == "ok" ]] && _droid_ok=1
+      if [[ "$_droid_outcome" == "no-output" ]]; then
+        timed_out=0
+      elif [[ "$_droid_outcome" == "timeout" ]]; then
+        # Spent-budget droid 124 is a real timeout even when Codex only failed
+        # transiently — preserve exit 124 for callers that split the diff.
+        timed_out=1
+      fi
 
       # Telemetry: log every escalation regardless of outcome, with droid_ok
       # reflecting the actual success/failure determination. Resolve .claude
@@ -2160,8 +2196,8 @@ _execute_codex() {
       local _git_root=""
       _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
       if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
-        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"codex_attempts":%d}\n' \
-          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$attempts_run" \
+        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$_droid_outcome" "$attempts_run" \
           >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || true
       fi
 
@@ -2170,7 +2206,7 @@ _execute_codex() {
         printf '%s' "$droid_out"
         return 0
       fi
-      echo "⚠️  Droid escalation failed (exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
+      echo "⚠️  Droid escalation failed (${_droid_outcome}: exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
     fi
 
     [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"

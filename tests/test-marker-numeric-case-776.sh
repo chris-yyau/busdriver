@@ -9,10 +9,19 @@ ok() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
 no() { FAIL=$((FAIL + 1)); printf '  FAIL  %s :: %s\n' "$1" "${2:-}"; }
 
 verdict() {
-  local payload
+  local payload out
   payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' \
     "$1" 2>/dev/null) || { printf 'ERROR'; return; }
-  python3 -I "$CLASSIFIER" <<<"$payload" 2>/dev/null || printf 'ERROR'
+  # Status captured SEPARATELY, not appended. `cmd || printf ERROR` leaves whatever the
+  # classifier already wrote in place and adds to it, so a partial `BLOCK_…` followed by a
+  # crash reads as `BLOCK_…ERROR` -- which every `== BLOCK_*` assertion here accepts. A
+  # non-zero exit is not a verdict, and the blocking assertions are the ones that must not
+  # be satisfiable by a crash.
+  if ! out=$(python3 -I "$CLASSIFIER" <<<"$payload" 2>/dev/null); then
+    printf 'ERROR'
+    return
+  fi
+  printf '%s' "$out"
 }
 
 # Exact POSIX shape from issue #776 (empty-alt + digit-negation glob + catch-all).

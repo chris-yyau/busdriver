@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty-eight ways a first draft of that membership test still
+Review found forty-nine ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -424,6 +424,14 @@ adding a grammar:
   actually be built was left unproven (every `:/` shape tried already refused,
   since a mid-pattern `^` does not match itself). The refusal is simply hoisted
   above the resolution now, so it no longer rests on the answer.
+- **What the ref will HOLD is not what the word PEELS to.** `git update-ref
+  refs/heads/master <annotated tag oid>` stores the TAG object, while
+  `rev-parse <tag>^{commit}` peels past it to the tagged commit — so the gate
+  vouched for a reachable commit while the branch was created at the tag
+  (measured ALLOWED). The non-commit refusal already stated this rule and simply
+  never ran when peeling SUCCEEDED; the raw word's object TYPE is asked first
+  now. The cost, accepted: `git branch <protected> <annotated tag>` blocks even
+  though branch creation would peel — naming the peeled oid is one command.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

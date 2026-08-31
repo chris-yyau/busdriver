@@ -2160,6 +2160,22 @@ run_gate "...whatever its peeled spelling would resolve to" \
     block "git checkout -b master :/zzz" "finds a commit by its MESSAGE"
 run_gate "...and a RANGE start point likewise" \
     block "git branch master main...feature" "names a RANGE rather than one commit"
+# What the ref would HOLD is not always what the word PEELS to: `git update-ref`
+# stores an annotated tag OBJECT, while `rev-parse <tag>^{commit}` peels past it
+# to the tagged commit -- so the gate vouched for a reachable commit while the
+# branch was created at the tag.
+git -C "$REPO" tag -a -m annotated atag-create main >/dev/null 2>&1
+_ATAG_OID=$(git -C "$REPO" rev-parse atag-create)
+_ATAG_PEELED=$(git -C "$REPO" rev-parse 'atag-create^{commit}')
+run_gate "a raw annotated-TAG object on a protected name is not a commit" \
+    block "git update-ref refs/heads/master $_ATAG_OID" \
+    "an object but NOT a commit"
+run_gate "...nor is the tag named by its name" \
+    block "git update-ref refs/heads/master atag-create" \
+    "an object but NOT a commit"
+run_gate "...while its peeled commit is ordinary work" \
+    allow "git update-ref refs/heads/master $_ATAG_PEELED"
+git -C "$REPO" tag -d atag-create >/dev/null 2>&1
 git -C "$REPO" reset -q --hard HEAD~1
 # A RELATIVE destination resolves against the SHELL's directory, which need not
 # be the repository root: from a nested directory `git push ..` is this

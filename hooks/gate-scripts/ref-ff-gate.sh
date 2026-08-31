@@ -1670,7 +1670,7 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
     # is the answer AND the oid for the block message. Seventeen graph walks
     # inside a 10s budget whose expiry emits no decision was a way through the
     # gate; this is one.
-    local _cands="" _oid _obj
+    local _cands="" _oid _obj _typ
     for _t in HEAD $CREATE_TOKS; do
         # Two spellings are refused BEFORE any attempt to resolve them, because
         # hanging their refusal off a FAILED `rev-parse "$_t^{commit}"` made it
@@ -1694,6 +1694,23 @@ Blocking as precaution (fail-closed)."
                 # will not vouch for it either.
                 block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} from '$_t', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
   git merge-base <a> <b>
+  git branch $_matched <that object id>
+Blocking as precaution (fail-closed)."
+                exit 0 ;;
+        esac
+        # What the ref would actually HOLD, which is not always what the word
+        # PEELS to. `git update-ref refs/heads/master <annotated tag oid>` stores
+        # the tag OBJECT, while `rev-parse <tag>^{commit}` peels past it to the
+        # tagged commit -- so the gate vouched for a reachable commit while the
+        # branch was created at the tag (measured ALLOWED). The non-commit
+        # refusal below already states this rule; it just never ran when peeling
+        # SUCCEEDED. Asked of the raw word, so it is a different question from
+        # the `^{object}` peel below rather than a duplicate of it.
+        _typ=$(git_real cat-file -t "$_t" 2>/dev/null) || _typ=""
+        case "$_typ" in
+            tag|blob|tree)
+                block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} at '$_t', which is an object but NOT a commit (it is a $_typ) — a ref may hold one, and such an object has no ancestry, so nothing can show it is content a protected branch already carries (issue #781). Name the commit itself:
+  git rev-parse '$_t^{commit}'
   git branch $_matched <that object id>
 Blocking as precaution (fail-closed)."
                 exit 0 ;;

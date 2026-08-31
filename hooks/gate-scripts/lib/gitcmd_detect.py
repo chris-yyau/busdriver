@@ -4001,7 +4001,9 @@ def git_ref_create(cmd):
         local_dst = not dst.startswith(('refs/remotes/', 'refs/tags/'))
         if '*' in dst and local_dst:
             opaque = opaque or 'wildcard'
-        if local_dst and 'fetch' in ntoks:
+        if local_dst and ('fetch' in ntoks or 'pull' in ntoks):
+            # `pull` too: it runs a fetch phase, so `git pull . topic:refs/heads/
+            # master` writes the destination exactly as `git fetch` would.
             fetch_spec = True
         # `lstrip('+')` because a refspec may be force-prefixed:
         # `+<oid>:refs/heads/master` left the SOURCE as `+<oid>`, which resolves

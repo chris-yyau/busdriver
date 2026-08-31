@@ -1806,6 +1806,11 @@ run_gate "a push colon-refspec that CREATES a protected ref -> block" \
     block "git push . HEAD:refs/heads/master" "would CREATE the protected branch"
 run_gate "...and the fetch spelling of the same write" \
     block "git fetch . feature:refs/heads/master" "would CREATE the protected branch"
+# `git pull` carries a fetch phase, so its refspec writes the destination the
+# same way -- and on an UNPROTECTED branch the fast-forward arm exits without
+# looking, which is what let this one through.
+run_gate "...and a PULL refspec on an unprotected branch is the same write" \
+    block "git pull . feature:refs/heads/master" "resolved in the REMOTE repository"
 git -C "$REPO" checkout -q main
 run_gate "...but the same refspec off main's own tip is inert" \
     allow "git push . HEAD:refs/heads/master"
@@ -1856,6 +1861,15 @@ run_gate "a CONFIGURED fetch refspec writing a local branch -> block" \
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 run_gate "...and the ordinary configured refspec is untouched" \
     allow "git fetch origin"
+# `git pull` runs a fetch phase under the same configured refspec, and it is not
+# an alias candidate, so the guard has to key on the command WORD -- a bare
+# `git pull origin` names no destination at all.
+git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
+git -C "$REPO" checkout -q feature
+run_gate "...and a bare PULL under the same configured refspec -> block" \
+    block "git pull origin" "under a configured refspec whose destination"
+git -C "$REPO" checkout -q main
+git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 
 # A word carrying whitespace cannot be a ref NAME, but git still accepts it as a
 # REVISION -- `:/subject` finds a commit by its message -- so dropping it left a

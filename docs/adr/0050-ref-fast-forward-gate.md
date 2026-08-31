@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty ways a first draft of that membership test still leaked, and
+Review found twenty-one ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -246,6 +246,12 @@ adding a grammar:
   refspec is ONE word until both halves are reported. A `+` prefix then hid the
   SOURCE too — `+<oid>` resolves to no commit, so the unreviewed content it named
   was skipped and a vouched HEAD made the creation read as inert.
+- **A colon refspec on a PULL.** `creation_check` handed any command carrying a
+  literal merge/pull straight to the fast-forward arms — but pull runs a fetch
+  phase, so `git pull . topic:refs/heads/master` from an UNPROTECTED branch
+  created the protected branch during that phase while the arm exited because the
+  current branch was not protected. A refspec or an opaque-input shape on a pull
+  is now judged here first.
 - **A fetch refspec supplied by CONFIG.** `git fetch origin` need not carry a
   refspec: `remote.<name>.fetch` supplies one, so a configured destination under
   refs/heads/ creates a local branch with no word in the command naming it. The
@@ -349,6 +355,14 @@ the reference-transaction layer, with #622.
 substitution (`git branch $B <oid>`) is not a literal word and is not matched —
 the THREAT MODEL's deliberate evader, who has arbitrary shell either way; and a
 force-update of a branch that exists stays #780.
+
+**Also still open:** the configured-refspec read above sees the config this gate
+can read, and the `GIT_CONFIG_COUNT` family is stripped from its environment and
+not from the command's — so a `remote.<name>.fetch` supplied that way is
+invisible here. That is the same inherited residual the header records at length
+for every other config-derived answer, and it is not made worse by this check:
+the check only ADDS refusals, and closing it needs the launcher to hand the gate
+a trusted view of the command's environment, which is #777's.
 
 **Also still open, and deliberately: the reachability proof is not bounded in
 TIME.** `rev-list` walks history, `--max-count=1` bounds its output rather than

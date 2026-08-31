@@ -1074,13 +1074,23 @@ MARKER="$REPO_DIR/$MARKER_REL"
 # command, the same cost the alias and companion rules already accept, and it is
 # paid only for the six conventional names plus whatever the operator declared.
 creation_check() {
-    # A command carrying a literal merge/pull belongs entirely to the arms below,
-    # which already refuse any companion beside it -- so a creation cannot ride
-    # along, and leaving it here keeps #779's refusals speaking for themselves.
-    [ -n "$KIND" ] && return 0
     # A git builtin reached as its own EXECUTABLE names no `git <sub>` pair, so
-    # it reports no alias candidate; the flag is what keeps it in scope.
-    [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] && return 0
+    # it reports no alias candidate; the flag is what keeps it in scope. Neither
+    # does `pull`, which the parser recognizes as a merge/pull rather than
+    # reporting as unresolved -- and it carries a fetch phase, so a refspec, an
+    # opaque-input shape, or a CONFIGURED destination on it still has to be
+    # judged here. A bare `git pull origin` names no destination at all, which is
+    # exactly why the fetching test below is on the command word rather than on
+    # anything the words spell.
+    _is_fetching=0
+    case " $CREATE_TOKS " in
+        *" fetch "*|*" git-fetch "*|*" pull "*|*" git-pull "*) _is_fetching=1 ;;
+    esac
+    if [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] \
+       && [ "$CREATE_FETCHSPEC" != "1" ] && [ -z "$CREATE_OPAQUE" ] \
+       && [ "$_is_fetching" = "0" ]; then
+        return 0
+    fi
     # A declaration file that names NO branch is the operator saying this
     # repository has no protected branch — the same statement the merge/pull arm
     # honours below by exiting. Honour it here too, or the conventional names
@@ -1097,6 +1107,59 @@ creation_check() {
     done
     [ -z "$_absent" ] && return 0
     _absent_names="$_absent"
+
+    # A FETCH need not carry a refspec at all: `remote.<name>.fetch` supplies
+    # one, so a configured destination under refs/heads/ creates a local branch
+    # with no word in the command naming it. Read from the config this gate can
+    # see -- which can only ADD refusals, never remove one, so the usual caveat
+    # about config the gate cannot see costs nothing here.
+    case " $CREATE_TOKS " in
+        *" fetch "*|*" git-fetch "*|*" pull "*|*" git-pull "*)
+            local _cfg="" _crc=0 _cline _cdst
+            _cfg=$(git_real config --get-regexp '^remote\..*\.fetch$' 2>/dev/null) || _crc=$?
+            # 1 is "no such key", which is the ordinary answer; anything else is
+            # a config this gate could not read, and it decides where a fetch
+            # writes.
+            if [ "$_crc" -gt 1 ] || [ "${#_cfg}" -ge 65536 ]; then
+                block_emit "BLOCKED: this command fetches in ${REPO_DIR:-.}, and the gate could not read the repository's configured fetch refspecs (git config exited $_crc, or the listing is past the 64 KiB this gate reads). A configured destination under refs/heads/ creates a local branch with no word in the command naming it, so an unreadable configuration is exactly the case that would hide it. Blocking as precaution (fail-closed)."
+                exit 0
+            fi
+            while IFS= read -r _cline; do
+                [ -z "$_cline" ] && continue
+                case "$_cline" in *:*) ;; *) continue ;; esac
+                _cdst=${_cline##*:}
+                _cdst=${_cdst#+}
+                case "$_cdst" in refs/remotes/*|refs/tags/*) continue ;; esac
+                block_emit "BLOCKED: this command fetches in ${REPO_DIR:-.} under a configured refspec whose destination is '$_cdst' — not refs/remotes/ or refs/tags/, so it writes a LOCAL branch, and it can be a protected one ($_PROT_NAME_LIST) that does not exist yet. No word in the command names it, and its content comes from the REMOTE repository, which nothing local can authenticate (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Point the refspec at the remote-tracking namespace, which writes no local branch:
+  git -C $Q_REPO config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+Blocking as precaution (fail-closed)."
+                exit 0
+            done <<EOF
+$_cfg
+EOF
+            ;;
+    esac
+
+
+    # A command carrying a literal merge/pull otherwise belongs entirely to the
+    # arms below, which already refuse any companion beside it -- so a creation
+    # cannot ride along, and leaving it to them keeps #779's refusals speaking
+    # for themselves. The exception is a colon REFSPEC, because `git pull`
+    # carries a fetch phase: `git pull . topic:refs/heads/master` on an
+    # UNPROTECTED branch creates the protected branch during that phase, and the
+    # fast-forward arm then exits because the current branch is not protected.
+    #
+    # An OPAQUE shape needs no exception, and that is a fact about the shapes
+    # rather than an oversight. A single command cannot be both `git merge` and
+    # `git fast-import`, or both `git merge` and `git update-ref --stdin`, so an
+    # opaque shape beside a literal merge/pull is always a COMPANION -- which the
+    # arm below refuses outright, blocking the same command with the message
+    # #779 wrote for it. The one opaque shape a merge/pull can carry ALONE is a
+    # wildcard refspec, and that sets CREATE_FETCHSPEC too, so it does not take
+    # this return.
+    if [ -n "$KIND" ] && [ "$CREATE_FETCHSPEC" != "1" ]; then
+        return 0
+    fi
 
     # `git update-ref --stdin` takes its ref names from DATA -- `printf 'create
     # refs/heads/master <oid>' | git update-ref --stdin` names the branch inside a
@@ -1129,38 +1192,6 @@ Blocking as precaution (fail-closed)."
                 _matched_all="$_matched_all $_t" ;;
         esac
     done
-    # A FETCH need not carry a refspec at all: `remote.<name>.fetch` supplies
-    # one, so a configured destination under refs/heads/ creates a local branch
-    # with no word in the command naming it. Read from the config this gate can
-    # see -- which can only ADD refusals, never remove one, so the usual caveat
-    # about config the gate cannot see costs nothing here.
-    case " $CREATE_TOKS " in
-        *" fetch "*|*" git-fetch "*)
-            local _cfg="" _crc=0 _cline _cdst
-            _cfg=$(git_real config --get-regexp '^remote\..*\.fetch$' 2>/dev/null) || _crc=$?
-            # 1 is "no such key", which is the ordinary answer; anything else is
-            # a config this gate could not read, and it decides where a fetch
-            # writes.
-            if [ "$_crc" -gt 1 ] || [ "${#_cfg}" -ge 65536 ]; then
-                block_emit "BLOCKED: this command fetches in ${REPO_DIR:-.}, and the gate could not read the repository's configured fetch refspecs (git config exited $_crc, or the listing is past the 64 KiB this gate reads). A configured destination under refs/heads/ creates a local branch with no word in the command naming it, so an unreadable configuration is exactly the case that would hide it. Blocking as precaution (fail-closed)."
-                exit 0
-            fi
-            while IFS= read -r _cline; do
-                [ -z "$_cline" ] && continue
-                case "$_cline" in *:*) ;; *) continue ;; esac
-                _cdst=${_cline##*:}
-                _cdst=${_cdst#+}
-                case "$_cdst" in refs/remotes/*|refs/tags/*) continue ;; esac
-                block_emit "BLOCKED: this command fetches in ${REPO_DIR:-.} under a configured refspec whose destination is '$_cdst' — not refs/remotes/ or refs/tags/, so it writes a LOCAL branch, and it can be a protected one ($_PROT_NAME_LIST) that does not exist yet. No word in the command names it, and its content comes from the REMOTE repository, which nothing local can authenticate (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Point the refspec at the remote-tracking namespace, which writes no local branch:
-  git -C $Q_REPO config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-Blocking as precaution (fail-closed)."
-                exit 0
-            done <<EOF
-$_cfg
-EOF
-            ;;
-    esac
-
     # THE IMPLICIT DESTINATION. On an UNBORN branch, HEAD is a symbolic ref to a
     # branch that does not exist, and every ref writer that goes THROUGH HEAD
     # creates it while naming it nowhere: `git update-ref HEAD <oid>` and

@@ -57,8 +57,10 @@ IFS='|' read -r NT FP parents GOT <<<"$parsed"
 [[ -n "$NT" ]] || refuse 'refusing unauthorized merge commit.'
 [[ "$parents" -ge 2 ]] || exit 0
 if [[ ! -f "$GD/MERGE_HEAD" ]]; then
-  [[ ! -e "$ARM" && ! -f "$CLAIM" ]] && exit 0
-  refuse 'missing MERGE_HEAD for armed merge authorization.'
+  [[ -e "$ARM" || -f "$CLAIM" ]] && refuse 'missing MERGE_HEAD for armed merge authorization.'
+  # Fast-forward onto an existing merge tip (OLD may be a deep ancestor).
+  "${G[@]}" merge-base --is-ancestor "$OLD" "$NEW" 2>/dev/null || refuse 'refusing unauthorized merge commit.'
+  exit 0
 fi
 [[ "$FOREIGN" -eq 0 ]] || refuse 'refusing unrelated ref update in merge transaction.'
 [[ -e "$SPENT" ]] && refuse 'refusing reuse of spent merge authorization.'

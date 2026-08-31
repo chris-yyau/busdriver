@@ -2190,6 +2190,29 @@ def _case_state_after_op(state, op):
     return state
 
 
+def _case_state_after_segment(state, pairs, k, seg):
+    """Advance the case walk across a segment's own WORDS, after its operator."""
+    words = seg.split()
+    lead = words[0] if words else ""
+    if state == _CASE_HEADER and lead != "in" and not _carries_no_command(seg):
+        # A header is `case WORD in`: the `in` shares the segment or LEADS the next one.
+        # Without this exit the header survived every operator until some later segment
+        # merely CONTAINED `in` -- `A=(case x); echo in; ...` -- and flipped executing
+        # stages to PATTERN. An unterminated header is not a case.
+        state = _CASE_CLOSED
+    if lead == "esac":
+        state = _CASE_CLOSED
+    elif (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
+            and _case_lead_is_command_position(pairs, k)):
+        # Only where a command may START. `case case in case) ...` is valid bash, and
+        # honouring the PATTERN-list `case` reopened the header -- then a body operand
+        # `in` re-entered pattern state and dropped a real stage (fail-OPEN).
+        state = _CASE_HEADER
+    if state == _CASE_HEADER and _IN_WORD_RE.search(seg):
+        state = _CASE_PATTERN                 # `in` may share the segment or follow it
+    return state
+
+
 def _case_pattern_segments(pairs):
     """Per-segment flags: is pairs[k] inside a `case ... in` PATTERN list?
 
@@ -2218,24 +2241,7 @@ def _case_pattern_segments(pairs):
             # A pattern list is inert text EXCEPT here: a substitution executes. Dropping
             # to CLOSED keeps its stages in the producer text, which is fail-CLOSED.
             state = _CASE_CLOSED
-        words = seg.split()
-        lead = words[0] if words else ""
-        if state == _CASE_HEADER and lead != "in" and not _carries_no_command(seg):
-            # A header is `case WORD in`: the `in` shares the segment or LEADS the next
-            # one. Without this exit the header survived every operator until some later
-            # segment merely CONTAINED `in` -- `A=(case x); echo in; ...` -- and flipped
-            # executing stages to PATTERN. An unterminated header is not a case.
-            state = _CASE_CLOSED
-        if lead == "esac":
-            state = _CASE_CLOSED
-        elif (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
-                and _case_lead_is_command_position(pairs, k)):
-            # Only where a command may START. `case case in case) ...` is valid bash, and
-            # honouring the PATTERN-list `case` reopened the header -- then a body operand
-            # `in` re-entered pattern state and dropped a real stage (fail-OPEN).
-            state = _CASE_HEADER
-        if state == _CASE_HEADER and _IN_WORD_RE.search(seg):
-            state = _CASE_PATTERN             # `in` may share the segment or follow it
+        state = _case_state_after_segment(state, pairs, k, seg)
         flags[k] = state == _CASE_PATTERN
     return flags
 

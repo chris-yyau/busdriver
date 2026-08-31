@@ -199,7 +199,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
             GATE_VALIDATE_REASON="PASS-MERGE marker is stale (over 1h old). Run /litmus."
             return 1
         fi
-        if git -C "$repo_dir" -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv --quiet 2>/dev/null; then
+        if git -C "$repo_dir" --no-replace-objects -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv --quiet 2>/dev/null; then
             if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content"; then
                 GATE_VALIDATE_REASON="Could not persist the one-use merge claim."
                 return 1
@@ -222,7 +222,8 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         return 1
     fi
     # --no-ext-diff --no-textconv: ignore inherited drivers; -c diff.external= clears config.
-    diff_out=$(git -C "$repo_dir" -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv 2>/dev/null) || hash_rc=$?
+    # --no-replace-objects: claim/RT also ignore replacements — keep the reviewed tree honest.
+    diff_out=$(git -C "$repo_dir" --no-replace-objects -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv 2>/dev/null) || hash_rc=$?
     if [[ "$hash_rc" -ne 0 ]]; then
         GATE_VALIDATE_REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $state_dir/skip-litmus.local to bypass."
         return 1

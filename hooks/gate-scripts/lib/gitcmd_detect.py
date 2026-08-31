@@ -3846,6 +3846,163 @@ def _has_companion_command(chunks):
     return False
 
 
+# What GIT refuses in a ref name, not what Python calls whitespace. `\s` matches
+# U+00A0 and friends, which `git check-ref-format` ACCEPTS -- so a protected
+# branch containing one was dropped from the word list and never matched, a
+# fail-OPEN reachable by declaring such a name. ASCII space, the control range
+# and DEL are the characters git actually rejects.
+_REF_CREATE_IMPLAUSIBLE_RE = re.compile(r'[ \x00-\x1f\x7f]')
+
+# A ref-writing git command reached as its own executable rather than as a
+# subcommand word: `$(git --exec-path)/git-branch master <oid>` runs the same
+# builtin while naming no `git <sub>` the alias scan can report.
+_REF_CREATE_GIT_EXE_RE = re.compile(r'^git-[a-z][a-z0-9-]*$')
+
+
+def git_ref_create(cmd):
+    """The ref-plausible WORDS of a command, and its one authorizable creation
+    shape (#781).
+
+    THE CLASS, NOT A GRAMMAR. `git branch`, `checkout -b/-B`, `switch -c/-C`,
+    `update-ref`, `worktree add -b` and DWIM `checkout <name>` all create a ref,
+    each with its own option grammar, and extracting "the name being created"
+    from any of them mis-parses toward ALLOW: one separate-value option this
+    module does not know about shifts the operand and the gate checks the wrong
+    word. Reporting EVERY word instead over-approximates toward BLOCK -- whichever
+    operand carries the name, it IS one of these words -- so the gate can decide
+    by set membership against the protected names it discovers, with no grammar
+    here to get wrong. Same move, and the same fail-closed reason, as
+    _has_companion_command.
+
+    Returns (canon_name, canon_oid, tokens, opts, stdin_ref_write, git_exe):
+      canon_name  set only when the WHOLE command is exactly the one authorizable
+                  creation shape, `git branch <name> <start>` (a leading plain
+                  `cd` aside, which only scopes it). Anything else leaves it '',
+                  and the gate then offers no marker route -- recognizing one
+                  exact shape is an allowlist, so a shape this misses fails
+                  CLOSED. `refs/heads/<name>` is reported as `<name>`.
+      canon_oid   that shape's start-point word, for the gate to bind a marker to
+                  once it has checked the word resolves to itself.
+      tokens      every word that could name a ref, deduplicated and in command
+                  order, each with any `refs/heads/` prefix already stripped. A
+                  word carrying whitespace or a control character is dropped (git
+                  accepts neither in a ref name) and so is a `-`-leading one (no
+                  option is a start point). The gate matches protected names
+                  against this list and resolves it to prove a creation inert;
+                  it is NOT capped here, because a cap would silently drop a name
+                  from the MATCH -- the gate bounds its own resolving loop and
+                  refuses rather than examining a subset.
+      opts        the `-`-leading words, which are NOT start points but CAN carry
+                  the created name ATTACHED: `git checkout -bmaster <oid>`,
+                  `-Bmaster`, `switch -cmaster`, a clustered `-qbmaster`, and
+                  `--create=master` all create `master` while emitting no
+                  `master` word of their own. Dropping them outright was a
+                  fail-OPEN. The gate tests each protected name as a SUFFIX of
+                  these, which over-matches (`--no-main` would too) in the
+                  blocking direction and needs no table of which git options take
+                  an attached value.
+      stdin_ref_write
+                  True when the command runs `git update-ref` with `--stdin` or
+                  `-z`, which takes its ref names from data no command-string
+                  parser can see (`printf 'create refs/heads/master <oid>' | git
+                  update-ref --stdin` names the ref inside a quoted word). There
+                  is nothing to match, so the gate refuses the shape outright
+                  wherever a protected name could be created.
+      git_exe     True when a word names a git builtin as its own EXECUTABLE
+                  (`git-branch`, `.../git-core/git-update-ref`). Such a command
+                  contains no `git <subcommand>` pair, so the gate would exit
+                  before looking at its words; this is what keeps it looking.
+                  Every subcommand test above is run over the same normalization,
+                  so `git-update-ref --stdin` and `git-worktree add <path>` reach
+                  the same rules their subcommand spellings do.
+
+    RESIDUAL, and the standing one every command-string parser here carries: a
+    name reached through a substitution or a variable (`git branch $B <oid>`) is
+    not a literal word and is not reported. That is the THREAT MODEL's deliberate
+    evader, not the routine command this gate is the observation point for."""
+    chunks = _all_chunks(cmd)
+    seen = []
+    opts = []
+    argvs = []
+    stdin_ref_write = False
+    git_exe = False
+
+    def _add(w):
+        w = w[len('refs/heads/'):] if w.startswith('refs/heads/') else w
+        if w and w not in seen:
+            seen.append(w)
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            if not seg.strip():
+                continue
+            if _record_cds(seg, []) is not None and not _seg_env_scope(seg):
+                continue      # a plain `cd` only scopes what follows
+            toks = toks_once(seg)
+            if not toks or all(_REDIR_ARTIFACT_RE.match(x) for x in toks):
+                continue      # redirection debris, not a command
+            argvs.append(toks)
+            # `git <sub>` and the standalone `git-<sub>` executable are the same
+            # builtin, so every subcommand test below runs over the NORMALIZED
+            # words: `/path/git-core/git-update-ref --stdin` and `git-worktree
+            # add ../master` reach the same rules as their subcommand spellings,
+            # and testing the raw words let both walk past.
+            ntoks = [(_x.rsplit('/', 1)[-1][4:]
+                      if _REF_CREATE_GIT_EXE_RE.match(_x.rsplit('/', 1)[-1])
+                      else _x)
+                     for _x in toks]
+            if 'update-ref' in ntoks and any(
+                    t == '-z' or (t.startswith('--') and len(t) > 2
+                                  and '--stdin'.startswith(t))
+                    for t in toks):
+                # EVERY accepted spelling, not the canonical one. git's
+                # parse-options takes any unambiguous long-option prefix, so
+                # `--std` and `--stdi` read the same opaque input that `--stdin`
+                # does; matching the full word only was a fail-OPEN.
+                stdin_ref_write = True
+            # `git worktree add <path>` with no -b/-B/--detach and no commit-ish
+            # DERIVES the new branch name from the path's final component, so
+            # `git worktree add ../master` creates `master` while the command
+            # contains no `master` word. Scoped to this subcommand deliberately:
+            # it is the only git command that names a branch after a path, and
+            # taking the basename of every `/`-bearing word everywhere would
+            # block ordinary `git add config/default`.
+            _wt = 'worktree' in ntoks and 'add' in ntoks
+            for t in toks:
+                if _REF_CREATE_IMPLAUSIBLE_RE.search(t):
+                    continue
+                if t.startswith('-'):
+                    if t not in opts:
+                        opts.append(t)
+                    continue
+                if _REF_CREATE_GIT_EXE_RE.match(t.rsplit('/', 1)[-1]):
+                    git_exe = True
+                _add(t)
+                if ':' in t:
+                    # A COLON REFSPEC writes a ref with no checkout:
+                    # `git push . HEAD:refs/heads/master` and `git fetch .
+                    # feature:refs/heads/master` both CREATE `master`, and the
+                    # whole refspec is one word that matches no protected name.
+                    # Both halves are reported -- the destination is the name
+                    # being created, the source is the content it would carry.
+                    for part in t.split(':'):
+                        _add(part)
+                if _wt:
+                    bare = (t[len('refs/heads/'):]
+                            if t.startswith('refs/heads/') else t)
+                    _add(bare.rstrip('/').rsplit('/', 1)[-1])
+    canon_name = canon_oid = ''
+    if len(chunks) == 1 and len(argvs) == 1 and len(argvs[0]) == 4:
+        a = argvs[0]
+        bare = (a[2][len('refs/heads/'):]
+                if a[2].startswith('refs/heads/') else a[2])
+        if _is_exe(a[0], 'git') and a[1] == 'branch' and bare \
+           and not _REF_CREATE_IMPLAUSIBLE_RE.search(a[2]) \
+           and not _REF_CREATE_IMPLAUSIBLE_RE.search(a[3]) \
+           and not a[3].startswith('-'):
+            canon_name, canon_oid = bare, a[3]
+    return canon_name, canon_oid, seen, opts, stdin_ref_write, git_exe
+
+
 def git_ref_op(cmd, with_untrusted_cd=False):
     """Detect a `git merge` / `git pull` that can FAST-FORWARD a branch ref (#779).
 

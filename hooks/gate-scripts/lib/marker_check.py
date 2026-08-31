@@ -2166,28 +2166,60 @@ def _strip_line_continuations(text):
     bash deletes an unquoted or double-quoted `\<newline>` BEFORE parsing, so
     `${\<newline> printf x; }` is an alternate command substitution with the separator on
     the next line. Scanning the raw bytes saw a backslash where the separator belongs and
-    missed it. Inside SINGLE quotes the pair is literal and is kept.
+    missed it.
+
+    NOT removed inside single quotes, where the pair is literal, and NOT inside a COMMENT:
+    a backslash does not continue a comment, the newline still ends it. Removing it there
+    joined the following line INTO the comment and hid a live substitution behind it --
+    `# note \<newline>${| printf x; }` read as inert, a fail-OPEN.
+
+    Quote, escape and comment-boundary rules are the same ones `_alt_cmd_subst_active`
+    applies; the two are read together.
     """
     if "\\\n" not in text:
         return text
     out, i, n = [], 0, len(text)
-    in_single = in_double = False
+    in_single = in_double = in_comment = False
+    prev = ""
     while i < n:
         ch = text[i]
+        if in_comment:
+            out.append(ch)
+            if ch == "\n":
+                in_comment = False
+                prev = "\n"
+            i += 1
+            continue
         if in_single:
             if ch == "'":
                 in_single = False
             out.append(ch)
+            prev = "x"
             i += 1
             continue
         if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
-            i += 2                            # the continuation is removed, not escaped
+            # REMOVED, so `prev` is left alone: bash deletes the pair before parsing, and
+            # the character before it keeps its meaning for the comment boundary. Setting
+            # `prev = "x"` here hid a boundary -- `case x in \<nl># note` then read as an
+            # ordinary word, the comment never opened, and the next continuation was
+            # removed too, folding a live substitution into text that later scanned as a
+            # comment: a fail-OPEN.
+            i += 2
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            prev = "x"
             continue
         if ch == "'" and not in_double:
             in_single = True
         elif ch == '"':
             in_double = not in_double
+        elif ch == "#" and not in_double and (prev == "" or prev in " \t\n;&|()"):
+            in_comment = True
         out.append(ch)
+        prev = ch
         i += 1
     return "".join(out)
 
@@ -2226,6 +2258,9 @@ def _alt_cmd_subst_active(text):
                 in_single = False
             prev = "x"
             i += 1
+            continue
+        if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
+            i += 2                            # a continuation is absent; `prev` is kept
             continue
         if ch == "\\":
             i += 2                            # escapes the next char, including `$`

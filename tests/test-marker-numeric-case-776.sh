@@ -268,17 +268,28 @@ done
 # PRE-EXISTING glob-class expansion -- HEAD reaches the same band on `[!0-9]x|$A;`
 # repetitions, which its filter also retains. Tracked separately, not introduced here.
 # shellcheck disable=SC2016  # $A must stay literal inside the generated payload
-WORST=$(python3 -c 'print("[!0-9]|$A;" * 6000)')
+WORST=$(python3 -c 'print("[!0-9]|$A;" * 2000)')
 # Bounded by python, not by the GNU `timeout` binary, which a stock macOS does not ship --
 # and this branch explicitly targets macOS. Falling back to an unbounded run there would
 # let the hang this assertion exists to catch hang the suite instead of failing it.
 got=$(python3 - "$CLASSIFIER" "$WORST" <<'PYEOF' 2>/dev/null || echo TIMEOUT_OR_ERROR
 import subprocess, sys, json
+
+# Bounded by the PRODUCTION budget: the gate is registered with a 5s timeout and a
+# timeout writes NO decision, which the harness reads as ALLOW, so anything looser would
+# let a regression that takes 6-20s pass here while failing OPEN in production.
+#
+# The payload is deliberately sized BELOW the pre-existing pathological band rather than
+# at it. 6000 repetitions sit at ~3.5s on the older glob-class expansion path that parent
+# 51ba26e2 shares (tracked in issue #802), which is close enough to 5s to flake without
+# saying anything about this branch. 2000 measures ~0.15s, so the 5s bound carries ~30x
+# headroom and genuinely encodes the production constraint instead of a round number.
+PROD_TIMEOUT_S = 5  # the repetition count lives with the payload, in `WORST=` below
 try:
     p = subprocess.run([sys.executable, "-I", sys.argv[1]],
                        input=json.dumps({"tool_name": "Bash",
                                          "tool_input": {"command": sys.argv[2]}}),
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=PROD_TIMEOUT_S)
 except subprocess.TimeoutExpired:
     print("TIMEOUT_OR_ERROR")
 else:
@@ -406,6 +417,8 @@ fi
 # analysis, which is out of scope here; a `(` opener or any non-first position works today.
 GEN_PASS=0; GEN_FAIL=0; GEN_XFAIL=0
 # shellcheck disable=SC2016  # the heredoc'd generator is python source, not shell
+# shellcheck disable=SC2312  # a failed generator yields no rows, which the
+# `*_PASS > 0` assertion below already reports as a failure
 while IFS=$'\t' read -r want cmd; do
   [[ -z "$cmd" ]] && continue
   bash -n <<<"$cmd" 2>/dev/null || continue          # only assert on valid bash
@@ -474,6 +487,8 @@ done
 # a valid empty first arm followed by the numeric-validation pattern.
 GEN2_PASS=0; GEN2_FAIL=0
 # shellcheck disable=SC2016  # the generator is python source, not shell
+# shellcheck disable=SC2312  # a failed generator yields no rows, which the
+# `*_PASS > 0` assertion below already reports as a failure
 while IFS=$'\t' read -r want cmd; do
   [[ -z "$cmd" ]] && continue
   bash -n <<<"$cmd" 2>/dev/null || continue
@@ -553,6 +568,10 @@ def run(cmd):
         except subprocess.TimeoutExpired:
             return (None, "TIMEOUT")
         dt = time.monotonic() - t0
+        # A non-zero exit is not a measurement: the classifier crashed or was killed, and
+        # timing a crash says nothing about scaling. Report it instead of averaging it in.
+        if p.returncode != 0:
+            return (None, "EXIT%d" % p.returncode)
         if best is None or dt < best[0]:
             best = (dt, p.stdout.strip())
     return best
@@ -570,7 +589,12 @@ if small_t <= FLOOR:
     print("BAD 0 %.3f %.3f TOO_FAST_TO_COMPARE %s" % (small_t, large_t, large_v))
     raise SystemExit(0)
 ratio = large_t / small_t
-ok = ratio <= LIMIT and small_v and large_v
+# The VERDICTS are asserted too, not merely non-empty: a change that made the valid short
+# case BLOCK would otherwise sail through on timing alone. The long case legitimately
+# reaches the classifier's own budget, so it may be either.
+ok = (ratio <= LIMIT
+      and small_v == "OK|"
+      and (large_v == "OK|" or large_v.startswith("BLOCK_")))
 print("%s %.2f %.3f %.3f %s %s" % ("OK" if ok else "BAD", ratio, small_t, large_t,
                                    small_v or "<none>", large_v or "<none>"))
 PYEOF
@@ -607,6 +631,8 @@ fi
 # on the surrounding pattern, not on the backtick.
 BT_PASS=0; BT_FAIL=0
 # shellcheck disable=SC2016  # the generator is python source, not shell
+# shellcheck disable=SC2312  # a failed generator yields no rows, which the
+# `*_PASS > 0` assertion below already reports as a failure
 while IFS=$'\t' read -r want cmd; do
   [[ -z "$cmd" ]] && continue
   bash -n <<<"$cmd" 2>/dev/null || continue
@@ -831,6 +857,16 @@ for want, text in (
     (True,  bs + ")#" + _d + _b + " printf x; }"),   # escaped `)`: NOT a boundary
     (True,  "a#" + _d + _b + " printf x; }"),        # mid-word `#`: not a comment
     (True,  ") " + _d + _b + "| printf x; }"),       # real boundary, then a substitution
+    # A backslash does NOT continue a comment: the newline still ends it, so the
+    # substitution on the FOLLOWING line runs. Joining the lines hid it -- a fail-OPEN.
+    (True,  "# note " + bs + "\n" + _d + _b + "| printf x; }"),
+    (False, "# note " + bs + " still comment " + _d + _b + " x"),
+    # A continuation REMOVED before the `#` must leave the preceding character in place:
+    # bash deletes the pair, so the space before it still opens the comment boundary.
+    # Rewriting it to a word character hid the boundary, folded the next line in, and the
+    # live substitution scanned as comment text -- a fail-OPEN.
+    (True,  "case x in " + bs + "\n# note " + bs + "\n" + _d + _b + "| printf x; }"),
+    (True,  "in " + bs + "\n" + _d + _b + "| printf x; }"),
 ):
     if mc._alt_cmd_subst_active(text) != want:
         bad.append((text, want, not want))
@@ -838,6 +874,27 @@ for want, text in (
 for text in (_d + _b + "V}", dq + _d + _b + "V:-x}" + dq, _d + _b + "VAR}", _d + _b + "#V}"):
     if mc._alt_cmd_subst_active(text):
         bad.append((text, False, True))
+# Generated cross-product of the lexical states that decide this, rather than more fixed
+# rows: quote context x comment-before x line-continuation. Every fail-open found in this
+# area was a COMBINATION (an apostrophe inside double quotes; a continuation removed
+# before a `#`), so the combinations are enumerated instead of sampled. The expectation is
+# derived from the rules, not from the implementation: a substitution runs unless it is
+# single-quoted, escaped, or inside a comment, and a comment ends at a real newline.
+for wrap in ("bare", "dq", "sq"):
+    for lead in ("", "; ", "# note\n", "# note " + bs + "\n", "x " + bs + "\n"):
+        for intro in (_d + _b + " ", _d + _b + "|"):
+            core = intro + "printf x; }"
+            if wrap == "dq":
+                core = dq + core + dq
+            elif wrap == "sq":
+                core = q + core + q
+            text = lead + core
+            # Inert only when single-quoted, or when a comment is still open at the core.
+            commented = lead.startswith("#") and not lead.endswith("\n")
+            want = (wrap != "sq") and not commented
+            got = mc._alt_cmd_subst_active(text)
+            if got != want:
+                bad.append((text, want, got))
 print("CLEAN" if not bad else "BAD %d %r" % (len(bad), bad[:2]))
 PYEOF
 )

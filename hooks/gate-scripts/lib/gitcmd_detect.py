@@ -3893,7 +3893,7 @@ def git_ref_create(cmd):
     _has_companion_command.
 
     Returns (canon_name, canon_oid, tokens, opts, opaque, git_exe, symref,
-             fetch_spec, unreadable, is_fetching):
+             fetch_spec, unreadable, is_fetching, is_pushing):
       canon_name  set only when the WHOLE command is exactly the one authorizable
                   creation shape, `git branch <name> <start>` (a leading plain
                   `cd` aside, which only scopes it). Anything else leaves it '',
@@ -3942,12 +3942,15 @@ def git_ref_create(cmd):
                                branch and names none of them. The ordinary
                                `+refs/heads/*:refs/remotes/origin/*` writes no
                                local branch and is not refused.
-      is_fetching True when the command runs under the repository's CONFIGURED
-                  refspecs -- `fetch`, `pull`, `remote update`, `push` or
-                  `send-pack` -- which is where a destination no word of the
-                  command spells can come from (`remote.<name>.fetch` and
-                  `remote.<name>.push` alike). Read from the NORMALIZED words, so
-                  the standalone `git-fetch` executable counts.
+      is_fetching True when the command runs under `remote.<name>.fetch` --
+                  `fetch`, `pull` or `remote update` -- which is where a
+                  destination no word of the command spells can come from. Read
+                  from the NORMALIZED words, so the standalone `git-fetch`
+                  executable counts.
+      is_pushing  the same for `remote.<name>.push`: `push` and `send-pack`.
+                  Kept apart from is_fetching so the gate reads only the config
+                  key the operation actually uses -- an unused `remote.self.push`
+                  must not refuse a fetch.
       symref      True for `git symbolic-ref`, `git notes` and `git subtree
                   split`: three ways a ref's content is not any word of the
                   command. A symbolic ref
@@ -4001,6 +4004,7 @@ def git_ref_create(cmd):
     fetch_spec = False
     unreadable = False
     is_fetching = False
+    is_pushing = False
 
     def _add(w):
         # BOTH spellings. Stripping `refs/heads/` is what makes the protected
@@ -4019,6 +4023,15 @@ def git_ref_create(cmd):
         """Read a `<src>:<dst>` word, wherever it came from."""
         nonlocal opaque, fetch_spec
         if ':' not in w or _REF_CREATE_IMPLAUSIBLE_RE.search(w):
+            return
+        # A PUSH writes its destination in ANOTHER repository, which this gate
+        # does not guard -- that boundary is ADR 0050's, and reporting the
+        # destination anyway refused `git push origin feature:refs/heads/master`
+        # as though it created a local branch. The exception is a push AT this
+        # repository, where `.` is the operand and the ref really does land here.
+        if (('push' in ntoks or 'send-pack' in ntoks)
+                and 'fetch' not in ntoks and 'pull' not in ntoks
+                and '.' not in ntoks):
             return
         # A `*` in the DESTINATION half expands to ref names no word here can
         # spell. refs/remotes/ and refs/tags/ cannot become a local branch, so
@@ -4062,12 +4075,15 @@ def git_ref_create(cmd):
                 # the NORMALIZED words, so the standalone `git-fetch` executable
                 # reaches the same scan as the subcommand spelling.
                 is_fetching = True
-            if ('fetch' in ntoks or 'pull' in ntoks or 'push' in ntoks
-                    or 'send-pack' in ntoks):
-                # `push` and `send-pack` too: `remote.<name>.push` supplies a
-                # destination the same way `remote.<name>.fetch` does, and a
-                # remote whose url is this repository writes the branch HERE.
+            if 'fetch' in ntoks or 'pull' in ntoks:
                 is_fetching = True
+            if 'push' in ntoks or 'send-pack' in ntoks:
+                # `remote.<name>.push` supplies a destination the same way
+                # `remote.<name>.fetch` does, and a remote whose url is this
+                # repository writes the branch HERE. Reported SEPARATELY, so the
+                # gate reads only the config key the operation actually uses --
+                # an unused `remote.self.push` must not refuse a fetch.
+                is_pushing = True
             if ('symbolic-ref' in ntoks or 'notes' in ntoks
                     or ('subtree' in ntoks and 'split' in ntoks)):
                 # Three ways a ref's content is not one of the command's
@@ -4158,7 +4174,7 @@ def git_ref_create(cmd):
            and not a[3].startswith('-'):
             canon_name, canon_oid = bare, a[3]
     return (canon_name, canon_oid, seen, opts, opaque, git_exe, symref,
-            fetch_spec, unreadable, is_fetching)
+            fetch_spec, unreadable, is_fetching, is_pushing)
 
 
 def git_ref_op(cmd, with_untrusted_cd=False):

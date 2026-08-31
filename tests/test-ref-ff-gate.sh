@@ -1909,6 +1909,22 @@ run_gate "a configured PUSH refspec creating a protected branch -> block" \
 git -C "$REPO" config remote.self.push 'HEAD:refs/heads/main'
 run_gate "...while one naming a branch that exists is ordinary work" \
     allow "git push self"
+# Only the config key this OPERATION reads. An unused `remote.<n>.push` must not
+# refuse a fetch, and an unrelated remote's fetch mapping must not refuse a push.
+git -C "$REPO" config remote.self.url .
+git -C "$REPO" config remote.self.push 'HEAD:refs/heads/master'
+run_gate "an unused remote.<n>.push does not refuse a FETCH" \
+    allow "git fetch origin"
+git -C "$REPO" config --unset remote.self.push
+git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
+run_gate "...and an unrelated remote.<n>.fetch does not refuse a PUSH" \
+    allow "git push origin"
+git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C "$REPO" config --unset remote.self.url
+# A PUSH writes its destination in ANOTHER repository, which this gate does not
+# guard -- ADR 0050's boundary. Reporting it anyway refused ordinary work.
+run_gate "a push refspec at a REMOTE repository is out of this gate's scope" \
+    allow "git push origin feature:refs/heads/master"
 git -C "$REPO" config --unset remote.self.push
 git -C "$REPO" config --unset remote.self.url
 
@@ -2025,6 +2041,11 @@ run_gate "...while a non-protected name is still none of the gate's business" \
 BLOB_OID=$(printf x | git -C "$REPO" hash-object -w --stdin)
 run_gate "a ref pointed at a BLOB has no ancestry to vouch for -> block" \
     block "git update-ref refs/heads/master $BLOB_OID" "an object but NOT a commit"
+# `:/text` finds a commit by its MESSAGE, and `^{commit}` cannot be appended to
+# it -- git reads the suffix as part of the search text, so resolution failed and
+# the word was skipped as naming nothing.
+run_gate "a :/message revision start point is refused, not skipped" \
+    block "git branch master :/unreviewed" "finds a commit by its MESSAGE"
 # Stripping `refs/heads/` is what makes the protected NAME match, but it also
 # changes which revision the word names: with a TAG and a BRANCH sharing a name
 # at different commits, resolving the stripped word answers for the tag while the

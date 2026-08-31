@@ -443,6 +443,7 @@ try:
         print('')
         print('')
         print('')
+        print('')
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -486,7 +487,7 @@ try:
     # with the merge/pull one about what the command says, and so the gate pays
     # one interpreter start rather than two on every git command it now sees.
     (c_name, c_oid, c_toks, c_opts, c_opaque, c_exe, c_symref,
-     c_fetchspec, c_unreadable, c_fetching) = git_ref_create(cmd)
+     c_fetchspec, c_unreadable, c_fetching, c_pushing) = git_ref_create(cmd)
     if any(chr(10) in v or chr(13) in v
            for v in [c_name, c_oid] + c_toks + c_opts):
         raise ValueError('newline in an emitted creation field')
@@ -502,8 +503,9 @@ try:
     print('1' if c_fetchspec else '0')
     print('1' if c_unreadable else '0')
     print('1' if c_fetching else '0')
+    print('1' if c_pushing else '0')
 except Exception:
-    for _ in range(22):
+    for _ in range(23):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -529,6 +531,7 @@ CREATE_SYMREF=$(echo "$PARSE_RESULT" | sed -n '19p')
 CREATE_FETCHSPEC=$(echo "$PARSE_RESULT" | sed -n '20p')
 CREATE_UNREADABLE=$(echo "$PARSE_RESULT" | sed -n '21p')
 CREATE_FETCHING=$(echo "$PARSE_RESULT" | sed -n '22p')
+CREATE_PUSHING=$(echo "$PARSE_RESULT" | sed -n '23p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -1087,7 +1090,7 @@ creation_check() {
     # anything the words spell.
     if [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] \
        && [ "$CREATE_FETCHSPEC" != "1" ] && [ -z "$CREATE_OPAQUE" ] \
-       && [ "$CREATE_FETCHING" != "1" ]; then
+       && [ "$CREATE_FETCHING" != "1" ] && [ "$CREATE_PUSHING" != "1" ]; then
         return 0
     fi
     # A declaration file that names NO branch is the operator saying this
@@ -1112,8 +1115,7 @@ creation_check() {
     # with no word in the command naming it. Read from the config this gate can
     # see -- which can only ADD refusals, never remove one, so the usual caveat
     # about config the gate cannot see costs nothing here.
-    case "$CREATE_FETCHING" in
-        1)
+    if [ "$CREATE_FETCHING" = "1" ] || [ "$CREATE_PUSHING" = "1" ]; then
             local _cfg="" _crc=0 _cline _cdst _cpre _cname_leaf
             _cfg=$(git_real config --get-regexp '^remote\..*\.(fetch|push)$' 2>/dev/null) || _crc=$?
             # 1 is "no such key", which is the ordinary answer; anything else is
@@ -1126,6 +1128,14 @@ creation_check() {
             while IFS= read -r _cline; do
                 [ -z "$_cline" ] && continue
                 case "$_cline" in *:*) ;; *) continue ;; esac
+                # Only the key this OPERATION actually reads. An unused
+                # `remote.self.push` must not refuse a fetch, and an unrelated
+                # remote's fetch mapping must not refuse a push.
+                case "${_cline%% *}" in
+                    *.fetch) [ "$CREATE_FETCHING" = "1" ] || continue ;;
+                    *.push)  [ "$CREATE_PUSHING" = "1" ] || continue ;;
+                    *) continue ;;
+                esac
                 _cdst=${_cline##*:}
                 _cdst=${_cdst#+}
                 # Can this destination land under refs/heads/? Asked precisely
@@ -1173,8 +1183,7 @@ Blocking as precaution (fail-closed)."
             done <<EOF
 $_cfg
 EOF
-            ;;
-    esac
+    fi
 
 
     # A command carrying a literal merge/pull otherwise belongs entirely to the
@@ -1354,6 +1363,19 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
             # spelling is not a routine creation, and one full object id costs a
             # single re-typed command.
             case "$_t" in
+                :/*)
+                    # `:/text` finds a commit by its MESSAGE, and `^{commit}`
+                    # cannot be appended to it -- git reads the suffix as part of
+                    # the search text, resolution fails, and the word was skipped
+                    # as naming nothing. Skipping is the ALLOW direction, so a
+                    # commit reachable only from an unprotected ref rode past a
+                    # vouched HEAD. Refused rather than resolved, like the range
+                    # spelling below.
+                    block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} from '$_t', which finds a commit by its MESSAGE rather than naming one — the gate cannot reduce it to a single object without re-running git's search, and it will not vouch for a start point it has not resolved (issue #781). Name the commit itself:
+  git rev-list -1 '$_t'
+  git branch $_matched <that object id>
+Blocking as precaution (fail-closed)."
+                    exit 0 ;;
                 *...*)
                     block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} from '$_t', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
   git merge-base <a> <b>

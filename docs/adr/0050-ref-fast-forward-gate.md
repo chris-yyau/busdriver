@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-six ways a first draft of that membership test still leaked, and
+Review found twenty-seven ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -348,6 +348,10 @@ adding a grammar:
   naming nothing — the ALLOW direction — and the proof vouched for HEAD alone.
   Such an object has no ancestry and can never be shown reachable, so it is
   refused.
+- **A start point that finds a commit by its MESSAGE.** `^{commit}` cannot be
+  appended to `:/text` — git reads the suffix as part of the search — so
+  resolution failed and the word was skipped as naming nothing. Refused rather
+  than resolved, like the range spelling below.
 - **A start point that names a RANGE.** Measured: `git branch <name> f1...f2`,
   `checkout -b` and `switch -c` all create the branch at the MERGE BASE. It names
   two revisions, so `rev-parse <word>^{commit}` refuses to reduce it and the word
@@ -425,6 +429,13 @@ so it lands in the unknown-word set and the refusal that predates this arm block
 it before the creation check runs. Measured for a plain alias, a nested one and a
 `!`-shell alias (refused by name, body unread), and now pinned by tests so it is
 not re-argued from reading `git_ref_create` alone.
+
+**Two over-blocks this arm introduced and then removed**, recorded because a
+gate that refuses ordinary work is a real cost, not a safe default: a push
+refspec at a REMOTE repository was refused as though it created a local branch
+(it is the boundary above, and only a push at `.` lands here), and the configured
+refspec scan read both `remote.<n>.fetch` and `.push` for every operation, so an
+unused `.push` refused a fetch. Each is pinned by an allow-assertion now.
 
 **Where this stops.** Every shape above is closed because it was cheap, not
 because the enumeration is complete — it cannot be, and the THREAT MODEL in the

@@ -2098,12 +2098,21 @@ def _is_digit_negation_only_segment(seg) -> bool:
     return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
 
 
-def _case_pattern_list_head(pairs, i):
-    """Index of the first segment in the `|`-joined alternative list containing pairs[i]."""
-    j = i
-    while j > 0 and pairs[j][0] == "|":
-        j -= 1
-    return j
+def _case_pattern_list_span(pairs, i):
+    """(first, last) indices of the `|`-joined alternative list containing pairs[i].
+
+    BOTH directions. Scanning only backwards to the head missed an empty-string
+    alternative written AFTER the digit-negation one -- `case x in *[!0-9]*|''|foo)` is
+    valid bash and was over-blocked, as were 17 sibling spellings the fixed examples
+    never covered. Alternative ORDER carries no meaning in a case pattern list.
+    """
+    head = i
+    while head > 0 and pairs[head][0] == "|":
+        head -= 1
+    tail = i
+    while tail + 1 < len(pairs) and pairs[tail + 1][0] == "|":
+        tail += 1
+    return head, tail
 
 
 # Empty-string case alternatives (#776): one or more empty quotes as a whole alt, or after in.
@@ -2115,6 +2124,51 @@ _IN_WORD_RE = re.compile(r"(?<![\w-])in(?![\w-])")
 
 # Where a `case` is, as PARSER STATE rather than as text nearby (#776).
 _CASE_CLOSED, _CASE_HEADER, _CASE_PATTERN, _CASE_BODY = 0, 1, 2, 3
+
+# `NAME=` / `NAME+=` immediately before a `(` -- an ARRAY ASSIGNMENT, not a subshell.
+_ARRAY_ASSIGN_TAIL_RE = re.compile(r"(?:^|[\s;&|])[\w.\[\]-]+\+?=$")
+
+
+def _case_lead_is_command_position(pairs, k):
+    """True when a leading `case` word in pairs[k] could actually START a command.
+
+    `_split_with_ops` splits on `(`, so an array assignment `A=(case x)` leaves the bare
+    word `case` at a segment LEAD while it is only an array element. Reading it as the
+    keyword opened a header that a later `in` closed into a pattern list, and real
+    executing stages were then dropped from the producer text -- a fail-OPEN. A genuine
+    subshell `(case x in ...)` carries no `NAME=` immediately before its `(`.
+    """
+    # The op must be EXACTLY `(`. Operator characters join into one run, so a real
+    # subshell after an empty assignment arrives as `;(` -- `A=;(case x in ...)` is valid
+    # bash and command position, and matching any op CONTAINING `(` over-blocked it.
+    if pairs[k][0] != "(" or k == 0:
+        return True
+    return not _ARRAY_ASSIGN_TAIL_RE.search(pairs[k - 1][1].rstrip())
+
+
+def _opens_substitution(pairs, k):
+    """True when the `(` preceding pairs[k] opens a process or command SUBSTITUTION.
+
+    `<( … )`, `>( … )` and `$( … )` RUN their contents, so unlike the rest of a pattern
+    list they are not inert text -- `case x in <(*[!0-9]* | '' | bash))` really executes
+    that pipeline. The tokenizer splits on `(`, leaving the introducer as the tail of the
+    previous segment.
+    """
+    if "(" not in pairs[k][0] or k == 0:
+        return False
+    return pairs[k - 1][1].rstrip().endswith(("<", ">", "$"))
+
+
+def _case_state_after_op(state, op):
+    """Advance the case walk across the operator that PRECEDES a segment."""
+    if state == _CASE_PATTERN:
+        if op == ")":
+            return _CASE_BODY                 # pattern list closed; the BODY runs
+        # `;` is a normalized newline, `|` joins alternatives, `(` opens the item.
+        return state if op in (";", "|", "(") else _CASE_CLOSED
+    if state == _CASE_BODY and op in (";;", ";&", ";;&"):
+        return _CASE_PATTERN                  # next arm -- `;&` / `;;&` fall through
+    return state
 
 
 def _case_pattern_segments(pairs):
@@ -2128,9 +2182,11 @@ def _case_pattern_segments(pairs):
     Both go away by tracking the construct instead of guessing at it: a keyword counts
     only in COMMAND position -- the leading word of a segment -- which is the same rule,
     for the same reason, that `_group_delta` already applies to compound keywords.
-    Between `in` and the pattern-closing `)` bash executes NOTHING, so a segment flagged
-    here cannot be a real pipeline stage. Every unrecognized op drops the state, so the
-    unreadable shape keeps its text and stays fail-CLOSED.
+    Between `in` and the pattern-closing `)` bash executes nothing EXCEPT a substitution
+    -- `<( … )`, `>( … )`, `$( … )` all run their contents -- so those drop the state via
+    `_opens_substitution` and a segment still flagged here cannot be a real pipeline
+    stage. Every unrecognized op drops the state too, so an unreadable shape keeps its
+    text and stays fail-CLOSED.
     """
     # ponytail: no nesting stack -- an inner `esac` closes the outer case too, so arms of
     # an OUTER case following a nested one over-block. That is the fail-CLOSED direction;
@@ -2138,22 +2194,26 @@ def _case_pattern_segments(pairs):
     flags = [False] * len(pairs)
     state = _CASE_CLOSED
     for k, (op, seg) in enumerate(pairs):
-        if state == _CASE_PATTERN:
-            if op == ")":
-                state = _CASE_BODY            # pattern list closed; the BODY runs
-            elif op not in (";", "|", "("):
-                # `;` is a normalized newline, `|` joins alternatives, `(` opens the item.
-                state = _CASE_CLOSED
-        elif state == _CASE_BODY and op in (";;", ";&", ";;&"):
-            state = _CASE_PATTERN             # next arm -- `;&` / `;;&` fall through
+        state = _case_state_after_op(state, op)
+        if state == _CASE_PATTERN and _opens_substitution(pairs, k):
+            # A pattern list is inert text EXCEPT here: a substitution executes. Dropping
+            # to CLOSED keeps its stages in the producer text, which is fail-CLOSED.
+            state = _CASE_CLOSED
         words = seg.split()
         lead = words[0] if words else ""
+        if state == _CASE_HEADER and lead != "in" and not _carries_no_command(seg):
+            # A header is `case WORD in`: the `in` shares the segment or LEADS the next
+            # one. Without this exit the header survived every operator until some later
+            # segment merely CONTAINED `in` -- `A=(case x); echo in; ...` -- and flipped
+            # executing stages to PATTERN. An unterminated header is not a case.
+            state = _CASE_CLOSED
         if lead == "esac":
             state = _CASE_CLOSED
-        elif lead == "case" and state in (_CASE_CLOSED, _CASE_BODY):
+        elif (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
+                and _case_lead_is_command_position(pairs, k)):
             # Only where a command may START. `case case in case) ...` is valid bash, and
             # honouring the PATTERN-list `case` reopened the header -- then a body operand
-            # `in` re-entered pattern state and dropped a real pipeline stage (fail-OPEN).
+            # `in` re-entered pattern state and dropped a real stage (fail-OPEN).
             state = _CASE_HEADER
         if state == _CASE_HEADER and _IN_WORD_RE.search(seg):
             state = _CASE_PATTERN             # `in` may share the segment or follow it
@@ -2161,11 +2221,9 @@ def _case_pattern_segments(pairs):
     return flags
 
 
-def _has_empty_string_case_alt(pairs, i, head=None):
-    """True when the `|`-list containing pairs[i] includes an empty-string alternative."""
-    if head is None:
-        head = _case_pattern_list_head(pairs, i)
-    for k in range(head, i + 1):
+def _has_empty_string_case_alt(pairs, head, tail):
+    """True when the `|`-list spanning pairs[head:tail] carries an empty-string alternative."""
+    for k in range(head, tail + 1):
         seg = pairs[k][1]
         if _EMPTY_ALT_SEG_RE.match(seg) or _EMPTY_ALT_AFTER_IN_RE.search(seg):
             return True
@@ -2173,10 +2231,62 @@ def _has_empty_string_case_alt(pairs, i, head=None):
 
 
 def _in_empty_alt_case_pattern(pairs, i, flags):
-    """True for #776 case-pattern residue: an empty alt in a real case pattern list."""
-    if pairs[i][0] != "|" or not flags[i]:
+    """True for #776 case-pattern residue: an empty alt in a real case pattern list.
+
+    Membership is decided by `flags`, NOT by the preceding operator. Requiring `|` was a
+    leftover from the text-window era and assumed the digit-negation alternative followed
+    another one; a paren-opened item puts it FIRST, where its operator is `(`, and the
+    valid `case x in (*[!0-9]*|''|foo)` was over-blocked. `flags[i]` already means bash
+    executes nothing here, which is the property the omission actually rests on.
+    """
+    if not flags[i]:
         return False
-    return _has_empty_string_case_alt(pairs, i, _case_pattern_list_head(pairs, i))
+    return _has_empty_string_case_alt(pairs, *_case_pattern_list_span(pairs, i))
+
+
+def _case_pattern_closes_after(pairs, i):
+    """True when the `|`-alternative list containing pairs[i] ends at a `)` close.
+
+    Only a pattern list that actually closes is case residue; a `|` run that reaches
+    anything else is a pipeline, and its text stays. The walk follows a CONTIGUOUS `|`
+    run and stops at the first operator that is not one, so it cannot wander off through
+    unrelated commands.
+
+    `startswith(")")`, NOT `== ")"`: consecutive operator characters join into one run,
+    so an empty case arm `''|*[!0-9]*);;` presents the close as `');;'`. Requiring a bare
+    `)` re-blocks that shape -- the `#776 empty case arm` regression test covers it.
+
+    KNOWN RESIDUAL: the walk is not bounded by the producer window, so the authorizing
+    `)` need not belong to the same construct the flags were computed for. Bounding it at
+    the window end was TRIED and withdrawn: `last` is the last candidate shell stage, not
+    the pattern close, so `case x in ''|*[!0-9]*|bash) : ;; esac` keeps its `)` at
+    `last + 1` and the bound over-blocked a valid case. This is defence in depth behind
+    `_case_pattern_segments`, which is what actually decides the construct.
+    """
+    j = i
+    while j + 1 < len(pairs):
+        next_op = pairs[j + 1][0]
+        if next_op.startswith(")"):
+            return True
+        if next_op != "|":
+            return False
+        j += 1
+    return False
+
+
+def _omit_case_residue(pairs, i, flags_box):
+    """True when pairs[i] is #776 case-pattern residue and must leave the producer text."""
+    if not _is_digit_negation_only_segment(pairs[i][1]):
+        return False
+    # ONCE per command, and only once a candidate shows up: this scan is O(pairs), and
+    # running it per emitted producer made a command of many short pipeline stages
+    # quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out hook writes NO
+    # decision, which the harness reads as ALLOW. Same reason and same shape of fix as
+    # the once-per-command probe in _herestring_shell_payloads.
+    if not flags_box:
+        flags_box.append(_case_pattern_segments(pairs))
+    return (_in_empty_alt_case_pattern(pairs, i, flags_box[0])
+            and _case_pattern_closes_after(pairs, i))
 
 
 def _join_piped_producer_segments(pairs, start, last, flags_box):
@@ -2188,33 +2298,8 @@ def _join_piped_producer_segments(pairs, start, last, flags_box):
     later list op closes the pattern with `)`. Real pipelines -- including one wearing the
     words `case` and `in` as operands -- keep the glob and stay fail-closed.
     """
-    parts = []
-    for i in range(start, last):
-        op, seg = pairs[i]
-        if _is_digit_negation_only_segment(seg):
-            # ONCE per command, and only if a candidate shows up: this scan is O(pairs),
-            # and running it per emitted producer made a command of many short pipeline
-            # stages quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out
-            # hook writes NO decision, which the harness reads as ALLOW. Same reason, and
-            # the same shape of fix, as the once-per-command probe in _herestring_shell_payloads.
-            if not flags_box:
-                flags_box.append(_case_pattern_segments(pairs))
-            if _in_empty_alt_case_pattern(pairs, i, flags_box[0]):
-                j = i
-                omit = False
-                while j + 1 < len(pairs):
-                    next_op = pairs[j + 1][0]
-                    if next_op.startswith(")"):
-                        omit = True
-                        break
-                    if next_op == "|":
-                        j += 1
-                        continue
-                    break
-                if omit:
-                    continue
-        parts.append(seg)
-    return " ; ".join(parts)
+    return " ; ".join(pairs[i][1] for i in range(start, last)
+                      if not _omit_case_residue(pairs, i, flags_box))
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a

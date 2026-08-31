@@ -4055,7 +4055,7 @@ execute_review() {
              if [[ -z "$_bd_lib_dir" ]]; then
                echo "busdriver: cannot resolve the plugin lib dir — refusing to dispatch the opencode Auditor (cannot locate its read-only config)." >&2
                _bd_exit_as 1
-             fi
+             else
              local _oc_cfg="${_bd_lib_dir}/opencode-review-config.json"
              # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
              # it silently loads the user's default config, restoring write/bash.
@@ -4067,7 +4067,7 @@ execute_review() {
              if [[ ! -f "$_oc_cfg" ]]; then
                echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_oc_cfg} exists." >&2
                _bd_exit_as 1
-             fi
+             else
              # CANONICALIZE to absolute. We dispatch with the child CWD set to the
              # neutral dir, so a relative path would resolve against THAT dir,
              # not here — the file would be missing and opencode would fail OPEN to
@@ -4076,7 +4076,7 @@ execute_review() {
              if [[ ! -f "$_oc_cfg" ]]; then
                echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                _bd_exit_as 1
-             fi
+             else
              # Derive the trusted home from the PASSWORD DATABASE FIRST (not
              # $HOME: repo-injectable) — used for the auth/cache env paths.
              # `~user` tilde expansion reads getpwnam; `id` runs absolute.
@@ -4088,7 +4088,7 @@ execute_review() {
                # (or a hostile name could execute as shell text).
                echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                _bd_exit_as 1
-             fi
+             else
              _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
              # NO $HOME fallback — $HOME is the repo-injectable value this whole
              # block exists to distrust. If the password-DB lookup fails (a broken
@@ -4096,7 +4096,7 @@ execute_review() {
              if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
                echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                _bd_exit_as 1
-             fi
+             else
              # Neutral cwd is created INSIDE the validated sandbox (post-
              # validation, in the run subshell): opencode's project discovery
              # walks UP and stops at the sandbox's own validated copy. Never
@@ -4124,7 +4124,7 @@ execute_review() {
                echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
                /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
                _bd_exit_as 1
-             fi
+             else
              _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
              _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
              # PROMPT VIA STDIN (pipe mode), not argv. opencode reads its message
@@ -4179,7 +4179,7 @@ execute_review() {
              if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
                echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
                _bd_exit_as 4
-             fi
+             else
              # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
              # opencode loads these in EVERY environment — including this
              # sandbox — so they are a fourth config surface the three isolation
@@ -4243,7 +4243,14 @@ execute_review() {
              local _oc_rc=$?
               # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
             /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
-             _bd_exit_as "$_oc_rc" ;;
+             _bd_exit_as "$_oc_rc"
+             fi
+             fi
+             fi
+             fi
+             fi
+             fi
+             fi ;;
     builtin) echo "BUILTIN_FALLBACK"; _bd_exit_as 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

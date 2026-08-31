@@ -242,7 +242,7 @@ fi
 er_ng="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_ng"; exit 1; }
 out_ng="$(cd "$er_ng" && REPO_ROOT="$REPO_ROOT" PATH="$er_stub:$PATH" bash -c '
   . "$REPO_ROOT/scripts/lib/resolve-cli.sh" 2>/dev/null
-  execute_review agy "review" 10 2>&1')"
+  execute_review agy "review" 10 2>&1')" || true
 if [[ "$out_ng" == *"refusing review dispatch"* && "$out_ng" != *"ER_ARGV:"* ]]; then
   pass "execute_review agy refuses fail-CLOSED outside a Git checkout (no dispatch)"
 else

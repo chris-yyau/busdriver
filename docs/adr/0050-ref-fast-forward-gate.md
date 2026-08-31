@@ -503,6 +503,19 @@ substitution (`git branch $B <oid>`) is not a literal word and is not matched �
 the THREAT MODEL's deliberate evader, who has arbitrary shell either way; and a
 force-update of a branch that exists stays #780.
 
+One more, named here because review read the amendment as claiming more than it
+does: **commit-producing porcelain on an UNBORN protected branch.** `git am` and
+`git cherry-pick` create both the commits and the ref without a `git commit`, so
+neither `pre-commit-gate.sh` (which owns the initial-commit shape above) nor this
+arm observes them — no word names the branch, and the content does not exist to
+be judged when the gate runs. That is the same shape as `git pull`, and it has
+the same answer: it needs the reference-transaction layer, where the ref write is
+observed with its content in hand. It belongs with `rebase`/`am` in #783 and the
+installer in #622, and this amendment does not close it. What this arm claims is
+narrower than "any creation at unreviewed content": it is every creation whose
+ref NAME is a word of the command, plus the shapes that name refs where no word
+scan can reach, which are refused outright.
+
 **Also still open:** the configured-refspec read above sees the config this gate
 can read, and the `GIT_CONFIG_COUNT` family is stripped from its environment and
 not from the command's — so a `remote.<name>.fetch` supplied that way is
@@ -546,7 +559,9 @@ environment-only `remote.origin.fetch=<src>:refs/heads/master` would make a plai
 `git fetch origin` create a branch no command word names. Neither reaches its
 check: an env assignment is an operand the gate cannot resolve statically, and
 the refusal that predates this arm blocks it first — measured for push and fetch
-alike, `env`-prefixed spelling included, and now pinned by tests. A stand-down flag for it was built, found
+alike, `env`-prefixed spelling included — as are `git -c <key>=<value>` and
+`--config-env`, which carry the same config as command-local options — and now
+pinned by tests. A stand-down flag for it was built, found
 redundant against that refusal, and removed rather than left as a second control
 nobody would know was dead.
 

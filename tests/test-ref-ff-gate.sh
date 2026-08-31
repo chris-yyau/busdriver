@@ -2138,6 +2138,17 @@ run_gate "...as does a FETCH carrying a configured refspec in its environment" \
 run_gate "...and the env-prefixed spelling of it" \
     block "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.fetch GIT_CONFIG_VALUE_0=refs/heads/main:refs/heads/master git fetch origin" \
     "cannot be resolved statically"
+# `git -c` and `--config-env` carry command-local config the gate's own query
+# would not see either. They meet the same refusal.
+run_gate "...as does command-local config via git -c" \
+    block "git -c remote.self.url=. push self feature:refs/heads/master" \
+    "cannot be resolved statically"
+run_gate "...and via --config-env" \
+    block "git --config-env=remote.origin.pushurl=SELF push origin feature:refs/heads/master" \
+    "cannot be resolved statically"
+run_gate "...and a git -c on a FETCH" \
+    block "git -c remote.origin.fetch=refs/heads/main:refs/heads/master fetch origin" \
+    "cannot be resolved statically"
 # A RELATIVE destination resolves against the SHELL's directory, which need not
 # be the repository root: from a nested directory `git push ..` is this
 # repository while `..` from the root is its parent.

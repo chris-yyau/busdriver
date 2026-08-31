@@ -2120,6 +2120,18 @@ run_gate "...but honoured when the destination came from url" \
     allow "git push selfp feature:refs/heads/master"
 git -C "$REPO" config --unset url.https://elsewhere/.pushInsteadOf
 git -C "$REPO" remote remove selfp >/dev/null 2>&1
+# The gate's environment is SANITIZED of the GIT_CONFIG_* family and the
+# command's is not, so a command carrying its own config would answer the push
+# boundary differently from the way git will. It never reaches that boundary:
+# an env assignment is an operand the gate cannot resolve statically, and the
+# refusal that predates this arm blocks it first. Pinned so it is not re-argued
+# from reading the boundary alone.
+run_gate "a command carrying GIT_CONFIG_* never reaches the push boundary" \
+    block "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=. git push origin feature:refs/heads/master" \
+    "cannot be resolved statically"
+run_gate "...and GIT_DIR likewise" \
+    block "GIT_DIR=$REPO/.git git push origin feature:refs/heads/master" \
+    "cannot be resolved statically"
 # A RELATIVE destination resolves against the SHELL's directory, which need not
 # be the repository root: from a nested directory `git push ..` is this
 # repository while `..` from the root is its parent.

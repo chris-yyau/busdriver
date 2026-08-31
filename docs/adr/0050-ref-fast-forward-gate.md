@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty-six ways a first draft of that membership test still
+Review found forty-seven ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -411,6 +411,11 @@ adding a grammar:
 - **Each linked worktree's ADMIN git dir** (`<common>/worktrees/<id>`) is a git
   directory on the same shared ref store, and it is named by no list of worktree
   ROOTS. The whole family is closed by the prefix rather than by enumerating it.
+- **A FAILED worktree listing is not an empty one.** Converting the failure to
+  "no other worktrees" let a push at a sibling read as external. It now stands
+  the early return down, as a truncated listing does — and the candidate loop
+  carries the same 16-word bound the ref-name scan does, past which it likewise
+  cannot rule a destination out.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping
@@ -530,6 +535,17 @@ this gate evaluate arbitrary push destinations means resolving and reading other
 repositories from a PreToolUse hook, which is a different feature, not a
 tightening of this one. Note also which way the content flows: what such a push
 carries is content from THIS repository, which every gate here has already seen.
+
+**Raised and already covered: the command's own `GIT_CONFIG_*`.** The gate's
+environment is sanitized of that family (#325 / ADR 0016) and the executed
+command's is not, so a command carrying its own config would answer the push
+boundary differently from the way git will —
+`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=. git push origin …`.
+It never reaches that boundary: an env assignment is an operand the gate cannot
+resolve statically, and the refusal that predates this arm blocks it first
+(measured, and now pinned by tests). A stand-down flag for it was built, found
+redundant against that refusal, and removed rather than left as a second control
+nobody would know was dead.
 
 **Raised repeatedly and NOT a gap: a config alias hiding the creation.**
 `alias.mk = 'branch master <oid>'` then `git mk` carries no protected word — but

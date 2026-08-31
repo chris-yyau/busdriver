@@ -1147,7 +1147,10 @@ creation_check() {
         # `/path/to/my project/wt`.
         local _wl _wp _wn=0
         _mw_phys=""
-        _wl=$(git_real worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 65) || _wl=""
+        # A FAILED listing is not an empty one: converting it to "no other
+        # worktrees" let a push at a sibling read as external.
+        _wl=$(git_real worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 65) || _wt_trunc=1
+        [ -n "$_wl" ] || _wt_trunc=1
         while IFS= read -r _wp; do
             [ -n "$_wp" ] || continue
             _wn=$((_wn + 1))
@@ -1263,7 +1266,13 @@ ULEOF
         # --repo=. origin:refs/heads/master` be judged on `origin` -- a refspec
         # half that happens to be a remote name -- and returned as external
         # while git pushed here.
+        local _cn=0 _cand_trunc=0
         for _pt in $_cands; do
+            # Two short git calls apiece, so the same cap the ref-name scan uses
+            # applies here. Past it the scan can no longer rule a destination
+            # out, which the stand-down below reads as "could not tell".
+            _cn=$((_cn + 1))
+            if [ "$_cn" -gt 16 ]; then _cand_trunc=1; break; fi
             if _push_dest_is_self "$_pt"; then
                 _premote="$_pt"; _at_self=1; break
             fi
@@ -1298,7 +1307,7 @@ ULEOF
         # a destination this gate could not enumerate is not one it may vouch for
         # as elsewhere.
         if [ "$_at_self" = "0" ] && [ "$CREATE_UNREADABLE" != "1" ] \
-           && [ "$_wt_trunc" != "1" ]; then
+           && [ "$_wt_trunc" != "1" ] && [ "$_cand_trunc" != "1" ]; then
             return 0
         fi
         # A self-push with NO refspec in the command takes its destination from

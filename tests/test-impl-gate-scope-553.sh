@@ -158,13 +158,13 @@ echo "── property: EVERY expansion that hides the verb, across every runner 
 # because it is the spelling that needs no assignment anywhere in the command.
 PROP_BAD=0; PROP_CASES=""
 prop() {   # <expected: allow|block> <command>
-    local out; out="$(armed "$2")"
-    case "$out" in
-        *'"block"'*) [[ "$1" == "block" ]] || { PROP_BAD=$((PROP_BAD + 1))
-                       PROP_CASES="${PROP_CASES} [blocked: $2]"; } ;;
-        *)           [[ "$1" == "allow" ]] || { PROP_BAD=$((PROP_BAD + 1))
-                       PROP_CASES="${PROP_CASES} [allowed: $2]"; } ;;
-    esac
+    # Routed through `verdict` like every other assertion, so a gate CRASH stays its own
+    # third answer: matching the output directly would fold GATE-EXIT-* and
+    # PAYLOAD-BUILD-FAILED into `allow`, and the first `prop allow` case added later would
+    # then pass vacuously on a crash (coderabbit, #553).
+    local got; got="$(verdict "$(armed "$2")")"
+    [[ "$got" == "$1" ]] || { PROP_BAD=$((PROP_BAD + 1))
+                              PROP_CASES="${PROP_CASES} [$got: $2]"; }
 }
 # Each spelling reaches `rm` at run time and equals no verb at read time.
 HIDDEN_RM='${P} -rf src|$P -rf src|`echo rm` -rf src|/b?n/r? -rf src|{rm,-rf} src'
@@ -1024,7 +1024,23 @@ import os, sys, time
 sys.path.insert(0, os.environ["GATE_LIB"])
 import cmdword, marker_check
 
-BUDGET = 3.0
+# The bound is machine-relative, and the LOCAL number is the meaningful one: it is the
+# developer machine whose 5s hook deadline this is a proxy for. A hosted CI runner is
+# simply slower at the same work — the worst shape measured 1.99s locally and 4.88s on a
+# GitHub runner, a ~2.45x constant factor with no shape changing rank. Pinning 3.0
+# everywhere therefore fails on runner speed, while flat-raising it to clear CI would
+# blind the LOCAL run to the very regression this exists to catch (the unbounded -exec
+# rescan measured 5.158s locally, and origin/main 4.3s). So keep 3.0 where it maps to the
+# real deadline and scale it by the observed factor where it does not: a genuine return to
+# quadratic is multiples, not 2.45x, so it still fails on CI too (#553).
+#
+# Keyed on GITHUB_ACTIONS == "true", NOT on a truthy `CI`. Two reasons, both reported:
+# `os.environ.get("CI")` is true for the string `false`, which is a value CI systems
+# really do set; and 7.5 is a calibration measured on a GitHub runner, so applying it to
+# any other CI would silently license a 3-7.5s regression on hardware nobody measured.
+# Anything that is not provably the runner this factor came from keeps the strict local
+# bound (codex, #553).
+BUDGET = 7.5 if os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true" else 3.0
 CASES = {
     "64 closers after 65k filler": "X=${Y:-" + ("a" * 65000) + ("}" * 64) + " ls",
     "...and with a verb behind it": "X=${Y:-" + ("a" * 65000) + ("}" * 64) + " rm -rf src",

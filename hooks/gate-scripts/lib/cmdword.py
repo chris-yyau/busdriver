@@ -4417,10 +4417,16 @@ def is_file_mod(cmd, _depth=0):
     pairs, ok = _split_with_ops(_norm)
     if not ok:
         return _regex_fallback(cmd)      # same residual as the substitution path above
-    # ...and the flag the FIRST split raised is preserved across them: the extra calls
-    # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
-    # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
-    _norm = _normalize(cmd)
+    # ...and the flag the FIRST split raised is preserved across the extra readings below.
+    # `_paren_hash_ambiguous` is written only by _defuse_comments (inside _normalize) and
+    # cleared only above; _split_with_ops never touches it, so the `_amb` save/restore is a
+    # guard against a future reset here rather than a live fix. Do not drop the reset above
+    # — without it a `)#` ambiguity recorded by an earlier call leaks into this one, and a
+    # fail-CLOSED stall becomes an allow (codex, #553).
+    #
+    # `_norm` is reused rather than recomputed: _normalize is pure and its one side effect
+    # (raising the flag) is idempotent on the same input, so the second pass only re-ran
+    # comment defusing and every substitution over the whole command (coderabbit, #553).
     # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
     # the opener from the raw command, and bash removes it before parsing (codex, #553).
     _readings, _base_pairs = [], pairs

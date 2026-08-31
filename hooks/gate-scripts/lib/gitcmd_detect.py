@@ -3859,6 +3859,24 @@ _REF_CREATE_IMPLAUSIBLE_RE = re.compile(r'[ \x00-\x1f\x7f]')
 _REF_CREATE_GIT_EXE_RE = re.compile(r'^git-[a-z][a-z0-9-]*$')
 
 
+def _writes_local_branch(dst):
+    """Can this refspec DESTINATION land under refs/heads/?
+
+    Asked precisely rather than as "anything but refs/remotes/ and refs/tags/",
+    which was the first cut and over-blocked: `refs/notes/*`, `refs/replace/*`
+    and any other namespace cannot become a branch, so a fetch writing one is
+    ordinary work. Three ways it CAN: the destination is under refs/heads/; it
+    carries no `refs/` prefix at all, which git completes to refs/heads/<name>;
+    or it is a wildcard whose literal prefix is short enough to expand into
+    refs/heads/ (`refs/*` can, `refs/notes/*` cannot)."""
+    d = dst.lstrip('+')
+    if d.startswith('refs/heads/'):
+        return True
+    if d.startswith('refs/'):
+        return 'refs/heads/'.startswith(d.split('*', 1)[0])
+    return True
+
+
 def git_ref_create(cmd):
     """The ref-plausible WORDS of a command, and its one authorizable creation
     shape (#781).
@@ -4005,7 +4023,7 @@ def git_ref_create(cmd):
         # spell. refs/remotes/ and refs/tags/ cannot become a local branch, so
         # the ordinary fetch refspec is untouched.
         dst = w.rsplit(':', 1)[-1].lstrip('+')
-        local_dst = not dst.startswith(('refs/remotes/', 'refs/tags/'))
+        local_dst = _writes_local_branch(dst)
         if '*' in dst and local_dst:
             opaque = opaque or 'wildcard'
         if local_dst and ('fetch' in ntoks or 'pull' in ntoks):

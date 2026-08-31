@@ -1881,6 +1881,19 @@ run_gate "...and so does 'git remote update'" \
 run_gate "...and the standalone git-fetch executable" \
     block "$(git --exec-path)/git-fetch origin" \
     "under a configured refspec whose destination"
+# ...but a destination in a namespace that CANNOT become a branch is ordinary
+# work. "Anything but refs/remotes/ and refs/tags/" was the first cut and
+# over-blocked every one of these.
+for _ns in 'refs/notes/*' 'refs/replace/*' 'refs/stash'; do
+    git -C "$REPO" config remote.origin.fetch "refs/heads/*:$_ns"
+    run_gate "a configured destination in $_ns cannot create a branch -> allow" \
+        allow "git fetch origin"
+done
+# A wildcard whose literal prefix is short enough to reach refs/heads/ still can.
+git -C "$REPO" config remote.origin.fetch 'refs/heads/*:refs/*'
+run_gate "...but a bare refs/* wildcard reaches refs/heads/ -> block" \
+    block "git fetch origin" "under a configured refspec whose destination"
+git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 git -C "$REPO" checkout -q main
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 

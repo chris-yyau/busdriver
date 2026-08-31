@@ -1114,7 +1114,7 @@ creation_check() {
     # about config the gate cannot see costs nothing here.
     case "$CREATE_FETCHING" in
         1)
-            local _cfg="" _crc=0 _cline _cdst
+            local _cfg="" _crc=0 _cline _cdst _cpre
             _cfg=$(git_real config --get-regexp '^remote\..*\.fetch$' 2>/dev/null) || _crc=$?
             # 1 is "no such key", which is the ordinary answer; anything else is
             # a config this gate could not read, and it decides where a fetch
@@ -1128,7 +1128,29 @@ creation_check() {
                 case "$_cline" in *:*) ;; *) continue ;; esac
                 _cdst=${_cline##*:}
                 _cdst=${_cdst#+}
-                case "$_cdst" in refs/remotes/*|refs/tags/*) continue ;; esac
+                # Can this destination land under refs/heads/? Asked precisely
+                # rather than as "anything but refs/remotes/ and refs/tags/",
+                # which over-blocked: refs/notes/, refs/replace/ and any other
+                # namespace cannot become a branch. Three ways it can -- under
+                # refs/heads/, no refs/ prefix at all (git completes it to
+                # refs/heads/<name>), or a wildcard whose literal prefix is short
+                # enough to reach refs/heads/ (`refs/*` can, `refs/notes/*`
+                # cannot).
+                case "$_cdst" in
+                    refs/heads/*) ;;
+                    refs/*)
+                        _cpre=${_cdst%%\**}
+                        # Constant on the left ON PURPOSE: the question is
+                        # whether refs/heads/ starts with the pattern's literal
+                        # prefix, so the prefix is the PATTERN and the fixed
+                        # namespace is the word.
+                        # shellcheck disable=SC2194
+                        case "refs/heads/" in
+                            "$_cpre"*) ;;
+                            *) continue ;;
+                        esac ;;
+                    *) ;;
+                esac
                 block_emit "BLOCKED: this command fetches in ${REPO_DIR:-.} under a configured refspec whose destination is '$_cdst' — not refs/remotes/ or refs/tags/, so it writes a LOCAL branch, and it can be a protected one ($_PROT_NAME_LIST) that does not exist yet. No word in the command names it, and its content comes from the REMOTE repository, which nothing local can authenticate (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Point the refspec at the remote-tracking namespace, which writes no local branch:
   git -C $Q_REPO config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 Blocking as precaution (fail-closed)."

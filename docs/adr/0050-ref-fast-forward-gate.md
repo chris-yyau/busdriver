@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-four ways a first draft of that membership test still leaked, and
+Review found twenty-five ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -319,6 +319,13 @@ adding a grammar:
   current ref to match — and `git pull <remote> <branch>` populated the unborn
   protected branch from remote content, the one thing that arm refuses
   everywhere else. The current-branch test now runs over the protected NAMES.
+- **Over-blocking, the other direction.** The configured-refspec check first
+  treated every destination outside refs/remotes/ and refs/tags/ as a branch
+  write, which refused ordinary `refs/notes/*`, `refs/replace/*` and any other
+  namespace. The question is asked precisely now: a destination lands under
+  refs/heads/ when it is spelled there, when it carries no `refs/` prefix at all
+  (git completes it), or when it is a wildcard whose literal prefix is short
+  enough to reach it — `refs/*` can, `refs/notes/*` cannot.
 - **Other ways to reach the CONFIGURED refspecs.** `git remote update` fetches
   under them too, and the standalone `git-fetch` executable spells no `fetch`
   word — the guard read the raw words. It now reads a normalized flag from the

@@ -2153,6 +2153,24 @@ _CASE_ARM_RESTART_RE = re.compile(r"^\)(?:;;&|;;|;&)\(?$")
 _CASE_TERM_RUN_RE = re.compile(r"^(?:;;&|;;|;&)\(?$")
 
 
+def _pattern_text_executes(pairs, k, seg):
+    """True when pairs[k] carries text a case pattern would RUN rather than match.
+
+    A pattern list is inert text except for substitution, so these end the state and the
+    stages keep their text -- the fail-CLOSED direction.
+    """
+    if _opens_substitution(pairs, k):
+        return True
+    # Backticks are the POSIX spelling of command substitution and execute exactly the
+    # same way, but the tokenizer does not split on them, so there is no `(` operator to
+    # detect and the introducer never reaches _opens_substitution: the character itself is
+    # the only marker. `case x in `:; '' | *[!0-9]* | bash`)` is valid bash and really runs
+    # that pipeline. Blocked today by other machinery -- every probed spelling returns
+    # BLOCK -- but the STATE was still wrong, and resting a security invariant on a
+    # different check happening to fire is how the next spelling gets through.
+    return "`" in seg
+
+
 def _case_state_after_op(state, op):
     """Advance the case walk across the operator that PRECEDES a segment."""
     if state == _CASE_PATTERN:
@@ -2220,11 +2238,20 @@ def _case_pattern_segments(pairs):
     state = _CASE_CLOSED
     for k, (op, seg) in enumerate(pairs):
         state = _case_state_after_op(state, op)
-        if state == _CASE_PATTERN and _opens_substitution(pairs, k):
+        state = _case_state_after_segment(state, pairs, k, seg)
+        if state == _CASE_PATTERN and _pattern_text_executes(pairs, k, seg):
             # A pattern list is inert text EXCEPT here: a substitution executes. Dropping
             # to CLOSED keeps its stages in the producer text, which is fail-CLOSED.
+            #
+            # AFTER the segment transition, not before it. A segment can both OPEN the
+            # pattern list and carry the substitution -- `case x in `:; …`)` is one
+            # segment -- and checking first saw state CLOSED there, skipped, and then let
+            # the header transition mark it PATTERN anyway. The guard never fired on the
+            # very shape it was added for; the BLOCK came from the whole-command backtick
+            # scan instead, which is the "another check happens to fire" dependency this
+            # is supposed to remove. `<( … )` still trips it: that opener arrives on a
+            # LATER segment whose state is already PATTERN, so the move costs it nothing.
             state = _CASE_CLOSED
-        state = _case_state_after_segment(state, pairs, k, seg)
         flags[k] = state == _CASE_PATTERN
     return flags
 

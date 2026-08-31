@@ -492,23 +492,74 @@ fi
 #
 # Every alternative in a `|`-list shares one span, one empty-alt answer and one closing
 # `)`. Deciding that per candidate re-walked the whole list each time, so a long valid
-# pattern was quadratic; `_case_residue_flags` now settles each list once. The earlier
-# bounded-work probe missed this because its repeated alternatives sit OUTSIDE a real
-# case-pattern state. A timeout here is NO decision, which the harness reads as ALLOW.
-# The bound is loose on purpose (a slow runner must not flake it): pre-fix this shape
-# grew 0.08s -> 0.18s -> 0.38s across N=500/1000/2000; after, N=4000 lands at ~0.17s.
-LONG_ALT=$(python3 -c '
-import sys
-n = 4000; q = chr(39); s = chr(42)
-alts = [q + q] + [s + "[!0-9]" + s] * n + ["bash"]
-print("case x in " + "|".join(alts) + ") : ;; " + s + ") : ;; esac")
-')
-long_payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$LONG_ALT" 2>/dev/null)
-got=$(printf '%s' "$long_payload" | timeout 30 python3 -I "$CLASSIFIER" 2>/dev/null) || got="TIMEOUT_OR_ERROR"
-if [[ "$got" == "OK|" || "$got" == BLOCK_* ]]; then
-  ok "#776 long in-pattern alternative list returns a verdict in bounded time"
+# pattern did redundant work; `_case_residue_flags` now settles each list once. The
+# earlier bounded-work probe missed it because its repeated alternatives sit OUTSIDE a
+# real case-pattern state, so none of them was ever a candidate.
+#
+# This is an EMPIRICAL regression detector, not a complexity proof, and the distinction
+# matters: at the sizes the classifier's own budget allows, the prior implementation
+# peaked below 1s, so no wall-clock ceiling short of the gate's 5s timeout could separate
+# the two. What does separate them is the SHAPE. Measured N=500 -> N=4000 (8x input),
+# best-of-3, same machine: 13.16 on the implementation this replaced, 2.66 after. The
+# limit is set at 6.0, between the two, and was RUN against that prior commit to confirm
+# it fails there -- a bound the regression slips under is worse than no bound.
+# Both measurements ride the same interpreter start-up and the same budget truncation, so
+# a slower runner moves them together and the ratio holds.
+RATIO_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import json, subprocess, sys, time
+
+classifier = sys.argv[1]
+q, s = chr(39), chr(42)
+FLOOR = 0.05
+LIMIT = 6.0
+
+
+def build(n):
+    alts = [q + q] + [s + "[!0-9]" + s] * n + ["bash"]
+    return "case x in " + "|".join(alts) + ") : ;; " + s + ") : ;; esac"
+
+
+def run(cmd):
+    """Best-of-3 wall time plus the verdict; None if the classifier fails to answer."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+    best = None
+    for _ in range(3):
+        t0 = time.monotonic()
+        try:
+            # A hang is the failure mode this test exists to catch, so it must become a
+            # failed assertion here rather than a stalled job an outer CI timeout kills.
+            p = subprocess.run([sys.executable, "-I", classifier], input=payload,
+                               capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return (None, "TIMEOUT")
+        dt = time.monotonic() - t0
+        if best is None or dt < best[0]:
+            best = (dt, p.stdout.strip())
+    return best
+
+
+small_t, small_v = run(build(500))
+large_t, large_v = run(build(4000))
+if small_t is None or large_t is None:
+    print("BAD 0 0 0 %s %s" % (small_v, large_v))
+    raise SystemExit(0)
+# The floor only guards division. If the small case ever lands at or under it the ratio
+# stops meaning anything -- report inconclusive rather than let a shrunken denominator
+# hide real growth.
+if small_t <= FLOOR:
+    print("BAD 0 %.3f %.3f TOO_FAST_TO_COMPARE %s" % (small_t, large_t, large_v))
+    raise SystemExit(0)
+ratio = large_t / small_t
+ok = ratio <= LIMIT and small_v and large_v
+print("%s %.2f %.3f %.3f %s %s" % ("OK" if ok else "BAD", ratio, small_t, large_t,
+                                   small_v or "<none>", large_v or "<none>"))
+PYEOF
+)
+read -r _r_status _r_ratio _r_small _r_large _r_sv _r_lv <<<"$RATIO_OUT"
+if [[ "$_r_status" == "OK" ]]; then
+  ok "#776 long in-pattern list: 8x input -> ${_r_ratio}x time (limit 6x; was 13.16x)"
 else
-  no "#776 long in-pattern alternative list returns a verdict in bounded time" "got=${got:-<empty>}"
+  no "#776 long in-pattern list scaling" "ratio=${_r_ratio} small=${_r_small}s large=${_r_large}s verdicts=${_r_sv}/${_r_lv}"
 fi
 
 # The same list length as a REAL pipeline must still block (not merely be fast).
@@ -521,6 +572,100 @@ if [[ "$got" == BLOCK_* ]]; then
   ok "#776 long real pipeline of digit-negation stages still blocks"
 else
   no "#776 long real pipeline of digit-negation stages still blocks" "got=${got:-<empty>}"
+fi
+
+# --- Generated backtick coverage: executable vs inert spellings.
+#
+# Backticks are the POSIX command substitution and RUN their contents, but the tokenizer
+# does not split on them, so there is no `(` for the substitution check to see. Two fixed
+# examples do not separate the executable spellings from the ones the shell treats as
+# ordinary characters, so the forms are generated: bare, nested, operator-adjacent, and
+# the three INERT spellings -- backslash-escaped, single-quoted, and inside double quotes
+# (where a backtick still substitutes, so that one is executable too and is asserted as
+# such). Executable rows must BLOCK. The inert rows are asserted only to be VALID bash and
+# to return some verdict, because whether the numeric shape is still allowed there depends
+# on the surrounding pattern, not on the backtick.
+BT_PASS=0; BT_FAIL=0
+# shellcheck disable=SC2016  # the generator is python source, not shell
+while IFS=$'\t' read -r want cmd; do
+  [[ -z "$cmd" ]] && continue
+  bash -n <<<"$cmd" 2>/dev/null || continue
+  got=$(verdict "$cmd")
+  case "$want" in
+    block) if [[ "$got" == BLOCK_* ]]; then BT_PASS=$((BT_PASS + 1)); else
+             BT_FAIL=$((BT_FAIL + 1)); printf '  bt MISMATCH want=block got=%s :: %s\n' "$got" "$cmd"; fi ;;
+    any)   if [[ "$got" == "OK|" || "$got" == BLOCK_* ]]; then BT_PASS=$((BT_PASS + 1)); else
+             BT_FAIL=$((BT_FAIL + 1)); printf '  bt NO-VERDICT :: %s\n' "$cmd"; fi ;;
+  esac
+done < <(python3 -c '
+q = chr(39); dq = chr(34); s = chr(42); bt = chr(96)
+neg = s + "[!0-9]" + s
+inner = q + q + " | " + neg + " | bash"
+rows = []
+# Executable: the substitution really runs the pipeline.
+rows.append(("block", "case x in " + bt + inner + bt + ") : ;; " + s + ") : ;; esac"))
+rows.append(("block", "case x in " + bt + ":; " + inner + bt + ") : ;; " + s + ") : ;; esac"))
+rows.append(("block", "case x in " + q + q + "|" + bt + neg + bt + ") : ;; " + s + ") : ;; esac"))
+rows.append(("block", "case x in a) : ;; " + bt + inner + bt + ") : ;; " + s + ") : ;; esac"))
+# Inside DOUBLE quotes a backtick still substitutes -- executable, not inert.
+rows.append(("block", "case x in " + dq + bt + inner + bt + dq + ") : ;; " + s + ") : ;; esac"))
+# Inert spellings: the shell passes the backtick through as an ordinary character.
+rows.append(("any", "case x in " + chr(92) + bt + q + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
+rows.append(("any", "case x in " + q + bt + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
+for w, c in rows:
+    print(w + chr(9) + c)
+')
+if [[ "$BT_FAIL" -eq 0 && "$BT_PASS" -gt 0 ]]; then
+  ok "#776 backtick matrix (${BT_PASS} spellings: executable block, inert still decide)"
+else
+  no "#776 backtick matrix" "pass=${BT_PASS} fail=${BT_FAIL}"
+fi
+
+# --- State-level assertion for the substitution guard.
+#
+# A verdict-level test cannot see this: every backtick spelling already BLOCKS via the
+# whole-command backtick scan, on the parent commit too, so the matrix above passes even
+# when the walk still marks an executing glob as case residue. That standing dependency on
+# a different check is the thing being removed, so the assertion reads the walk directly:
+# no digit-negation segment inside a backtick substitution may come back as residue.
+# Verified to FAIL on the parent blob, where segment 2 is marked.
+STATE_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import importlib.util, io, json, sys
+
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "true"}}))
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+# The classifier prints its verdict for the stub command at import time; swallow it so
+# this probe's stdout carries only the assertion result.
+_real_stdout, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real_stdout
+
+q, s, bt = chr(39), chr(42), chr(96)
+neg = s + "[!0-9]" + s
+cases = [
+    "case x in " + bt + ":; " + q + q + " | " + neg + " | bash" + bt + ") : ;; " + s + ") : ;; esac",
+    "case x in " + bt + q + q + " | " + neg + bt + ") : ;; " + s + ") : ;; esac",
+    "case x in " + q + q + "|" + bt + neg + bt + ") : ;; " + s + ") : ;; esac",
+]
+bad = []
+for c in cases:
+    pairs, _ok = mc._split_with_ops(mc._norm_for_scan(c))
+    residue = mc._case_residue_flags(pairs)
+    for i, (_op, seg) in enumerate(pairs):
+        if mc._is_digit_negation_only_segment(seg) and residue[i]:
+            bad.append((c, i))
+print("CLEAN" if not bad else "MARKED %d" % len(bad))
+PYEOF
+)
+if [[ "$STATE_OUT" == "CLEAN" ]]; then
+  ok "#776 no executing backtick glob is marked as case residue (walk state, not verdict)"
+else
+  no "#776 no executing backtick glob is marked as case residue" "$STATE_OUT"
 fi
 
 echo ""

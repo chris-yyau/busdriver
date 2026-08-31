@@ -440,6 +440,8 @@ try:
         print('')
         print('')
         print('')
+        print('')
+        print('')
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -482,8 +484,8 @@ try:
     # #781. Read from the SAME parse, so the creation check can never disagree
     # with the merge/pull one about what the command says, and so the gate pays
     # one interpreter start rather than two on every git command it now sees.
-    (c_name, c_oid, c_toks, c_opts,
-     c_opaque, c_exe, c_symref) = git_ref_create(cmd)
+    (c_name, c_oid, c_toks, c_opts, c_opaque, c_exe, c_symref,
+     c_fetchspec, c_unreadable) = git_ref_create(cmd)
     if any(chr(10) in v or chr(13) in v
            for v in [c_name, c_oid] + c_toks + c_opts):
         raise ValueError('newline in an emitted creation field')
@@ -496,8 +498,10 @@ try:
     print(c_opaque)
     print('1' if c_exe else '0')
     print('1' if c_symref else '0')
+    print('1' if c_fetchspec else '0')
+    print('1' if c_unreadable else '0')
 except Exception:
-    for _ in range(19):
+    for _ in range(21):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -520,6 +524,8 @@ CREATE_OPTS=$(echo "$PARSE_RESULT" | sed -n '16p')
 CREATE_OPAQUE=$(echo "$PARSE_RESULT" | sed -n '17p')
 CREATE_GITEXE=$(echo "$PARSE_RESULT" | sed -n '18p')
 CREATE_SYMREF=$(echo "$PARSE_RESULT" | sed -n '19p')
+CREATE_FETCHSPEC=$(echo "$PARSE_RESULT" | sed -n '20p')
+CREATE_UNREADABLE=$(echo "$PARSE_RESULT" | sed -n '21p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -1148,6 +1154,31 @@ Blocking as precaution (fail-closed)."
     # not exist yet.
     if [ "$CREATE_SYMREF" = "1" ]; then
         block_emit "BLOCKED: this command would make the protected branch '''$_matched''' a SYMBOLIC ref in ${REPO_DIR:-.}, and it does not exist there yet. A symbolic ref carries whatever its target holds LATER, so nothing about it can be reviewed now — and the command that then writes the target names no protected branch at all (issue #781). Point the branch at a commit instead:
+  git branch $_matched <full object id>
+Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+
+    # A FETCH resolves its refspec source in the REMOTE repository, so the word
+    # that looks vouchable here is not the content git will land: `git fetch evil
+    # main:refs/heads/master` passes a local `main` reachable from a protected
+    # branch while landing `evil`'s. Authenticating a remote source is what ADR
+    # 0050 already rejected as unachievable — the fast-forward arm refuses `git
+    # pull` outright for exactly this reason — so this refuses too.
+    if [ "$CREATE_FETCHSPEC" = "1" ]; then
+        block_emit "BLOCKED: this fetch would CREATE the protected branch '''$_matched''' in ${REPO_DIR:-.} from a refspec whose SOURCE is resolved in the REMOTE repository — so the word naming it here is not the content git would land, and no local check can authenticate where it came from (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Fetch into the remote-tracking namespace and land the work through a PR:
+  git fetch <remote>
+Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    # A word carrying whitespace cannot be a ref NAME — which is why it is not
+    # matched — but it can be a REVISION (`:/unreviewed subject` finds a commit
+    # by its message), so it can be the start point, and skipping it left a
+    # vouched HEAD as the only evidence. Refuse rather than vouch on a list known
+    # to be incomplete. Nothing fires until a protected name is matched, so an
+    # ordinary quoted commit message costs nothing.
+    if [ "$CREATE_UNREADABLE" = "1" ]; then
+        block_emit "BLOCKED: this command would create the protected branch '''$_matched''' in ${REPO_DIR:-.}, and it carries a word the gate cannot read as a ref name (it contains whitespace). Git still accepts such a word as a REVISION, so it may be the start point, and the gate will not vouch for a creation on a list of candidates it knows is incomplete (issue #781). Name the start point as a full object id:
   git branch $_matched <full object id>
 Blocking as precaution (fail-closed)."
         exit 0

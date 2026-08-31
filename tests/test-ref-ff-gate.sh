@@ -1828,6 +1828,41 @@ run_gate "creating a protected branch as a SYMBOLIC ref -> block" \
 run_gate "...but reading a symbolic ref is nobody's business" \
     allow "git symbolic-ref --short HEAD"
 
+# A FETCH resolves its refspec source in the REMOTE repository, so the word that
+# looks vouchable here is not the content git lands: local `main` can be
+# reachable from a protected branch while the remote's `main` is anything at all.
+run_gate "a fetch refspec creating a protected branch -> block" \
+    block "git fetch elsewhere main:refs/heads/master" \
+    "resolved in the REMOTE repository"
+run_gate "...but a plain fetch into the remote-tracking namespace is fine" \
+    allow "git fetch origin"
+
+# A word carrying whitespace cannot be a ref NAME, but git still accepts it as a
+# REVISION -- `:/subject` finds a commit by its message -- so dropping it left a
+# vouched HEAD as the only evidence for the start point.
+run_gate "a whitespace-bearing revision start point is not vouched away" \
+    block "git branch master ':/unreviewed subject'" \
+    "cannot read as a ref name"
+run_gate "...and an ordinary quoted message still costs nothing" \
+    allow "git commit -m 'fix(hooks): a quoted subject line'"
+
+# `--track` DERIVES the local branch name from the remote-tracking operand, so
+# the command creates `master` while carrying no such word.
+TRACKED="$TMPROOT/tracked"
+rm -rf "$TRACKED"
+git clone -q "$REPO" "$TRACKED" >/dev/null 2>&1
+mkdir -p "$TRACKED/$ISO_STATE"
+git -C "$TRACKED" update-ref refs/remotes/origin/master "$UNREV_OID" >/dev/null 2>&1
+SAVED_REPO="$REPO"
+REPO="$TRACKED"
+run_gate "checkout --track derives the local name from origin/<name>" \
+    block "git checkout --track origin/master" "would CREATE the protected branch"
+run_gate "...and switch -t is the same derivation" \
+    block "git switch -t origin/master" "would CREATE the protected branch"
+run_gate "...while an untracked feature name is still ordinary work" \
+    allow "git checkout -b feature-tracked"
+REPO="$SAVED_REPO"
+
 # A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
 # so nothing reported an alias candidate and the gate exited before looking at
 # the words. The builtin creates the branch just the same.

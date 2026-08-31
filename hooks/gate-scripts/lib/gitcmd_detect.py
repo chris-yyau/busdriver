@@ -3874,7 +3874,8 @@ def git_ref_create(cmd):
     here to get wrong. Same move, and the same fail-closed reason, as
     _has_companion_command.
 
-    Returns (canon_name, canon_oid, tokens, opts, opaque, git_exe, symref):
+    Returns (canon_name, canon_oid, tokens, opts, opaque, git_exe, symref,
+             fetch_spec, unreadable):
       canon_name  set only when the WHOLE command is exactly the one authorizable
                   creation shape, `git branch <name> <start>` (a leading plain
                   `cd` aside, which only scopes it). Anything else leaves it '',
@@ -3926,6 +3927,23 @@ def git_ref_create(cmd):
                   protected branch at all. The gate refuses the shape once it
                   names an absent protected branch, rather than trying to vouch
                   for a target that does not exist yet.
+      fetch_spec  True when a `fetch` carries a refspec whose destination is not
+                  under refs/remotes/ or refs/tags/, so it can write a local
+                  branch. Its SOURCE is resolved in the REMOTE repository, which
+                  means the word looks vouchable here and is not: `git fetch evil
+                  main:refs/heads/master` passes a local `main` that is reachable
+                  from a protected branch while git lands `evil`'s `main`.
+                  Authenticating a remote source is what ADR 0050 already
+                  rejected as unachievable, so the shape is refused once its
+                  destination names an absent protected branch.
+      unreadable  True when a word was dropped for carrying whitespace. Such a
+                  word cannot be a REF NAME, which is why it is not matched — but
+                  it can be a REVISION (`git branch master ':/unreviewed
+                  subject'` finds a commit by its message), so it can also be the
+                  start point, and dropping it left a vouched HEAD as the only
+                  evidence. The gate refuses rather than vouching on an
+                  incomplete list, and only once a protected name is matched, so
+                  an ordinary quoted commit message costs nothing.
       git_exe     True when a word names a git builtin as its own EXECUTABLE
                   (`git-branch`, `.../git-core/git-update-ref`). Such a command
                   contains no `git <subcommand>` pair, so the gate would exit
@@ -3945,6 +3963,8 @@ def git_ref_create(cmd):
     opaque = ''
     git_exe = False
     symref = False
+    fetch_spec = False
+    unreadable = False
 
     def _add(w):
         w = w[len('refs/heads/'):] if w.startswith('refs/heads/') else w
@@ -3988,8 +4008,15 @@ def git_ref_create(cmd):
             # taking the basename of every `/`-bearing word everywhere would
             # block ordinary `git add config/default`.
             _wt = 'worktree' in ntoks and 'add' in ntoks
+            # Git DERIVES a local branch name from a path or a remote-tracking
+            # operand in this family too: `worktree add ../master`, and
+            # `checkout --track origin/master` / `switch -t origin/master`,
+            # each create `master` while the command carries no such word.
+            _derive = _wt or 'checkout' in ntoks or 'switch' in ntoks
             for t in toks:
                 if _REF_CREATE_IMPLAUSIBLE_RE.search(t):
+                    if not t.startswith('-'):
+                        unreadable = True
                     continue
                 if t.startswith('-'):
                     if t not in opts:
@@ -4003,9 +4030,12 @@ def git_ref_create(cmd):
                     # here can spell. refs/remotes/ and refs/tags/ cannot become
                     # a local branch, so the ordinary fetch refspec is untouched.
                     _dst = t.rsplit(':', 1)[-1].lstrip('+')
-                    if '*' in _dst and not _dst.startswith(('refs/remotes/',
-                                                            'refs/tags/')):
+                    _local_dst = not _dst.startswith(('refs/remotes/',
+                                                      'refs/tags/'))
+                    if '*' in _dst and _local_dst:
                         opaque = opaque or 'wildcard'
+                    if _local_dst and 'fetch' in ntoks:
+                        fetch_spec = True
                     # A COLON REFSPEC writes a ref with no checkout:
                     # `git push . HEAD:refs/heads/master` and `git fetch .
                     # feature:refs/heads/master` both CREATE `master`, and the
@@ -4019,7 +4049,7 @@ def git_ref_create(cmd):
                     # as inert.
                     for part in t.split(':'):
                         _add(part.lstrip('+'))
-                if _wt:
+                if _derive:
                     bare = (t[len('refs/heads/'):]
                             if t.startswith('refs/heads/') else t)
                     _add(bare.rstrip('/').rsplit('/', 1)[-1])
@@ -4033,7 +4063,8 @@ def git_ref_create(cmd):
            and not _REF_CREATE_IMPLAUSIBLE_RE.search(a[3]) \
            and not a[3].startswith('-'):
             canon_name, canon_oid = bare, a[3]
-    return canon_name, canon_oid, seen, opts, opaque, git_exe, symref
+    return (canon_name, canon_oid, seen, opts, opaque, git_exe, symref,
+            fetch_spec, unreadable)
 
 
 def git_ref_op(cmd, with_untrusted_cd=False):

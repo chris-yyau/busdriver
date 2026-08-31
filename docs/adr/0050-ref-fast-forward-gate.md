@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found six ways a first draft of that membership test still leaked, and
+Review found nine ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -258,6 +258,24 @@ adding a grammar:
   which `git check-ref-format` allows, so a protected branch containing one was
   dropped from the word list. The filter now refuses only what git refuses:
   ASCII space, the control range, DEL.
+- **A refspec source resolved in the REMOTE repository.** `git fetch evil
+  main:refs/heads/master` passes a local `main` that is reachable from a
+  protected branch while git lands `evil`'s `main`. Authenticating a remote
+  source is the thing this ADR already rejected as unachievable — it is why
+  `git pull` onto a protected branch has no route at all — so a fetch refspec
+  whose destination can write a local branch is refused once that destination
+  names an absent protected branch.
+- **A local branch name DERIVED from a remote-tracking operand.** `git checkout
+  --track origin/master` and `git switch -t origin/master` create `master` while
+  carrying no such word. The `worktree add <path>` basename rule now covers the
+  `checkout`/`switch` family too.
+- **A start point that is a REVISION rather than a ref name.** A word carrying
+  whitespace cannot be a branch name, which is why it is not matched — but
+  `:/unreviewed subject` finds a commit by its message, so it can be the start
+  point, and dropping it left a vouched HEAD as the only evidence. The gate now
+  refuses rather than vouching on a candidate list it knows is incomplete, and
+  only once a protected name is matched, so an ordinary quoted commit message
+  costs nothing.
 
 An EMPTY declaration file stands this arm down exactly as it stands the
 fast-forward arm down: it is the operator saying the repository has no protected

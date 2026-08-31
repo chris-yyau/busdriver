@@ -1006,16 +1006,12 @@ if [ -n "$ZERO_OLD_OPS" ]; then
             block_emit "BLOCKED: this would DELETE the protected branch '$_zo_name' (issue #780)."
             exit 0
         fi
-        _zo_rc=0
-        git_real rev-parse --verify --quiet "refs/heads/$_zo_name" >/dev/null 2>&1 || _zo_rc=$?
-        if [ "$_zo_rc" -eq 0 ]; then
-            block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
-            exit 0
-        fi
-        if [ "$_zo_rc" -ne 1 ]; then
-            block_emit "BLOCKED: cannot determine whether '$_zo_name' exists (issue #780)."
-            exit 0
-        fi
+        # PROTECTED_SET only contains refs discovered as present. A ZERO-old
+        # force against one is therefore a force-update (or a TOCTOU recreate
+        # after a concurrent delete). Do not re-probe with rev-parse — that
+        # race would authorize argv that can still overwrite the protected ref.
+        block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
+        exit 0
     done
 fi
 

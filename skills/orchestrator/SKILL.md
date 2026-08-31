@@ -36,6 +36,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 | **Pre-implementation** | Write/Edit/MultiEdit/Bash while design unreviewed | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
 | **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `hooks/gate-scripts/freeze-guard.sh` |
 | **Pre-merge (pr-grind)** | `gh pr merge` | `.claude/skip-pr-grind.local` (must be ≥30s and ≤3600s old) | `pr-grind/SKILL.md` |
+| **Ref fast-forward** | `git merge` / `git pull` that would fast-forward a protected branch (#779). `git pull` there is refused outright; a merge must be the only command in its Bash call | `.claude/skip-litmus.local`, or a single-use operator-written `.claude/ref-ff-authorized.local` holding exactly `PASS-FF refs/heads/<branch> <oid>`, spent by `git merge --ff-only <oid>` naming that oid | `hooks/gate-scripts/ref-ff-gate.sh` |
 
 The only escape hatch is the gitignored, operator-created `.local` skip file (`.claude/skip-litmus.local`, `skip-design-review.local`, `skip-pr-grind.local`). The env-based `SKIP_LITMUS` / `SKIP_DESIGN_REVIEW` / `SKIP_PR_GRIND` skips were **removed** (#325 / ADR 0016): a committed `settings.json` `env` block could inject them, so gate env is now sanitized (`env -i` + allowlist at the hook entry).
 

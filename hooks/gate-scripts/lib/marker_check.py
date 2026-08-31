@@ -2098,10 +2098,17 @@ def _is_digit_negation_only_segment(seg) -> bool:
     return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
 
 
-# Empty-string case alternatives (#776): one or more empty quotes as a whole alt, or after in.
-_EMPTY_ALT_SEG_RE = re.compile(r"^\s*(?:''|\"\")+\s*$")
+# Empty-string case alternatives (#776): empty quotes as a whole alt, or straight after
+# `in`. The quotes are OPTIONAL because the scan also runs over a DEQUOTED copy of the
+# command, where `case x in ''|*[!0-9]*)` has already become `case x in |*[!0-9]*)`: the
+# alternative is still empty, it is just spelled as nothing at all. Requiring the literal
+# quotes made the residue rule miss that copy, and a valid numeric case whose subject
+# carried a substitution was blocked on the strength of the dequoted variant alone.
+# Widening is safe here because the caller has already established, from parser state,
+# that these segments sit in a pattern list -- text a case matches, never runs.
+_EMPTY_ALT_SEG_RE = re.compile(r"^\s*(?:''|\"\")*\s*$")
 _EMPTY_ALT_AFTER_IN_RE = re.compile(
-    r"(?<![\w-])in(?![\w-])(?:\s+#[^\n]*)?\s*(?:''|\"\")+\s*$"
+    r"(?<![\w-])in(?![\w-])(?:\s+#[^\n]*)?\s*(?:''|\"\")*\s*$"
 )
 _IN_WORD_RE = re.compile(r"(?<![\w-])in(?![\w-])")
 
@@ -2191,26 +2198,46 @@ def _case_state_after_op(state, op):
     return state
 
 
+def _effective_lead(words):
+    """The first word that could be a COMMAND, stepping over compound introducers.
+
+    `case` is a keyword in command position, and bash allows introducers in front of it in
+    the SAME segment: `if case x in …`, `while case …`, `then case …`, `! case …`,
+    `time case …`. Taking `words[0]` literally missed every one, so the pattern list was
+    kept as producer text and valid numeric-validation cases were blocked. `_group_delta`
+    already steps over exactly these words, for exactly this reason -- this reuses its
+    sets rather than hand-listing a second copy that would drift.
+    """
+    for w in words:
+        if w in ("case", "esac"):
+            return w                          # the keywords this walk is looking for
+        if w in _GROUP_CONNECT or w in _GROUP_OPEN or w in _GROUP_CLOSE:
+            continue                          # an introducer, not the command
+        return w
+    return ""
+
+
 def _case_state_after_segment(state, pairs, k, seg):
     """Advance the case walk across a segment's own WORDS, after its operator."""
-    words = seg.split()
-    lead = words[0] if words else ""
-    if state == _CASE_HEADER and lead != "in" and not _carries_no_command(seg):
-        # A header is `case WORD in`: the `in` shares the segment or LEADS the next one.
-        # Without this exit the header survived every operator until some later segment
-        # merely CONTAINED `in` -- `A=(case x); echo in; ...` -- and flipped executing
-        # stages to PATTERN. An unterminated header is not a case.
-        state = _CASE_CLOSED
+    lead = _effective_lead(seg.split())
     if lead == "esac":
-        state = _CASE_CLOSED
-    elif (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
+        return _CASE_CLOSED
+    if (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
             and _case_lead_is_command_position(pairs, k)):
         # Only where a command may START. `case case in case) ...` is valid bash, and
         # honouring the PATTERN-list `case` reopened the header -- then a body operand
         # `in` re-entered pattern state and dropped a real stage (fail-OPEN).
-        state = _CASE_HEADER
-    if state == _CASE_HEADER and _IN_WORD_RE.search(seg):
-        state = _CASE_PATTERN                 # `in` may share the segment or follow it
+        if _IN_WORD_RE.search(seg):
+            return _CASE_PATTERN          # `case WORD in …` all in one segment
+        return _CASE_HEADER
+    if state == _CASE_HEADER and lead == "in":
+        # The `in` LEADS its segment. Matching it ANYWHERE in the segment instead was a
+        # fail-OPEN: `A=(case x); echo in; …` flipped executing stages to PATTERN on the
+        # strength of an `echo` operand. Requiring the lead also lets a header span the
+        # segments a substitution in the SUBJECT creates -- `case "$(printf x)" in …`
+        # flattens to `case` / `printf x` / `in` in the dequoted scan, and closing on the
+        # inner `printf x` blocked a valid case.
+        return _CASE_PATTERN
     return state
 
 
@@ -2236,9 +2263,30 @@ def _case_pattern_segments(pairs):
     # add a stack only if a real command needs it.
     flags = [False] * len(pairs)
     state = _CASE_CLOSED
+    depth = 0                                 # unclosed `(` inside a case SUBJECT
     for k, (op, seg) in enumerate(pairs):
+        if state == _CASE_HEADER:
+            # The subject may contain a substitution, and the tokenizer splits on its
+            # parens: `case "$(printf x)" in …` dequotes to `case $` / `printf x` / ` in `
+            # with a `)` op in the middle. Only a `)` that closes nothing ends the header;
+            # a clause terminator always does. Without the depth count the inner `)` cut
+            # the header short and a valid case was blocked; without the close at depth 0,
+            # `(case x); in; …` carried a header across the `);` into an `in` and flipped
+            # a real pipeline to PATTERN.
+            if "(" in op:
+                depth += 1
+            elif op.startswith(")"):
+                if depth > 0:
+                    depth -= 1
+                else:
+                    state = _CASE_CLOSED
+            elif _CASE_TERM_RUN_RE.match(op):
+                state = _CASE_CLOSED
         state = _case_state_after_op(state, op)
+        _was = state
         state = _case_state_after_segment(state, pairs, k, seg)
+        if state == _CASE_HEADER and _was != _CASE_HEADER:
+            depth = 0                         # a freshly opened header counts from zero
         if state == _CASE_PATTERN and _pattern_text_executes(pairs, k, seg):
             # A pattern list is inert text EXCEPT here: a substitution executes. Dropping
             # to CLOSED keeps its stages in the producer text, which is fail-CLOSED.
@@ -2283,6 +2331,21 @@ def _case_pattern_closes_after(pairs, i):
     the pattern close, so `case x in ''|*[!0-9]*|bash) : ;; esac` keeps its `)` at
     `last + 1` and the bound over-blocked a valid case. This is defence in depth behind
     `_case_pattern_segments`, which is what actually decides the construct.
+
+    KNOWN OVER-BLOCK, deliberate: a case whose SUBJECT carries a substitution --
+    `case "$(printf x)" in ''|*[!0-9]*) …`, and the backtick and nested spellings -- is
+    BLOCKED even though bash accepts it. The abandoned scan also runs over a copy in which
+    `$( … )` has been flattened to separators, and that copy has lost the pattern-closing
+    `)`, so this check declines and the glob keeps its text. Two ways out were built and
+    measured, and BOTH re-opened a verified fail-open, which is why the over-block stands:
+      * dropping this check entirely let `(case $(printf x)); in; ('' | *[!0-9]* | bash)`
+        through, plus one more;
+      * accepting a later command-position `esac` instead let
+        `case x in "`'' | *[!0-9]* | bash`") …` through, because the variant that erases
+        the `)` erases the backticks too, so the substitution guard cannot see them.
+    In the flattened copy the legitimate case and the spoof are the same text. Blocking
+    both is the fail-CLOSED reading, and it costs an unusual spelling rather than a
+    bypass. `tests/test-marker-numeric-case-776.sh` pins it so it cannot silently widen.
     """
     j = i
     while j + 1 < len(pairs):

@@ -668,6 +668,43 @@ else
   no "#776 no executing backtick glob is marked as case residue" "$STATE_OUT"
 fi
 
+# --- PINNED over-block: a case SUBJECT carrying a substitution.
+#
+# `case "$(printf x)" in ''|*[!0-9]*) …` is valid bash and IS blocked. The abandoned scan
+# also runs over a copy where `$( … )` has been flattened to separators, and that copy has
+# lost the pattern-closing `)`, so the residue rule declines and the glob keeps its text.
+# Two fixes were built and measured, and both re-opened a verified fail-open: removing the
+# closing-`)` requirement let `(case $(printf x)); in; ('' | *[!0-9]* | bash)` through, and
+# accepting a later `esac` instead let a double-quoted backtick pipeline through, because
+# the same flattening erases the backticks the substitution guard looks for. In that copy
+# the valid case and the spoof are identical text, so both are blocked.
+#
+# Pinned, not asserted-correct: if a later change makes these ALLOW while every spoof in
+# this file still blocks, that is an improvement -- update this block deliberately.
+# shellcheck disable=SC2016  # the subjects must stay literal, unexpanded
+for _subj in '"$(printf x)"' '`printf x`' '"$(printf "$(echo x)")"'; do
+  SUBJ_CMD=$(python3 -c '
+import sys
+subj = sys.argv[1]; q = chr(39); s = chr(42)
+print("case " + subj + " in " + q + q + "|" + s + "[!0-9]" + s + ") : ;; " + s + ") : ;; esac")
+' "$_subj")
+  got=$(verdict "$SUBJ_CMD")
+  if [[ "$got" == BLOCK_* ]]; then
+    ok "#776 substitution in the case subject is pinned as a known over-block"
+  else
+    no "#776 substitution-subject over-block changed (review the residual note)" "got=${got:-<empty>}"
+  fi
+done
+
+# The spoof the over-block pays for must stay blocked.
+SUBJ_SPOOF=$(python3 -c 'q=chr(39);s=chr(42);d=chr(36);print("(case "+d+"(printf x)); in; ("+q+q+" | "+s+"[!0-9]"+s+" | bash)")')
+got=$(verdict "$SUBJ_SPOOF")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 flattened-substitution spoof still blocks"
+else
+  no "#776 flattened-substitution spoof still blocks" "got=${got:-<empty>}"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

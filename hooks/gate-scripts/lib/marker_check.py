@@ -126,6 +126,33 @@ def _is_redir(t):
     return len(t) > 0 and all(c in "<>|&" for c in t) and ("<" in t or ">" in t)
 
 
+def _dollar_run_is_even(buf, end=None):
+    """Parity of the `$` run ending at `buf[end]` (or at the end of `buf`), BACKWARDS.
+
+    `end` lets a caller ask about a position inside a longer string without slicing it:
+    slicing copied the whole growing prefix once per candidate, which is quadratic on a
+    line of many `$${` (codex, #553).
+
+    `$$` is the PID, so `$${` is a PID and a literal brace while `$$${` is a PID and a
+    real `${`. Joining the whole prefix to measure that made the split quadratic on a
+    line of many expansions -- 13k of them took ~1.1s against 0.004s (codex, #553).
+    """
+    stop = len(buf) if end is None else end
+    k = stop
+    while k and buf[k - 1] == "$":
+        k -= 1
+    run = stop - k
+    # A `$` the shell was told to take LITERALLY is not part of the run: in `\$$${X}` the
+    # first is escaped, so the two that follow are the PID and no expansion opens
+    # (codex, #553). Backslashes are counted for parity -- `\\$` is an active `$`.
+    b = k
+    while b and buf[b - 1] == chr(92):
+        b -= 1
+    if run and (k - b) % 2:
+        run -= 1
+    return run % 2 == 0
+
+
 def _split_with_ops(s):
     # _split_simple_commands, but each segment carries the operator RUN that preceded it,
     # so a pipe-fed stage can be told from a `||` one. Consecutive operator characters
@@ -232,6 +259,219 @@ def _split_simple_commands(s):
     # which does the scanning for both.
     pairs, ok = _split_with_ops(s)
     return [seg for _op, seg in pairs], ok
+
+
+def _expansion_joined_pairs(s, close_at=None):
+    """The same split, but with every `${...}` treated as ONE opaque word.
+
+    ADDITIVE, and deliberately so. Bash reads `X=${Y:-a;b} cmd` as a single assignment
+    followed by `cmd`, while the split above -- HEAD's, unchanged -- cuts at the `;` and
+    loses `cmd`. Teaching that split the expansion grammar was tried and withdrawn: every
+    correction also RELAXED HEAD's blanket block on everything command-shaped inside an
+    expansion, and each traded a false block for a MISS or the reverse. Running both
+    keeps the blanket AND closes the miss, so a defect here can only fail to add a block
+    -- never remove one. KEEP IN STEP WITH cmdword._expansion_joined_pairs (codex, #553).
+    """
+    buf, i, n, q, frames, parens = [], 0, len(s), "", 0, 0
+    # `close_at` names the `}` that ends the FIRST frame. A stray `}` inside a nested
+    # construct otherwise ends it early -- balancing parens covers `$( )` but not a
+    # `case` pattern terminator, an argument that is a literal brace, or the next of
+    # these somebody thinks of. Rather than chase them, the caller runs one reading per
+    # candidate `}` and adds them all: the RIGHT one is always among them, and a wrong
+    # one can only fail to add a block.
+    while i < n:
+        ch = s[i]
+        if q:
+            buf.append(ch)
+            if ch == chr(92) and q == _DQ and i + 1 < n:
+                i += 1
+                buf.append(s[i])
+            elif ch == q:
+                q = ""
+        elif ch == chr(92) and i + 1 < n:
+            buf.append(ch)
+            i += 1
+            buf.append(s[i])
+        elif ch in (_SQ, _DQ):
+            q = ch
+            buf.append(ch)
+        elif (ch == "$" and s[i + 1:i + 2] == "{"
+                and _dollar_run_is_even(buf)):   # `$${` is a PID and a literal brace
+            frames += 1
+            buf.append(ch)
+            i += 1
+            buf.append(s[i])
+        elif frames and ch == "(" and buf and buf[-1] in "$<>":
+            parens += 1               # a `}` inside a nested SUBSTITUTION closes nothing;
+            buf.pop()                 # a bare `(` is ordinary text and nests nothing
+        elif frames and parens and ch == ")":
+            parens -= 1
+        elif frames and ch == "}" and (i == close_at if (close_at is not None
+                                                        and frames == 1)
+                                       else not parens):
+            frames -= 1
+            buf.append(ch)
+        elif frames:
+            # Everything that could END THE WORD is DROPPED rather than kept or replaced
+            # by a space: the one job of this pass is to hand the tokenizer the expansion
+            # as a single word so the command word BEHIND it is reached. Its value is
+            # data, and this reading is additive, so mangling it costs nothing (#553).
+            if not (ch.isspace() or ch in ";|&()"):
+                buf.append(ch)
+        else:
+            buf.append(ch)
+        i += 1
+    joined = "".join(buf)
+    if joined == s:
+        return []
+    pairs, ok = _split_with_ops(joined)
+    return pairs if ok else []
+
+# How many candidate closers to try. Each is one extra linear split, so the count is
+# capped -- and EXCEEDING the cap fails CLOSED rather than settling for the readings that
+# fit. Any finite cap can be stepped over by writing one more `}` than it allows, and a
+# scan that could not finish is the failure case, not the happy path (codex, #553).
+_MAX_EXPANSION_READINGS = 64
+
+
+def _blank_comments(s):
+    """Every character of a shell COMMENT replaced by a space, LENGTH PRESERVED.
+
+    For the expansion-aware readings only. A `${` inside a comment opens nothing, but the
+    scanners below took the first one they met as the frame opener, so `: # ${` on its own
+    line nested the REAL expansion under a phantom frame and the reading that would have
+    exposed the command word was never built -- prefixing that comment turned a blocked
+    command into an allowed one (codex, #553). KEEP IN STEP WITH cmdword._blank_comments.
+
+    Length is preserved because the candidate closers are INDICES into this string. Blanking
+    rather than deleting for the same reason _defuse_comments does it: the readings are
+    additive, and HEAD's split still sees the comment exactly as it always did, so nothing
+    a comment contains can lose a block here.
+
+    _normalize has already blanked the separators INSIDE a comment and rewritten the
+    newline that ends it to `;`, so in normalized text a comment runs to the next `;`.
+
+    RESIDUAL, deliberate, and at HEAD PARITY -- origin/main misses every one of these too,
+    so none is a regression this closes or reopens. A comment that is not blanked can still
+    hold a phantom opener: one written AFTER the first real `${` (the scan stops there --
+    see the loop), and one opened after a `)` (not word position -- see the loop). Each was
+    closed in a review round and each closure opened the next spelling, which is the
+    signature _defuse_comments already names for this exact question. The scan therefore
+    answers only the part it can answer WITHOUT ever removing a reading, and the rest stays
+    parity rather than becoming a fifth guess (codex, #553, four rounds).
+    """
+    out = list(s)
+    i, n, q, word = 0, len(s), "", True
+    while i < n:
+        ch = s[i]
+        if not q and ch == "$" and s[i + 1:i + 2] == "{" and _dollar_run_is_even(s, i):
+            # STOP at the first REAL opener. Everything this pass exists to fix happens
+            # before it -- a phantom `${` in a comment being taken as the frame opener --
+            # and a `#` INSIDE an expansion is literal text to bash, so blanking past here
+            # deleted the command word out of `X=${Y:-a;b #x} /bin/rm -rf src` (codex,
+            # #553). A comment further right can only add a spurious candidate `}`, which
+            # is one more additive reading and costs nothing.
+            break
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+            word = False
+        elif ch == chr(92):
+            i += 1
+            word = False
+        elif ch in (_SQ, _DQ):
+            q = ch
+            word = False
+        elif ch == "#" and word:
+            # Word position only -- bash reads `a#b` and `sed 's#a#b#'` as ordinary text.
+            while i < n and s[i] != ";":
+                out[i] = " "
+                i += 1
+            continue
+        else:
+            # `)` DOES NOT COUNT, exactly as in _defuse_comments, which refuses to guess
+            # whether the paren delimited a command. Counting it was tried: it closed
+            # `(true)# ${` and opened `printf ... $(true)# "${Y:-...}" | bash`, where a
+            # substitution's `)` leaves the `#` mid-word, so blanking from there DELETED
+            # the real expansion and dropped the only reading that exposed the verb. That
+            # direction removes blocks, which this pass may never do -- so the guess is
+            # not made, and `)#` stays the HEAD-parity residual named above (codex, #553).
+            word = ch.isspace() or ch in ";|&("
+        i += 1
+    return "".join(out)
+
+def _expansion_readings(s):
+    """(readings, truncated) -- every expansion-aware reading of `s`, deduplicated.
+
+    One per candidate `}` for the first frame, plus the balanced default. Additive: the
+    caller classifies these ALONGSIDE the ordinary split, so a wrong reading can only
+    fail to add a block. `truncated` says the cap cut the candidate list, which the
+    caller must treat as unresolvable (codex, #553).
+    """
+    out, seen = [], set()
+    # Candidates are the UNQUOTED `}` at or after the first `${`. Taking them from the
+    # whole string let eight quoted braces in earlier assignment values exhaust the cap
+    # before the real closer was reached (codex, #553).
+    # Every unquoted `}` at or after the first `${`. Narrowing this to braces "inside a
+    # frame" was tried and withdrawn: deciding where the frame ends is the very question
+    # these readings exist to answer, and any tracking good enough to scope the candidate
+    # list would already have settled it. The cap is what bounds the work instead, and it
+    # is set well above the brace count of ordinary shell (codex, #553).
+    # The first REAL opener: an escaped `$`, or one closing an odd `$` run, opens nothing,
+    # and treating it as an opener let 63 harmless brace groups reach the cap (codex).
+    first, _q, _k = -1, "", 0
+    while _k < len(s):
+        _c = s[_k]
+        if _q:
+            if _c == chr(92) and _q == _DQ:
+                _k += 1
+            elif _c == _q:
+                _q = ""
+        elif _c == chr(92):
+            _k += 1
+        elif _c == _SQ:
+            _q = _c
+        elif _c == _DQ:
+            _q = _c
+        elif (_c == "$" and s[_k + 1:_k + 2] == "{"
+                and _dollar_run_is_even(s, _k)):
+            first = _k
+            break
+        _k += 1
+    if first < 0:
+        return [], False
+    cands, q, i, n = [None], "", 0, len(s)
+    while i < n and len(cands) <= _MAX_EXPANSION_READINGS + 1:
+        ch = s[i]
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+        elif ch == chr(92):
+            i += 1
+        elif ch in (_SQ, _DQ):
+            q = ch
+        elif ch == "}" and i > first >= 0:
+            cands.append(i)
+        i += 1
+    # One entry per READING, kept WHOLE and deduplicated whole -- KEEP IN STEP WITH
+    # cmdword._expansion_readings, which carries the reasoning for both flattenings that
+    # were tried and withdrawn: a per-segment dedup made the verdict turn on which
+    # pipeline was written first, and a flatten without it multiplied the segment count by
+    # the candidate count and exhausted the scan budget on a harmless read (codex, #553).
+    for k in cands:
+        reading = tuple(_expansion_joined_pairs(s, k))
+        if reading and reading not in seen:
+            seen.add(reading)
+            out.append(reading)
+    # `cands` carries the balanced reading as a leading None, which is not a candidate:
+    # counting it made exactly _MAX_EXPANSION_READINGS real braces read as truncated and
+    # fail closed on a command the scanner had finished (codex, #553).
+    return out, len(cands) - 1 > _MAX_EXPANSION_READINGS
+
 
 
 # Commands that RUN the command that follows them. Open-ended by nature: a launcher not
@@ -1577,6 +1817,10 @@ _HELPER_ALPHABET = set("".join(_MUTATING_HELPERS))
 # all, and nothing at all is the fail-CLOSED case.
 _HELPER_MAX_TOKENS = 4000
 _helper_budget = [0]
+# What each distinct pipeline stage decided in this scan, cleared beside the budget above.
+# The expansion-aware readings re-walk the same stages; deciding one twice is neither work
+# worth doing nor work worth charging -- see _piped_shell_producers (#553).
+_stage_recv = {}
 # Set by _defuse_comments on a `)#`, whose meaning it refuses to guess. Read by
 # _helper_invoked, which answers it by fail-CLOSED probe.
 _paren_hash_ambiguous = [False]
@@ -1587,6 +1831,65 @@ _WATCH_MAX_PAYLOAD_BYTES = 1 << 20
 # The same helpers as MODULE names. `python3 -m lease_slot` runs the file without
 # ever naming it, and `-m` was on the list of flags whose operand gets skipped.
 _MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
+
+# KEEP IN STEP WITH cmdword's constant of the same name. See that module for the
+# measurement, and for why pathname and brace expansion are in scope at all rather than
+# only `$` and a backtick: a `pytho?3` spelling reaches python3 carrying neither, which
+# is the interpreter half of the same bypass (codex, #553).
+_UNRESOLVED_CW_CHARS = "$" + "*?[{(" + chr(96)
+_SUBST_CW_CHARS = "$" + chr(96)
+def _has_extglob(text):
+    """True iff `text` carries an UNQUOTED extglob operator.
+
+    Quoting is honoured so a literal stays literal, but nothing narrower is attempted:
+    this fires only for a segment that also NAMES a guarded helper, where the fail-CLOSED
+    answer costs an over-block on a command nobody writes.
+    """
+    # A LINE CONTINUATION is removed by the shell before it parses, so it can neither
+    # separate the operator from its `(` nor defuse it (codex, #553).
+    text = text.replace(chr(92) + chr(10), "")
+    q, i, n, esc_at = "", 0, len(text), -1
+    while i < n:
+        ch = text[i]
+        if q:
+            if ch == chr(92) and q == chr(34):
+                i += 1
+                esc_at = i
+            elif ch == q:
+                q = ""
+        elif ch == chr(92):
+            i += 1
+            esc_at = i            # an ESCAPED operator introduces nothing: `\@(x)` is
+        elif ch in (chr(39), chr(34)):   # the literal name `@(x)` (codex, #553)
+            q = ch
+        elif ch == "(" and i and text[i - 1] in "@+*?!" and i - 1 != esc_at:
+            return True
+        i += 1
+    return False
+
+
+def _unresolved_word(w):
+    """True if the shell rewrites this word before it resolves what runs, so the word
+    NAMES NOTHING this file can compare against an interpreter name (#553).
+
+    Blanket, unlike cmdword's twin, which asks a pattern whether it can REACH a name it
+    judges. That refinement was tried here and removed: the resolved path tests
+    `_bn(t).startswith("python")` -- an UNBOUNDED prefix, not a list -- so any finite set
+    of spellings is narrower than what it stands in for, and `./pytho??? -I <helper>`
+    walked through a python2/python3/python3.N list while matching a real interpreter at
+    run time (codex, #553). It costs nothing measurable: the rule fires only where no
+    interpreter resolved, and blocks only when _names_helper finds a helper NAMED in the
+    same segment, so it flips NOTHING on the corpus cmdword's twin was measured against.
+    """
+    if not w:
+        return False
+    # TILDE expansion is unreadable when it is the WHOLE word -- `HOME=/usr/bin/python3;
+    # ~ -I <helper>` reaches the interpreter while `~` names nothing (codex, #553). With a
+    # `/` in it the last component still names the program, so only `~` / `~user` counts.
+    if w.startswith("~") and "/" not in w:
+        return True
+    return any(ch in w for ch in _UNRESOLVED_CW_CHARS)
+
 
 # Modules that CONSUME a following path as data rather than executing it, keyed by the
 # first dotted component. Deliberately an allowlist and deliberately short: the inverse
@@ -3823,6 +4126,22 @@ def _piped_shell_producers(pairs):
         _words = seg.split()
         bare = _carries_no_command(seg)
         if fed:
+            # WHETHER A FED STAGE RECEIVES IS A PURE FUNCTION OF ITS TEXT, so it is decided
+            # ONCE per distinct stage. The expansion-aware readings re-walk the same stages
+            # -- up to _MAX_EXPANSION_READINGS times -- and deciding each one afresh took a
+            # 64 KiB command from 0.7s to 8.0s, past the 5s hook timeout after which no
+            # decision is written and the harness reads ALLOW. That is a fail-OPEN bought
+            # with repeated work, so the repetition is what goes (codex, #553).
+            #
+            # The memo also carries the BUDGET: an answer that costs a dict lookup is not
+            # the walk the budget bounds, and charging it spent the whole 4,000 tokens on a
+            # 663-character command naming no helper -- UNSCANNABLE in a clean repo, where
+            # this guard is unconditional and that block is permanent.
+            if seg in _stage_recv:
+                if _stage_recv[seg]:
+                    last = i
+                kdepth = max(0, kdepth + _group_delta(_words))
+                continue
             try:
                 lex = shlex.shlex(seg, posix=True, punctuation_chars=True)
                 lex.whitespace_split = True
@@ -3884,6 +4203,7 @@ def _piped_shell_producers(pairs):
                    or _runs_cmdpos_receiver(_strip_time_prefix(toks)) \
                    or _launcher_in_any_simple_command(seg):
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 # A SUBSTITUTION is executed, so an unresolved word inside one is an
@@ -3966,11 +4286,13 @@ def _piped_shell_producers(pairs):
                     _sub_unres = True
                 if _sub_unres:
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 # The EXTGLOB spelling, resolved, in front of the same name test.
                 if _EXTGLOB_NEG_RE.search(seg):
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 _deglob = _EXTGLOB_RE.sub(r"\1", seg)
@@ -3979,6 +4301,7 @@ def _piped_shell_producers(pairs):
                     # and iterating to a fixed point is a slower guess at a grammar. Same
                     # exit the negation and the alternation take -- unresolved, fail CLOSED.
                     last = i
+                    _stage_recv[seg] = True
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue
                 if _deglob != seg:
@@ -3997,6 +4320,7 @@ def _piped_shell_producers(pairs):
                        or any(_is_shell_name(_bn(w)) for w in _stage_words(_dtoks)) \
                        or _runs_cmdpos_receiver(_strip_time_prefix(_dtoks)):
                         last = i
+                        _stage_recv[seg] = True
                         kdepth = max(0, kdepth + _group_delta(_words))
                         continue
                 _tokp, _strp = _exec_payloads(toks)
@@ -4020,6 +4344,9 @@ def _piped_shell_producers(pairs):
                    or any(_cmdpos_receiver_in_any_simple_command(p) for p in _progs) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i
+            # The fall-through arm: every other exit above recorded itself before jumping.
+            if seg not in _stage_recv:
+                _stage_recv[seg] = last == i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
         out.append(_join_piped_producer_segments(pairs, start, last, case_flags))
@@ -4172,6 +4499,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     _whole = cmd if _full is None else _full
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _stage_recv.clear()
         _deep_budget[0] = _DEEP_MAX_BYTES
         _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
@@ -4255,6 +4583,29 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         if _hit:
             return _hit
     _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    # ...and the flag the FIRST split raised is preserved across them: the extra calls
+    # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
+    # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
+    _nf = _norm_for_scan(cmd)
+    _readings, _base_pairs = [], _pairs
+    # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
+    # the opener from the raw command, and bash removes it before parsing (codex, #553).
+    if "${" in _nf.replace(chr(92) + chr(10), ""):     # ...plus the expansion-aware
+        _nf = _nf.replace(chr(92) + chr(10), "")       # readings, which only ADD
+        _amb = _paren_hash_ambiguous[0]
+        _readings, _cut = _expansion_readings(_blank_comments(_nf))
+        if _cut:
+            return _HELPER_UNSCANNED  # cap exceeded: unresolvable -> fail CLOSED
+        # The SEGMENT walk takes the union; the transport probes below read each reading
+        # whole. Same split as cmdword.is_file_mod, and for the same two reasons.
+        _seen_seg = set(_s for _o, _s in _pairs)
+        _pairs = list(_pairs)
+        for _rd in _readings:
+            for _op, _seg in _rd:
+                if _seg not in _seen_seg:
+                    _seen_seg.add(_seg)
+                    _pairs.append((_op, _seg))
+        _paren_hash_ambiguous[0] = _amb or _paren_hash_ambiguous[0]
     # `)#` -- the comment defuser could not tell whether that paren delimited a command and
     # said so instead of guessing. Unresolved is the fail-CLOSED case, the same as an
     # unparseable command below, so the squeezed probe answers it.
@@ -4274,19 +4625,32 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # `VAR='<helper>' sh -c 'sh <<< "$VAR"'` classify OK -- the nested scan saw the
         # unresolved operand but not the assignment, which lives only in the outer command.
         # Same variable every sibling call site here already threads through for this reason.
-        for _prod in _herestring_shell_payloads(_pairs, _whole):
-            _hit = _abandoned_scan_probe(_prod)
-            if _hit:
-                return _hit
-        for _prod in _piped_shell_producers(_pairs):
-            # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes
-            # GLOB characters, so a payload naming `lease_slo?.py` -- which the shell
-            # expands to the helper while the text names none literally -- is caught. The
-            # sibling call sites already used the probe; this one did not, and a glob in a
-            # PIPED payload walked through.
-            _hit = _abandoned_scan_probe(_prod)
-            if _hit:
-                return _hit
+        #
+        # Each reading is walked ON ITS OWN, never as part of the union `_pairs`: these two
+        # are the consumers that turn on adjacency, and a union built by segment dedup
+        # pairs a receiver with whichever producer came first (codex, #553).
+        #
+        # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes GLOB
+        # characters, so a payload naming `lease_slo?.py` -- which the shell expands to the
+        # helper while the text names none literally -- is caught. The sibling call sites
+        # already used the probe; the piped one did not, and a glob in a PIPED payload
+        # walked through.
+        #
+        # Here-strings stay ahead of pipes across ALL readings rather than per reading, so
+        # which helper NAME a multi-transport command reports does not move.
+        #
+        # Charged ONCE per distinct stage, not once per reading -- see the debit site.
+        _seen_prod = set()
+        for _here in (True, False):
+            for _seq in [_base_pairs] + _readings:
+                for _prod in (_herestring_shell_payloads(_seq, _whole) if _here
+                              else _piped_shell_producers(_seq)):
+                    if _prod in _seen_prod:
+                        continue
+                    _seen_prod.add(_prod)
+                    _hit = _abandoned_scan_probe(_prod)
+                    if _hit:
+                        return _hit
     if not ok:
         # Unparseable -- most often a Bash-VALID heredoc whose BODY contains an
         # apostrophe, which this segmenter models as shell source (a known limitation the
@@ -4404,11 +4768,88 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # wrapper, look for the interpreter anywhere; otherwise require it in command
         # position, which is what keeps `echo python3 lease_slot.py` a mention.
         pyi = None
+        cw = _peel_wrappers(words)
         if _wrapped:
+            # NOT an assignment-shaped token: `env python3=foo ...` sets an environment
+            # variable NAMED python3, and an assignment is not an interpreter. Raised by
+            # codex (#553) as a decoy that occupies pyi and stops the unresolved fallback
+            # below from running. Measured against HEAD, the reported command already
+            # blocked through another path, so this changes no verdict on it -- it
+            # removes the mechanism rather than a live bypass.
+            # RESIDUAL, present at HEAD and left there: a wrapper's own operand can be
+            # python-prefixed (`flock /tmp/python-lock python3 -I <helper>`), and the
+            # first candidate is then the operand rather than the interpreter. Three
+            # repairs were tried and all three broke the execution-versus-mention
+            # contract instead -- rightmost candidate (a trailing decoy suppresses it),
+            # whole-suffix search (quadratic), per-candidate script (`python3 -c x` and
+            # an interpreter named as another script's ARGUMENT both block). It needs
+            # per-flag arity, which this file does not carry, and it involves no
+            # expansion, so it is not #553's to close (codex, #553).
+            # ...and this search is origin/main's, UNFILTERED, which is a decision rather
+            # than an omission. Excluding assignment-shaped words looked free -- an
+            # assignment is not an interpreter -- but only a wrapper that READS
+            # `NAME=value` makes one, and `timeout`, `nice` and `doas` execute a PATH entry
+            # literally named `python3=shim`. Excluding them was therefore a fail-OPEN, and
+            # a NEW one: origin/main blocks that spelling.
+            #
+            # Eleven rules were written and measured to keep the exclusion and buy the
+            # spelling back -- skipping by env-name adjacency, bounding it to an assignment
+            # REGION, walking to command position, three interpreter-name tests, an
+            # operand-slot rule for `flock`/`chroot`, and re-asking both readings -- and
+            # each closed one spelling by opening another. Every one of them CHOSE a
+            # reading, and choosing needs per-flag ARITY (`flock -w 1 <file>` puts the
+            # operand a word further along than `flock -n <file>`), which this file
+            # carries no table for by design. The choice is not decidable from the text
+            # either: `env python3 python3 <helper>` is a decoy in front of an
+            # interpreter or an interpreter running a script NAMED `python3`, spelled
+            # identically -- so no rule that picks one of them can be right.
+            #
+            # What closes the decoy is therefore not a better CHOICE but a second
+            # READING, the same answer this file gives expansions: when the candidate
+            # the search lands on is ASSIGNMENT-SHAPED -- the only shape a decoy can
+            # wear and still be mistaken for an interpreter -- the segment is re-asked
+            # ONCE without it. Neither reading is preferred and a hit in either blocks,
+            # so the ambiguity resolves fail-CLOSED and no arity is needed:
+            # `env python3=decoy python3 -I <helper>` blocks through the second reading
+            # while `timeout 5 python3=shim -I <helper>` -- where the assignment shape is
+            # a real PATH entry that `timeout` executes literally -- still blocks through
+            # the first. Excluding the shape outright, which was the other way to answer
+            # the decoy, loses that second command entirely: it is a NEW fail-open on a
+            # spelling origin/main blocks.
+            #
+            # Strictly ADDITIVE, so it cannot open a hole -- every verdict it changes is
+            # block-ward -- and bounded: it fires only on an assignment-shaped candidate,
+            # drops exactly one word, and is charged to the same token budget as any
+            # other re-entry.
+            #
+            # ACCEPTED OVER-BLOCK, and the only one it costs: a READ whose argument names
+            # a helper, behind a wrapper, behind an assignment whose basename starts with
+            # `python` -- `env python3=cfg grep python3 <helper>` blocks where
+            # origin/main allows. That is the trade this guard takes everywhere else and
+            # the direction it is documented to prefer.
+            #
+            # NOT a candidate LOOP over every python-shaped word. That is the
+            # per-candidate script repair the residual above already records as tried and
+            # withdrawn: it breaks the execution-versus-mention contract on `python3 -c x`
+            # and on an interpreter named as another script's ARGUMENT. One conditional
+            # re-ask closes the decoy without reopening either (codex, #553).
             pyi = next((i for i, t in enumerate(words)
                         if _bn(t).startswith("python")), None)
+            if pyi is not None and "=" in words[pyi]:
+                # A bare `=` test, NOT `_skippable`. `_skippable` recognises only a shell
+                # IDENTIFIER assignment (`[A-Za-z_][A-Za-z0-9_]*=`), and `env` accepts a
+                # far wider operand -- `env python3.foo=decoy python3 -I <helper>` sets a
+                # variable named `python3.foo` and runs the real interpreter, and the
+                # narrower test raised no second reading for it (codex, #553). What makes
+                # a word a decoy here is that a wrapper MIGHT read it as an assignment,
+                # and every such word carries an `=`. Widening can only add readings, and
+                # a reading can only add a block.
+                _alt = " ".join(shlex.quote(_t) for _i, _t in enumerate(words)
+                                if _i != pyi)
+                _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
+                if _hit:
+                    return _hit
         else:
-            cw = _peel_wrappers(words)
             if cw is not None and _bn(cw).startswith("python"):
                 pyi = words.index(cw)
             elif cw is not None and _bn(cw) in _MUTATING_HELPERS:
@@ -4417,6 +4858,77 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 if not (i + 1 < len(words) and words[i + 1] == "--self-check"):
                     return _bn(cw)
                 continue
+        # UNRESOLVED COMMAND WORD (#553). `P=python3;${P} -I <helper> .claude fake 1`
+        # runs the helper, but `${P}` is not `python3` to any static reader, so the
+        # interpreter search above finds nothing and the operand carrying the helper is
+        # never reached. Every runner the gate knows carried this equally.
+        #
+        # Asked BEFORE the pyi verdict and regardless of it, not only when pyi is None: a
+        # wrapper flag operand can look like an interpreter (`sudo -u python-user ${P} -I
+        # <helper>` selects `python-user`), and gating this on "no interpreter found" let
+        # that decoy suppress it entirely (codex, #553). Asking always can only add a
+        # block.
+        #
+        # Scoped to segments that NAME a helper, not to every unresolved command word,
+        # and that scoping is load-bearing: this guard is UNCONDITIONAL, so a blunt rule
+        # would block `$EDITOR notes.txt` in every session forever. `_names_helper`
+        # returns the NAME, so the block message stays accurate. ACCEPTED OVER-BLOCK:
+        # `${EDITOR} <helper-path>` blocks, since nothing static tells an editor from an
+        # interpreter once the command word is a variable.
+        #
+        # Regime split as in the interpreter search above: under a wrapper a flag can
+        # take an operand, so peeling to the first non-flag word misses the unresolved
+        # word behind it (`sudo -u root ${P} -I <helper> ...`).
+        # The RAW token: this rule is blanket, so a basename would hide a glob in a
+        # directory component (`/tmp/*/python3`) that still reaches the interpreter.
+        # A skippable SHAPE that carries a substitution is not skippable: with
+        # P='x python3', `env X=${P} -I <helper>` field-splits into an env assignment
+        # followed by the interpreter, and skipping `X=${P}` left pyi unset and the
+        # helper allowed (codex, #553).
+        # ACCEPTED OVER-BLOCK, deliberate and documented: under a wrapper this reads
+        # EVERY non-skippable token, arguments included, so a read whose argument looks
+        # unresolved (`sudo grep '[abc]' <helper>`) blocks. Narrowing it to command
+        # position was tried and withdrawn -- deciding where command position ENDS needs
+        # per-flag arity, and the table that approximated it grew a new hole every review
+        # round (macOS `env -P`, `arch -arch`, `script -t`, GNU abbreviations, bundled
+        # `env -uC`) while each hole was a fail-OPEN on an unconditional guard. A blanket
+        # test costs a rare false block; a leaky table costs the guard.
+        _unresolved = (any(_unresolved_word(t) for t in words
+                           if any(ch in t for ch in _SUBST_CW_CHARS)
+                           or not _skippable(t))
+                       if _wrapped else _unresolved_word(cw or ""))
+        # ...and the same question asked of the SEGMENT TEXT, because tokenization takes
+        # an extglob apart: `/usr/bin/@(python3|no-such-python)` leaves no token and no
+        # command word carrying the construct.
+        #
+        # Whole-segment, like the test above and for the same reason: scoping it to
+        # command position was tried and withdrawn, because finding command position on
+        # RAW text means stepping over every launcher shape there is -- `time`, a
+        # multicall dispatcher (`busybox env ...`), a named `coproc` -- and each one
+        # missed was a fail-OPEN in an unconditional guard. The cost is the same accepted
+        # over-block: `echo @(a|b) <helper>` blocks, which is a mention read as an
+        # invocation (codex, #553, four rounds).
+        _unresolved = _unresolved or _has_extglob(segtext)
+        if _unresolved:
+            # The SEGMENT -- not the whole command, and not the command's assignments.
+            # Both wider readings were tried here and withdrawn (codex, #553, five
+            # rounds). Searching the WHOLE command couples unrelated segments and breaks
+            # the read/mention contract: `cat <helper>; $EDITOR notes.txt` would report an
+            # invocation from a plain read. Resolving what the command ASSIGNS closes the
+            # variable-named-helper shape, but only by modelling shell semantics this file
+            # does not have -- which value is live needs control flow (`H=x;
+            # H=harmless true`, `&&`/`||`), reassembling one needs per-target `+=`
+            # tracking, recognising the reference needs the parameter-expansion grammar
+            # (`${H:-x}`, `${H[0]}`), and deciding a token IS an assignment needs to tell
+            # `H=v` from `printf '%s' H=v`. Each was a finding of its own.
+            #
+            # A helper name the shell ASSEMBLES is the ADR 0006 residual this function
+            # already declares out of scope in its header: the stem search finds a literal
+            # `M=<stem>` and not a name split across two variables. That shape is allowed
+            # at HEAD and stays allowed. What this rule closes is the COMMAND WORD.
+            _hit = _names_helper(segtext)
+            if _hit:
+                return _hit
         if pyi is None:
             continue
         # The EXECUTED script is the interpreter first non-flag argument. Anything later

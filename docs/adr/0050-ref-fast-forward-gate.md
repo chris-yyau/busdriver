@@ -539,6 +539,21 @@ it before the creation check runs. Measured for a plain alias, a nested one and 
 `!`-shell alias (refused by name, body unread), and now pinned by tests so it is
 not re-argued from reading `git_ref_create` alone.
 
+**Ask git for the push destination; do not re-implement its config rules.** Four
+of the leaks above were the same mistake in different clothes — the gate
+resolving `remote.<n>.pushurl` / `.url` by hand and getting one of git's rules
+wrong: pushurl's precedence over url, the fact that both keys are multi-valued
+and every value is pushed to, `insteadOf`/`pushInsteadOf` rewriting, and git
+IGNORING `pushInsteadOf` when a remote has an explicit `pushurl`. Each was found
+separately, each failed OPEN, and a fifth was always plausible. The resolution is
+now one call — `git remote get-url --push --all <name>` — which applies all four
+rules because it IS git; a word that is no configured remote (exit 2) falls back
+to itself plus `git ls-remote --get-url`, and any other exit status is treated as
+"could not resolve", which this gate may not read as *elsewhere*. The
+hand-rolled longest-prefix rewriting is deleted rather than kept alongside. What
+remains gate-side is what git cannot answer: which SPELLINGS name this
+repository (paths, gitdirs, worktrees, `~`, relative bases).
+
 **Raised twice and NOT a gap: the separator dot in an insteadOf key.** Review
 read `_ubest=${_ubase%".$_usuf"}` as stripping only `insteadof`, leaving
 `url./repo.insteadof` reconstructed as `/repo.` and failing to resolve. The

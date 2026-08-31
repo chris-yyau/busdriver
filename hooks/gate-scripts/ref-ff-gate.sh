@@ -1167,75 +1167,40 @@ WLEOF
         for _pt in $CREATE_OPTS; do
             case "$_pt" in *=*) _cands="$_cands ${_pt#*=}" ;; esac
         done
-        # The `url.<base>.insteadOf` / `.pushInsteadOf` rewrites, read ONCE:
-        # they decide which repository a url actually reaches, so a remote whose
-        # configured url points at an external host can still resolve to this
-        # one. LOWERCASE keys: git canonicalizes config variable names in its
-        # listing whatever the file says, and a mixed-case comparison matched
-        # nothing at all.
-        local _urc=0 _ucfg=""
-        _ucfg=$(git_real config --get-regexp '^url\..*\.(insteadOf|pushInsteadOf)$' 2>/dev/null) || _urc=$?
-        if [ "$_urc" -gt 1 ] || [ "${#_ucfg}" -ge 65536 ]; then
-            block_emit "BLOCKED: this pushes in ${REPO_DIR:-.} and the gate could not read the repository's url.<base>.insteadOf rewrites (git config exited $_urc, or the listing is past the 64 KiB this gate reads). Those rewrites decide which repository the push actually reaches, so an unreadable one is exactly the case that would hide a push at this repository (issue #781). Blocking as precaution (fail-closed)."
-            exit 0
-        fi
-
         # Does this SPELLING of a push destination name this repository? A word
         # can be a remote name, a path, or a url, and each has to be resolved
         # the way git resolves it before the paths can be compared.
         _push_dest_is_self() {
-            local _d="$1" _u="" _uline _ukey _uval _ubase _usuf _ulist=""
-            local _ubest="" _ubestlen=0 _urest="" _phys _wp
-            local _explicit_pushurl=0 _phys1 _phys2
+            local _d="$1" _u="" _ulist="" _rc=0 _phys _phys1 _phys2 _wp _alt
             [ -n "$_d" ] || return 1
             case "$_d" in .) return 0 ;; esac
-            # PUSHURL first: git prefers it over url for a push, so reading only
-            # url let `url = https://elsewhere/` with `pushurl = .` read as
-            # external. A word that is no configured remote is its own url.
-            # get-ALL: both keys are multi-valued and git pushes to EVERY url, so
-            # one external value must not answer for a sibling naming this
-            # repository.
-            if _ulist=$(git_real config --get-all "remote.$_d.pushurl" 2>/dev/null); then
-                _explicit_pushurl=1
-            else
-                _ulist=$(git_real config --get-all "remote.$_d.url" 2>/dev/null) \
-                    || _ulist="$_d"
+            # ASK GIT. `git remote get-url --push --all` applies git's own rules
+            # -- pushurl over url, EVERY value of a multi-valued key, insteadOf,
+            # and pushInsteadOf with its explicit-pushurl exception. Resolving
+            # that config by hand drifted from git on each of those four in
+            # turn, every time in the fail-open direction; this cannot.
+            _ulist=$(git_real remote get-url --push --all "$_d" 2>/dev/null) || _rc=$?
+            if [ "$_rc" != "0" ]; then
+                # WHY it failed decides what to do, and the exit status is no way
+                # to ask: git dies with 128 down some paths and 2 down others.
+                # Its own list of remote NAMES answers it instead.
+                if git_real remote 2>/dev/null | grep -qxF -- "$_d"; then
+                    # A real remote whose url git could not resolve. That is not
+                    # an answer this gate may read as "elsewhere".
+                    return 0
+                fi
+                # Not a configured remote, so the word is its own url -- and git
+                # rewrites a literal url too.
+                _ulist="$_d"
+                _alt=$(git_real ls-remote --get-url "$_d" 2>/dev/null) || _alt=""
+                if [ -n "$_alt" ] && [ "$_alt" != "$_d" ]; then
+                    _ulist="$_ulist
+$_alt"
+                fi
             fi
             [ -n "$_ulist" ] || return 1
             while IFS= read -r _u; do
             [ -n "$_u" ] || continue
-            _ubest=""; _ubestlen=0; _urest=""
-            # Longest matching prefix wins, and for a push a pushInsteadOf match
-            # suppresses insteadOf entirely -- git's own rule.
-            # Git IGNORES pushInsteadOf for a remote that has an explicit
-            # pushurl, so applying it there resolved a destination git does not
-            # use -- `pushurl = .` with `url.https://elsewhere/.pushInsteadOf =
-            # .` rewrote a self-push into an external one.
-            for _usuf in $([ "$_explicit_pushurl" = "1" ] && echo insteadof || echo pushinsteadof insteadof); do
-                while IFS= read -r _uline; do
-                    [ -z "$_uline" ] && continue
-                    _ukey=${_uline%% *}
-                    case "$_ukey" in *".$_usuf") ;; *) continue ;; esac
-                    # `pushinsteadof` ENDS with `insteadof`, so the second pass
-                    # would otherwise read a push rewrite as a plain one.
-                    if [ "$_usuf" = insteadof ]; then
-                        case "$_ukey" in *.pushinsteadof) continue ;; esac
-                    fi
-                    _uval=${_uline#* }
-                    [ "$_uval" = "$_uline" ] && continue
-                    case "$_u" in "$_uval"*) ;; *) continue ;; esac
-                    if [ "${#_uval}" -gt "$_ubestlen" ]; then
-                        _ubase=${_ukey#url.}
-                        _ubest=${_ubase%".$_usuf"}
-                        _ubestlen=${#_uval}
-                        _urest=${_u#"$_uval"}
-                    fi
-                done <<CFGEOF
-$_ucfg
-CFGEOF
-                [ -n "$_ubest" ] && break
-            done
-            [ -n "$_ubest" ] && _u="$_ubest$_urest"
             # `file://` is the same local path spelled as a URL, and a GITDIR
             # path names the same repository as its worktree.
             _u=${_u#file://}

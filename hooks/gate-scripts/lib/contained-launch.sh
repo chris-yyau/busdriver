@@ -269,9 +269,20 @@ fi
 
 # Trusted ambient-git-scope sentinel for gates that strip GIT_* from probes
 # (#780). Do not forward the raw values — only whether any were set pre-env -i.
+# Includes GIT_CONFIG* / GIT_EXEC_PATH — env -i removes them from the gate while
+# the approved command still sees ambient aliases and config overrides.
 _bd_git_scope=0
-[[ -n "${GIT_DIR+x}" || -n "${GIT_WORK_TREE+x}" || -n "${GIT_COMMON_DIR+x}" \
-    || -n "${GIT_NAMESPACE+x}" || -n "${GIT_INDEX_FILE+x}" ]] && _bd_git_scope=1
+while IFS= read -r _bd_name; do
+    case "$_bd_name" in
+        GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_NAMESPACE|GIT_INDEX_FILE|\
+        GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|\
+        GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_EXEC_PATH|\
+        GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+            _bd_git_scope=1
+            break
+            ;;
+    esac
+done < <(compgen -e)
 if [[ "$_bd_git_scope" -eq 1 ]]; then
     /usr/bin/env -i BUSDRIVER_GIT_SCOPE_PRESENT=1 "$@"
 else

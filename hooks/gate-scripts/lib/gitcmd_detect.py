@@ -4319,13 +4319,18 @@ def _zero_old_git_argv(seg):
     return ['git', last_sub] + list(toks[last_i + 1:]), toks
 _ZERO_OLD_SCOPE_ENV = frozenset({
     'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_INDEX_FILE',
+    'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_EXEC_PATH',
 })
+def _zero_old_scope_key(k):
+    return (k in _ZERO_OLD_SCOPE_ENV
+            or k.startswith('GIT_CONFIG_KEY_') or k.startswith('GIT_CONFIG_VALUE_'))
 def _zero_old_git_env():
-    return {k: v for k, v in os.environ.items() if k not in _ZERO_OLD_SCOPE_ENV}
+    return {k: v for k, v in os.environ.items() if not _zero_old_scope_key(k)}
 def _zero_old_ambient_scope():
     if os.environ.get('BUSDRIVER_GIT_SCOPE_PRESENT') == '1':
         return True
-    return any(k in os.environ for k in _ZERO_OLD_SCOPE_ENV)
+    return any(_zero_old_scope_key(k) for k in os.environ)
 def _zero_old_ref_path(ref_operand):
     if not isinstance(ref_operand, str) or not ref_operand:
         return ''
@@ -4336,18 +4341,47 @@ def _zero_old_ref_path(ref_operand):
     return 'refs/heads/' + ref_operand
 _ZERO_OLD_MAX_DEREF_OPS = 32; _ZERO_OLD_MAX_SYMREF_CHAIN = 16
 def _zero_old_symref_map(repo_dir):
-    import subprocess
+    import subprocess, select, time
     try:
-        r = subprocess.run(
+        p = subprocess.Popen(
             ['git', '-C', repo_dir, 'for-each-ref', '--count=4097',
              '--format=%(refname)\t%(symref)', 'refs/'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=_zero_old_git_env(), text=True, timeout=5)
+            env=_zero_old_git_env())
+    except OSError:
+        return None
+    buf = []
+    total = 0
+    deadline = time.monotonic() + 5
+    try:
+        fd = p.stdout.fileno()
+        os.set_blocking(fd, False)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                p.kill(); p.wait(); return None
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                p.kill(); p.wait(); return None
+            try:
+                chunk = p.stdout.read(8192)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 256 * 1024:
+                p.kill(); p.wait(); return None
+            buf.append(chunk)
+        rc = p.wait(timeout=max(0.1, deadline - time.monotonic()))
     except (OSError, subprocess.TimeoutExpired):
+        try: p.kill(); p.wait()
+        except Exception: pass
         return None
-    if r.returncode != 0 or r.stdout is None or len(r.stdout) > 256 * 1024:
+    if rc != 0:
         return None
-    lines = [ln for ln in r.stdout.split('\n') if ln != '']
+    raw = b''.join(buf).decode('utf-8', 'surrogateescape')
+    lines = [ln for ln in raw.split('\n') if ln != '']
     # --count=4096 bound: one extra row means the map is truncated.
     if len(lines) > 4096:
         return None
@@ -4433,14 +4467,16 @@ def _zero_old_classify_names(kind, ref_operand, symref_map, no_deref=False):
         return [] if _zero_old_non_heads_ref(ref_operand) else [(kind, '')]
     if symref_map is None:
         return [(kind, '')]
-    deref = zero_old_ref_effective_short(ref_operand, symref_map=symref_map)
-    out = []
+    # Do not authorize via a pre-command symref snapshot (TOCTOU retarget).
+    if isinstance(ref_operand, str) and (
+            ref_operand in ('HEAD', '@') or ref_operand.upper() == 'HEAD'):
+        lookup = 'HEAD'
+    else:
+        lookup = _zero_old_ref_path(ref_operand) if isinstance(ref_operand, str) else ''
+    if lookup and lookup in symref_map:
+        return [(kind, '')]
     if original:
-        out.append((kind, original))
-    if deref and deref != original:
-        out.append((kind, deref))
-    if out:
-        return out
+        return [(kind, original)]
     if _zero_old_non_heads_ref(ref_operand):
         return []
     return [(kind, '')]

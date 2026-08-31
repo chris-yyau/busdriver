@@ -1,3 +1,10 @@
+## [2.1.7](https://github.com/chris-yyau/busdriver/compare/v2.1.6...v2.1.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* **integrity:** refuse unvalidated __pycache__ bytecode ([#797](https://github.com/chris-yyau/busdriver/issues/797)) ([#799](https://github.com/chris-yyau/busdriver/issues/799)) ([33690be](https://github.com/chris-yyau/busdriver/commit/33690be362311a73a1d4f9d71060e291186566a2))
+
 ## [2.1.6](https://github.com/chris-yyau/busdriver/compare/v2.1.5...v2.1.6) (2026-08-30)
 
 

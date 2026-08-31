@@ -2488,7 +2488,61 @@ grok_preflight_hint() {
   printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
 }
 
+# The review CLI runs as a SUBPROCESS and must see the REAL repository.
+# run-review-loop.sh pins its own reads to an index SNAPSHOT by exporting
+# GIT_INDEX_FILE, and on macOS `mktemp -t` places that snapshot under
+# _CS_DARWIN_USER_TEMP_DIR (TMPDIR is ignored for `-t`), a path the codex sandbox
+# cannot read. git inside the sandbox then falls back to a near-empty index and
+# reports every tracked file as DELETED -- measured on a linked worktree:
+# `git ls-files` returned 8 entries while the same command with an explicit
+# GIT_INDEX_FILE returned 797, and `diff --cached` claimed 789 deletions. The
+# reviewer reported that as a high-severity finding against a clean tree, which is
+# a fail-CLOSED stall on infrastructure rather than on the code under review.
+#
+# The prompt already carries the pinned diff AS TEXT, so the CLI needs no index
+# pin -- and inheriting litmus's private one is wrong regardless of whether the
+# temp dir happens to be reachable. Unset for the dispatch, restored after it so
+# litmus's own later `--cached` reads stay pinned to the snapshot.
+#
+# Wrapper rather than an inline unset: the `builtin` branch returns early (3), and
+# an inline restore after the `case` would be skipped on that path, leaking the
+# unset back to the caller and silently unpinning the reads that follow.
 execute_review() {
+  local _gif_set=0 _gif_val="" _gif_exported=0
+  if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
+    _gif_set=1
+    _gif_val="$GIT_INDEX_FILE"
+    # Whether it was EXPORTED, not merely set: restoring a shell-local variable as an
+    # exported one would hand the pin to every later child process, which is the same
+    # class of bug this wrapper exists to remove.
+    if declare -p GIT_INDEX_FILE 2>/dev/null | grep -q 'declare -x'; then
+      _gif_exported=1
+    fi
+    unset GIT_INDEX_FILE 2>/dev/null || :
+    # VERIFY, do not assume: `unset` on a readonly variable fails, and callers run with
+    # errexit disabled or suppressed, so an ignored failure would dispatch the review
+    # with the unreadable pin still in the environment -- the exact fail-OPEN-shaped
+    # silent degradation this guards. Unresolvable is the fail-CLOSED case.
+    if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
+      echo "busdriver: GIT_INDEX_FILE is set and could not be unset (readonly?) — refusing" >&2
+      echo "  to dispatch a review whose CLI would inherit litmus's private index snapshot." >&2
+      return 1
+    fi
+  fi
+  local _rc=0
+  _execute_review_dispatch "$@" || _rc=$?
+  if [[ "$_gif_set" -eq 1 ]]; then
+    if [[ "$_gif_exported" -eq 1 ]]; then
+      export GIT_INDEX_FILE="$_gif_val"
+    else
+      GIT_INDEX_FILE="$_gif_val"
+    fi
+  fi
+  return "$_rc"
+}
+
+
+_execute_review_dispatch() {
   local cli="$1"
   local prompt="$2"
   local duration="${3:-1200}"

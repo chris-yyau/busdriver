@@ -178,9 +178,81 @@ this gate existed, and none of them weakens a case the gate does block.**
 ### Out of scope by decision
 
 Non-FF merges and `merge -s ours` laundering (#622, #782); force-updates,
-`update-ref`, `branch -f`, `checkout -B` (#780); ref creation (#781);
+`update-ref`, `branch -f`, `checkout -B` of a branch that EXISTS (#780);
 `rebase` / `am` (#783). `--squash` is allowed — it moves no ref, and
 `pre-commit-gate.sh` owns the `git commit` that follows.
+
+## Amendment (#781) — the creation class
+
+A protected ref that does not EXIST cannot be fast-forwarded, so every arm of
+the decision above walks past it, and creating it lands arbitrary content on a
+protected name with no commit object and nothing else observing it. Measured on
+the fix branch before the change: `git branch master <commit-tree oid>` in a
+repo holding only `main`, and `git branch main <oid>` in a single-branch clone,
+were both ALLOWED. The gate now covers that class at the same PreToolUse layer,
+for the same reason the original decision gives — the reference-transaction hook
+needs an installer that belongs to #622.
+
+**The rule is #781's**, and its reachability condition is load-bearing rather
+than incidental: a creation has no pre-image to compare against, so the only
+meaningful test is whether the content is *already reachable from a protected
+branch that exists*. If it is, the creation is inert and is allowed with no
+marker, no audit record and no friction. If it is not, it is refused, or spends
+a `PASS-CREATE refs/heads/<branch> <oid>` line in the same marker file. A
+blanket "creation is inert" rule — which an earlier #622 draft carried — admits
+both measured shapes.
+
+**No creation grammar is parsed, deliberately.** `branch`, `checkout -b/-B`,
+`switch -c/-C`, `update-ref`, `worktree add -b` and DWIM `checkout <name>` are
+six option grammars, and extracting "the name being created" from any of them
+mis-parses toward ALLOW: one separate-value option the parser does not know
+shifts the operand and the gate checks the wrong word. Matching every command
+WORD over-approximates toward BLOCK instead. That is the same enumeration→class
+move `_has_companion_command` already made, and it is what makes the fix one
+membership test rather than six parsers to keep in sync.
+
+Review found three ways a first draft of that membership test still leaked, and
+all three are closed the same way — by widening what counts as "a word naming
+this branch", never by adding a grammar:
+
+- **The name attached to an option.** `-bmaster`, a clustered `-qbmaster`, and
+  `--create=master` create `master` while the command contains no `master` word.
+  Each protected name is now tested as a SUFFIX of every option word, which
+  over-matches (`--no-main` would) in the blocking direction and needs no table
+  of which git options take an attached value.
+- **Git's DWIM start point.** `git checkout main` with no local `main` creates it
+  from `refs/remotes/<remote>/main` — a ref a bare `main` does NOT resolve to, so
+  the word vouched for nothing and only HEAD was checked. Where some OTHER
+  protected branch existed to vouch for HEAD, the creation was allowed. The
+  remote-tracking refs whose full path suffix matches a matched name are now part
+  of what must be reachable; matching only the last path component lost a
+  protected `release/main`.
+- **Ref names in data.** `git update-ref --stdin` (and `-z`) names its refs
+  inside input no command-string parser can see, so there is nothing to match and
+  the companion refusal — which runs only after a match — cannot help. That shape
+  is refused outright wherever a protected name could be created.
+
+An EMPTY declaration file stands this arm down exactly as it stands the
+fast-forward arm down: it is the operator saying the repository has no protected
+branch, and the conventional names must not keep guarding one anyway.
+
+**Two costs, accepted rather than hidden**, both pinned by tests in
+`tests/test-ref-ff-gate.sh`: a bare word equal to a protected-but-absent name
+blocks whatever it actually meant (`git commit -m develop`; a quoted multi-word
+message is a single token and never matches), and off a protected branch even an
+explicit start point blocks, because HEAD cannot be ruled out as the implicit
+one without the grammar the gate refuses to parse. Both cost one re-typed
+command, which is the cost the alias and companion rules already accept.
+
+**The initial commit is NOT covered here, and does not need to be at this
+layer.** It is `git commit`, which `pre-commit-gate.sh` already blocks
+(measured), so litmus reviews that content. It needs the creation rule only at
+the reference-transaction layer, with #622.
+
+**Still open**, unchanged by this amendment: a name reached through a
+substitution (`git branch $B <oid>`) is not a literal word and is not matched —
+the THREAT MODEL's deliberate evader, who has arbitrary shell either way; and a
+force-update of a branch that exists stays #780.
 
 ## Alternatives considered
 
@@ -189,8 +261,9 @@ Non-FF merges and `merge -s ours` laundering (#622, #782); force-updates,
 - **`git ls-remote` to verify provenance** — a network round-trip inside a 10s
   PreToolUse budget, and it blocks every offline merge. Worse than the residual
   it closes.
-- **Gate the ref-writing commands too** — that is #780/#781, explicitly out of
-  scope for this change.
+- **Gate the ref-writing commands too** — force-updates of a branch that exists
+  are #780, explicitly out of scope for this change; ref CREATION is #781 and is
+  now covered, see the amendment above.
 - **Persist discovered protected branches in a gate-owned file** — a fifth state
   file and a new write path, to close a hypothetical in repositories that do not
   exist yet. The empty-set block closes the same lever with no new state.

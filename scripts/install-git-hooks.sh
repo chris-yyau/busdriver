@@ -126,12 +126,14 @@ PY
 preflight_install() {
     local sig='# Installed by busdriver scripts/install-git-hooks.sh'
     local spec hook_name gate_src hook_path
+    # Publication gate first in preflight + install so a partial install still
+    # blocks unreviewed merge tips even if --no-verify skips pre-merge-commit.
     for spec in \
+        "reference-transaction:$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh" \
+        "prepare-commit-msg:$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh" \
         "pre-merge-commit:$PLUGIN_ROOT/hooks/gate-scripts/pre-merge-commit-gate.sh" \
         "post-merge:$PLUGIN_ROOT/hooks/gate-scripts/post-merge-consume-marker.sh" \
         "pre-commit:$PLUGIN_ROOT/hooks/gate-scripts/merge-pre-commit-gate.sh" \
-        "prepare-commit-msg:$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh" \
-        "reference-transaction:$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh" \
         "post-commit:$PLUGIN_ROOT/hooks/gate-scripts/merge-post-commit-consume.sh"
     do
         hook_name="${spec%%:*}"
@@ -155,15 +157,15 @@ preflight_install() {
 
 preflight_install
 
+install_one reference-transaction \
+    "$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
+install_one prepare-commit-msg \
+    "$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh"
 install_one pre-merge-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/pre-merge-commit-gate.sh"
 install_one post-merge \
     "$PLUGIN_ROOT/hooks/gate-scripts/post-merge-consume-marker.sh"
 install_one pre-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-pre-commit-gate.sh"
-install_one prepare-commit-msg \
-    "$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh"
-install_one reference-transaction \
-    "$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
 install_one post-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-post-commit-consume.sh"

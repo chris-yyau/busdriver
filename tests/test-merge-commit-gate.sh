@@ -11,6 +11,10 @@
 #   8. Abort after failed merge commit leaves marker for ordinary commits.
 #   9. Spoofed GIT_REFLOG_ACTION does not prevent marker consumption.
 #  10. Hostile BASH_ENV cannot bypass merge validation.
+#  11. Fast-forward onto a published merge tip keeps HEAD (with RT).
+#  12. commit-tree + update-ref of an unpublished merge tip is refused.
+#  13. A tag tip alone cannot witness merge publication onto a branch.
+#  14. A symbolic head aliasing a tag cannot witness merge publication.
 #
 # Usage: bash tests/test-merge-commit-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -103,12 +107,15 @@ TMP_SKNONE_LONG=$(mktemp -d)
 TMP_SKNONE_BOUND=$(mktemp -d)
 TMP_REPO_MARKER=$(mktemp -d)
 TMP_FF_MERGE=$(mktemp -d)
+TMP_CTREE=$(mktemp -d)
+TMP_TAG_WITNESS=$(mktemp -d)
+TMP_SYM_WITNESS=$(mktemp -d)
 TMP_ANNOTATED=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_CTREE" "$TMP_TAG_WITNESS" "$TMP_SYM_WITNESS" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -502,9 +509,8 @@ if [[ "$FF_CREATE_RC" -ne 0 || "$FF_PARENT_COUNT" -lt 2 ]]; then
         "create-failed(rc=$FF_CREATE_RC parents=$FF_PARENT_COUNT err=$FF_CREATE_ERR)"
 else
 FF_PARENT=$(git -C "$TMP_FF_MERGE" rev-parse 'HEAD^1')
+# Keep main at the reviewed merge; FF a lagging branch onto that published tip.
 git -C "$TMP_FF_MERGE" checkout -qb behind "$FF_PARENT"
-# FF onto an existing merge is not a live merge; drop RT so this asserts post-merge non-rewind.
-rm -f "$HOOKS/reference-transaction"
 set +e
 git -C "$TMP_FF_MERGE" merge --ff-only "$FF_MERGE_SHA" >/dev/null 2>"$LOGDIR/ff-onto-merge.err"
 FF_ONTO_RC=$?
@@ -517,6 +523,69 @@ else
     assert "fast-forward onto merge commit keeps merge HEAD" "kept" \
         "moved(rc=$FF_ONTO_RC head=$FF_ONTO_HEAD want=$FF_MERGE_SHA err=$FF_ONTO_ERR)"
 fi
+fi
+
+echo "── commit-tree merge tip without other ref is refused ─"
+setup_repo "$TMP_CTREE"
+install_hook "$TMP_CTREE" "$HOOKS"
+CTREE_MAIN=$(git -C "$TMP_CTREE" rev-parse main)
+CTREE_TOPIC=$(git -C "$TMP_CTREE" rev-parse topic)
+CTREE_TREE=$(git -C "$TMP_CTREE" rev-parse "$CTREE_TOPIC^{tree}")
+CTREE_MERGE=$(git -C "$TMP_CTREE" commit-tree "$CTREE_TREE" -p "$CTREE_MAIN" -p "$CTREE_TOPIC" -m "crafted merge")
+set +e
+git -C "$TMP_CTREE" update-ref refs/heads/main "$CTREE_MERGE" "$CTREE_MAIN" >/dev/null 2>"$LOGDIR/ctree-update.err"
+CTREE_RC=$?
+set -e
+CTREE_HEAD=$(git -C "$TMP_CTREE" rev-parse main)
+if [[ "$CTREE_RC" -ne 0 && "$CTREE_HEAD" == "$CTREE_MAIN" ]]; then
+    assert "commit-tree merge tip without other ref blocked" "block" "block"
+else
+    CTREE_ERR=$(tr '\n' ' ' <"$LOGDIR/ctree-update.err" || true)
+    assert "commit-tree merge tip without other ref blocked" "block" \
+        "allow(rc=$CTREE_RC head=$CTREE_HEAD err=$CTREE_ERR)"
+fi
+
+echo "── tag tip cannot witness an unreviewed merge publication ─"
+setup_repo "$TMP_TAG_WITNESS"
+install_hook "$TMP_TAG_WITNESS" "$HOOKS"
+TW_MAIN=$(git -C "$TMP_TAG_WITNESS" rev-parse main)
+TW_TOPIC=$(git -C "$TMP_TAG_WITNESS" rev-parse topic)
+TW_TREE=$(git -C "$TMP_TAG_WITNESS" rev-parse "$TW_TOPIC^{tree}")
+TW_MERGE=$(git -C "$TMP_TAG_WITNESS" commit-tree "$TW_TREE" -p "$TW_MAIN" -p "$TW_TOPIC" -m "tag-witnessed merge")
+git -C "$TMP_TAG_WITNESS" update-ref refs/tags/bypass "$TW_MERGE"
+set +e
+git -C "$TMP_TAG_WITNESS" update-ref refs/heads/main "$TW_MERGE" "$TW_MAIN" >/dev/null 2>"$LOGDIR/tag-witness.err"
+TW_RC=$?
+set -e
+TW_HEAD=$(git -C "$TMP_TAG_WITNESS" rev-parse main)
+if [[ "$TW_RC" -ne 0 && "$TW_HEAD" == "$TW_MAIN" ]]; then
+    assert "tag tip cannot witness merge publication" "block" "block"
+else
+    TW_ERR=$(tr '\n' ' ' <"$LOGDIR/tag-witness.err" || true)
+    assert "tag tip cannot witness merge publication" "block" \
+        "allow(rc=$TW_RC head=$TW_HEAD err=$TW_ERR)"
+fi
+
+echo "── symbolic head aliasing a tag cannot witness merge publication ─"
+setup_repo "$TMP_SYM_WITNESS"
+install_hook "$TMP_SYM_WITNESS" "$HOOKS"
+SW_MAIN=$(git -C "$TMP_SYM_WITNESS" rev-parse main)
+SW_TOPIC=$(git -C "$TMP_SYM_WITNESS" rev-parse topic)
+SW_TREE=$(git -C "$TMP_SYM_WITNESS" rev-parse "$SW_TOPIC^{tree}")
+SW_MERGE=$(git -C "$TMP_SYM_WITNESS" commit-tree "$SW_TREE" -p "$SW_MAIN" -p "$SW_TOPIC" -m "symref-witnessed merge")
+git -C "$TMP_SYM_WITNESS" update-ref refs/tags/bypass "$SW_MERGE"
+git -C "$TMP_SYM_WITNESS" symbolic-ref refs/heads/witness refs/tags/bypass
+set +e
+git -C "$TMP_SYM_WITNESS" update-ref refs/heads/main "$SW_MERGE" "$SW_MAIN" >/dev/null 2>"$LOGDIR/sym-witness.err"
+SW_RC=$?
+set -e
+SW_HEAD=$(git -C "$TMP_SYM_WITNESS" rev-parse main)
+if [[ "$SW_RC" -ne 0 && "$SW_HEAD" == "$SW_MAIN" ]]; then
+    assert "symbolic head cannot witness merge publication" "block" "block"
+else
+    SW_ERR=$(tr '\n' ' ' <"$LOGDIR/sym-witness.err" || true)
+    assert "symbolic head cannot witness merge publication" "block" \
+        "allow(rc=$SW_RC head=$SW_HEAD err=$SW_ERR)"
 fi
 
 echo "── annotated-tag merge peels MERGE_HEAD and allows matching marker ─"

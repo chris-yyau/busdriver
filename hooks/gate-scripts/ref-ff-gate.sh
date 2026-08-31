@@ -40,8 +40,9 @@
 #        the default `--ff`), and `git pull` on the protected branch.
 #   OUT  a merge that produces a COMMIT (`--no-ff`, a real three-way merge, and
 #        `merge -s ours` laundering) — #622 / #782; `--squash`, whose `git commit`
-#        pre-commit-gate already owns; force-updates and `update-ref`/`branch -f`
-#        — #780; ref CREATION — #781; `rebase` / `am` — #783.
+#        pre-commit-gate already owns; ref CREATION at unreachable content — #781;
+#        `rebase` / `am` — #783.
+#   ALSO #780 ZERO-old force/delete (`branch -f`, `checkout -B`, `update-ref`).
 #   ALIASES are handled, not conceded: one defined on the COMMAND LINE (`-c
 #   alias.m=merge`, or indirectly via `-c include.path=…`) makes the operation
 #   unresolvable, and one defined in a config FILE is resolved here against
@@ -409,7 +410,7 @@ sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
     from gitcmd_detect import (git_ref_op, REF_OP_UNRESOLVABLE,
-                               REF_OP_FF_PREFIX)
+                               REF_OP_FF_PREFIX, git_zero_old_ref_op)
     d = json.load(sys.stdin)
     def noop():
         # kind, target_dir, cwd, untrusted_cd, then a REAL operand count.
@@ -423,6 +424,7 @@ try:
         print('0')
         print('')
         print('')
+        print('')   # ZERO_OLD_OPS (#780)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -434,6 +436,13 @@ try:
     cmd = inp.get('command', '')
     kind, target_dir, ops, untrusted_cd, n_ops, ref_writer, aliases = git_ref_op(
         cmd, with_untrusted_cd=True)
+    zero_ops, zero_target_dir, zero_untrusted = git_zero_old_ref_op(
+        cmd, with_untrusted_cd=True, hook_cwd=cwd)
+    if zero_ops:
+        if zero_target_dir and not target_dir:
+            target_dir = zero_target_dir
+        if zero_untrusted:
+            untrusted_cd = zero_untrusted
     # The pull's fast-forward mode rides along as a sentinel operand; split out
     # here so the operand count stays a count of REAL operands.
     ff_mode = ''
@@ -462,8 +471,19 @@ try:
     print('1' if ref_writer else '0')
     print(' '.join(aliases))
     print(ff_mode)
+    _zparts = []
+    for _zk, _zn in zero_ops:
+        if not isinstance(_zk, str) or not isinstance(_zn, str):
+            continue
+        if chr(10) in _zk or chr(13) in _zk or chr(10) in _zn or chr(13) in _zn:
+            raise ValueError('newline in zero-old field')
+        if ' ' in _zk or ' ' in _zn or ':' in _zk or ':' in _zn:
+            _zparts.append('force:')  # unreadable → empty name
+        else:
+            _zparts.append(_zk + ':' + _zn)
+    print(' '.join(_zparts))
 except Exception:
-    for _ in range(12):
+    for _ in range(13):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -479,6 +499,7 @@ NOPERATIONS=$(echo "$PARSE_RESULT" | sed -n '9p')
 REF_WRITER=$(echo "$PARSE_RESULT" | sed -n '10p')
 ALIAS_CANDIDATES=$(echo "$PARSE_RESULT" | sed -n '11p')
 FF_MODE=$(echo "$PARSE_RESULT" | sed -n '12p')
+ZERO_OLD_OPS=$(echo "$PARSE_RESULT" | sed -n '13p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -525,6 +546,16 @@ if [ "$UNRESOLVABLE" = "1" ]; then
     exit 0
 fi
 
+if [ -n "$ZERO_OLD_OPS" ]; then
+    for _zo_pair in $ZERO_OLD_OPS; do
+        _zo_name="${_zo_pair#*:}"
+        if [ -z "$_zo_name" ]; then
+            block_emit "BLOCKED: a force-update or delete of a protected branch cannot be resolved statically (issue #780)."
+            exit 0
+        fi
+    done
+fi
+
 gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
     block_emit "Ref fast-forward gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the git merge/pull and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo's protected branch would move. Run it from the repo root, join the cd with '&&' (cd /repo && git merge X), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
@@ -564,7 +595,7 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
         UNKNOWN_CANDIDATES="$UNKNOWN_CANDIDATES $_cand"
     done
 fi
-if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then
+if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ] && [ -z "$ZERO_OLD_OPS" ]; then
     exit 0
 fi
 
@@ -844,10 +875,8 @@ fi
 # HEAD it replaces is not. A project whose protected branch is not a conventional
 # name should declare it rather than rely on discovery.
 # The same non-regression bound as the other residuals applies: deleting a remote
-# HEAD is a ref write, the #780/#781 class this gate does not observe — and an
-# actor who can make one can equally run `git update-ref refs/heads/<branch>
-# <oid>`, which moves the branch outright in one command. Discovery's mutability
-# hands that actor nothing they did not already have.
+# HEAD is a ref write. #780 covers ZERO-old force/delete of protected names;
+# creation-at-unreachable-content remains #781.
 
 _PROT_LIST=${PROTECTED_SET# }
 
@@ -869,6 +898,16 @@ Check the spelling against:
         exit 0
     fi
     if [ "$DECLARED" = "1" ]; then
+        exit 0
+    fi
+    if [ -n "$ZERO_OLD_OPS" ] && [ -z "$KIND" ]; then
+        block_emit "BLOCKED: this command force-updates or deletes a branch ref (issue #780), and the gate cannot identify a protected branch in ${REPO_DIR:-.} — none of main, master, trunk, develop, development or default exists locally, no remote publishes a HEAD, and init.defaultBranch names nothing that exists. It therefore cannot tell whether the target is protected.
+
+Say which branches are protected, one per line, in their own terminal:
+  echo release > $Q_STATE/ref-ff-protected.local
+
+If this repository genuinely has no protected branch, say THAT — an empty file is the deliberate statement, and the gate then stays out of the way:
+  : > $Q_STATE/ref-ff-protected.local"
         exit 0
     fi
     block_emit "BLOCKED: this command runs a git merge/pull, and the gate cannot identify a protected branch in ${REPO_DIR:-.} — none of main, master, trunk, develop, development or default exists locally, no remote publishes a HEAD, and init.defaultBranch names nothing that exists. It therefore cannot tell whether this would fast-forward a protected ref, which creates no commit object and so passes every other review gate unseen (issue #779).
@@ -951,8 +990,39 @@ Run the parts as SEPARATE calls, so the gate sees the target at its final value:
     exit 0
 fi
 
+# #780 ZERO-old-oid
+if [ -n "$ZERO_OLD_OPS" ]; then
+    for _zo_pair in $ZERO_OLD_OPS; do
+        _zo_kind="${_zo_pair%%:*}"
+        _zo_name="${_zo_pair#*:}"
+        if [ -z "$_zo_name" ]; then
+            block_emit "BLOCKED: a force-update or delete of a protected branch cannot be resolved statically (issue #780)."
+            exit 0
+        fi
+        case " $PROTECTED_SET " in *" $_zo_name "*) ;; *) continue ;; esac
+        if [ "$_zo_kind" = "delete" ]; then
+            block_emit "BLOCKED: this would DELETE the protected branch '$_zo_name' (issue #780)."
+            exit 0
+        fi
+        _zo_rc=0
+        git_real rev-parse --verify --quiet "refs/heads/$_zo_name" >/dev/null 2>&1 || _zo_rc=$?
+        if [ "$_zo_rc" -eq 0 ]; then
+            block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
+            exit 0
+        fi
+        if [ "$_zo_rc" -ne 1 ]; then
+            block_emit "BLOCKED: cannot determine whether '$_zo_name' exists (issue #780)."
+            exit 0
+        fi
+    done
+fi
+
 # Detached HEAD moves no branch ref; a merge onto any OTHER branch is ordinary
 # feature work that the commit/PR gates already cover on its way to main.
+# #780 shapes handled above; exit when this command has no merge/pull.
+if [ -z "$KIND" ]; then
+    exit 0
+fi
 CURRENT=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || CURRENT=""
 [ -z "$CURRENT" ] && exit 0
 case " $PROTECTED_SET " in *" $CURRENT "*) ;; *) exit 0 ;; esac

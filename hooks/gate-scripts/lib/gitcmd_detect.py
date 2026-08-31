@@ -3917,6 +3917,719 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     return r + (_count_ref_ops(chunks), _has_companion_command(chunks), aliases)
 
 
+# ── #780 ZERO-old-oid shapes ──
+
+def _branch_short_from_ref(ref):
+    if not isinstance(ref, str) or not ref:
+        return ""
+    if _may_be_substitution(ref) or _word_may_split(ref, ref):
+        return ""
+    if ref.startswith("refs/heads/"):
+        return ref[len("refs/heads/"):]
+    if ref.startswith("refs/"):
+        return ""
+    return ref
+
+def _branch_name_from_porcelain(name):
+    if not isinstance(name, str) or not name:
+        return ""
+    if "@" in name or _may_be_substitution(name) or _word_may_split(name, name):
+        return ""
+    return name
+_ZERO_OLD_PSEUDO_REFS = frozenset({
+    'HEAD', 'ORIG_HEAD', 'FETCH_HEAD', 'MERGE_HEAD', 'CHERRY_PICK_HEAD',
+    'REBASE_HEAD', 'REVERT_HEAD', 'AUTO_MERGE', '@'})
+def _zero_old_long_hits(tok, options):
+    if not tok.startswith("--") or "=" in tok:
+        return []
+    return [o for o in options if o.startswith(tok)]
+def _zero_old_ops_from_argv(argv):
+    sub, sub_idx = _git_subcommand(argv)
+    if sub is None:
+        return
+    rest = argv[sub_idx + 1:]
+    if sub == "branch":
+        force = False
+        delete = False
+        move = False
+        copy = False
+        end_opts = False
+        names = []
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if not end_opts and a == "--":
+                end_opts = True
+                i += 1
+                continue
+            if not end_opts and a.startswith("-") and a != "-":
+                if _may_be_substitution(a) or _word_may_split(a, a):
+                    yield ("force", "")
+                    return
+                is_del = a in ("-D", "-d", "--delete") or len(_zero_old_long_hits(a, ("--delete",))) == 1
+                is_force = a in ("-f", "--force")
+                if not is_force and a.startswith("--"):
+                    is_force = len(_zero_old_long_hits(a, ("--force",))) == 1
+                is_move = a in ("-M", "-m", "--move")
+                is_copy = a in ("-c", "-C", "--copy")
+                if not is_move and a.startswith("--"):
+                    is_move = len(_zero_old_long_hits(a, ("--move",))) == 1
+                if not is_copy and a.startswith("--"):
+                    is_copy = len(_zero_old_long_hits(a, ("--copy",))) == 1
+                if a.startswith("-") and not a.startswith("--") and len(a) > 2:
+                    body = a[1:]
+                    for ch in body:
+                        if ch == "u":
+                            break
+                        if ch in "Dd":
+                            is_del = True
+                        elif ch == "f":
+                            is_force = True
+                        elif ch in "Mm":
+                            is_move = is_force = True
+                        elif ch in "Cc":
+                            is_copy = is_force = True
+                if is_del:
+                    delete = True
+                if is_force:
+                    force = True
+                if is_move:
+                    move = True
+                if is_copy:
+                    copy = True
+                if a in ("-t", "--track"):
+                    i += 1
+                    continue
+                if a in ("--column", "--no-column") or (
+                        a.startswith("--") and "=" not in a
+                        and len(_zero_old_long_hits(a, ("--column", "--no-column"))) == 1):
+                    i += 1
+                    continue
+                _branch_value_long = (
+                    "--set-upstream-to", "--unset-upstream",
+                    "--contains", "--no-contains", "--points-at",
+                    "--merged", "--no-merged", "--sort", "--format",
+                    "--edit-description")
+                _cluster_u = (a.startswith("-") and not a.startswith("--")
+                               and len(a) > 1 and "u" in a[1:])
+                if a in ("-u",) or _cluster_u or (
+                        a.startswith("--") and (
+                            a.split("=", 1)[0] in _branch_value_long
+                            or len(_zero_old_long_hits(
+                                a.split("=", 1)[0], _branch_value_long)) == 1)):
+                    if _cluster_u:
+                        _ub = a[1:]
+                        if _ub[_ub.index("u") + 1:]:
+                            i += 1
+                            continue
+                    if "=" not in a and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if (a.startswith("--")
+                        and not (is_force or is_move or is_copy or is_del)
+                        and (force or move or copy or delete)):
+                    yield ("force", "")
+                    return
+                i += 1
+                continue
+            if _may_be_substitution(a) or _word_may_split(a, a):
+                yield ("force", "")
+                return
+            names.append(a)
+            i += 1
+        if delete:
+            if not names:
+                yield ("delete", "")
+                return
+            for n in names:
+                yield ("delete", _branch_name_from_porcelain(n) or "")
+            return
+        if force or move or copy:
+            if not names:
+                yield ("force", "")
+                return
+            if move or copy:
+                yield ("force", _branch_name_from_porcelain(names[-1]) or "")
+                if copy and not move:
+                    return
+                if len(names) >= 2:
+                    yield ("force", _branch_name_from_porcelain(names[0]) or "")
+                else:
+                    yield ("delete", "HEAD", False)
+            else:
+                yield ("force", _branch_name_from_porcelain(names[0]) or "")
+            return
+        return
+    if sub in ("checkout", "switch"):
+        force_create = False
+        force_branch = None
+        end_opts = False
+        names = []
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if not end_opts and a == "--":
+                end_opts = True
+                i += 1
+                continue
+            if not end_opts and a.startswith("-") and a != "-":
+                if _may_be_substitution(a) or _word_may_split(a, a):
+                    yield ("force", "")
+                    return
+                if a.startswith("--conflict="):
+                    i += 1
+                    continue
+                if (a in ("--conflict", "--orphan", "--track", "-t")
+                        or len(_zero_old_long_hits(a, ("--conflict", "--orphan"))) == 1):
+                    if "=" not in a and i + 1 < len(rest):
+                        nxt = rest[i + 1]
+                        if (a in ("--track", "-t", "--orphan")
+                                or len(_zero_old_long_hits(a, ("--orphan",))) == 1):
+                            if not nxt.startswith("-"):
+                                i += 2
+                                continue
+                        else:
+                            i += 2
+                            continue
+                    i += 1
+                    continue
+                if a in ("-B", "-C"):
+                    force_create = True
+                    if i + 1 < len(rest):
+                        force_branch = rest[i + 1]
+                        names.append(rest[i + 1])
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if a.startswith("--") and "=" in a:
+                    opt_name, sep, opt_val = a.partition("=")
+                    if sep and opt_name != "--force" and len(_zero_old_long_hits(opt_name, ("--force-create",))) == 1:
+                        force_create = True
+                        force_branch = opt_val
+                        names.append(opt_val)
+                        i += 1
+                        continue
+                if a.startswith("--force-create="):
+                    force_create = True
+                    force_branch = a.split("=", 1)[1]
+                    names.append(force_branch)
+                    i += 1
+                    continue
+                if a.startswith("--") and "=" not in a:
+                    if a != "--force" and len(_zero_old_long_hits(a, ("--force-create",))) == 1:
+                        force_create = True
+                        if i + 1 < len(rest):
+                            force_branch = rest[i + 1]
+                            names.append(rest[i + 1])
+                            i += 2
+                            continue
+                if a.startswith("-") and not a.startswith("--") and len(a) > 2:
+                    body = a[1:]
+                    if any(ch in body for ch in "BC"):
+                        force_create = True
+                        bc_idx = next(j for j, ch in enumerate(body) if ch in "BC")
+                        attached = body[bc_idx + 1:]
+                        if attached:
+                            force_branch = attached
+                            names.append(attached)
+                        elif i + 1 < len(rest):
+                            force_branch = rest[i + 1]
+                            names.append(rest[i + 1])
+                            i += 2
+                            continue
+                        i += 1
+                        continue
+                i += 1
+                continue
+            if _may_be_substitution(a) or _word_may_split(a, a):
+                yield ("force", "")
+                return
+            names.append(a)
+            i += 1
+        if force_create:
+            branch = force_branch
+            if branch is None and names:
+                branch = names[-1]
+            if not branch:
+                yield ("force", "")
+            else:
+                yield ("force", _branch_name_from_porcelain(branch) or "")
+        return
+    if sub == "update-ref":
+        delete = False
+        no_deref = False
+        end_opts = False
+        ops = []
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if not end_opts and a == "--":
+                end_opts = True
+                i += 1
+                continue
+            if not end_opts and a.startswith("-") and a != "-":
+                if _may_be_substitution(a) or _word_may_split(a, a):
+                    yield ("force", "")
+                    return
+                if a in ("--no-deref",) or (
+                        a.startswith("--") and len(_zero_old_long_hits(a, ("--no-deref",))) == 1):
+                    no_deref = True
+                if a in ("--deref",) or (
+                        a.startswith("--") and len(_zero_old_long_hits(a, ("--deref",))) == 1):
+                    no_deref = False  # last-option-wins, same as git
+                if a in ("-d", "--delete") or len(_zero_old_long_hits(a, ("--delete",))) == 1:
+                    delete = True
+                elif a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" not in a[1:] and "d" in a[1:]:
+                    delete = True
+                if a in ("-m", "--message") and "=" not in a and i + 1 < len(rest):
+                    i += 2
+                    continue
+                if a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" in a[1:]:
+                    body = a[1:]; m_idx = body.index("m")
+                    if "d" in body[:m_idx]: delete = True
+                    i += 1 if body[m_idx + 1:] else (2 if i + 1 < len(rest) else 1)
+                    continue
+                i += 1
+                continue
+            if a.startswith('#'):
+                break
+            if _REDIR_RE.match(a):
+                i += _redirection_span(a, rest, i)
+                continue
+            if (not a) or _may_be_substitution(a) or _word_may_split(a, a):
+                yield ("force", "")
+                return
+            ops.append(a)
+            i += 1
+        if not ops:
+            yield ("force", "")
+            return
+        ref_operand = ops[0]
+        if (isinstance(ref_operand, str) and (
+                ref_operand in _ZERO_OLD_PSEUDO_REFS
+                or ref_operand.upper() == "HEAD"
+                or "@" in ref_operand)):
+            yield ("force", "")
+            return
+        if isinstance(ref_operand, str) and not ref_operand.startswith("refs/"):
+            yield ("force", "")
+            return
+        if (no_deref and isinstance(ref_operand, str) and ref_operand.startswith("refs/")
+                and not ref_operand.startswith("refs/heads/")):
+            return
+        if delete:
+            yield ("delete", ref_operand, no_deref)
+            return
+        if len(ops) >= 3:
+            new_oid, old_oid = ops[1], ops[2]
+            if (isinstance(new_oid, str) and len(new_oid) >= 40
+                    and set(new_oid) <= set('0')):
+                yield ("delete", ref_operand, no_deref)
+            elif (isinstance(old_oid, str) and len(old_oid) >= 40
+                    and set(old_oid) <= set('0')):
+                yield ("force", ref_operand, no_deref)
+            return
+        yield ("force", ref_operand, no_deref)
+        return
+    if sub == "symbolic-ref":
+        delete = False
+        end_opts = False
+        ops = []
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if not end_opts and a == "--":
+                end_opts = True
+                i += 1
+                continue
+            if not end_opts and a.startswith("-") and a != "-":
+                if _may_be_substitution(a) or _word_may_split(a, a):
+                    yield ("force", "")
+                    return
+                if a in ("-d", "--delete") or len(_zero_old_long_hits(a, ("--delete",))) == 1:
+                    delete = True
+                elif (a.startswith("-") and not a.startswith("--") and len(a) > 2
+                        and "d" in a[1:] and "m" not in a[1:]):
+                    delete = True
+                if a in ("-m", "--message") and "=" not in a and i + 1 < len(rest):
+                    i += 2
+                    continue
+                if a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" in a[1:]:
+                    body = a[1:]
+                    m_idx = body.index("m")
+                    if "d" in body[:m_idx]:
+                        delete = True
+                    if body[m_idx + 1:]:
+                        i += 1
+                        continue
+                    if i + 1 < len(rest):
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                i += 1
+                continue
+            if _may_be_substitution(a) or _word_may_split(a, a) or not a:
+                yield ("force", "")
+                return
+            ops.append(a)
+            i += 1
+        if not ops:
+            yield ("force", ""); return
+        ref_operand = ops[0]
+        if delete or len(ops) >= 2:
+            kind = "delete" if delete else "force"
+            if ref_operand in _ZERO_OLD_PSEUDO_REFS or ref_operand.upper() == "HEAD":
+                yield (kind, "")
+            else:
+                yield (kind, ref_operand if ref_operand.startswith("refs/") else "refs/heads/" + ref_operand, False)
+        return
+def _git_dashed_subcommand(exe):
+    if not isinstance(exe, str):
+        return None
+    base = exe.rsplit('/', 1)[-1]
+    if not base.startswith('git-') or base == 'git':
+        return None
+    sub = base[4:]
+    return sub if sub else None
+def _git_dashed_to_argv(argv):
+    if not argv:
+        return argv
+    sub = _git_dashed_subcommand(argv[0])
+    if sub is None:
+        return argv
+    return ['git', sub] + argv[1:]
+_ZERO_OLD_SUBS = frozenset({'branch', 'checkout', 'switch', 'update-ref', 'symbolic-ref'})
+def _zero_old_git_argv(seg):
+    argv, raw_argv = _command_argv(seg, 'git', with_raw=True, wrapper_operands=True)
+    argv = _git_dashed_to_argv(argv)
+    if argv and _is_exe(argv[0], 'git'):
+        return argv, raw_argv
+    toks = toks_once(seg)
+    last_i = last_sub = None
+    for i, tok in enumerate(toks):
+        sub = _git_dashed_subcommand(tok)
+        if sub is not None:
+            last_i, last_sub = i, sub
+    if last_i is None:
+        return None, None
+    return ['git', last_sub] + list(toks[last_i + 1:]), toks
+def _zero_old_git_env():
+    return {k: v for k, v in os.environ.items()
+            if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+                         'GIT_NAMESPACE', 'GIT_INDEX_FILE')}
+def _zero_old_ref_path(ref_operand):
+    if not isinstance(ref_operand, str) or not ref_operand:
+        return ''
+    if ref_operand.startswith('refs/'):
+        return ref_operand
+    if ref_operand in _ZERO_OLD_PSEUDO_REFS or ref_operand.upper() == 'HEAD':
+        return ref_operand
+    return 'refs/heads/' + ref_operand
+_ZERO_OLD_MAX_DEREF_OPS = 32; _ZERO_OLD_MAX_SYMREF_CHAIN = 16
+def _zero_old_symref_map(repo_dir):
+    import subprocess
+    try:
+        r = subprocess.run(
+            ['git', '-C', repo_dir, 'for-each-ref',
+             '--format=%(refname)\t%(symref)', 'refs/'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=_zero_old_git_env(), text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0 or r.stdout is None or len(r.stdout) > 256 * 1024:
+        return None
+    sym = {}
+    for line in r.stdout.split('\n'):
+        if line == '':
+            continue
+        if '\t' not in line:
+            return None
+        ref, target = line.split('\t', 1)
+        if not ref:
+            return None
+        if target:
+            sym[ref] = target
+    roots = {t for t in sym.values()
+             if t and not t.startswith('refs/') and '/' not in t}
+    for pref in _ZERO_OLD_PSEUDO_REFS:
+        if pref != '@':
+            roots.add(pref)
+    import time
+    dl = time.monotonic() + 2.0
+    for pref in roots:
+        rem = dl - time.monotonic()
+        if rem <= 0: return None
+        try:
+            hr = subprocess.run(
+                ['git', '-C', repo_dir, 'symbolic-ref', '-q', pref],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=_zero_old_git_env(), text=True, timeout=max(0.05, rem))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if hr.returncode == 0 and hr.stdout:
+            tgt = hr.stdout.split('\n', 1)[0]
+            if tgt:
+                sym[pref] = tgt
+                if pref == 'HEAD': sym['@'] = tgt
+        elif hr.returncode not in (0, 1):
+            return None
+    return sym
+def _zero_old_resolve_symref(ref, symref_map):
+    seen = set()
+    current = ref
+    while current in symref_map:
+        if current in seen or len(seen) >= _ZERO_OLD_MAX_SYMREF_CHAIN:
+            return ""
+        seen.add(current)
+        current = symref_map[current]
+        if not current:
+            return ""
+    return current
+def zero_old_ref_effective_short(ref_operand, no_deref=False, symref_map=None):
+    if no_deref:
+        return _branch_short_from_ref(ref_operand) or ""
+    if not isinstance(ref_operand, str) or not ref_operand:
+        return ""
+    if symref_map is None:
+        return ""
+    if ref_operand in ("HEAD", "@") or ref_operand.upper() == "HEAD":
+        ref = "HEAD"
+    else:
+        ref = _zero_old_ref_path(ref_operand)
+        if not ref:
+            return ""
+    current = _zero_old_resolve_symref(ref, symref_map)
+    if not current:
+        return ""
+    short = _branch_short_from_ref(current)
+    if short == "" and current.startswith("refs/heads/"):
+        return ""
+    return short or ""
+def _zero_old_needs_deref(item):
+    if len(item) == 3:
+        return not item[2]
+    if len(item) == 2 and item[0] == 'force':
+        return True
+    return False
+def _zero_old_non_heads_ref(ref_operand):
+    return (isinstance(ref_operand, str) and ref_operand.startswith('refs/')
+            and not ref_operand.startswith('refs/heads/'))
+def _zero_old_classify_names(kind, ref_operand, symref_map, no_deref=False):
+    original = _branch_short_from_ref(ref_operand) or ''
+    if no_deref:
+        if original:
+            return [(kind, original)]
+        return [] if _zero_old_non_heads_ref(ref_operand) else [(kind, '')]
+    if symref_map is None:
+        return [(kind, '')]
+    deref = zero_old_ref_effective_short(ref_operand, symref_map=symref_map)
+    out = []
+    if original:
+        out.append((kind, original))
+    if deref and deref != original:
+        out.append((kind, deref))
+    if out:
+        return out
+    if _zero_old_non_heads_ref(ref_operand):
+        return []
+    return [(kind, '')]
+def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
+    resolve_dir = repo_dir if repo_dir else hook_cwd
+    if resolve_dir and not os.path.isabs(resolve_dir) and hook_cwd:
+        resolve_dir = os.path.join(hook_cwd, resolve_dir)
+    deref_n = sum(1 for item in found if _zero_old_needs_deref(item))
+    if deref_n > _ZERO_OLD_MAX_DEREF_OPS:
+        out = []
+        for item in found:
+            if _zero_old_needs_deref(item):
+                out.append((item[0], ''))
+            elif len(item) == 3:
+                out.append((item[0], _branch_short_from_ref(item[1]) or ''))
+            elif len(item) == 2 and item[0] == 'delete':
+                out.append((item[0], _branch_name_from_porcelain(item[1]) or ''))
+            else:
+                out.append(item)
+        return out
+    symref_map = None
+    if deref_n and resolve_dir:
+        symref_map = _zero_old_symref_map(resolve_dir)
+    out = []
+    for item in found:
+        if len(item) == 3:
+            kind, ref_operand, no_deref = item
+            if no_deref:
+                out.extend(_zero_old_classify_names(
+                    kind, ref_operand, None, no_deref=True))
+            elif not resolve_dir or symref_map is None:
+                out.extend(_zero_old_classify_names(
+                    kind, ref_operand, None, no_deref=False))
+            else:
+                out.extend(_zero_old_classify_names(
+                    kind, ref_operand, symref_map, no_deref=False))
+        elif len(item) == 2 and item[0] == 'force':
+            kind, ref_operand = item
+            name = _branch_name_from_porcelain(ref_operand)
+            if not name:
+                out.append((kind, ''))
+                continue
+            ref_path = 'refs/heads/' + name
+            if not resolve_dir or symref_map is None:
+                out.extend(_zero_old_classify_names(
+                    kind, ref_path, None, no_deref=False))
+            else:
+                out.extend(_zero_old_classify_names(
+                    kind, ref_path, symref_map, no_deref=False))
+        elif len(item) == 2 and item[0] == 'delete':
+            out.append((item[0], _branch_name_from_porcelain(item[1]) or ''))
+        else:
+            out.append(item)
+    return out
+def _zero_old_has_risky_companion(chunks):
+    n_mut = 0
+    for chunk in chunks:
+        for _op, seg in split_segments(chunk):
+            if _record_cds(seg, []) is not None and not _seg_env_scope(seg):
+                continue
+            argv, _ = _zero_old_git_argv(seg)
+            if argv and _is_exe(argv[0], 'git'):
+                sub, _ = _git_subcommand(argv)
+                if sub in _ZERO_OLD_SUBS:
+                    n_mut += 1
+                    continue
+                return True
+            if seg.strip() and not all(_REDIR_ARTIFACT_RE.match(x) for x in toks_once(seg)):
+                return True
+    return n_mut > 1
+def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
+    chunks = _all_chunks(cmd)
+    raw_all = []
+    target_dir = ''
+    untrusted = ''
+    resolve_base = ''
+    first = True
+    prev_scope_key = None
+    for chunk in chunks:
+        allow_cd = first
+        first = False
+        pending_cd = None
+        pending_cd_op = ''
+        cds = []
+        for op, seg in split_segments(chunk):
+            cd = _record_cds(seg, cds)
+            if cd is not None:
+                pending_cd = cd
+                pending_cd_op = op
+                continue
+            argv, raw_argv = _zero_old_git_argv(seg)
+            if not argv or not _is_exe(argv[0], 'git'):
+                toks = toks_once(seg)
+                _fi = any(t in ('-f','-D','-B','-C','--force','--delete') or t.startswith('--force')
+                          or (t.startswith('-') and not t.startswith('--') and any(c in t[1:] for c in 'fDBC')) for t in toks)
+                _dyn = any(_may_be_substitution(t) or _word_may_split(t, t) for t in toks)
+                if (any(t in _ZERO_OLD_SUBS or _git_dashed_subcommand(t) in _ZERO_OLD_SUBS for t in toks)
+                        or (_dyn and (_fi or len(toks) >= 4
+                            or any(t.startswith('refs/') or t in ('HEAD', '@') for t in toks)))):
+                    raw_all.append(('force', ''))
+                continue
+            sub, sub_idx = _git_subcommand(argv)
+            scope_fail_closed = (
+                _has_unaccounted_global(argv, sub_idx)
+                or _wrapper_chdir_in_prefix(seg, argv)
+                or _seg_env_scope(seg))
+            link_op = op if op == '&&' else pending_cd_op
+            base = _trusted_cd(pending_cd, link_op) if allow_cd else ''
+            auth = _cd_authoritative(base, link_op, cds) if allow_cd else False
+            base, auth, tilde_c, nested_c = _apply_global_c(
+                argv, raw_argv, sub_idx, base, auth, allow_cd)
+            scope_untrusted = _commit_untrusted(
+                cds, allow_cd, auth, tilde_c, nested_c)
+            raw = list(_zero_old_ops_from_argv(argv))
+            if not raw and sub not in _ZERO_OLD_SUBS:
+                _forceish = any(
+                    t in ('-f', '-D', '-B', '-C', '--force', '--delete') or t.startswith('--force')
+                    or (t.startswith('-') and not t.startswith('--') and any(c in t[1:] for c in 'fDBC'))
+                    for t in argv[1:])
+                if sub and sub not in _REF_SAFE_SUBS and sub not in _REF_OP_SUBS and _forceish:
+                    raw_all.append(('force', ''))
+                elif not scope_fail_closed:
+                    continue
+            if scope_fail_closed:
+                scope_key = '-git-scope-env'
+            elif allow_cd and base:
+                if os.path.isabs(base):
+                    scope_key = base
+                elif hook_cwd:
+                    scope_key = os.path.join(hook_cwd, base)
+                else:
+                    scope_key = base
+            else:
+                scope_key = hook_cwd or ''
+            if prev_scope_key is not None and scope_key != prev_scope_key:
+                raw_all = [('force', '')]
+                untrusted = '-multi-zero-old'
+                target_dir = ''
+                resolve_base = ''
+                break
+            prev_scope_key = scope_key
+            if (scope_fail_closed or scope_untrusted or not allow_cd
+                    or (pending_cd and not auth)):
+                raw_all.append(('force', ''))
+            else:
+                raw_all.extend(raw)
+                if allow_cd and base:
+                    resolve_base = base
+            if allow_cd:
+                target_dir = base
+                if scope_fail_closed:
+                    untrusted = '-git-scope-env'
+                elif scope_untrusted:
+                    untrusted = scope_untrusted
+                elif not auth and pending_cd:
+                    untrusted = _untrusted_cd(([pending_cd] if pending_cd else []) + cds)
+                else:
+                    untrusted = ''
+            else:
+                target_dir = ''
+                untrusted = _untrusted_cd(cds + _nested_cds(chunks))
+                if scope_fail_closed and not untrusted:
+                    untrusted = '-git-scope-env'
+        else:
+            continue
+        break
+    if not raw_all:
+        if with_untrusted_cd:
+            return [], target_dir, untrusted
+        return []
+    if _zero_old_has_risky_companion(chunks):
+        raw_all = list(raw_all) + [('force', '')]
+    ops = _finalize_zero_old_ops(raw_all, resolve_base, hook_cwd)
+    if with_untrusted_cd:
+        return ops, target_dir, untrusted
+    return ops
+def zero_old_ref_exists(repo_dir, short_name):
+    import subprocess
+    if not short_name or not isinstance(short_name, str):
+        return None
+    ref = short_name if short_name.startswith('refs/') else 'refs/heads/' + short_name
+    try:
+        r = subprocess.run(
+            ['git', '-C', repo_dir, 'rev-parse', '--verify', '--quiet', ref],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=_zero_old_git_env(),
+            check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1:
+        return False
+    return None
+
+
 def _gh_find_pr_sub(rest, subcommand):
     """Index in `rest` (argv after `gh`) of the `pr` token immediately followed by
     `subcommand`, reached past gh global flags and their values, or None. Split out

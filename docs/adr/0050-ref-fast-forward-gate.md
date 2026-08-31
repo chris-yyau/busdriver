@@ -177,10 +177,18 @@ this gate existed, and none of them weakens a case the gate does block.**
 
 ### Out of scope by decision
 
-Non-FF merges and `merge -s ours` laundering (#622, #782); force-updates,
-`update-ref`, `branch -f`, `checkout -B` (#780); ref creation (#781);
-`rebase` / `am` (#783). `--squash` is allowed — it moves no ref, and
-`pre-commit-gate.sh` owns the `git commit` that follows.
+Non-FF merges and `merge -s ours` laundering (#622, #782); ref creation at
+unreachable content (#781); `rebase` / `am` (#783). `--squash` is allowed — it
+moves no ref, and `pre-commit-gate.sh` owns the `git commit` that follows.
+
+**#780 (ZERO-old-oid force-update / delete)** is closed in this same PreToolUse
+gate: `branch -f`, `checkout -B` / `switch -C`, `update-ref` without `<oldvalue>`,
+and deletes of a protected name. Create vs force-update uses the githooks(5)
+discriminator — pre-command `git rev-parse --verify` (identical to prepared-time
+inspection inside `reference-transaction`). Deletes abort so delete-then-recreate
+cannot re-mint a protected name. Migrating that check into a native
+`reference-transaction` hook remains the #622-installer follow-up; the
+discriminator does not change.
 
 ## Alternatives considered
 
@@ -189,8 +197,8 @@ Non-FF merges and `merge -s ours` laundering (#622, #782); force-updates,
 - **`git ls-remote` to verify provenance** — a network round-trip inside a 10s
   PreToolUse budget, and it blocks every offline merge. Worse than the residual
   it closes.
-- **Gate the ref-writing commands too** — that is #780/#781, explicitly out of
-  scope for this change.
+- **Gate the ref-writing commands too** — #780 (ZERO-old force/delete) is now
+  closed in this same PreToolUse gate; unreachable creates remain #781.
 - **Persist discovered protected branches in a gate-owned file** — a fifth state
   file and a new write path, to close a hypothetical in repositories that do not
   exist yet. The empty-set block closes the same lever with no new state.

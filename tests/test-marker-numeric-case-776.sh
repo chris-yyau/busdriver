@@ -322,9 +322,12 @@ fi
 # `_split_with_ops` splits on `(`, so an ARRAY ASSIGNMENT `A=(case x)` leaves the bare word
 # `case` at a segment lead while it is only an array element -- not command position. The
 # header it wrongly opened was then closed into a pattern list by any later segment merely
-# containing `in`, and real executing stages were dropped from the producer text. Two
-# independent guards now close it: the array-assignment `(` is not command position, and an
-# unterminated header no longer survives a segment that is not the `in`.
+# containing `in`, and real executing stages were dropped from the producer text.
+#
+# What these VERDICT rows actually prove is narrower than it looks, so it is worth being
+# exact: since the `in` must now LEAD its segment, `echo in` cannot complete a header at
+# all, and these commands would still block even if the array-assignment guard regressed.
+# They pin the outcome; the state-level assertion below is what pins the guard itself.
 for _spoof_case in "case x" "case"; do
   ARR=$(python3 -c '
 import sys
@@ -984,6 +987,43 @@ if [[ "$SUBST_OUT" == "CLEAN" ]]; then
   ok "#776 substitution introducer survives a line continuation before its ("
 else
   no "#776 substitution introducer survives a line continuation before its (" "$SUBST_OUT"
+fi
+
+# --- The array-assignment guard, asserted directly.
+# The verdict rows above cannot isolate it (see the note there), so it is checked at the
+# walk: an ATTACHED `(` after `NAME=` is an array assignment and not command position,
+# while a `(` reached through a separator is a genuine subshell and is.
+ARRGUARD=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import importlib.util, io, json, sys
+
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "true"}}))
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+
+bad = []
+# `A=(case x)` -- array element, NOT command position.
+if mc._case_lead_is_command_position([("", "A="), ("(", "case x")], 1):
+    bad.append("array assignment treated as command position")
+# `A=;(case x …)` -- the `(` is a real subshell, so it IS command position.
+if not mc._case_lead_is_command_position([("", "A="), (";(", "case x")], 1):
+    bad.append("subshell after an empty assignment rejected")
+# A bare subshell with nothing before it is command position too.
+if not mc._case_lead_is_command_position([("", ""), ("(", "case x")], 1):
+    bad.append("plain subshell rejected")
+print("CLEAN" if not bad else "BAD %r" % (bad,))
+PYEOF
+)
+if [[ "$ARRGUARD" == "CLEAN" ]]; then
+  ok "#776 array-assignment ( is not command position (guard asserted directly)"
+else
+  no "#776 array-assignment ( is not command position" "$ARRGUARD"
 fi
 
 echo ""

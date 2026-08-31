@@ -1,3 +1,10 @@
+## [2.1.8](https://github.com/chris-yyau/busdriver/compare/v2.1.7...v2.1.8) (2026-08-31)
+
+
+### Bug Fixes
+
+* **gate:** fail closed on an unresolved command word in both gate layers ([#553](https://github.com/chris-yyau/busdriver/issues/553)) ([#805](https://github.com/chris-yyau/busdriver/issues/805)) ([3381499](https://github.com/chris-yyau/busdriver/commit/33814991cd6bac023d7544e2465c0cce601397c2))
+
 ## [2.1.7](https://github.com/chris-yyau/busdriver/compare/v2.1.6...v2.1.7) (2026-08-31)
 
 

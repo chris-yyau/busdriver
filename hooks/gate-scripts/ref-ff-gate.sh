@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse hook: gate a FAST-FORWARD of the protected branch (issue #779)
+# PreToolUse hook: gate a FAST-FORWARD of the protected branch (issue #779),
+# and its CREATION at unreviewed content (issue #781)
 #
 # THE BYPASS. `git pull --ff-only`, and any `git merge` that resolves to a
 # fast-forward (including `--no-commit`), move the protected branch to commits
@@ -35,13 +36,22 @@
 #   automated fast-forward-to-unreviewed flow (work lands via `gh pr merge`), so
 #   an automatic minter would be machinery with no caller.
 #
-# SCOPE — deliberately only the fast-forward class:
+# SCOPE — the fast-forward class, and the creation class beside it:
 #   IN   `git merge <ref>` that fast-forwards HEAD (`--ff-only`, `--no-commit`,
 #        the default `--ff`), and `git pull` on the protected branch.
+#   IN   CREATING a protected branch that does not exist, at content no existing
+#        protected branch already carries (#781) — whatever spelling reaches it,
+#        because the gate matches the NAME as a command word rather than parsing
+#        six creation grammars. Its authorization is a `PASS-CREATE` line in the
+#        same marker file, spent on the one shape `git branch <name> <oid>`; see
+#        the creation_check block below for the rule and what it costs. The
+#        INITIAL COMMIT — the other shape #781 names — is `git commit`, which
+#        pre-commit-gate.sh already blocks (measured), so it is observed at this
+#        layer and this gate stays out of its way.
 #   OUT  a merge that produces a COMMIT (`--no-ff`, a real three-way merge, and
 #        `merge -s ours` laundering) — #622 / #782; `--squash`, whose `git commit`
-#        pre-commit-gate already owns; force-updates and `update-ref`/`branch -f`
-#        — #780; ref CREATION — #781; `rebase` / `am` — #783.
+#        pre-commit-gate already owns; force-updates of a branch that EXISTS,
+#        `update-ref`/`branch -f` — #780; `rebase` / `am` — #783.
 #   ALIASES are handled, not conceded: one defined on the COMMAND LINE (`-c
 #   alias.m=merge`, or indirectly via `-c include.path=…`) makes the operation
 #   unresolvable, and one defined in a config FILE is resolved here against
@@ -408,8 +418,8 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
-    from gitcmd_detect import (git_ref_op, REF_OP_UNRESOLVABLE,
-                               REF_OP_FF_PREFIX)
+    from gitcmd_detect import (git_ref_op, git_ref_create,
+                               REF_OP_UNRESOLVABLE, REF_OP_FF_PREFIX)
     d = json.load(sys.stdin)
     def noop():
         # kind, target_dir, cwd, untrusted_cd, then a REAL operand count.
@@ -421,6 +431,12 @@ try:
         print('0')
         print(0)
         print('0')
+        print('')
+        print('')
+        print('')
+        print('')
+        print('')
+        print('')
         print('')
         print('')
     tool = d.get('tool_name', d.get('toolName', ''))
@@ -462,8 +478,23 @@ try:
     print('1' if ref_writer else '0')
     print(' '.join(aliases))
     print(ff_mode)
+    # #781. Read from the SAME parse, so the creation check can never disagree
+    # with the merge/pull one about what the command says, and so the gate pays
+    # one interpreter start rather than two on every git command it now sees.
+    c_name, c_oid, c_toks, c_opts, c_stdin, c_exe = git_ref_create(cmd)
+    if any(chr(10) in v or chr(13) in v
+           for v in [c_name, c_oid] + c_toks + c_opts):
+        raise ValueError('newline in an emitted creation field')
+    print(c_name)
+    print(c_oid)
+    # SPACE-JOINED, which is safe precisely because git_ref_create drops every
+    # word containing whitespace: a ref name cannot hold any.
+    print(' '.join(c_toks))
+    print(' '.join(c_opts))
+    print('1' if c_stdin else '0')
+    print('1' if c_exe else '0')
 except Exception:
-    for _ in range(12):
+    for _ in range(18):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -479,6 +510,12 @@ NOPERATIONS=$(echo "$PARSE_RESULT" | sed -n '9p')
 REF_WRITER=$(echo "$PARSE_RESULT" | sed -n '10p')
 ALIAS_CANDIDATES=$(echo "$PARSE_RESULT" | sed -n '11p')
 FF_MODE=$(echo "$PARSE_RESULT" | sed -n '12p')
+CREATE_NAME=$(echo "$PARSE_RESULT" | sed -n '13p')
+CREATE_OID=$(echo "$PARSE_RESULT" | sed -n '14p')
+CREATE_TOKS=$(echo "$PARSE_RESULT" | sed -n '15p')
+CREATE_OPTS=$(echo "$PARSE_RESULT" | sed -n '16p')
+CREATE_STDIN=$(echo "$PARSE_RESULT" | sed -n '17p')
+CREATE_GITEXE=$(echo "$PARSE_RESULT" | sed -n '18p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -564,7 +601,20 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
         UNKNOWN_CANDIDATES="$UNKNOWN_CANDIDATES $_cand"
     done
 fi
-if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then
+# ALIAS_CANDIDATES, not UNKNOWN_CANDIDATES (which is the subset of it that
+# resolves to nothing). The #781 shapes are ORDINARY git commands -- `git branch
+# main <oid>`, `git checkout -b master <oid>`, `git update-ref refs/heads/develop
+# <oid>` -- so KIND is empty and every word resolves; both tests above were empty
+# for them and the gate exited before it ever learned which names are protected.
+# ALIAS_CANDIDATES holds every subcommand outside the read-only set, which is
+# the class the creation check below scans. A command of only read-only
+# subcommands (`git log main`) still exits here, unexamined and free.
+IS_REFOP=0
+if [ -n "$KIND" ] || [ -n "$UNKNOWN_CANDIDATES" ]; then
+    IS_REFOP=1
+fi
+if [ "$IS_REFOP" = "0" ] && [ -z "$ALIAS_CANDIDATES" ] \
+   && [ "$CREATE_GITEXE" != "1" ]; then
     exit 0
 fi
 
@@ -682,6 +732,13 @@ fi
 # conventional names are therefore always in the set when they exist locally, so
 # re-pointing origin/HEAD can only ADD to what is protected, never remove.
 PROTECTED_SET=""
+# The same names WITHOUT the existence filter below. A branch that does not
+# exist cannot be fast-forwarded, so the merge/pull arms have no use for it --
+# but it is exactly what a CREATION lands on (#781), and filtering it out is why
+# `git branch master <unreviewed>` in a repo that has only `main` was invisible
+# to this gate. Discovery and declaration both feed it, so the two sets can
+# never drift apart.
+PROTECTED_NAMES=""
 _CANDIDATES=""
 # Discovery spawns one `git symbolic-ref` per remote, inside a 10s hook budget
 # whose expiry is NOT a block — the runner kills the process before anything can
@@ -742,6 +799,7 @@ EOF
 _INIT_DEFAULT=$(git_real config --get init.defaultBranch 2>/dev/null) || _INIT_DEFAULT=""
 for _b in $_CANDIDATES "$_INIT_DEFAULT" main master trunk develop development default; do
     [ -z "$_b" ] && continue
+    case " $PROTECTED_NAMES " in *" $_b "*) ;; *) PROTECTED_NAMES="$PROTECTED_NAMES $_b" ;; esac
     git_real show-ref --verify --quiet "refs/heads/$_b" 2>/dev/null || continue
     case " $PROTECTED_SET " in *" $_b "*) continue ;; esac
     PROTECTED_SET="$PROTECTED_SET $_b"
@@ -819,7 +877,17 @@ Untrack it and write it locally instead:
         # asked. Deferring that to the empty-set check was not enough: in a repo
         # that also has `main`, the set is non-empty and `releaze` vanished
         # silently, which is exactly the case an operator would not notice.
+        case " $PROTECTED_NAMES " in *" $_b "*) ;; *) PROTECTED_NAMES="$PROTECTED_NAMES $_b" ;; esac
+        # DEFERRED, not relaxed. A declared name that does not exist is still a
+        # typo for the merge/pull arms and still blocks them below -- but it is
+        # ALSO the precise case #781 guards (a protected ref that is not there
+        # yet, about to be created at unreviewed content), and this gate now runs
+        # on every non-read-only git command. Refusing here would have turned one
+        # mistyped line into a block on `git add`, `git commit` and every other
+        # ordinary command in the repo. The creation check reads the name; the
+        # refusal fires where it always did.
         if ! git_real show-ref --verify --quiet "refs/heads/$_b" 2>/dev/null; then
+            [ "$IS_REFOP" = "1" ] || continue
             block_emit "BLOCKED: $STATE_DIR/ref-ff-protected.local declares '$_b' as a protected branch, but no such branch exists in ${REPO_DIR:-.}. The gate will not quietly guard less than was declared — a name that resolves to nothing is a typo, not a narrower policy.
 
 Check it against:
@@ -860,7 +928,12 @@ _PROT_LIST=${PROTECTED_SET# }
 # or comments only) says "this repository has no protected branch" deliberately.
 # Absence of the file is not that statement — it is the gate having nothing to go
 # on, which is the failure case, not the happy path.
-if [ -z "$PROTECTED_SET" ]; then
+# Merge/pull only. An empty set means no protected branch EXISTS, which for a
+# fast-forward is the failure case -- but for a creation it is ordinary: a fresh
+# `git init` has no branches at all, and routing `git add` through this refusal
+# would block every command in such a repo. The creation check runs on
+# PROTECTED_NAMES, which the conventional names keep non-empty regardless.
+if [ -z "$PROTECTED_SET" ] && [ "$IS_REFOP" = "1" ]; then
     if [ "$DECLARED" = "1" ] && [ "$DECL_LISTED" -gt 0 ]; then
         block_emit "BLOCKED: $STATE_DIR/ref-ff-protected.local names $DECL_LISTED branch(es), but none of them exists in ${REPO_DIR:-.} — so the gate is guarding nothing while the file says otherwise, which is what a typo looks like. A file that names NO branch is the deliberate 'this repository has none'; a file that names branches which do not exist is not.
 
@@ -941,6 +1014,330 @@ if [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
 fi
 
 
+# The marker file both routes spend, hoisted above the creation check that now
+# also reads it. One file, one forge guard, one audit path; the two verbs inside
+# it (PASS-FF and PASS-CREATE) authorize different operations and are compared
+# whole, so neither is spendable on the other.
+MARKER_REL="$STATE_DIR/ref-ff-authorized.local"
+MARKER="$REPO_DIR/$MARKER_REL"
+
+# ── #781: CREATING a protected ref at content nothing reviewed ────────
+#
+# THE BYPASS. A ref that does not exist yet cannot be fast-forwarded, so the
+# arms below never look at it -- and creating it lands arbitrary content on a
+# protected name with no commit object and no marker anywhere. Two shapes,
+# both measured on this branch before the fix:
+#   `git branch master <oid>` / `git checkout -b master <oid>` / `git switch -c`
+#   / `git update-ref refs/heads/master <oid>` in a repo that has only `main`,
+#   where <oid> came from `git commit-tree` and is reachable from nothing;
+#   and the same commands re-creating `main` itself in a checkout that does not
+#   have it (a single-branch clone, or after the branch was deleted).
+# The initial commit -- the other shape issue #781 names -- is NOT in this list:
+# it is `git commit`, which pre-commit-gate.sh already blocks (measured), so at
+# this layer it is observed. It needs the rule only at the reference-transaction
+# layer that arrives with #622, and ADR 0050 records why that layer is not built
+# here.
+#
+# THE RULE, from #781: there is no pre-image to compare a creation against, so
+# the only meaningful test is whether the content is ALREADY reachable from an
+# existing protected branch. If it is, the creation is inert and is allowed with
+# no ceremony -- which is what keeps `git checkout -b develop` off `main`
+# ordinary. If it is not, it is landing new content on a protected name and must
+# be authorized or refused. A blanket "creation is inert" rule admits both shapes
+# above, which is why the reachability condition is load-bearing rather than
+# incidental.
+#
+# WHY THE WHOLE COMMAND IS SCANNED rather than the creating operand parsed:
+# `branch`, `checkout -b/-B`, `switch -c/-C`, `update-ref`, `worktree add -b`
+# and DWIM `checkout <name>` are six grammars, and reading "the name being
+# created" out of any of them mis-parses toward ALLOW -- one separate-value
+# option this parser does not know shifts the operand and the gate checks the
+# wrong word. Matching every TOKEN over-approximates toward BLOCK instead, since
+# whichever operand carries the name is one of the command tokens either way.
+# Same move, and the same reason, as _has_companion_command.
+#
+# WHAT IT COSTS, stated rather than left to be found: a bare word equal to a
+# protected-but-absent name blocks whatever it actually meant -- `git commit -m
+# develop` on a feature branch, `git fetch origin master` where master is not
+# local. Quoting does not help (the parser sees tokens, not quotes), but a
+# multi-word message is one token and never matches. That is one re-typed
+# command, the same cost the alias and companion rules already accept, and it is
+# paid only for the six conventional names plus whatever the operator declared.
+creation_check() {
+    # A git builtin reached as its own EXECUTABLE names no `git <sub>` pair, so
+    # it reports no alias candidate; the flag is what keeps it in scope.
+    [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] && return 0
+    # A declaration file that names NO branch is the operator saying this
+    # repository has no protected branch — the same statement the merge/pull arm
+    # honours below by exiting. Honour it here too, or the conventional names
+    # would keep guarding a repo whose operator explicitly said not to.
+    if [ "$DECLARED" = "1" ] && [ "$DECL_LISTED" -eq 0 ]; then
+        return 0
+    fi
+    # The names a command can CREATE: protected, and with no local ref. One that
+    # exists is a force-update -- #780 -- and deliberately not judged here.
+    local _n _absent=""
+    for _n in $PROTECTED_NAMES; do
+        case " $PROTECTED_SET " in *" $_n "*) continue ;; esac
+        _absent="$_absent $_n"
+    done
+    [ -z "$_absent" ] && return 0
+    _absent_names="$_absent"
+
+    # `git update-ref --stdin` takes its ref names from DATA -- `printf 'create
+    # refs/heads/master <oid>' | git update-ref --stdin` names the branch inside a
+    # quoted word this parser reports as one opaque token. There is nothing to
+    # match, and the companion refusal below cannot help because it runs only
+    # AFTER a match. So the shape is refused wherever a protected name could be
+    # created; a scripted batch of ref updates is not a routine command, and the
+    # named alternative costs one line each.
+    if [ "$CREATE_STDIN" = "1" ]; then
+        block_emit "BLOCKED: this command runs 'git update-ref --stdin' in ${REPO_DIR:-.}, which takes its ref names from input the gate cannot read — so it cannot tell whether one of them CREATES a protected branch ($_PROT_NAME_LIST) at content no review gate has seen (issue #781). Name each ref update on the command line instead:
+  git update-ref refs/heads/<branch> <oid>
+Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+
+    # MATCHED here, not in the parser: the parser does not know which names
+    # are protected, and a set-membership test needs no grammar.
+    local _t _matched=""
+    _matched_all=""
+    for _t in $CREATE_TOKS; do
+        case " $_absent " in
+            *" $_t "*)
+                [ -z "$_matched" ] && _matched="$_t"
+                _matched_all="$_matched_all $_t" ;;
+        esac
+    done
+    # ATTACHED to an option word, which carries no word of its own:
+    # `git checkout -bmaster <oid>`, `-Bmaster`, `switch -cmaster`, a clustered
+    # `-qbmaster` and `--create=master` all create `master`. Tested as a SUFFIX
+    # rather than against a table of which options take an attached value —
+    # over-matching here BLOCKS (`--no-main` would), which is the safe direction,
+    # and no option table can go stale.
+    local _o
+    for _o in $CREATE_OPTS; do
+        for _t in $_absent; do
+            case "$_o" in
+                *"$_t")
+                    [ -z "$_matched" ] && _matched="$_t"
+                    case " $_matched_all " in
+                        *" $_t "*) ;;
+                        *) _matched_all="$_matched_all $_t" ;;
+                    esac ;;
+            esac
+        done
+    done
+    [ -z "$_matched" ] && return 0
+
+    # Every word below costs two short git calls inside the 10s budget, whose
+    # expiry emits no decision at all -- so a command naming more ref-plausible
+    # words than this is REFUSED rather than half-examined, the same shape as the
+    # remote-listing and declaration bounds above. The bound is applied here and
+    # not in the parser, because a parser-side cap would silently drop a word
+    # from the MATCH above and read as "names nothing protected".
+    local _ntok
+    _ntok=$(printf '%s' "$CREATE_TOKS" | wc -w | tr -d ' ')
+    if [ "$_ntok" -gt 16 ]; then
+        block_emit "BLOCKED: this command names the protected branch '$_matched', which does not exist in ${REPO_DIR:-.} yet, and carries more candidate start points than the gate resolves inside its 10s budget. It cannot show that every one of them is already reachable from a protected branch, and a walk that outruns the budget is killed without emitting a decision. Run the creation on its own. Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    # A companion command makes every answer below a pre-command value: it can
+    # move HEAD, write the very oid being vouched for, or create the ref itself.
+    # Same rule, and the same reason, as the merge arm's.
+    if [ "$REF_WRITER" = "1" ]; then
+        block_emit "BLOCKED: this command runs something else ALONGSIDE a reference to '$_matched', a protected branch that does not exist in ${REPO_DIR:-.} yet. The gate reads HEAD and resolves every start point BEFORE the command runs, so a companion command can move what it checked -- or create the ref outright -- after it has already looked (issue #781).
+
+Run the parts as SEPARATE calls, so the gate sees the start point at its final value. (A leading 'cd' is fine -- it only scopes the command.)"
+        exit 0
+    fi
+
+    # INERT? Every start point the command could use -- HEAD, plus every
+    # ref-plausible word in it -- already reachable from a protected branch that
+    # EXISTS. Then whatever this creates is content those branches already carry,
+    # and no review was skipped. rev-list is one call per oid rather than one
+    # per (oid, branch) pair: it prints nothing exactly when the oid is reachable
+    # from the set.
+    local _not_refs="" _b
+    for _b in $PROTECTED_SET; do _not_refs="$_not_refs refs/heads/$_b"; done
+    local _oid _out _rc _unvouched=""
+    # <oid> -> sets _unvouched and returns 1 when the oid is NOT already carried
+    # by a protected branch. An unanswerable query blocks: "git could not decide"
+    # is not "yes".
+    _vouch() {
+        [ -z "$1" ] && return 0
+        if [ -z "$_not_refs" ]; then
+            # Nothing protected EXISTS, so nothing can vouch for anything. A
+            # single-branch clone with no local main is exactly this case, and
+            # it is the second shape #781 names.
+            _unvouched="$1"; return 1
+        fi
+        local _o2 _r2=0
+        # shellcheck disable=SC2086  # deliberate word split of the ref list
+        _o2=$(git_real rev-list --max-count=1 "$1" --not $_not_refs 2>/dev/null) || _r2=$?
+        if [ "$_r2" -ne 0 ]; then
+            block_emit "Ref gate: git could not decide whether $1 is already reachable from a protected branch in ${REPO_DIR:-.} (git rev-list exited $_r2 rather than answering), so the gate cannot tell whether creating '$_matched' would land unreviewed content. Blocking as precaution (fail-closed)."
+            exit 0
+        fi
+        [ -n "$_o2" ] && { _unvouched="$1"; return 1; }
+        return 0
+    }
+    for _t in HEAD $CREATE_TOKS; do
+        _oid=$(git_real rev-parse --verify --quiet "${_t}^{commit}" 2>/dev/null) || _oid=""
+        _vouch "$_oid" || break
+    done
+    # GIT'S DWIM START POINT, which is NOT one of the words above. `git checkout
+    # main` / `git switch main` with no local `main` creates it from
+    # refs/remotes/<remote>/main -- and a bare `main` does NOT resolve to that ref
+    # (rev-parse's DWIM list reaches refs/remotes/<name>, never
+    # refs/remotes/<remote>/<name>), so the word above resolved to nothing, was
+    # skipped, and only HEAD was vouched for. In a repo whose protected branch is
+    # `develop`, HEAD sits on reviewed content while the created `main` lands
+    # whatever the remote-tracking ref holds -- a fail-OPEN on the very shape the
+    # second half of #781 names, differing from the single-branch-clone case only
+    # in that SOME protected branch exists to vouch for HEAD.
+    # ONE listing rather than a lookup per (remote, word): remotes are
+    # repo-controlled and cost nothing to add, and the last path component is what
+    # a remote-tracking ref is named after, so a remote legally called `team/origin`
+    # still yields `main` here.
+    if [ -z "$_unvouched" ]; then
+        local _rtlist _rtref _rtoid
+        # shellcheck disable=SC2310  # head's answer is what is judged, not git's
+        _rtlist=$( { git_real for-each-ref --format='%(refname) %(objectname)' refs/remotes/ 2>/dev/null || true; } | head -c 65536 && printf X)
+        _rtlist="${_rtlist%X}"
+        if [ "${#_rtlist}" -ge 65536 ]; then
+            block_emit "BLOCKED: this command names the protected branch '$_matched', which does not exist in ${REPO_DIR:-.} yet, and the repository has more remote-tracking refs than the gate can read inside its 10s budget. Git creates such a branch from refs/remotes/<remote>/$_matched when no start point is given, so the gate cannot show what content it would land. Blocking as precaution (fail-closed)."
+            exit 0
+        fi
+        while read -r _rtref _rtoid; do
+            [ -z "$_rtref" ] && continue
+            # By the WHOLE name as a path suffix, never `${_rtref##*/}`: a
+            # protected `release/main` lives at refs/remotes/origin/release/main,
+            # whose last component is `main`, so the branch the DWIM would create
+            # was never vouched for. A suffix can also over-match
+            # (refs/remotes/origin/x/main for a name `main`), which adds oids to
+            # the set that must be reachable — the BLOCKING direction.
+            for _t in $_matched_all; do
+                case "$_rtref" in
+                    */"$_t") _vouch "$_rtoid" || break 2 ;;
+                esac
+            done
+        done <<EOF
+$_rtlist
+EOF
+    fi
+    [ -z "$_unvouched" ] && return 0
+
+    authorize_create_or_block "$_matched" "$CREATE_NAME" "$CREATE_OID" "$_unvouched"
+}
+
+# The marker route for a creation. It shares state_file, the anti-self-bypass
+# window, the forge guard, the audit append and the single-use consume with the
+# fast-forward route above; what it does NOT share is that route's --ff-only
+# requirement (there is no merge to constrain) and its core.hooksPath refusal
+# (`git branch` runs no hook -- which is also why `git branch` is the one shape
+# this route authorizes, rather than `checkout -b`, whose post-checkout hook
+# would put the landed content one step from execution).
+authorize_create_or_block() {   # <matched> <canon name> <canon oid word> <unvouched oid>
+    local matched="$1" cname="$2" cspec="$3" unvouched="$4"
+    local _q_marker _q_line _q_name
+    printf -v _q_marker '%q' "$MARKER"
+    # ONE exact shape is authorizable, and it is an ALLOWLIST -- a creation
+    # spelling this does not recognize gets no route rather than a guessed one,
+    # so a shape missed here fails CLOSED.
+    case " $_absent_names " in
+        *" $cname "*) ;;
+        *) cname="" ;;   # the shape names something else; no marker route
+    esac
+    if [ -z "$cname" ]; then
+        printf -v _q_name '%q' "$matched"
+        block_emit "BLOCKED: this would CREATE the protected branch '$matched' in ${REPO_DIR:-.} at content no review gate has seen -- $unvouched is reachable from no protected branch here. A creation makes no commit object, so nothing in the commit-oriented machinery observes it, exactly like the fast-forward in issue #779 (issue #781).
+
+Ordinary work does not need this. Either use a name that is not protected here ($_PROT_NAME_LIST), or start the branch from content a protected branch already carries -- the gate allows that with no ceremony.
+
+To land new work, open a PR and merge it (/litmus, then /pr-grind).
+
+If this exact creation is what the user wants, the gate authorizes ONE shape, so that it can bind an authorization to an object id git will not resolve again:
+  git branch $_q_name <full object id>
+Re-run it that way and the block message will print the exact line to write."
+        exit 0
+    fi
+    printf -v _q_name '%q' "$cname"
+    local oid=""
+    oid=$(git_real rev-parse --verify --quiet "${cspec}^{commit}" 2>/dev/null) || oid=""
+    if [ -z "$oid" ]; then
+        block_emit "BLOCKED: this would create the protected branch '$cname' in ${REPO_DIR:-.}, but the gate cannot resolve its start point '$cspec' to a commit, so it cannot tell what content the branch would carry (issue #781). Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    # "Resolves to itself" is an equality, not a length -- the merge arm states
+    # the reasoning at length. A symbolic word is looked up again when the
+    # command runs, so an authorization bound to it would not bind the ref move.
+    local _spec_lc _oid_lc
+    _spec_lc=$(printf '%s' "$cspec" | tr '[:upper:]' '[:lower:]')
+    _oid_lc=$(printf '%s' "$oid" | tr '[:upper:]' '[:lower:]')
+
+    local _mrc=0 _mraw="" _mcontent
+    _mraw=$(state_file read 'ref-ff-authorized.local' && printf X) || _mrc=$?
+    _mcontent="${_mraw%X}"
+    _mcontent="${_mcontent%$'\n'}"
+    if [ "$_mrc" -eq 2 ]; then
+        block_emit "BLOCKED: $MARKER_REL could not be read safely -- it is a symlink, sits behind a symlinked path component, or is not a regular file. The authorization token is honoured only as a regular file the operator wrote in place."
+        exit 0
+    fi
+    if [ "$_spec_lc" != "$_oid_lc" ]; then
+        if [ "$_mrc" -eq 0 ]; then
+            block_emit "BLOCKED: a $MARKER_REL marker is present, but this creation names '$cspec' -- a symbolic ref that git resolves again when the command runs, so the authorization could not be bound to the ref it produces. Name the object id instead, which resolves to itself:
+  git branch $_q_name $oid
+The marker must then read: PASS-CREATE refs/heads/$cname $oid"
+            exit 0
+        fi
+    fi
+    local expected="PASS-CREATE refs/heads/$cname $oid"
+    printf -v _q_line '%q' "$expected"
+    if [ "$_mrc" -eq 0 ] && [ "$_spec_lc" = "$_oid_lc" ] \
+       && ! gate_skip_file_repo_controlled "$REPO_DIR" "$MARKER_REL"; then
+        local age=999 mtime=""
+        mtime=$(stat -f %m "$MARKER" 2>/dev/null) \
+            || mtime=$(stat -c %Y "$MARKER" 2>/dev/null) \
+            || mtime=""
+        [ -n "$mtime" ] && age=$(( $(date +%s) - mtime ))
+        if [ "$age" -lt 30 ]; then
+            block_emit "BLOCKED: $MARKER_REL was created moments ago (likely self-bypass). Do NOT create $MARKER yourself. If the user wants to authorize this creation, they should create the file manually in their terminal."
+            exit 0
+        fi
+        # Whole-file compare, never a per-line grep, and never a PASS-FF line:
+        # the two verbs authorize different operations and a token minted for one
+        # must not be spendable on the other.
+        if [ "$_mcontent" = "$expected" ]; then
+            audit_ref_ff "$cname" "$oid" "marker-create"
+            if ! state_file unlink 'ref-ff-authorized.local' >/dev/null 2>&1; then
+                block_emit "BLOCKED: the authorization in $MARKER_REL matched, but the gate could not CONSUME it -- the file could not be removed (a read-only state directory, or the entry is no longer a plain file). It is single-use by design, and leaving it in place would authorize every later creation too, so the command is refused rather than run against a token that stays live. Remove the file and re-authorize."
+                exit 0
+            fi
+            exit 0
+        fi
+    fi
+    block_emit "BLOCKED: this would CREATE the protected branch '$cname' in ${REPO_DIR:-.} at $oid, which is reachable from no protected branch here -- content no review gate has seen. A creation makes no commit object, so nothing in the commit-oriented machinery observes it, exactly like the fast-forward in issue #779 (issue #781).
+
+To land new work, open a PR and merge it (/litmus, then /pr-grind). Starting the branch from content a protected branch already carries needs no authorization at all.
+
+If the user really wants this exact creation, they can authorize it in their own terminal -- one ref, one oid, single use:
+  echo $_q_line > $_q_marker
+  git branch $_q_name $oid
+Every use is recorded in ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/bypass-log.jsonl."
+    exit 0
+}
+
+_PROT_NAME_LIST=${PROTECTED_NAMES# }
+_absent_names=""
+_matched_all=""
+creation_check
+# Everything below is about a merge or a pull. A command that is neither has
+# been fully judged by the creation check.
+[ "$IS_REFOP" = "1" ] || exit 0
+
+
+
 if [ "$REF_WRITER" = "1" ] && [ -n "$KIND" ]; then
     block_emit "BLOCKED: this command runs something else ALONGSIDE a merge/pull, in a repo with a protected branch ($_PROT_LIST). The gate resolves the merge target and reads git config before the command runs, so any other command in the same invocation can replace what it checked — including which branch is checked out ('git switch main && git merge <oid>') — 'git branch -f topic <oid> && git merge topic' is the shape, 'git fetch' counts because it moves FETCH_HEAD and the remote-tracking refs, and so does anything that can run a configured helper or change git's environment. The gate does not try to tell those apart from a harmless 'git status'.
 
@@ -977,9 +1374,6 @@ REMOTE=$(git_real config --get "branch.$PROTECTED.remote" 2>/dev/null) || REMOTE
 
 printf -v Q_PROT '%q' "$PROTECTED"
 printf -v Q_REMOTE '%q' "$REMOTE"
-
-MARKER_REL="$STATE_DIR/ref-ff-authorized.local"
-MARKER="$REPO_DIR/$MARKER_REL"
 
 # Authorize by the oid-bound marker, or block. Only reached once the operation is
 # known to be a fast-forward of the protected branch to content that remote

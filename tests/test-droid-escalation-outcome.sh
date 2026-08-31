@@ -168,6 +168,30 @@ else
   fail "_execute_codex: expected rc 124 for transient-codex + droid-timeout, got rc=$rc3 out=$(printf '%q' "$out3")"
 fi
 
+# stderr-only exit 0 must NOT count as ok — classify on stdout alone.
+cat > "$STUB_DIR/codex" <<'EOF'
+#!/bin/sh
+sleep 20
+EOF
+chmod +x "$STUB_DIR/codex"
+cat > "$STUB_DIR/droid" <<'EOF'
+#!/bin/sh
+echo "diagnostic on stderr only" >&2
+exit 0
+EOF
+chmod +x "$STUB_DIR/droid"
+
+set +e
+out4=$(run_execute_codex)
+rc4=$?
+set -e
+
+if [[ "$rc4" -eq 3 && "$out4" == "BUILTIN_FALLBACK" ]]; then
+  ok "_execute_codex: droid exit0+stderr-only → rc 3 (stdout empty = no-output)"
+else
+  fail "_execute_codex: expected rc 3 for stderr-only droid, got rc=$rc4 out=$(printf '%q' "$out4")"
+fi
+
 # Prove the isolation path was not created (no live telemetry pollution).
 if [[ -e "$SCRIPT_DIR/$ISO_STATE" ]]; then
   fail "isolation dir was created — telemetry may have leaked into the checkout"

@@ -2167,11 +2167,26 @@ _execute_codex() {
       local _fail_reason="transient errors"
       [[ "$timed_out" -eq 1 ]] && _fail_reason="timeout"
       echo "⚠️  Codex failed after ${attempts_run} attempt(s) (${_fail_reason}) — escalating to droid" >&2
-      local droid_out='' droid_exit=0
+      local droid_out='' droid_err='' droid_exit=0
       # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
       # execute_review's posture and the codex `-s read-only` posture this is
       # escalating from. See execute_review droid case for PR #97 historical context.
-      droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
+      # Capture stdout and stderr separately: classification keys on stdout only
+      # so an exit-0 diagnostic on stderr is not treated as a successful review
+      # (CodeRabbit on #806 / #804).
+      local _droid_errf=""
+      _droid_errf=$(mktemp -t droid-err 2>/dev/null) || _droid_errf=$(mktemp 2>/dev/null) || _droid_errf=""
+      if [[ -n "$_droid_errf" ]]; then
+        droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>"$_droid_errf") || droid_exit=$?
+        droid_err=$(cat "$_droid_errf" 2>/dev/null || true)
+        rm -f "$_droid_errf"
+      else
+        # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
+        # the exit-0+stderr-only false-success). Discard stderr for classification
+        # and note the loss so the failure log still explains the gap.
+        droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>/dev/null) || droid_exit=$?
+        droid_err="(stderr discarded: mktemp unavailable)"
+      fi
 
       # Classify before the post-escalation timed_out check: empty stdout inside
       # budget is a refusal/no-output, not a timeout (#804). Spent-budget 124
@@ -2206,7 +2221,13 @@ _execute_codex() {
         printf '%s' "$droid_out"
         return 0
       fi
-      echo "⚠️  Droid escalation failed (${_droid_outcome}: exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
+      echo "⚠️  Droid escalation failed (${_droid_outcome}: exit $droid_exit, output_bytes=${#droid_out}, stderr_bytes=${#droid_err}) — falling back to built-in review" >&2
+      if [[ -n "$droid_err" ]]; then
+        printf '%s
+%s
+%s
+'           "----- droid stderr -----"           "$droid_err"           "----- end droid stderr -----" >&2
+      fi
     fi
 
     [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"

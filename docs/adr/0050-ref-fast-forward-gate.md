@@ -392,6 +392,17 @@ them a bash-4-only construct that aborted the gate on EVERY command under the
 What this amendment does is reduce the exposure it was asked to bound: the proof
 was up to seventeen graph walks and is now ONE.
 
+**Out of scope by the gate's own boundary: another repository's refs.**
+`git push ../other HEAD:refs/heads/main` can create `main` in a DIFFERENT
+repository, and this gate will not stop it. That is not an oversight in the
+creation arm — it is the scope every gate in this directory has: each resolves
+ONE repository from the hook payload's cwd and guards that one. The destination
+repository has its own checkout, its own `.claude`, and its own gates; making
+this gate evaluate arbitrary push destinations means resolving and reading other
+repositories from a PreToolUse hook, which is a different feature, not a
+tightening of this one. Note also which way the content flows: what such a push
+carries is content from THIS repository, which every gate here has already seen.
+
 **Raised repeatedly and NOT a gap: a config alias hiding the creation.**
 `alias.mk = 'branch master <oid>'` then `git mk` carries no protected word — but
 an alias name is neither a git builtin nor anything `git --list-cmds` reports,

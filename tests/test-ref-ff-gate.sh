@@ -2106,6 +2106,33 @@ git -C "$REPO" config --add remote.multi.url https://evil.example/y
 run_gate "...while every value external stays out of scope" \
     allow "git push multi feature:refs/heads/master"
 git -C "$REPO" remote remove multi >/dev/null 2>&1
+# Git IGNORES pushInsteadOf for a remote that has an explicit pushurl, so
+# applying it there resolved a destination git does not use.
+git -C "$REPO" remote add selfp . >/dev/null 2>&1
+git -C "$REPO" config remote.selfp.pushurl .
+git -C "$REPO" config url.https://elsewhere/.pushInsteadOf .
+run_gate "pushInsteadOf is ignored when an explicit pushurl exists" \
+    block "git push selfp feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config --unset remote.selfp.pushurl
+git -C "$REPO" config remote.selfp.url .
+run_gate "...but honoured when the destination came from url" \
+    allow "git push selfp feature:refs/heads/master"
+git -C "$REPO" config --unset url.https://elsewhere/.pushInsteadOf
+git -C "$REPO" remote remove selfp >/dev/null 2>&1
+# A RELATIVE destination resolves against the SHELL's directory, which need not
+# be the repository root: from a nested directory `git push ..` is this
+# repository while `..` from the root is its parent.
+mkdir -p "$REPO/sub/deep/$ISO_STATE"
+_SAVED_REPO_REL="$REPO"
+REPO="$REPO/sub/deep"
+run_gate "a relative destination resolves against the command's directory" \
+    block "git push ../.. feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...while another repository is still external" \
+    allow "git push $ORIGIN feature:refs/heads/master"
+REPO="$_SAVED_REPO_REL"
+rm -rf "$REPO/sub"
 # A word carrying WHITESPACE is dropped from the candidate list, so a self path
 # spelled with a space lost its destination, fell back to the default remote and
 # returned as external -- ahead of the unreadable-word refusal, which sits after
@@ -2161,6 +2188,17 @@ git -C "$_SAVED_REPO_WT" worktree add -q "$_WT_SIB" -b wt-sibling >/dev/null 2>&
 run_gate "...as does a push at a SIBLING linked worktree" \
     block "git push $_WT_SIB feature:refs/heads/master" \
     "would CREATE the protected branch"
+# ...and its ADMIN git dir, which lives under <common>/worktrees/ and is named
+# by no list of worktree ROOTS -- a whole family closed by the prefix.
+_WT_ADMIN=$(git -C "$_WT_SIB" rev-parse --path-format=absolute --git-dir 2>/dev/null) || _WT_ADMIN=""
+if [ -n "$_WT_ADMIN" ]; then
+    run_gate "...as does a sibling worktree's ADMIN git dir" \
+        block "git push $_WT_ADMIN feature:refs/heads/master" \
+        "would CREATE the protected branch"
+else
+    printf '  FAIL  could not resolve the sibling worktree admin git dir\n'
+    FAIL=$((FAIL + 1))
+fi
 git -C "$_SAVED_REPO_WT" worktree remove --force "$_WT_SIB" >/dev/null 2>&1
 git -C "$_SAVED_REPO_WT" branch -D wt-sibling >/dev/null 2>&1
 rm -rf "$_WT_SIB"

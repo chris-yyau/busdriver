@@ -1186,6 +1186,7 @@ WLEOF
         _push_dest_is_self() {
             local _d="$1" _u="" _uline _ukey _uval _ubase _usuf _ulist=""
             local _ubest="" _ubestlen=0 _urest="" _phys _wp
+            local _explicit_pushurl=0 _phys1 _phys2
             [ -n "$_d" ] || return 1
             case "$_d" in .) return 0 ;; esac
             # PUSHURL first: git prefers it over url for a push, so reading only
@@ -1194,16 +1195,23 @@ WLEOF
             # get-ALL: both keys are multi-valued and git pushes to EVERY url, so
             # one external value must not answer for a sibling naming this
             # repository.
-            _ulist=$(git_real config --get-all "remote.$_d.pushurl" 2>/dev/null) \
-                || _ulist=$(git_real config --get-all "remote.$_d.url" 2>/dev/null) \
-                || _ulist="$_d"
+            if _ulist=$(git_real config --get-all "remote.$_d.pushurl" 2>/dev/null); then
+                _explicit_pushurl=1
+            else
+                _ulist=$(git_real config --get-all "remote.$_d.url" 2>/dev/null) \
+                    || _ulist="$_d"
+            fi
             [ -n "$_ulist" ] || return 1
             while IFS= read -r _u; do
             [ -n "$_u" ] || continue
             _ubest=""; _ubestlen=0; _urest=""
             # Longest matching prefix wins, and for a push a pushInsteadOf match
             # suppresses insteadOf entirely -- git's own rule.
-            for _usuf in pushinsteadof insteadof; do
+            # Git IGNORES pushInsteadOf for a remote that has an explicit
+            # pushurl, so applying it there resolved a destination git does not
+            # use -- `pushurl = .` with `url.https://elsewhere/.pushInsteadOf =
+            # .` rewrote a self-push into an external one.
+            for _usuf in $([ "$_explicit_pushurl" = "1" ] && echo insteadof || echo pushinsteadof insteadof); do
                 while IFS= read -r _uline; do
                     [ -z "$_uline" ] && continue
                     _ukey=${_uline%% *}
@@ -1254,16 +1262,31 @@ CFGEOF
             # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
             # no local path at all, and comparing two empty strings would have
             # called every external remote "this repository".
-            _phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_u" 2>/dev/null && pwd -P) || _phys=""
-            [ -n "$_phys" ] || continue
-            { [ -n "$_cur_phys" ] && [ "$_phys" = "$_cur_phys" ]; } && return 0
-            { [ -n "$_gd_phys" ] && [ "$_phys" = "$_gd_phys" ]; } && return 0
-            { [ -n "$_cd_phys" ] && [ "$_phys" = "$_cd_phys" ]; } && return 0
-            while IFS= read -r _wp; do
-                [ -n "$_wp" ] && [ "$_wp" = "$_phys" ] && return 0
-            done <<MWEOF
+            # BOTH bases. A relative destination resolves against the shell's
+            # directory, which is the payload's cwd and need not be the
+            # repository root -- from a nested directory `git push ..` is this
+            # repository while `..` from the root is its parent. Trying both
+            # over-matches toward BLOCK, which is the direction to miss in.
+            _phys1=$(cd -- "${HOOK_CWD:-${REPO_DIR:-.}}" 2>/dev/null && cd -- "$_u" 2>/dev/null && pwd -P) || _phys1=""
+            _phys2=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_u" 2>/dev/null && pwd -P) || _phys2=""
+            for _phys in "$_phys1" "$_phys2"; do
+                [ -n "$_phys" ] || continue
+                { [ -n "$_cur_phys" ] && [ "$_phys" = "$_cur_phys" ]; } && return 0
+                { [ -n "$_gd_phys" ] && [ "$_phys" = "$_gd_phys" ]; } && return 0
+                { [ -n "$_cd_phys" ] && [ "$_phys" = "$_cd_phys" ]; } && return 0
+                # Every linked worktree's ADMIN git dir lives under
+                # <common>/worktrees/, and each is a git directory on this same
+                # shared ref store -- a whole family no list of worktree ROOTS
+                # names, closed by the prefix rather than by enumerating it.
+                if [ -n "$_cd_phys" ]; then
+                    case "$_phys" in "$_cd_phys"/worktrees/*) return 0 ;; esac
+                fi
+                while IFS= read -r _wp; do
+                    [ -n "$_wp" ] && [ "$_wp" = "$_phys" ] && return 0
+                done <<MWEOF
 $_mw_phys
 MWEOF
+            done
             done <<ULEOF
 $_ulist
 ULEOF

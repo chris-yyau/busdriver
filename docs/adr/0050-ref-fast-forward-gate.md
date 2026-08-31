@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty-three ways a first draft of that membership test still
+Review found forty-six ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -400,6 +400,17 @@ adding a grammar:
   push. `~` and `~+` are expanded here; `~-` is the shell's OLDPWD and `~user`
   another account's home, neither of which the gate can know, so those are
   treated as possibly-here rather than vouched for as elsewhere.
+- **Git IGNORES `pushInsteadOf` for a remote with an explicit `pushurl`**, so
+  applying it there resolved a destination git does not use: `pushurl = .` with
+  `url.https://elsewhere/.pushInsteadOf = .` rewrote a self-push into an external
+  one. The rewrite pass now depends on which key the value came from.
+- **A RELATIVE destination resolves against the SHELL's directory**, not the
+  repository root — from a nested directory `git push ..` is this repository
+  while `..` from the root is its parent. Both bases are tried, which
+  over-matches toward BLOCK, the direction to miss in.
+- **Each linked worktree's ADMIN git dir** (`<common>/worktrees/<id>`) is a git
+  directory on the same shared ref store, and it is named by no list of worktree
+  ROOTS. The whole family is closed by the prefix rather than by enumerating it.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

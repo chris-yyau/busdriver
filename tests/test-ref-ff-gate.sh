@@ -1744,5 +1744,293 @@ run_gate "a marker in ANOTHER repo does not authorize this one" \
     block "git merge --ff-only $FEATURE_OID"
 rm -f "$MARKER_HOLDER/$ISO_STATE/ref-ff-authorized.local"
 
+# ── CREATING a protected ref at unreviewed content (#781) ───────────
+#
+# THE BYPASS UNDER TEST, distinct from the fast-forward above. A protected ref
+# that does not EXIST cannot be fast-forwarded, so every case above walks past
+# it -- and creating it lands arbitrary content on a protected name with no
+# commit object, no merge, and nothing for any other gate to observe. Measured on
+# this branch before the fix: `git branch master <commit-tree oid>` in a repo
+# that has only `main`, and `git branch main <oid>` in a checkout that does not
+# have main at all, were both ALLOWED.
+#
+# The contract has two halves and both are pinned here: the creation of a
+# protected name at content no protected branch carries is refused, and a
+# creation whose start point those branches ALREADY carry stays ordinary work
+# needing no ceremony at all.
+printf '\n=== protected-ref creation (#781) ===\n'
+
+setup_repo create || { printf '  FAIL  fixture setup (create)\n'; exit 1; }
+# Unreviewed content reachable from nothing -- the issue's own construction.
+UNREV_OID=$(git -C "$REPO" commit-tree "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" -m unreviewed)
+
+# `master`, `trunk`, `develop` are conventional protected names that this fixture
+# does not have. Creating one at content main does not carry is the bypass, in
+# each of the spellings that reaches it -- which is why the gate matches the NAME
+# as a token rather than parsing four different creation grammars.
+run_gate "git branch <protected> at an unreachable oid -> block" \
+    block "git branch master $UNREV_OID" "would CREATE the protected branch"
+run_gate "...checkout -b is the same creation" \
+    block "git checkout -b trunk $UNREV_OID" "would CREATE the protected branch"
+run_gate "...switch -c is the same creation" \
+    block "git switch -c develop $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and so is a raw update-ref, fully spelled" \
+    block "git update-ref refs/heads/master $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and worktree add -b, whose grammar the gate never parses" \
+    block "git worktree add -b master ../wt $UNREV_OID" "would CREATE the protected branch"
+
+# ATTACHED to the option word, which carries no word of its own. Dropping every
+# `-`-leading token was a fail-OPEN: each of these creates the branch while the
+# command contains no `master` word at all.
+run_gate "an ATTACHED -b<name> is still a creation" \
+    block "git checkout -bmaster $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and a CLUSTERED -qb<name>" \
+    block "git checkout -qbmaster $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and switch -c<name>" \
+    block "git switch -cmaster $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and the long --create=<name> form" \
+    block "git switch --create=master $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and worktree add -b<name>" \
+    block "git worktree add -bmaster ../wt $UNREV_OID" "would CREATE the protected branch"
+# An option word that merely ENDS in a protected name over-matches into the
+# blocking direction, which is the safe one -- but an ordinary option must not.
+run_gate "an ordinary option word is not mistaken for an attached name" \
+    allow "git branch --list --sort=-committerdate"
+
+# A COLON REFSPEC writes a ref with no checkout, so it never reaches the merge
+# arm — and the whole refspec is ONE word, matching no protected name until both
+# halves are reported. `git push . HEAD:refs/heads/master` creates master
+# outright (confirmed with --dry-run); the source half is the content it lands.
+git -C "$REPO" checkout -q feature
+run_gate "a push colon-refspec that CREATES a protected ref -> block" \
+    block "git push . HEAD:refs/heads/master" "would CREATE the protected branch"
+run_gate "...and the fetch spelling of the same write" \
+    block "git fetch . feature:refs/heads/master" "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
+run_gate "...but the same refspec off main's own tip is inert" \
+    allow "git push . HEAD:refs/heads/master"
+
+# A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
+# so nothing reported an alias candidate and the gate exited before looking at
+# the words. The builtin creates the branch just the same.
+run_gate "a direct git-branch executable is still a creation" \
+    block "$(git --exec-path)/git-branch master $UNREV_OID" \
+    "would CREATE the protected branch"
+run_gate "...and the executable form reaches the --stdin refusal too" \
+    block "$(git --exec-path)/git-update-ref --stdin" \
+    "takes its ref names from input the gate cannot read"
+git -C "$REPO" checkout -q feature
+run_gate "...and the executable form of worktree add derives the same name" \
+    block "$(git --exec-path)/git-worktree add ../master" \
+    "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
+
+# `git update-ref --stdin` names its refs in DATA the parser cannot read, and the
+# companion refusal cannot help because it runs only after a name match.
+run_gate "git update-ref --stdin is refused: its ref names are unreadable" \
+    block "printf 'create refs/heads/master $UNREV_OID' | git update-ref --stdin" \
+    "takes its ref names from input the gate cannot read"
+run_gate "...and -z is the same opaque input" \
+    block "git update-ref -z --stdin < /tmp/batch" \
+    "takes its ref names from input the gate cannot read"
+run_gate "...and every accepted ABBREVIATION of --stdin, which git takes too" \
+    block "printf 'create refs/heads/master $UNREV_OID' | git update-ref --std" \
+    "takes its ref names from input the gate cannot read"
+run_gate "...down to the shortest unambiguous one" \
+    block "git update-ref --s" \
+    "takes its ref names from input the gate cannot read"
+
+# `git worktree add <path>` with no -b and no commit-ish DERIVES the branch name
+# from the path's final component, so this creates `master` while the command
+# contains no `master` word.
+run_gate "...but an ordinary worktree path is not a protected name" \
+    allow "git worktree add ../scratch"
+run_gate "...and off main it is inert while HEAD is main's own tip" \
+    allow "git worktree add ../master"
+git -C "$REPO" checkout -q feature
+run_gate "worktree add derives the branch from the PATH -> block" \
+    block "git worktree add ../master" "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
+
+# A companion command means HEAD and every start point the gate resolved are
+# pre-command values -- and one of them can create the ref outright.
+run_gate "a companion command cannot escort a creation past the gate" \
+    block "git status && git branch master $UNREV_OID" "something else ALONGSIDE"
+
+# The other half of the contract: ordinary work is untouched. A creation whose
+# start point main already carries is INERT -- it makes no content reachable that
+# was not reachable before -- so it needs no marker and gets none.
+run_gate "creating a protected name at content main carries -> allow" \
+    allow "git branch master main"
+run_gate "...and with no start point at all, from main itself" \
+    allow "git checkout -b develop"
+run_gate "a NON-protected name is none of this gate's business" \
+    allow "git checkout -b feature-2 $UNREV_OID"
+run_gate "...nor is an ordinary commit" \
+    allow "git commit -m \"fix(hooks): a message that mentions master and develop\""
+run_gate "...nor a read-only command naming an absent protected branch" \
+    allow "git log master"
+# `git commit` creating refs/heads/main from nothing is the OTHER shape #781
+# names, and at THIS layer it is already observed: pre-commit-gate.sh blocks it
+# (measured). This gate deliberately stays out of its way; the reference-
+# transaction rule for it arrives with #622, per ADR 0050.
+run_gate "the initial-commit shape belongs to the commit gate, not this one" \
+    allow "git commit -m initial"
+
+# The marker route. Same file, same forge guard, same audit and same single use
+# as the fast-forward token -- and a different verb, so neither is spendable on
+# the other.
+CREATE_LINE="PASS-CREATE refs/heads/master $UNREV_OID"
+write_marker "PASS-FF refs/heads/master $UNREV_OID"
+run_gate "a PASS-FF token does not authorize a CREATION" \
+    block "git branch master $UNREV_OID" "would CREATE the protected branch"
+write_marker "$CREATE_LINE"
+run_gate "...but the PASS-CREATE token for this exact ref and oid does" \
+    allow "git branch master $UNREV_OID"
+_rc=0; [ -f "$REPO/$ISO_STATE/ref-ff-authorized.local" ] && _rc=1
+assert_true "...and the token is CONSUMED, so it authorizes exactly once" "$_rc"
+_rc=0
+grep -q '"via":"marker-create"' "$REPO/$ISO_STATE/bypass-log.jsonl" 2>/dev/null || _rc=1
+assert_true "...and the authorization is recorded in bypass-log.jsonl" "$_rc"
+run_gate "...the consumed token does not authorize a second creation" \
+    block "git branch master $UNREV_OID" "would CREATE the protected branch"
+
+# ONE authorizable shape, deliberately. Recognizing shapes is an allowlist, so a
+# spelling the gate does not recognize gets no route rather than a guessed one --
+# and `git branch` is the one that runs no hook of its own.
+write_marker "PASS-CREATE refs/heads/trunk $UNREV_OID"
+run_gate "checkout -b gets no marker route, and the block says which shape does" \
+    block "git checkout -b trunk $UNREV_OID" "the gate authorizes ONE shape"
+git -C "$REPO" branch unreviewed-src "$UNREV_OID" >/dev/null 2>&1
+write_marker "PASS-CREATE refs/heads/master $UNREV_OID"
+run_gate "a SYMBOLIC start point cannot be bound, however right the marker looks" \
+    block "git branch master unreviewed-src" "resolves again when the command runs"
+rm -f "$REPO/$ISO_STATE/ref-ff-authorized.local"
+
+# The second shape the issue names: the protected branch is not in this checkout
+# at all, so nothing local can vouch for anything. A single-branch clone is the
+# ordinary way to arrive there.
+SBC="$TMPROOT/single-branch"
+rm -rf "$SBC"
+git clone -q --single-branch --branch feature "$REPO" "$SBC" >/dev/null 2>&1
+mkdir -p "$SBC/$ISO_STATE"
+SAVED_REPO="$REPO"
+REPO="$SBC"
+run_gate "re-creating main where no protected branch exists -> block" \
+    block "git branch main $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and origin/main is not a voucher either (it is a local ref)" \
+    block "git checkout main" "would CREATE the protected branch"
+REPO="$SAVED_REPO"
+
+# GIT'S DWIM START POINT is not a word of the command, and missing it was a
+# fail-OPEN. `git checkout main` with no local `main` creates it from
+# refs/remotes/<remote>/main — a ref rev-parse does NOT reach from the bare word
+# `main` — so the word resolved to nothing and only HEAD was vouched for. With a
+# DIFFERENT protected branch present to vouch for HEAD, the creation was allowed
+# and landed whatever the remote-tracking ref held. The fixture below is exactly
+# that shape: `develop` is protected and checked out, `main` is absent locally,
+# and origin/main carries content develop does not.
+DWIM="$TMPROOT/dwim"
+rm -rf "$DWIM"
+git clone -q "$REPO" "$DWIM" >/dev/null 2>&1
+mkdir -p "$DWIM/$ISO_STATE"
+(
+    set -e
+    cd "$DWIM"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    # A protected branch that DOES exist, so HEAD has a voucher, and a local main
+    # deleted so the creation path is the one under test.
+    git checkout -q -b develop
+    git branch -q -D main
+    # And origin/main carries content develop does NOT, which is what makes the
+    # DWIM creation a real ref move rather than an inert one. Written directly,
+    # because what matters is only that the remote-tracking ref holds an oid no
+    # protected branch here reaches.
+    git update-ref refs/remotes/origin/main "$UNREV_OID"
+) >/dev/null 2>&1
+SAVED_REPO="$REPO"
+REPO="$DWIM"
+run_gate "DWIM checkout of an absent protected branch is a creation -> block" \
+    block "git checkout main" "would CREATE the protected branch"
+run_gate "...and switch is the same DWIM" \
+    block "git switch main" "would CREATE the protected branch"
+_rc=0
+git -C "$DWIM" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1 || _rc=1
+assert_true "fixture: origin/main exists, which is what DWIM would have used" "$_rc"
+REPO="$SAVED_REPO"
+
+# Git ACCEPTS a ref name containing U+00A0, which Python's `\s` calls whitespace
+# — so the word was dropped as implausible and the creation matched nothing. The
+# filter now refuses only what git itself refuses (ASCII space, controls, DEL).
+NBSP=$(printf 'ma\xc2\xa0in')
+NBSP_REPO="$TMPROOT/nbsp"
+rm -rf "$NBSP_REPO"
+git clone -q "$REPO" "$NBSP_REPO" >/dev/null 2>&1
+mkdir -p "$NBSP_REPO/$ISO_STATE"
+(
+    set -e
+    cd "$NBSP_REPO"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    git checkout -q feature
+    git branch -q -D main
+    printf '%s\n' "$NBSP" > "$ISO_STATE/ref-ff-protected.local"
+) >/dev/null 2>&1
+SAVED_REPO="$REPO"
+REPO="$NBSP_REPO"
+_rc=0
+git -C "$NBSP_REPO" check-ref-format "refs/heads/$NBSP" || _rc=1
+assert_true "fixture: git really does accept a ref name containing U+00A0" "$_rc"
+run_gate "a protected name git accepts but Python calls whitespace still matches" \
+    block "git branch $NBSP $UNREV_OID" "would CREATE the protected branch"
+REPO="$SAVED_REPO"
+
+# A protected name may contain a SLASH, and matching the remote-tracking ref by
+# its last path component silently lost it: refs/remotes/origin/release/main
+# reduces to `main`, so `git checkout release/main` was never vouched against the
+# unreviewed ref the DWIM would have used.
+SLASHED="$TMPROOT/slashed"
+rm -rf "$SLASHED"
+git clone -q "$REPO" "$SLASHED" >/dev/null 2>&1
+mkdir -p "$SLASHED/$ISO_STATE"
+(
+    set -e
+    cd "$SLASHED"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    git checkout -q -b develop
+    git branch -q -D main
+    git update-ref refs/remotes/origin/release/main "$UNREV_OID"
+    printf 'release/main\n' > "$ISO_STATE/ref-ff-protected.local"
+) >/dev/null 2>&1
+SAVED_REPO="$REPO"
+REPO="$SLASHED"
+run_gate "a declared protected name containing '/' is matched in full" \
+    block "git checkout release/main" "would CREATE the protected branch"
+REPO="$SAVED_REPO"
+
+# An EMPTY declaration is the operator saying this repository has NO protected
+# branch. The merge arm has always honoured that by standing down; the creation
+# arm has to as well, or the conventional names would keep guarding a repo whose
+# operator explicitly said not to.
+: > "$REPO/$ISO_STATE/ref-ff-protected.local"
+run_gate "an empty declaration stands the creation arm down too" \
+    allow "git branch master $UNREV_OID"
+rm -f "$REPO/$ISO_STATE/ref-ff-protected.local"
+run_gate "...and removing it restores the block" \
+    block "git branch master $UNREV_OID" "would CREATE the protected branch"
+
+# KNOWN OVER-BLOCK, pinned so it is a decision rather than a surprise. The gate
+# cannot tell an explicit start point from the implicit HEAD without parsing the
+# grammars it deliberately does not parse, so HEAD is always one of the words it
+# must vouch for. Off a protected branch that costs one `git checkout main`
+# first, which is the same "run them as separate calls" the merge arm already
+# asks for.
+git -C "$REPO" checkout -q feature
+run_gate "off a protected branch, even an explicit start point blocks (documented)" \
+    block "git branch master main" "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
+
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

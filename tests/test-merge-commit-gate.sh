@@ -23,6 +23,8 @@ REPO_ROOT="$PWD"
 GATE_SCRIPT="hooks/gate-scripts/pre-merge-commit-gate.sh"
 POST_MERGE="hooks/gate-scripts/post-merge-consume-marker.sh"
 MERGE_PRE_COMMIT="hooks/gate-scripts/merge-pre-commit-gate.sh"
+MERGE_PREPARE_COMMIT_MSG="hooks/gate-scripts/merge-prepare-commit-msg-gate.sh"
+MERGE_REFERENCE_TRANSACTION="hooks/gate-scripts/merge-reference-transaction-gate.sh"
 MERGE_POST_COMMIT="hooks/gate-scripts/merge-post-commit-consume.sh"
 HASH_HELPER="scripts/lib/staged-diff-hash.sh"
 
@@ -55,6 +57,8 @@ install_hook() {
     ln -sf "$REPO_ROOT/$GATE_SCRIPT" "$hooks_dir/pre-merge-commit"
     ln -sf "$REPO_ROOT/$POST_MERGE" "$hooks_dir/post-merge"
     ln -sf "$REPO_ROOT/$MERGE_PRE_COMMIT" "$hooks_dir/pre-commit"
+    ln -sf "$REPO_ROOT/$MERGE_PREPARE_COMMIT_MSG" "$hooks_dir/prepare-commit-msg"
+    ln -sf "$REPO_ROOT/$MERGE_REFERENCE_TRANSACTION" "$hooks_dir/reference-transaction"
     ln -sf "$REPO_ROOT/$MERGE_POST_COMMIT" "$hooks_dir/post-commit"
     chmod +x "$hooks_dir"/*
     git -C "$repo" config core.hooksPath "$hooks_dir"
@@ -66,6 +70,7 @@ setup_repo() {
     git -C "$repo" config user.email t@t.dev
     git -C "$repo" config user.name tester
     git -C "$repo" config commit.gpgsign false
+    git -C "$repo" config tag.gpgsign false
     echo base >"$repo/base.txt"
     git -C "$repo" add base.txt
     git -C "$repo" commit -q -m base --no-verify
@@ -97,11 +102,13 @@ TMP_SKNONE_FUTURE=$(mktemp -d)
 TMP_SKNONE_LONG=$(mktemp -d)
 TMP_SKNONE_BOUND=$(mktemp -d)
 TMP_REPO_MARKER=$(mktemp -d)
+TMP_FF_MERGE=$(mktemp -d)
+TMP_ANNOTATED=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -473,6 +480,71 @@ if [[ "$REPO_MARKER_RC" -ne 0 && "$REPO_MARKER_HEAD" == "sneak marker" ]]; then
     assert "committed marker blocked" "block" "block"
 else
     assert "committed marker blocked" "block" "allow(rc=$REPO_MARKER_RC head=$REPO_MARKER_HEAD)"
+fi
+
+echo "── fast-forward onto existing merge commit does not rewind HEAD ─"
+setup_repo "$TMP_FF_MERGE"
+install_hook "$TMP_FF_MERGE" "$HOOKS"
+mkdir -p "$TMP_FF_MERGE/.claude"
+git -C "$TMP_FF_MERGE" merge --no-commit --no-ff topic >/dev/null 2>&1
+FF_MERGE_HASH=$(staged_hash "$TMP_FF_MERGE")
+git -C "$TMP_FF_MERGE" merge --abort >/dev/null 2>&1
+printf 'BUILTIN-%s\n' "$FF_MERGE_HASH" >"$TMP_FF_MERGE/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_FF_MERGE" merge --no-ff topic --no-edit >/dev/null 2>"$LOGDIR/ff-merge-create.err"
+FF_CREATE_RC=$?
+set -e
+FF_MERGE_SHA=$(git -C "$TMP_FF_MERGE" rev-parse HEAD)
+FF_PARENT_COUNT=$(git -C "$TMP_FF_MERGE" rev-list --parents -n 1 HEAD | awk '{print NF-1}')
+if [[ "$FF_CREATE_RC" -ne 0 || "$FF_PARENT_COUNT" -lt 2 ]]; then
+    FF_CREATE_ERR=$(tr '\n' ' ' <"$LOGDIR/ff-merge-create.err" || true)
+    assert "fast-forward onto merge commit keeps merge HEAD" "kept" \
+        "create-failed(rc=$FF_CREATE_RC parents=$FF_PARENT_COUNT err=$FF_CREATE_ERR)"
+else
+FF_PARENT=$(git -C "$TMP_FF_MERGE" rev-parse 'HEAD^1')
+git -C "$TMP_FF_MERGE" checkout -qb behind "$FF_PARENT"
+# FF onto an existing merge is not a live merge; drop RT so this asserts post-merge non-rewind.
+rm -f "$HOOKS/reference-transaction"
+set +e
+git -C "$TMP_FF_MERGE" merge --ff-only "$FF_MERGE_SHA" >/dev/null 2>"$LOGDIR/ff-onto-merge.err"
+FF_ONTO_RC=$?
+set -e
+FF_ONTO_HEAD=$(git -C "$TMP_FF_MERGE" rev-parse HEAD)
+if [[ "$FF_ONTO_RC" -eq 0 && "$FF_ONTO_HEAD" == "$FF_MERGE_SHA" ]]; then
+    assert "fast-forward onto merge commit keeps merge HEAD" "kept" "kept"
+else
+    FF_ONTO_ERR=$(tr '\n' ' ' <"$LOGDIR/ff-onto-merge.err" || true)
+    assert "fast-forward onto merge commit keeps merge HEAD" "kept" \
+        "moved(rc=$FF_ONTO_RC head=$FF_ONTO_HEAD want=$FF_MERGE_SHA err=$FF_ONTO_ERR)"
+fi
+fi
+
+echo "── annotated-tag merge peels MERGE_HEAD and allows matching marker ─"
+setup_repo "$TMP_ANNOTATED"
+install_hook "$TMP_ANNOTATED" "$HOOKS"
+mkdir -p "$TMP_ANNOTATED/.claude"
+git -C "$TMP_ANNOTATED" checkout -q topic
+git -C "$TMP_ANNOTATED" -c tag.gpgsign=false tag -a v-ann -m "annotated topic"
+git -C "$TMP_ANNOTATED" checkout -q main
+git -C "$TMP_ANNOTATED" merge --no-commit --no-ff v-ann >/dev/null 2>&1
+ANN_HASH=$(staged_hash "$TMP_ANNOTATED")
+git -C "$TMP_ANNOTATED" merge --abort >/dev/null 2>&1
+printf 'BUILTIN-%s\n' "$ANN_HASH" >"$TMP_ANNOTATED/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_ANNOTATED" merge --no-ff v-ann --no-edit >"$LOGDIR/ann-merge.out" 2>"$LOGDIR/ann-merge.err"
+ANN_RC=$?
+set -e
+ANN_HEAD=$(git -C "$TMP_ANNOTATED" log -1 --format=%s 2>/dev/null || true)
+ANN_PARENTS=$(git -C "$TMP_ANNOTATED" log -1 --format=%P)
+ANN_TAG_OID=$(git -C "$TMP_ANNOTATED" rev-parse v-ann)
+ANN_COMMIT_OID=$(git -C "$TMP_ANNOTATED" rev-parse 'v-ann^{commit}')
+if [[ "$ANN_RC" -eq 0 && "$ANN_HEAD" != "mainline" && "$ANN_TAG_OID" != "$ANN_COMMIT_OID" \
+    && "$ANN_PARENTS" == *" $ANN_COMMIT_OID" ]]; then
+    assert "annotated-tag merge allowed with peeled claim" "allow" "allow"
+else
+    ANN_ERR=$(tr '\n' ' ' <"$LOGDIR/ann-merge.err" || true)
+    assert "annotated-tag merge allowed with peeled claim" "allow" \
+        "block(rc=$ANN_RC head=$ANN_HEAD tag=$ANN_TAG_OID commit=$ANN_COMMIT_OID parents=$ANN_PARENTS err=$ANN_ERR)"
 fi
 
 echo ""

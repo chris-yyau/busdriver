@@ -52,6 +52,9 @@ gate_merge_pending_invoke() {
         consume)
             _gate_merge_python "$repo_dir" "$lib" consume_if_pending "$state_dir" "$gate_name"
             ;;
+        bind)
+            _gate_merge_python "$repo_dir" "$lib" bind_pending_merge_heads "$state_dir"
+            ;;
         skip)
             _gate_merge_python "$repo_dir" "$lib" authorize_operator_skip "$state_dir" "$gate_name" "$claim_head" "$marker_content"
             ;;
@@ -88,6 +91,10 @@ gate_merge_pending_clear() {
 
 gate_merge_consume_if_pending() {
     gate_merge_pending_invoke "$1" "$2" consume "$3"
+}
+
+gate_merge_bind_pending_heads() {
+    gate_merge_pending_invoke "$1" "$2" bind
 }
 
 gate_marker_read() {

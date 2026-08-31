@@ -14,7 +14,7 @@ import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 
 from audit_append import append_at, open_state_dir, state_dir_unchanged  # noqa: E402
-from skip_age import skip_file_too_young  # noqa: E402
+from skip_age import finish_skip_consume, open_skip_for_authorization  # noqa: E402
 
 PENDING = "merge-litmus-pending.local"
 PENDING_TMP = "merge-litmus-pending.local.tmp"
@@ -463,11 +463,11 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
         dfd = open_state_dir(state_dir)
         if dfd is None:
             return False
+        skip_fd = open_skip_for_authorization(dfd, SKIP)
+        if skip_fd is None:
+            os.close(dfd)
+            return False
         try:
-            if skip_file_too_young(dfd, SKIP):
-                return False
-            if not _unlink_if_exists(dfd, SKIP):
-                return False
             _unlink_if_exists(dfd, _BLOCK_COUNT)
             staged_tree = _staged_tree(".")
             if not staged_tree:
@@ -492,6 +492,15 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
                 dfd, state_dir, claim_head, marker_content, staged_tree, merge_heads
             ):
                 return False
+            try:
+                consumed = finish_skip_consume(dfd, SKIP, skip_fd)
+                skip_fd = None
+            except OSError:
+                consumed = False
+            if not consumed:
+                if not _retire_claim(dfd):
+                    return False
+                return False
             completed = dict(started)
             completed["ts"] = datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
@@ -507,6 +516,11 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
                 return False
             return True
         finally:
+            if skip_fd is not None:
+                try:
+                    os.close(skip_fd)
+                except OSError:
+                    pass
             os.close(dfd)
 
     return _in_repo(repo, _authorize)

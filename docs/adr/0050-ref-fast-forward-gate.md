@@ -541,9 +541,12 @@ environment is sanitized of that family (#325 / ADR 0016) and the executed
 command's is not, so a command carrying its own config would answer the push
 boundary differently from the way git will —
 `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=. git push origin …`.
-It never reaches that boundary: an env assignment is an operand the gate cannot
-resolve statically, and the refusal that predates this arm blocks it first
-(measured, and now pinned by tests). A stand-down flag for it was built, found
+The same asymmetry reaches the configured-refspec scan, where an
+environment-only `remote.origin.fetch=<src>:refs/heads/master` would make a plain
+`git fetch origin` create a branch no command word names. Neither reaches its
+check: an env assignment is an operand the gate cannot resolve statically, and
+the refusal that predates this arm blocks it first — measured for push and fetch
+alike, `env`-prefixed spelling included, and now pinned by tests. A stand-down flag for it was built, found
 redundant against that refusal, and removed rather than left as a second control
 nobody would know was dead.
 

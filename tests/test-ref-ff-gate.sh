@@ -2132,6 +2132,12 @@ run_gate "a command carrying GIT_CONFIG_* never reaches the push boundary" \
 run_gate "...and GIT_DIR likewise" \
     block "GIT_DIR=$REPO/.git git push origin feature:refs/heads/master" \
     "cannot be resolved statically"
+run_gate "...as does a FETCH carrying a configured refspec in its environment" \
+    block "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.fetch GIT_CONFIG_VALUE_0=refs/heads/main:refs/heads/master git fetch origin" \
+    "cannot be resolved statically"
+run_gate "...and the env-prefixed spelling of it" \
+    block "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.fetch GIT_CONFIG_VALUE_0=refs/heads/main:refs/heads/master git fetch origin" \
+    "cannot be resolved statically"
 # A RELATIVE destination resolves against the SHELL's directory, which need not
 # be the repository root: from a nested directory `git push ..` is this
 # repository while `..` from the root is its parent.

@@ -80,10 +80,24 @@ PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
 # headroom above the observed runtime rather than tuned to it -- same reasoning as
 # the job-level ceiling in tests.yml, and for the same reason: a cap set at the
 # measurement reproduces this false failure on the next PR that adds a case.
+#
+# test-impl-gate-scope-553: the same shape as its #519 sibling, one ticket later. The
+# suite drives the REAL gate against two throwaway repos -- one holding a pending review
+# so a block is attributable to the classifier, one clean so a block is attributable to
+# the unconditional helper guard -- and that doubling is what makes each verdict
+# attributable at all. Its several-hundred-case sweeps already run IN PROCESS for exactly
+# this reason (see the file's own header); what remains is ~150 end-to-end gate
+# invocations, each three processes. Measured 193s at the #553 branch head and 185s with
+# the interpreter-decoy cases added -- already past the 180s default before CI's slower,
+# shared CPUs are accounted for, and the growth is the fail-closed rules this ticket adds
+# rather than anything getting slower. Same headroom reasoning as the entry above: set
+# above the observation, not at it, so the next PR that adds a case does not reproduce
+# this failure.
 test_timeout() {   # <basename> -> prints the effective per-test timeout
   local override=0
   case "$1" in
     test-impl-gate-scope-519) override=900 ;;
+    test-impl-gate-scope-553) override=600 ;;
   esac
   if [ "$override" -gt "$PER_TEST_TIMEOUT" ]; then
     printf '%s\n' "$override"

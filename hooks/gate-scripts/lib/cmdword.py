@@ -39,6 +39,7 @@ a duplication that currently costs nothing. Unify if they ever need to change to
 — not speculatively.
 """
 
+import fnmatch
 import re
 import shlex
 
@@ -277,6 +278,11 @@ _MAX_CMD_CHARS = 65536
 # Reset by every _depth == 0 entry, so the public entry point is self-contained; the gate
 # runs as a one-shot subprocess and the test suite drives it through is_file_mod().
 _scan_budget = [0]
+
+# Per-segment memo for the stdin-reader test inside _piped_shell_producers, cleared beside
+# the budget above. The expansion-aware readings re-walk the same stages, and repeating a
+# pure text test on identical text is not work worth charging -- see the call site (#553).
+_stdin_memo = {}
 
 # Set by _defuse_comments when it meets a `#` immediately after a `)` -- see there.
 # Read and cleared by is_file_mod, which answers the ambiguity by fail-CLOSED fallback
@@ -542,6 +548,33 @@ _TEST_OPEN = frozenset(("[[", "["))
 _NAME_INTRO = frozenset(("function", "for", "select", "case"))
 
 
+def _dollar_run_is_even(buf, end=None):
+    """Parity of the `$` run ending at `buf[end]` (or at the end of `buf`), BACKWARDS.
+
+    `end` lets a caller ask about a position inside a longer string without slicing it:
+    slicing copied the whole growing prefix once per candidate, which is quadratic on a
+    line of many `$${` (codex, #553).
+
+    `$$` is the PID, so `$${` is a PID and a literal brace while `$$${` is a PID and a
+    real `${`. Joining the whole prefix to measure that made the split quadratic on a
+    line of many expansions -- 13k of them took ~1.1s against 0.004s (codex, #553).
+    """
+    stop = len(buf) if end is None else end
+    k = stop
+    while k and buf[k - 1] == "$":
+        k -= 1
+    run = stop - k
+    # A `$` the shell was told to take LITERALLY is not part of the run: in `\$$${X}` the
+    # first is escaped, so the two that follow are the PID and no expansion opens
+    # (codex, #553). Backslashes are counted for parity -- `\\$` is an active `$`.
+    b = k
+    while b and buf[b - 1] == chr(92):
+        b -= 1
+    if run and (k - b) % 2:
+        run -= 1
+    return run % 2 == 0
+
+
 def _split_with_ops(s):
     """Split into simple-command segments, each paired with the operator run before it.
 
@@ -677,6 +710,235 @@ def _split_with_ops(s):
     # An unterminated backtick joins the unterminated quote and the dangling escape: the
     # caller falls back to the wider raw scan rather than trusting a half-parse.
     return pairs, not (in_s or in_d or esc or in_b)
+
+
+def _expansion_joined_pairs(s, close_at=None):
+    """The same split, but with every `${...}` treated as ONE opaque word.
+
+    ADDITIVE, and deliberately so. Bash reads `X=${Y:-a;b} cmd` as a single assignment
+    followed by `cmd`, while the split above -- HEAD's, unchanged -- cuts at the `;` and
+    loses `cmd` entirely. Teaching that split the expansion grammar was tried and
+    withdrawn across five review rounds: every correction (a `)` that closes nothing, a
+    nested substitution, a quoted or bare brace, a `case` pattern terminator, a here-doc
+    body, a line continuation, an `esac` used as an argument) traded a false block for a
+    MISS or the reverse, because it also RELAXED HEAD's blanket block on everything
+    command-shaped inside an expansion.
+
+    Running both instead keeps that blanket AND closes the miss: the caller classifies
+    HEAD's segments and these, and blocks if either does. A defect in this scanner can
+    therefore only fail to add a block -- it can never remove one (codex, #553).
+    """
+    buf, i, n, q, frames, parens = [], 0, len(s), "", 0, 0
+    # `close_at` names the `}` that ends the FIRST frame. A stray `}` inside a nested
+    # construct otherwise ends it early -- balancing parens covers `$( )` but not a
+    # `case` pattern terminator, an argument that is a literal brace, or the next of
+    # these somebody thinks of. Rather than chase them, the caller runs one reading per
+    # candidate `}` and adds them all: the RIGHT one is always among them, and a wrong
+    # one can only fail to add a block.
+    while i < n:
+        ch = s[i]
+        if q:
+            buf.append(ch)
+            if ch == chr(92) and q == _DQ and i + 1 < n:
+                i += 1
+                buf.append(s[i])
+            elif ch == q:
+                q = ""
+        elif ch == chr(92) and i + 1 < n:
+            buf.append(ch)
+            i += 1
+            buf.append(s[i])
+        elif ch in (_SQ, _DQ):
+            q = ch
+            buf.append(ch)
+        elif (ch == "$" and s[i + 1:i + 2] == "{"
+                and _dollar_run_is_even(buf)):   # `$${` is a PID and a literal brace
+            frames += 1
+            buf.append(ch)
+            i += 1
+            buf.append(s[i])
+        elif frames and ch == "(" and buf and buf[-1] in "$<>":
+            parens += 1               # a `}` inside a nested SUBSTITUTION closes nothing;
+            buf.pop()                 # a bare `(` is ordinary text and nests nothing
+        elif frames and parens and ch == ")":
+            parens -= 1
+        elif frames and ch == "}" and (i == close_at if (close_at is not None
+                                                        and frames == 1)
+                                       else not parens):
+            frames -= 1
+            buf.append(ch)
+        elif frames:
+            # Everything that could END THE WORD is DROPPED rather than kept or replaced
+            # by a space: the one job of this pass is to hand the tokenizer the expansion
+            # as a single word so the command word BEHIND it is reached. Its value is
+            # data, and this reading is additive, so mangling it costs nothing (#553).
+            if not (ch.isspace() or ch in ";|&()"):
+                buf.append(ch)
+        else:
+            buf.append(ch)
+        i += 1
+    joined = "".join(buf)
+    if joined == s:
+        return []                     # nothing was rewritten: the caller has this already
+    pairs, ok = _split_with_ops(joined)
+    return pairs if ok else []
+
+# How many candidate closers to try. Each is one extra linear split, so the count is
+# capped -- and EXCEEDING the cap fails CLOSED rather than settling for the readings that
+# fit. Any finite cap can be stepped over by writing one more `}` than it allows, and a
+# scan that could not finish is the failure case, not the happy path (codex, #553).
+_MAX_EXPANSION_READINGS = 64
+
+
+def _blank_comments(s):
+    """Every character of a shell COMMENT replaced by a space, LENGTH PRESERVED.
+
+    For the expansion-aware readings only. A `${` inside a comment opens nothing, but the
+    scanners below took the first one they met as the frame opener, so `: # ${` on its own
+    line nested the REAL expansion under a phantom frame and the reading that would have
+    exposed the command word was never built -- prefixing that comment turned a blocked
+    command into an allowed one (codex, #553).
+
+    Length is preserved because the candidate closers are INDICES into this string. Blanking
+    rather than deleting for the same reason _defuse_comments does it: the readings are
+    additive, and HEAD's split still sees the comment exactly as it always did, so nothing
+    a comment contains can lose a block here.
+
+    _normalize has already blanked the separators INSIDE a comment and rewritten the
+    newline that ends it to `;`, so in normalized text a comment runs to the next `;`.
+
+    RESIDUAL, deliberate, and at HEAD PARITY -- origin/main misses every one of these too,
+    so none is a regression this closes or reopens. A comment that is not blanked can still
+    hold a phantom opener: one written AFTER the first real `${` (the scan stops there --
+    see the loop), and one opened after a `)` (not word position -- see the loop). Each was
+    closed in a review round and each closure opened the next spelling, which is the
+    signature _defuse_comments already names for this exact question. The scan therefore
+    answers only the part it can answer WITHOUT ever removing a reading, and the rest stays
+    parity rather than becoming a fifth guess (codex, #553, four rounds).
+    """
+    out = list(s)
+    i, n, q, word = 0, len(s), "", True
+    while i < n:
+        ch = s[i]
+        if not q and ch == "$" and s[i + 1:i + 2] == "{" and _dollar_run_is_even(s, i):
+            # STOP at the first REAL opener. Everything this pass exists to fix happens
+            # before it -- a phantom `${` in a comment being taken as the frame opener --
+            # and a `#` INSIDE an expansion is literal text to bash, so blanking past here
+            # deleted the command word out of `X=${Y:-a;b #x} /bin/rm -rf src` (codex,
+            # #553). A comment further right can only add a spurious candidate `}`, which
+            # is one more additive reading and costs nothing.
+            break
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+            word = False
+        elif ch == chr(92):
+            i += 1
+            word = False
+        elif ch in (_SQ, _DQ):
+            q = ch
+            word = False
+        elif ch == "#" and word:
+            # Word position only -- bash reads `a#b` and `sed 's#a#b#'` as ordinary text.
+            while i < n and s[i] != ";":
+                out[i] = " "
+                i += 1
+            continue
+        else:
+            # `)` DOES NOT COUNT, exactly as in _defuse_comments, which refuses to guess
+            # whether the paren delimited a command. Counting it was tried: it closed
+            # `(true)# ${` and opened `printf ... $(true)# "${Y:-...}" | bash`, where a
+            # substitution's `)` leaves the `#` mid-word, so blanking from there DELETED
+            # the real expansion and dropped the only reading that exposed the verb. That
+            # direction removes blocks, which this pass may never do -- so the guess is
+            # not made, and `)#` stays the HEAD-parity residual named above (codex, #553).
+            word = ch.isspace() or ch in ";|&("
+        i += 1
+    return "".join(out)
+
+
+def _expansion_readings(s):
+    """(readings, truncated) -- every expansion-aware reading of `s`, deduplicated.
+
+    A READING is a whole (op, segment) sequence, one per candidate `}` for the first
+    frame, plus the balanced default. Additive: the caller classifies these ALONGSIDE the
+    ordinary split, so a wrong reading can only fail to add a block. `truncated` says the
+    cap cut the candidate list, which the caller must treat as unresolvable (codex, #553).
+
+    Readings are NOT flattened into one sequence -- see the loop below for what each of
+    the two flattenings cost.
+    """
+    out, seen = [], set()
+    # Candidates are the UNQUOTED `}` at or after the first `${`. Taking them from the
+    # whole string let eight quoted braces in earlier assignment values exhaust the cap
+    # before the real closer was reached (codex, #553).
+    # Every unquoted `}` at or after the first `${`. Narrowing this to braces "inside a
+    # frame" was tried and withdrawn: deciding where the frame ends is the very question
+    # these readings exist to answer, and any tracking good enough to scope the candidate
+    # list would already have settled it. The cap is what bounds the work instead, and it
+    # is set well above the brace count of ordinary shell (codex, #553).
+    # The first REAL opener: an escaped `$`, or one closing an odd `$` run, opens nothing,
+    # and treating it as an opener let 63 harmless brace groups reach the cap (codex).
+    first, _q, _k = -1, "", 0
+    while _k < len(s):
+        _c = s[_k]
+        if _q:
+            if _c == chr(92) and _q == _DQ:
+                _k += 1
+            elif _c == _q:
+                _q = ""
+        elif _c == chr(92):
+            _k += 1
+        elif _c == _SQ:
+            _q = _c
+        elif _c == _DQ:
+            _q = _c
+        elif (_c == "$" and s[_k + 1:_k + 2] == "{"
+                and _dollar_run_is_even(s, _k)):
+            first = _k
+            break
+        _k += 1
+    if first < 0:
+        return [], False
+    cands, q, i, n = [None], "", 0, len(s)
+    while i < n and len(cands) <= _MAX_EXPANSION_READINGS + 1:
+        ch = s[i]
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+        elif ch == chr(92):
+            i += 1
+        elif ch in (_SQ, _DQ):
+            q = ch
+        elif ch == "}" and i > first >= 0:
+            cands.append(i)
+        i += 1
+    # One entry per READING, kept WHOLE and deduplicated whole -- never flattened here.
+    # Flattening with a per-segment dedup was order-dependent and lost blocks: two
+    # pipelines whose receivers spell the same
+    # (`printf hello | X=${Y:-a;b} bash; printf 'rm -rf src' | X=${Y:-a;b} bash`) collapse
+    # to ONE receiver entry, which then sits beside the FIRST producer, so the command
+    # blocked when the dangerous half came first and not when it came second. Flattening
+    # WITHOUT that dedup fixed the order but multiplied the segment count by the candidate
+    # count -- 63 harmless `echo };` commands became 2,144 pairs and exhausted the
+    # fail-closed scan budget on a 520-character read (codex, #553, both directions).
+    #
+    # So the two consumers are separated instead: adjacency is read per reading, and the
+    # segment scan takes the union. Neither cost is multiplied.
+    for k in cands:
+        reading = tuple(_expansion_joined_pairs(s, k))
+        if reading and reading not in seen:
+            seen.add(reading)
+            out.append(reading)
+    # `cands` carries the balanced reading as a leading None, which is not a candidate:
+    # counting it made exactly _MAX_EXPANSION_READINGS real braces read as truncated and
+    # fail closed on a command the scanner had finished (codex, #553).
+    return out, len(cands) - 1 > _MAX_EXPANSION_READINGS
+
 
 
 def _split_simple_commands(s):
@@ -1340,6 +1602,250 @@ _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 
 _UNRESOLVED_CW_CHARS = "$*?[{(" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
 
+# UNRESOLVED COMMAND WORD -> file modification (#553). The characters above answer
+# "could this word BE a shell"; asked of the word that names the VERB they answer whether
+# the command can be read at all. `P=rm;${P}${IFS}-rf${IFS}src` deletes the tree while its
+# command word equals no verb, and every runner the gate knows (`sh -c`, `bash -c`,
+# `env -S`, `watch`) carried that hole identically. Unresolved fails CLOSED here exactly
+# as it does for the shell-NAME tests above.
+#
+# All three expansions are in scope -- `/b?n/r?` reaches /bin/rm and a brace list reaches
+# `rm -rf src`, carrying no `$` at all -- but they are NOT asked the same question, and
+# that split is the design. Substitution is unbounded: unreadable outright. Pathname and
+# brace expansion resolve against NAMES, so they are asked whether they can reach a name
+# this module acts on (_reaches_judged_name). Treating every glob as unreadable instead
+# broke a documented contract: 519 asserts a globbed CASE PATTERN stays allowed, and the
+# segment splitter hands its alternatives here in command position.
+#
+# MEASURED COST, differentially against this file at HEAD over 8,514 real shell-history
+# commands (2026-08-29, #553): 209 flip from allow to block; 191 are not commands at all
+# (continued argument strings and prose a history file recorded as separate lines),
+# leaving 18 genuine -- 0.21%. Those are `eval "$(ssh-agent -s)"`-shaped shell-init
+# idioms, backtick-quoted lines, and `sudo <cmd> "$VAR"`; 9 come from the wrapped branch.
+# The helper guard's twin flips NOTHING on the same corpus, being scoped to segments that
+# also NAME a helper. That measurement settled the issue's open question -- "how many real
+# commands does this break, which is measurable against shell history rather than
+# arguable" -- in favour of failing closed. The cost lands only WHILE a review is pending
+# and is recoverable through the skip lease; a verb the gate cannot read is neither.
+
+
+# Every name whose RECOGNITION changes the verdict of _runs_mod_verb / _segment_is_mod.
+# A pattern is judged by whether it can reach one of these, so the set must be what those
+# two look at when the word is literal, or the classifier disagrees with itself on the
+# same command spelled two ways.
+#
+# Every name the walk special-cases has to be here, because each changes where the walk
+# stops: find and sed are matched by command word rather than through _MOD_VERBS,
+# reaching a WRAPPER selects the conservative all-token regime, and reaching a RESERVED
+# word or NAME INTRODUCER makes the walk step over the pattern and read on. That last
+# group was missing and cost a hole -- `tim? rm -rf src` and `functio? f { rm x; }; f`
+# resolved to a word this set had no opinion of, so the literal `rm` behind them was
+# never examined (codex, #553). Those, plus `su?o rm -rf src`, `watc? 'rm -rf src'`,
+# `fin? . -delete` and `se? -i s/a/b/ f`, are all allowed at HEAD and blocked here.
+#
+# SHELL names are here too, and getting to that took two passes. They were excluded at
+# first because 519's stdin-shell matrix asserted `printf 'hello' | /bin/[b]ash` stays
+# allowed. But a pattern yields as many words as it matches, so `ba*` is `bash baz` in a
+# directory holding both, and excluding shells let it through while it ran `baz` (codex,
+# #553). A globbed shell spelling is an unresolved command word like any other, so the
+# matrix now asserts it the same way as `$SHELL` and the exclusion is gone.
+_JUDGED_NAMES = (frozenset(_MOD_VERBS) | frozenset(_DISPATCHERS) | _WRAPPERS
+                 | _OPAQUE_INTRO | _RESERVED | _NAME_INTRO | _CMD_PREFIX_WORDS
+                 | _TEST_OPEN | _SHELLS | _STDIN_SHELLS | _LAUNCHER_SHELLS
+                 | _DASH_C_RUNNERS | frozenset(("find", "sed", "xargs")))
+
+# Substitution characters, the half of _UNRESOLVED_CW_CHARS that stands for text this
+# module cannot bound. `$` and a backtick can produce ANY string -- `${P}` may be assigned
+# from a read -- so there is nothing to test a pattern against and the answer is simply
+# "unreadable". The remaining characters are PATHNAME and BRACE expansion, which resolve
+# against names, and those get the narrower question below.
+_SUBST_CW_CHARS = "$" + chr(96)
+_BACKTICK = chr(96)
+
+
+# Longest command word the bracket scanner will read. Beyond it the word is answered
+# "unreadable" rather than scanned -- see _squeeze_brackets.
+_MAX_BRACKET_WORD = 1024
+
+
+def _squeeze_brackets(w):
+    """Replace every BRACKET EXPRESSION in `w` with `*`.
+
+    `?` looks like the right stand-in -- a bracket expression matches one character -- and
+    is wrong for a COLLATING SYMBOL, which matches one collating ELEMENT and can be
+    several characters: under a locale where `ch` is one element, `wat[[.ch.]]` reaches
+    `watch` while `wat?` matches nothing (codex, #553). `*` cannot under-match, and the
+    only cost of over-matching here is an over-block, so it is the fail-CLOSED choice.
+
+    A scanner rather than a regex, because bash's bracket grammar has three features a
+    regex kept getting wrong (codex, #553, three rounds): a POSIX construct closes with
+    its own `]` (`[[:alpha:]]`, `[[=m=]]`, `[[.hyphen.]]`), it can be one member among
+    others (`[[:alpha:]_]`), and a `]` in FIRST position is a literal member (`[]m]`).
+    Each miss left a stray `]` in the squeezed word, so `r[[:alpha:]]` became `r?]` and
+    reached no verb.
+
+    An UNTERMINATED `[` is left as a literal, which is what bash does with it too.
+    """
+    # A command word this long is not honest shape, and the scan below is worst-case
+    # quadratic on adversarial bracket soup (`[[:x` repeated, with one `]` at the end):
+    # each turn does a suffix-wide search for a terminator that never arrives. Rather
+    # than bound the inner searches individually, an over-long word is answered `*` --
+    # unreadable, the fail-CLOSED direction -- which also keeps a large Bash payload from
+    # stalling a gate that fails open on timeout (codex, #553).
+    if len(w) > _MAX_BRACKET_WORD:
+        return "*"
+    out = []
+    i, n = 0, len(w)
+    last_close = w.rfind("]")
+    while i < n:
+        if w[i] != "[":
+            out.append(w[i])
+            i += 1
+            continue
+        j = i + 1
+        if j < n and w[j] in "!^":
+            j += 1
+        if j < n and w[j] == "]":         # a literal `]` as the first member
+            j += 1
+        closed = False
+        while j < n:
+            if w[j] == "[" and j + 1 < n and w[j + 1] in ":=.":
+                k = w.find(w[j + 1] + "]", j + 2)
+                if k < 0:
+                    break                 # unterminated POSIX construct
+                j = k + 2
+                continue
+            if w[j] == "]":
+                closed = True
+                j += 1
+                break
+            j += 1
+        if not closed:
+            # No `]` remains at all -> no later `[` can close either, so copy the rest
+            # verbatim instead of rescanning it once per bracket. `rfind` is computed
+            # once above rather than slicing the suffix per turn.
+            if i >= last_close:
+                out.append(w[i:])
+                break
+            out.append(w[i])
+            i += 1
+            continue
+        out.append("*")
+        i = j
+    return "".join(out)
+
+
+def _reaches_judged_name(w):
+    """Can this pattern expand onto a name this module would act on?
+
+    `/b?n/r?` reaches `rm` and must block; `*.md` reaches nothing and must not. Asking
+    that rather than "does the word contain a glob character" is what keeps the
+    read/mention contract -- 519 asserts a globbed CASE PATTERN stays allowed, and a
+    blanket rule blocked it, and `./*.sh` with it.
+
+    BRACE and EXTGLOB are answered "unreadable" without asking fnmatch, which has no
+    notion of either grammar: `{rm,-rf}` and `r+(m)` reach a verb by syntax it would read
+    as literal text.
+
+    BRACKETS are squeezed by _squeeze_brackets first rather than handed to fnmatch,
+    because Python translates `[...]` to a regex class and answers confidently but
+    wrongly -- bash implements POSIX classes and Python does not, so `/bin/r[[:alpha:]]`
+    reaches /bin/rm while fnmatch reads the literal set `[:alph` (codex, #553). After the
+    squeeze `r[[:alpha:]]`, `r[m]` and `[b]ash` all reach a judged name and block; shell
+    names are judged too, so the bracketed shell spelling is not an exception.
+
+    The match is CASE-INSENSITIVE: `shopt -s nocaseglob` makes `/bin/R?` reach /bin/rm.
+    Folding only widens what a pattern reaches, so it costs over-blocks, never coverage.
+
+    A bracket character SURVIVING the squeeze means the word was not read: an ESCAPED
+    delimiter -- a backslash before the closing bracket -- reaches /bin/rm, and that
+    backslash is removed by tokenization before this sees it, so the scanner ends the
+    expression at the wrong `]` and leaves a stray one (codex, #553). Which `]` was
+    escaped cannot be recovered here, so a leftover bracket is answered "unreadable".
+    """
+    if any(ch in w for ch in "{("):
+        return True                       # not fnmatch's grammar -- see the docstring
+    squeezed = _squeeze_brackets(w)
+    if "[" in squeezed or "]" in squeezed:
+        return True                       # unread bracket syntax: fail CLOSED
+    return _pattern_reaches(squeezed, _JUDGED_NAMES)
+
+
+def _cmd_name(tok):
+    """The part of `tok` that names the program, or the whole token when nothing can.
+
+    `_basename` splits on the last `/`, which is right for a path and wrong for a token
+    whose slash is not a path separator. Three shapes proved that in review (codex, #553):
+    `${P:-rm}${Q%/foo}` and `{rm,/tmp/victim}` hide the slash INSIDE the construct, and
+    `P='rm -rf src'; ${P}/victim` field-splits BEFORE the suffix attaches -- all three ran
+    rm while basenaming to words with no expansion character left to notice.
+
+    So a token that can FIELD-SPLIT -- any substitution, and brace expansion -- is never
+    split: no prefix of it is reliably the program name, and returning it whole keeps its
+    expansion characters visible, the fail-CLOSED direction. That costs the precision an
+    earlier round advertised (`"$HOME/bin/tool"`, `./${dir}/script.sh` now block); unsound
+    precision is worth less than the over-block it saves, and two attempts to keep it
+    (nesting depth, then last-closer) each shipped a bypass.
+
+    PATHNAME expansion still splits, because `*` and `?` do not match `/`, so the last
+    component is the one that names the program. It can still match SEVERAL files, and
+    that is handled where it matters rather than here: _unresolved_word answers a glob in
+    a directory component, and _segment_is_mod judges the suffix a vanished pattern would
+    promote. `/b?n/r?` therefore still resolves to `r?` and is judged against the verbs.
+    """
+    if any(ch in tok for ch in _SUBST_CW_CHARS) or "{" in tok:
+        return tok
+    return _basename(tok)
+
+
+def _pattern_reaches(squeezed, names):
+    try:
+        pat = re.compile(fnmatch.translate(squeezed), re.IGNORECASE)
+    except (re.error, TypeError):
+        return True                       # unparseable pattern: fail CLOSED
+    return any(pat.match(n) for n in names)
+
+
+def _unresolved_word(w):
+    """True if the shell rewrites this word into something this module cannot read.
+
+    Asked of the RAW token, not a basename. Three things have to be distinguished, and
+    each was a bypass when it was not (codex, #553):
+
+      * a token that can FIELD-SPLIT -- any substitution, or a brace list -- is unreadable
+        whole, because no prefix of it is reliably the program name. `"$HOME/bin/tool"`
+        and `./${dir}/script.sh` are unresolved for this reason; basenaming them to
+        `tool` / `script.sh` let `${P}/victim` and `${P:-rm}${Q%/foo}` through.
+      * a glob in a DIRECTORY component can also yield several words even when the final
+        component is literal: `/tmp/*/bash` can be `/tmp/a/bash /tmp/b/bash`, where the
+        first executes the second. Unreadable too.
+      * only when the directory part is clean does the last component name the program,
+        which is what keeps `/b?n/r?` resolving to `r?` and judged against the verbs.
+
+    TILDE expansion is unreadable when it is the WHOLE word: `~` becomes $HOME, so
+    `HOME=/bin/rm; ~ -rf src` runs rm while the word names nothing (codex, #553). With a
+    `/` in it the last component still names the program (`~/bin/tool` is `tool`), so only
+    the directoryless spelling -- `~`, `~user` -- is unresolved.
+
+    KEEP IN STEP WITH marker_check._unresolved_word, which asks the same question of the
+    helper guard -- against the HELPER names there, since that is the list its callers
+    act on.
+    """
+    if not w:
+        return False
+    if any(ch in w for ch in _SUBST_CW_CHARS) or "{" in w:
+        return True
+    if w.startswith("~") and "/" not in w:
+        return True
+    head, sep, tail = w.rpartition("/")
+    if sep and any(ch in head for ch in "*?[("):
+        return True
+    name = tail if sep else w
+    if not any(ch in name for ch in _UNRESOLVED_CW_CHARS):
+        return False
+    return _reaches_judged_name(name)
+
+
 # Compound-command keyword sets -- see the definitions above _FUNC_NAME.
 
 
@@ -1818,10 +2324,21 @@ def _piped_shell_producers(pairs):
             # hook it backs has a 5s timeout after which NO decision is written, which the
             # harness reads as ALLOW. Overrunning leaves the budget negative, so the charge
             # downstream fails CLOSED. The gate copy already charged here.
-            _scan_budget[0] -= len(seg.split())
-            if _scan_budget[0] < 0:
-                break
-            if _may_read_program_from_stdin(seg):
+            #
+            # MEMOIZED across the expansion-aware readings, which re-walk the very same
+            # stages: charging each reading separately spent a 4,000-token budget on a
+            # 663-character read whose one pipeline was simply seen 64 times (codex, #553).
+            # Answering from the memo is not work, so it is not charged; a MISS pays in
+            # full, which keeps the bound on the walk this budget exists to bound.
+            if seg in _stdin_memo:
+                _reads_stdin = _stdin_memo[seg]
+            else:
+                _scan_budget[0] -= len(seg.split())
+                if _scan_budget[0] < 0:
+                    break
+                _reads_stdin = _may_read_program_from_stdin(seg)
+                _stdin_memo[seg] = _reads_stdin
+            if _reads_stdin:
                 last = i
         bare = _carries_no_command(seg)
         # Counted loosely, and safe BECAUSE of the ordering above. A literal `{` argument
@@ -3021,12 +3538,16 @@ def _starts_with_wrapper(toks):
     return False
 
 
-def _effective_command_word(toks):
+def _effective_command_word(toks, raw=False, want_index=False):
     """The verb this simple command RUNS, with the preamble peeled.
 
     Skips leading assignments, flags, reserved words, grouping punctuation, wrappers and
     bare numeric operands; keywords that introduce a NAME consume their operand too.
     Returns None if nothing executes.
+
+    `raw` returns the TOKEN rather than its resolved name, for the caller that has to see
+    the whole spelling -- a name alone cannot show a glob sitting in a DIRECTORY component
+    (see _unresolved_word).
 
     Only consulted for WRAPPER-FREE commands (see _runs_mod_verb): peeling a wrapper
     preamble precisely would mean knowing which of its flags take an operand
@@ -3034,7 +3555,7 @@ def _effective_command_word(toks):
     fails OPEN.
     """
     skip_next = False
-    for t in toks:
+    for idx, t in enumerate(toks):
         if skip_next:
             skip_next = False
             continue
@@ -3048,7 +3569,10 @@ def _effective_command_word(toks):
             continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             continue
-        b = _basename(t)
+        # _cmd_name, not _basename: a `/` inside expansion SYNTAX is not a path
+        # separator, and splitting there produced a word with no expansion character
+        # left in it. Identical to _basename for every ordinary token.
+        b = _cmd_name(t)
         if b in _TEST_OPEN:
             return None               # a test expression runs no command
         if b in _NAME_INTRO:
@@ -3056,7 +3580,9 @@ def _effective_command_word(toks):
             continue
         if b in _RESERVED or b in _WRAPPERS:
             continue
-        return b
+        if want_index:
+            return idx
+        return t if raw else b
     return None
 
 
@@ -3100,6 +3626,63 @@ def _sed_inplace(toks):
     return False
 
 
+def _find_mutates(toks, depth, cw=None, names=None, wrapped=None):
+    """True iff this `find` invocation writes -- `-delete`, or a modifying -exec payload.
+
+    Its own function because the NULLGLOB walk judges a promoted remainder through
+    _payload_is_mod, which knew only about direct verbs: `no-match-* find . -delete` then
+    classified as a read (codex, #553).
+    """
+    if names is None:
+        names = [_basename(t) for t in toks]
+    if cw is None:
+        cw = _effective_command_word(toks)
+    if wrapped is None:
+        wrapped = _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO
+    if not (cw == "find" or (wrapped and "find" in names)):
+        return False
+    if "-delete" in names:
+        return True
+    i, n = 0, len(toks)
+    while i < n:
+        if toks[i] not in ("-exec", "-execdir", "-ok", "-okdir"):
+            i += 1
+            continue
+        payload, j = [], i + 1
+        while j < n:
+            t2 = toks[j]
+            # `+` terminates only after `{}`; elsewhere it is an operand, and breaking
+            # on it truncated the payload (`-o + unshare`).
+            if t2 == ";" or (t2 == "+" and payload and payload[-1] == "{}"):
+                break
+            payload.append(t2)
+            j += 1
+        if payload and _payload_is_mod(payload, depth):
+            return True
+        # EVERY -exec-like token is re-examined, including one sitting inside a payload
+        # already read -- which is origin/main's scan, restored. Skipping PAST a consumed
+        # payload reads what find ACTUALLY executes (`-exec printf %s -exec rm -rf src ;`
+        # runs printf, and the inner words are printf's data) and is the more precise
+        # parse, but it turns a BLOCK into an ALLOW on a segment naming `rm -rf`, and this
+        # classifier does not take a fail-open direction on a precision argument. The cost
+        # is the rare false block on that contrived read, which is the trade this module
+        # documents everywhere.
+        #
+        # Re-examining is QUADRATIC, though, and quadratic here is its own fail-open: a
+        # hook killed by its 5s timeout writes no decision and the harness reads that as
+        # ALLOW. 3,000 `-exec` tokens followed by a verb measured 5.158s, because this
+        # branch's `_payload_is_mod` re-enters `is_file_mod` for executed operands and so
+        # pays far more per rescan than origin/main did. Charged to the same scan budget
+        # every other unbounded walk in this file is charged to, and exhausting it fails
+        # CLOSED -- the answer is a BLOCK delivered in time, never a scan that runs past
+        # the timeout (codex backstop, #553).
+        _scan_budget[0] -= len(payload) + 1
+        if _scan_budget[0] < 0:
+            return True                   # fail CLOSED -- see _MAX_SCAN_TOKENS
+        i += 1
+    return False
+
+
 def _payload_is_mod(toks, depth):
     """Full verdict for a token list that is itself a command — used for the find -exec
     payload and a function body.
@@ -3127,10 +3710,35 @@ def _runs_mod_verb(toks):
     Otherwise -> the command word alone, so data operands stay data.
 
     Shared by the segment check, the find -exec payload and the function body.
+
     """
     names = [_basename(t) for t in toks]
     if _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO:
         if any(n in _MOD_VERBS for n in names):
+            return True
+        # An UNRESOLVED word anywhere (#553). This regime already scans every token,
+        # for exactly the reason that applies here: locating the command word past a
+        # wrapper preamble needs per-flag arity, and every approximation of that fails
+        # OPEN. `sudo -u root ${P} -rf src` peels to `root`, so asking the effective
+        # command word alone -- which is what the unwrapped branch below does -- leaves
+        # this branch open on the same input the ticket reports.
+        #
+        # Assignments and flags are excluded because neither can BE the command word.
+        # A flag's OPERAND is NOT excluded, and this is the branch's real cost, stated
+        # plainly rather than implied: `sudo -u "$U" ls`, `sudo ls "$f"` and a `sudo grep`
+        # whose PATTERN carries a bracket expression all block -- not because any of them
+        # runs something unresolved, but because telling a flag operand from a command
+        # word is the arity table this module refuses to keep, the same trade that already
+        # makes `sudo grep -n rm f` block on the verb name alone. Most of the measured
+        # cost of this change lands here rather than in the command-word branch below.
+        # Assignments and flags are skipped because neither can BE the command word --
+        # UNLESS one carries a substitution, which can field-split and leave only its
+        # FIRST field wearing the prefix: with P='x rm -rf src', `env X=${P}` becomes
+        # `X=x rm -rf src` and env runs rm, and `sudo -u${P}` does the same (codex, #553).
+        # The shape is only a reason to skip when it is the whole word.
+        if any(_unresolved_word(t) for t in toks
+               if any(ch in t for ch in _SUBST_CW_CHARS)
+               or (not _ASSIGN_RE.match(t) and not t.startswith("-"))):
             return True
         # A dispatcher behind a wrapper (`sudo git clean -fd`, `env git stash`) cannot use
         # the positional lookup below, because locating the command word past a wrapper
@@ -3147,6 +3755,15 @@ def _runs_mod_verb(toks):
         applies, writes = _dispatcher_verdict(toks)
         return applies and writes
     word = _effective_command_word(toks)
+    # The RAW token, because a resolved name cannot show a glob in a directory component.
+    raw_word = _effective_command_word(toks, raw=True)
+    # UNRESOLVED COMMAND WORD -> fail CLOSED (#553). `${P}` is not `rm`, so no verb
+    # matched and no runner was recognised; the classifier tokenizes but cannot expand.
+    # Evaluating the expansion is not available to a static reader -- `${P}` may be
+    # assigned from anything, including a read -- so the only honest verdict for a word
+    # that names nothing yet is the conservative one.
+    if _unresolved_word(raw_word or ""):
+        return True
     if word in _MOD_VERBS:
         return True
     # SUBCOMMAND DISPATCHERS. `git rm src/x` and `git mv a b` really do delete and rename
@@ -3240,19 +3857,472 @@ def _dispatch_regions(toks, name, i):
     return "", gopts, []
 
 
-def _segment_is_mod(toks, depth=0):
-    """True iff this simple command RUNS a file-modifying verb."""
+def _dequote_word(word):
+    """`word` as the shell resolves its quoting, which is not "delete every quote".
+
+    Inside SINGLE quotes nothing is special, so a backslash is a literal character.
+    Inside DOUBLE quotes a backslash escapes only `$`, a backtick, `"`, itself and a
+    newline; before anything else it stays. Deleting quotes and backslashes wholesale got
+    `'no\\match'-*` wrong -- it produced `nomatch-*`, matched no token, and the caller
+    stopped (codex, #553).
+    """
+    out, q, i, n = [], "", 0, len(word)
+    while i < n:
+        ch = word[i]
+        if q == _SQ:
+            if ch == _SQ:
+                q = ""
+            else:
+                out.append(ch)
+        elif q == _DQ:
+            if ch == chr(92) and i + 1 < n and word[i + 1] in "$" + chr(96) + _DQ + chr(92) + chr(10):
+                if word[i + 1] != chr(10):   # a line CONTINUATION drops both characters
+                    out.append(word[i + 1])
+                i += 1
+            elif ch == _DQ:
+                q = ""
+            else:
+                out.append(ch)
+        elif ch == chr(92) and i + 1 < n:
+            if word[i + 1] != chr(10):      # ...and outside quotes too
+                out.append(word[i + 1])
+            i += 1
+        elif ch in (_SQ, _DQ):
+            q = ch
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _glob_kind(word):
+    """("expands", "extglob") for `word` as WRITTEN, quoting honoured.
+
+    Tokenization strips quoting, so by the time the walk below sees a command word it
+    cannot tell `no-match-*` from `'no-match-*'` -- and the quoted one is a literal
+    program name whose `rm` is an ARGUMENT, not a promoted command (codex, #553). This
+    asks the word as written, which still has its quotes.
+
+    Bracket grammar is followed rather than approximated: a `[` opens an expression only
+    if the word later CLOSES it, and bash's rule that a `]` in first position (after an
+    optional `!`/`^`) is a literal MEMBER is honoured -- so `tool-[`, `[]` and `[!]` are
+    ordinary command names, not patterns (codex, three rounds).
+
+    EXTGLOB is reported separately rather than refused by a blanket paren test, because a
+    paren INSIDE a bracket expression is an ordinary member: `no-match-[()]` is a plain
+    glob, and rejecting every parenthesis skipped it.
+    """
+    # A LINE CONTINUATION is removed by the shell before it parses anything, so `@\<nl>(x)`
+    # is the single word `@(x)` and the operator does introduce an extglob (codex, #553).
+    word = word.replace(chr(92) + chr(10), "")
+    q = ""
+    i, n = 0, len(word)
+    expands = extglob = False
+    esc_at = -1                           # index of the most recently ESCAPED character
+    # The last UNQUOTED `]`, computed once: an unmatched `[` otherwise rescans the whole
+    # remaining word for a closer that is not there, which is quadratic on a run of them.
+    # Counting a QUOTED `]` reintroduced that, since the inner scan correctly refuses it
+    # (codex, #553, twice).
+    last_close, _lq, _k = -1, "", 0
+    while _k < n:
+        _c = word[_k]
+        if _lq:
+            if _c == chr(92) and _lq == _DQ:
+                _k += 1
+            elif _c == _lq:
+                _lq = ""
+        elif _c == chr(92):
+            _k += 1
+        elif _c in (_SQ, _DQ):
+            _lq = _c
+        elif _c == "]":
+            last_close = _k
+        _k += 1
+    while i < n:
+        ch = word[i]
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+            i += 1
+            continue
+        if ch == chr(92):
+            i += 2                        # escaped: literal, never a pattern
+            esc_at = i - 1                # ...and the operator it escaped cannot INTRODUCE
+            continue                      # one either: `\@(x)` is a literal name (codex)
+        if ch in (_SQ, _DQ):
+            q = ch
+            i += 1
+            continue
+        if ch == "[":
+            if i > last_close:            # no `]` remains: this one is literal
+                i += 1
+                continue
+            j = i + 1
+            if j < n and word[j] in "!^":
+                j += 1
+            if j < n and word[j] == "]":  # a `]` here is a literal MEMBER
+                j += 1
+            # QUOTE-AWARE: a quoted `]` does not close the expression, so `[']'` is the
+            # literal command name `[]` rather than a glob (codex, #553).
+            bq = ""
+            while j < n:
+                cj = word[j]
+                if bq:
+                    if cj == chr(92) and bq == _DQ:
+                        j += 1
+                    elif cj == bq:
+                        bq = ""
+                elif cj == chr(92):
+                    j += 1
+                elif cj in (_SQ, _DQ):
+                    bq = cj
+                elif cj == "]":
+                    break
+                j += 1
+            if j < n:                     # closed: a real bracket expression
+                expands = True
+                i = j + 1
+                continue
+            i += 1                        # unmatched `[`: literal
+            continue
+        if ch in "*?":
+            expands = True
+        elif ch == "(" and i and word[i - 1] in "@+*?!" and i - 1 != esc_at:
+            extglob = True
+        i += 1
+    return expands, extglob
+
+
+def _raw_command_word(segtext, cw, nth=0):
+    """`cw` as the segment SPELLS it, or None when that cannot be established.
+
+    The walk below works on tokens, which have lost their quoting; this recovers the
+    original spelling by scanning the text for the first word in COMMAND position that
+    dequotes to `cw`. Words are cut on operators as well as whitespace, and a redirect's
+    operand is skipped, because both otherwise mislead: an attached `>` hides the command
+    word inside a longer string, and a here-string operand can spell it first. When no
+    word qualifies, the caller does nothing -- a MISS rather than a guess, which is the
+    direction this classifier accepts.
+    """
+    q = ""
+    i, n, start = 0, len(segtext), None
+    hits = []
+    after_redirect = False
+
+    def _emit(word, is_redirect):
+        # A redirect's OPERAND is not a command word. `<<< 'no-match-*' no-match-* rm`
+        # spells the same word twice, and taking the first match read the here-string
+        # operand's quoting as the command word's (codex, #553).
+        nonlocal after_redirect
+        if (word and not after_redirect and not is_redirect
+                and cw in (word, _dequote_word(word))):
+            hits.append(word)
+        after_redirect = is_redirect
+
+    while i <= n:
+        ch = segtext[i] if i < n else " "
+        if q:
+            if ch == chr(92) and q == _DQ:
+                i += 1
+            elif ch == q:
+                q = ""
+        elif ch == chr(92):
+            if start is None:
+                start = i                 # `\ano-match-*` starts HERE, not after the
+            i += 1                        # escape (codex, #553)
+        elif ch in (_SQ, _DQ):
+            q = ch
+            if start is None:
+                start = i
+        elif ch.isspace() or ch in "<>":
+            # Operators END a word as surely as whitespace does, or an ATTACHED redirect
+            # (`no-match-*>/dev/null rm`) hides the command word inside a longer string
+            # and it is never located at all (codex, #553).
+            if start is not None:
+                _emit(segtext[start:i], False)
+                start = None
+            if ch in "<>":
+                # The OPERATOR is delimited by _REDIR_RE, not by a run of characters that
+                # look like one: `>123` is a redirect to a file named `123`, and eating
+                # the digits made the next word look like the target, so the command word
+                # behind it was skipped (codex, #553). `2>&1` and `>&-` carry their
+                # target INSIDE the operator for the same reason.
+                _m = _REDIR_RE.match(segtext[i:])
+                i += _m.end() if _m else 1
+                # The next word is the TARGET either way -- attached (`>123`, and the
+                # `1` of `2>&1` once _REDIR_RE has taken `>&`) or separated
+                # (`> /dev/null`). Distinguishing them let an attached operand be read as
+                # an ordinary word, where a repeated spelling then misaligned the
+                # command-word lookup (codex, #553).
+                after_redirect = True
+                continue
+        elif start is None:
+            start = i
+        i += 1
+    # The Nth occurrence, not always the first: a pattern may appear again as an operand
+    # (`no-match-* rm no-match-* -rf src`), and the walk may also consume one occurrence
+    # per turn, where the next turn's command word is a DIFFERENTLY QUOTED spelling of
+    # the same token (`no-match-* 'no-match-*' rm`). Reusing hits[0] then read the
+    # second, quoted word as expandable (codex, #553).
+    return hits[nth] if nth < len(hits) else None
+
+
+# How many leading patterns the nullglob walk will step over. Only reached by a command
+# that opens with a long run of them; real ones open with one. Reaching it FAILS CLOSED:
+# a cap that simply stopped left the ninth pattern reading as the command word, which was
+# the bypass all over again (codex, #553).
+_MAX_VANISHING_WORDS = 8
+
+
+# The only things bash allows in FRONT of a redirect operator: an explicit fd number, or
+# the `{name}` of a varredir.
+_REDIR_FD_PREFIX_RE = re.compile(r"[0-9]+|[{][A-Za-z_][A-Za-z0-9_]*[}]")
+
+
+def _raw_pieces(segtext):
+    """`segtext` as a stream of ("word"|"redir", text), each keeping its spelling.
+
+    Word-at-a-time scanning was wrong twice over. Quoted whitespace (`X='a b' cmd`) splits
+    one word into two, and a redirect need not align with word boundaries at all: it can
+    be attached in front (`env>/dev/null cmd`), have its target attached or separated, and
+    a single whitespace-delimited word can carry SEVERAL (`</dev/null< /dev/null cmd`).
+    Emitting operators as their own pieces settles all of it in one pass (codex, #553).
+    """
+    pieces, cur, q, i, n, closers = [], [], "", 0, len(segtext), []
+    # A LINE CONTINUATION is removed by the shell before it parses anything.
+    segtext = segtext.replace(chr(92) + chr(10), "")
+    n = len(segtext)
+
+    def flush():
+        if cur:
+            pieces.append(("word", "".join(cur)))
+            del cur[:]
+
+    while i < n:
+        ch = segtext[i]
+        if q:
+            cur.append(ch)
+            if ch == chr(92) and q in (_DQ, chr(96)) and i + 1 < n:
+                i += 1
+                cur.append(segtext[i])
+            elif ch == q:
+                q = ""
+        elif ch == chr(92) and i + 1 < n:
+            cur.append(ch)
+            i += 1
+            cur.append(segtext[i])
+        elif ch in (_SQ, _DQ, chr(96)):
+            q = ch
+            cur.append(ch)
+        elif i + 1 < n and ((segtext[i + 1] == "(" and ch in "<>")
+                            or (ch == "$" and segtext[i + 1] in "{("
+                                and _dollar_run_is_even(cur))):
+            # PROCESS substitution is a WORD, not a redirect: `X=<(echo x) cmd` passes a
+            # /dev/fd path, and reading its `<` as a redirect operator skipped into the
+            # body and lost the command word behind it (codex, #553).
+            # A SUBSTITUTION is one word however much whitespace it contains: bash
+            # keeps `X=${Y:-a b}` whole, and splitting it slid the command word. The
+            # expected closer is STACKED rather than counted, because `)` is an ordinary
+            # character inside `${...}` and letting either bracket close either form
+            # ended the word early (codex, #553, twice).
+            i += 1
+            closers.append("}" if segtext[i] == "{" else ")")
+            cur.append(ch)
+            cur.append(segtext[i])
+        elif closers and ch == closers[-1]:
+            closers.pop()
+            cur.append(ch)
+        elif closers:
+            cur.append(ch)
+        elif ch.isspace():
+            flush()
+        elif ch in "<>" or (ch == "&" and i + 1 < n and segtext[i + 1] == ">"):
+            # An fd number or `{name}` already in the buffer belongs to the OPERATOR.
+            # `&>` takes NO fd or `{var}` prefix, so a pending word in front of it is an
+            # ordinary word: bash runs `2&>/dev/null cmd` with `2` as the command.
+            pending = "".join(cur)
+            if ch != "&" and pending and _REDIR_FD_PREFIX_RE.fullmatch(pending):
+                del cur[:]
+            else:
+                pending = ""
+                flush()
+            if ch == "&":                 # `&>` and `&>>` redirect BOTH streams
+                op = "&>>" if segtext[i:i + 3] == "&>>" else "&>"
+            else:
+                m = _REDIR_RE.match(segtext[i:])
+                op = m.group(0) if m else ch
+            pieces.append(("redir", pending + op))
+            i += len(op) - 1
+        else:
+            cur.append(ch)
+        i += 1
+    flush()
+    return pieces
+
+
+def _cmd_pos_index(pieces):
+    """(index of the piece in COMMAND position or None, whether a WRAPPER was passed).
+
+    Assignments, redirections with their targets, and wrapper flags are stepped over
+    exactly as _effective_command_word steps over their tokens. The wrapper flag is
+    reported because a wrapper flag can take an OPERAND, and settling which word is then
+    the command needs the per-flag arity table this module refuses to carry -- so the
+    caller falls back to the conservative all-word scan instead (codex, #553).
+    """
+    skip_next = wrapped = False
+    for idx, (kind, text) in enumerate(pieces):
+        if kind == "redir":
+            skip_next = True          # the target is the next word either way
+            continue
+        if skip_next:
+            skip_next = False
+            continue
+        if _ASSIGN_RE.match(text):
+            continue
+        # A flag belongs to a WRAPPER. With none seen yet the leading `-` is part of the
+        # program's own name, and skipping it walked past `-@(no-match) rm` (codex, #553).
+        if wrapped and text.startswith("-"):
+            continue
+        b = _basename(_dequote_word(text))
+        if b in _WRAPPERS or b in _RESERVED or b in _CMD_PREFIX_WORDS:
+            wrapped = True
+            continue
+        return idx, wrapped
+    return None, wrapped
+
+
+def _extglob_in_command_position(segtext):
+    """True iff an EXTGLOB can end up in command position in `segtext`.
+
+    The walk matters because a plain glob in front of it may VANISH under nullglob and
+    promote it, and the token stream cannot see that: shlex splits `@(a|b)` apart and its
+    alternation bar is indistinguishable from a pipe (codex, #553).
+    """
+    pieces = _raw_pieces(segtext)
+    for _ in range(_MAX_VANISHING_WORDS):
+        idx, wrapped = _cmd_pos_index(pieces)
+        # A vanished glob can promote a WRAPPER into command position, and from there the
+        # command word is not recoverable without per-flag arity -- so every remaining
+        # word is scanned, as the token-level wrapped regime does (codex, #553).
+        if wrapped:
+            return any(_glob_kind(t)[1] for k, t in pieces if k == "word")
+        if idx is None:
+            return False
+        expands, extglob = _glob_kind(pieces[idx][1])
+        if extglob:
+            return True
+        if not expands:
+            return False
+        pieces = pieces[idx + 1:]     # it vanished: the next word is the command
+    return True                       # still expanding at the cap -> fail CLOSED
+
+
+def _segment_is_mod(toks, depth=0, segtext=None):
+    """True iff this simple command RUNS a file-modifying verb.
+
+    `segtext` is the segment as written, which the nullglob rule needs because quoting is
+    the one thing tokenization has thrown away by the time it runs.
+    """
     names = [_basename(t) for t in toks]
     cw = _effective_command_word(toks)
     # `find` is deliberately NOT a conservative trigger: forcing the all-token scan for
     # it made read-only `find . -name rm` and `find . -exec echo rm {} +` classify as
     # writes. It gets its own block below.
     wrapped = _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO
+    # An EXTGLOB is judged on the SEGMENT TEXT, because the alternation bar inside
+    # `@(a|b)` tokenizes as a pipe and the construct never reaches _unresolved_word whole.
+    # It is unreadable either way: enabled it may match anything, and under nullglob it
+    # may vanish and promote the next word. _glob_kind is asked rather than a regex so
+    # that quoting still decides -- `echo '@(a|b)'` names a literal (codex, #553).
+    if segtext is not None:
+        # The WRAPPED regime scans every word for the same reason it does at token level:
+        # `sudo -u root @(r)m -rf src` peels to `root`, and settling which word is the
+        # command would need the per-flag arity table this module refuses to carry.
+        # Asked of the RAW pieces alone, never of the token-derived `wrapped`: tokens
+        # split a parameter expansion, so `X=${Y:-a env b} ls ...` exposes an `env` that
+        # is expansion TEXT, and reading the all-word scan off THAT made an extglob
+        # ARGUMENT decide the verdict. _extglob_in_command_position meets any real
+        # wrapper itself and widens on its own (codex, #553).
+        #
+        # That segment still fails closed, one layer down: the same spurious `env` puts
+        # _runs_mod_verb in its wrapped regime, where the expansion's own fragments read
+        # as unresolved. Narrowing THAT is the precision trade this module refuses; the
+        # cost is asserted in tests/test-impl-gate-scope-553.sh, not waived here.
+        if _extglob_in_command_position(segtext):
+            return True
     # Both regimes live in _runs_mod_verb; this used to re-implement them inline and the
     # copies drifted. _payload_is_mod calls the same function, so a find -exec payload and
     # a top-level command are judged identically.
     if _runs_mod_verb(toks):
         return True
+    # NULLGLOB: a pattern matching nothing DISAPPEARS and the next word becomes the
+    # command, so `no-match-* rm -rf src` runs rm while the pattern itself names no verb.
+    # The promoted remainder is CLASSIFIED rather than scanned for verb NAMES -- a name
+    # scan would read `no-match-* grep rm file` as a write, which is the #519
+    # false-positive class -- so a verb one layer deeper (`no-match-* sh -c "rm x"`) is
+    # caught and a read stays a read.
+    #
+    # REPEATED, because patterns vanish one after another: `no-a-* no-b-* rm -rf src`
+    # promotes rm only once both are gone. Bounded, and the bound only truncates a
+    # command that opens with a long run of patterns.
+    #
+    # An EXTGLOB never reaches this walk: it is judged EARLIER, on the segment text, and
+    # refused outright. Deciding what one PROMOTES needs adjacency and quoting that
+    # tokenization has discarded, and every formulation that tried FALSE-BLOCKED a read
+    # (`@(no-match) echo rm -rf src` promotes echo). Refusing it instead costs that same
+    # over-block and closes the spelling that was the ADR 0006 residual at origin/main --
+    # see _extglob_in_command_position. A pattern behind a wrapper FLAG stays residual:
+    # that one needs the per-flag arity table this module refuses to carry.
+    #
+    # BRACKETS are not refused: `no-match-[0-9]` is an ordinary pattern, and the shape
+    # that made brackets look dangerous -- `[ -f x ] rm -rf src`, where `[` is a literal
+    # test command -- never reaches here, because _effective_command_word returns None
+    # for a test opener.
+    #
+    # A pattern that MATCHES does not vanish, and nothing here can know which happens --
+    # that is a question about the filesystem at run time. Reading it as vanishing is the
+    # fail-CLOSED choice, and its cost is an over-block on a command whose first word is
+    # a bare glob followed by a verb.
+    #
+    # ACCEPTED OVER-BLOCK, and it is one shape wearing three spellings:
+    # _effective_command_word steps over flags and reserved words, so a program NAMED
+    # like one lets this resolve past it to the pattern behind. `-n no-match-* rm`, a
+    # quoted `'if' no-match-* rm` and a `/bin/if no-match-* rm` path all block. Contrived
+    # program names against a real promotion -- the direction this module takes
+    # everywhere -- and pinned in the suite so the cost is visible.
+    _promoted, _turns, _seen_cw = toks, 0, {}
+    while True:
+        _glob_cw = _effective_command_word(_promoted, raw=True)
+        if not _glob_cw:
+            break                         # a real command word: nothing left to promote
+        # The WORD's own spelling decides, not the segment's: a quoted command word with
+        # an unrelated glob later in the line (`'no-match-*' *.txt rm`) is still a literal
+        # program name (codex, #553). Unlocatable spelling -> do nothing.
+        _nth = _seen_cw.get(_glob_cw, 0)
+        _seen_cw[_glob_cw] = _nth + 1
+        _raw_cw = (_raw_command_word(segtext, _glob_cw, _nth) if segtext is not None
+                   else _glob_cw)
+        if _raw_cw is None:
+            break
+        _expands, _extglob = _glob_kind(_raw_cw)
+        # An EXTGLOB word vanishes under nullglob exactly as a plain glob does
+        # (`shopt -s extglob nullglob; ?(no-match) rm -rf src` runs rm), so it promotes
+        # too. Stopping the walk on it was a hole, not caution (codex, #553).
+        if not (_expands or _extglob):
+            break
+        if _turns >= _MAX_VANISHING_WORDS:
+            return True                   # a pattern STILL in command position at the
+        # The command word's own POSITION, not the first token that happens to equal it:
+        # a here-string operand can carry the same spelling, and slicing there left the
+        # real glob in command position (codex, #553).
+        _cut = _effective_command_word(_promoted, want_index=True)
+        _promoted = _promoted[_cut + 1:]                        # cap: fail CLOSED
+        _turns += 1
+        if _promoted and (_payload_is_mod(_promoted, depth)
+                          or _find_mutates(_promoted, depth)):
+            return True
     # `function NAME { body }`: the NAME is data, the BODY is code (it executes when the
     # name is called later). Judged by command word so `function f { echo rm; }` -- which
     # only prints the word -- stays allowed.
@@ -3273,20 +4343,8 @@ def _segment_is_mod(toks, depth=0):
     # command. The payload goes through _runs_mod_verb so a WRAPPED payload
     # (`-exec sudo -u root rm {} ;`) is caught and a DATA operand (`-exec echo rm {} +`)
     # is not.
-    if cw == "find" or (wrapped and "find" in names):
-        if "-delete" in names:
-            return True
-        for i, t in enumerate(toks):
-            if t in ("-exec", "-execdir", "-ok", "-okdir"):
-                payload = []
-                for t2 in toks[i + 1:]:
-                    # `+` terminates only after `{}`; elsewhere it is an operand, and
-                    # breaking on it truncated the payload (`-o + unshare`).
-                    if t2 == ";" or (t2 == "+" and payload and payload[-1] == "{}"):
-                        break
-                    payload.append(t2)
-                if payload and _payload_is_mod(payload, depth):
-                    return True
+    if _find_mutates(toks, depth, cw, names, wrapped):
+        return True
     # sed modifies only in-place, and the -i must come AFTER the sed token: in
     # `grep -i sed notes.txt` the -i belongs to grep and sed is its search string.
     # Anchored on command position so `echo sed -i` is not a write.
@@ -3311,6 +4369,7 @@ def is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
         _psub_budget[0] = _MAX_SCAN_TOKENS
+        _stdin_memo.clear()
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
         # and the cap returns before the tokenized pass that would have run
@@ -3358,6 +4417,36 @@ def is_file_mod(cmd, _depth=0):
     pairs, ok = _split_with_ops(_norm)
     if not ok:
         return _regex_fallback(cmd)      # same residual as the substitution path above
+    # ...and the flag the FIRST split raised is preserved across the extra readings below.
+    # `_paren_hash_ambiguous` is written only by _defuse_comments (inside _normalize) and
+    # cleared only above; _split_with_ops never touches it, so the `_amb` save/restore is a
+    # guard against a future reset here rather than a live fix. Do not drop the reset above
+    # — without it a `)#` ambiguity recorded by an earlier call leaks into this one, and a
+    # fail-CLOSED stall becomes an allow (codex, #553).
+    #
+    # `_norm` is reused rather than recomputed: _normalize is pure and its one side effect
+    # (raising the flag) is idempotent on the same input, so the second pass only re-ran
+    # comment defusing and every substitution over the whole command (coderabbit, #553).
+    # Gated on the NORMALIZED text: a line continuation between the `$` and the `{` hides
+    # the opener from the raw command, and bash removes it before parsing (codex, #553).
+    _readings, _base_pairs = [], pairs
+    if "${" in _norm.replace(chr(92) + chr(10), ""):   # ...plus the expansion-aware
+        _norm = _norm.replace(chr(92) + chr(10), "")   # readings, which only ADD
+        _amb = _paren_hash_ambiguous[0]
+        _readings, _cut = _expansion_readings(_blank_comments(_norm))
+        if _cut:
+            return True               # cap exceeded: unresolvable -> fail CLOSED
+        # The SEGMENT scan takes the union, because a segment's verdict is a pure function
+        # of its text and re-classifying a repeat buys nothing but budget. The PRODUCER
+        # scan below reads each reading whole, because that one turns on adjacency.
+        _seen_seg = set(_s for _o, _s in pairs)
+        pairs = list(pairs)
+        for _rd in _readings:
+            for _op, _seg in _rd:
+                if _seg not in _seen_seg:
+                    _seen_seg.add(_seg)
+                    pairs.append((_op, _seg))
+        _paren_hash_ambiguous[0] = _amb or _paren_hash_ambiguous[0]
     # `)#` -- the comment defuser could not tell whether that paren delimited a command, so
     # it refused to guess and said so. Unresolved is the fail-CLOSED case here exactly as it
     # is for an unparseable command above: fall back to the raw whole-command scan.
@@ -3374,16 +4463,36 @@ def is_file_mod(cmd, _depth=0):
     # regexes cannot see a redirect-only write, so `printf 'echo x > src/impl.py' | bash`
     # performed the write and classified as a read. The caller's own redirect check does not
     # cover it either -- it strips single-quoted text first, which is where a payload lives.
+    #
     # ...and the same verdict for a shell fed across a PROCESS SUBSTITUTION rather than a
     # pipe, which the scan above recognises only `|`/`|&` as (#563).
+    #
+    # Each reading is walked ON ITS OWN, never as part of the union above: this is the one
+    # consumer that turns on adjacency, and a union built by segment dedup pairs a receiver
+    # with whichever producer happened to be written first (codex, #553).
+    #
+    # BOTH transports are asked of every reading. Scoping the process-substitution scan to
+    # the base split would have left a receiver that only ONE reading exposes unasked,
+    # which is the same miss the readings exist to close -- and `_procsub_producers` is
+    # already whole-command in scope (it is handed `_norm`), so the extra readings widen
+    # only which STAGES it is asked about, never the text it reads (#553, #563).
+    #
+    # Charged ONCE per distinct stage, not once per reading -- see the memo at the debit
+    # site. Resetting the budget per reading instead was measured at 3.9s on a 64 KiB
+    # command, against the 5s hook timeout the budget exists to stay inside (#553).
     _psub = _process_substitutions(_norm)
     _psub_present = any(_psub[:2])
-    _producers = _piped_shell_producers(pairs) + _procsub_producers(pairs, _norm, _psub)
-    for producer in _producers:
-        if _regex_fallback(producer):
-            return True
-        if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(producer)):
-            return True
+    _seen_prod = set()
+    for _seq in [_base_pairs] + _readings:
+        for producer in (_piped_shell_producers(_seq)
+                         + _procsub_producers(_seq, _norm, _psub)):
+            if producer in _seen_prod:
+                continue
+            _seen_prod.add(producer)
+            if _regex_fallback(producer):
+                return True
+            if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(producer)):
+                return True
     # INDIRECTION WITHDRAWS THE STAGE CONTRACT, the same way it does in the helper guard.
     # A NAME can stand for either end of the transport: `f(){ bash; }; printf <payload> | f`
     # hides the shell, and `g(){ printf <payload>; }; g | bash` hides the payload -- and the
@@ -3426,8 +4535,10 @@ def is_file_mod(cmd, _depth=0):
         _scan_budget[0] -= len(toks)
         if _scan_budget[0] < 0:
             return True                   # fail CLOSED -- see _MAX_SCAN_TOKENS
-        if _segment_is_mod(toks, _depth):
+        if _segment_is_mod(toks, _depth, segtext):
             return True
+        # NULLGLOB promotion is handled in _segment_is_mod, for the spellings whose
+        # expansion can actually be read -- see the walk there and the residual it names.
         # A REDIRECT inside an executed string writes just as surely as a verb does.
         # The caller checks redirects on the raw command, but it strips single-quoted
         # text first (so a literal `jq .x > 0` is not a write), which is exactly the

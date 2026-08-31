@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found fourteen ways a first draft of that membership test still leaked, and
+Review found sixteen ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -281,6 +281,17 @@ adding a grammar:
   read it as `@{-1}`, the previous checkout, so `git checkout -b master -` was
   dropped with the other `-`-leading words and vouched by HEAD alone while
   landing wherever that previous checkout was.
+- **A refspec carried by an OPTION.** `git fetch
+  --refmap=refs/heads/main:refs/heads/master` writes the destination just as a
+  positional refspec does; the word went into the option list and moved on, so
+  neither half was examined. Refspec reading is now one helper called for a bare
+  word and for an option's value alike.
+- **An UNBORN protected branch, in the FAST-FORWARD arm.** It is absent from the
+  set of branches that EXIST, so in a repo where some other protected branch was
+  present the empty-set safeguard did not fire and the arm found no protected
+  current ref to match — and `git pull <remote> <branch>` populated the unborn
+  protected branch from remote content, the one thing that arm refuses
+  everywhere else. The current-branch test now runs over the protected NAMES.
 - **A start point that names a RANGE.** Measured: `git branch <name> f1...f2`,
   `checkout -b` and `switch -c` all create the branch at the MERGE BASE. It names
   two revisions, so `rev-parse <word>^{commit}` refuses to reduce it and the word

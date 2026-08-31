@@ -1836,6 +1836,9 @@ run_gate "a fetch refspec creating a protected branch -> block" \
     "resolved in the REMOTE repository"
 run_gate "...but a plain fetch into the remote-tracking namespace is fine" \
     allow "git fetch origin"
+run_gate "...and an OPTION can carry the same refspec" \
+    block "git fetch --refmap=refs/heads/main:refs/heads/master elsewhere main" \
+    "resolved in the REMOTE repository"
 
 # A word carrying whitespace cannot be a ref NAME, but git still accepts it as a
 # REVISION -- `:/subject` finds a commit by its message -- so dropping it left a
@@ -1904,6 +1907,14 @@ run_gate "...but content a protected branch already carries is still inert" \
     allow "git update-ref HEAD develop"
 run_gate "...and an ordinary command in that repo is untouched" \
     allow "git add -A"
+# An UNBORN protected branch is absent from the set of branches that EXIST, so
+# the fast-forward arm found no protected current ref to match and let a pull
+# populate it from remote content -- the one thing that arm refuses everywhere
+# else. It is still the protected branch when it has no commits yet.
+run_gate "a pull onto an UNBORN protected branch is refused like any other" \
+    block "git pull origin main" "does not exist locally yet"
+run_gate "...and a merge onto it is the creation it would be anywhere" \
+    block "git merge develop" "FAST-FORWARD the protected branch"
 # Ref names arriving as DATA, in the two remaining shapes.
 run_gate "git fetch --stdin reads its refspecs from unreadable input" \
     block "git fetch --stdin" "writes refs from INPUT the gate cannot read"

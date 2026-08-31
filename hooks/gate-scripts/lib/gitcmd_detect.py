@@ -3976,6 +3976,27 @@ def git_ref_create(cmd):
         w = w[len('refs/heads/'):] if w.startswith('refs/heads/') else w
         if w and w not in seen:
             seen.append(w)
+
+    def _refspec(w, ntoks):
+        """Read a `<src>:<dst>` word, wherever it came from."""
+        nonlocal opaque, fetch_spec
+        if ':' not in w or _REF_CREATE_IMPLAUSIBLE_RE.search(w):
+            return
+        # A `*` in the DESTINATION half expands to ref names no word here can
+        # spell. refs/remotes/ and refs/tags/ cannot become a local branch, so
+        # the ordinary fetch refspec is untouched.
+        dst = w.rsplit(':', 1)[-1].lstrip('+')
+        local_dst = not dst.startswith(('refs/remotes/', 'refs/tags/'))
+        if '*' in dst and local_dst:
+            opaque = opaque or 'wildcard'
+        if local_dst and 'fetch' in ntoks:
+            fetch_spec = True
+        # `lstrip('+')` because a refspec may be force-prefixed:
+        # `+<oid>:refs/heads/master` left the SOURCE as `+<oid>`, which resolves
+        # to no commit, so the unreviewed content it names was skipped and a
+        # vouched HEAD made the creation read as inert.
+        for part in w.split(':'):
+            _add(part.lstrip('+'))
     for chunk in chunks:
         for _op, seg in split_segments(chunk):
             if not seg.strip():
@@ -4044,34 +4065,17 @@ def git_ref_create(cmd):
                 if t.startswith('-'):
                     if t not in opts:
                         opts.append(t)
+                    # An option can CARRY a refspec: `git fetch
+                    # --refmap=refs/heads/main:refs/heads/master` writes the
+                    # destination just as a positional refspec does, and putting
+                    # the word in `opts` and moving on examined neither half.
+                    if '=' in t:
+                        _refspec(t.split('=', 1)[1], ntoks)
                     continue
                 if _REF_CREATE_GIT_EXE_RE.match(t.rsplit('/', 1)[-1]):
                     git_exe = True
                 _add(t)
-                if ':' in t:
-                    # A `*` in the DESTINATION half expands to ref names no word
-                    # here can spell. refs/remotes/ and refs/tags/ cannot become
-                    # a local branch, so the ordinary fetch refspec is untouched.
-                    _dst = t.rsplit(':', 1)[-1].lstrip('+')
-                    _local_dst = not _dst.startswith(('refs/remotes/',
-                                                      'refs/tags/'))
-                    if '*' in _dst and _local_dst:
-                        opaque = opaque or 'wildcard'
-                    if _local_dst and 'fetch' in ntoks:
-                        fetch_spec = True
-                    # A COLON REFSPEC writes a ref with no checkout:
-                    # `git push . HEAD:refs/heads/master` and `git fetch .
-                    # feature:refs/heads/master` both CREATE `master`, and the
-                    # whole refspec is one word that matches no protected name.
-                    # Both halves are reported -- the destination is the name
-                    # being created, the source is the content it would carry.
-                    # `lstrip('+')` because a refspec may be force-prefixed:
-                    # `+<oid>:refs/heads/master` left the SOURCE as `+<oid>`,
-                    # which resolves to no commit, so the unreviewed content it
-                    # names was skipped and a vouched HEAD made the creation read
-                    # as inert.
-                    for part in t.split(':'):
-                        _add(part.lstrip('+'))
+                _refspec(t, ntoks)
                 if _derive:
                     bare = (t[len('refs/heads/'):]
                             if t.startswith('refs/heads/') else t)

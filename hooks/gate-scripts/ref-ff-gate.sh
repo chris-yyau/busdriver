@@ -1447,7 +1447,13 @@ fi
 # feature work that the commit/PR gates already cover on its way to main.
 CURRENT=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || CURRENT=""
 [ -z "$CURRENT" ] && exit 0
-case " $PROTECTED_SET " in *" $CURRENT "*) ;; *) exit 0 ;; esac
+# PROTECTED_NAMES, not PROTECTED_SET. An UNBORN protected branch is absent from
+# the set of branches that EXIST, so a repo where some OTHER protected branch
+# exists passed the empty-set safeguard and then found no protected current ref
+# to match -- and `git pull <remote> <branch>` populated the unborn protected
+# branch from remote content, which is precisely what this gate refuses
+# everywhere else. It is still the protected branch when it has no commits yet.
+case " $PROTECTED_NAMES " in *" $CURRENT "*) ;; *) exit 0 ;; esac
 PROTECTED="$CURRENT"
 
 # Placed AFTER the protected-branch determination, unlike the companion refusal

@@ -2160,6 +2160,98 @@ _CASE_ARM_RESTART_RE = re.compile(r"^\)(?:;;&|;;|;&)\(?$")
 _CASE_TERM_RUN_RE = re.compile(r"^(?:;;&|;;|;&)\(?$")
 
 
+def _strip_line_continuations(text):
+    r"""`text` with backslash-newline removed everywhere bash removes it.
+
+    bash deletes an unquoted or double-quoted `\<newline>` BEFORE parsing, so
+    `${\<newline> printf x; }` is an alternate command substitution with the separator on
+    the next line. Scanning the raw bytes saw a backslash where the separator belongs and
+    missed it. Inside SINGLE quotes the pair is literal and is kept.
+    """
+    if "\\\n" not in text:
+        return text
+    out, i, n = [], 0, len(text)
+    in_single = in_double = False
+    while i < n:
+        ch = text[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
+            i += 2                            # the continuation is removed, not escaped
+            continue
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _alt_cmd_subst_active(text):
+    r"""True when `text` opens a bash 5.3 `${ cmd; }` / `${| cmd; }` that would RUN.
+
+    Quote state decides it, so this tracks the three things that change it rather than
+    stripping quotes first. Stripping single-quoted runs was WRONG: an apostrophe inside
+    DOUBLE quotes is a literal character and opens nothing, so
+    `case x in "'${| printf x | '' | *[!0-9]* | bash; }'")` had its live substitution
+    removed and read as inert -- a fail-OPEN on valid bash 5.3.
+
+    Inside single quotes nothing expands, so `'${ '` is inert. Inside double quotes a
+    substitution still runs. A backslash escapes the next character unless single-quoted,
+    so `\${ ` is inert too.
+
+    The separator set is space, TAB, NEWLINE and `|` -- every character bash accepts after
+    `${`. Newline is easy to leave out and is a real spelling: `${\nprintf x; }` runs.
+
+    A `#` at a word boundary opens a COMMENT, which expands nothing, so a `#`-prefixed
+    note is inert. The boundary test matters: `${#V}` is a length expansion and `a#b` is
+    an ordinary word, and neither starts a comment -- and the character before the `#` is
+    judged AS THE SHELL SEES IT, so an escaped one does not create a boundary. Reading the
+    raw byte instead made `\)#` look like a separator-then-comment, and the live
+    substitution behind it was skipped -- a fail-OPEN.
+    """
+    text = _strip_line_continuations(text)
+    in_single = in_double = False
+    i, n = 0, len(text)
+    prev = ""                                 # previous char AS THE SHELL SEES IT: "" at
+    while i < n:                              # the start, "x" for anything escaped
+        ch = text[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            prev = "x"
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2                            # escapes the next char, including `$`
+            prev = "x"                        # ...and that char is an ordinary WORD char,
+            continue                          # so it cannot be a word boundary
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        elif (ch == "#" and not in_double
+                and (prev == "" or prev in " \t\n;&|()")):
+            # A COMMENT runs to end of line and expands nothing, so `# ${ note` is inert.
+            # Only at a word boundary: `a#b` and `${#V}` are ordinary characters.
+            nl = text.find("\n", i)
+            if nl < 0:
+                return False
+            i = nl + 1
+            prev = "\n"
+            continue
+        elif ch == "$" and i + 2 < n and text[i + 1] == "{" and text[i + 2] in " \t\n|":
+            return True                       # `${ ` / `${|`, unquoted or double-quoted
+        prev = ch
+        i += 1
+    return False
+
+
 def _pattern_text_executes(pairs, k, seg):
     """True when pairs[k] carries text a case pattern would RUN rather than match.
 
@@ -2175,7 +2267,17 @@ def _pattern_text_executes(pairs, k, seg):
     # that pipeline. Blocked today by other machinery -- every probed spelling returns
     # BLOCK -- but the STATE was still wrong, and resting a security invariant on a
     # different check happening to fire is how the next spelling gets through.
-    return "`" in seg
+    if "`" in seg:
+        return True
+    # bash 5.3 ALTERNATE command substitution, `${ cmd; }` and `${| cmd; }`, which run
+    # their body like `$( … )` while looking like a parameter expansion. The separator is
+    # what distinguishes them: `${` followed by whitespace or `|`. Plain `${VAR}` and
+    # `${VAR:-x}` expand without running anything and must NOT match, so the brace name
+    # character class is deliberately excluded. SINGLE-quoted text is inert -- bash runs
+    # nothing inside `'…'` -- so `case x in '${ '|''|*[!0-9]*|bash)` is a valid pattern
+    # and must not be read as a substitution. Double quotes are NOT stripped: `"${ x; }"`
+    # still runs.
+    return _alt_cmd_subst_active(seg)
 
 
 def _case_state_after_op(state, op):

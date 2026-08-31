@@ -1529,7 +1529,24 @@ describe_role_resolution() {
 # We prefer the plugin's companion script when installed; fall back to
 # direct CLI invocation otherwise.
 
-_CODEX_COMPANION=""
+# Honour a value the caller already set. The companion is preferred (see below), but it
+# talks to a LONG-LIVED `codex app-server`, and a wedged one is not recoverable from here:
+# an app-server started from a shell that had `GIT_INDEX_FILE` exported keeps injecting
+# that dead path into every task shell it serves, so the reviewer sees an empty index and
+# reports the whole tree as deleted -- measured, with the server up for over a day. The
+# unconditional assignment left no way to reach the direct-CLI fallback without editing
+# this file. `_CODEX_COMPANION=none` now selects it: the same codex CLI in the same
+# read-only sandbox, just a fresh process instead of the shared daemon.
+# ONLY the sentinel is honoured; any other inherited value is discarded so
+# `_resolve_codex_companion` re-derives the trusted cache path. Accepting arbitrary
+# inherited text would make the reviewer's interpreter path env-injectable -- a committed
+# `settings.json` env block could point it at an attacker-chosen script (#325 / ADR 0016
+# is the same lesson for the gate env). A sentinel selects a transport; it never names one.
+if [[ "${_CODEX_COMPANION-}" == "none" ]]; then
+  _CODEX_COMPANION=none
+else
+  _CODEX_COMPANION=""
+fi
 _resolve_codex_companion() {
   [[ -n "$_CODEX_COMPANION" ]] && return
   # Check common plugin cache locations
@@ -2530,6 +2547,13 @@ execute_review() {
     fi
   fi
   local _rc=0
+  # `|| _rc=$?` rather than a bare call plus `$?`: the restore below MUST run even when the
+  # dispatch returns non-zero, and a bare call under errexit would abort the function first
+  # and leak the unset to the caller. It does not newly suppress errexit: EVERY caller
+  # already neutralises it, as this function's own contract above requires --
+  # run-review-loop.sh brackets the call with `set +e` / `set -e`, and
+  # run-design-review-loop.sh uses the `execute_review … || rc=$?` form. Either way the
+  # dispatch has always run with errexit off; this wrapper changes nothing about that.
   _execute_review_dispatch "$@" || _rc=$?
   if [[ "$_gif_set" -eq 1 ]]; then
     if [[ "$_gif_exported" -eq 1 ]]; then

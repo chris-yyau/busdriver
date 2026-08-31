@@ -269,8 +269,28 @@ done
 # repetitions, which its filter also retains. Tracked separately, not introduced here.
 # shellcheck disable=SC2016  # $A must stay literal inside the generated payload
 WORST=$(python3 -c 'print("[!0-9]|$A;" * 6000)')
-worst_payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$WORST" 2>/dev/null)
-got=$(printf '%s' "$worst_payload" | timeout 30 python3 -I "$CLASSIFIER" 2>/dev/null) || got="TIMEOUT_OR_ERROR"
+# Bounded by python, not by the GNU `timeout` binary, which a stock macOS does not ship --
+# and this branch explicitly targets macOS. Falling back to an unbounded run there would
+# let the hang this assertion exists to catch hang the suite instead of failing it.
+got=$(python3 - "$CLASSIFIER" "$WORST" <<'PYEOF' 2>/dev/null || echo TIMEOUT_OR_ERROR
+import subprocess, sys, json
+try:
+    p = subprocess.run([sys.executable, "-I", sys.argv[1]],
+                       input=json.dumps({"tool_name": "Bash",
+                                         "tool_input": {"command": sys.argv[2]}}),
+                       capture_output=True, text=True, timeout=30)
+except subprocess.TimeoutExpired:
+    print("TIMEOUT_OR_ERROR")
+else:
+    # A non-zero exit is NOT a verdict, even when stdout already carries a BLOCK-prefixed
+    # partial line: the previous shell pipeline turned every non-zero status into
+    # TIMEOUT_OR_ERROR and that contract is preserved here.
+    if p.returncode != 0:
+        print("TIMEOUT_OR_ERROR")
+    else:
+        print((p.stdout or "").strip() or "TIMEOUT_OR_ERROR")
+PYEOF
+)
 if [[ "$got" == BLOCK_* ]]; then
   ok "#776 worst-case digit-negation pipeline returns a verdict in bounded time"
 else
@@ -704,6 +724,162 @@ if [[ "$got" == BLOCK_* ]]; then
 else
   no "#776 flattened-substitution spoof still blocks" "got=${got:-<empty>}"
 fi
+
+# --- bash 5.3 alternate command substitution inside a case pattern.
+# `$<brace> cmd; }` and `$<brace>| cmd; }` RUN their body while wearing parameter-expansion syntax, so
+# a pattern list carrying one is not inert text. The separator after `${` is what tells
+# them from `${VAR}` / `${VAR:-x}`, which expand without running anything and must stay
+# allowed -- both controls are asserted here so the rule cannot be widened into them.
+# The introducers are BUILT, never written literally: bash 3.2 -- still /bin/bash on a
+# stock macOS -- fails to parse a file containing `${ `, even inside a quoted heredoc,
+# with "unexpected EOF while looking for matching '}'". A test that cannot be parsed
+# cannot run, so the whole suite would have been dead on the platform it targets.
+_D=$(python3 -c 'print(chr(36))'); _B=$(python3 -c 'print(chr(123))')
+for _alt in "${_D}${_B} " "${_D}${_B}| "; do
+  ALTCMD=$(python3 -c '
+import sys
+intro = sys.argv[1]; q = chr(39); s = chr(42)
+print("case x in " + intro + "printf x | " + q + q + " | " + s + "[!0-9]" + s + " | bash; }) : ;; " + s + ") : ;; esac")
+' "$_alt")
+  got=$(verdict "$ALTCMD")
+  if [[ "$got" == BLOCK_* ]]; then
+    ok "#776 bash 5.3 '${_alt}...}' substitution in a case pattern still blocks"
+  else
+    no "#776 bash 5.3 '${_alt}...}' substitution in a case pattern still blocks" "got=${got:-<empty>}"
+  fi
+done
+
+# Controls: ordinary parameter expansion runs nothing and must remain allowed.
+# shellcheck disable=SC2016  # the expansions must stay literal
+for _var in '"${V}"' '"${V:-x}"'; do
+  VARCMD=$(python3 -c '
+import sys
+subj = sys.argv[1]; q = chr(39); s = chr(42)
+print("V=x; case " + subj + " in " + q + q + "|" + s + "[!0-9]" + s + ") : ;; " + s + ") : ;; esac")
+' "$_var")
+  got=$(verdict "$VARCMD")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#776 plain parameter expansion ${_var} in the subject -> allowed"
+  else
+    no "#776 plain parameter expansion ${_var} in the subject -> allowed" "got=${got:-<empty>}"
+  fi
+done
+
+# --- Generated quote-context coverage for bash 5.3 alternate command substitution.
+#
+# Whether the body RUNS is decided by QUOTE STATE, not by the characters alone, and the
+# combination that first broke it was a literal apostrophe inside double quotes: an
+# earlier version stripped single-quoted runs before looking, so a double-quoted run
+# holding a literal apostrophe around the introducer had its
+# live substitution removed and read as inert. The contexts are therefore generated
+# rather than sampled.
+#
+# The rows are SEGMENT TEXT, not whole commands, so they are deliberately not run through
+# `bash -n`: such a fragment is half a pattern and would fail a
+# syntax check while still being exactly what the walk receives after `_split_with_ops`.
+# The end-to-end spellings are covered separately below and in the backtick matrix. The
+# assertion is on `_alt_cmd_subst_active` -- the walk's own decision -- because the
+# surrounding verdict can be supplied by other machinery and would hide a wrong answer.
+QUOTE_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import importlib.util, io, json, subprocess, sys
+
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "true"}}))
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+
+q, dq, bs = chr(39), chr(34), chr(92)
+bad = []
+# Every separator bash accepts after `${`: space, TAB, NEWLINE and `|`. Newline is the
+# one most easily left out of a hand-written class, and `${\nprintf x; }` really runs.
+_d, _b = chr(36), chr(123)                # built, never literal -- see the note above
+for intro in (_d + _b + " ", _d + _b + "\t", _d + _b + "\n", _d + _b + "|"):
+    rows = [
+        (True,  intro + " printf x; }"),                      # unquoted: runs
+        # bash removes an unquoted or double-quoted backslash-newline BEFORE parsing, so
+        # the separator can arrive on the next line and the substitution still runs.
+        (True,  _d + _b + bs + "\n printf x; }"),
+        (True,  dq + _d + _b + bs + "\n printf x; }" + dq),
+        (False, q + _d + _b + bs + "\n printf x; }" + q),      # single-quoted: literal
+        (True,  dq + intro + " printf x; }" + dq),            # double-quoted: still runs
+        (True,  dq + q + intro + " printf x; }" + q + dq),    # literal apostrophe inside "
+        (True,  "a" + dq + intro + " printf x; }" + dq),      # after ordinary text
+        (False, q + intro + " printf x; }" + q),              # single-quoted: inert
+        (False, bs + intro + " printf x; }"),                 # escaped `$`: inert
+        # A closed single-quoted run, then the SAME spelling inside double quotes: the
+        # second one runs, so the whole text is active. Quoting is positional, not a
+        # property of the characters -- this row is why the matrix exists.
+        (True,  q + intro + q + dq + intro + q),
+        (False, q + intro + q + q + intro + q),               # both runs single-quoted
+    ]
+    for want, text in rows:
+        got = mc._alt_cmd_subst_active(text)
+        if got != want:
+            bad.append((text, want, got))
+# Comment boundaries, judged AS THE SHELL SEES THEM. A `#` opens a comment only at a
+# word boundary, and an ESCAPED character before it is an ordinary word character, so
+# `\)#` is not a boundary and the substitution behind it runs.
+for want, text in (
+    (False, "# " + _d + _b + " note"),        # comment at the start
+    (False, "; # " + _d + _b + " note"),      # comment after a separator
+    (True,  bs + ")#" + _d + _b + " printf x; }"),   # escaped `)`: NOT a boundary
+    (True,  "a#" + _d + _b + " printf x; }"),        # mid-word `#`: not a comment
+    (True,  ") " + _d + _b + "| printf x; }"),       # real boundary, then a substitution
+):
+    if mc._alt_cmd_subst_active(text) != want:
+        bad.append((text, want, not want))
+# Controls: ordinary parameter expansion must never look like a substitution.
+for text in (_d + _b + "V}", dq + _d + _b + "V:-x}" + dq, _d + _b + "VAR}", _d + _b + "#V}"):
+    if mc._alt_cmd_subst_active(text):
+        bad.append((text, False, True))
+print("CLEAN" if not bad else "BAD %d %r" % (len(bad), bad[:2]))
+PYEOF
+)
+if [[ "$QUOTE_OUT" == "CLEAN" ]]; then
+  ok "#776 quote-context matrix: executable vs inert substitution spellings"
+else
+  no "#776 quote-context matrix" "$QUOTE_OUT"
+fi
+
+# End-to-end control for the spellings that are decided entirely by this walk.
+SQ_INERT=$(python3 -c 'q=chr(39);s=chr(42);d=chr(36);b=chr(123);print("case x in "+q+d+b+" "+q+"|"+q+q+"|"+s+"[!0-9]"+s+"|bash) : ;; "+s+") : ;; esac")')
+got=$(verdict "$SQ_INERT")
+if [[ "$got" == "OK|" ]]; then
+  ok "#776 single-quoted inert substitution spelling -> allowed"
+else
+  no "#776 single-quoted inert substitution spelling -> allowed" "got=${got:-<empty>}"
+fi
+
+# A `#` at a word boundary opens a COMMENT, which expands nothing, so the substitution
+# spelling is inert there. `${#V}` and `a#b` are NOT comments and must stay allowed.
+COMMENT_CMD=$(python3 -c 'q=chr(39);s=chr(42);d=chr(36);b=chr(123);print("case x in # "+d+b+" inert comment\n"+q+q+"|"+s+"[!0-9]"+s+") : ;; "+s+") : ;; esac")')
+got=$(verdict "$COMMENT_CMD")
+if [[ "$got" == "OK|" ]]; then
+  ok "#776 substitution spelling inside a comment is inert -> allowed"
+else
+  no "#776 substitution spelling inside a comment is inert -> allowed" "got=${got:-<empty>}"
+fi
+
+# shellcheck disable=SC2016  # the expansions must stay literal
+for _hash in '"${#V}"' 'a#b'; do
+  HASHCMD=$(python3 -c '
+import sys
+subj = sys.argv[1]; q = chr(39); s = chr(42)
+print("V=abc; case " + subj + " in " + q + q + "|" + s + "[!0-9]" + s + ") : ;; " + s + ") : ;; esac")
+' "$_hash")
+  got=$(verdict "$HASHCMD")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#776 ${_hash} is not a comment -> allowed"
+  else
+    no "#776 ${_hash} is not a comment -> allowed" "got=${got:-<empty>}"
+  fi
+done
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

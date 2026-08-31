@@ -4118,8 +4118,15 @@ def git_ref_create(cmd):
             _derive = _wt or 'checkout' in ntoks or 'switch' in ntoks
             for t in toks:
                 if _REF_CREATE_IMPLAUSIBLE_RE.search(t):
-                    if not t.startswith('-'):
-                        unreadable = True
+                    # An OPTION word carrying whitespace is just as unreadable:
+                    # `git push '--repo=/path to/this repo'` names the
+                    # destination inside a word that is dropped here, so the
+                    # push boundary fell back to the default remote and read a
+                    # self-push as external. Reporting it costs nothing on its
+                    # own -- the refusal it feeds fires only once some OTHER
+                    # word names a protected branch that does not exist, and a
+                    # dropped word can name none.
+                    unreadable = True
                     continue
                 if t == '-' and _derive:
                     # A LONE `-` is not an option to checkout/switch: it is

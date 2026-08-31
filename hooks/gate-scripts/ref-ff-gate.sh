@@ -1257,7 +1257,14 @@ ULEOF
            && _push_dest_is_self "$_premote"; then
             _at_self=1
         fi
-        if [ "$_at_self" = "0" ]; then
+        # A word carrying WHITESPACE is dropped from the candidate list before
+        # this runs, so `git push '/path to/this repo' HEAD:refs/heads/master'
+        # lost its destination, fell back to the default remote, and returned as
+        # external -- ahead of the unreadable-word refusal, which sits after the
+        # name match and so never ran. Standing the early return down hands such
+        # a command to that refusal, which still fires only once a protected name
+        # is matched, so an ordinary quoted word costs nothing.
+        if [ "$_at_self" = "0" ] && [ "$CREATE_UNREADABLE" != "1" ]; then
             return 0
         fi
         # A self-push with NO refspec in the command takes its destination from

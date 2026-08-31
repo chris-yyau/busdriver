@@ -2106,6 +2106,18 @@ git -C "$REPO" config --add remote.multi.url https://evil.example/y
 run_gate "...while every value external stays out of scope" \
     allow "git push multi feature:refs/heads/master"
 git -C "$REPO" remote remove multi >/dev/null 2>&1
+# A word carrying WHITESPACE is dropped from the candidate list, so a self path
+# spelled with a space lost its destination, fell back to the default remote and
+# returned as external -- ahead of the unreadable-word refusal, which sits after
+# the name match and so never ran.
+run_gate "a self path carrying whitespace does not escape the creation check" \
+    block "git push '$REPO ' HEAD:refs/heads/master" \
+    "a word the gate cannot read as a ref name"
+run_gate "...nor does one reached through --repo=" \
+    block "git push '--repo=$REPO ' HEAD:refs/heads/master" \
+    "a word the gate cannot read as a ref name"
+run_gate "...while a quoted word naming no protected branch costs nothing" \
+    allow "git push origin 'HEAD:refs/heads/feature2'"
 # A LINKED worktree keeps refs/heads/ in the COMMON dir, so a push at the MAIN
 # worktree or at the common dir lands the branch in this repository's ref store
 # just as surely -- and neither path equals the linked worktree's own

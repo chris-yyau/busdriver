@@ -211,8 +211,8 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty ways a first draft of that membership test still leaked,
-and
+Review found forty-one ways a first draft of that membership test still
+leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -376,6 +376,16 @@ adding a grammar:
   while `git config --get` answers with the LAST value. A self url followed by an
   external one therefore read as an external push. Both `pushurl` and `url` are
   read with `--get-all` now, and any value naming this repository settles it.
+- **A destination carrying WHITESPACE was dropped before the boundary decided.**
+  Such a word is no ref name, so the parser drops it and reports `unreadable` —
+  but that refusal sits after the name match, and the push boundary's early
+  return ran first, so `git push '/path to/this repo' HEAD:refs/heads/master`
+  fell back to the default remote and read as external. The early return now
+  stands down whenever a word was dropped, handing the command to the refusal
+  that already exists; and the parser reports an OPTION word carrying whitespace
+  too (`--repo='/path to/this repo'`), which it had been dropping silently.
+  Neither costs anything on its own: the refusal fires only once some other word
+  names a protected branch that does not exist, and a dropped word can name none.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

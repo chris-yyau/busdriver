@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty-one ways a first draft of that membership test still
+Review found forty-three ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -386,6 +386,20 @@ adding a grammar:
   too (`--repo='/path to/this repo'`), which it had been dropping silently.
   Neither costs anything on its own: the refusal fires only once some other word
   names a protected branch that does not exist, and a dropped word can name none.
+- **EVERY worktree shares the ref store, not just the main one.** A push from one
+  linked worktree at a SIBLING reaches the same `refs/heads/`, and reading only
+  the first entry of `git worktree list` read the sibling as external. All of
+  them count now, matched a whole line at a time (a space-joined list matched
+  `/path/to/my` against a worktree at `/path/to/my project/wt`), and bounded at
+  64 entries so a repository with many worktrees cannot spend the gate's budget
+  here — past which the listing stands the early return down rather than
+  answering from a list known to be short.
+- **The shell expands a leading `~` before git sees the word**, while the gate is
+  handed the command UNEXPANDED — so `git push ~+ feature:refs/heads/master`
+  resolved as a literal directory named `~+`, failed, and read as an external
+  push. `~` and `~+` are expanded here; `~-` is the shell's OLDPWD and `~user`
+  another account's home, neither of which the gate can know, so those are
+  treated as possibly-here rather than vouched for as elsewhere.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

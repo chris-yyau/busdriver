@@ -1119,7 +1119,7 @@ creation_check() {
     # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
         local _pt _premote="" _at_self=0 _cur_phys _cur_br _gd_phys _cands
-        local _cd_phys _mw_phys
+        local _cd_phys _mw_phys _wt_trunc=0
         _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
         _cur_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
         # A GITDIR path names the same repository as its worktree: `git push
@@ -1137,10 +1137,30 @@ creation_check() {
         if [ -n "$_cd_phys" ]; then
             _cd_phys=$(cd -- "$_cd_phys" 2>/dev/null && pwd -P) || _cd_phys=""
         fi
-        _mw_phys=$(git_real worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || _mw_phys=""
-        if [ -n "$_mw_phys" ]; then
-            _mw_phys=$(cd -- "$_mw_phys" 2>/dev/null && pwd -P) || _mw_phys=""
-        fi
+        # EVERY worktree, not just the main one: a push from one linked
+        # worktree at a SIBLING reaches the same shared ref store. Bounded at 64
+        # so a repository with many worktrees cannot spend the gate's budget
+        # here; past that the list is treated as unknown, which the boundary
+        # below reads as "could not rule this out" rather than as external.
+        # NEWLINE-delimited, and compared a whole line at a time: a
+        # space-joined list matched `/path/to/my` against a worktree at
+        # `/path/to/my project/wt`.
+        local _wl _wp _wn=0
+        _mw_phys=""
+        _wl=$(git_real worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 65) || _wl=""
+        while IFS= read -r _wp; do
+            [ -n "$_wp" ] || continue
+            _wn=$((_wn + 1))
+            # Past 64 the list is TRUNCATED, so it can no longer rule a
+            # destination out. Stop reading and say so rather than answer from a
+            # list known to be short.
+            if [ "$_wn" -gt 64 ]; then _wt_trunc=1; break; fi
+            _wp=$(cd -- "$_wp" 2>/dev/null && pwd -P) || continue
+            _mw_phys="$_mw_phys$_wp
+"
+        done <<WLEOF
+$_wl
+WLEOF
         # `git push --repo=<repository>` names the target inside an OPTION word,
         # where no scan of the command's operands could see it.
         _cands="$CREATE_TOKS"
@@ -1165,7 +1185,7 @@ creation_check() {
         # the way git resolves it before the paths can be compared.
         _push_dest_is_self() {
             local _d="$1" _u="" _uline _ukey _uval _ubase _usuf _ulist=""
-            local _ubest="" _ubestlen=0 _urest="" _phys
+            local _ubest="" _ubestlen=0 _urest="" _phys _wp
             [ -n "$_d" ] || return 1
             case "$_d" in .) return 0 ;; esac
             # PUSHURL first: git prefers it over url for a push, so reading only
@@ -1213,6 +1233,24 @@ CFGEOF
             _u=${_u#file://}
             case "$_u" in */.git) _u=${_u%/.git} ;; esac
             [ -n "$_u" ] || continue
+            # The shell expands a leading `~` before git sees the word, while
+            # this gate is handed the command UNEXPANDED -- so `git push ~+`
+            # resolved as a literal directory named `~+`, failed, and read as an
+            # external push. `~` and `~+` are expanded here; `~-` is the shell's
+            # OLDPWD and `~user` another account's home, neither of which the
+            # gate can know, so those are treated as possibly-here rather than
+            # vouched for as elsewhere.
+            # shellcheck disable=SC2088  # a LITERAL tilde is the point here:
+            # these patterns match the unexpanded word the gate was handed, and
+            # $HOME is what they expand it to.
+            case "$_u" in
+                '~') _u="${HOME:-}" ;;
+                '~/'*) _u="${HOME:-}/${_u#'~/'}" ;;
+                '~+') _u="${HOOK_CWD:-${REPO_DIR:-.}}" ;;
+                '~+/'*) _u="${HOOK_CWD:-${REPO_DIR:-.}}/${_u#'~+/'}" ;;
+                '~'*) return 0 ;;
+            esac
+            [ -n "$_u" ] || continue
             # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
             # no local path at all, and comparing two empty strings would have
             # called every external remote "this repository".
@@ -1221,7 +1259,11 @@ CFGEOF
             { [ -n "$_cur_phys" ] && [ "$_phys" = "$_cur_phys" ]; } && return 0
             { [ -n "$_gd_phys" ] && [ "$_phys" = "$_gd_phys" ]; } && return 0
             { [ -n "$_cd_phys" ] && [ "$_phys" = "$_cd_phys" ]; } && return 0
-            { [ -n "$_mw_phys" ] && [ "$_phys" = "$_mw_phys" ]; } && return 0
+            while IFS= read -r _wp; do
+                [ -n "$_wp" ] && [ "$_wp" = "$_phys" ] && return 0
+            done <<MWEOF
+$_mw_phys
+MWEOF
             done <<ULEOF
 $_ulist
 ULEOF
@@ -1264,7 +1306,11 @@ ULEOF
         # name match and so never ran. Standing the early return down hands such
         # a command to that refusal, which still fires only once a protected name
         # is matched, so an ordinary quoted word costs nothing.
-        if [ "$_at_self" = "0" ] && [ "$CREATE_UNREADABLE" != "1" ]; then
+        # ...and the same stand-down when the worktree listing was truncated:
+        # a destination this gate could not enumerate is not one it may vouch for
+        # as elsewhere.
+        if [ "$_at_self" = "0" ] && [ "$CREATE_UNREADABLE" != "1" ] \
+           && [ "$_wt_trunc" != "1" ]; then
             return 0
         fi
         # A self-push with NO refspec in the command takes its destination from

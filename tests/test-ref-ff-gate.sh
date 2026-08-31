@@ -2118,6 +2118,23 @@ run_gate "...nor does one reached through --repo=" \
     "a word the gate cannot read as a ref name"
 run_gate "...while a quoted word naming no protected branch costs nothing" \
     allow "git push origin 'HEAD:refs/heads/feature2'"
+# The SHELL expands a leading `~` before git sees the word, while the gate is
+# handed the command unexpanded -- so `~+` resolved as a literal directory named
+# `~+`, failed, and read as an external push.
+git -C "$REPO" checkout -q feature
+run_gate "~+ is this directory, not a literal path" \
+    block "git push ~+ feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...and ~+/ likewise" \
+    block "git push ~+/ feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...while ~- (the shell's OLDPWD) is not vouched for as elsewhere" \
+    block "git push ~- feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...nor is another account's home" \
+    block "git push ~nobody/x feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
 # A LINKED worktree keeps refs/heads/ in the COMMON dir, so a push at the MAIN
 # worktree or at the common dir lands the branch in this repository's ref store
 # just as surely -- and neither path equals the linked worktree's own
@@ -2136,6 +2153,31 @@ run_gate "...and one at the COMMON dir does too" \
     "would CREATE the protected branch"
 run_gate "...while another repository still does not" \
     allow "git push $ORIGIN feature:refs/heads/master"
+# ...and so does a SIBLING worktree: every worktree shares the one ref store,
+# so reading only the MAIN one left the sibling reading as external.
+_WT_SIB="$TMPROOT/wt-sibling"
+rm -rf "$_WT_SIB"
+git -C "$_SAVED_REPO_WT" worktree add -q "$_WT_SIB" -b wt-sibling >/dev/null 2>&1
+run_gate "...as does a push at a SIBLING linked worktree" \
+    block "git push $_WT_SIB feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$_SAVED_REPO_WT" worktree remove --force "$_WT_SIB" >/dev/null 2>&1
+git -C "$_SAVED_REPO_WT" branch -D wt-sibling >/dev/null 2>&1
+rm -rf "$_WT_SIB"
+# A worktree path carrying a SPACE: joining the list with spaces and matching a
+# substring made `$TMPROOT/aa` match a worktree at `$TMPROOT/aa bb`, refusing an
+# ordinary push at an unrelated directory.
+rm -rf "$TMPROOT/aa" "$TMPROOT/aa bb"
+mkdir -p "$TMPROOT/aa"
+git -C "$_SAVED_REPO_WT" worktree add -q "$TMPROOT/aa bb" -b wt-spaced >/dev/null 2>&1
+run_gate "a directory that is only a space-prefix of a worktree is not one" \
+    allow "git push $TMPROOT/aa feature:refs/heads/master"
+run_gate "...while the spaced worktree itself still counts" \
+    block "git push '$TMPROOT/aa bb' feature:refs/heads/master" \
+    "a word the gate cannot read as a ref name"
+git -C "$_SAVED_REPO_WT" worktree remove --force "$TMPROOT/aa bb" >/dev/null 2>&1
+git -C "$_SAVED_REPO_WT" branch -D wt-spaced >/dev/null 2>&1
+rm -rf "$TMPROOT/aa" "$TMPROOT/aa bb"
 REPO="$_SAVED_REPO_WT"
 git -C "$REPO" worktree remove --force "$_WT_CREATE" >/dev/null 2>&1
 git -C "$REPO" branch -D wt-create >/dev/null 2>&1

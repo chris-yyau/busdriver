@@ -137,7 +137,7 @@ PY
 )" || _probe_out="0 1 0 1"
 read -r _n _bad _exempt _badexempt <<<"$_probe_out"
 _rc=0
-[[ "$_n" -eq 10 && "$_bad" -eq 0 ]] || _rc=1
+[[ "$_n" -eq 11 && "$_bad" -eq 0 ]] || _rc=1
 assert "$_rc" "all $_n sanitized-gate.sh GATE registrations launch via contained-launch.sh, which applies env -i (strips BASH_FUNC_*)"
 _rc=0
 [[ "$_exempt" -eq 2 && "$_badexempt" -eq 0 ]] || _rc=1

@@ -45,6 +45,7 @@ import shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
+_BQ = chr(96)
 
 # The original patterns, kept as the unparseable-command fallback.
 FILE_MOD_PATTERNS = [
@@ -589,7 +590,7 @@ def _split_with_ops(s):
     exactly the difference between `a || b` (run `||`) and `a | ; b`.
     """
     pairs, buf, op = [], [], []
-    in_s = in_d = esc = False
+    in_s = in_d = esc = in_b = False
     # Did the PREVIOUS character open a redirect -- an unquoted, unescaped `<` or `>`?
     # Tracked rather than read back off buf[-1], because the buffer cannot tell an
     # OPERATOR `<` from a literal one: bash runs `printf <payload> \<|bash` as a real
@@ -607,16 +608,50 @@ def _split_with_ops(s):
             if ch == _SQ:
                 in_s = False
             redir = False
+        elif in_b:
+            # A BACKTICK SUBSTITUTION is one word of the stage it sits in, however many
+            # control operators its body holds: bash runs `printf <payload> | echo `true &&
+            # bash`` as a TWO-stage pipeline, and the nested shell inherits the pipe. Read
+            # as outer separators, that `&&` ended the pipeline before the receiver was
+            # reached and the producer was discarded -- verified executing (#563). Tracked
+            # as STATE, exactly like the two quote states above and for the same reason: the
+            # buffer cannot say whether a character it already emitted was inside a span.
+            # The body still gets classified as code -- `_command_substitutions` extracts it
+            # and recurses -- so making it opaque HERE removes no block.
+            buf.append(ch)
+            if ch == "\\":
+                esc = True                # in_b survives the escape: only `esc` is consumed
+            elif ch == _BQ:
+                # ...and back into the double quotes if that is where the span opened:
+                # `in_d` is never cleared by the branch below, so there is no state to
+                # restore here.
+                in_b = False
+            redir = False
         elif in_d:
             buf.append(ch)
             if ch == "\\":
                 esc = True
+            elif ch == _BQ:
+                # A backtick INSIDE double quotes still opens a substitution -- bash runs
+                # `echo "`echo "x && cat"; bash`"`, and the quotes inside the body belong to
+                # the body's own command, not to the outer string. Checked BEFORE `in_d`
+                # above so the inner span wins; `in_d` is deliberately left True, so closing
+                # the span returns to the string with no saved-state bookkeeping. Ordered
+                # after `in_d` in the first cut of #563, this branch was unreachable from a
+                # quoted context: the body's second `"` read as the outer string's CLOSE,
+                # the `&&` behind it split the stage, and the producer was discarded again
+                # -- verified executing.
+                in_b = True
             elif ch == _DQ:
                 in_d = False
             redir = False
         elif ch == "\\":
             buf.append(ch)
             esc = True
+            redir = False
+        elif ch == _BQ:
+            buf.append(ch)
+            in_b = True
             redir = False
         elif ch == _SQ:
             buf.append(ch)
@@ -672,7 +707,9 @@ def _split_with_ops(s):
             buf.append(ch)
             redir = ch in "<>"
     pairs.append(("".join(op), "".join(buf)))
-    return pairs, not (in_s or in_d or esc)
+    # An unterminated backtick joins the unterminated quote and the dangling escape: the
+    # caller falls back to the wider raw scan rather than trusting a half-parse.
+    return pairs, not (in_s or in_d or esc or in_b)
 
 
 def _expansion_joined_pairs(s, close_at=None):
@@ -2533,6 +2570,636 @@ def _command_substitutions(s):
     return out, True
 
 
+def _process_substitutions(s):
+    """(in_bodies, out_bodies, ok) for the `<(...)` and `>(...)` process substitutions in s.
+
+    Split by DIRECTION, because the two run the transport opposite ways and the producer
+    scan needs to know which end is which:
+
+      `<(BODY)`  BODY's stdout becomes a file the OUTER command reads -- so BODY is the
+                 producer and the outer command may be the receiver.
+      `>(BODY)`  the OUTER command writes into BODY's stdin -- so the outer command is the
+                 producer and BODY may be the receiver.
+
+    Both were verified executing (#563): `bash < <(printf 'rm -rf src')` and
+    `printf 'rm -rf src' > >(bash)` each performed the removal while `is_file_mod`
+    answered False, because `_piped_shell_producers` recognises only `|` and `|&` as
+    feeding a stage. `bash <(printf ...)` -- the substitution as a script OPERAND rather
+    than through a redirect -- runs it too, so this does not ask for a redirect character.
+
+    QUOTING IS NOT MODELLED, and that is deliberate. A process substitution does not happen
+    inside quotes, so an earlier cut skipped quoted regions -- and one global double-quote
+    state cannot do that, because quoting RESTARTS inside a `$(...)` body: two valid quoted
+    substitutions on either side made the scanner skip the real substitution between them
+    and still report success, a fail-OPEN verified executing. Tracking it properly needs a
+    stack of quoting contexts, which is the parser this module twice refuses to build. So
+    the detector OVER-detects: an inert `<(rm -rf q)` inside a string is reported too. That
+    costs a whole-command raw scan on a command that ALSO names a shell somewhere, which is
+    narrow, rare, and the direction this module chooses everywhere else.
+
+    `ok` is always True. An unterminated `<(` used to return False and hand the caller the
+    whole-command scan, and an unterminated one inside an inert quoted operand is ordinary
+    text -- `grep -n 'rm -rf src <(' notes.txt` blocked on it. It is recorded as a BODILESS
+    entry instead, and the walk STOPS there: that is enough to say a substitution is present,
+    so the receiver tests still run, while re-scanning the suffix for every later opener was
+    quadratic (12,000 of them measured 5.76s against a 5s hook timeout).
+    """
+    ins, outs, i, n = [], [], 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == chr(92):                 # a backslash escapes the next character
+            i += 2
+            continue
+        # EVERY adjacent `<(`/`>(` counts -- no quote state, and no word-boundary test in
+        # front of it. Both guards were written, both for precision, and both opened holes:
+        # the word-boundary one skipped `> "">(bash)` and `> $E>(bash)`, which bash feeds by
+        # concatenating an empty expansion; the quote one is described in the docstring.
+        if ch in "<>" and i + 1 < n and s[i + 1] == "(":
+            j = _subst_end(s, i + 1)       # quote-aware paren match, shared with `$(`
+            if j < 0:
+                # NO BODY, but still a substitution as far as this detector is concerned.
+                # Returning `ok = False` here handed the caller the whole-command scan, and
+                # an unmatched `<(` inside an inert quoted operand is ordinary text:
+                # `grep -n 'rm -rf src <(' notes.txt` went from allow to block. Recording it
+                # bodiless keeps the RECEIVER tests running -- so a real substitution whose
+                # end this cannot find still blocks when a receiver is named -- while a grep
+                # pattern that merely contains the characters does not.
+                # ...and STOP. Continuing re-ran `_subst_end` over the remaining suffix for
+                # every later opener, which is quadratic: 12,000 `<(` sequences inside one
+                # quoted operand measured 5.76s against the hook's 5s timeout, and a
+                # timed-out hook writes no decision the harness reads as ALLOW. Nothing is
+                # lost by stopping -- the bodies only feed the candidate stage list, which
+                # already carries the whole command and its own segments, and one bodiless
+                # entry is enough to say a substitution is present.
+                (ins if ch == "<" else outs).append("")
+                break
+            (ins if ch == "<" else outs).append(s[i + 2:j])
+            i = j + 1
+            continue
+        i += 1
+    return ins, outs, True
+
+
+# A SECOND allowance of the same size, NOT a share of `_scan_budget`. The candidate walk
+# below covers the whole command, and `is_file_mod`'s own per-segment walk then covers it
+# again, so charging both against one counter silently HALVED the documented 4,000-token
+# limit for any command holding a `<(`: a benign 2,004-token
+# `grep -f <(echo pat) file0.txt ... file1999.txt` flipped from allow to BLOCK, with the
+# charge buying nothing (the walk emitted no producer) and the later walk failing closed on
+# a budget it had not spent. Two bounded walks are still bounded, and the branch runs only
+# when a process substitution is present: a 65KB substitution-heavy command measures 0.33s
+# against the hook's 5s timeout.
+_psub_budget = [_MAX_SCAN_TOKENS]
+
+# Every `_STDIN_SHELLS` name, for the quote-blind candidate test in `_procsub_producers`.
+#
+# The boundary is NOT `\b`, which treats a filename suffix as a word: `\bsh\b` matches
+# `notes.sh` and `\bbash\b` matches `bash.log`, and this repo is full of `.sh` operands --
+# `grep -n 'rm -rf src' notes.sh <(echo pat)` went from allow to block on that alone, which
+# is precisely the quoted-operand false positive #519 exists to have removed. A `.` and a
+# `-` therefore JOIN the word characters here, while `/` does not, so `/bin/bash` still
+# matches and `notes.sh` does not.
+#
+# Quote-blind on purpose: resolving quoting is what the lexed path already does, and what
+# adversarial quoting defeats.
+_STDIN_SHELL_RE = re.compile(r"(?<![A-Za-z0-9_.:@=+#-])(?:"
+                             + "|".join(sorted(map(re.escape, _STDIN_SHELLS)))
+                             + r")(?![A-Za-z0-9_.\-/:@=+#])")
+
+# The VERSION-QUALIFIED interpreter family, for the same scan. `_ATTACHED_INTERP_RE` is
+# END-ANCHORED because it is asked of one WORD, so searching it across a whole command
+# matched nothing and `/usr/bin/perl5.34` -- a real packaged executable that runs a program
+# read from stdin -- walked through. DERIVED from that pattern rather than restated, so the
+# two cannot drift: the trailing `$` is dropped and the same boundary the set above uses is
+# put around it.
+assert _ATTACHED_INTERP_RE.pattern.endswith("$")
+_VERSIONED_INTERP_SCAN_RE = re.compile(r"(?<![A-Za-z0-9_.:@=+#-])"
+                                       + _ATTACHED_INTERP_RE.pattern[:-1]
+                                       + r"(?![A-Za-z0-9_.\-/:@=+#])")
+
+
+# COMMAND POSITION, spelled STRUCTURALLY rather than by lexing. The word that follows a
+# pipeline or grouping operator is the next command word, and that is true of the raw text
+# whatever the quoting does to a lexer -- which is the whole point, because adversarial
+# quoting is exactly the thing that takes the lexed answer away.
+#
+# This is what makes the command-position-only receiver classes askable quote-blind. Asked
+# as ANY word they are the test this ADR measured at 100 over-blocks for `.` alone and
+# rejected; asked HERE they keep the anchor that made them safe: `grep -n 'rm -rf src'
+# <(printf source)` puts `printf` in command position, not `source`, and stays allowed.
+# `(`, `)`, `{` and `}` are separators here, so a command WORD built by an expansion is torn
+# in half -- `ba{s..s}h` into `ba` and `s..s`, `{s..s}ource` into `s..s` and `ource`. That is
+# deliberate and answered INSIDE the walk, not here: only the walk knows whether the torn
+# word was in command position. See the cut check and the run-tail check below.
+_CMDPOS_RUN_RE = re.compile(r"(?:^|[;&|(){}\n])([^;&|(){}\n]*)")
+# `>&`, `<&`, `>|` and `&>` -- the spellings whose `&`/`|` belongs to the redirect rather
+# than to the pipeline. Folded to a bare operator before the run walk; see the note there.
+# ESCAPED redirect characters are NOT folded: a `\>` is a literal argument, so the `|`
+# after it is a REAL pipeline operator and folding it away destroyed the boundary --
+# `printf <payload> \> | source /dev/stdin` then hid its receiver. Same lesson the
+# splitter learned for `printf <payload> \<|bash`.
+_REDIR_FOLD_RE = re.compile(r"(?<!\\)([<>])[&|]|(?<!\\)&(?=>)")
+
+
+def _redir_fold(m):
+    return m.group(1) or ""
+
+
+# A BRACE EXPANSION opening a command word. `ba{s..s}h` is caught by the cut check -- the
+# run ends with `ba` glued to the brace -- but a command word that BEGINS with one leaves
+# nothing attached for that check to see, and the run regex hands the walk `s..s` and
+# `ource` as two ordinary runs holding no receiver name. `{b..b}ash` survives only because
+# `bash` is in the quote-blind name scan; `source` is command-position-only and deliberately
+# outside it, so behind the quote pads `| {s..s}ource /dev/stdin` was a verified fail-OPEN.
+#
+# Spelled narrowly on purpose, because `{` also opens a GROUP COMMAND: an expansion has no
+# whitespace and carries a `,` or a `..`, so `; { cat file; }` does not match and a
+# read-only group is not refused.
+# A BRACE EXPANSION is FOLDED OUT of the text before the run walk, exactly as a redirect
+# operator is. A command word that BEGINS with one -- `{s..s}ource`, which bash expands to
+# `source` -- leaves nothing attached in front of the brace for the cut check to see, and
+# the run regex hands the walk `s..s` and `ource`, neither of them a name. `{b..b}ash` hid
+# that for a while, because `bash` is in the quote-blind name scan and blocks wherever it
+# sits; `source` is command-position-only by design, so behind the quote pads nothing else
+# could answer and it was a verified fail-OPEN.
+#
+# Folding rather than a second command-position test, and that IS the lesson of the round:
+# asking "is this empty run a command position?" needed a guard for a closer, then a guard
+# for the group-command `{`, then a guard for a closer that ends an expansion inside a
+# PREFIX -- four rounds, each fixing the previous one's opposite defect, which is this
+# document's own signal to stop refining. An expansion is not a boundary at all; it is part
+# of the word around it. Replaced by `*` -- already in `_UNRESOLVED_CW_CHARS` -- the word
+# stays ONE word and the ordinary walk decides it: unresolvable in command position, an
+# operand anywhere else. `X=$(true) {source,/dev/stdin}` blocks, `grep -n 'rm -rf src'
+# {a,b}file <(echo pat)` does not, and neither needed a rule of its own.
+# What ENDS a candidate span, unescaped: WHITESPACE, because an expansion is part of one
+# word and a word ends there (`| X={a,b source /dev/stdin }` is an assignment prefix and
+# then a receiver, and swallowing the spaces ate it); and a RUN SEPARATOR, because folding
+# one away deletes a real pipeline boundary -- `printf <payload>{a,|bash>x}` is a pipe into
+# a shell, and the redirect makes `bash` a genuine command name rather than `bash}`.
+#
+# Aborting a span does NOT take back the `*` already written for its opener, and that is
+# what lets both halves hold at once. A QUOTED separator (`{s,";"x}ource`) is a stop here --
+# telling it from a real one is the lexed question this walk exists because it cannot ask --
+# but the word keeps its `*`, stays unresolvable, and blocks in command position anyway.
+_BRACE_FOLD_STOP = frozenset(" \t\n\r;&|()")
+# The characters that DELIMIT the `{` reserved word, i.e. that make it a GROUP command
+# rather than the first character of a word.
+_BRACE_FOLD_DELIM = frozenset(" \t\n\r<>;&|()")
+
+
+def _fold_brace_expansions(text):
+    """Replace each brace EXPANSION with `*`, leaving group commands and operators alone.
+
+    ONE left-to-right pass, deliberately: the regex spelling of this -- an opening brace, two
+    lazy non-space runs and a closing brace --
+    carries two overlapping lazy scans and was measured at 6.29s on a 4.5KB command of
+    stacked `({` and `a,` -- past the hook's 5s timeout, which writes no decision and reads
+    as ALLOW, so it was a bypass rather than a slowdown. Bounding the scans would have made
+    a long expansion the bypass instead.
+
+    A GROUP command is excluded by the same fact bash uses to tell them apart: `{` must be
+    delimited to be the reserved word, so whitespace and the operators that delimit it end
+    a candidate span. `;`, `&`, `|` and the parens are on that list for a second reason too
+    -- they are run separators, and folding across one would erase a pipeline boundary, the
+    mistake the redirect fold already learned from an escaped redirect character.
+
+    The OUTERMOST opener pairs with the FIRST close, which is what makes one pass enough for
+    a nested word: `{X=,{b..b}ash}` folds to `*ash}`, still one unresolvable word.
+    """
+    if "{" not in text:
+        return text
+    out = []
+    open_i = open_out = -1                 # source index of the opener, and its slot in `out`
+    esc = False
+    for i, ch in enumerate(text):
+        if esc:
+            # A BACKSLASH-ESCAPED character is data, never an operator -- the same fact the
+            # redirect fold learned from `\>`. So an escaped space or `;` stays INSIDE the
+            # span, and an escaped `}` does not close it.
+            esc = False
+            out.append(ch)
+            continue
+        if ch == chr(92):
+            esc = True
+        elif ch in _BRACE_FOLD_STOP:
+            open_i = -1
+        elif ch == "{":
+            # ...and a GROUP command is left alone. Bash's own rule: `{` is the reserved
+            # word only when what follows DELIMITS it, so `{ cat file; }` and `{>&1 x; }`
+            # are groups -- real separators the walk must keep seeing as such -- while
+            # `{a,b}` is the first character of a WORD.
+            #
+            # A word-opening `{` is replaced even when no close is ever found. It is not a
+            # boundary either way, and the run regex splits on it: `| X={a,b source
+            # /dev/stdin }` handed the walk a run STARTING at `a,b`, which it read as the
+            # command and stopped there, never reaching the receiver behind it.
+            # EVERY word-opening `{` is replaced, not only the one that opens the span.
+            # A nested one emitted verbatim survives an ABORTED span as a run separator,
+            # and `| X={a{b source /dev/stdin }` -- one brace deeper than the shape above,
+            # and live under real bash -- split into `X=*a` and `b source ...`, so the walk
+            # read `b` as the command. Inside a span that does fold, the extra `*` is
+            # discarded with the rest of it. Do not make this conditional again: it is what
+            # keeps an aborted span's word whole, which is the only thing standing behind
+            # the quoting shapes this walk cannot lex.
+            nxt = text[i + 1:i + 2]
+            if nxt and nxt not in _BRACE_FOLD_DELIM:
+                if open_i < 0:
+                    open_i, open_out = i, len(out)
+                out.append("*")
+                continue
+        elif ch == "}" and open_i >= 0:
+            body = text[open_i + 1:i]
+            if "," in body or ".." in body:
+                del out[open_out:]         # the span was emitted verbatim; take it back
+                out.append("*")
+                open_i = -1
+                continue
+            open_i = -1
+        out.append(ch)
+    return "".join(out)
+_CMDPOS_RECEIVERS = frozenset(("source", ".")) | _LAUNCHER_SHELLS
+
+# RESIDUAL over-block, stated: the separator class is quote-blind, so punctuation inside a
+# quoted OPERAND reads as a boundary and the word behind it as a command --
+# `grep -n "rm -rf src; $file" <(echo pat)` and `grep -n "rm -rf src | source" <(echo pat)`
+# both block. Telling a quoted `;` from a real one is the lexed question, and being defeated
+# at it is the entire reason this walk exists; a second quote parser here would be defeated
+# the same way. The shape needs a write verb inside a quoted pattern, punctuation inside that
+# same pattern, AND a process substitution in the command, so it is narrow -- and it is the
+# direction this module chooses. Pinned in the grid.
+
+
+def _cmdpos_receiver_in_raw(text):
+    """Does a command-POSITION word in this raw text name a receiver, or resolve at run time?
+
+    Quote-blind and lexer-free, for the shapes where the lexer has been defeated. Three
+    questions, all of them ones the lexed path already asks of a stage's first word: is it a
+    command-position-only receiver name (`source`, `.`, a launcher), is it a dash-versioned
+    interpreter, or is it UNRESOLVABLE -- built by an expansion or a glob, like
+    `b$(printf as)h`, `$SHELL` or `/bin/ba[s]h`, where no spelling of the command contains a
+    name at all.
+
+    The expansion test is why this is anchored rather than asked of the whole command: a `$`
+    ANYWHERE selected the whole-command scan and blocked
+    `grep -n "rm -rf src" "$file" "<(x)"`, where the variable is an operand. In command
+    position it is the program.
+
+    Command position is a RUN, not the token after the operator -- bash allows assignments,
+    redirections, prefix words, wrappers and reserved words in front of the real command --
+    so the run is walked and the first word that is none of those is the answer.
+    """
+    # EXTGLOB first, because the run regex cannot see it: `(` is a separator here, so
+    # `/bin/ba+(s)h` -- which bash expands to a real shell before a command word exists --
+    # is split before `_UNRESOLVED_CW_CHARS` can be asked of it. The opener is a finite
+    # two-character shape, and an ordinary operand carrying one is rare enough that refusing
+    # the whole text costs a raw scan on a command that also holds a substitution.
+    # A `&` or `|` that BELONGS TO A REDIRECTION is not a command separator. The run regex
+    # splits on both characters unconditionally, so `| 2>&1 source /dev/stdin` broke into a
+    # run ending `2>` and a run starting `1 source`: the pending target was lost, the walk
+    # took `1` for the command word and never reached `source`. `>|` split the same way.
+    # Behind the quote pads -- where the lexed candidate path is already defeated and the
+    # command-position names are deliberately outside the quote-blind name scan -- that is a
+    # fail-OPEN, verified.
+    #
+    # Normalised rather than parsed: the descriptor-duplication and clobber forms are folded
+    # to a bare redirect (`2>&1` -> `2>1`, `>|` -> `>`, `&>` -> `>`), which is all this walk
+    # needs -- it only has to recognise the word as a REDIRECTION so the prefix run
+    # continues past it. `>>` carries no `&`/`|` and is untouched.
+    text = _REDIR_FOLD_RE.sub(_redir_fold, text)
+    # ...and a BRACE EXPANSION is not a boundary either -- it is part of the word around it.
+    # Folded to `*` so `{s..s}ource` stays ONE unresolvable word; see `_fold_brace_expansions`.
+    text = _fold_brace_expansions(text)
+    for _m in _CMDPOS_RUN_RE.finditer(text):
+        # Does this run end because an EXPANSION character was glued to its last word?
+        # `(` and `{` are separators to the run regex, so `ba{s..s}h` and `/bin/ba+(s)h` --
+        # which bash expands to a real program before a command word exists -- are cut in
+        # half and `_UNRESOLVED_CW_CHARS` never sees them. Asked HERE rather than over the
+        # text, because only the walk knows whether the truncated word was in COMMAND
+        # POSITION: an anchored regex over the whole command made `grep -n 'rm -rf src'
+        # file{1,2} <(echo pat)` a receiver, and an unanchored one made every operand one.
+        # TUPLE membership, not `in "({"`: an empty slice is a substring of every string, so
+        # a run ending at end-of-text read as `cut` and its last word as a truncated command.
+        _cut = (text[_m.end():_m.end() + 1] in ("(", "{")
+                and _m.group(1) and not _m.group(1)[-1].isspace())
+        _skip_target = _seen_prefix = False
+        _words = _m.group(1).split()
+        # BY INDEX, not by identity. `w is _last_word` looked right and was not: CPython
+        # interns short strings, so a leading `!` and a trailing `!` are the SAME object and
+        # the cut check fired on the wrong word -- `! grep -n 'rm -rf src' !{a,b} <(echo pat)`
+        # matched on the leading `!` prefix and blocked a read-only grep.
+        _last_i = len(_words) - 1
+        for _i, w in enumerate(_words):
+            # A BACKSLASH counts with the quotes: bash joins `X=foo\ bar` into ONE
+            # assignment word, and whitespace-splitting cuts it in two exactly as a quoted
+            # value is cut. Same exit, same reason -- knowing where the word really ends is
+            # the lexed question this walk exists because it cannot ask.
+            _quoted = _DQ in w or _SQ in w or chr(92) in w
+            if _skip_target:
+                # the operand of a BARE redirection operator, which is a filename and never
+                # the command: `| > /dev/null source /dev/stdin` put `/dev/null` where the
+                # walk was looking and it stopped there.
+                # ...and the target may itself END in another redirect operator, in which
+                # case the word after IT is the next target: bash reads
+                # `command> /dev/null> /tmp/x source /dev/stdin` as two redirections and
+                # then the receiver, while clearing the flag unconditionally left the walk
+                # stopping on `/tmp/x`. Same test as the prefix branch, same reason.
+                _skip_target = w.endswith(("<", ">", "<<-"))
+                if _quoted:
+                    return True               # `> "/tmp/a b"` -- see the note below
+                continue
+            if _REDIR_RE.fullmatch(w):
+                # NO CUT CHECK HERE. A process substitution ends its own run in a bare `<`
+                # or `>` followed by `(` BY CONSTRUCTION, so testing it here fired on every
+                # such command -- `grep -n 'rm -rf src' file{1,2} <(echo pat)` included. A
+                # redirect operator is never a truncated command word.
+                _skip_target = _seen_prefix = True
+                continue
+            _bare = re.split(r"[<>]", w, maxsplit=1)[0]        # `command>/dev/null` is a prefix too
+            if (_ASSIGN_RE.match(w) or _REDIR_RE.match(w)
+                    or _basename(_bare) in _CMD_PREFIX_WORDS
+                    or w in _CMD_PREFIX_WORDS
+                    # ...and WRAPPERS, which the lexed path peels for the same reason:
+                    # `| env source /dev/stdin` puts `env` where a prefix word would be, and
+                    # the generated grid caught it.
+                    or (_basename(_bare) in _WRAPPERS | _ENV_NAMES
+                        # ...but an OPERAND-taking wrapper is not steppable: `flock FILE
+                        # CMD` and `chroot ROOT CMD` put a positional operand between the
+                        # wrapper and the command, so the walk stopped on the operand and
+                        # never reached the receiver. Which wrappers take one, and how many,
+                        # is the arity table this module refuses to build -- so the run is
+                        # refused instead, the same move made for an option in command
+                        # position.
+                        and _basename(_bare) not in _OPERAND_WRAPPERS)
+                    # ...and the RESERVED words that open or connect a compound command:
+                    # `| if true; then source /dev/stdin; fi` splits on the `;`, so the run
+                    # holding the receiver begins with `then`. Derived from the keyword sets
+                    # rather than hand-listed, so adding a keyword extends both walks.
+                    # ...asked of `_bare`, like the prefix test above it. A redirection
+                    # needs no whitespace, so `then>/dev/null` is ONE word; asked of `w` it
+                    # was an ordinary command and the walk stopped on it, one word before
+                    # the receiver.
+                    or _bare in _COMPOUND_WORDS):
+                # A QUOTE INSIDE THE PREFIX RUN makes it unresolved, and that is the exit
+                # rather than a fix: whitespace-splitting cuts a quoted value in two
+                # (`X="a b" source /dev/stdin`), and a parity counter over both quote kinds
+                # was tried and defeated at once by `X="'a b'"`, whose aggregate parity is
+                # even while the value still spans two fragments. Knowing which quote is
+                # open is the LEXED question, and being defeated at it is why this walk
+                # exists. Scoped to words already identified as PREFIX, because the run
+                # regex splits on `(` and leaves quote fragments of ordinary operands
+                # behind -- `grep -n 'rm -rf src <(' notes.txt` yields a bare `'` run, and
+                # refusing on that blocked a read-only grep.
+                if _quoted:
+                    return True
+                if (_cut and _i == _last_i
+                        and not _ASSIGN_RE.match(w) and not _REDIR_RE.match(w)):
+                    # ...and the CUT check belongs here too, not only past the branches. A
+                    # truncated command word can look like a prefix: `/tmp/only-shell/!(nope)`
+                    # is cut to `/tmp/only-shell/!`, whose basename `!` IS a prefix word, so
+                    # the walk continued past it and never asked whether the run ended in an
+                    # expansion. With extglob on, bash resolves that word to whatever the
+                    # directory holds.
+                    #
+                    # NOT for an ASSIGNMENT or a REDIRECTION, though. Neither is ever the
+                    # command word, so an expansion in its value or target says nothing
+                    # about what runs: `X=foo{a,b} grep -n 'rm -rf src' <(echo pat)` and
+                    # `</tmp/${name} grep -n 'rm -rf src' <(echo pat)` are read-only greps,
+                    # and firing here blocked both. A truncated command word never starts
+                    # with `<` or `>`, so the exemption cannot hide one. The command is
+                    # whatever follows, and the walk goes on to ask about that.
+                    return True
+                _seen_prefix = True
+                # ...and if the word ENDS in a redirect operator, its target is the NEXT
+                # word. `command>/dev/null` is one word and needs nothing, but
+                # `command> /dev/null source /dev/stdin` put `/dev/null` where the walk was
+                # looking and it stopped there -- the same defect the bare-operator branch
+                # already answers, reached through a prefix, a reserved word or an
+                # assignment instead. `>>`, `<<`, `<<<` and `<>` end in a redirect character
+                # too, and a folded `2>1` does not. `<<-` is the ONE spelling that ends in
+                # something else, and it takes a separated delimiter word like any other
+                # target: `command<<- EOF source <(payload)` runs `command source
+                # <(payload)`, and the walk took `EOF` for the program.
+                _skip_target = w.endswith(("<", ">", "<<-"))
+                continue
+            if _basename(re.split(r"[<>]", w, maxsplit=1)[0]) in _OPERAND_WRAPPERS:
+                return True               # see the operand-wrapper note above
+            if _seen_prefix and w.startswith("-"):
+                # AN OPTION IN COMMAND POSITION marks the run unresolved rather than being
+                # stepped over. Stepping over it is only sound when it takes no value:
+                # `env -u X $SHELL` put `X` -- the operand of `-u` -- where the command word
+                # goes, and the walk read it as the program. Deciding which options take a
+                # value is the arity table this module refuses to build, and it fails OPEN
+                # when wrong; the same move is already made for an option before a launcher.
+                return True
+            # UNRESOLVABLE, on the same set the lexed path uses rather than a subset of it:
+            # `$` and a backtick were asked for, and `/bin/ba[s]h` -- a GLOB that bash
+            # expands to a real shell before a command word exists -- was not. `(` cannot
+            # reach here, since the run regex treats it as a separator.
+            if any(ch in w for ch in _UNRESOLVED_CW_CHARS):
+                return True
+            # ...with any ATTACHED redirect cut off first. A redirection needs no
+            # whitespace, so `source</dev/stdin` and `lldb-19</dev/stdin` arrive as ONE
+            # word and the name test saw the redirect glued to the receiver.
+            b = _basename(re.split(r"[<>]", w, maxsplit=1)[0])
+            if b in _CMDPOS_RECEIVERS or _CMDPOS_INTERP_RE.fullmatch(b):
+                return True
+            if _cut and _i == _last_i:
+                return True               # the command word ran into an expansion
+            break
+    return False
+
+
+
+def _any_reads_program_from_stdin(texts, seen):
+    """Might any of these stages run a program it reads from stdin?
+
+    CHARGED before each call, for the reason `_piped_shell_producers` records at its own
+    charge site: the walk behind this question is the potentially quadratic one, and a hook
+    that overruns its 5s timeout writes NO decision, which the harness reads as ALLOW.
+    Exhaustion answers True, so an unfinished scan widens rather than narrows; the caller
+    turns an exhausted walk into the whole-command scan, which is the same best-effort exit
+    this module already takes for an unreadable command.
+
+    THE CALLER CHARGES, once, for the whole command. Charging per text here double-counted
+    twice over -- a substitution body is normally already one of the segments, and the
+    segments PARTITION the very command that is also passed as a stage, so a 2,004-token
+    command spent about 4,008 against a 4,000 budget. Every text handed here comes out of
+    ONE command, so one charge for that command bounds them all; `seen` still keeps the walk
+    from repeating on identical text, which is the cost the charge exists to bound.
+    """
+    for t in texts:
+        if t in seen:
+            if seen[t]:
+                return True
+            continue
+        seen[t] = _may_read_program_from_stdin(t)
+        if seen[t]:
+            return True
+    return False
+
+
+def _procsub_producers(pairs, whole, subs):
+    """Text feeding a shell across a PROCESS SUBSTITUTION rather than a pipe (#563).
+
+    Same decision as `_piped_shell_producers` and the same fail-closed answer -- hand the
+    visible payload to the raw pre-#519 regexes -- for the transport that scan cannot see.
+    Nothing here models the language: the receiver question is the one
+    `_may_read_program_from_stdin` already answers, and what is yielded goes to the same
+    producer loop the pipe path feeds.
+
+    SCOPE, and the over-block it buys. For `<(...)` the candidate test is asked of every
+    stage of the command rather than of the stage the substitution is attached to: the
+    splitter breaks on `(` and `)`, so a substitution arrives already torn off its own
+    stage and binding the two back together means positional bookkeeping the splitter does
+    not keep. The cost is that a shell named ANYWHERE in the command puts every `<(...)`
+    body under the raw scan -- `sh -c ':' <(printf 'rm -rf src')` blocks. For `>(...)` the
+    producer is the WHOLE command, for the same reason and with the same trade, which is
+    the shape the indirection rule in `is_file_mod` already takes.
+
+    Process substitutions are RARE, so an ordinary command pays nothing: the candidate walk
+    runs only once one is present. `subs` is the caller's already-computed
+    `_process_substitutions(whole)`, which it needs anyway for the indirection trigger --
+    one walk, not two.
+    """
+    ins, outs, ok = subs
+    if not ok:
+        return [whole]                    # unreadable: fail CLOSED, scan it all
+    if not (ins or outs):
+        # NOTHING to route, so charge nothing and INHERIT nothing. The exhaustion exit below
+        # is unconditional otherwise, and `_psub_budget` is reset only at depth 0 -- so once
+        # any nested branch exhausted it, every later sibling in the same top-level call was
+        # raw-scanned whole for a walk it never ran. Over-blocking only, but it is the same
+        # cross-command budget coupling this allowance was split off to remove.
+        return []
+    # ONE PRODUCER, ONE CANDIDATE, and both are the WHOLE command.
+    #
+    # The first cut scoped the input direction to the substitution BODIES, which was more
+    # precise and depended on `_subst_end` extracting the right body. It does not always: a
+    # `case` PATTERN terminator is a bare `)` with no opener, so
+    # `bash < <(case x in x) printf 'rm -rf src';; esac)` truncated at `x)` -- verified
+    # executing. A paren-balance guard closed that spelling and was re-balanced by an
+    # unrelated `(`; scoping the PRODUCER to the whole command fixed the payload half but
+    # left the extraction load-bearing for the RECEIVER half, since a truncated body hides
+    # the shell inside it from the candidate test.
+    #
+    # So the extraction is not load-bearing at all now. It answers ONE question -- is there
+    # a process substitution here -- where over-reading is free, and both the candidate test
+    # and the raw scan are given the whole command, which contains every body whether or not
+    # `_subst_end` found its end. The cost is stated plainly: a shell named ANYWHERE in a
+    # command carrying a process substitution puts that whole command under the raw scan.
+    # That is the trade the indirection rule already makes, it is scoped by rarity (the walk
+    # runs only when a substitution is present), and it replaces a guess that was wrong
+    # twice in two different halves.
+    # THE WHOLE COMMAND *AND* THE BODY STAGES. `whole` is what makes the extraction
+    # non-load-bearing -- its any-word shell test sees a receiver the extraction truncated
+    # away -- but it cannot answer the COMMAND-POSITION-only names, `.` and `source`, which
+    # are only ever asked of a stage's own first word. Handing it alone therefore lost
+    # `> >(true; . /dev/stdin)`, where `whole` begins with `printf`. Both, then: the split
+    # bodies for the command-position question, `whole` for everything the split may have
+    # missed -- and the SPLIT SEGMENTS of the command, which is the third source and the
+    # one that does not depend on the extraction at all: the splitter breaks `>(` on the
+    # paren, so a receiver inside a body that `_subst_end` truncated away
+    # (`> >(case x in x) . /dev/stdin;; esac)`) still arrives here as a segment of its own,
+    # in command position, where `.` and `source` are answered. A wrong extraction now costs
+    # precision and never soundness.
+    # ONE CHARGE, for the whole command, before any of it is walked -- for the reason
+    # `_piped_shell_producers` records at its own charge site: the walk behind this question
+    # is the potentially quadratic one, and a hook that overruns its 5s timeout writes NO
+    # decision, which the harness reads as ALLOW. Everything below is derived from `whole`
+    # -- its own partition, and bodies inside it -- so charging per text counted the same
+    # bytes two and three times over.
+    # STAGES AS WELL AS WORDS. `len(whole.split())` alone is a proxy that ignores shell
+    # punctuation, and punctuation is what carries the cost here: a 64KB command of repeated
+    # `env;` segments splits into ~16,000 stages, each of which gets the walk -- and it
+    # charged FIVE tokens and measured 8.86s against the hook's 5s timeout, which writes no
+    # decision and reads as ALLOW. This is the third time in this family that an
+    # under-charged scan was a bypass rather than a slowdown; the budget has to track the
+    # dimension the work actually grows in.
+    # ...and by CHARACTERS, because neither words nor stages bound the LEXER. A 60KB
+    # command of repeated `su<a>` fragments is four words and one stage, and it produced
+    # ~48,000 tokens and took 14.0s -- past the hook's 5s timeout, which writes no decision
+    # and reads as ALLOW. Redirect characters make tokens without making whitespace, so the
+    # only measure that tracks all three is the length itself; the divisor is a floor, not a
+    # model, chosen so an ordinary 2,000-operand command still fits inside the 4,000 ceiling.
+    _psub_budget[0] -= max(len(whole.split()) + len(pairs), len(whole) // 8)
+    if _psub_budget[0] < 0:
+        return [whole]                    # exhausted: unexamined, not clean
+    # A QUOTE-BLIND NAME SCAN, in addition to the lexed stages. Adversarial quoting can
+    # make `shlex` pair its quotes differently and swallow the receiver: a matched pair of
+    # `: "$(printf '"')"` pads around `cat < <(payload) | bash` left every lexed view of the
+    # command without the word `bash`, so both this walk and the pipe scan answered no --
+    # verified executing. This test cannot be fooled that way because it never resolves
+    # quoting at all; it only ever ADDS a candidate, and it fires only on a command that
+    # already carries a process substitution.
+    # ...asked of every SHELL VARIANT, not just the text as written. The shell strips
+    # quoting and escapes before it resolves a command word, so `b\a\s\h` runs bash while
+    # no contiguous `bash` appears -- the same obfuscation `_shell_variants` already exists
+    # to answer everywhere else in this module.
+    # ...and the VERSION-QUALIFIED spellings, which are a separate set: `_STDIN_SHELLS` is
+    # exact names, so `/usr/bin/perl5.34` -- a real packaged executable that runs a program
+    # read from stdin -- matched nothing. `_ATTACHED_INTERP_RE` is the same family the lexed
+    # path already asks about, and it is unanchored for exactly this kind of search.
+    #
+    # PROGRAM NAMES ONLY. A quote-blind pass over the COMMAND-POSITION-only classes was
+    # written -- `source`, the `. /path` shape, the launchers, the dash-versioned
+    # interpreters -- and it closed those receivers behind the pads. It also re-created the
+    # any-word test this ADR MEASURED and rejected: those are ordinary English words, and
+    # `grep -n 'rm -rf src' <(printf source)`, the `unshare` and `lldb-19` twins, all went
+    # from allow to block. The lexed path anchors them to command position for exactly that
+    # reason, at a measured cost of 100 over-blocks for `.` alone. `_STDIN_SHELLS` and the
+    # version-qualified family are different: the pipe path already matches those as ANY
+    # word, so asking them here is consistent rather than a widening.
+    # THE SQUEEZED VARIANTS ONLY -- the ones with quoting, escapes and `$` removed, which
+    # `_squeezed_variants` names so this does not have to count them. Asked of the RAW text
+    # as well, a quote or a backslash acts as a name boundary that the shell will delete
+    # before it resolves anything: `bash".log"`, `bash\.log` and `python3".12.log"` are
+    # ordinary filenames, and each matched, turning read-only commands into blocks. Squeezed,
+    # they are `bash.log` and `python3.12.log`, which the boundary correctly refuses -- while
+    # the shapes this scan exists for (`b\a\s\h`, a name behind the quote pads) squeeze down
+    # to the bare name and still match.
+    if any(_STDIN_SHELL_RE.search(v) or _VERSIONED_INTERP_SCAN_RE.search(v)
+           for v in _squeezed_variants(whole)):
+        return [whole]
+    # ...and the command-position walk over EVERY variant, squeezed and not. The name half
+    # of it wants the squeezed text for the same reason the scan above does; the EXPANSION
+    # half wants the raw, because squeezing deletes the `$` that is the whole signal --
+    # `b$(printf as)h` squeezes to `b(printf as)h` and names nothing. Both are cheap, so
+    # both are asked rather than choosing.
+    if any(_cmdpos_receiver_in_raw(v) for v in _shell_variants(whole)):
+        return [whole]
+    # ADVERSARIAL QUOTING, and how it is answered. A command can be built so `shlex` pairs
+    # its quotes differently -- a matched pair of `: "$(printf '"')"` pads is the shape --
+    # and every LEXED view then loses the receiver. Two quote-blind answers were written for
+    # it and both were withdrawn on measurement, because each asked a command-position
+    # question of the WHOLE command:
+    #
+    #   any `$` or backtick anywhere   ->  blocked `grep -n "rm -rf src" "$file" "<(x)"`
+    #   any `source`/launcher anywhere ->  blocked `grep -n 'rm -rf src' <(printf source)`
+    #
+    # A `$` and the word `source` are ordinary anywhere else in a command; they mean
+    # RECEIVER only in command position, which is exactly what the lexer was providing and
+    # what the quoting takes away. So the anchor was rebuilt WITHOUT the lexer:
+    # `_cmdpos_receiver_in_raw` walks the word after every pipeline and grouping operator --
+    # true of the raw text whatever the quoting does to a lexer -- and asks the three
+    # questions the lexed path asks of a stage's first word. Both faces close, and every one
+    # of those over-blocks stays allowed, because in each the word in question is an operand
+    # rather than a command.
+    #
+    # The rule this keeps re-deriving: when a test is safe only in COMMAND POSITION, do not
+    # widen it to any position -- rebuild the position test in whatever terms still work.
+    _stages = [whole] + [seg for _op, seg in pairs]
+    for _body in ins + outs:
+        _bsegs, _bok = _split_simple_commands(_body)
+        if not _bok:
+            return [whole]                # unsplittable body: fail CLOSED, scan it all
+        _stages.extend(_bsegs)
+    out, seen = [], {}
+    if _any_reads_program_from_stdin(_stages, seen):
+        out.append(whole)
+    return out
+
+
 def _executed_operands(toks):
     """Token operands this simple command hands to a shell to EXECUTE.
 
@@ -3701,6 +4368,7 @@ def is_file_mod(cmd, _depth=0):
         return True                       # fail CLOSED -- see _MAX_CMD_CHARS
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
+        _psub_budget[0] = _MAX_SCAN_TOKENS
         _stdin_memo.clear()
     if _depth >= _MAX_DEPTH:
         # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
@@ -3730,14 +4398,25 @@ def is_file_mod(cmd, _depth=0):
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
     if not subst_ok:
+        # RESIDUAL, stated: this is verb patterns only, so a redirect-only write behind an
+        # unparseable command (`printf 'echo x > src/impl.py' | bash` with an unterminated
+        # backtick) is not seen -- the producer scan that would see it is skipped whenever a
+        # parser bails. Adding the redirect half here was tried twice and withdrawn both
+        # times: raw, it read an INERT redirect inside a comment as a write (this path runs
+        # BEFORE comment defusing, and a comment's stray apostrophe is often what made the
+        # command unparseable in the first place); gated on `#` being absent, the gate became
+        # a bypass primitive -- append a quoted `#` and the redirect half switches off.
+        # Deciding which `#` opens a comment needs the quote state that is by definition
+        # broken here. Refusing to guess is the same exit `)#` already takes.
         return _regex_fallback(cmd)
     for body in bodies:
         if is_file_mod(body, _depth + 1):
             return True
     _paren_hash_ambiguous[0] = False
-    pairs, ok = _split_with_ops(_normalize(cmd))
+    _norm = _normalize(cmd)
+    pairs, ok = _split_with_ops(_norm)
     if not ok:
-        return _regex_fallback(cmd)
+        return _regex_fallback(cmd)      # same residual as the substitution path above
     # ...and the flag the FIRST split raised is preserved across them: the extra calls
     # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
     # recorded, turning a fail-CLOSED stall into an allow (codex, #553).
@@ -3779,16 +4458,28 @@ def is_file_mod(cmd, _depth=0):
     # performed the write and classified as a read. The caller's own redirect check does not
     # cover it either -- it strips single-quoted text first, which is where a payload lives.
     #
+    # ...and the same verdict for a shell fed across a PROCESS SUBSTITUTION rather than a
+    # pipe, which the scan above recognises only `|`/`|&` as (#563).
+    #
     # Each reading is walked ON ITS OWN, never as part of the union above: this is the one
     # consumer that turns on adjacency, and a union built by segment dedup pairs a receiver
     # with whichever producer happened to be written first (codex, #553).
     #
+    # BOTH transports are asked of every reading. Scoping the process-substitution scan to
+    # the base split would have left a receiver that only ONE reading exposes unasked,
+    # which is the same miss the readings exist to close -- and `_procsub_producers` is
+    # already whole-command in scope (it is handed `_norm`), so the extra readings widen
+    # only which STAGES it is asked about, never the text it reads (#553, #563).
+    #
     # Charged ONCE per distinct stage, not once per reading -- see the memo at the debit
     # site. Resetting the budget per reading instead was measured at 3.9s on a 64 KiB
     # command, against the 5s hook timeout the budget exists to stay inside (#553).
+    _psub = _process_substitutions(_norm)
+    _psub_present = any(_psub[:2])
     _seen_prod = set()
     for _seq in [_base_pairs] + _readings:
-        for producer in _piped_shell_producers(_seq):
+        for producer in (_piped_shell_producers(_seq)
+                         + _procsub_producers(_seq, _norm, _psub)):
             if producer in _seen_prod:
                 continue
             _seen_prod.add(producer)
@@ -3804,7 +4495,16 @@ def is_file_mod(cmd, _depth=0):
     # that BOTH introduces indirection AND feeds a candidate stage is scanned whole.
     # Keyed on ANY pipe, not on a candidate stage: the whole point is that the receiver may
     # be a NAME (`... | f`), which no candidate test can recognise as a shell.
-    if any(_is_pipe(_o) for _o, _ in pairs) and _has_indirection(cmd):
+    #
+    # ...and on any PROCESS SUBSTITUTION for the same reason, which the first cut of #563
+    # left out: a substitution is a transport with no `|` in it, so keying this on the pipe
+    # alone let indirection hide either end of it. Both spellings were verified executing
+    # while `is_file_mod` answered False -- `f(){ printf 'rm -rf src'; }; bash < <(f)` (the
+    # producer handed to the regexes is the bare name `f`) and
+    # `f(){ bash; }; printf 'rm -rf src' > >(f)` (`f` is not recognised as a shell) -- while
+    # their pipe twin `f(){ printf 'rm -rf src'; }; f | bash` already blocked through this
+    # very rule. The transport changed; the reason the rule exists did not.
+    if (any(_is_pipe(_o) for _o, _ in pairs) or _psub_present) and _has_indirection(cmd):
         if _regex_fallback(cmd):
             return True
         if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd)):
@@ -3822,6 +4522,8 @@ def is_file_mod(cmd, _depth=0):
             # This one segment is unparseable. Decide the WHOLE command by the regex
             # fallback rather than silently dropping the segment — dropping it is the
             # only outcome here that could be a fail-OPEN.
+            #
+            # Same residual as the two paths above: verb patterns only.
             return _regex_fallback(cmd)
         # Charge before scanning: the O(tokens^2) walk is what this bounds.
         _scan_budget[0] -= len(toks)
@@ -3916,6 +4618,23 @@ def _ansi_c(text):
     return _decode_escapes(text).replace("$" + _SQ, _SQ)
 
 
+def _squeezed_variants(text):
+    """Only the variants with quoting, escapes and the `$` prefix DELETED.
+
+    A named half of `_shell_variants` rather than a slice off its end: a caller that
+    wants the squeezed set only -- because a quote or a backslash acts as a name
+    boundary the shell deletes, so `bash".log"` must not read as `bash` -- says which
+    set it means instead of counting how many unsqueezed entries come first.
+    """
+    out = []
+    for base in (text, _decode_escapes(text)):
+        squeezed = base.replace(chr(92) + chr(10), "")
+        for _ch in (_SQ, _DQ, chr(92), "$"):
+            squeezed = squeezed.replace(_ch, "")
+        out.append(squeezed)
+    return out
+
+
 def _shell_variants(text):
     """The text as written, and as the shell will have rewritten it before running it.
 
@@ -3923,14 +4642,12 @@ def _shell_variants(text):
     all removed by the shell before it resolves the command word; ANSI-C escapes are
     DECODED by it, so `g$'\\x69't` is `git`. Every variant is additive -- matching any of
     them blocks -- so this only ever adds a block.
+
+    Built FROM `_squeezed_variants` so the two cannot drift: adding an unsqueezed base
+    here without adding it there is the only way to desynchronize them, and that shows
+    up as a missing squeezed twin rather than as a silently wrong slice index.
     """
-    out = [text, _decode_escapes(text)]
-    for base in list(out):
-        squeezed = base.replace(chr(92) + chr(10), "")
-        for _ch in (_SQ, _DQ, chr(92), "$"):
-            squeezed = squeezed.replace(_ch, "")
-        out.append(squeezed)
-    return out
+    return [text, _decode_escapes(text)] + _squeezed_variants(text)
 
 
 def _demo():

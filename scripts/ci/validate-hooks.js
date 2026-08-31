@@ -97,7 +97,7 @@ const CONTAINED_WRAPPER_PATHS = new Set(CONTAINED_WRAPPERS.map(
 // operand at another path) also removes the registration from the population the grammar
 // guards, so the grammar would pass by vacuum. The count is what makes the pin fail-closed.
 // Changing it is a deliberate, reviewed act — see docs/adr/0049 and #713.
-const EXPECTED_CONTAINED = 19;
+const EXPECTED_CONTAINED = 20;
 let containedSeen = 0;
 // Of those, how many are exec form vs. deliberately left in shell form. Two registrations
 // are NOT migrated: the Codex nudges POST `@codex review` comments and are suppressed by
@@ -107,7 +107,7 @@ let containedSeen = 0;
 // the trade Hermes took in #713 rather than silently re-enabling an outbound side effect.
 // They are pinned VERBATIM below, not by grammar: a substring-keyed exemption would be the
 // same self-selecting hole the count above exists to close.
-const EXPECTED_EXEC_FORM = 17;
+const EXPECTED_EXEC_FORM = 18;
 const EXPECTED_SHELL_EXEMPT = 2;
 let execFormSeen = 0;
 let shellExemptSeen = 0;
@@ -125,6 +125,7 @@ const EXPECTED_ROSTER = [
   "PreToolUse|Bash|t=10|careful-guard.sh",
   "PreToolUse|Bash|t=10|pre-commit-gate.sh",
   "PreToolUse|Bash|t=10|pre-pr-gate.sh",
+  "PreToolUse|Bash|t=10|ref-ff-gate.sh",
   "PreToolUse|Bash|t=20|codex-nudge-premerge.sh",
   "PreToolUse|Bash|t=20|pre-merge-gate.sh",
   "PreToolUse|Bash|t=undefined|--fail-open pre:bash:gateguard-fact-force scripts/hooks/gateguard-fact-force.js minimal,standard,strict",

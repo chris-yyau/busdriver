@@ -3942,11 +3942,12 @@ def git_ref_create(cmd):
                                branch and names none of them. The ordinary
                                `+refs/heads/*:refs/remotes/origin/*` writes no
                                local branch and is not refused.
-      is_fetching True when the command fetches under the repository's
-                  CONFIGURED refspecs -- `fetch`, `pull`, or `remote update` --
-                  which is where a destination no word of the command spells can
-                  come from. Read from the NORMALIZED words, so the standalone
-                  `git-fetch` executable counts.
+      is_fetching True when the command runs under the repository's CONFIGURED
+                  refspecs -- `fetch`, `pull`, `remote update`, `push` or
+                  `send-pack` -- which is where a destination no word of the
+                  command spells can come from (`remote.<name>.fetch` and
+                  `remote.<name>.push` alike). Read from the NORMALIZED words, so
+                  the standalone `git-fetch` executable counts.
       symref      True for `git symbolic-ref`, `git notes` and `git subtree
                   split`: three ways a ref's content is not any word of the
                   command. A symbolic ref
@@ -4061,7 +4062,11 @@ def git_ref_create(cmd):
                 # the NORMALIZED words, so the standalone `git-fetch` executable
                 # reaches the same scan as the subcommand spelling.
                 is_fetching = True
-            if 'fetch' in ntoks or 'pull' in ntoks:
+            if ('fetch' in ntoks or 'pull' in ntoks or 'push' in ntoks
+                    or 'send-pack' in ntoks):
+                # `push` and `send-pack` too: `remote.<name>.push` supplies a
+                # destination the same way `remote.<name>.fetch` does, and a
+                # remote whose url is this repository writes the branch HERE.
                 is_fetching = True
             if ('symbolic-ref' in ntoks or 'notes' in ntoks
                     or ('subtree' in ntoks and 'split' in ntoks)):

@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-five ways a first draft of that membership test still leaked, and
+Review found twenty-six ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -319,6 +319,14 @@ adding a grammar:
   current ref to match — and `git pull <remote> <branch>` populated the unborn
   protected branch from remote content, the one thing that arm refuses
   everywhere else. The current-branch test now runs over the protected NAMES.
+- **`remote.<name>.push`, the other configured refspec.** A remote whose url is
+  this repository writes the branch HERE, so `remote.self.push =
+  HEAD:refs/heads/master` plus `git push self` creates the protected branch with
+  no word naming it — exactly the `.fetch` hole one key over. Both keys are read
+  now, and the destination test was tightened at the same time so it fires only
+  on a name that is ABSENT or a wildcard that could expand into one: a configured
+  push at a branch that EXISTS creates nothing, and refusing it would be the same
+  over-block as below.
 - **Over-blocking, the other direction.** The configured-refspec check first
   treated every destination outside refs/remotes/ and refs/tags/ as a branch
   write, which refused ordinary `refs/notes/*`, `refs/replace/*` and any other

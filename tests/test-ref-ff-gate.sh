@@ -1862,7 +1862,7 @@ run_gate "...and an OPTION can carry the same refspec" \
 # the command naming it.
 git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
 run_gate "a CONFIGURED fetch refspec writing a local branch -> block" \
-    block "git fetch origin" "under a configured refspec whose destination"
+    block "git fetch origin" "under a configured refspec (remote.<name>.fetch or .push)"
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 run_gate "...and the ordinary configured refspec is untouched" \
     allow "git fetch origin"
@@ -1872,15 +1872,15 @@ run_gate "...and the ordinary configured refspec is untouched" \
 git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
 git -C "$REPO" checkout -q feature
 run_gate "...and a bare PULL under the same configured refspec -> block" \
-    block "git pull origin" "under a configured refspec whose destination"
+    block "git pull origin" "under a configured refspec (remote.<name>.fetch or .push)"
 # `git remote update` fetches under the same configured refspecs, and the
 # standalone `git-fetch` executable spells no `fetch` word -- so the guard reads
 # a NORMALIZED flag from the parser rather than guessing from the raw words.
 run_gate "...and so does 'git remote update'" \
-    block "git remote update origin" "under a configured refspec whose destination"
+    block "git remote update origin" "under a configured refspec (remote.<name>.fetch or .push)"
 run_gate "...and the standalone git-fetch executable" \
     block "$(git --exec-path)/git-fetch origin" \
-    "under a configured refspec whose destination"
+    "under a configured refspec (remote.<name>.fetch or .push)"
 # ...but a destination in a namespace that CANNOT become a branch is ordinary
 # work. "Anything but refs/remotes/ and refs/tags/" was the first cut and
 # over-blocked every one of these.
@@ -1892,10 +1892,25 @@ done
 # A wildcard whose literal prefix is short enough to reach refs/heads/ still can.
 git -C "$REPO" config remote.origin.fetch 'refs/heads/*:refs/*'
 run_gate "...but a bare refs/* wildcard reaches refs/heads/ -> block" \
-    block "git fetch origin" "under a configured refspec whose destination"
+    block "git fetch origin" "under a configured refspec (remote.<name>.fetch or .push)"
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 git -C "$REPO" checkout -q main
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+
+# `remote.<name>.push` supplies a destination exactly as `.fetch` does, and a
+# remote whose url is this repository writes the branch HERE. `git push self`
+# names no destination at all.
+git -C "$REPO" config remote.self.url .
+git -C "$REPO" config remote.self.push 'HEAD:refs/heads/master'
+run_gate "a configured PUSH refspec creating a protected branch -> block" \
+    block "git push self" "under a configured refspec (remote.<name>.fetch or .push)"
+# ...but a configured push at a branch that EXISTS creates nothing, and refusing
+# it would be the same over-block the namespace test guards against.
+git -C "$REPO" config remote.self.push 'HEAD:refs/heads/main'
+run_gate "...while one naming a branch that exists is ordinary work" \
+    allow "git push self"
+git -C "$REPO" config --unset remote.self.push
+git -C "$REPO" config --unset remote.self.url
 
 # A word carrying whitespace cannot be a ref NAME, but git still accepts it as a
 # REVISION -- `:/subject` finds a commit by its message -- so dropping it left a

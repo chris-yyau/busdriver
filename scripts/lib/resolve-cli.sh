@@ -2524,57 +2524,30 @@ grok_preflight_hint() {
 # Wrapper rather than an inline unset: the `builtin` branch returns early (3), and
 # an inline restore after the `case` would be skipped on that path, leaking the
 # unset back to the caller and silently unpinning the reads that follow.
-execute_review() {
-  local _gif_set=0 _gif_val="" _gif_exported=0
+execute_review() (
+  # A SUBSHELL body, so the unset below cannot outlive the call and there is nothing to
+  # restore. The save/restore this replaced had to answer "was it exported?", and every
+  # way of asking was wrong in a different way: a `declare -x` prefix match misses the
+  # combined `declare -ix`; `grep -q` on a pipeline is turned into 141 by SIGPIPE under
+  # the callers' `pipefail`; searching `export -p` OUTPUT matches an unrelated exported
+  # VALUE that happens to contain the name; and a plain assignment re-exports under
+  # `set -a`. None of those questions needs asking if the change is scoped to a subshell.
+  #
+  # Not redundant with the caller: run-review-loop.sh already wraps this in `$( … )`, but
+  # run-design-review-loop.sh calls it with a plain redirect, where an unset WOULD leak.
   if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
-    _gif_set=1
-    _gif_val="$GIT_INDEX_FILE"
-    # Whether it was EXPORTED, not merely set: restoring a shell-local variable as an
-    # exported one would hand the pin to every later child process, which is the same
-    # class of bug this wrapper exists to remove.
-    #
-    # Membership in `export -p`, not a `declare -x` prefix match. bash COMBINES attribute
-    # letters, so an exported integer prints as `declare -ix` and a prefix match reads it
-    # as unexported -- the restore would then silently drop the export and every later
-    # child would lose the pin. `export -p` lists exported names only, so being in it is
-    # the answer regardless of what else is set.
-    # `grep ... >/dev/null`, NOT `grep -q`: `-q` exits at the first match, and with the
-    # callers' `set -o pipefail` the SIGPIPE that gives `export -p` turns the pipeline into
-    # 141 whenever more exported data follows. The variable then reads as unexported and
-    # the restore silently drops the export, which is the failure this branch exists to
-    # prevent. Draining the output costs nothing and cannot be signalled.
-    if export -p 2>/dev/null | grep '[[:space:]]GIT_INDEX_FILE=' >/dev/null; then
-      _gif_exported=1
-    fi
     unset GIT_INDEX_FILE 2>/dev/null || :
-    # VERIFY, do not assume: `unset` on a readonly variable fails, and callers run with
-    # errexit disabled or suppressed, so an ignored failure would dispatch the review
-    # with the unreadable pin still in the environment -- the exact fail-OPEN-shaped
-    # silent degradation this guards. Unresolvable is the fail-CLOSED case.
+    # VERIFY, do not assume: `unset` fails on a readonly variable and callers run with
+    # errexit neutralised, so an ignored failure would dispatch the review with the
+    # unreadable pin still set. Unresolvable is the fail-CLOSED case.
     if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
       echo "busdriver: GIT_INDEX_FILE is set and could not be unset (readonly?) — refusing" >&2
       echo "  to dispatch a review whose CLI would inherit litmus's private index snapshot." >&2
       return 1
     fi
   fi
-  local _rc=0
-  # `|| _rc=$?` rather than a bare call plus `$?`: the restore below MUST run even when the
-  # dispatch returns non-zero, and a bare call under errexit would abort the function first
-  # and leak the unset to the caller. It does not newly suppress errexit: EVERY caller
-  # already neutralises it, as this function's own contract above requires --
-  # run-review-loop.sh brackets the call with `set +e` / `set -e`, and
-  # run-design-review-loop.sh uses the `execute_review … || rc=$?` form. Either way the
-  # dispatch has always run with errexit off; this wrapper changes nothing about that.
-  _execute_review_dispatch "$@" || _rc=$?
-  if [[ "$_gif_set" -eq 1 ]]; then
-    if [[ "$_gif_exported" -eq 1 ]]; then
-      export GIT_INDEX_FILE="$_gif_val"
-    else
-      GIT_INDEX_FILE="$_gif_val"
-    fi
-  fi
-  return "$_rc"
-}
+  _execute_review_dispatch "$@"
+)
 
 
 _execute_review_dispatch() {

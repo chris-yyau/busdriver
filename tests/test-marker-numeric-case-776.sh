@@ -488,6 +488,41 @@ else
   no "#776 arm-layout matrix" "pass=${GEN2_PASS} fail=${GEN2_FAIL}"
 fi
 
+# --- Bounded work INSIDE a real case pattern list (litmus PR-mode finding on #800).
+#
+# Every alternative in a `|`-list shares one span, one empty-alt answer and one closing
+# `)`. Deciding that per candidate re-walked the whole list each time, so a long valid
+# pattern was quadratic; `_case_residue_flags` now settles each list once. The earlier
+# bounded-work probe missed this because its repeated alternatives sit OUTSIDE a real
+# case-pattern state. A timeout here is NO decision, which the harness reads as ALLOW.
+# The bound is loose on purpose (a slow runner must not flake it): pre-fix this shape
+# grew 0.08s -> 0.18s -> 0.38s across N=500/1000/2000; after, N=4000 lands at ~0.17s.
+LONG_ALT=$(python3 -c '
+import sys
+n = 4000; q = chr(39); s = chr(42)
+alts = [q + q] + [s + "[!0-9]" + s] * n + ["bash"]
+print("case x in " + "|".join(alts) + ") : ;; " + s + ") : ;; esac")
+')
+long_payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$LONG_ALT" 2>/dev/null)
+got=$(printf '%s' "$long_payload" | timeout 30 python3 -I "$CLASSIFIER" 2>/dev/null) || got="TIMEOUT_OR_ERROR"
+if [[ "$got" == "OK|" || "$got" == BLOCK_* ]]; then
+  ok "#776 long in-pattern alternative list returns a verdict in bounded time"
+else
+  no "#776 long in-pattern alternative list returns a verdict in bounded time" "got=${got:-<empty>}"
+fi
+
+# The same list length as a REAL pipeline must still block (not merely be fast).
+LONG_PIPE=$(python3 -c '
+q = chr(39); s = chr(42)
+print("(" + q + q + " | " + " | ".join([s + "[!0-9]" + s] * 200) + " | bash)")
+')
+got=$(verdict "$LONG_PIPE")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 long real pipeline of digit-negation stages still blocks"
+else
+  no "#776 long real pipeline of digit-negation stages still blocks" "got=${got:-<empty>}"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -2098,23 +2098,6 @@ def _is_digit_negation_only_segment(seg) -> bool:
     return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
 
 
-def _case_pattern_list_span(pairs, i):
-    """(first, last) indices of the `|`-joined alternative list containing pairs[i].
-
-    BOTH directions. Scanning only backwards to the head missed an empty-string
-    alternative written AFTER the digit-negation one -- `case x in *[!0-9]*|''|foo)` is
-    valid bash and was over-blocked, as were 17 sibling spellings the fixed examples
-    never covered. Alternative ORDER carries no meaning in a case pattern list.
-    """
-    head = i
-    while head > 0 and pairs[head][0] == "|":
-        head -= 1
-    tail = i
-    while tail + 1 < len(pairs) and pairs[tail + 1][0] == "|":
-        tail += 1
-    return head, tail
-
-
 # Empty-string case alternatives (#776): one or more empty quotes as a whole alt, or after in.
 _EMPTY_ALT_SEG_RE = re.compile(r"^\s*(?:''|\"\")+\s*$")
 _EMPTY_ALT_AFTER_IN_RE = re.compile(
@@ -2255,20 +2238,6 @@ def _has_empty_string_case_alt(pairs, head, tail):
     return False
 
 
-def _in_empty_alt_case_pattern(pairs, i, flags):
-    """True for #776 case-pattern residue: an empty alt in a real case pattern list.
-
-    Membership is decided by `flags`, NOT by the preceding operator. Requiring `|` was a
-    leftover from the text-window era and assumed the digit-negation alternative followed
-    another one; a paren-opened item puts it FIRST, where its operator is `(`, and the
-    valid `case x in (*[!0-9]*|''|foo)` was over-blocked. `flags[i]` already means bash
-    executes nothing here, which is the property the omission actually rests on.
-    """
-    if not flags[i]:
-        return False
-    return _has_empty_string_case_alt(pairs, *_case_pattern_list_span(pairs, i))
-
-
 def _case_pattern_closes_after(pairs, i):
     """True when the `|`-alternative list containing pairs[i] ends at a `)` close.
 
@@ -2299,19 +2268,32 @@ def _case_pattern_closes_after(pairs, i):
     return False
 
 
-def _omit_case_residue(pairs, i, flags_box):
-    """True when pairs[i] is #776 case-pattern residue and must leave the producer text."""
-    if not _is_digit_negation_only_segment(pairs[i][1]):
-        return False
-    # ONCE per command, and only once a candidate shows up: this scan is O(pairs), and
-    # running it per emitted producer made a command of many short pipeline stages
-    # quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out hook writes NO
-    # decision, which the harness reads as ALLOW. Same reason and same shape of fix as
-    # the once-per-command probe in _herestring_shell_payloads.
-    if not flags_box:
-        flags_box.append(_case_pattern_segments(pairs))
-    return (_in_empty_alt_case_pattern(pairs, i, flags_box[0])
-            and _case_pattern_closes_after(pairs, i))
+def _case_residue_flags(pairs):
+    """Per-segment: is pairs[k] a digit-negation-only segment that is #776 case residue?
+
+    ONE linear pass over the alternative lists, not one rescan per candidate. Every
+    member of a `|`-list shares the same span, the same empty-alt answer and the same
+    closing `)`, so deciding per candidate re-walked the whole list each time -- O(n^2)
+    on a long pattern like `case x in \'\'|*[!0-9]*|*[!0-9]*|...|bash)`. This gate treats
+    a timeout as NO decision, which the harness reads as ALLOW, so quadratic work on
+    attacker-shaped input is a fail-open surface even where a later budget trips first.
+    """
+    flags = _case_pattern_segments(pairs)
+    out = [False] * len(pairs)
+    n = len(pairs)
+    start = 0
+    while start < n:
+        end = start                           # extent of one `|`-joined alternative list
+        while end + 1 < n and pairs[end + 1][0] == "|":
+            end += 1
+        if (any(flags[k] for k in range(start, end + 1))
+                and _has_empty_string_case_alt(pairs, start, end)
+                and _case_pattern_closes_after(pairs, end)):
+            for k in range(start, end + 1):
+                if flags[k] and _is_digit_negation_only_segment(pairs[k][1]):
+                    out[k] = True
+        start = end + 1
+    return out
 
 
 def _join_piped_producer_segments(pairs, start, last, flags_box):
@@ -2323,8 +2305,20 @@ def _join_piped_producer_segments(pairs, start, last, flags_box):
     later list op closes the pattern with `)`. Real pipelines -- including one wearing the
     words `case` and `in` as operands -- keep the glob and stay fail-closed.
     """
-    return " ; ".join(pairs[i][1] for i in range(start, last)
-                      if not _omit_case_residue(pairs, i, flags_box))
+    for i in range(start, last):
+        if _is_digit_negation_only_segment(pairs[i][1]):
+            # ONCE per command, and only once a candidate shows up: the scan is O(pairs),
+            # and running it per emitted producer made a command of many short pipeline
+            # stages quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out
+            # hook writes NO decision, which the harness reads as ALLOW. Same reason and
+            # same shape of fix as the once-per-command probe in _herestring_shell_payloads.
+            if not flags_box:
+                flags_box.append(_case_residue_flags(pairs))
+            break
+    if not flags_box:
+        return " ; ".join(pairs[i][1] for i in range(start, last))
+    residue = flags_box[0]
+    return " ; ".join(pairs[i][1] for i in range(start, last) if not residue[i])
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a

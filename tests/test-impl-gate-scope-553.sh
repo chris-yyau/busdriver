@@ -969,6 +969,26 @@ check "...and in a segment's own command position it blocks" block \
 # ...while a payload's ARGUMENT stays an argument, at parity and by design.
 check "an extglob ARGUMENT in a payload stays an argument" allow \
     "$(armed 'find . -exec echo @(a|b) {} +')"
+
+# The find -exec scan re-examines EVERY -exec-like token, including one sitting inside a
+# payload already read. Skipping past a consumed payload parses what find actually runs
+# (`-exec printf %s -exec rm -rf src {} ;` runs printf, and the inner words are printf's
+# data) and was measured to turn a BLOCK into an ALLOW on a segment naming `rm -rf`.
+# That is a fail-open direction, and this classifier does not take one on a precision
+# argument; origin/main's scan is restored and the false block is the accepted cost
+# (codex backstop, #553).
+check "an -exec inside a payload is still re-read, so the inner rm blocks" block \
+    "$(armed 'find . -exec printf %s -exec rm -rf src {} \;')"
+check "...as does a genuine second payload" block \
+    "$(armed 'find . -exec echo hi {} \; -exec rm -rf src {} \;')"
+check "...while two harmless payloads stay two reads" allow \
+    "$(armed 'find . -exec echo hi {} \; -exec echo bye {} \;')"
+check "...and an -exec-shaped filename pattern with no payload is not one" allow \
+    "$(armed 'find . -maxdepth 0 -name -exec')"
+# ...and the rescan cannot be turned into a timeout, which would be a fail-open by the
+# other door: it is charged to the scan budget, and exhausting the budget BLOCKS.
+check "a crafted run of -exec predicates still decides, and decides block" block \
+    "$(armed "find . $(for _i in $(seq 1 3000); do printf -- '-exec '; done); rm -rf src")"
 check "...even beside a real read verb" allow \
     "$(armed 'find . -type f -exec grep -l @(a|b) {} +')"
 
@@ -990,6 +1010,62 @@ for _i in $(seq 1 63); do _many="$_many echo };"; done
 _many="$_many echo"
 check "a candidate closer per brace does not exhaust the budget" allow "$(armed "$_many")"
 check "...and does not exhaust the helper guard's either" allow "$(clean "$_many")"
+
+# ...and the WALL CLOCK, which the budget alone does not pin: the budget counts TOKENS
+# while the readings cost CHARACTERS, so a command of a few enormous tokens is charged
+# almost nothing. A hook killed by its 5s timeout writes NO decision and the harness reads
+# that as ALLOW, so a slow scan is a fail-open rather than a slow pass. Measured in
+# process, on the shapes a reviewer proposed as an amplification attack, with BOTH modules
+# charged to ONE budget because the hook spends one deadline on the pair — worst observed
+# 1.9s combined against origin/main's 0.2s. Generous bound: the point is to catch a return
+# to quadratic, not to pin a number (codex backstop, #553).
+if PERF_OUT="$(GATE_LIB="${REPO_ROOT}/hooks/gate-scripts/lib" python3 - <<'PY'
+import os, sys, time
+sys.path.insert(0, os.environ["GATE_LIB"])
+import cmdword, marker_check
+
+BUDGET = 3.0
+CASES = {
+    "64 closers after 65k filler": "X=${Y:-" + ("a" * 65000) + ("}" * 64) + " ls",
+    "...and with a verb behind it": "X=${Y:-" + ("a" * 65000) + ("}" * 64) + " rm -rf src",
+    "a few enormous tokens": "sudo " + ("b" * 32000) + " " + ("c" * 32000),
+    "64 openers and 60k filler": ("X=${Y:-a} " * 64) + ("d" * 60000) + " ls",
+    # The find -exec rescan is QUADRATIC by construction -- every -exec-like token is
+    # re-examined, which is what keeps the inner one fail-CLOSED -- so it is charged to
+    # the scan budget and exhausting it blocks. Unbounded, this shape measured 5.158s,
+    # past the timeout that reads as ALLOW; origin/main itself takes 4.3s on it.
+    "3000 -exec predicates": "find . " + ("-exec " * 3000) + "; rm -rf src",
+    "8000 -exec predicates": "find . " + ("-exec " * 8000) + "; rm -rf src",
+}
+# The two modules are charged TOGETHER against one budget, because that is how the hook
+# spends its deadline: they run in sequence inside a single 5s window, so two calls that
+# each fit a per-module bound can still blow the real one and fail open with no decision.
+slow = []
+for label, cmd in CASES.items():
+    spent = 0.0
+    for name, fn in (("classifier", cmdword.is_file_mod),
+                     ("helper guard", marker_check._helper_invoked)):
+        start = time.time()
+        try:
+            fn(cmd)
+        except Exception as exc:                 # a crash is not a verdict either
+            slow.append("%s/%s CRASH %s" % (label, name, type(exc).__name__))
+            continue
+        spent += time.time() - start
+    if spent > BUDGET:
+        slow.append("%s both-modules %.2fs" % (label, spent))
+print("PERF-RESULT:" + ("|".join(slow) if slow else "within budget"))
+PY
+)"; then
+    PERF_OUT="${PERF_OUT##*PERF-RESULT:}"
+    if [[ "$PERF_OUT" == "within budget" ]]; then
+        ok "adversarial 64 KiB commands decide inside the hook budget"
+    else
+        no "adversarial 64 KiB commands decide inside the hook budget" "$PERF_OUT"
+    fi
+else
+    no "adversarial 64 KiB commands decide inside the hook budget" "probe did not run"
+fi
 
 # ...and the same with a PIPELINE in it, which is the shape that pays twice: every reading
 # re-walks that pipeline's stages, so the stage decision — and the budget charge for it —

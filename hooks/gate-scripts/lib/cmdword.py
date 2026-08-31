@@ -2992,7 +2992,27 @@ def _find_mutates(toks, depth, cw=None, names=None, wrapped=None):
             j += 1
         if payload and _payload_is_mod(payload, depth):
             return True
-        i = j + 1                     # PAST this payload: restarting at every -exec-like
+        # EVERY -exec-like token is re-examined, including one sitting inside a payload
+        # already read -- which is origin/main's scan, restored. Skipping PAST a consumed
+        # payload reads what find ACTUALLY executes (`-exec printf %s -exec rm -rf src ;`
+        # runs printf, and the inner words are printf's data) and is the more precise
+        # parse, but it turns a BLOCK into an ALLOW on a segment naming `rm -rf`, and this
+        # classifier does not take a fail-open direction on a precision argument. The cost
+        # is the rare false block on that contrived read, which is the trade this module
+        # documents everywhere.
+        #
+        # Re-examining is QUADRATIC, though, and quadratic here is its own fail-open: a
+        # hook killed by its 5s timeout writes no decision and the harness reads that as
+        # ALLOW. 3,000 `-exec` tokens followed by a verb measured 5.158s, because this
+        # branch's `_payload_is_mod` re-enters `is_file_mod` for executed operands and so
+        # pays far more per rescan than origin/main did. Charged to the same scan budget
+        # every other unbounded walk in this file is charged to, and exhausting it fails
+        # CLOSED -- the answer is a BLOCK delivered in time, never a scan that runs past
+        # the timeout (codex backstop, #553).
+        _scan_budget[0] -= len(payload) + 1
+        if _scan_budget[0] < 0:
+            return True                   # fail CLOSED -- see _MAX_SCAN_TOKENS
+        i += 1
     return False
 
 

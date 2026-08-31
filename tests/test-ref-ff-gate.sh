@@ -1809,6 +1809,24 @@ run_gate "...and the fetch spelling of the same write" \
 git -C "$REPO" checkout -q main
 run_gate "...but the same refspec off main's own tip is inert" \
     allow "git push . HEAD:refs/heads/master"
+# A refspec may be FORCE-prefixed, and the `+` made the source resolve to no
+# commit at all -- so the unreviewed content it names was skipped and a vouched
+# HEAD made the creation read as inert.
+run_gate "...and a force-prefixed source is still the content it lands" \
+    block "git push . +$UNREV_OID:refs/heads/master" "would CREATE the protected branch"
+# A WILDCARD destination expands to names no word here can spell.
+run_gate "a wildcard refspec destination that can reach refs/heads -> block" \
+    block "git fetch origin refs/heads/*:refs/heads/*" "wildcard that can expand"
+run_gate "...but the ordinary remote-tracking refspec writes no local branch" \
+    allow "git fetch origin +refs/heads/*:refs/remotes/origin/*"
+
+# A SYMBOLIC ref points at a NAME, so there is nothing to vouch for: the target
+# can be written afterwards by a command that names no protected branch at all.
+run_gate "creating a protected branch as a SYMBOLIC ref -> block" \
+    block "git symbolic-ref refs/heads/master refs/heads/staging" \
+    "would make the protected branch"
+run_gate "...but reading a symbolic ref is nobody's business" \
+    allow "git symbolic-ref --short HEAD"
 
 # A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
 # so nothing reported an alias candidate and the gate exited before looking at

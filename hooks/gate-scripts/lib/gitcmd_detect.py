@@ -3874,7 +3874,7 @@ def git_ref_create(cmd):
     here to get wrong. Same move, and the same fail-closed reason, as
     _has_companion_command.
 
-    Returns (canon_name, canon_oid, tokens, opts, stdin_ref_write, git_exe):
+    Returns (canon_name, canon_oid, tokens, opts, opaque, git_exe, symref):
       canon_name  set only when the WHOLE command is exactly the one authorizable
                   creation shape, `git branch <name> <start>` (a leading plain
                   `cd` aside, which only scopes it). Anything else leaves it '',
@@ -3901,13 +3901,31 @@ def git_ref_create(cmd):
                   these, which over-matches (`--no-main` would too) in the
                   blocking direction and needs no table of which git options take
                   an attached value.
-      stdin_ref_write
-                  True when the command runs `git update-ref` with `--stdin` or
-                  `-z`, which takes its ref names from data no command-string
-                  parser can see (`printf 'create refs/heads/master <oid>' | git
-                  update-ref --stdin` names the ref inside a quoted word). There
-                  is nothing to match, so the gate refuses the shape outright
-                  wherever a protected name could be created.
+      opaque      why this command writes refs the word scan cannot name, or ''
+                  when it does not. Two values, both refused outright wherever a
+                  protected name could be created, because there is nothing to
+                  match against:
+                    'stdin'    `git update-ref --stdin`/`-z` -- ANY accepted
+                               abbreviation of `--stdin`, since git takes them
+                               all -- reads its ref names from data (`printf
+                               'create refs/heads/master <oid>' | git update-ref
+                               --stdin` names the ref inside one quoted word).
+                    'wildcard' a refspec whose DESTINATION carries a `*` and is
+                               not under refs/remotes/ or refs/tags/, so it can
+                               expand to refs/heads/<anything>: `git fetch origin
+                               'refs/heads/*:refs/heads/*'` creates every absent
+                               branch and names none of them. The ordinary
+                               `+refs/heads/*:refs/remotes/origin/*` writes no
+                               local branch and is not refused.
+      symref      True when the command runs `git symbolic-ref`. A symbolic ref
+                  points at a NAME, so a protected branch created as one carries
+                  whatever its target holds LATER -- `git symbolic-ref
+                  refs/heads/master refs/heads/staging` against an absent
+                  `staging` vouches for nothing today, and the `git update-ref
+                  refs/heads/staging <unreviewed>` that follows names no
+                  protected branch at all. The gate refuses the shape once it
+                  names an absent protected branch, rather than trying to vouch
+                  for a target that does not exist yet.
       git_exe     True when a word names a git builtin as its own EXECUTABLE
                   (`git-branch`, `.../git-core/git-update-ref`). Such a command
                   contains no `git <subcommand>` pair, so the gate would exit
@@ -3924,8 +3942,9 @@ def git_ref_create(cmd):
     seen = []
     opts = []
     argvs = []
-    stdin_ref_write = False
+    opaque = ''
     git_exe = False
+    symref = False
 
     def _add(w):
         w = w[len('refs/heads/'):] if w.startswith('refs/heads/') else w
@@ -3950,6 +3969,8 @@ def git_ref_create(cmd):
                       if _REF_CREATE_GIT_EXE_RE.match(_x.rsplit('/', 1)[-1])
                       else _x)
                      for _x in toks]
+            if 'symbolic-ref' in ntoks:
+                symref = True
             if 'update-ref' in ntoks and any(
                     t == '-z' or (t.startswith('--') and len(t) > 2
                                   and '--stdin'.startswith(t))
@@ -3958,7 +3979,7 @@ def git_ref_create(cmd):
                 # parse-options takes any unambiguous long-option prefix, so
                 # `--std` and `--stdi` read the same opaque input that `--stdin`
                 # does; matching the full word only was a fail-OPEN.
-                stdin_ref_write = True
+                opaque = opaque or 'stdin'
             # `git worktree add <path>` with no -b/-B/--detach and no commit-ish
             # DERIVES the new branch name from the path's final component, so
             # `git worktree add ../master` creates `master` while the command
@@ -3978,14 +3999,26 @@ def git_ref_create(cmd):
                     git_exe = True
                 _add(t)
                 if ':' in t:
+                    # A `*` in the DESTINATION half expands to ref names no word
+                    # here can spell. refs/remotes/ and refs/tags/ cannot become
+                    # a local branch, so the ordinary fetch refspec is untouched.
+                    _dst = t.rsplit(':', 1)[-1].lstrip('+')
+                    if '*' in _dst and not _dst.startswith(('refs/remotes/',
+                                                            'refs/tags/')):
+                        opaque = opaque or 'wildcard'
                     # A COLON REFSPEC writes a ref with no checkout:
                     # `git push . HEAD:refs/heads/master` and `git fetch .
                     # feature:refs/heads/master` both CREATE `master`, and the
                     # whole refspec is one word that matches no protected name.
                     # Both halves are reported -- the destination is the name
                     # being created, the source is the content it would carry.
+                    # `lstrip('+')` because a refspec may be force-prefixed:
+                    # `+<oid>:refs/heads/master` left the SOURCE as `+<oid>`,
+                    # which resolves to no commit, so the unreviewed content it
+                    # names was skipped and a vouched HEAD made the creation read
+                    # as inert.
                     for part in t.split(':'):
-                        _add(part)
+                        _add(part.lstrip('+'))
                 if _wt:
                     bare = (t[len('refs/heads/'):]
                             if t.startswith('refs/heads/') else t)
@@ -4000,7 +4033,7 @@ def git_ref_create(cmd):
            and not _REF_CREATE_IMPLAUSIBLE_RE.search(a[3]) \
            and not a[3].startswith('-'):
             canon_name, canon_oid = bare, a[3]
-    return canon_name, canon_oid, seen, opts, stdin_ref_write, git_exe
+    return canon_name, canon_oid, seen, opts, opaque, git_exe, symref
 
 
 def git_ref_op(cmd, with_untrusted_cd=False):

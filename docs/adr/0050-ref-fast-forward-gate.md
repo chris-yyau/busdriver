@@ -211,9 +211,10 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found three ways a first draft of that membership test still leaked, and
-all three are closed the same way — by widening what counts as "a word naming
-this branch", never by adding a grammar:
+Review found six ways a first draft of that membership test still leaked, and
+each is closed the same way — by widening what counts as "a word naming this
+branch", or by refusing a shape whose ref names are not words at all. Never by
+adding a grammar:
 
 - **The name attached to an option.** `-bmaster`, a clustered `-qbmaster`, and
   `--create=master` create `master` while the command contains no `master` word.
@@ -227,10 +228,36 @@ this branch", never by adding a grammar:
   remote-tracking refs whose full path suffix matches a matched name are now part
   of what must be reachable; matching only the last path component lost a
   protected `release/main`.
-- **Ref names in data.** `git update-ref --stdin` (and `-z`) names its refs
-  inside input no command-string parser can see, so there is nothing to match and
-  the companion refusal — which runs only after a match — cannot help. That shape
-  is refused outright wherever a protected name could be created.
+- **Ref names in data.** `git update-ref --stdin` (and `-z`, and every accepted
+  abbreviation of `--stdin`, since git takes them all) names its refs inside
+  input no command-string parser can see, so there is nothing to match and the
+  companion refusal — which runs only after a match — cannot help. That shape is
+  refused outright wherever a protected name could be created, as is a refspec
+  whose DESTINATION carries a `*` that can reach `refs/heads/`
+  (`git fetch origin 'refs/heads/*:refs/heads/*'` creates every absent branch and
+  names none of them; the ordinary `+refs/heads/*:refs/remotes/origin/*` writes
+  no local branch and is untouched).
+- **Colon refspecs, including force-prefixed ones.** `git push .
+  HEAD:refs/heads/master` creates the branch with no checkout, and the whole
+  refspec is ONE word until both halves are reported. A `+` prefix then hid the
+  SOURCE too — `+<oid>` resolves to no commit, so the unreviewed content it named
+  was skipped and a vouched HEAD made the creation read as inert.
+- **A symbolic ref, which points at a NAME rather than at content.** `git
+  symbolic-ref refs/heads/master refs/heads/staging` against an absent `staging`
+  passes every reachability test today, and the `git update-ref
+  refs/heads/staging <unreviewed>` that follows names no protected branch at all.
+  There is nothing to vouch for, so the shape is refused once it names an absent
+  protected branch.
+- **A git builtin reached as its own executable.** `$(git --exec-path)/git-branch
+  master <oid>` contains no `git <subcommand>` pair, so the gate exited before
+  looking at its words. Every subcommand test now runs over words normalized
+  through `git-<sub>` → `<sub>`, which also puts `git-update-ref --stdin` and
+  `git-worktree add <path>` back under the rules their subcommand spellings
+  reach.
+- **A ref name git accepts and Python calls whitespace.** `\s` matches U+00A0,
+  which `git check-ref-format` allows, so a protected branch containing one was
+  dropped from the word list. The filter now refuses only what git refuses:
+  ASCII space, the control range, DEL.
 
 An EMPTY declaration file stands this arm down exactly as it stands the
 fast-forward arm down: it is the operator saying the repository has no protected

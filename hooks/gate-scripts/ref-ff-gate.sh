@@ -439,6 +439,7 @@ try:
         print('')
         print('')
         print('')
+        print('')
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -481,7 +482,8 @@ try:
     # #781. Read from the SAME parse, so the creation check can never disagree
     # with the merge/pull one about what the command says, and so the gate pays
     # one interpreter start rather than two on every git command it now sees.
-    c_name, c_oid, c_toks, c_opts, c_stdin, c_exe = git_ref_create(cmd)
+    (c_name, c_oid, c_toks, c_opts,
+     c_opaque, c_exe, c_symref) = git_ref_create(cmd)
     if any(chr(10) in v or chr(13) in v
            for v in [c_name, c_oid] + c_toks + c_opts):
         raise ValueError('newline in an emitted creation field')
@@ -491,10 +493,11 @@ try:
     # word containing whitespace: a ref name cannot hold any.
     print(' '.join(c_toks))
     print(' '.join(c_opts))
-    print('1' if c_stdin else '0')
+    print(c_opaque)
     print('1' if c_exe else '0')
+    print('1' if c_symref else '0')
 except Exception:
-    for _ in range(18):
+    for _ in range(19):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -514,8 +517,9 @@ CREATE_NAME=$(echo "$PARSE_RESULT" | sed -n '13p')
 CREATE_OID=$(echo "$PARSE_RESULT" | sed -n '14p')
 CREATE_TOKS=$(echo "$PARSE_RESULT" | sed -n '15p')
 CREATE_OPTS=$(echo "$PARSE_RESULT" | sed -n '16p')
-CREATE_STDIN=$(echo "$PARSE_RESULT" | sed -n '17p')
+CREATE_OPAQUE=$(echo "$PARSE_RESULT" | sed -n '17p')
 CREATE_GITEXE=$(echo "$PARSE_RESULT" | sed -n '18p')
+CREATE_SYMREF=$(echo "$PARSE_RESULT" | sed -n '19p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -1091,10 +1095,16 @@ creation_check() {
     # AFTER a match. So the shape is refused wherever a protected name could be
     # created; a scripted batch of ref updates is not a routine command, and the
     # named alternative costs one line each.
-    if [ "$CREATE_STDIN" = "1" ]; then
+    if [ "$CREATE_OPAQUE" = "stdin" ]; then
         block_emit "BLOCKED: this command runs 'git update-ref --stdin' in ${REPO_DIR:-.}, which takes its ref names from input the gate cannot read — so it cannot tell whether one of them CREATES a protected branch ($_PROT_NAME_LIST) at content no review gate has seen (issue #781). Name each ref update on the command line instead:
   git update-ref refs/heads/<branch> <oid>
 Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    if [ "$CREATE_OPAQUE" = "wildcard" ]; then
+        block_emit "BLOCKED: this command carries a refspec whose DESTINATION is a wildcard that can expand into refs/heads/, in a repo where a protected branch ($_PROT_NAME_LIST) does not exist yet — so it can CREATE one at content no review gate has seen while naming it nowhere the gate can read (issue #781). Name the refs you mean:
+  git fetch <remote> <branch>
+(A destination under refs/remotes/ or refs/tags/ writes no local branch and is not refused.) Blocking as precaution (fail-closed)."
         exit 0
     fi
 
@@ -1129,6 +1139,19 @@ Blocking as precaution (fail-closed)."
         done
     done
     [ -z "$_matched" ] && return 0
+
+    # A SYMBOLIC ref points at a name, not at content, so there is nothing to
+    # vouch for: `git symbolic-ref refs/heads/master refs/heads/staging` against
+    # an absent `staging` passes every reachability test today, and the `git
+    # update-ref refs/heads/staging <unreviewed>` that follows names no protected
+    # branch at all. Refuse the shape rather than vouch for a target that does
+    # not exist yet.
+    if [ "$CREATE_SYMREF" = "1" ]; then
+        block_emit "BLOCKED: this command would make the protected branch '''$_matched''' a SYMBOLIC ref in ${REPO_DIR:-.}, and it does not exist there yet. A symbolic ref carries whatever its target holds LATER, so nothing about it can be reviewed now — and the command that then writes the target names no protected branch at all (issue #781). Point the branch at a commit instead:
+  git branch $_matched <full object id>
+Blocking as precaution (fail-closed)."
+        exit 0
+    fi
 
     # Every word below costs two short git calls inside the 10s budget, whose
     # expiry emits no decision at all -- so a command naming more ref-plausible

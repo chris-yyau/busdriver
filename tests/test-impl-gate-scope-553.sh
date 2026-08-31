@@ -937,6 +937,40 @@ check "...and when the dangerous one is" block \
 # as a bypass, verified as a block).
 check "a grouped substitution does not hide the extglob behind it" block \
     "$(armed "X=\$( ( : ) ) /bin/@(r)m -rf src")"
+check "...including the alternation spelling, with a command after the group" block \
+    "$(armed "X=\$( ( : ); true ) /bin/@(r|x)m -rf src")"
+
+# RESIDUAL, at origin/main parity and left there: an extglob in an UNWRAPPED find
+# -exec payload's command word. The payload is judged as a token list and never becomes a
+# segment of its own — the structural gap `_runs_mod_verb` already records — and
+# tokenization is exactly what an extglob does not survive, since its alternation bar
+# reads as a pipe.
+#
+# Four rules were written and measured to close it, and each closed one spelling by
+# opening another: matching the predicate on the raw word missed a QUOTED `-exec`; adding
+# quoting missed a REDIRECTION between the predicate and its payload; ending the payload
+# where find does missed a terminator an expansion could PRODUCE; failing closed on a
+# substitution missed a brace list, then a nested brace, then a tilde, then an expansion
+# that synthesizes the extglob itself. Each needs one more piece of the shell's own
+# grammar resolved before find is reached, which is the ADR 0006 computed-name class this
+# file declares out of scope — and the last cut had already cost a false BLOCK on
+# `find . -exec echo '$PAT' /bin/@(a|b) {} +`, a plain read. Reverted rather than half-
+# chased. It is recorded HERE rather than asserted: an `allow` on a recursive delete is
+# not a contract this suite should carry, however accurate — a residual that origin/main
+# shares is documented, and only the shapes that genuinely BLOCK are pinned (codex,
+# #553).
+#
+# What DOES close, and must not regress: behind a wrapper the scan reads every word, so
+# the extglob is met wherever it sits; and at top level the segment-text rule answers it.
+check "behind a wrapper every word is read, so the payload extglob blocks" block \
+    "$(armed 'sudo find . -exec @(r|x)m -rf src {} +')"
+check "...and in a segment's own command position it blocks" block \
+    "$(armed '/bin/@(r|x)m -rf src')"
+# ...while a payload's ARGUMENT stays an argument, at parity and by design.
+check "an extglob ARGUMENT in a payload stays an argument" allow \
+    "$(armed 'find . -exec echo @(a|b) {} +')"
+check "...even beside a real read verb" allow \
+    "$(armed 'find . -type f -exec grep -l @(a|b) {} +')"
 
 # The helper guard carries the same reading machinery, so it carries the same order
 # dependence until the twin is fixed too. An inert pipeline written FIRST, with a

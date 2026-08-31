@@ -1024,6 +1024,10 @@ source "$SCRIPT_DIR/lib/validation.sh"
 # shellcheck source=lib/iteration-history.sh
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
+# #782: empty-diff merge auto-pass requires every MERGE_HEAD already reachable
+# shellcheck source=../../../hooks/gate-scripts/lib/merge-heads-reachable.sh disable=SC1091
+source "$SCRIPT_DIR/../../../hooks/gate-scripts/lib/merge-heads-reachable.sh"
+
 # Determine review mode from state file or env var
 REVIEW_MODE="${LITMUS_MODE:-commit}"
 
@@ -1136,19 +1140,21 @@ else
   # Commit mode: check for staged changes
   # Detect merge in progress — merge resolutions have all files staged
   # as part of the merge state, making git diff --cached appear empty
-  # when conflicts are resolved by keeping our code.
+  # when conflicts are resolved by keeping our code. Empty tree alone is
+  # not enough (#782): `git merge -s ours <unreviewed>` keeps our tree
+  # while still adding the other side as a parent.
   if git rev-parse MERGE_HEAD >/dev/null 2>&1; then
     if git diff --cached --quiet 2>/dev/null; then
-      # Merge keeps our already-reviewed code unchanged — auto-pass
-      echo "ℹ️  Merge commit detected with no changes relative to HEAD"
-      echo "   Resolution keeps already-reviewed code — auto-passing review"
-      echo ""
-      mkdir -p "$STATE_DIR"
-      publish_marker_gen
-      echo "PASS-MERGE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
-      clear_iteration_history
-      rm -f "$STATE_FILE" 2>/dev/null
-      exit 0
+      # PASS-MERGE retired (#782). Empty tree never auto-passes — whether or
+      # not MERGE_HEAD is already reachable. PreToolUse cannot bind parents.
+      if merge_heads_already_reachable "."; then
+        echo "❌ Empty-diff merge refused (#782): PASS-MERGE auto-pass is retired because PreToolUse cannot vouch for final merge parents." >&2
+      else
+        echo "❌ Merge keeps our tree but introduces history not already reachable from HEAD (e.g. git merge -s ours of unreviewed commits)." >&2
+      fi
+      echo "   Abort the merge or land the other side as a reviewed non-empty change." >&2
+      write_terminal_status setup_error
+      exit 1
     fi
     echo "ℹ️  Merge commit detected — reviewing merge resolution changes"
     # Fall through to review the changes introduced by the merge

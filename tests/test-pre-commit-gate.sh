@@ -365,7 +365,7 @@ echo "── marker is bound to the diff it approved (#545) ──────�
 # a marker check that cannot reject is not a check. Formats and their writers:
 #   <64hex>                 run-review-loop.sh:1341,1654   → bind to staged diff
 #   BUILTIN-<64hex>         write-review-marker.sh:32      → bind to staged diff
-#   PASS-MERGE-<epoch>      run-review-loop.sh:848         → bind to EMPTY diff
+#   PASS-MERGE-<epoch>      retired (#782)                 → always block
 #   PASS-EXCLUDED-<64hex>-<epoch>
 #                           run-review-loop.sh:1096        → bind to staged diff
 #                                                            AND to age (≤1h);
@@ -452,19 +452,18 @@ run_marker_test "builtin marker matching the staged diff allows" \
 run_marker_test "...and a builtin marker for a different diff blocks" \
     block 'BUILTIN-0000000000000000000000000000000000000000000000000000000000000000' 1
 
-# PASS-MERGE's precondition is an EMPTY staged diff, so that is what binds it.
-run_marker_test "PASS-MERGE allows when the staged diff is empty" \
-    allow 'PASS-MERGE-1754400000' 0
+# PASS-MERGE is retired (#782): empty-diff MERGE_HEAD commits are blocked
+# before marker checks, and a leftover PASS-MERGE marker must never allow.
+run_marker_test "PASS-MERGE blocks when the staged diff is empty but MERGE_HEAD is absent" \
+    block 'PASS-MERGE-1754400000' 0
 run_marker_test "...and blocks once something is staged" \
     block 'PASS-MERGE-1754400000' 1
-# CodeRabbit (round 4 follow-up): PASS-MERGE's acceptance condition is purely
-# "staged diff is empty" — unlike PASS-EXCLUDED/BUILTIN/bare-hash, it has no
-# secondary hash-equality check that would reject trailing content. A per-line
+# CodeRabbit (round 4 follow-up): PASS-MERGE has no secondary hash-equality
+# check that would reject trailing content. A per-line
 # `grep -qE '^PASS-MERGE-[0-9]+$'` match would honor a multi-line marker whose
 # FIRST line merely starts with PASS-MERGE, ignoring anything after it. Pin
 # that a well-formed PASS-MERGE line followed by a second, unrecognized line
-# blocks even when the staged diff is empty (the one condition that would
-# otherwise have let it through).
+# blocks even when the staged diff is empty.
 run_marker_test "...and a multi-line PASS-MERGE marker with trailing garbage blocks even with an empty staged diff" \
     block "$(printf 'PASS-MERGE-1754400000\nrm -rf /')" 0
 

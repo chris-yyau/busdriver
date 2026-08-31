@@ -442,6 +442,7 @@ try:
         print('')
         print('')
         print('')
+        print('')
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -485,7 +486,7 @@ try:
     # with the merge/pull one about what the command says, and so the gate pays
     # one interpreter start rather than two on every git command it now sees.
     (c_name, c_oid, c_toks, c_opts, c_opaque, c_exe, c_symref,
-     c_fetchspec, c_unreadable) = git_ref_create(cmd)
+     c_fetchspec, c_unreadable, c_fetching) = git_ref_create(cmd)
     if any(chr(10) in v or chr(13) in v
            for v in [c_name, c_oid] + c_toks + c_opts):
         raise ValueError('newline in an emitted creation field')
@@ -500,8 +501,9 @@ try:
     print('1' if c_symref else '0')
     print('1' if c_fetchspec else '0')
     print('1' if c_unreadable else '0')
+    print('1' if c_fetching else '0')
 except Exception:
-    for _ in range(21):
+    for _ in range(22):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -526,6 +528,7 @@ CREATE_GITEXE=$(echo "$PARSE_RESULT" | sed -n '18p')
 CREATE_SYMREF=$(echo "$PARSE_RESULT" | sed -n '19p')
 CREATE_FETCHSPEC=$(echo "$PARSE_RESULT" | sed -n '20p')
 CREATE_UNREADABLE=$(echo "$PARSE_RESULT" | sed -n '21p')
+CREATE_FETCHING=$(echo "$PARSE_RESULT" | sed -n '22p')
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -1082,13 +1085,9 @@ creation_check() {
     # judged here. A bare `git pull origin` names no destination at all, which is
     # exactly why the fetching test below is on the command word rather than on
     # anything the words spell.
-    _is_fetching=0
-    case " $CREATE_TOKS " in
-        *" fetch "*|*" git-fetch "*|*" pull "*|*" git-pull "*) _is_fetching=1 ;;
-    esac
     if [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] \
        && [ "$CREATE_FETCHSPEC" != "1" ] && [ -z "$CREATE_OPAQUE" ] \
-       && [ "$_is_fetching" = "0" ]; then
+       && [ "$CREATE_FETCHING" != "1" ]; then
         return 0
     fi
     # A declaration file that names NO branch is the operator saying this
@@ -1113,8 +1112,8 @@ creation_check() {
     # with no word in the command naming it. Read from the config this gate can
     # see -- which can only ADD refusals, never remove one, so the usual caveat
     # about config the gate cannot see costs nothing here.
-    case " $CREATE_TOKS " in
-        *" fetch "*|*" git-fetch "*|*" pull "*|*" git-pull "*)
+    case "$CREATE_FETCHING" in
+        1)
             local _cfg="" _crc=0 _cline _cdst
             _cfg=$(git_real config --get-regexp '^remote\..*\.fetch$' 2>/dev/null) || _crc=$?
             # 1 is "no such key", which is the ordinary answer; anything else is

@@ -1840,6 +1840,11 @@ run_gate "a notes write that creates a protected ref -> block" \
     "at content the gate cannot see"
 run_gate "...but an ordinary notes write is nobody's business" \
     allow "git notes add -m x HEAD"
+# `git subtree split -b <name>` synthesizes rewritten history and points the
+# branch at it, so the object did not exist when the gate looked -- the same fact
+# as the two above.
+run_gate "a subtree split that creates a protected branch -> block" \
+    block "git subtree split -b master --prefix=." "at content the gate cannot see"
 
 # A FETCH resolves its refspec source in the REMOTE repository, so the word that
 # looks vouchable here is not the content git lands: local `main` can be
@@ -1868,6 +1873,14 @@ git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
 git -C "$REPO" checkout -q feature
 run_gate "...and a bare PULL under the same configured refspec -> block" \
     block "git pull origin" "under a configured refspec whose destination"
+# `git remote update` fetches under the same configured refspecs, and the
+# standalone `git-fetch` executable spells no `fetch` word -- so the guard reads
+# a NORMALIZED flag from the parser rather than guessing from the raw words.
+run_gate "...and so does 'git remote update'" \
+    block "git remote update origin" "under a configured refspec whose destination"
+run_gate "...and the standalone git-fetch executable" \
+    block "$(git --exec-path)/git-fetch origin" \
+    "under a configured refspec whose destination"
 git -C "$REPO" checkout -q main
 git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
 

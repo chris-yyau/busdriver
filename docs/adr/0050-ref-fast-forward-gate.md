@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-two ways a first draft of that membership test still leaked, and
+Review found twenty-four ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -319,6 +319,14 @@ adding a grammar:
   current ref to match — and `git pull <remote> <branch>` populated the unborn
   protected branch from remote content, the one thing that arm refuses
   everywhere else. The current-branch test now runs over the protected NAMES.
+- **Other ways to reach the CONFIGURED refspecs.** `git remote update` fetches
+  under them too, and the standalone `git-fetch` executable spells no `fetch`
+  word — the guard read the raw words. It now reads a normalized flag from the
+  parser, so both reach the configured-refspec scan.
+- **More content the command SYNTHESIZES.** `git subtree split -b <name>`
+  rewrites history and points the branch at the result, so the object did not
+  exist when the gate looked. It joins `notes` and `symbolic-ref` under the same
+  refusal.
 - **A ref pointed at a NON-COMMIT.** A ref does not have to name a commit:
   `git update-ref refs/heads/master <blob>` creates the protected branch at a
   blob, and peeling to `^{commit}` failed on it, so the word was skipped as

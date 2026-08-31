@@ -3875,7 +3875,7 @@ def git_ref_create(cmd):
     _has_companion_command.
 
     Returns (canon_name, canon_oid, tokens, opts, opaque, git_exe, symref,
-             fetch_spec, unreadable):
+             fetch_spec, unreadable, is_fetching):
       canon_name  set only when the WHOLE command is exactly the one authorizable
                   creation shape, `git branch <name> <start>` (a leading plain
                   `cd` aside, which only scopes it). Anything else leaves it '',
@@ -3924,8 +3924,14 @@ def git_ref_create(cmd):
                                branch and names none of them. The ordinary
                                `+refs/heads/*:refs/remotes/origin/*` writes no
                                local branch and is not refused.
-      symref      True for `git symbolic-ref` and for `git notes`: two ways a
-                  ref's content is not any word of the command. A symbolic ref
+      is_fetching True when the command fetches under the repository's
+                  CONFIGURED refspecs -- `fetch`, `pull`, or `remote update` --
+                  which is where a destination no word of the command spells can
+                  come from. Read from the NORMALIZED words, so the standalone
+                  `git-fetch` executable counts.
+      symref      True for `git symbolic-ref`, `git notes` and `git subtree
+                  split`: three ways a ref's content is not any word of the
+                  command. A symbolic ref
                   points at a NAME, so a protected branch created as one carries
                   whatever its target holds LATER -- `git symbolic-ref
                   refs/heads/master refs/heads/staging` against an absent
@@ -3975,6 +3981,7 @@ def git_ref_create(cmd):
     symref = False
     fetch_spec = False
     unreadable = False
+    is_fetching = False
 
     def _add(w):
         # BOTH spellings. Stripping `refs/heads/` is what makes the protected
@@ -4030,12 +4037,23 @@ def git_ref_create(cmd):
                       if _REF_CREATE_GIT_EXE_RE.match(_x.rsplit('/', 1)[-1])
                       else _x)
                      for _x in toks]
-            if 'symbolic-ref' in ntoks or 'notes' in ntoks:
-                # Two ways a ref's content is not one of the command's words.
-                # `symbolic-ref` points at a NAME. `git notes --ref=<ref>`
-                # SYNTHESIZES a notes commit and points the ref at it, so the
-                # object did not exist when the gate looked and no reachability
-                # proof over pre-existing revisions can cover it.
+            if 'remote' in ntoks and 'update' in ntoks:
+                # `git remote update` fetches under `remote.<name>.fetch` too,
+                # and the gate's configured-refspec scan has to see it. Keyed on
+                # the NORMALIZED words, so the standalone `git-fetch` executable
+                # reaches the same scan as the subcommand spelling.
+                is_fetching = True
+            if 'fetch' in ntoks or 'pull' in ntoks:
+                is_fetching = True
+            if ('symbolic-ref' in ntoks or 'notes' in ntoks
+                    or ('subtree' in ntoks and 'split' in ntoks)):
+                # Three ways a ref's content is not one of the command's
+                # words. `symbolic-ref` points at a NAME. `git notes --ref=<ref>`
+                # SYNTHESIZES a notes commit and points the ref at it, and
+                # `git subtree split -b <name>` synthesizes rewritten history and
+                # points the branch at that -- in both cases the object did not
+                # exist when the gate looked, so no reachability proof over
+                # pre-existing revisions can cover it.
                 symref = True
             if ('fast-import' in ntoks or 'receive-pack' in ntoks
                     or ('send-pack' in ntoks
@@ -4117,7 +4135,7 @@ def git_ref_create(cmd):
            and not a[3].startswith('-'):
             canon_name, canon_oid = bare, a[3]
     return (canon_name, canon_oid, seen, opts, opaque, git_exe, symref,
-            fetch_spec, unreadable)
+            fetch_spec, unreadable, is_fetching)
 
 
 def git_ref_op(cmd, with_untrusted_cd=False):

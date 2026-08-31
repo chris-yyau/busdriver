@@ -1242,7 +1242,25 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
     local _cands="" _oid
     for _t in HEAD $CREATE_TOKS; do
         _oid=$(git_real rev-parse --verify --quiet "${_t}^{commit}" 2>/dev/null) || _oid=""
-        [ -z "$_oid" ] && continue
+        if [ -z "$_oid" ]; then
+            # `A...B` IS a start point -- measured: `git branch <name> f1...f2`,
+            # `checkout -b` and `switch -c` all create the branch at the MERGE
+            # BASE -- but it names two revisions, so `rev-parse <tok>^{commit}`
+            # refuses to reduce it and the word was skipped as if it named
+            # nothing. Skipping is the ALLOW direction, so an unreviewed merge
+            # base rode past a vouched HEAD. Refuse rather than resolve it: this
+            # spelling is not a routine creation, and one full object id costs a
+            # single re-typed command.
+            case "$_t" in
+                *...*)
+                    block_emit "BLOCKED: this command would create the protected branch '''$_matched''' in ${REPO_DIR:-.} from '''$_t''', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
+  git merge-base <a> <b>
+  git branch $_matched <that object id>
+Blocking as precaution (fail-closed)." ;;
+                *) continue ;;
+            esac
+            exit 0
+        fi
         case " $_cands " in *" $_oid "*) ;; *) _cands="$_cands $_oid" ;; esac
     done
     # GIT'S DWIM START POINT, which is NOT one of the words above. `git checkout

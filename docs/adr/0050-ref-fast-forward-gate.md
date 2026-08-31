@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twelve ways a first draft of that membership test still leaked, and
+Review found fourteen ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -233,8 +233,10 @@ adding a grammar:
   input no command-string parser can see, so there is nothing to match and the
   companion refusal — which runs only after a match — cannot help. That shape is
   refused outright wherever a protected name could be created — as are `git
-  fetch --stdin` and a `git fast-import` stream, whose `reset refs/heads/<name>`
-  commands are equally unreadable — as is a refspec
+  fetch --stdin`, a `git fast-import` stream whose `reset refs/heads/<name>`
+  commands are equally unreadable, and the push plumbing that carries ref updates
+  over its protocol rather than as words (`git send-pack --stdin`, any `git
+  receive-pack`) — as is a refspec
   whose DESTINATION carries a `*` that can reach `refs/heads/`
   (`git fetch origin 'refs/heads/*:refs/heads/*'` creates every absent branch and
   names none of them; the ordinary `+refs/heads/*:refs/remotes/origin/*` writes
@@ -279,6 +281,13 @@ adding a grammar:
   read it as `@{-1}`, the previous checkout, so `git checkout -b master -` was
   dropped with the other `-`-leading words and vouched by HEAD alone while
   landing wherever that previous checkout was.
+- **A start point that names a RANGE.** Measured: `git branch <name> f1...f2`,
+  `checkout -b` and `switch -c` all create the branch at the MERGE BASE. It names
+  two revisions, so `rev-parse <word>^{commit}` refuses to reduce it and the word
+  was skipped as if it named nothing — and skipping is the ALLOW direction, so an
+  unreviewed merge base rode past a vouched HEAD. The gate refuses the spelling
+  rather than resolving it: one `git merge-base` and a full object id cost a
+  single re-typed command.
 - **A start point that is a REVISION rather than a ref name.** A word carrying
   whitespace cannot be a branch name, which is why it is not matched — but
   `:/unreviewed subject` finds a commit by its message, so it can be the start
@@ -308,6 +317,30 @@ the reference-transaction layer, with #622.
 substitution (`git branch $B <oid>`) is not a literal word and is not matched —
 the THREAT MODEL's deliberate evader, who has arbitrary shell either way; and a
 force-update of a branch that exists stays #780.
+
+**Also still open, and deliberately: the reachability proof is not bounded in
+TIME.** `rev-list` walks history, `--max-count=1` bounds its output rather than
+its traversal, and a repository large enough could outrun the runner's 10s
+deadline — which kills the hook before it emits anything, so the command
+proceeds. Review asked for an internal deadline here. That is declined, and not
+on judgement: a self-deadline was BUILT in this gate for #779 and REMOVED, for
+reasons recorded above — it is a property of all seven gates rather than of this
+one, so fixing it here would be both partial and duplicated, and it is a process
+killer inside a security gate that review found four separate defects in, one of
+them a bash-4-only construct that aborted the gate on EVERY command under the
+`/bin/bash` its registration names. It belongs with the launcher, next to #777.
+What this amendment does is reduce the exposure it was asked to bound: the proof
+was up to seventeen graph walks and is now ONE.
+
+**Where this stops.** Every shape above is closed because it was cheap, not
+because the enumeration is complete — it cannot be, and the THREAT MODEL in the
+gate's header says so. In scope is the ROUTINE creation: the command someone
+reaches for because it is the obvious next one. Against a deliberate evader who
+already holds arbitrary shell, `git branch "$B" "$O"` defeats any command-string
+parser in one line, and this gate provides a RECORD rather than a barrier —
+exactly as the fast-forward arm does. New shapes belong in that frame: worth
+closing when the fix is a few lines, never a reason to claim the class is
+sealed.
 
 ## Alternatives considered
 

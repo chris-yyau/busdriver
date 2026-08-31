@@ -1907,9 +1907,28 @@ run_gate "...and an ordinary command in that repo is untouched" \
 # Ref names arriving as DATA, in the two remaining shapes.
 run_gate "git fetch --stdin reads its refspecs from unreadable input" \
     block "git fetch --stdin" "writes refs from INPUT the gate cannot read"
-run_gate "...and a fast-import stream carries its own reset commands" \
-    block "git fast-import" "writes refs from INPUT the gate cannot read"
+run_gate "...as does send-pack --stdin, over the push protocol" \
+    block "git send-pack --stdin ." "writes refs from INPUT the gate cannot read"
+run_gate "...and receive-pack, on the other end of it" \
+    block "git receive-pack ." "writes refs from INPUT the gate cannot read"
 REPO="$SAVED_REPO"
+
+# `A...B` IS a start point — measured: git branch/checkout -b/switch -c all
+# create the branch at the MERGE BASE — but it names two revisions, so
+# `rev-parse <tok>^{commit}` refuses to reduce it and the word was skipped as if
+# it named nothing. Skipping is the ALLOW direction, so an unreviewed merge base
+# rode past a vouched HEAD.
+git -C "$REPO" branch mb-a "$FEATURE_OID" >/dev/null 2>&1
+git -C "$REPO" branch mb-b "$UNREV_OID" >/dev/null 2>&1
+run_gate "an A...B range start point is refused, not skipped" \
+    block "git branch master mb-a...mb-b" "names a RANGE rather than one commit"
+run_gate "...in the checkout -b spelling too" \
+    block "git checkout -b master mb-a...mb-b" "names a RANGE rather than one commit"
+run_gate "...while a non-protected name is still none of the gate's business" \
+    allow "git branch feature-range mb-a...mb-b"
+# `..` in an ordinary path is not a range, and must stay ordinary work.
+run_gate "...and a relative worktree path is not mistaken for one" \
+    allow "git worktree add ../scratch-range"
 
 # A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
 # so nothing reported an alias candidate and the gate exited before looking at

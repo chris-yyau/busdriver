@@ -3913,7 +3913,10 @@ def git_ref_create(cmd):
                                refs/heads/master <oid>' | git update-ref --stdin`
                                names the ref inside one quoted word).
                     'stream'   `git fast-import`, whose stream carries its own
-                               `reset refs/heads/<name>` commands.
+                               `reset refs/heads/<name>` commands, and the push
+                               plumbing that takes ref updates over its protocol
+                               rather than as words: `git send-pack --stdin` and
+                               any `git receive-pack`.
                     'wildcard' a refspec whose DESTINATION carries a `*` and is
                                not under refs/remotes/ or refs/tags/, so it can
                                expand to refs/heads/<anything>: `git fetch origin
@@ -3994,9 +3997,14 @@ def git_ref_create(cmd):
                      for _x in toks]
             if 'symbolic-ref' in ntoks:
                 symref = True
-            if 'fast-import' in ntoks:
+            if ('fast-import' in ntoks or 'receive-pack' in ntoks
+                    or ('send-pack' in ntoks
+                        and any(t.startswith('--') and len(t) > 2
+                                and '--stdin'.startswith(t) for t in toks))):
                 # A fast-import stream carries its own `reset refs/heads/<name>`
-                # commands. There is no word to match, exactly as with --stdin.
+                # commands; send-pack --stdin and receive-pack take their ref
+                # updates over the push protocol. There is no word to match in
+                # any of them, exactly as with update-ref --stdin.
                 opaque = opaque or 'stream'
             if ('update-ref' in ntoks or 'fetch' in ntoks) and any(
                     t == '-z' or (t.startswith('--') and len(t) > 2

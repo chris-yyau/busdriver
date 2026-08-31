@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found forty-seven ways a first draft of that membership test still
+Review found forty-eight ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -416,6 +416,14 @@ adding a grammar:
   the early return down, as a truncated listing does — and the candidate loop
   carries the same 16-word bound the ref-name scan does, past which it likewise
   cannot rule a destination out.
+- **The `:/message` and range refusals hung off a FAILED resolution.** Both were
+  reached only when `rev-parse "<tok>^{commit}"` returned nothing, which made
+  them depend on git not resolving the PEELED spelling — and `:/text` is a regex
+  over commit messages, so which commit that selects is repository content, not
+  gate logic. Whether a message colliding with the appended `^{commit}` can
+  actually be built was left unproven (every `:/` shape tried already refused,
+  since a mid-pattern `^` does not match itself). The refusal is simply hoisted
+  above the resolution now, so it no longer rests on the answer.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

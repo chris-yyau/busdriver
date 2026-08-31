@@ -2149,6 +2149,18 @@ run_gate "...and via --config-env" \
 run_gate "...and a git -c on a FETCH" \
     block "git -c remote.origin.fetch=refs/heads/main:refs/heads/master fetch origin" \
     "cannot be resolved statically"
+# `:/text` and `A...B` are refused BEFORE any attempt to resolve them: hanging
+# the refusal off a FAILED `rev-parse "<tok>^{commit}"` made it depend on git not
+# resolving the PEELED spelling, and `:/text` is a regex over commit messages, so
+# which commit that selects is repository content rather than gate logic.
+git -C "$REPO" commit -q --allow-empty -m 'zzz^{commit}' >/dev/null 2>&1
+run_gate "a :/message start point is refused, not resolved" \
+    block "git branch master :/zzz" "finds a commit by its MESSAGE"
+run_gate "...whatever its peeled spelling would resolve to" \
+    block "git checkout -b master :/zzz" "finds a commit by its MESSAGE"
+run_gate "...and a RANGE start point likewise" \
+    block "git branch master main...feature" "names a RANGE rather than one commit"
+git -C "$REPO" reset -q --hard HEAD~1
 # A RELATIVE destination resolves against the SHELL's directory, which need not
 # be the repository root: from a nested directory `git push ..` is this
 # repository while `..` from the root is its parent.

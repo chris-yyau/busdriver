@@ -2159,14 +2159,33 @@ def _opens_substitution(pairs, k):
     return pairs[k - 1][1].rstrip().endswith(("<", ">", "$"))
 
 
+# Clause terminators (`;;` ends an arm, `;&` and `;;&` fall through) as operator RUNS.
+# One operator RUN that closes an arm and opens the next pattern list: `)`, a terminator,
+# and the optional case-item `(`. Written whitespace-free, `case x in a);;(''|…)` emits the
+# whole thing as a single op, so the parts are matched together rather than enumerated.
+# `;;&` before `;;` -- alternation is first-match and the longer spelling must win.
+_CASE_ARM_RESTART_RE = re.compile(r"^\)(?:;;&|;;|;&)\(?$")
+# The terminator alone, with the same optional `(`: whitespace before the terminator makes
+# the tokenizer emit `)` and `;;(` as SEPARATE runs, so the body branch needs its own form.
+_CASE_TERM_RUN_RE = re.compile(r"^(?:;;&|;;|;&)\(?$")
+
+
 def _case_state_after_op(state, op):
     """Advance the case walk across the operator that PRECEDES a segment."""
     if state == _CASE_PATTERN:
         if op == ")":
             return _CASE_BODY                 # pattern list closed; the BODY runs
+        if _CASE_ARM_RESTART_RE.match(op):
+            # An EMPTY arm written without whitespace -- `case x in a);;''|…)`, with or
+            # without the optional item `(` -- arrives as ONE operator run. The `)` closes
+            # this list and the terminator ends the (empty) body, so the next alternative
+            # list starts immediately. Falling to CLOSED here over-blocked all six
+            # spellings. Anything else `)`-leading (`))`, a substitution close) still
+            # falls through to CLOSED, which keeps the text and is fail-CLOSED.
+            return _CASE_PATTERN
         # `;` is a normalized newline, `|` joins alternatives, `(` opens the item.
         return state if op in (";", "|", "(") else _CASE_CLOSED
-    if state == _CASE_BODY and op in (";;", ";&", ";;&"):
+    if state == _CASE_BODY and _CASE_TERM_RUN_RE.match(op):
         return _CASE_PATTERN                  # next arm -- `;&` / `;;&` fall through
     return state
 

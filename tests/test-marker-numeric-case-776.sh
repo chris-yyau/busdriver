@@ -445,6 +445,49 @@ print("case x in " + intro + "(" + s + "[!0-9]" + s + " | " + q + q + " | bash))
   fi
 done
 
+# --- Generated arm-layout coverage: terminator x whitespace x optional item opener.
+#
+# `case x in a);;''|*[!0-9]*) …` emits `);;` as ONE operator run, and with the optional
+# case-item opener it becomes `);;(`. Both were over-blocked, one spelling at a time, so
+# the layout axes are generated rather than enumerated: three terminators, whitespace
+# present or absent on each side, and the item `(` present or absent. Each `allow` row is
+# a valid empty first arm followed by the numeric-validation pattern.
+GEN2_PASS=0; GEN2_FAIL=0
+# shellcheck disable=SC2016  # the generator is python source, not shell
+while IFS=$'\t' read -r want cmd; do
+  [[ -z "$cmd" ]] && continue
+  bash -n <<<"$cmd" 2>/dev/null || continue
+  got=$(verdict "$cmd")
+  if [[ ( "$want" == "allow" && "$got" == "OK|" ) || ( "$want" == "block" && "$got" == BLOCK_* ) ]]; then
+    GEN2_PASS=$((GEN2_PASS + 1))
+  else
+    GEN2_FAIL=$((GEN2_FAIL + 1))
+    printf '  arm MISMATCH want=%s got=%s :: %s\n' "$want" "${got:-<empty>}" "$cmd"
+  fi
+done < <(python3 -c '
+q = chr(39); s = chr(42)
+neg = s + "[!0-9]" + s
+rows = []
+for term in (";;", ";&", ";;&"):
+    for lead in ("", " "):                 # whitespace before the terminator
+        for gap in ("", " "):              # whitespace after it
+            for opener in ("", "("):       # optional case-item opener
+                arm = "a)" + lead + term + gap + opener
+                rows.append(("allow",
+                    "case x in " + arm + q + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
+# Controls: the same terminator runs must not license a REAL pipeline into a shell.
+for term in (";;", ";&", ";;&"):
+    rows.append(("block", "case x in a)" + term + q + q + "|" + neg + ") : ;; esac; " + neg + " | bash"))
+    rows.append(("block", "case x in a) " + neg + " | bash " + term + " esac"))
+for w, c in rows:
+    print(w + "\t" + c)
+')
+if [[ "$GEN2_FAIL" -eq 0 && "$GEN2_PASS" -gt 0 ]]; then
+  ok "#776 arm-layout matrix (${GEN2_PASS} valid shapes: terminator x whitespace x item opener)"
+else
+  no "#776 arm-layout matrix" "pass=${GEN2_PASS} fail=${GEN2_FAIL}"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

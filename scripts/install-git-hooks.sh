@@ -5,16 +5,20 @@
 #   bash scripts/install-git-hooks.sh [REPO_ROOT]
 #
 # Installs (into the repo's effective hooks directory):
-#   pre-merge-commit  → hooks/gate-scripts/pre-merge-commit-gate.sh
-#   post-merge        → hooks/gate-scripts/post-merge-consume-marker.sh
-#   pre-commit        → hooks/gate-scripts/merge-pre-commit-gate.sh
-#                       (MERGE_HEAD only — merge --no-commit → git commit)
-#   post-commit       → hooks/gate-scripts/merge-post-commit-consume.sh
+#   pre-merge-commit       → hooks/gate-scripts/pre-merge-commit-gate.sh
+#   post-merge             → hooks/gate-scripts/post-merge-consume-marker.sh
+#   pre-commit             → hooks/gate-scripts/merge-pre-commit-gate.sh
+#                            (MERGE_HEAD only — merge --no-commit → git commit)
+#   prepare-commit-msg     → hooks/gate-scripts/merge-prepare-commit-msg-gate.sh
+#   reference-transaction  → hooks/gate-scripts/merge-reference-transaction-gate.sh
+#   post-commit            → hooks/gate-scripts/merge-post-commit-consume.sh
 #
-# Resolves hooks via `git rev-parse --git-path hooks` (worktree-safe) and honors
-# core.hooksPath. Refuses to overwrite a non-Busdriver hook without --force.
-# Native hooks are not invoked when Git suppresses hooks (--no-verify, alternate
-# core.hooksPath). Agent-layer PreToolUse gates block those paths where applicable.
+# Resolves the effective hooks directory via `git config --path core.hooksPath`
+# when set (pathname-expanded), otherwise `git rev-parse --git-path hooks`
+# (worktree-safe). Refuses to overwrite a non-Busdriver hook without --force.
+# `--no-verify` skips pre-commit / commit-msg / pre-merge-commit verification
+# hooks; prepare-commit-msg and reference-transaction still run. Agent-layer
+# PreToolUse gates block bypass paths where applicable.
 
 set -euo pipefail
 unset BASH_ENV ENV
@@ -40,8 +44,35 @@ if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 1
 fi
 
-HOOK_DIR=$(git -C "$REPO_ROOT" rev-parse --git-path hooks)
-# Make absolute when relative (worktree / linked cases)
+if git -C "$REPO_ROOT" config --get core.hooksPath >/dev/null 2>&1; then
+    HOOK_DIR=$(
+        python3 -I -S -c '
+import subprocess, sys
+r = subprocess.run(
+    ["git", "-C", sys.argv[1], "config", "--path", "--get", "core.hooksPath"],
+    capture_output=True,
+)
+if r.returncode != 0:
+    sys.exit(r.returncode)
+b = r.stdout
+if b.endswith(b"\n"):
+    b = b[:-1]
+sys.stdout.buffer.write(b)
+' "$REPO_ROOT"
+        printf x
+    ) || {
+        printf 'install-git-hooks: failed to read core.hooksPath\n' >&2
+        exit 1
+    }
+    HOOK_DIR=${HOOK_DIR%x}
+    if [[ -z "$HOOK_DIR" || "$HOOK_DIR" == *$'\n'* || "$HOOK_DIR" == *$'\r'* ]]; then
+        printf 'install-git-hooks: core.hooksPath is set but empty or invalid\n' >&2
+        exit 1
+    fi
+else
+    HOOK_DIR=$(git -C "$REPO_ROOT" rev-parse --git-path hooks)
+fi
+# Make absolute when relative (worktree / linked / core.hooksPath cases)
 if [[ "$HOOK_DIR" != /* ]]; then
     HOOK_DIR="$REPO_ROOT/$HOOK_DIR"
 fi

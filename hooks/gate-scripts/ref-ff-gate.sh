@@ -1305,7 +1305,7 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
     # is the answer AND the oid for the block message. Seventeen graph walks
     # inside a 10s budget whose expiry emits no decision was a way through the
     # gate; this is one.
-    local _cands="" _oid
+    local _cands="" _oid _obj
     for _t in HEAD $CREATE_TOKS; do
         _oid=$(git_real rev-parse --verify --quiet "${_t}^{commit}" 2>/dev/null) || _oid=""
         if [ -z "$_oid" ]; then
@@ -1322,10 +1322,24 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
                     block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} from '$_t', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
   git merge-base <a> <b>
   git branch $_matched <that object id>
-Blocking as precaution (fail-closed)." ;;
-                *) continue ;;
+Blocking as precaution (fail-closed)."
+                    exit 0 ;;
             esac
-            exit 0
+            # A ref does NOT have to point at a commit. `git update-ref
+            # refs/heads/master <blob oid>` creates the protected branch at a
+            # blob, and peeling to `^{commit}` failed on it -- so the word was
+            # skipped as naming nothing, which is the ALLOW direction, and the
+            # reachability proof vouched for HEAD alone. An object that EXISTS
+            # and is not a commit has no ancestry to check, so it can never be
+            # shown reachable: refuse it.
+            _obj=$(git_real rev-parse --verify --quiet "${_t}^{object}" 2>/dev/null) || _obj=""
+            if [ -n "$_obj" ]; then
+                block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} at $_obj, which is an object but NOT a commit — a ref may point at a blob or a tree, and such an object has no ancestry, so nothing can show it is content a protected branch already carries (issue #781). Point the branch at a commit:
+  git branch $_matched <full object id of a commit>
+Blocking as precaution (fail-closed)."
+                exit 0
+            fi
+            continue
         fi
         case " $_cands " in *" $_oid "*) ;; *) _cands="$_cands $_oid" ;; esac
     done

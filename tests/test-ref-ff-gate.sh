@@ -1976,6 +1976,14 @@ run_gate "...in the checkout -b spelling too" \
     block "git checkout -b master mb-a...mb-b" "names a RANGE rather than one commit"
 run_gate "...while a non-protected name is still none of the gate's business" \
     allow "git branch feature-range mb-a...mb-b"
+# A ref does not have to point at a COMMIT. `git update-ref refs/heads/master
+# <blob>` creates the protected branch at a blob, and peeling to `^{commit}`
+# failed on it -- so the word was skipped as naming nothing, which is the ALLOW
+# direction, and the proof vouched for HEAD alone. Such an object has no
+# ancestry, so it can never be shown reachable.
+BLOB_OID=$(printf x | git -C "$REPO" hash-object -w --stdin)
+run_gate "a ref pointed at a BLOB has no ancestry to vouch for -> block" \
+    block "git update-ref refs/heads/master $BLOB_OID" "an object but NOT a commit"
 # Stripping `refs/heads/` is what makes the protected NAME match, but it also
 # changes which revision the word names: with a TAG and a BRANCH sharing a name
 # at different commits, resolving the stripped word answers for the tag while the

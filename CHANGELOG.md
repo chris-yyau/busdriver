@@ -1,3 +1,10 @@
+## [2.1.6](https://github.com/chris-yyau/busdriver/compare/v2.1.5...v2.1.6) (2026-08-30)
+
+
+### Bug Fixes
+
+* **hooks:** gate fast-forwards of protected refs to unreviewed content ([#779](https://github.com/chris-yyau/busdriver/issues/779)) ([#801](https://github.com/chris-yyau/busdriver/issues/801)) ([26545b0](https://github.com/chris-yyau/busdriver/commit/26545b03c43e3ac1f03958864e90fba2024c4387)), closes [#777](https://github.com/chris-yyau/busdriver/issues/777)
+
 ## [2.1.5](https://github.com/chris-yyau/busdriver/compare/v2.1.4...v2.1.5) (2026-08-30)
 
 

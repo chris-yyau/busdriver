@@ -4421,6 +4421,20 @@ try:
         "pr-backstop-verdict.local.json",
         "skip-litmus.local",
         "skip-design-review.local",
+        # #779 — the ref fast-forward gate's authorization token. It AUTHORIZES a
+        # ref move (one branch, one oid, single use), which puts it in the same
+        # class as the review markers above, not with the inert state below: an
+        # agent that can write it can move the protected branch to unreviewed
+        # content and then delete the evidence. Listed so the forge guard blocks
+        # the write, the redirect and the rm alike. The gate CONSUMES it in script
+        # code rather than through a tool call, so this does not disarm the gate.
+        "ref-ff-authorized.local",
+        # #779 — the operator's declaration of which branches the ref fast-forward
+        # gate guards. Removing it forges no authorization; it REMOVES a branch
+        # from protection, which is the same "makes the next gate looser" class as
+        # the design-review state file below. Listed so the forge guard blocks the
+        # delete and the overwrite alike.
+        "ref-ff-protected.local",
         # #519 — the skip LEASE ledger. Its per-use slots are what bound the bypass to
         # 20 writes, so it is gate state exactly like the skip file itself. Unprotected,
         # the ceiling is trivially resettable BY the agent it constrains: the gate grants

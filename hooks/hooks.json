@@ -108,6 +108,25 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/contained-launch.sh",
+            "args": [
+              "closed",
+              "PATH=/usr/bin:/bin",
+              "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT}",
+              "/bin/bash",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh",
+              "ref-ff-gate.sh"
+            ],
+            "timeout": 10
+          }
+        ],
+        "description": "[GATE] Block a fast-forward of the protected branch to unreviewed content (git merge / git pull) until an operator-written, oid-bound PASS-FF marker authorizes the exact commit on a git merge --ff-only; a pull on a protected branch has no route at all, because the commit it would land does not exist locally when the gate runs [#779] [#713/ADR 0049] Exec-form launch through contained-launch.sh (command+args, no shell): a committed settings.json `env` block can no longer silence this gate via the outer /bin/sh, and the first hop runs `#!/bin/bash -p`, which ignores SHELLOPTS/BASHOPTS, skips BASH_ENV and ENV, and refuses to import shell functions. The launcher exits 2 with no output when a client drops `args` (closes R7), and converts a launch failure that never produced a decision into this registration's declared disposition (closes R8 \u2014 first arg `closed` or `open`). Remaining residual, tracked in #777: R3 (XDG_CONFIG_HOME and BUSDRIVER_ORIG_HOME are no longer forwarded)."
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" PR_GRIND_CODEX_RETRIGGER_MAX=\"${PR_GRIND_CODEX_RETRIGGER_MAX:-}\" PR_GRIND_CODEX_RETRIGGER_COOLDOWN=\"${PR_GRIND_CODEX_RETRIGGER_COOLDOWN:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
             "timeout": 20
           }

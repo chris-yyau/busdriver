@@ -46,7 +46,9 @@ for raw in sys.stdin.buffer:
     total += len(raw)
     if total > 65536: sys.exit(2)
     line=raw.decode("utf-8","replace").rstrip("\n")
-    if line.startswith("tree "): nt=line[5:]
+    if line.startswith("tree "):
+        if nt is not None: sys.exit(3)
+        nt=line[5:]
     elif line.startswith("parent "):
         p=line[7:]; n+=1
         if fp is None: fp=p
@@ -55,27 +57,152 @@ print("|".join([nt or "", fp or "", str(n), " ".join(got)]))
 ') || refuse 'refusing unauthorized merge commit.'
 IFS='|' read -r NT FP parents GOT <<<"$parsed"
 [[ -n "$NT" ]] || refuse 'refusing unauthorized merge commit.'
-[[ "$parents" -ge 2 ]] || exit 0
 if [[ ! -f "$GD/MERGE_HEAD" ]]; then
   [[ -e "$ARM" || -f "$CLAIM" ]] && refuse 'missing MERGE_HEAD for armed merge authorization.'
-  # Fast-forward only onto a merge tip already published as another *direct*
-  # local branch tip (objecttype=commit, non-symbolic). Ancestor alone is
-  # insufficient (commit-tree + update-ref). Tags/remotes/custom refs and
-  # symbolic heads are not witnesses — those namespaces are not gated here.
-  "${G[@]}" merge-base --is-ancestor "$OLD" "$NEW" 2>/dev/null || refuse 'refusing unauthorized merge commit.'
-  published=0
-  while IFS='|' read -r tip otype symref ref; do
-    [[ -n "${ref:-}" ]] || continue
-    [[ "$ref" == "$BRANCH" ]] && continue
-    [[ -z "${symref:-}" ]] || continue
-    [[ "${otype:-}" == "commit" ]] || continue
-    [[ "$tip" == "$NEW" ]] || continue
-    published=1
-    break
-  done < <("${G[@]}" for-each-ref --format='%(objectname)|%(objecttype)|%(symref)|%(refname)' refs/heads 2>/dev/null || true)
-  [[ "$published" -eq 1 ]] || refuse 'refusing unauthorized merge commit.'
-  exit 0
+  # Ordinary successor first — no branch enumeration while ref locks are held.
+  if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 && -n "$FP" && "$FP" == "$OLD" ]]; then
+    exit 0
+  fi
+  # Amend/replace tip: same first parent as OLD, still no merge introduction.
+  if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 && -n "$FP" ]]; then
+    old_fp=$("${G[@]}" cat-file -p "$OLD" 2>/dev/null | python3 -I -S -c '
+import sys
+fp=""
+for raw in sys.stdin.buffer:
+    if raw in (b"\n", b"\r\n"): break
+    line=raw.decode("utf-8","replace").rstrip("\n")
+    if line.startswith("parent "):
+        fp=line[7:]; break
+print(fp)
+') || old_fp=""
+    [[ -n "$old_fp" && "$FP" == "$old_fp" ]] && exit 0
+  fi
+  # Root tip (zero parents) cannot smuggle a merge — allow create/amend without witnesses.
+  if [[ "$parents" -eq 0 ]]; then
+    if [[ "$OLD" =~ ^0+$ ]]; then
+      exit 0
+    fi
+    old_parents=$("${G[@]}" cat-file -p "$OLD" 2>/dev/null | python3 -I -S -c '
+import sys
+n=0
+for raw in sys.stdin.buffer:
+    if raw in (b"\n", b"\r\n"): break
+    line=raw.decode("utf-8","replace").rstrip("\n")
+    if line.startswith("parent "): n+=1
+print(n)
+') || refuse 'refusing unauthorized merge commit.'
+    [[ "$old_parents" -eq 0 ]] && exit 0
+    refuse 'refusing unauthorized merge commit.'
+  fi
+  # Exact tip witness: stream heads, bound cardinality, stop on first match.
+  tip_witnessed() {
+    local want="$1" tip otype symref ref n=0
+    while IFS='|' read -r tip otype symref ref; do
+      n=$((n + 1))
+      [[ "$n" -le 4096 ]] || return 2
+      [[ -n "${ref:-}" ]] || continue
+      [[ "$ref" == "$BRANCH" ]] && continue
+      [[ -z "${symref:-}" ]] || continue
+      [[ "${otype:-}" == "commit" ]] || continue
+      [[ "$tip" == "$want" ]] && return 0
+    done < <("${G[@]}" for-each-ref --format='%(objectname)|%(objecttype)|%(symref)|%(refname)' refs/heads 2>/dev/null || true)
+    return 1
+  }
+  # mode=linear: every node until OLD must be a single-parent commit (no merge smuggle).
+  # mode=ancestor: commit-typed DAG walk only (witnessed merge tip FF).
+  # Single cat-file --batch process; type-checked; size-capped.
+  walk_to_old() {
+    python3 -I -S -c '
+import subprocess, sys
+mode, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+git = sys.argv[4:]
+budget, size_lim = 1024, 65536
+proc = subprocess.Popen(
+    git + ["cat-file", "--batch"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+)
+
+def parents_of(oid):
+    proc.stdin.write(oid.encode() + b"\n")
+    proc.stdin.flush()
+    header = proc.stdout.readline()
+    if not header:
+        return None
+    parts = header.split()
+    if len(parts) < 3 or parts[1] == b"missing":
+        return None
+    typ, size = parts[1], int(parts[2])
+    body = proc.stdout.read(size)
+    nl = proc.stdout.read(1)
+    if typ != b"commit" or size > size_lim or nl not in (b"\n", b""):
+        return None
+    ps = []
+    for line in body.splitlines():
+        if line == b"":
+            break
+        if line.startswith(b"parent "):
+            ps.append(line[7:].decode())
+    if mode == "linear" and len(ps) >= 2:
+        return False
+    return ps
+
+try:
+    seen = set()
+    q = [new]
+    visited = 0
+    while q:
+        cur = q.pop(0)
+        if cur == old:
+            raise SystemExit(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        visited += 1
+        if visited > budget:
+            raise SystemExit(1)
+        ps = parents_of(cur)
+        if ps is None or ps is False:
+            raise SystemExit(1)
+        q.extend(ps)
+    raise SystemExit(1)
+finally:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.kill()
+' "$1" "$2" "$3" "${G[@]}"
+  }
+  # Linear multi-commit FF: single-parent chain from NEW back to OLD (no merges).
+  if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 ]]; then
+    walk_rc=0
+    walk_to_old linear "$OLD" "$NEW" || walk_rc=$?
+    [[ "$walk_rc" -eq 0 ]] && exit 0
+    refuse 'refusing unauthorized merge commit.'
+  fi
+  # New branch (zero OLD): exact tip republish only (no merge-base/grafts).
+  if [[ "$OLD" =~ ^0+$ ]]; then
+    tw_rc=0
+    tip_witnessed "$NEW" || tw_rc=$?
+    [[ "$tw_rc" -eq 0 ]] && exit 0
+    refuse 'refusing unauthorized merge commit.'
+  fi
+  # Multi-parent NEW: must be another direct-head tip AND OLD ancestor of NEW (true FF).
+  if [[ "$parents" -ge 2 ]]; then
+    tw_rc=0
+    tip_witnessed "$NEW" || tw_rc=$?
+    [[ "$tw_rc" -eq 0 ]] || refuse 'refusing unauthorized merge commit.'
+    walk_rc=0
+    walk_to_old ancestor "$OLD" "$NEW" || walk_rc=$?
+    [[ "$walk_rc" -eq 0 ]] && exit 0
+    refuse 'refusing unauthorized merge commit.'
+  fi
+  refuse 'refusing unauthorized merge commit.'
 fi
+# Live merge only: MERGE_HEAD with a non-merge tip is stale/hostile.
+[[ "$parents" -ge 2 ]] || refuse 'refusing unauthorized merge commit.'
 [[ "$FOREIGN" -eq 0 ]] || refuse 'refusing unrelated ref update in merge transaction.'
 [[ -e "$SPENT" ]] && refuse 'refusing reuse of spent merge authorization.'
 [[ -f "$CLAIM" && -f "$ARM" ]] || refuse 'refusing unauthorized merge commit.'

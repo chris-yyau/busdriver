@@ -15,6 +15,13 @@
 #  12. commit-tree + update-ref of an unpublished merge tip is refused.
 #  13. A tag tip alone cannot witness merge publication onto a branch.
 #  14. A symbolic head aliasing a tag cannot witness merge publication.
+#  15. A one-parent tip cannot smuggle an unpublished merge into history.
+#  16. New-branch (zero old-oid) cannot publish smuggled merge ancestry.
+#  17. Stale MERGE_HEAD cannot authorize a one-parent smuggle tip.
+#  18. First root commit (zero OLD, zero parents) is allowed.
+#  19. Root amend (zero-parent replace of a root tip) is allowed.
+#  20. Fast-forward from a deeper ancestor onto a witnessed merge tip is allowed.
+#  21. Multi-commit linear fast-forward (no merges) is allowed.
 #
 # Usage: bash tests/test-merge-commit-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -110,12 +117,19 @@ TMP_FF_MERGE=$(mktemp -d)
 TMP_CTREE=$(mktemp -d)
 TMP_TAG_WITNESS=$(mktemp -d)
 TMP_SYM_WITNESS=$(mktemp -d)
+TMP_HIDDEN_MERGE=$(mktemp -d)
+TMP_NEW_BRANCH=$(mktemp -d)
+TMP_STALE_MH=$(mktemp -d)
+TMP_ROOT_CREATE=$(mktemp -d)
+TMP_ROOT_AMEND=$(mktemp -d)
+TMP_FF_DEEP=$(mktemp -d)
+TMP_LINEAR_FF=$(mktemp -d)
 TMP_ANNOTATED=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_CTREE" "$TMP_TAG_WITNESS" "$TMP_SYM_WITNESS" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_CTREE" "$TMP_TAG_WITNESS" "$TMP_SYM_WITNESS" "$TMP_HIDDEN_MERGE" "$TMP_NEW_BRANCH" "$TMP_STALE_MH" "$TMP_ROOT_CREATE" "$TMP_ROOT_AMEND" "$TMP_FF_DEEP" "$TMP_LINEAR_FF" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -493,6 +507,8 @@ echo "── fast-forward onto existing merge commit does not rewind HEAD ─"
 setup_repo "$TMP_FF_MERGE"
 install_hook "$TMP_FF_MERGE" "$HOOKS"
 mkdir -p "$TMP_FF_MERGE/.claude"
+# Create lagging branch while main tip is still a direct tip (zero-OLD exact).
+git -C "$TMP_FF_MERGE" branch behind main
 git -C "$TMP_FF_MERGE" merge --no-commit --no-ff topic >/dev/null 2>&1
 FF_MERGE_HASH=$(staged_hash "$TMP_FF_MERGE")
 git -C "$TMP_FF_MERGE" merge --abort >/dev/null 2>&1
@@ -508,9 +524,7 @@ if [[ "$FF_CREATE_RC" -ne 0 || "$FF_PARENT_COUNT" -lt 2 ]]; then
     assert "fast-forward onto merge commit keeps merge HEAD" "kept" \
         "create-failed(rc=$FF_CREATE_RC parents=$FF_PARENT_COUNT err=$FF_CREATE_ERR)"
 else
-FF_PARENT=$(git -C "$TMP_FF_MERGE" rev-parse 'HEAD^1')
-# Keep main at the reviewed merge; FF a lagging branch onto that published tip.
-git -C "$TMP_FF_MERGE" checkout -qb behind "$FF_PARENT"
+git -C "$TMP_FF_MERGE" checkout -q behind
 set +e
 git -C "$TMP_FF_MERGE" merge --ff-only "$FF_MERGE_SHA" >/dev/null 2>"$LOGDIR/ff-onto-merge.err"
 FF_ONTO_RC=$?
@@ -586,6 +600,167 @@ else
     SW_ERR=$(tr '\n' ' ' <"$LOGDIR/sym-witness.err" || true)
     assert "symbolic head cannot witness merge publication" "block" \
         "allow(rc=$SW_RC head=$SW_HEAD err=$SW_ERR)"
+fi
+
+echo "── one-parent tip cannot smuggle unpublished merge into history ─"
+setup_repo "$TMP_HIDDEN_MERGE"
+install_hook "$TMP_HIDDEN_MERGE" "$HOOKS"
+HM_MAIN=$(git -C "$TMP_HIDDEN_MERGE" rev-parse main)
+HM_TOPIC=$(git -C "$TMP_HIDDEN_MERGE" rev-parse topic)
+HM_TREE=$(git -C "$TMP_HIDDEN_MERGE" rev-parse "$HM_TOPIC^{tree}")
+HM_MERGE=$(git -C "$TMP_HIDDEN_MERGE" commit-tree "$HM_TREE" -p "$HM_MAIN" -p "$HM_TOPIC" -m "hidden merge")
+HM_CHILD=$(git -C "$TMP_HIDDEN_MERGE" commit-tree "$HM_TREE" -p "$HM_MERGE" -m "smuggle")
+set +e
+git -C "$TMP_HIDDEN_MERGE" update-ref refs/heads/main "$HM_CHILD" "$HM_MAIN" >/dev/null 2>"$LOGDIR/hidden-merge.err"
+HM_RC=$?
+set -e
+HM_HEAD=$(git -C "$TMP_HIDDEN_MERGE" rev-parse main)
+if [[ "$HM_RC" -ne 0 && "$HM_HEAD" == "$HM_MAIN" ]]; then
+    assert "one-parent tip cannot smuggle unpublished merge" "block" "block"
+else
+    HM_ERR=$(tr '\n' ' ' <"$LOGDIR/hidden-merge.err" || true)
+    assert "one-parent tip cannot smuggle unpublished merge" "block" \
+        "allow(rc=$HM_RC head=$HM_HEAD err=$HM_ERR)"
+fi
+
+echo "── new branch zero-oid cannot publish smuggled merge ancestry ─"
+setup_repo "$TMP_NEW_BRANCH"
+install_hook "$TMP_NEW_BRANCH" "$HOOKS"
+NB_MAIN=$(git -C "$TMP_NEW_BRANCH" rev-parse main)
+NB_TOPIC=$(git -C "$TMP_NEW_BRANCH" rev-parse topic)
+NB_TREE=$(git -C "$TMP_NEW_BRANCH" rev-parse "$NB_TOPIC^{tree}")
+NB_MERGE=$(git -C "$TMP_NEW_BRANCH" commit-tree "$NB_TREE" -p "$NB_MAIN" -p "$NB_TOPIC" -m "new-branch merge")
+NB_CHILD=$(git -C "$TMP_NEW_BRANCH" commit-tree "$NB_TREE" -p "$NB_MERGE" -m "new-branch child")
+set +e
+git -C "$TMP_NEW_BRANCH" update-ref refs/heads/smuggled "$NB_CHILD" >/dev/null 2>"$LOGDIR/new-branch.err"
+NB_RC=$?
+set -e
+if [[ "$NB_RC" -ne 0 ]] && ! git -C "$TMP_NEW_BRANCH" show-ref --verify --quiet refs/heads/smuggled; then
+    assert "new branch cannot publish smuggled merge ancestry" "block" "block"
+else
+    NB_ERR=$(tr '\n' ' ' <"$LOGDIR/new-branch.err" || true)
+    assert "new branch cannot publish smuggled merge ancestry" "block" \
+        "allow(rc=$NB_RC err=$NB_ERR)"
+fi
+
+echo "── stale MERGE_HEAD cannot authorize one-parent smuggle tip ─"
+setup_repo "$TMP_STALE_MH"
+install_hook "$TMP_STALE_MH" "$HOOKS"
+SM_MAIN=$(git -C "$TMP_STALE_MH" rev-parse main)
+SM_TOPIC=$(git -C "$TMP_STALE_MH" rev-parse topic)
+SM_TREE=$(git -C "$TMP_STALE_MH" rev-parse "$SM_TOPIC^{tree}")
+SM_MERGE=$(git -C "$TMP_STALE_MH" commit-tree "$SM_TREE" -p "$SM_MAIN" -p "$SM_TOPIC" -m "stale-mh merge")
+SM_CHILD=$(git -C "$TMP_STALE_MH" commit-tree "$SM_TREE" -p "$SM_MERGE" -m "stale-mh child")
+: >"$(git -C "$TMP_STALE_MH" rev-parse --absolute-git-dir)/MERGE_HEAD"
+set +e
+git -C "$TMP_STALE_MH" update-ref refs/heads/main "$SM_CHILD" "$SM_MAIN" >/dev/null 2>"$LOGDIR/stale-mh.err"
+SM_RC=$?
+set -e
+SM_HEAD=$(git -C "$TMP_STALE_MH" rev-parse main)
+if [[ "$SM_RC" -ne 0 && "$SM_HEAD" == "$SM_MAIN" ]]; then
+    assert "stale MERGE_HEAD cannot authorize one-parent smuggle" "block" "block"
+else
+    SM_ERR=$(tr '\n' ' ' <"$LOGDIR/stale-mh.err" || true)
+    assert "stale MERGE_HEAD cannot authorize one-parent smuggle" "block" \
+        "allow(rc=$SM_RC head=$SM_HEAD err=$SM_ERR)"
+fi
+
+echo "── first root commit (zero OLD, zero parents) is allowed ─"
+git -C "$TMP_ROOT_CREATE" init -q -b main
+git -C "$TMP_ROOT_CREATE" config user.email t@t.dev
+git -C "$TMP_ROOT_CREATE" config user.name tester
+git -C "$TMP_ROOT_CREATE" config commit.gpgsign false
+install_hook "$TMP_ROOT_CREATE" "$HOOKS"
+RC_EMPTY=$(git -C "$TMP_ROOT_CREATE" hash-object -t tree -w --stdin </dev/null)
+RC_ROOT=$(git -C "$TMP_ROOT_CREATE" commit-tree "$RC_EMPTY" -m "first root")
+set +e
+git -C "$TMP_ROOT_CREATE" update-ref refs/heads/main "$RC_ROOT" >/dev/null 2>"$LOGDIR/root-create.err"
+RC_RC=$?
+set -e
+RC_HEAD=$(git -C "$TMP_ROOT_CREATE" rev-parse main 2>/dev/null || true)
+if [[ "$RC_RC" -eq 0 && "$RC_HEAD" == "$RC_ROOT" ]]; then
+    assert "first root commit allowed" "allow" "allow"
+else
+    RC_ERR=$(tr '\n' ' ' <"$LOGDIR/root-create.err" || true)
+    assert "first root commit allowed" "allow" \
+        "block(rc=$RC_RC head=$RC_HEAD err=$RC_ERR)"
+fi
+
+echo "── root amend (zero-parent replace of a root tip) is allowed ─"
+git -C "$TMP_ROOT_AMEND" init -q -b main
+git -C "$TMP_ROOT_AMEND" config user.email t@t.dev
+git -C "$TMP_ROOT_AMEND" config user.name tester
+git -C "$TMP_ROOT_AMEND" config commit.gpgsign false
+RA_EMPTY=$(git -C "$TMP_ROOT_AMEND" hash-object -t tree -w --stdin </dev/null)
+RA_ROOT1=$(git -C "$TMP_ROOT_AMEND" commit-tree "$RA_EMPTY" -m "root1")
+git -C "$TMP_ROOT_AMEND" update-ref refs/heads/main "$RA_ROOT1"
+install_hook "$TMP_ROOT_AMEND" "$HOOKS"
+RA_ROOT2=$(git -C "$TMP_ROOT_AMEND" commit-tree "$RA_EMPTY" -m "root2")
+set +e
+git -C "$TMP_ROOT_AMEND" update-ref refs/heads/main "$RA_ROOT2" "$RA_ROOT1" >/dev/null 2>"$LOGDIR/root-amend.err"
+RA_RC=$?
+set -e
+RA_HEAD=$(git -C "$TMP_ROOT_AMEND" rev-parse main)
+if [[ "$RA_RC" -eq 0 && "$RA_HEAD" == "$RA_ROOT2" ]]; then
+    assert "root amend allowed" "allow" "allow"
+else
+    RA_ERR=$(tr '\n' ' ' <"$LOGDIR/root-amend.err" || true)
+    assert "root amend allowed" "allow" \
+        "block(rc=$RA_RC head=$RA_HEAD err=$RA_ERR)"
+fi
+
+echo "── fast-forward from deeper ancestor onto witnessed merge tip ─"
+setup_repo "$TMP_FF_DEEP"
+install_hook "$TMP_FF_DEEP" "$HOOKS"
+mkdir -p "$TMP_FF_DEEP/.claude"
+git -C "$TMP_FF_DEEP" merge --no-commit --no-ff topic >/dev/null 2>&1
+FF_DEEP_HASH=$(staged_hash "$TMP_FF_DEEP")
+git -C "$TMP_FF_DEEP" merge --abort >/dev/null 2>&1
+printf 'BUILTIN-%s\n' "$FF_DEEP_HASH" >"$TMP_FF_DEEP/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_FF_DEEP" merge --no-ff topic --no-edit >/dev/null 2>"$LOGDIR/ff-deep-create.err"
+FF_DEEP_CREATE_RC=$?
+set -e
+FF_DEEP_SHA=$(git -C "$TMP_FF_DEEP" rev-parse HEAD)
+FF_DEEP_GP=$(git -C "$TMP_FF_DEEP" rev-parse 'HEAD^1^')
+if [[ "$FF_DEEP_CREATE_RC" -ne 0 ]]; then
+    FF_DEEP_CREATE_ERR=$(tr '\n' ' ' <"$LOGDIR/ff-deep-create.err" || true)
+    assert "deeper ancestor FF onto witnessed merge" "kept" \
+        "create-failed(rc=$FF_DEEP_CREATE_RC err=$FF_DEEP_CREATE_ERR)"
+else
+git -C "$TMP_FF_DEEP" checkout -qb deeper "$FF_DEEP_GP"
+set +e
+git -C "$TMP_FF_DEEP" merge --ff-only "$FF_DEEP_SHA" >/dev/null 2>"$LOGDIR/ff-deep.err"
+FF_DEEP_RC=$?
+set -e
+FF_DEEP_HEAD=$(git -C "$TMP_FF_DEEP" rev-parse HEAD)
+if [[ "$FF_DEEP_RC" -eq 0 && "$FF_DEEP_HEAD" == "$FF_DEEP_SHA" ]]; then
+    assert "deeper ancestor FF onto witnessed merge" "kept" "kept"
+else
+    FF_DEEP_ERR=$(tr '\n' ' ' <"$LOGDIR/ff-deep.err" || true)
+    assert "deeper ancestor FF onto witnessed merge" "kept" \
+        "moved(rc=$FF_DEEP_RC head=$FF_DEEP_HEAD want=$FF_DEEP_SHA err=$FF_DEEP_ERR)"
+fi
+fi
+
+echo "── multi-commit linear fast-forward without merges is allowed ─"
+setup_repo "$TMP_LINEAR_FF"
+install_hook "$TMP_LINEAR_FF" "$HOOKS"
+LF_A=$(git -C "$TMP_LINEAR_FF" rev-parse main)
+LF_TREE=$(git -C "$TMP_LINEAR_FF" rev-parse 'main^{tree}')
+LF_B=$(git -C "$TMP_LINEAR_FF" commit-tree "$LF_TREE" -p "$LF_A" -m "linear-b")
+LF_C=$(git -C "$TMP_LINEAR_FF" commit-tree "$LF_TREE" -p "$LF_B" -m "linear-c")
+set +e
+git -C "$TMP_LINEAR_FF" update-ref refs/heads/main "$LF_C" "$LF_A" >/dev/null 2>"$LOGDIR/linear-ff.err"
+LF_RC=$?
+set -e
+LF_HEAD=$(git -C "$TMP_LINEAR_FF" rev-parse main)
+if [[ "$LF_RC" -eq 0 && "$LF_HEAD" == "$LF_C" ]]; then
+    assert "multi-commit linear FF allowed" "allow" "allow"
+else
+    LF_ERR=$(tr '\n' ' ' <"$LOGDIR/linear-ff.err" || true)
+    assert "multi-commit linear FF allowed" "allow" \
+        "block(rc=$LF_RC head=$LF_HEAD err=$LF_ERR)"
 fi
 
 echo "── annotated-tag merge peels MERGE_HEAD and allows matching marker ─"

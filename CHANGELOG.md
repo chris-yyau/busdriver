@@ -1,3 +1,10 @@
+## [2.1.9](https://github.com/chris-yyau/busdriver/compare/v2.1.8...v2.1.9) (2026-08-31)
+
+
+### Bug Fixes
+
+* **litmus:** classify empty droid escalation as no-output ([#804](https://github.com/chris-yyau/busdriver/issues/804)) ([#806](https://github.com/chris-yyau/busdriver/issues/806)) ([e6dce80](https://github.com/chris-yyau/busdriver/commit/e6dce80e9124115c8e122efc6fb0beca639aea29))
+
 ## [2.1.8](https://github.com/chris-yyau/busdriver/compare/v2.1.7...v2.1.8) (2026-08-31)
 
 

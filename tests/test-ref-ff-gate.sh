@@ -2015,6 +2015,24 @@ run_gate "...and a relative worktree path is not mistaken for one" \
 run_gate "a direct git-branch executable is still a creation" \
     block "$(git --exec-path)/git-branch master $UNREV_OID" \
     "would CREATE the protected branch"
+# A CONFIG ALIAS hiding the creation needs nothing new, and this pins why rather
+# than leaving it to be re-argued: an alias name is neither a git builtin nor
+# anything `git --list-cmds` reports, so it lands in the unknown-word set and the
+# refusal that predates this arm blocks it BEFORE the creation check runs. That
+# holds for a plain alias, a nested one, and a `!`-shell alias, which is refused
+# by name because its body is outside any command-string parser.
+git -C "$REPO" config alias.mkbr "branch master $UNREV_OID"
+git -C "$REPO" config alias.mknest mkbr
+git -C "$REPO" config alias.mkshell "!git branch master $UNREV_OID"
+run_gate "a config alias hiding a creation is refused as an unknown word" \
+    block "git mkbr" "resolves to neither a git command nor a git alias"
+run_gate "...and a nested one the same way" \
+    block "git mknest" "resolves to neither a git command nor a git alias"
+run_gate "...and a shell alias is refused by name, body unread" \
+    block "git mkshell" "is a git alias reaching"
+git -C "$REPO" config --unset alias.mkbr
+git -C "$REPO" config --unset alias.mknest
+git -C "$REPO" config --unset alias.mkshell
 run_gate "...and the executable form reaches the --stdin refusal too" \
     block "$(git --exec-path)/git-update-ref --stdin" \
     "writes refs from INPUT the gate cannot read"

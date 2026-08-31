@@ -392,6 +392,14 @@ them a bash-4-only construct that aborted the gate on EVERY command under the
 What this amendment does is reduce the exposure it was asked to bound: the proof
 was up to seventeen graph walks and is now ONE.
 
+**Raised repeatedly and NOT a gap: a config alias hiding the creation.**
+`alias.mk = 'branch master <oid>'` then `git mk` carries no protected word — but
+an alias name is neither a git builtin nor anything `git --list-cmds` reports,
+so it lands in the unknown-word set and the refusal that predates this arm blocks
+it before the creation check runs. Measured for a plain alias, a nested one and a
+`!`-shell alias (refused by name, body unread), and now pinned by tests so it is
+not re-argued from reading `git_ref_create` alone.
+
 **Where this stops.** Every shape above is closed because it was cheap, not
 because the enumeration is complete — it cannot be, and the THREAT MODEL in the
 gate's header says so. In scope is the ROUTINE creation: the command someone

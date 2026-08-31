@@ -935,6 +935,48 @@ else
   no "#776 an ordinary space still separates the case keyword" "got=${got:-<empty>}"
 fi
 
+# --- Substitution introducers separated from their `(` by a line continuation.
+# bash deletes an unquoted `\<newline>` before parsing, so `$`, `<` and `>` still open a
+# substitution across one. Asserted at the WALK as well as the verdict: the introducer is
+# normalized inside `_opens_substitution` rather than relying on upstream normalization
+# having run, and only the walk shows that.
+SUBST_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import importlib.util, io, json, sys
+
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "true"}}))
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+
+q, s, bs = chr(39), chr(42), chr(92)
+neg = s + "[!0-9]" + s
+bad = []
+for intro in ("$", "<", ">"):
+    # the helper itself, with the continuation still present
+    pairs = [("", "case x in " + intro + bs + "\n"), ("(", q + q + " ")]
+    if not mc._opens_substitution(pairs, 1):
+        bad.append(("helper", intro))
+    # and end to end: no digit-negation segment may be marked as case residue
+    cmd = "case x in " + intro + bs + "\n(" + q + q + " | " + neg + " | bash)) : ;; " + s + ") : ;; esac"
+    pr, _ok = mc._split_with_ops(mc._norm_for_scan(cmd))
+    res = mc._case_residue_flags(pr)
+    if any(res[i] for i, (_o, sg) in enumerate(pr) if mc._is_digit_negation_only_segment(sg)):
+        bad.append(("marked", intro))
+print("CLEAN" if not bad else "BAD %r" % (bad,))
+PYEOF
+)
+if [[ "$SUBST_OUT" == "CLEAN" ]]; then
+  ok "#776 substitution introducer survives a line continuation before its ("
+else
+  no "#776 substitution introducer survives a line continuation before its (" "$SUBST_OUT"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -2449,7 +2449,13 @@ def _opens_substitution(pairs, k):
     """
     if "(" not in pairs[k][0] or k == 0:
         return False
-    return pairs[k - 1][1].rstrip().endswith(("<", ">", "$"))
+    # Continuations removed FIRST, so this does not depend on upstream normalization
+    # happening to have done it: bash deletes an unquoted `\<newline>` before parsing, so
+    # `$`, `<` or `>` separated from its `(` by one still opens a substitution while the
+    # raw predecessor ends in a backslash. `_norm_for_scan` already strips them on the
+    # paths measured here, but a check that only works because something else ran first is
+    # the dependency this file keeps removing.
+    return _strip_line_continuations(pairs[k - 1][1]).rstrip().endswith(("<", ">", "$"))
 
 
 # Clause terminators (`;;` ends an arm, `;&` and `;;&` fall through) as operator RUNS.

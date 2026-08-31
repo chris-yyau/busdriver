@@ -674,6 +674,8 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
             _first=$(printf '%s' "$_first" | tr -d "'\"\\\\")
             case "$_first" in
                 merge|pull) _hit="$_expansion"; break ;;
+                # #780 ZERO-old alias bodies (branch -f / checkout -B / update-ref)
+                branch|checkout|switch|update-ref|symbolic-ref) _hit="$_expansion"; break ;;
                 # Git applies leading GLOBAL options from an expansion before the
                 # subcommand — `-c color.ui=false merge --ff-only` runs a merge.
                 # Following `alias.-c` found nothing and allowed the command; and

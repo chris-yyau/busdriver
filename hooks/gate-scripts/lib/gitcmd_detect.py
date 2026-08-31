@@ -4553,7 +4553,9 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                     t in ('-f', '-D', '-B', '-C', '--force', '--delete') or t.startswith('--force')
                     or (t.startswith('-') and not t.startswith('--') and any(c in t[1:] for c in 'fDBC'))
                     for t in argv[1:])
-                if sub and sub not in _REF_SAFE_SUBS and sub not in _REF_OP_SUBS and _forceish:
+                if sub and (_may_be_substitution(sub) or _word_may_split(sub, sub)):
+                    raw_all.append(('force', ''))
+                elif sub and sub not in _REF_SAFE_SUBS and sub not in _REF_OP_SUBS and _forceish:
                     raw_all.append(('force', ''))
                 elif not scope_fail_closed:
                     continue

@@ -68,7 +68,9 @@ body = (
     "export PATH=/usr/bin:/bin\n"
     f"export CLAUDE_PLUGIN_ROOT={shlex.quote(plugin_root)}\n"
     f"export BUSDRIVER_PLUGIN_ROOT={shlex.quote(plugin_root)}\n"
-    f"exec /bin/bash -p --noprofile --norc {shlex.quote(gate_src)}\n"
+    "exec /bin/bash -p --noprofile --norc "
+    + shlex.quote(gate_src)
+    + ' "$@"\n'
 ).encode("utf-8")
 fd, tmp = tempfile.mkstemp(prefix=f".busdriver-{hook_name}.", dir=hook_dir)
 try:
@@ -97,6 +99,8 @@ preflight_install() {
         "pre-merge-commit:$PLUGIN_ROOT/hooks/gate-scripts/pre-merge-commit-gate.sh" \
         "post-merge:$PLUGIN_ROOT/hooks/gate-scripts/post-merge-consume-marker.sh" \
         "pre-commit:$PLUGIN_ROOT/hooks/gate-scripts/merge-pre-commit-gate.sh" \
+        "prepare-commit-msg:$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh" \
+        "reference-transaction:$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh" \
         "post-commit:$PLUGIN_ROOT/hooks/gate-scripts/merge-post-commit-consume.sh"
     do
         hook_name="${spec%%:*}"
@@ -126,5 +130,9 @@ install_one post-merge \
     "$PLUGIN_ROOT/hooks/gate-scripts/post-merge-consume-marker.sh"
 install_one pre-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-pre-commit-gate.sh"
+install_one prepare-commit-msg \
+    "$PLUGIN_ROOT/hooks/gate-scripts/merge-prepare-commit-msg-gate.sh"
+install_one reference-transaction \
+    "$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
 install_one post-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-post-commit-consume.sh"

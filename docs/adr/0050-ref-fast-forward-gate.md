@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-eight ways a first draft of that membership test still leaked, and
+Review found thirty ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -319,6 +319,17 @@ adding a grammar:
   current ref to match — and `git pull <remote> <branch>` populated the unborn
   protected branch from remote content, the one thing that arm refuses
   everywhere else. The current-branch test now runs over the protected NAMES.
+- **The rest of the push-destination config.** Git prefers `pushurl` over `url`
+  for a push, so a remote whose url points elsewhere and whose pushurl points
+  here read as external; `file://<path>` and `<path>/.git` name the same
+  repository as `<path>`; and a self-push with NO refspec takes its destination
+  from `push.default` — `upstream`/`tracking` read `branch.<cur>.merge`, the rest
+  name the current branch, and `matching` creates nothing on a self-push because
+  both sides are this repository. All four are read now, and the effective remote
+  is resolved through git's own chain (operand, `branch.<cur>.pushRemote`,
+  `remote.pushDefault`, `branch.<cur>.remote`, `origin`) rather than treating an
+  unknown target as self, which would have refused the most ordinary command
+  there is.
 - **"At this repository" is a CONFIG question.** The push boundary was first
   drawn on the literal `.` operand a command-string parser can see, which missed
   `git push self HEAD:refs/heads/master` with `remote.self.url = .` — a named

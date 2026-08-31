@@ -1935,6 +1935,32 @@ run_gate "...while a named remote whose url is this repo does land here" \
 run_gate "...including one spelled as this repository's path" \
     block "git push selfpath feature:refs/heads/master" \
     "would CREATE the protected branch"
+# Git prefers `pushurl` over `url` for a push, so reading only url let a remote
+# whose url points elsewhere and whose PUSHURL points here read as external.
+git -C "$REPO" remote add tricky /nonexistent-remote >/dev/null 2>&1
+git -C "$REPO" config remote.tricky.pushurl .
+run_gate "...and pushurl beats url, which git prefers for a push" \
+    block "git push tricky feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config remote.tricky.pushurl "file://$REPO"
+run_gate "...and a file:// url is the same local path" \
+    block "git push tricky feature:refs/heads/master" \
+    "would CREATE the protected branch"
+# A self-push with NO refspec takes its destination from push.default, which is
+# four more places a protected name is named by no word of the command.
+git -C "$REPO" config remote.tricky.pushurl .
+git -C "$REPO" checkout -q feature
+git -C "$REPO" config push.default upstream
+git -C "$REPO" config branch.feature.merge refs/heads/master
+run_gate "a self-push with no refspec takes push.default's destination" \
+    block "git push tricky" "its destination comes from push.default"
+git -C "$REPO" config push.default simple
+run_gate "...while push.default=simple names the current branch, not a protected one" \
+    allow "git push tricky"
+git -C "$REPO" config --unset push.default
+git -C "$REPO" config --unset branch.feature.merge
+git -C "$REPO" checkout -q main
+git -C "$REPO" remote remove tricky >/dev/null 2>&1
 git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
 git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push

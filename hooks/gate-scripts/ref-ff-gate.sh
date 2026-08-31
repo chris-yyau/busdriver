@@ -1114,38 +1114,90 @@ creation_check() {
     # not guard: that boundary is ADR 0050's, and judging such a push refused
     # `git push origin feature:refs/heads/master` as though it created a local
     # branch. The exception is a push AT this repository, where the ref really
-    # does land here -- and "at this repository" is a CONFIG question (`git push
-    # self` with `remote.self.url = .`), not the literal `.` operand a
-    # command-string parser can see, which is why it is answered here.
-    # Unknown counts as SELF: a bare `git push` names no destination either way,
-    # so the safe reading costs nothing and the unsafe one would be a fail-open.
+    # does land here -- and that is a CONFIG question (`git push self` with
+    # `remote.self.url = .`), not the literal `.` operand a command-string parser
+    # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
-        local _pt _purl _at_self=0 _saw_target=0 _cur_phys _purl_phys
+        local _pt _premote="" _purl="" _at_self=0 _cur_phys _purl_phys _cur_br
+        _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
+        # WHICH remote, resolved the way git resolves it. A bare `git push` names
+        # none, and treating "unknown" as self would refuse the most ordinary
+        # command there is; git's own chain answers it instead.
         for _pt in $CREATE_TOKS; do
-            case "$_pt" in
-                .) _at_self=1; _saw_target=1; break ;;
-            esac
-            _purl=$(git_real config --get "remote.$_pt.url" 2>/dev/null) || _purl=""
-            [ -z "$_purl" ] && continue
-            _saw_target=1
-            case "$_purl" in
-                .) _at_self=1; break ;;
-                *)
-                    # Both resolutions must SUCCEED. A url that is not a local
-                    # path at all -- the ordinary `git@host:repo` -- resolves to
-                    # nothing, and comparing two empty strings would have called
-                    # every external remote "this repository".
-                    _cur_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
-                    _purl_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && cd "$_purl" 2>/dev/null && pwd -P) || _purl_phys=""
-                    if [ -n "$_purl_phys" ] && [ -n "$_cur_phys" ] \
-                       && [ "$_purl_phys" = "$_cur_phys" ]; then
-                        _at_self=1; break
-                    fi ;;
-            esac
+            case "$_pt" in .) _premote="."; break ;; esac
+            if git_real config --get "remote.$_pt.url" >/dev/null 2>&1 \
+               || git_real config --get "remote.$_pt.pushurl" >/dev/null 2>&1; then
+                _premote="$_pt"; break
+            fi
         done
-        if [ "$_saw_target" = "1" ] && [ "$_at_self" = "0" ]; then
+        if [ -z "$_premote" ]; then
+            _premote=$(git_real config --get "branch.$_cur_br.pushRemote" 2>/dev/null) \
+                || _premote=$(git_real config --get remote.pushDefault 2>/dev/null) \
+                || _premote=$(git_real config --get "branch.$_cur_br.remote" 2>/dev/null) \
+                || _premote="origin"
+        fi
+        # PUSHURL first: git prefers it over url for a push, so reading only url
+        # let `url = https://elsewhere/` with `pushurl = .` read as external.
+        if [ "$_premote" = "." ]; then
+            _purl="."
+        else
+            _purl=$(git_real config --get "remote.$_premote.pushurl" 2>/dev/null) \
+                || _purl=$(git_real config --get "remote.$_premote.url" 2>/dev/null) \
+                || _purl=""
+        fi
+        # `file://` is the same local path spelled as a URL, and `<path>/.git`
+        # names the same repository as `<path>`.
+        _purl=${_purl#file://}
+        case "$_purl" in */.git) _purl=${_purl%/.git} ;; esac
+        _cur_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
+        if [ -n "$_purl" ]; then
+            # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
+            # no local path at all, and comparing two empty strings would have
+            # called every external remote "this repository".
+            _purl_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && cd "$_purl" 2>/dev/null && pwd -P) || _purl_phys=""
+            if [ -n "$_purl_phys" ] && [ -n "$_cur_phys" ] \
+               && [ "$_purl_phys" = "$_cur_phys" ]; then
+                _at_self=1
+            fi
+        fi
+        if [ "$_at_self" = "0" ]; then
             return 0
         fi
+        # A self-push with NO refspec in the command takes its destination from
+        # `push.default`, which is four more places a protected name can be
+        # named without appearing in any word. `remote.<n>.push` overrides it and
+        # is read by the configured scan below; this covers the rest.
+        # `push` specifically, not `send-pack`: the latter takes its ref updates
+        # over the protocol, which the opaque refusal below owns and states
+        # better than a guess at push.default would.
+        case " $CREATE_TOKS " in
+            *:*) ;;
+            *" push "*|*" git-push "*)
+                if ! git_real config --get "remote.$_premote.push" >/dev/null 2>&1; then
+                    local _pd _pdst=""
+                    _pd=$(git_real config --get push.default 2>/dev/null) || _pd="simple"
+                    case "$_pd" in
+                        upstream|tracking)
+                            _pdst=$(git_real config --get "branch.$_cur_br.merge" 2>/dev/null) || _pdst="" ;;
+                        matching|nothing)
+                            # `matching` pushes only branches that exist on BOTH
+                            # sides, and for a self-push both sides are this
+                            # repository, so it creates nothing. `nothing` errors.
+                            _pdst="" ;;
+                        *)
+                            [ -n "$_cur_br" ] && _pdst="refs/heads/$_cur_br" ;;
+                    esac
+                    _pdst=${_pdst#refs/heads/}
+                    if [ -n "$_pdst" ]; then
+                        case " $_absent " in
+                            *" $_pdst "*)
+                                block_emit "BLOCKED: this pushes at THIS repository ('$_premote'), and with no refspec on the command line its destination comes from push.default — here, the protected branch '$_pdst', which does not exist in ${REPO_DIR:-.} yet. No word of the command names it, so nothing about the content it would land can be reviewed (issue #781). Name the refspec, or land the work through a PR (/litmus, then /pr-grind). Blocking as precaution (fail-closed)."
+                                exit 0 ;;
+                        esac
+                    fi
+                fi ;;
+            *) ;;
+        esac
     fi
 
     # A FETCH need not carry a refspec at all: `remote.<name>.fetch` supplies

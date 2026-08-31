@@ -93,13 +93,13 @@ chmod +x "$STUB_DIR/droid"
 # checkout path containing a quote cannot break the snippet.
 run_execute_codex() {
   local rc=0 out
+  # Env-passed SCRIPT_DIR/LIB/BUDGET must expand in the child, not here.
+  # shellcheck disable=SC2016
   out=$(
     env -i HOME="$HOME" PATH="$STUB_DIR:/opt/homebrew/bin:/usr/bin:/bin" \
       LITMUS_CODEX_RETRIES=0 LITMUS_CODEX_RETRY_DELAY=0 \
       BUSDRIVER_STATE_DIR="$ISO_STATE" \
       SCRIPT_DIR="$SCRIPT_DIR" LIB="$LIB" BUDGET="$BUDGET" \
-      # Env-passed SCRIPT_DIR/LIB/BUDGET must expand in the child, not here.
-      # shellcheck disable=SC2016
       bash -c '
         cd "$SCRIPT_DIR" || exit 97
         # shellcheck disable=SC1091

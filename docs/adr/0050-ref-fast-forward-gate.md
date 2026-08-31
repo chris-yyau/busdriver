@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found seventeen ways a first draft of that membership test still leaked, and
+Review found twenty ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -246,6 +246,20 @@ adding a grammar:
   refspec is ONE word until both halves are reported. A `+` prefix then hid the
   SOURCE too — `+<oid>` resolves to no commit, so the unreviewed content it named
   was skipped and a vouched HEAD made the creation read as inert.
+- **A fetch refspec supplied by CONFIG.** `git fetch origin` need not carry a
+  refspec: `remote.<name>.fetch` supplies one, so a configured destination under
+  refs/heads/ creates a local branch with no word in the command naming it. The
+  gate now reads the configured refspecs — which can only ADD refusals, so the
+  usual caveat about configuration it cannot see costs nothing here.
+- **`refs/heads/<name>` stripped for MATCHING, then resolved stripped.** The
+  strip is what makes the protected name match, but it also changes which
+  revision the word names: with a tag and a branch sharing a name at different
+  commits, resolving the stripped word answers for the TAG while the command
+  creates from the branch. Both spellings are candidates now.
+- **A derived name carrying SLASHES.** With the normal refspec `git checkout
+  --track origin/release/main` derives the local branch `release/main`, so
+  reducing the operand to its last component reported `main` and matched neither
+  it nor the protected name actually being created. Every slash suffix counts.
 - **Content the command SYNTHESIZES.** The reachability proof assumes a ref can
   only be created at a commit that already existed. `git notes
   --ref=refs/heads/master add -m x HEAD` builds a new notes commit and points the

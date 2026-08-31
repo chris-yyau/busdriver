@@ -1847,6 +1847,15 @@ run_gate "...but a plain fetch into the remote-tracking namespace is fine" \
 run_gate "...and an OPTION can carry the same refspec" \
     block "git fetch --refmap=refs/heads/main:refs/heads/master elsewhere main" \
     "resolved in the REMOTE repository"
+# A fetch need not CARRY a refspec: remote.<name>.fetch supplies one, so a
+# configured destination under refs/heads/ creates a local branch with no word in
+# the command naming it.
+git -C "$REPO" config remote.origin.fetch 'refs/heads/main:refs/heads/master'
+run_gate "a CONFIGURED fetch refspec writing a local branch -> block" \
+    block "git fetch origin" "under a configured refspec whose destination"
+git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+run_gate "...and the ordinary configured refspec is untouched" \
+    allow "git fetch origin"
 
 # A word carrying whitespace cannot be a ref NAME, but git still accepts it as a
 # REVISION -- `:/subject` finds a commit by its message -- so dropping it left a
@@ -1870,6 +1879,14 @@ run_gate "checkout --track derives the local name from origin/<name>" \
     block "git checkout --track origin/master" "would CREATE the protected branch"
 run_gate "...and switch -t is the same derivation" \
     block "git switch -t origin/master" "would CREATE the protected branch"
+# A derived name can carry SLASHES: with the normal refspec, `--track
+# origin/release/main` derives the local branch `release/main`, so reducing the
+# operand to its last component reported `main` and matched neither.
+git -C "$TRACKED" update-ref refs/remotes/origin/release/main "$UNREV_OID" >/dev/null 2>&1
+printf 'release/main\n' > "$TRACKED/$ISO_STATE/ref-ff-protected.local"
+run_gate "a multi-component tracked name is derived in full" \
+    block "git checkout --track origin/release/main" "would CREATE the protected branch"
+rm -f "$TRACKED/$ISO_STATE/ref-ff-protected.local"
 run_gate "...while an untracked feature name is still ordinary work" \
     allow "git checkout -b feature-tracked"
 REPO="$SAVED_REPO"
@@ -1945,6 +1962,14 @@ run_gate "...in the checkout -b spelling too" \
     block "git checkout -b master mb-a...mb-b" "names a RANGE rather than one commit"
 run_gate "...while a non-protected name is still none of the gate's business" \
     allow "git branch feature-range mb-a...mb-b"
+# Stripping `refs/heads/` is what makes the protected NAME match, but it also
+# changes which revision the word names: with a TAG and a BRANCH sharing a name
+# at different commits, resolving the stripped word answers for the tag while the
+# command creates from the branch. Both spellings are candidates now.
+git -C "$REPO" branch amb "$UNREV_OID" >/dev/null 2>&1
+git -C "$REPO" tag amb main >/dev/null 2>&1
+run_gate "an explicit refs/heads/<name> is resolved as the branch, not the tag" \
+    block "git branch master refs/heads/amb" "would CREATE the protected branch"
 # `..` in an ordinary path is not a range, and must stay ordinary work.
 run_gate "...and a relative worktree path is not mistaken for one" \
     allow "git worktree add ../scratch-range"

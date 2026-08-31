@@ -3977,9 +3977,17 @@ def git_ref_create(cmd):
     unreadable = False
 
     def _add(w):
-        w = w[len('refs/heads/'):] if w.startswith('refs/heads/') else w
-        if w and w not in seen:
-            seen.append(w)
+        # BOTH spellings. Stripping `refs/heads/` is what makes the protected
+        # NAME match, but it also changes which revision the word resolves to:
+        # with a tag `topic` and a branch `refs/heads/topic` at different
+        # commits, resolving the stripped word answers for the TAG while the
+        # command creates the branch from the explicit ref. Keeping the original
+        # too only ADDS candidates that must be reachable, which is the blocking
+        # direction.
+        for _w in ((w, w[len('refs/heads/'):]) if w.startswith('refs/heads/')
+                   else (w,)):
+            if _w and _w not in seen:
+                seen.append(_w)
 
     def _refspec(w, ntoks):
         """Read a `<src>:<dst>` word, wherever it came from."""
@@ -4088,7 +4096,14 @@ def git_ref_create(cmd):
                 if _derive:
                     bare = (t[len('refs/heads/'):]
                             if t.startswith('refs/heads/') else t)
-                    _add(bare.rstrip('/').rsplit('/', 1)[-1])
+                    # EVERY slash suffix, not just the last component. With the
+                    # normal refspec `git checkout --track origin/release/main`
+                    # derives the local branch `release/main`, so a basename-only
+                    # rule reported `main` and matched neither the operand nor
+                    # the protected name that was actually being created.
+                    _parts = bare.rstrip('/').split('/')
+                    for _i in range(1, len(_parts)):
+                        _add('/'.join(_parts[_i:]))
     canon_name = canon_oid = ''
     if len(chunks) == 1 and len(argvs) == 1 and len(argvs[0]) == 4:
         a = argvs[0]

@@ -2676,6 +2676,18 @@ def _case_state_after_op(state, op):
     return state
 
 
+# Shell blanks only. `str.split()` splits on Python's UNICODE whitespace, which is wider
+# than bash's IFS default: a non-breaking space is a word character to the shell, so
+# `case\u00a0x` is ONE ordinary command name -- and splitting it produced a `case` lead
+# that opened a pattern list over a REAL pipeline, dropping its executing stage.
+_SHELL_WORD_RE = re.compile(r"[^ \t\n]+")
+
+
+def _shell_words(text):
+    """`text` split the way the shell splits it: on space, tab and newline only."""
+    return _SHELL_WORD_RE.findall(text)
+
+
 def _effective_lead(words):
     """The first word that could be a COMMAND, stepping over compound introducers.
 
@@ -2697,7 +2709,7 @@ def _effective_lead(words):
 
 def _case_state_after_segment(state, pairs, k, seg):
     """Advance the case walk across a segment's own WORDS, after its operator."""
-    lead = _effective_lead(seg.split())
+    lead = _effective_lead(_shell_words(seg))
     if lead == "esac":
         return _CASE_CLOSED
     if (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)

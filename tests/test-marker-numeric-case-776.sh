@@ -944,6 +944,28 @@ print("V=abc; case " + subj + " in " + q + q + "|" + s + "[!0-9]" + s + ") : ;; 
   fi
 done
 
+# --- Word splitting follows the SHELL, not python.
+# `str.split()` splits on unicode whitespace; bash splits on space, tab and newline only.
+# A non-breaking space is an ordinary word character to the shell, so `case<NBSP>x` is ONE
+# command name -- and splitting it produced a `case` lead that opened a pattern list over
+# a REAL pipeline and dropped its executing stage.
+NBSP_SPOOF=$(python3 -c 'q=chr(39);s=chr(42);nb=chr(160);print("(case"+nb+"x in "+q+q+" | "+s+"[!0-9]"+s+" | bash)")')
+got=$(verdict "$NBSP_SPOOF")
+if [[ "$got" == BLOCK_* ]]; then
+  ok "#776 non-breaking space does not split a command word"
+else
+  no "#776 non-breaking space does not split a command word" "got=${got:-<empty>}"
+fi
+
+# The ordinary spelling, with a real space, is still a case and stays allowed.
+SP_CASE=$(python3 -c 'q=chr(39);s=chr(42);print("case x in "+q+q+"|"+s+"[!0-9]"+s+") : ;; "+s+") : ;; esac")')
+got=$(verdict "$SP_CASE")
+if [[ "$got" == "OK|" ]]; then
+  ok "#776 an ordinary space still separates the case keyword"
+else
+  no "#776 an ordinary space still separates the case keyword" "got=${got:-<empty>}"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -2532,7 +2532,18 @@ execute_review() {
     # Whether it was EXPORTED, not merely set: restoring a shell-local variable as an
     # exported one would hand the pin to every later child process, which is the same
     # class of bug this wrapper exists to remove.
-    if declare -p GIT_INDEX_FILE 2>/dev/null | grep -q 'declare -x'; then
+    #
+    # Membership in `export -p`, not a `declare -x` prefix match. bash COMBINES attribute
+    # letters, so an exported integer prints as `declare -ix` and a prefix match reads it
+    # as unexported -- the restore would then silently drop the export and every later
+    # child would lose the pin. `export -p` lists exported names only, so being in it is
+    # the answer regardless of what else is set.
+    # `grep ... >/dev/null`, NOT `grep -q`: `-q` exits at the first match, and with the
+    # callers' `set -o pipefail` the SIGPIPE that gives `export -p` turns the pipeline into
+    # 141 whenever more exported data follows. The variable then reads as unexported and
+    # the restore silently drops the export, which is the failure this branch exists to
+    # prevent. Draining the output costs nothing and cannot be signalled.
+    if export -p 2>/dev/null | grep '[[:space:]]GIT_INDEX_FILE=' >/dev/null; then
       _gif_exported=1
     fi
     unset GIT_INDEX_FILE 2>/dev/null || :

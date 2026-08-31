@@ -58,8 +58,22 @@ IFS='|' read -r NT FP parents GOT <<<"$parsed"
 [[ "$parents" -ge 2 ]] || exit 0
 if [[ ! -f "$GD/MERGE_HEAD" ]]; then
   [[ -e "$ARM" || -f "$CLAIM" ]] && refuse 'missing MERGE_HEAD for armed merge authorization.'
-  # Fast-forward onto an existing merge tip (OLD may be a deep ancestor).
+  # Fast-forward only onto a merge tip already published as another *direct*
+  # local branch tip (objecttype=commit, non-symbolic). Ancestor alone is
+  # insufficient (commit-tree + update-ref). Tags/remotes/custom refs and
+  # symbolic heads are not witnesses — those namespaces are not gated here.
   "${G[@]}" merge-base --is-ancestor "$OLD" "$NEW" 2>/dev/null || refuse 'refusing unauthorized merge commit.'
+  published=0
+  while IFS='|' read -r tip otype symref ref; do
+    [[ -n "${ref:-}" ]] || continue
+    [[ "$ref" == "$BRANCH" ]] && continue
+    [[ -z "${symref:-}" ]] || continue
+    [[ "${otype:-}" == "commit" ]] || continue
+    [[ "$tip" == "$NEW" ]] || continue
+    published=1
+    break
+  done < <("${G[@]}" for-each-ref --format='%(objectname)|%(objecttype)|%(symref)|%(refname)' refs/heads 2>/dev/null || true)
+  [[ "$published" -eq 1 ]] || refuse 'refusing unauthorized merge commit.'
   exit 0
 fi
 [[ "$FOREIGN" -eq 0 ]] || refuse 'refusing unrelated ref update in merge transaction.'

@@ -1074,6 +1074,10 @@ MARKER="$REPO_DIR/$MARKER_REL"
 # command, the same cost the alias and companion rules already accept, and it is
 # paid only for the six conventional names plus whatever the operator declared.
 creation_check() {
+    # A command carrying a literal merge/pull belongs entirely to the arms below,
+    # which already refuse any companion beside it -- so a creation cannot ride
+    # along, and leaving it here keeps #779's refusals speaking for themselves.
+    [ -n "$KIND" ] && return 0
     # A git builtin reached as its own EXECUTABLE names no `git <sub>` pair, so
     # it reports no alias candidate; the flag is what keeps it in scope.
     [ -z "$ALIAS_CANDIDATES" ] && [ "$CREATE_GITEXE" != "1" ] && return 0
@@ -1101,8 +1105,8 @@ creation_check() {
     # AFTER a match. So the shape is refused wherever a protected name could be
     # created; a scripted batch of ref updates is not a routine command, and the
     # named alternative costs one line each.
-    if [ "$CREATE_OPAQUE" = "stdin" ]; then
-        block_emit "BLOCKED: this command runs 'git update-ref --stdin' in ${REPO_DIR:-.}, which takes its ref names from input the gate cannot read — so it cannot tell whether one of them CREATES a protected branch ($_PROT_NAME_LIST) at content no review gate has seen (issue #781). Name each ref update on the command line instead:
+    if [ "$CREATE_OPAQUE" = "stdin" ] || [ "$CREATE_OPAQUE" = "stream" ]; then
+        block_emit "BLOCKED: this command writes refs from INPUT the gate cannot read — 'git update-ref'/'git fetch' with '--stdin' (any accepted abbreviation) or '-z', or a 'git fast-import' stream carrying its own reset commands. It therefore cannot tell whether one of those writes CREATES a protected branch ($_PROT_NAME_LIST) at content no review gate has seen (issue #781). Name each ref update on the command line instead:
   git update-ref refs/heads/<branch> <oid>
 Blocking as precaution (fail-closed)."
         exit 0
@@ -1125,6 +1129,23 @@ Blocking as precaution (fail-closed)."
                 _matched_all="$_matched_all $_t" ;;
         esac
     done
+    # THE IMPLICIT DESTINATION. On an UNBORN branch, HEAD is a symbolic ref to a
+    # branch that does not exist, and every ref writer that goes THROUGH HEAD
+    # creates it while naming it nowhere: `git update-ref HEAD <oid>` and
+    # `git reset <oid>` both land content on the protected branch with no
+    # protected word in the command at all. HEAD names it, so HEAD is read.
+    local _head_sym=""
+    _head_sym=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _head_sym=""
+    if [ -n "$_head_sym" ]; then
+        case " $_absent " in
+            *" $_head_sym "*)
+                [ -z "$_matched" ] && _matched="$_head_sym"
+                case " $_matched_all " in
+                    *" $_head_sym "*) ;;
+                    *) _matched_all="$_matched_all $_head_sym" ;;
+                esac ;;
+        esac
+    fi
     # ATTACHED to an option word, which carries no word of its own:
     # `git checkout -bmaster <oid>`, `-Bmaster`, `switch -cmaster`, a clustered
     # `-qbmaster` and `--create=master` all create `master`. Tested as a SUFFIX
@@ -1206,39 +1227,23 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
         exit 0
     fi
 
-    # INERT? Every start point the command could use -- HEAD, plus every
-    # ref-plausible word in it -- already reachable from a protected branch that
-    # EXISTS. Then whatever this creates is content those branches already carry,
-    # and no review was skipped. rev-list is one call per oid rather than one
-    # per (oid, branch) pair: it prints nothing exactly when the oid is reachable
-    # from the set.
-    local _not_refs="" _b
-    for _b in $PROTECTED_SET; do _not_refs="$_not_refs refs/heads/$_b"; done
-    local _oid _out _rc _unvouched=""
-    # <oid> -> sets _unvouched and returns 1 when the oid is NOT already carried
-    # by a protected branch. An unanswerable query blocks: "git could not decide"
-    # is not "yes".
-    _vouch() {
-        [ -z "$1" ] && return 0
-        if [ -z "$_not_refs" ]; then
-            # Nothing protected EXISTS, so nothing can vouch for anything. A
-            # single-branch clone with no local main is exactly this case, and
-            # it is the second shape #781 names.
-            _unvouched="$1"; return 1
-        fi
-        local _o2 _r2=0
-        # shellcheck disable=SC2086  # deliberate word split of the ref list
-        _o2=$(git_real rev-list --max-count=1 "$1" --not $_not_refs 2>/dev/null) || _r2=$?
-        if [ "$_r2" -ne 0 ]; then
-            block_emit "Ref gate: git could not decide whether $1 is already reachable from a protected branch in ${REPO_DIR:-.} (git rev-list exited $_r2 rather than answering), so the gate cannot tell whether creating '$_matched' would land unreviewed content. Blocking as precaution (fail-closed)."
-            exit 0
-        fi
-        [ -n "$_o2" ] && { _unvouched="$1"; return 1; }
-        return 0
-    }
+    # INERT? Every start point the command could use -- HEAD, every ref-plausible
+    # word in it, and (git's DWIM start point) every remote-tracking ref whose
+    # full path suffix matches a matched name -- already reachable from a
+    # protected branch that EXISTS. Then whatever this creates is content those
+    # branches already carry, and no review was skipped.
+    #
+    # ONE rev-list over ALL of them, not one per oid. `rev-list <oids...> --not
+    # <protected refs>` prints nothing exactly when EVERY oid is reachable from
+    # the set, and the first thing it does print IS an unvouched commit -- which
+    # is the answer AND the oid for the block message. Seventeen graph walks
+    # inside a 10s budget whose expiry emits no decision was a way through the
+    # gate; this is one.
+    local _cands="" _oid
     for _t in HEAD $CREATE_TOKS; do
         _oid=$(git_real rev-parse --verify --quiet "${_t}^{commit}" 2>/dev/null) || _oid=""
-        _vouch "$_oid" || break
+        [ -z "$_oid" ] && continue
+        case " $_cands " in *" $_oid "*) ;; *) _cands="$_cands $_oid" ;; esac
     done
     # GIT'S DWIM START POINT, which is NOT one of the words above. `git checkout
     # main` / `git switch main` with no local `main` creates it from
@@ -1248,37 +1253,55 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
     # skipped, and only HEAD was vouched for. In a repo whose protected branch is
     # `develop`, HEAD sits on reviewed content while the created `main` lands
     # whatever the remote-tracking ref holds -- a fail-OPEN on the very shape the
-    # second half of #781 names, differing from the single-branch-clone case only
-    # in that SOME protected branch exists to vouch for HEAD.
-    # ONE listing rather than a lookup per (remote, word): remotes are
-    # repo-controlled and cost nothing to add, and the last path component is what
-    # a remote-tracking ref is named after, so a remote legally called `team/origin`
-    # still yields `main` here.
-    if [ -z "$_unvouched" ]; then
-        local _rtlist _rtref _rtoid
-        # shellcheck disable=SC2310  # head's answer is what is judged, not git's
-        _rtlist=$( { git_real for-each-ref --format='%(refname) %(objectname)' refs/remotes/ 2>/dev/null || true; } | head -c 65536 && printf X)
-        _rtlist="${_rtlist%X}"
-        if [ "${#_rtlist}" -ge 65536 ]; then
-            block_emit "BLOCKED: this command names the protected branch '$_matched', which does not exist in ${REPO_DIR:-.} yet, and the repository has more remote-tracking refs than the gate can read inside its 10s budget. Git creates such a branch from refs/remotes/<remote>/$_matched when no start point is given, so the gate cannot show what content it would land. Blocking as precaution (fail-closed)."
-            exit 0
-        fi
-        while read -r _rtref _rtoid; do
-            [ -z "$_rtref" ] && continue
-            # By the WHOLE name as a path suffix, never `${_rtref##*/}`: a
-            # protected `release/main` lives at refs/remotes/origin/release/main,
-            # whose last component is `main`, so the branch the DWIM would create
-            # was never vouched for. A suffix can also over-match
-            # (refs/remotes/origin/x/main for a name `main`), which adds oids to
-            # the set that must be reachable — the BLOCKING direction.
-            for _t in $_matched_all; do
-                case "$_rtref" in
-                    */"$_t") _vouch "$_rtoid" || break 2 ;;
-                esac
-            done
-        done <<EOF
+    # second half of #781 names.
+    # ONE listing rather than a lookup per (remote, word), and git's own STATUS is
+    # the answer: a producer failure read as an empty list would omit exactly the
+    # unreviewed oid this exists to find, so it blocks. `--count` bounds the walk
+    # inside git rather than by closing a pipe on it, which is what makes the
+    # status trustworthy.
+    local _rtlist="" _rtrc=0 _rtref _rtoid _rtn
+    _rtlist=$(git_real for-each-ref --count=512 --format='%(refname) %(objectname)' refs/remotes/ 2>/dev/null) || _rtrc=$?
+    if [ "$_rtrc" -ne 0 ] || [ "${#_rtlist}" -ge 65536 ]; then
+        block_emit "BLOCKED: this command names the protected branch '''$_matched''', which does not exist in ${REPO_DIR:-.} yet, and the gate could not read the repository'''s remote-tracking refs (git for-each-ref exited $_rtrc, or the listing is past the 64 KiB this gate reads). Git creates such a branch from refs/remotes/<remote>/$_matched when no start point is given, so an unreadable listing is exactly the case that would hide what it lands. Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    # shellcheck disable=SC2310  # no match IS the zero answer
+    _rtn=$(printf '%s' "$_rtlist" | grep -c '^') || _rtn=0
+    if [ "$_rtn" -ge 512 ]; then
+        block_emit "BLOCKED: this command names the protected branch '''$_matched''', which does not exist in ${REPO_DIR:-.} yet, and the repository has more remote-tracking refs than the gate enumerates (512). It cannot rule out that one of them is the refs/remotes/<remote>/$_matched git would create the branch from. Blocking as precaution (fail-closed)."
+        exit 0
+    fi
+    while read -r _rtref _rtoid; do
+        [ -z "$_rtref" ] && continue
+        # By the WHOLE name as a path suffix, never `${_rtref##*/}`: a protected
+        # `release/main` lives at refs/remotes/origin/release/main, whose last
+        # component is `main`, so the branch the DWIM would create was never
+        # vouched for. A suffix can also over-match, which only ADDS oids that
+        # must be reachable -- the BLOCKING direction.
+        for _t in $_matched_all; do
+            case "$_rtref" in
+                */"$_t")
+                    case " $_cands " in
+                        *" $_rtoid "*) ;;
+                        *) _cands="$_cands $_rtoid" ;;
+                    esac ;;
+            esac
+        done
+    done <<EOF
 $_rtlist
 EOF
+    # Nothing resolvable at all -- a fresh repo with no commits, say. Nothing can
+    # be landed by a command whose every start point is unresolvable, so there is
+    # nothing to vouch for.
+    [ -z "$_cands" ] && return 0
+    local _not_refs="" _b
+    for _b in $PROTECTED_SET; do _not_refs="$_not_refs refs/heads/$_b"; done
+    local _unvouched="" _rc=0
+    # shellcheck disable=SC2086  # deliberate word split of both ref lists
+    _unvouched=$(git_real rev-list --max-count=1 $_cands --not $_not_refs 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        block_emit "Ref gate: git could not decide whether the start points of this command are already reachable from a protected branch in ${REPO_DIR:-.} (git rev-list exited $_rc rather than answering), so the gate cannot tell whether creating '''$_matched''' would land unreviewed content. Blocking as precaution (fail-closed)."
+        exit 0
     fi
     [ -z "$_unvouched" ] && return 0
 

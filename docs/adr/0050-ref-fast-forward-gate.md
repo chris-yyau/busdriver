@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found ten ways a first draft of that membership test still leaked, and
+Review found twelve ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -232,7 +232,9 @@ adding a grammar:
   abbreviation of `--stdin`, since git takes them all) names its refs inside
   input no command-string parser can see, so there is nothing to match and the
   companion refusal — which runs only after a match — cannot help. That shape is
-  refused outright wherever a protected name could be created, as is a refspec
+  refused outright wherever a protected name could be created — as are `git
+  fetch --stdin` and a `git fast-import` stream, whose `reset refs/heads/<name>`
+  commands are equally unreadable — as is a refspec
   whose DESTINATION carries a `*` that can reach `refs/heads/`
   (`git fetch origin 'refs/heads/*:refs/heads/*'` creates every absent branch and
   names none of them; the ordinary `+refs/heads/*:refs/remotes/origin/*` writes
@@ -269,6 +271,10 @@ adding a grammar:
   --track origin/master` and `git switch -t origin/master` create `master` while
   carrying no such word. The `worktree add <path>` basename rule now covers the
   `checkout`/`switch` family too.
+- **The IMPLICIT destination.** On an unborn branch HEAD is a symbolic ref to a
+  branch that does not exist, so `git update-ref HEAD <oid>` and `git reset
+  <oid>` create the protected branch while naming it nowhere. HEAD names it, so
+  HEAD is read and matched against the absent set like any other word.
 - **A lone `-`, which is an OPERAND and not an option.** `checkout`/`switch`
   read it as `@{-1}`, the previous checkout, so `git checkout -b master -` was
   dropped with the other `-`-leading words and vouched by HEAD alone while

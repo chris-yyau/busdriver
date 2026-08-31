@@ -1875,6 +1875,42 @@ run_gate "...and switch -c reads it the same way" \
 run_gate "...while the same operand on a feature name is ordinary work" \
     allow "git checkout -b feature-dash -"
 
+# THE IMPLICIT DESTINATION. On an UNBORN branch, HEAD is a symbolic ref to a
+# branch that does not exist, and every ref writer going THROUGH HEAD creates it
+# while naming it nowhere -- no protected word appears in the command at all.
+UNBORN="$TMPROOT/unborn"
+rm -rf "$UNBORN"
+git clone -q "$REPO" "$UNBORN" >/dev/null 2>&1
+mkdir -p "$UNBORN/$ISO_STATE"
+(
+    set -e
+    cd "$UNBORN"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false; git config tag.gpgsign false
+    # `develop` exists and is protected, so HEAD's own content has a voucher and
+    # nothing else is doing the blocking; `main` is deleted and HEAD re-pointed
+    # at it, which is what an unborn protected branch looks like.
+    git checkout -q -b develop
+    git branch -q -D main
+    git symbolic-ref HEAD refs/heads/main
+) >/dev/null 2>&1
+SAVED_REPO="$REPO"
+REPO="$UNBORN"
+run_gate "update-ref through an UNBORN protected HEAD names no branch -> block" \
+    block "git update-ref HEAD $UNREV_OID" "would CREATE the protected branch"
+run_gate "...and reset writes through the same HEAD" \
+    block "git reset --hard $UNREV_OID" "would CREATE the protected branch"
+run_gate "...but content a protected branch already carries is still inert" \
+    allow "git update-ref HEAD develop"
+run_gate "...and an ordinary command in that repo is untouched" \
+    allow "git add -A"
+# Ref names arriving as DATA, in the two remaining shapes.
+run_gate "git fetch --stdin reads its refspecs from unreadable input" \
+    block "git fetch --stdin" "writes refs from INPUT the gate cannot read"
+run_gate "...and a fast-import stream carries its own reset commands" \
+    block "git fast-import" "writes refs from INPUT the gate cannot read"
+REPO="$SAVED_REPO"
+
 # A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
 # so nothing reported an alias candidate and the gate exited before looking at
 # the words. The builtin creates the branch just the same.
@@ -1883,7 +1919,7 @@ run_gate "a direct git-branch executable is still a creation" \
     "would CREATE the protected branch"
 run_gate "...and the executable form reaches the --stdin refusal too" \
     block "$(git --exec-path)/git-update-ref --stdin" \
-    "takes its ref names from input the gate cannot read"
+    "writes refs from INPUT the gate cannot read"
 git -C "$REPO" checkout -q feature
 run_gate "...and the executable form of worktree add derives the same name" \
     block "$(git --exec-path)/git-worktree add ../master" \
@@ -1894,16 +1930,16 @@ git -C "$REPO" checkout -q main
 # companion refusal cannot help because it runs only after a name match.
 run_gate "git update-ref --stdin is refused: its ref names are unreadable" \
     block "printf 'create refs/heads/master $UNREV_OID' | git update-ref --stdin" \
-    "takes its ref names from input the gate cannot read"
+    "writes refs from INPUT the gate cannot read"
 run_gate "...and -z is the same opaque input" \
     block "git update-ref -z --stdin < /tmp/batch" \
-    "takes its ref names from input the gate cannot read"
+    "writes refs from INPUT the gate cannot read"
 run_gate "...and every accepted ABBREVIATION of --stdin, which git takes too" \
     block "printf 'create refs/heads/master $UNREV_OID' | git update-ref --std" \
-    "takes its ref names from input the gate cannot read"
+    "writes refs from INPUT the gate cannot read"
 run_gate "...down to the shortest unambiguous one" \
     block "git update-ref --s" \
-    "takes its ref names from input the gate cannot read"
+    "writes refs from INPUT the gate cannot read"
 
 # `git worktree add <path>` with no -b and no commit-ish DERIVES the branch name
 # from the path's final component, so this creates `master` while the command

@@ -3906,11 +3906,14 @@ def git_ref_create(cmd):
                   when it does not. Two values, both refused outright wherever a
                   protected name could be created, because there is nothing to
                   match against:
-                    'stdin'    `git update-ref --stdin`/`-z` -- ANY accepted
-                               abbreviation of `--stdin`, since git takes them
-                               all -- reads its ref names from data (`printf
-                               'create refs/heads/master <oid>' | git update-ref
-                               --stdin` names the ref inside one quoted word).
+                    'stdin'    `git update-ref` or `git fetch` with
+                               `--stdin`/`-z` -- ANY accepted abbreviation of
+                               `--stdin`, since git takes them all -- reads its
+                               ref names from data (`printf 'create
+                               refs/heads/master <oid>' | git update-ref --stdin`
+                               names the ref inside one quoted word).
+                    'stream'   `git fast-import`, whose stream carries its own
+                               `reset refs/heads/<name>` commands.
                     'wildcard' a refspec whose DESTINATION carries a `*` and is
                                not under refs/remotes/ or refs/tags/, so it can
                                expand to refs/heads/<anything>: `git fetch origin
@@ -3991,7 +3994,11 @@ def git_ref_create(cmd):
                      for _x in toks]
             if 'symbolic-ref' in ntoks:
                 symref = True
-            if 'update-ref' in ntoks and any(
+            if 'fast-import' in ntoks:
+                # A fast-import stream carries its own `reset refs/heads/<name>`
+                # commands. There is no word to match, exactly as with --stdin.
+                opaque = opaque or 'stream'
+            if ('update-ref' in ntoks or 'fetch' in ntoks) and any(
                     t == '-z' or (t.startswith('--') and len(t) > 2
                                   and '--stdin'.startswith(t))
                     for t in toks):

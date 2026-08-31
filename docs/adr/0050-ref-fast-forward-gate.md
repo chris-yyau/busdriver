@@ -211,8 +211,8 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found thirty-two ways a first draft of that membership test still leaked,
-and
+Review found thirty-five ways a first draft of that membership test still
+leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -339,6 +339,22 @@ adding a grammar:
   unexamined. Every command word is now resolved as a path too, under the same
   `file://` and `<path>/.git` normalization, and a word that does not resolve to
   this repository's physical path settles nothing.
+- **The push target inside an OPTION word.** `git push --repo=. HEAD:refs/heads/master`
+  names its repository where the operand scan does not look. Every option's
+  `=`-value is now resolved as a target too.
+- **A GITDIR path is the same repository.** `git push .git` and `git push
+  <path>/.git` both land the ref here, and neither resolves to the worktree path
+  the boundary compared against. The absolute git dir is now a second accepted
+  answer, which also covers a worktree whose git dir is not `<path>/.git`.
+- **`url.<base>.insteadOf` rewrites the url git actually uses**, so a remote
+  whose configured url points at an external host can still resolve to this
+  repository — the same rewriting that leaves `git pull` with no authenticatable
+  source, here running the other way. Git's rule is now applied: longest matching
+  prefix wins, `pushInsteadOf` is preferred for a push and suppresses `insteadOf`
+  when it matches, and an unreadable rewrite listing blocks. Note git canonicalizes
+  config variable names to LOWERCASE in its listing, so the first draft's
+  mixed-case comparison matched nothing at all — the fix is pinned by a test that
+  fails without it.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

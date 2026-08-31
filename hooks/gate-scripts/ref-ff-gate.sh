@@ -1119,13 +1119,26 @@ creation_check() {
     # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
         local _pt _premote="" _purl="" _at_self=0 _cur_phys _purl_phys _cur_br
-        local _ptp _ptp_phys
+        local _ptp _ptp_phys _gd_phys _cands
         _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
         _cur_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
+        # A GITDIR path names the same repository as its worktree: `git push
+        # .git` and `git push <path>/.git` both land the ref here, and neither
+        # resolves to the worktree path.
+        _gd_phys=$(git_real rev-parse --absolute-git-dir 2>/dev/null) || _gd_phys=""
+        if [ -n "$_gd_phys" ]; then
+            _gd_phys=$(cd -- "$_gd_phys" 2>/dev/null && pwd -P) || _gd_phys=""
+        fi
+        # `git push --repo=<repository>` names the target inside an OPTION word,
+        # where no scan of the command's operands could see it.
+        _cands="$CREATE_TOKS"
+        for _pt in $CREATE_OPTS; do
+            case "$_pt" in *=*) _cands="$_cands ${_pt#*=}" ;; esac
+        done
         # WHICH remote, resolved the way git resolves it. A bare `git push` names
         # none, and treating "unknown" as self would refuse the most ordinary
         # command there is; git's own chain answers it instead.
-        for _pt in $CREATE_TOKS; do
+        for _pt in $_cands; do
             case "$_pt" in .) _premote="."; break ;; esac
             if git_real config --get "remote.$_pt.url" >/dev/null 2>&1 \
                || git_real config --get "remote.$_pt.pushurl" >/dev/null 2>&1; then
@@ -1140,8 +1153,9 @@ creation_check() {
             case "$_ptp" in */.git) _ptp=${_ptp%/.git} ;; esac
             [ -n "$_ptp" ] || continue
             _ptp_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_ptp" 2>/dev/null && pwd -P) || _ptp_phys=""
-            if [ -n "$_ptp_phys" ] && [ -n "$_cur_phys" ] \
-               && [ "$_ptp_phys" = "$_cur_phys" ]; then
+            [ -n "$_ptp_phys" ] || continue
+            if { [ -n "$_cur_phys" ] && [ "$_ptp_phys" = "$_cur_phys" ]; } \
+               || { [ -n "$_gd_phys" ] && [ "$_ptp_phys" = "$_gd_phys" ]; }; then
                 _premote="$_pt"; _at_self=1; break
             fi
         done
@@ -1162,6 +1176,48 @@ creation_check() {
                 || _purl=$(git_real config --get "remote.$_premote.url" 2>/dev/null) \
                 || _purl=""
         fi
+        # `url.<base>.pushInsteadOf` and `.insteadOf` REWRITE the url git uses,
+        # so a remote whose configured url points elsewhere can still resolve to
+        # this repository. Longest matching prefix wins, and for a push a
+        # pushInsteadOf match suppresses insteadOf entirely -- git's own rule.
+        if [ -n "$_purl" ]; then
+            local _urc=0 _ucfg="" _uline _ukey _uval _ubase _ubest="" _ubestlen=0 _usuf _urest=""
+            _ucfg=$(git_real config --get-regexp '^url\..*\.(insteadOf|pushInsteadOf)$' 2>/dev/null) || _urc=$?
+            if [ "$_urc" -gt 1 ] || [ "${#_ucfg}" -ge 65536 ]; then
+                block_emit "BLOCKED: this pushes in ${REPO_DIR:-.} and the gate could not read the repository's url.<base>.insteadOf rewrites (git config exited $_urc, or the listing is past the 64 KiB this gate reads). Those rewrites decide which repository the push actually reaches, so an unreadable one is exactly the case that would hide a push at this repository (issue #781). Blocking as precaution (fail-closed)."
+                exit 0
+            fi
+            # LOWERCASE: git canonicalizes config variable names, so the
+            # listing spells these `insteadof`/`pushinsteadof` whatever the
+            # config file says, and a mixed-case comparison matched nothing.
+            for _usuf in pushinsteadof insteadof; do
+                while IFS= read -r _uline; do
+                    [ -z "$_uline" ] && continue
+                    _ukey=${_uline%% *}
+                    case "$_ukey" in *".$_usuf") ;; *) continue ;; esac
+                    # `pushinsteadof` ENDS with `insteadof`, so the second pass
+                    # would read a push rewrite as a plain one.
+                    if [ "$_usuf" = insteadof ]; then
+                        case "$_ukey" in *.pushinsteadof) continue ;; esac
+                    fi
+                    _uval=${_uline#* }
+                    [ "$_uval" = "$_uline" ] && continue
+                    case "$_purl" in "$_uval"*) ;; *) continue ;; esac
+                    if [ "${#_uval}" -gt "$_ubestlen" ]; then
+                        _ubase=${_ukey#url.}
+                        _ubest=${_ubase%".$_usuf"}
+                        _ubestlen=${#_uval}
+                        _urest=${_purl#"$_uval"}
+                    fi
+                done <<CFGEOF
+$_ucfg
+CFGEOF
+                [ -n "$_ubest" ] && break
+            done
+            if [ -n "$_ubest" ]; then
+                _purl="$_ubest$_urest"
+            fi
+        fi
         # `file://` is the same local path spelled as a URL, and `<path>/.git`
         # names the same repository as `<path>`.
         _purl=${_purl#file://}
@@ -1171,8 +1227,9 @@ creation_check() {
             # no local path at all, and comparing two empty strings would have
             # called every external remote "this repository".
             _purl_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && cd "$_purl" 2>/dev/null && pwd -P) || _purl_phys=""
-            if [ -n "$_purl_phys" ] && [ -n "$_cur_phys" ] \
-               && [ "$_purl_phys" = "$_cur_phys" ]; then
+            if [ -n "$_purl_phys" ] \
+               && { { [ -n "$_cur_phys" ] && [ "$_purl_phys" = "$_cur_phys" ]; } \
+                    || { [ -n "$_gd_phys" ] && [ "$_purl_phys" = "$_gd_phys" ]; }; }; then
                 _at_self=1
             fi
         fi

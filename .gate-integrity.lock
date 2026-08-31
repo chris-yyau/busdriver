@@ -30,7 +30,7 @@ d44648f2f6f4917279e7f6d3bb604fa465038ea86ef6e1dc6713700c4f23290d  hooks/gate-scr
 f05c6248ad1ee06bd88ad360e5ceb105029f652ef0089ffc48e0c3ab47abd68b  hooks/gate-scripts/pre-implementation-gate.sh
 d18d10504f3c3bc26568cf4949a0e19e4e7cd40e434ea50ccb5e02e681890cc0  hooks/gate-scripts/pre-merge-gate.sh
 d6b346985540105f05c8c9b240b58e7f5d8029465b624b52f491c82f906bdcae  hooks/gate-scripts/pre-pr-gate.sh
-5105d7c5ee53bb106280551f7502f4b86b191552097e927b55078f41ea6b598a  hooks/gate-scripts/ref-ff-gate.sh
+129ab75adf5996d8f0abb7d9523589240cb083e3df3d5c23ec18e02fd6c598e5  hooks/gate-scripts/ref-ff-gate.sh
 a5e6c354960cbf6969dd493e0a87903163f1d703622f4a2d0525994d30528d7a  scripts/hooks/auto-tmux-dev.js
 671e9fff02a9c6229637d4c170dc60c11e78c5420d8b30f51c26d42a34d876b7  scripts/hooks/block-no-verify.js
 f3646b7d0060cfcc9f41c1ed1d00eaa275a153b748af74188d692f7d7a579c59  scripts/hooks/check-console-log.js

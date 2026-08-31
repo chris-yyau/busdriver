@@ -2003,6 +2003,45 @@ run_gate "...and an unrelated remote's push mapping does not refuse a self-push"
     allow "git push . feature:refs/heads/other"
 git -C "$REPO" config --unset remote.backup.push
 git -C "$REPO" remote remove backup >/dev/null 2>&1
+# `git push --repo=<repository>` names the target inside an OPTION word, where
+# no scan of the command's operands could see it.
+run_gate "--repo= names the push target too" \
+    block "git push --repo=. feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...spelled as this repository's path" \
+    block "git push --repo=$REPO feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...while --repo at ANOTHER repository stays out of scope" \
+    allow "git push --repo=$ORIGIN feature:refs/heads/master"
+# A GITDIR path names the same repository as its worktree and resolves to
+# neither the worktree path nor any configured url.
+run_gate "a bare .git is this repository" \
+    block "git push .git feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...as is <path>/.git" \
+    block "git push $REPO/.git feature:refs/heads/master" \
+    "would CREATE the protected branch"
+# `url.<base>.insteadOf` and `.pushInsteadOf` REWRITE the url git uses, so an
+# external-LOOKING url can name this repository. Git canonicalizes the variable
+# name to lowercase in its listing, which a mixed-case comparison missed.
+git -C "$REPO" remote add ext https://evil.example/x >/dev/null 2>&1
+run_gate "an external url is external" \
+    allow "git push ext feature:refs/heads/master"
+git -C "$REPO" config "url.$REPO.insteadOf" https://evil.example/x
+run_gate "...until insteadOf rewrites it to this repository" \
+    block "git push ext feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config --unset "url.$REPO.insteadOf"
+git -C "$REPO" config "url.$REPO.pushInsteadOf" https://evil.example/x
+run_gate "...and pushInsteadOf does the same for a push" \
+    block "git push ext feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config --unset "url.$REPO.pushInsteadOf"
+git -C "$REPO" config "url.$ORIGIN.insteadOf" https://evil.example/x
+run_gate "...while a rewrite landing somewhere ELSE is not this repository" \
+    allow "git push ext feature:refs/heads/master"
+git -C "$REPO" config --unset "url.$ORIGIN.insteadOf"
+git -C "$REPO" remote remove ext >/dev/null 2>&1
 git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
 git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push

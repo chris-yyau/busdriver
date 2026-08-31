@@ -48,12 +48,12 @@ mkdir -p "$REPO/bin"
 printf '#!/bin/sh\necho FORGED_PASS\n' > "$REPO/bin/codex"
 chmod +x "$REPO/bin/codex"
 
-EXT=$(mktemp -d "$WORK/ext.XXXX")
+EXT=$(mktemp -d "$WORK/ext.XXXXXX")
 printf '#!/bin/sh\necho REAL\n' > "$EXT/codex"
 chmod +x "$EXT/codex"
 
 
-LINKDIR=$(mktemp -d "$WORK/link.XXXX")
+LINKDIR=$(mktemp -d "$WORK/link.XXXXXX")
 ln -s "$REPO/bin/codex" "$LINKDIR/codex"
 
 run_avail() {
@@ -124,8 +124,8 @@ fi
 # Shim dir on PATH resolves to a different physical bindir — dispatch PATH must
 # still include the outside-checkout shim dir so bare `codex` remains findable
 # (companion lookup), without using $HOME.
-PHYS=$(mktemp -d "$WORK/phys.XXXX")
-SHIM=$(mktemp -d "$WORK/shim.XXXX")
+PHYS=$(mktemp -d "$WORK/phys.XXXXXX")
+SHIM=$(mktemp -d "$WORK/shim.XXXXXX")
 printf '#!/bin/sh\necho REAL_PHYS\n' > "$PHYS/codex.js"
 chmod +x "$PHYS/codex.js"
 ln -s "$PHYS/codex.js" "$SHIM/codex"
@@ -169,7 +169,7 @@ fi
 
 # Earlier PATH dir with a non-codex alias to the same physical target must not
 # steal launchdir — only "$d/codex" counts.
-ALIAS=$(mktemp -d "$WORK/alias.XXXX")
+ALIAS=$(mktemp -d "$WORK/alias.XXXXXX")
 ln -s "$PHYS/codex.js" "$ALIAS/notcodex"
 disp_alias=$(
   cd "$REPO" && PATH="$ALIAS:$SHIM:/usr/bin:/bin" \
@@ -232,13 +232,13 @@ else
 fi
 
 # --- (b) approved env-node shim with decoy node beside it ---
-NODEDIR=$(mktemp -d "$WORK/node.XXXX")
+NODEDIR=$(mktemp -d "$WORK/node.XXXXXX")
 printf '#!/bin/sh\necho TRUSTED_NODE\n' > "$NODEDIR/node"
 chmod +x "$NODEDIR/node"
 node_phys="$(CDPATH='' cd -P -- "$NODEDIR" 2>/dev/null && pwd -P)"
 
-ENVPHYS=$(mktemp -d "$WORK/envphys.XXXX")
-ENVSHIM=$(mktemp -d "$WORK/envshim.XXXX")
+ENVPHYS=$(mktemp -d "$WORK/envphys.XXXXXX")
+ENVSHIM=$(mktemp -d "$WORK/envshim.XXXXXX")
 printf '%s\n' '#!/usr/bin/env node' 'console.log("ENVNODE")' > "$ENVPHYS/codex.js"
 chmod +x "$ENVPHYS/codex.js"
 ln -sf "$ENVPHYS/codex.js" "$ENVSHIM/codex"
@@ -534,8 +534,8 @@ fi
 # outside-a-checkout refusal. A 1.0.x agy on ambient PATH, probed from a non-Git
 # directory, must be read as LEGACY (RC=1, stdin transport) with a CONCLUSIVE
 # probe — not defaulted to argv because the trusted resolver declined to answer.
-AGYDIR=$(mktemp -d "$WORK/agy.XXXX")
-NONGIT=$(mktemp -d "$WORK/nongit.XXXX")
+AGYDIR=$(mktemp -d "$WORK/agy.XXXXXX")
+NONGIT=$(mktemp -d "$WORK/nongit.XXXXXX")
 # shellcheck disable=SC2016 # $1 belongs to the generated stub script, not this shell
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0.7; exit 0; fi\necho AGY\n' > "$AGYDIR/agy"
 chmod +x "$AGYDIR/agy"

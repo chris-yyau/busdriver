@@ -4317,10 +4317,15 @@ def _zero_old_git_argv(seg):
     if last_i is None:
         return None, None
     return ['git', last_sub] + list(toks[last_i + 1:]), toks
+_ZERO_OLD_SCOPE_ENV = frozenset({
+    'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_INDEX_FILE',
+})
 def _zero_old_git_env():
-    return {k: v for k, v in os.environ.items()
-            if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
-                         'GIT_NAMESPACE', 'GIT_INDEX_FILE')}
+    return {k: v for k, v in os.environ.items() if k not in _ZERO_OLD_SCOPE_ENV}
+def _zero_old_ambient_scope():
+    if os.environ.get('BUSDRIVER_GIT_SCOPE_PRESENT') == '1':
+        return True
+    return any(k in os.environ for k in _ZERO_OLD_SCOPE_ENV)
 def _zero_old_ref_path(ref_operand):
     if not isinstance(ref_operand, str) or not ref_operand:
         return ''
@@ -4334,7 +4339,7 @@ def _zero_old_symref_map(repo_dir):
     import subprocess
     try:
         r = subprocess.run(
-            ['git', '-C', repo_dir, 'for-each-ref',
+            ['git', '-C', repo_dir, 'for-each-ref', '--count=4097',
              '--format=%(refname)\t%(symref)', 'refs/'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=_zero_old_git_env(), text=True, timeout=5)
@@ -4342,10 +4347,12 @@ def _zero_old_symref_map(repo_dir):
         return None
     if r.returncode != 0 or r.stdout is None or len(r.stdout) > 256 * 1024:
         return None
+    lines = [ln for ln in r.stdout.split('\n') if ln != '']
+    # --count=4096 bound: one extra row means the map is truncated.
+    if len(lines) > 4096:
+        return None
     sym = {}
-    for line in r.stdout.split('\n'):
-        if line == '':
-            continue
+    for line in lines:
         if '\t' not in line:
             return None
         ref, target = line.split('\t', 1)
@@ -4548,6 +4555,9 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             scope_untrusted = _commit_untrusted(
                 cds, allow_cd, auth, tilde_c, nested_c)
             raw = list(_zero_old_ops_from_argv(argv))
+            if (raw or sub in _ZERO_OLD_SUBS) and _zero_old_ambient_scope():
+                raw_all.append(('force', ''))
+                continue
             if not raw and sub not in _ZERO_OLD_SUBS:
                 _forceish = any(
                     t in ('-f', '-D', '-B', '-C', '--force', '--delete') or t.startswith('--force')

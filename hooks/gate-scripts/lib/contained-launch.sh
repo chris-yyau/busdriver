@@ -267,7 +267,16 @@ if [[ -e "$first_operand" && ! -f "$first_operand" ]]; then
     exit 2
 fi
 
-/usr/bin/env -i "$@"
+# Trusted ambient-git-scope sentinel for gates that strip GIT_* from probes
+# (#780). Do not forward the raw values — only whether any were set pre-env -i.
+_bd_git_scope=0
+[[ -n "${GIT_DIR+x}" || -n "${GIT_WORK_TREE+x}" || -n "${GIT_COMMON_DIR+x}" \
+    || -n "${GIT_NAMESPACE+x}" || -n "${GIT_INDEX_FILE+x}" ]] && _bd_git_scope=1
+if [[ "$_bd_git_scope" -eq 1 ]]; then
+    /usr/bin/env -i BUSDRIVER_GIT_SCOPE_PRESENT=1 "$@"
+else
+    /usr/bin/env -i "$@"
+fi
 rc=$?
 
 # This reproduces the shell-form tails EXACTLY, which is the point — the disposition replaces

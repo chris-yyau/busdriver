@@ -1925,6 +1925,18 @@ git -C "$REPO" config --unset remote.self.url
 # guard -- ADR 0050's boundary. Reporting it anyway refused ordinary work.
 run_gate "a push refspec at a REMOTE repository is out of this gate's scope" \
     allow "git push origin feature:refs/heads/master"
+# ...but "at this repository" is a CONFIG question, not the literal `.` operand:
+# a NAMED remote whose url points here writes the branch here just the same.
+git -C "$REPO" remote add selfnamed . >/dev/null 2>&1
+git -C "$REPO" remote add selfpath "$REPO" >/dev/null 2>&1
+run_gate "...while a named remote whose url is this repo does land here" \
+    block "git push selfnamed feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...including one spelled as this repository's path" \
+    block "git push selfpath feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
+git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push
 git -C "$REPO" config --unset remote.self.url
 

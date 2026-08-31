@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found twenty-seven ways a first draft of that membership test still leaked, and
+Review found twenty-eight ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -319,6 +319,13 @@ adding a grammar:
   current ref to match — and `git pull <remote> <branch>` populated the unborn
   protected branch from remote content, the one thing that arm refuses
   everywhere else. The current-branch test now runs over the protected NAMES.
+- **"At this repository" is a CONFIG question.** The push boundary was first
+  drawn on the literal `.` operand a command-string parser can see, which missed
+  `git push self HEAD:refs/heads/master` with `remote.self.url = .` — a named
+  remote pointing here writes the branch here just the same. The boundary is
+  decided in the GATE now, which can read the url, and an UNKNOWN target counts
+  as self: a bare `git push` names no destination either way, so the safe reading
+  costs nothing and the unsafe one would be a fail-open.
 - **`remote.<name>.push`, the other configured refspec.** A remote whose url is
   this repository writes the branch HERE, so `remote.self.push =
   HEAD:refs/heads/master` plus `git push self` creates the protected branch with

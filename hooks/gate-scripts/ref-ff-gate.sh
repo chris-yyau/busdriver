@@ -1110,6 +1110,44 @@ creation_check() {
     [ -z "$_absent" ] && return 0
     _absent_names="$_absent"
 
+    # A PUSH writes its destination in ANOTHER repository, which this gate does
+    # not guard: that boundary is ADR 0050's, and judging such a push refused
+    # `git push origin feature:refs/heads/master` as though it created a local
+    # branch. The exception is a push AT this repository, where the ref really
+    # does land here -- and "at this repository" is a CONFIG question (`git push
+    # self` with `remote.self.url = .`), not the literal `.` operand a
+    # command-string parser can see, which is why it is answered here.
+    # Unknown counts as SELF: a bare `git push` names no destination either way,
+    # so the safe reading costs nothing and the unsafe one would be a fail-open.
+    if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
+        local _pt _purl _at_self=0 _saw_target=0 _cur_phys _purl_phys
+        for _pt in $CREATE_TOKS; do
+            case "$_pt" in
+                .) _at_self=1; _saw_target=1; break ;;
+            esac
+            _purl=$(git_real config --get "remote.$_pt.url" 2>/dev/null) || _purl=""
+            [ -z "$_purl" ] && continue
+            _saw_target=1
+            case "$_purl" in
+                .) _at_self=1; break ;;
+                *)
+                    # Both resolutions must SUCCEED. A url that is not a local
+                    # path at all -- the ordinary `git@host:repo` -- resolves to
+                    # nothing, and comparing two empty strings would have called
+                    # every external remote "this repository".
+                    _cur_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
+                    _purl_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && cd "$_purl" 2>/dev/null && pwd -P) || _purl_phys=""
+                    if [ -n "$_purl_phys" ] && [ -n "$_cur_phys" ] \
+                       && [ "$_purl_phys" = "$_cur_phys" ]; then
+                        _at_self=1; break
+                    fi ;;
+            esac
+        done
+        if [ "$_saw_target" = "1" ] && [ "$_at_self" = "0" ]; then
+            return 0
+        fi
+    fi
+
     # A FETCH need not carry a refspec at all: `remote.<name>.fetch` supplies
     # one, so a configured destination under refs/heads/ creates a local branch
     # with no word in the command naming it. Read from the config this gate can

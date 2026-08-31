@@ -4024,15 +4024,6 @@ def git_ref_create(cmd):
         nonlocal opaque, fetch_spec
         if ':' not in w or _REF_CREATE_IMPLAUSIBLE_RE.search(w):
             return
-        # A PUSH writes its destination in ANOTHER repository, which this gate
-        # does not guard -- that boundary is ADR 0050's, and reporting the
-        # destination anyway refused `git push origin feature:refs/heads/master`
-        # as though it created a local branch. The exception is a push AT this
-        # repository, where `.` is the operand and the ref really does land here.
-        if (('push' in ntoks or 'send-pack' in ntoks)
-                and 'fetch' not in ntoks and 'pull' not in ntoks
-                and '.' not in ntoks):
-            return
         # A `*` in the DESTINATION half expands to ref names no word here can
         # spell. refs/remotes/ and refs/tags/ cannot become a local branch, so
         # the ordinary fetch refspec is untouched.

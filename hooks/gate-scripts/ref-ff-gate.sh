@@ -1118,8 +1118,7 @@ creation_check() {
     # `remote.self.url = .`), not the literal `.` operand a command-string parser
     # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
-        local _pt _premote="" _purl="" _at_self=0 _cur_phys _purl_phys _cur_br
-        local _ptp _ptp_phys _gd_phys _cands
+        local _pt _premote="" _at_self=0 _cur_phys _cur_br _gd_phys _cands
         _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
         _cur_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
         # A GITDIR path names the same repository as its worktree: `git push
@@ -1135,103 +1134,104 @@ creation_check() {
         for _pt in $CREATE_OPTS; do
             case "$_pt" in *=*) _cands="$_cands ${_pt#*=}" ;; esac
         done
-        # WHICH remote, resolved the way git resolves it. A bare `git push` names
-        # none, and treating "unknown" as self would refuse the most ordinary
-        # command there is; git's own chain answers it instead.
-        for _pt in $_cands; do
-            case "$_pt" in .) _premote="."; break ;; esac
-            if git_real config --get "remote.$_pt.url" >/dev/null 2>&1 \
-               || git_real config --get "remote.$_pt.pushurl" >/dev/null 2>&1; then
-                _premote="$_pt"; break
-            fi
-            # `git push <repository>` takes a PATH or a URL as readily as a
-            # remote name, and a path naming THIS repository has no
-            # `remote.<n>.url` to look up -- so matching only configured names
-            # fell through to the default remote and let `git push "$PWD"
-            # feature:refs/heads/master` create the branch unexamined.
-            _ptp=${_pt#file://}
-            case "$_ptp" in */.git) _ptp=${_ptp%/.git} ;; esac
-            [ -n "$_ptp" ] || continue
-            _ptp_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_ptp" 2>/dev/null && pwd -P) || _ptp_phys=""
-            [ -n "$_ptp_phys" ] || continue
-            if { [ -n "$_cur_phys" ] && [ "$_ptp_phys" = "$_cur_phys" ]; } \
-               || { [ -n "$_gd_phys" ] && [ "$_ptp_phys" = "$_gd_phys" ]; }; then
-                _premote="$_pt"; _at_self=1; break
-            fi
-        done
-        if [ "$_at_self" = "0" ] && [ -z "$_premote" ]; then
-            _premote=$(git_real config --get "branch.$_cur_br.pushRemote" 2>/dev/null) \
-                || _premote=$(git_real config --get remote.pushDefault 2>/dev/null) \
-                || _premote=$(git_real config --get "branch.$_cur_br.remote" 2>/dev/null) \
-                || _premote="origin"
+        # The `url.<base>.insteadOf` / `.pushInsteadOf` rewrites, read ONCE:
+        # they decide which repository a url actually reaches, so a remote whose
+        # configured url points at an external host can still resolve to this
+        # one. LOWERCASE keys: git canonicalizes config variable names in its
+        # listing whatever the file says, and a mixed-case comparison matched
+        # nothing at all.
+        local _urc=0 _ucfg=""
+        _ucfg=$(git_real config --get-regexp '^url\..*\.(insteadOf|pushInsteadOf)$' 2>/dev/null) || _urc=$?
+        if [ "$_urc" -gt 1 ] || [ "${#_ucfg}" -ge 65536 ]; then
+            block_emit "BLOCKED: this pushes in ${REPO_DIR:-.} and the gate could not read the repository's url.<base>.insteadOf rewrites (git config exited $_urc, or the listing is past the 64 KiB this gate reads). Those rewrites decide which repository the push actually reaches, so an unreadable one is exactly the case that would hide a push at this repository (issue #781). Blocking as precaution (fail-closed)."
+            exit 0
         fi
-        # PUSHURL first: git prefers it over url for a push, so reading only url
-        # let `url = https://elsewhere/` with `pushurl = .` read as external.
-        if [ "$_at_self" = "1" ]; then
-            _purl=""
-        elif [ "$_premote" = "." ]; then
-            _purl="."
-        else
-            _purl=$(git_real config --get "remote.$_premote.pushurl" 2>/dev/null) \
-                || _purl=$(git_real config --get "remote.$_premote.url" 2>/dev/null) \
-                || _purl=""
-        fi
-        # `url.<base>.pushInsteadOf` and `.insteadOf` REWRITE the url git uses,
-        # so a remote whose configured url points elsewhere can still resolve to
-        # this repository. Longest matching prefix wins, and for a push a
-        # pushInsteadOf match suppresses insteadOf entirely -- git's own rule.
-        if [ -n "$_purl" ]; then
-            local _urc=0 _ucfg="" _uline _ukey _uval _ubase _ubest="" _ubestlen=0 _usuf _urest=""
-            _ucfg=$(git_real config --get-regexp '^url\..*\.(insteadOf|pushInsteadOf)$' 2>/dev/null) || _urc=$?
-            if [ "$_urc" -gt 1 ] || [ "${#_ucfg}" -ge 65536 ]; then
-                block_emit "BLOCKED: this pushes in ${REPO_DIR:-.} and the gate could not read the repository's url.<base>.insteadOf rewrites (git config exited $_urc, or the listing is past the 64 KiB this gate reads). Those rewrites decide which repository the push actually reaches, so an unreadable one is exactly the case that would hide a push at this repository (issue #781). Blocking as precaution (fail-closed)."
-                exit 0
-            fi
-            # LOWERCASE: git canonicalizes config variable names, so the
-            # listing spells these `insteadof`/`pushinsteadof` whatever the
-            # config file says, and a mixed-case comparison matched nothing.
+
+        # Does this SPELLING of a push destination name this repository? A word
+        # can be a remote name, a path, or a url, and each has to be resolved
+        # the way git resolves it before the paths can be compared.
+        _push_dest_is_self() {
+            local _d="$1" _u="" _uline _ukey _uval _ubase _usuf
+            local _ubest="" _ubestlen=0 _urest="" _phys
+            [ -n "$_d" ] || return 1
+            case "$_d" in .) return 0 ;; esac
+            # PUSHURL first: git prefers it over url for a push, so reading only
+            # url let `url = https://elsewhere/` with `pushurl = .` read as
+            # external. A word that is no configured remote is its own url.
+            _u=$(git_real config --get "remote.$_d.pushurl" 2>/dev/null) \
+                || _u=$(git_real config --get "remote.$_d.url" 2>/dev/null) \
+                || _u="$_d"
+            [ -n "$_u" ] || return 1
+            # Longest matching prefix wins, and for a push a pushInsteadOf match
+            # suppresses insteadOf entirely -- git's own rule.
             for _usuf in pushinsteadof insteadof; do
                 while IFS= read -r _uline; do
                     [ -z "$_uline" ] && continue
                     _ukey=${_uline%% *}
                     case "$_ukey" in *".$_usuf") ;; *) continue ;; esac
                     # `pushinsteadof` ENDS with `insteadof`, so the second pass
-                    # would read a push rewrite as a plain one.
+                    # would otherwise read a push rewrite as a plain one.
                     if [ "$_usuf" = insteadof ]; then
                         case "$_ukey" in *.pushinsteadof) continue ;; esac
                     fi
                     _uval=${_uline#* }
                     [ "$_uval" = "$_uline" ] && continue
-                    case "$_purl" in "$_uval"*) ;; *) continue ;; esac
+                    case "$_u" in "$_uval"*) ;; *) continue ;; esac
                     if [ "${#_uval}" -gt "$_ubestlen" ]; then
                         _ubase=${_ukey#url.}
                         _ubest=${_ubase%".$_usuf"}
                         _ubestlen=${#_uval}
-                        _urest=${_purl#"$_uval"}
+                        _urest=${_u#"$_uval"}
                     fi
                 done <<CFGEOF
 $_ucfg
 CFGEOF
                 [ -n "$_ubest" ] && break
             done
-            if [ -n "$_ubest" ]; then
-                _purl="$_ubest$_urest"
-            fi
-        fi
-        # `file://` is the same local path spelled as a URL, and `<path>/.git`
-        # names the same repository as `<path>`.
-        _purl=${_purl#file://}
-        case "$_purl" in */.git) _purl=${_purl%/.git} ;; esac
-        if [ -n "$_purl" ]; then
+            [ -n "$_ubest" ] && _u="$_ubest$_urest"
+            # `file://` is the same local path spelled as a URL, and a GITDIR
+            # path names the same repository as its worktree.
+            _u=${_u#file://}
+            case "$_u" in */.git) _u=${_u%/.git} ;; esac
+            [ -n "$_u" ] || return 1
             # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
             # no local path at all, and comparing two empty strings would have
             # called every external remote "this repository".
-            _purl_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && cd "$_purl" 2>/dev/null && pwd -P) || _purl_phys=""
-            if [ -n "$_purl_phys" ] \
-               && { { [ -n "$_cur_phys" ] && [ "$_purl_phys" = "$_cur_phys" ]; } \
-                    || { [ -n "$_gd_phys" ] && [ "$_purl_phys" = "$_gd_phys" ]; }; }; then
-                _at_self=1
+            _phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_u" 2>/dev/null && pwd -P) || _phys=""
+            [ -n "$_phys" ] || return 1
+            { [ -n "$_cur_phys" ] && [ "$_phys" = "$_cur_phys" ]; } && return 0
+            { [ -n "$_gd_phys" ] && [ "$_phys" = "$_gd_phys" ]; } && return 0
+            return 1
+        }
+
+        # ANY candidate that names this repository settles it. Stopping at the
+        # first word that merely matched a configured remote let `git push
+        # --repo=. origin:refs/heads/master` be judged on `origin` -- a refspec
+        # half that happens to be a remote name -- and returned as external
+        # while git pushed here.
+        for _pt in $_cands; do
+            if _push_dest_is_self "$_pt"; then
+                _premote="$_pt"; _at_self=1; break
             fi
+            if [ -z "$_premote" ] \
+               && { git_real config --get "remote.$_pt.url" >/dev/null 2>&1 \
+                    || git_real config --get "remote.$_pt.pushurl" >/dev/null 2>&1; }; then
+                _premote="$_pt"
+            fi
+        done
+        # No word named a destination at all: git's own chain picks one, and the
+        # default remote can be this repository just as readily. Treating an
+        # unknown target as self instead would refuse the most ordinary command
+        # there is.
+        if [ "$_at_self" = "0" ] && [ -z "$_premote" ]; then
+            _premote=$(git_real config --get "branch.$_cur_br.pushRemote" 2>/dev/null) \
+                || _premote=$(git_real config --get remote.pushDefault 2>/dev/null) \
+                || _premote=$(git_real config --get "branch.$_cur_br.remote" 2>/dev/null) \
+                || _premote="origin"
+        fi
+        if [ "$_at_self" = "0" ] && [ -n "$_premote" ] \
+           && _push_dest_is_self "$_premote"; then
+            _at_self=1
         fi
         if [ "$_at_self" = "0" ]; then
             return 0
@@ -1243,9 +1243,29 @@ CFGEOF
         # `push` specifically, not `send-pack`: the latter takes its ref updates
         # over the protocol, which the opaque refusal below owns and states
         # better than a guess at push.default would.
-        case " $CREATE_TOKS " in
-            *:*) ;;
-            *" push "*|*" git-push "*)
+        local _has_spec=0 _is_push=0 _tleaf
+        for _pt in $_cands; do
+            # A colon ANYWHERE was read as "a refspec was supplied", so `git push
+            # file://<path>` skipped push.default over the colon in its own URL.
+            # The destination word is not a refspec; anything else carrying a
+            # colon is.
+            # A URL is not a refspec either, whatever colons it carries. The
+            # destination word is excluded by name, but `--repo=file://<path>`
+            # also leaves its unsplit spelling among the candidates while the
+            # word that resolved as the destination is the split one.
+            if [ "$_pt" != "$_premote" ]; then
+                case "$_pt" in
+                    *://*) ;;
+                    *:*) _has_spec=1 ;;
+                esac
+            fi
+            # A git builtin reached as its own executable can be PATH-qualified,
+            # and `/usr/libexec/git-core/git-push` equals neither spelling.
+            _tleaf=${_pt##*/}
+            case "$_tleaf" in push|git-push) _is_push=1 ;; esac
+        done
+        case "$_has_spec$_is_push" in
+            01)
                 if ! git_real config --get "remote.$_premote.push" >/dev/null 2>&1; then
                     local _pd _pdst=""
                     _pd=$(git_real config --get push.default 2>/dev/null) || _pd="simple"

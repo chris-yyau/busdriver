@@ -2042,6 +2042,48 @@ run_gate "...while a rewrite landing somewhere ELSE is not this repository" \
     allow "git push ext feature:refs/heads/master"
 git -C "$REPO" config --unset "url.$ORIGIN.insteadOf"
 git -C "$REPO" remote remove ext >/dev/null 2>&1
+# ANY candidate naming this repository settles it. Stopping at the first word
+# that merely matched a configured remote judged this on `origin` -- a refspec
+# half that happens to be a remote name -- and returned as external.
+run_gate "--repo=. is not overruled by a refspec half named after a remote" \
+    block "git push --repo=. origin:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...nor by any earlier remote-named word" \
+    block "git push --repo=$REPO origin:refs/heads/master" \
+    "would CREATE the protected branch"
+# A colon ANYWHERE was read as "a refspec was supplied", so a destination URL
+# carrying one skipped push.default entirely.
+git -C "$REPO" config push.default upstream
+git -C "$REPO" config branch.feature.merge refs/heads/master
+git -C "$REPO" checkout -q feature
+run_gate "a colon in the destination URL is not a refspec" \
+    block "git push file://$REPO" "its destination comes from push.default"
+run_gate "...while a real refspec does suppress push.default" \
+    allow "git push file://$REPO HEAD:refs/heads/feature2"
+run_gate "a PATH-qualified git-push is still a push" \
+    block "/usr/libexec/git-core/git-push ." "its destination comes from push.default"
+# A URL is not a refspec either: `--repo=file://<path>` leaves its unsplit
+# spelling among the candidates while the word that resolved as the destination
+# is the split one, so excluding the destination BY NAME was not enough.
+run_gate "--repo=file://<self> with no refspec still reads push.default" \
+    block "git push --repo=file://$REPO" "its destination comes from push.default"
+run_gate "...while a real refspec on that form suppresses it" \
+    allow "git push --repo=file://$REPO HEAD:refs/heads/feature2"
+git -C "$REPO" checkout -q main
+git -C "$REPO" config --unset push.default
+git -C "$REPO" config --unset branch.feature.merge
+# The DEFAULT remote can be this repository with no word naming it at all.
+# On `feature`, whose commit no protected branch reaches -- on `main` the same
+# push lands content `main` already carries, which is the inert creation the
+# rule exists to leave alone.
+git -C "$REPO" config remote.origin.pushurl .
+git -C "$REPO" checkout -q feature
+run_gate "a bare push whose default remote is this repository" \
+    block "git push HEAD:refs/heads/master" "would CREATE the protected branch"
+git -C "$REPO" checkout -q main
+run_gate "...while from main it lands content main already carries" \
+    allow "git push HEAD:refs/heads/master"
+git -C "$REPO" config --unset remote.origin.pushurl
 git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
 git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push

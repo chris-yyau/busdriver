@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found thirty-five ways a first draft of that membership test still
+Review found thirty-eight ways a first draft of that membership test still
 leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
@@ -355,6 +355,18 @@ adding a grammar:
   config variable names to LOWERCASE in its listing, so the first draft's
   mixed-case comparison matched nothing at all — the fix is pinned by a test that
   fails without it.
+- **The destination is whichever word names this repository, not the first one
+  that looks like a remote.** Stopping at the first candidate matching a
+  configured remote judged `git push --repo=. origin:refs/heads/master` on
+  `origin` — a refspec half that happens to be a remote name — and returned as
+  external while git pushed here. Every candidate is resolved now, a self-naming
+  one wins wherever it sits, and the git-chain default is consulted only when no
+  word named a destination at all.
+- **A colon in the destination URL is not a refspec.** The push.default guard
+  read a colon anywhere as "a refspec was supplied", so `git push file://<path>`
+  skipped it. The destination word is excluded from that test now — and the
+  `git-push` executable spelling is matched on its last path component, since
+  `/usr/libexec/git-core/git-push` equals neither bare spelling.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping

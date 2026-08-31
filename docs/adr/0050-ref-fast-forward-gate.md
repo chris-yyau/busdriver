@@ -211,7 +211,8 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found thirty ways a first draft of that membership test still leaked, and
+Review found thirty-two ways a first draft of that membership test still leaked,
+and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -330,6 +331,24 @@ adding a grammar:
   `remote.pushDefault`, `branch.<cur>.remote`, `origin`) rather than treating an
   unknown target as self, which would have refused the most ordinary command
   there is.
+- **A push target need not be a remote NAME at all.** `git push <repository>`
+  takes a path or a URL as readily as a configured name, and a path naming this
+  repository has no `remote.<n>.url` to look up — so a boundary that matched only
+  `.` and configured names fell through to the default remote, found it external,
+  and let `git push "$PWD" feature:refs/heads/master` create the branch
+  unexamined. Every command word is now resolved as a path too, under the same
+  `file://` and `<path>/.git` normalization, and a word that does not resolve to
+  this repository's physical path settles nothing.
+- **Reading every remote's refspec over-blocked.** The configured-refspec scan
+  was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
+  the remote the command actually uses, so an unused `remote.backup.fetch` mapping
+  refused an ordinary `git fetch origin`. It is now scoped to the remote git will
+  apply — the one already resolved for a push, and for a fetch the named remote or
+  `branch.<cur>.remote`/`origin`. The narrowing stands down, back to every remote,
+  for the shapes that really do read several: `--all` and `--multiple` (matched as
+  any `--a`/`--m` option, since git accepts unambiguous abbreviations), `git remote
+  update`, and a `remotes.<group>` word. Anything it cannot narrow reads
+  everything, so uncertainty stays fail-closed.
 - **"At this repository" is a CONFIG question.** The push boundary was first
   drawn on the literal `.` operand a command-string parser can see, which missed
   `git push self HEAD:refs/heads/master` with `remote.self.url = .` — a named

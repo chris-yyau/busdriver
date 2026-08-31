@@ -1119,7 +1119,9 @@ creation_check() {
     # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
         local _pt _premote="" _purl="" _at_self=0 _cur_phys _purl_phys _cur_br
+        local _ptp _ptp_phys
         _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
+        _cur_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
         # WHICH remote, resolved the way git resolves it. A bare `git push` names
         # none, and treating "unknown" as self would refuse the most ordinary
         # command there is; git's own chain answers it instead.
@@ -1129,8 +1131,21 @@ creation_check() {
                || git_real config --get "remote.$_pt.pushurl" >/dev/null 2>&1; then
                 _premote="$_pt"; break
             fi
+            # `git push <repository>` takes a PATH or a URL as readily as a
+            # remote name, and a path naming THIS repository has no
+            # `remote.<n>.url` to look up -- so matching only configured names
+            # fell through to the default remote and let `git push "$PWD"
+            # feature:refs/heads/master` create the branch unexamined.
+            _ptp=${_pt#file://}
+            case "$_ptp" in */.git) _ptp=${_ptp%/.git} ;; esac
+            [ -n "$_ptp" ] || continue
+            _ptp_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_ptp" 2>/dev/null && pwd -P) || _ptp_phys=""
+            if [ -n "$_ptp_phys" ] && [ -n "$_cur_phys" ] \
+               && [ "$_ptp_phys" = "$_cur_phys" ]; then
+                _premote="$_pt"; _at_self=1; break
+            fi
         done
-        if [ -z "$_premote" ]; then
+        if [ "$_at_self" = "0" ] && [ -z "$_premote" ]; then
             _premote=$(git_real config --get "branch.$_cur_br.pushRemote" 2>/dev/null) \
                 || _premote=$(git_real config --get remote.pushDefault 2>/dev/null) \
                 || _premote=$(git_real config --get "branch.$_cur_br.remote" 2>/dev/null) \
@@ -1138,7 +1153,9 @@ creation_check() {
         fi
         # PUSHURL first: git prefers it over url for a push, so reading only url
         # let `url = https://elsewhere/` with `pushurl = .` read as external.
-        if [ "$_premote" = "." ]; then
+        if [ "$_at_self" = "1" ]; then
+            _purl=""
+        elif [ "$_premote" = "." ]; then
             _purl="."
         else
             _purl=$(git_real config --get "remote.$_premote.pushurl" 2>/dev/null) \
@@ -1149,7 +1166,6 @@ creation_check() {
         # names the same repository as `<path>`.
         _purl=${_purl#file://}
         case "$_purl" in */.git) _purl=${_purl%/.git} ;; esac
-        _cur_phys=$(cd "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
         if [ -n "$_purl" ]; then
             # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
             # no local path at all, and comparing two empty strings would have
@@ -1207,6 +1223,50 @@ creation_check() {
     # about config the gate cannot see costs nothing here.
     if [ "$CREATE_FETCHING" = "1" ] || [ "$CREATE_PUSHING" = "1" ]; then
             local _cfg="" _crc=0 _cline _cdst _cpre _cname_leaf
+            local _rscope="" _ro _rt _rn
+            # WHICH remote's refspecs git will actually apply. Reading every
+            # remote's over-blocked: an unused `remote.backup.fetch` refused an
+            # ordinary `git fetch origin`, and another remote's unused push
+            # mapping refused a self-push. Empty means "could not narrow it" and
+            # keeps the every-remote scan, so every uncertainty stays fail-closed.
+            if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
+                # A push reaches here only past the at-self return above, so the
+                # remote resolved there is the one git uses.
+                _rscope="$_premote"
+            elif [ "$CREATE_FETCHING" = "1" ] && [ "$CREATE_PUSHING" != "1" ]; then
+                # `--all` and `--multiple` fetch from several remotes, and git
+                # accepts unambiguous abbreviations of both, so any option
+                # starting `--a`/`--m` stands the narrowing down rather than
+                # guessing which one it is.
+                for _ro in $CREATE_OPTS; do
+                    case "$_ro" in --a*|--m*) _rscope="ALL"; break ;; esac
+                done
+                case " $CREATE_TOKS " in
+                    *" remote "*) _rscope="ALL" ;;
+                esac
+                if [ "$_rscope" != "ALL" ]; then
+                    for _rt in $CREATE_TOKS; do
+                        # A remotes GROUP names several remotes in one word and
+                        # is no remote itself.
+                        if git_real config --get "remotes.$_rt" >/dev/null 2>&1; then
+                            _rscope="ALL"; break
+                        fi
+                        if git_real config --get "remote.$_rt.url" >/dev/null 2>&1 \
+                           || git_real config --get "remote.$_rt.fetch" >/dev/null 2>&1; then
+                            _rscope="$_rscope $_rt"
+                        fi
+                    done
+                fi
+                if [ "$_rscope" = "ALL" ]; then
+                    _rscope=""
+                elif [ -z "$_rscope" ]; then
+                    # No remote named: git fetches from the branch's remote, or
+                    # origin.
+                    _rn=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _rn=""
+                    _rscope=$(git_real config --get "branch.$_rn.remote" 2>/dev/null) \
+                        || _rscope="origin"
+                fi
+            fi
             _cfg=$(git_real config --get-regexp '^remote\..*\.(fetch|push)$' 2>/dev/null) || _crc=$?
             # 1 is "no such key", which is the ordinary answer; anything else is
             # a config this gate could not read, and it decides where a fetch
@@ -1226,6 +1286,15 @@ creation_check() {
                     *.push)  [ "$CREATE_PUSHING" = "1" ] || continue ;;
                     *) continue ;;
                 esac
+                # ...and only the REMOTE it will apply. An empty scope is the
+                # could-not-narrow case and reads every line, as before.
+                if [ -n "$_rscope" ]; then
+                    _rn=${_cline%% *}
+                    _rn=${_rn#remote.}
+                    _rn=${_rn%.fetch}
+                    _rn=${_rn%.push}
+                    case " $_rscope " in *" $_rn "*) ;; *) continue ;; esac
+                fi
                 _cdst=${_cline##*:}
                 _cdst=${_cdst#+}
                 # Can this destination land under refs/heads/? Asked precisely

@@ -1961,6 +1961,48 @@ git -C "$REPO" config --unset push.default
 git -C "$REPO" config --unset branch.feature.merge
 git -C "$REPO" checkout -q main
 git -C "$REPO" remote remove tricky >/dev/null 2>&1
+# `git push <repository>` takes a PATH or a URL as readily as a remote name, and
+# a path naming THIS repository has no `remote.<n>.url` to look up -- so matching
+# only configured names fell through to the default remote and let this through.
+run_gate "an explicit PATH naming this repository is a self-push" \
+    block "git push $REPO feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...spelled relatively" \
+    block "git push ./ feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...spelled as a file:// URL" \
+    block "git push file://$REPO feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...and <path>/.git is the same repository" \
+    block "git push $REPO/.git feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...while ANOTHER repository's path stays out of scope" \
+    allow "git push $ORIGIN feature:refs/heads/master"
+# The configured-refspec scan reads only the remote git will actually apply.
+# Reading every remote's refused an ordinary `git fetch origin` over an unused
+# mapping on a remote the command never touches.
+git -C "$REPO" remote add backup "$ORIGIN" >/dev/null 2>&1
+git -C "$REPO" config remote.backup.fetch '+refs/heads/*:refs/heads/*'
+run_gate "an unrelated remote's fetch mapping does not refuse a fetch" \
+    allow "git fetch origin"
+run_gate "...while fetching THAT remote applies it" \
+    block "git fetch backup" "under a configured refspec"
+run_gate "...and --all reads every remote" \
+    block "git fetch --all" "under a configured refspec"
+run_gate "...as does git remote update" \
+    block "git remote update" "under a configured refspec"
+run_gate "...an undefined word is no remotes group" \
+    allow "git fetch mygroup"
+git -C "$REPO" config remotes.mygroup "origin backup"
+run_gate "...but a DEFINED group names several, so every remote is read" \
+    block "git fetch mygroup" "under a configured refspec"
+git -C "$REPO" config --unset remotes.mygroup
+git -C "$REPO" config --unset remote.backup.fetch
+git -C "$REPO" config remote.backup.push '+refs/heads/feature:refs/heads/master'
+run_gate "...and an unrelated remote's push mapping does not refuse a self-push" \
+    allow "git push . feature:refs/heads/other"
+git -C "$REPO" config --unset remote.backup.push
+git -C "$REPO" remote remove backup >/dev/null 2>&1
 git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
 git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push

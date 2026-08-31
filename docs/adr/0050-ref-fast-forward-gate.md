@@ -211,8 +211,8 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found thirty-eight ways a first draft of that membership test still
-leaked, and
+Review found forty ways a first draft of that membership test still leaked,
+and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -367,6 +367,15 @@ adding a grammar:
   skipped it. The destination word is excluded from that test now — and the
   `git-push` executable spelling is matched on its last path component, since
   `/usr/libexec/git-core/git-push` equals neither bare spelling.
+- **A LINKED worktree shares its ref store.** `refs/heads/` lives in the COMMON
+  dir, so a push at the main worktree or at the common dir lands the branch in
+  this repository just as surely — and neither path equals a linked worktree's
+  own `.git/worktrees/<id>` git dir, which was all the boundary compared against.
+  Both are accepted answers now (measured: both were ALLOWED before).
+- **A remote may carry SEVERAL push urls**, and git pushes to every one of them,
+  while `git config --get` answers with the LAST value. A self url followed by an
+  external one therefore read as an external push. Both `pushurl` and `url` are
+  read with `--get-all` now, and any value naming this repository settles it.
 - **Reading every remote's refspec over-blocked.** The configured-refspec scan
   was filtered by operation (`.fetch` for a fetch, `.push` for a push) but not by
   the remote the command actually uses, so an unused `remote.backup.fetch` mapping
@@ -495,12 +504,22 @@ it before the creation check runs. Measured for a plain alias, a nested one and 
 `!`-shell alias (refused by name, body unread), and now pinned by tests so it is
 not re-argued from reading `git_ref_create` alone.
 
+**Raised twice and NOT a gap: the separator dot in an insteadOf key.** Review
+read `_ubest=${_ubase%".$_usuf"}` as stripping only `insteadof`, leaving
+`url./repo.insteadof` reconstructed as `/repo.` and failing to resolve. The
+pattern includes the dot, so it reconstructs `/repo`; the end-to-end test
+`...until insteadOf rewrites it to this repository` blocks, which it can only do
+after that path resolves. Recorded here so the third reading does not re-argue it
+from the parameter expansion alone.
+
 **Two over-blocks this arm introduced and then removed**, recorded because a
 gate that refuses ordinary work is a real cost, not a safe default: a push
 refspec at a REMOTE repository was refused as though it created a local branch
 (it is the boundary above, and only a push at `.` lands here), and the configured
 refspec scan read both `remote.<n>.fetch` and `.push` for every operation, so an
-unused `.push` refused a fetch. Each is pinned by an allow-assertion now.
+unused `.push` refused a fetch — and then, once filtered by operation, it still
+read EVERY remote's mapping, so an unused `remote.backup.fetch` refused an
+ordinary `git fetch origin`. Each is pinned by an allow-assertion now.
 
 **Where this stops.** Every shape above is closed because it was cheap, not
 because the enumeration is complete — it cannot be, and the THREAT MODEL in the

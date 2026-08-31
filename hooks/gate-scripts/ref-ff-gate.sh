@@ -1119,6 +1119,7 @@ creation_check() {
     # can see, which is why it is answered here.
     if [ "$CREATE_PUSHING" = "1" ] && [ "$CREATE_FETCHING" != "1" ]; then
         local _pt _premote="" _at_self=0 _cur_phys _cur_br _gd_phys _cands
+        local _cd_phys _mw_phys
         _cur_br=$(git_real symbolic-ref --quiet --short HEAD 2>/dev/null) || _cur_br=""
         _cur_phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && pwd -P) || _cur_phys=""
         # A GITDIR path names the same repository as its worktree: `git push
@@ -1127,6 +1128,18 @@ creation_check() {
         _gd_phys=$(git_real rev-parse --absolute-git-dir 2>/dev/null) || _gd_phys=""
         if [ -n "$_gd_phys" ]; then
             _gd_phys=$(cd -- "$_gd_phys" 2>/dev/null && pwd -P) || _gd_phys=""
+        fi
+        # A LINKED worktree keeps refs/heads/ in the COMMON dir, so a push at the
+        # main worktree or at the common dir lands the branch in this
+        # repository's ref store just as surely -- and neither path equals this
+        # worktree's own `.git/worktrees/<id>` git dir.
+        _cd_phys=$(git_real rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _cd_phys=""
+        if [ -n "$_cd_phys" ]; then
+            _cd_phys=$(cd -- "$_cd_phys" 2>/dev/null && pwd -P) || _cd_phys=""
+        fi
+        _mw_phys=$(git_real worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || _mw_phys=""
+        if [ -n "$_mw_phys" ]; then
+            _mw_phys=$(cd -- "$_mw_phys" 2>/dev/null && pwd -P) || _mw_phys=""
         fi
         # `git push --repo=<repository>` names the target inside an OPTION word,
         # where no scan of the command's operands could see it.
@@ -1151,17 +1164,23 @@ creation_check() {
         # can be a remote name, a path, or a url, and each has to be resolved
         # the way git resolves it before the paths can be compared.
         _push_dest_is_self() {
-            local _d="$1" _u="" _uline _ukey _uval _ubase _usuf
+            local _d="$1" _u="" _uline _ukey _uval _ubase _usuf _ulist=""
             local _ubest="" _ubestlen=0 _urest="" _phys
             [ -n "$_d" ] || return 1
             case "$_d" in .) return 0 ;; esac
             # PUSHURL first: git prefers it over url for a push, so reading only
             # url let `url = https://elsewhere/` with `pushurl = .` read as
             # external. A word that is no configured remote is its own url.
-            _u=$(git_real config --get "remote.$_d.pushurl" 2>/dev/null) \
-                || _u=$(git_real config --get "remote.$_d.url" 2>/dev/null) \
-                || _u="$_d"
-            [ -n "$_u" ] || return 1
+            # get-ALL: both keys are multi-valued and git pushes to EVERY url, so
+            # one external value must not answer for a sibling naming this
+            # repository.
+            _ulist=$(git_real config --get-all "remote.$_d.pushurl" 2>/dev/null) \
+                || _ulist=$(git_real config --get-all "remote.$_d.url" 2>/dev/null) \
+                || _ulist="$_d"
+            [ -n "$_ulist" ] || return 1
+            while IFS= read -r _u; do
+            [ -n "$_u" ] || continue
+            _ubest=""; _ubestlen=0; _urest=""
             # Longest matching prefix wins, and for a push a pushInsteadOf match
             # suppresses insteadOf entirely -- git's own rule.
             for _usuf in pushinsteadof insteadof; do
@@ -1193,14 +1212,19 @@ CFGEOF
             # path names the same repository as its worktree.
             _u=${_u#file://}
             case "$_u" in */.git) _u=${_u%/.git} ;; esac
-            [ -n "$_u" ] || return 1
+            [ -n "$_u" ] || continue
             # Both resolutions must SUCCEED. An ordinary `git@host:repo` url is
             # no local path at all, and comparing two empty strings would have
             # called every external remote "this repository".
             _phys=$(cd -- "${REPO_DIR:-.}" 2>/dev/null && cd -- "$_u" 2>/dev/null && pwd -P) || _phys=""
-            [ -n "$_phys" ] || return 1
+            [ -n "$_phys" ] || continue
             { [ -n "$_cur_phys" ] && [ "$_phys" = "$_cur_phys" ]; } && return 0
             { [ -n "$_gd_phys" ] && [ "$_phys" = "$_gd_phys" ]; } && return 0
+            { [ -n "$_cd_phys" ] && [ "$_phys" = "$_cd_phys" ]; } && return 0
+            { [ -n "$_mw_phys" ] && [ "$_phys" = "$_mw_phys" ]; } && return 0
+            done <<ULEOF
+$_ulist
+ULEOF
             return 1
         }
 

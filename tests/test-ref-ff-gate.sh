@@ -2084,6 +2084,50 @@ git -C "$REPO" checkout -q main
 run_gate "...while from main it lands content main already carries" \
     allow "git push HEAD:refs/heads/master"
 git -C "$REPO" config --unset remote.origin.pushurl
+# A remote may carry SEVERAL push urls and git pushes to EVERY one of them, but
+# `git config --get` answers with the LAST value -- so a self url followed by an
+# external one read as an external push.
+git -C "$REPO" remote add multi https://evil.example/x >/dev/null 2>&1
+git -C "$REPO" config --unset-all remote.multi.url
+git -C "$REPO" config --add remote.multi.pushurl .
+git -C "$REPO" config --add remote.multi.pushurl https://evil.example/y
+run_gate "one of several pushurls naming this repository is a self-push" \
+    block "git push multi feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config --unset-all remote.multi.pushurl
+git -C "$REPO" config --add remote.multi.url .
+git -C "$REPO" config --add remote.multi.url https://evil.example/y
+run_gate "...and a multi-valued url counts the same" \
+    block "git push multi feature:refs/heads/master" \
+    "would CREATE the protected branch"
+git -C "$REPO" config --unset-all remote.multi.url
+git -C "$REPO" config --add remote.multi.url https://evil.example/x
+git -C "$REPO" config --add remote.multi.url https://evil.example/y
+run_gate "...while every value external stays out of scope" \
+    allow "git push multi feature:refs/heads/master"
+git -C "$REPO" remote remove multi >/dev/null 2>&1
+# A LINKED worktree keeps refs/heads/ in the COMMON dir, so a push at the MAIN
+# worktree or at the common dir lands the branch in this repository's ref store
+# just as surely -- and neither path equals the linked worktree's own
+# `.git/worktrees/<id>` git dir, which was all the boundary compared against.
+_SAVED_REPO_WT="$REPO"
+_WT_CREATE="$TMPROOT/wt-create"
+rm -rf "$_WT_CREATE"
+git -C "$REPO" worktree add -q "$_WT_CREATE" -b wt-create >/dev/null 2>&1
+mkdir -p "$_WT_CREATE/$ISO_STATE"
+REPO="$_WT_CREATE"
+run_gate "from a linked worktree, a push at the MAIN worktree lands here" \
+    block "git push $_SAVED_REPO_WT feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...and one at the COMMON dir does too" \
+    block "git push $_SAVED_REPO_WT/.git feature:refs/heads/master" \
+    "would CREATE the protected branch"
+run_gate "...while another repository still does not" \
+    allow "git push $ORIGIN feature:refs/heads/master"
+REPO="$_SAVED_REPO_WT"
+git -C "$REPO" worktree remove --force "$_WT_CREATE" >/dev/null 2>&1
+git -C "$REPO" branch -D wt-create >/dev/null 2>&1
+rm -rf "$_WT_CREATE"
 git -C "$REPO" remote remove selfnamed >/dev/null 2>&1
 git -C "$REPO" remote remove selfpath >/dev/null 2>&1
 git -C "$REPO" config --unset remote.self.push

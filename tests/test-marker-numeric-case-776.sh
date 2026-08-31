@@ -867,6 +867,12 @@ for want, text in (
     # live substitution scanned as comment text -- a fail-OPEN.
     (True,  "case x in " + bs + "\n# note " + bs + "\n" + _d + _b + "| printf x; }"),
     (True,  "in " + bs + "\n" + _d + _b + "| printf x; }"),
+    # ANSI-C `$'…'`: a backslash escapes INSIDE it, including the closing quote, so
+    # `$'a\'b'` is one word. Treating every quote alike let the escaped one close the run
+    # and the real one open a false single-quoted region, hiding a live substitution.
+    (True,  _d + q + "a" + bs + q + "b" + q + _d + _b + " printf x; }"),
+    (True,  _d + q + "ab" + q + " " + _d + _b + " printf x; }"),
+    (False, _d + q + "a b" + q + " " + q + _d + _b + " " + q),
 ):
     if mc._alt_cmd_subst_active(text) != want:
         bad.append((text, want, not want))

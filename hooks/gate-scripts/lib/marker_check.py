@@ -2482,10 +2482,23 @@ def _strip_line_continuations(text):
     if "\\\n" not in text:
         return text
     out, i, n = [], 0, len(text)
-    in_single = in_double = in_comment = False
+    in_single = in_double = in_comment = in_ansi = False
     prev = ""
     while i < n:
         ch = text[i]
+        if in_ansi:
+            # Inside `$'…'` a backslash is an ESCAPE, so `\<newline>` is an escape
+            # sequence rather than a line continuation and must survive intact.
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == "'":
+                in_ansi = False
+            prev = "x"
+            i += 1
+            continue
         if in_comment:
             out.append(ch)
             if ch == "\n":
@@ -2513,6 +2526,13 @@ def _strip_line_continuations(text):
             out.append(ch)
             out.append(text[i + 1])
             i += 2
+            prev = "x"
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "'" and not in_double:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            in_ansi = True
             prev = "x"
             continue
         if ch == "'" and not in_double:
@@ -2551,16 +2571,34 @@ def _alt_cmd_subst_active(text):
     substitution behind it was skipped -- a fail-OPEN.
     """
     text = _strip_line_continuations(text)
-    in_single = in_double = False
+    in_single = in_double = in_ansi = False
     i, n = 0, len(text)
     prev = ""                                 # previous char AS THE SHELL SEES IT: "" at
     while i < n:                              # the start, "x" for anything escaped
         ch = text[i]
+        if in_ansi:
+            # ANSI-C `$'…'`: a backslash escapes here, INCLUDING the closing quote, so
+            # `$'a\'b'` is one word and the second `'` is not a delimiter. Treating every
+            # quote alike made the escaped one close the run and the real one OPEN a false
+            # single-quoted region, hiding a live substitution behind it.
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "'":
+                in_ansi = False
+            prev = "x"
+            i += 1
+            continue
         if in_single:
             if ch == "'":
                 in_single = False
             prev = "x"
             i += 1
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "'" and not in_double:
+            in_ansi = True                    # `$'` opens ANSI-C quoting
+            i += 2
+            prev = "x"
             continue
         if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
             i += 2                            # a continuation is absent; `prev` is kept

@@ -3924,15 +3924,19 @@ def git_ref_create(cmd):
                                branch and names none of them. The ordinary
                                `+refs/heads/*:refs/remotes/origin/*` writes no
                                local branch and is not refused.
-      symref      True when the command runs `git symbolic-ref`. A symbolic ref
+      symref      True for `git symbolic-ref` and for `git notes`: two ways a
+                  ref's content is not any word of the command. A symbolic ref
                   points at a NAME, so a protected branch created as one carries
                   whatever its target holds LATER -- `git symbolic-ref
                   refs/heads/master refs/heads/staging` against an absent
                   `staging` vouches for nothing today, and the `git update-ref
                   refs/heads/staging <unreviewed>` that follows names no
-                  protected branch at all. The gate refuses the shape once it
-                  names an absent protected branch, rather than trying to vouch
-                  for a target that does not exist yet.
+                  protected branch at all. `git notes --ref=refs/heads/master add
+                  -m x HEAD` SYNTHESIZES a notes commit and points the ref at it,
+                  so the object did not exist when the gate looked and no proof
+                  over pre-existing revisions can cover it. Either way the gate
+                  refuses the shape once it names an absent protected branch,
+                  rather than vouching for content it cannot see.
       fetch_spec  True when a `fetch` carries a refspec whose destination is not
                   under refs/remotes/ or refs/tags/, so it can write a local
                   branch. Its SOURCE is resolved in the REMOTE repository, which
@@ -4016,7 +4020,12 @@ def git_ref_create(cmd):
                       if _REF_CREATE_GIT_EXE_RE.match(_x.rsplit('/', 1)[-1])
                       else _x)
                      for _x in toks]
-            if 'symbolic-ref' in ntoks:
+            if 'symbolic-ref' in ntoks or 'notes' in ntoks:
+                # Two ways a ref's content is not one of the command's words.
+                # `symbolic-ref` points at a NAME. `git notes --ref=<ref>`
+                # SYNTHESIZES a notes commit and points the ref at it, so the
+                # object did not exist when the gate looked and no reachability
+                # proof over pre-existing revisions can cover it.
                 symref = True
             if ('fast-import' in ntoks or 'receive-pack' in ntoks
                     or ('send-pack' in ntoks

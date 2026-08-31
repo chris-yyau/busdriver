@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found sixteen ways a first draft of that membership test still leaked, and
+Review found seventeen ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -246,6 +246,13 @@ adding a grammar:
   refspec is ONE word until both halves are reported. A `+` prefix then hid the
   SOURCE too — `+<oid>` resolves to no commit, so the unreviewed content it named
   was skipped and a vouched HEAD made the creation read as inert.
+- **Content the command SYNTHESIZES.** The reachability proof assumes a ref can
+  only be created at a commit that already existed. `git notes
+  --ref=refs/heads/master add -m x HEAD` builds a new notes commit and points the
+  ref at it, so every pre-existing revision the proof checked was reachable and
+  the object that actually landed was not among them. Refused, beside the
+  symbolic-ref case below, for the same reason: the ref's content is not any word
+  of the command.
 - **A symbolic ref, which points at a NAME rather than at content.** `git
   symbolic-ref refs/heads/master refs/heads/staging` against an absent `staging`
   passes every reachability test today, and the `git update-ref

@@ -1824,9 +1824,17 @@ run_gate "...but the ordinary remote-tracking refspec writes no local branch" \
 # can be written afterwards by a command that names no protected branch at all.
 run_gate "creating a protected branch as a SYMBOLIC ref -> block" \
     block "git symbolic-ref refs/heads/master refs/heads/staging" \
-    "would make the protected branch"
+    "at content the gate cannot see"
 run_gate "...but reading a symbolic ref is nobody's business" \
     allow "git symbolic-ref --short HEAD"
+# `git notes --ref=<ref>` SYNTHESIZES the commit it points the ref at, so the
+# object did not exist when the gate looked and no proof over pre-existing
+# revisions can cover it -- the reachability return assumed otherwise.
+run_gate "a notes write that creates a protected ref -> block" \
+    block "git notes --ref=refs/heads/master add -m x HEAD" \
+    "at content the gate cannot see"
+run_gate "...but an ordinary notes write is nobody's business" \
+    allow "git notes add -m x HEAD"
 
 # A FETCH resolves its refspec source in the REMOTE repository, so the word that
 # looks vouchable here is not the content git lands: local `main` can be

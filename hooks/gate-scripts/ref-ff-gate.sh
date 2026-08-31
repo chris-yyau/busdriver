@@ -1167,14 +1167,17 @@ Blocking as precaution (fail-closed)."
     done
     [ -z "$_matched" ] && return 0
 
-    # A SYMBOLIC ref points at a name, not at content, so there is nothing to
-    # vouch for: `git symbolic-ref refs/heads/master refs/heads/staging` against
-    # an absent `staging` passes every reachability test today, and the `git
+    # TWO WAYS the ref's content is not any word of the command, and the
+    # reachability proof below cannot see either. A SYMBOLIC ref points at a
+    # NAME: `git symbolic-ref refs/heads/master refs/heads/staging` against an
+    # absent `staging` passes every reachability test today, and the `git
     # update-ref refs/heads/staging <unreviewed>` that follows names no protected
-    # branch at all. Refuse the shape rather than vouch for a target that does
-    # not exist yet.
+    # branch at all. `git notes --ref=refs/heads/master add -m x HEAD`
+    # SYNTHESIZES a notes commit and points the ref at it, so the object did not
+    # exist when the gate looked. Refuse the shape rather than vouch for content
+    # the command has not produced yet.
     if [ "$CREATE_SYMREF" = "1" ]; then
-        block_emit "BLOCKED: this command would make the protected branch '''$_matched''' a SYMBOLIC ref in ${REPO_DIR:-.}, and it does not exist there yet. A symbolic ref carries whatever its target holds LATER, so nothing about it can be reviewed now — and the command that then writes the target names no protected branch at all (issue #781). Point the branch at a commit instead:
+        block_emit "BLOCKED: this command would point the protected branch '$_matched' at content the gate cannot see, in ${REPO_DIR:-.} where it does not exist yet — a SYMBOLIC ref, which carries whatever its target holds LATER (and the command that then writes that target names no protected branch at all), or a 'git notes' write, which SYNTHESIZES the commit it points the ref at. Neither is any word of this command, so nothing about it can be reviewed now (issue #781). Point the branch at a commit that already exists:
   git branch $_matched <full object id>
 Blocking as precaution (fail-closed)."
         exit 0
@@ -1187,7 +1190,7 @@ Blocking as precaution (fail-closed)."
     # 0050 already rejected as unachievable — the fast-forward arm refuses `git
     # pull` outright for exactly this reason — so this refuses too.
     if [ "$CREATE_FETCHSPEC" = "1" ]; then
-        block_emit "BLOCKED: this fetch would CREATE the protected branch '''$_matched''' in ${REPO_DIR:-.} from a refspec whose SOURCE is resolved in the REMOTE repository — so the word naming it here is not the content git would land, and no local check can authenticate where it came from (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Fetch into the remote-tracking namespace and land the work through a PR:
+        block_emit "BLOCKED: this fetch would CREATE the protected branch '$_matched' in ${REPO_DIR:-.} from a refspec whose SOURCE is resolved in the REMOTE repository — so the word naming it here is not the content git would land, and no local check can authenticate where it came from (the same reason 'git pull' onto a protected branch is refused outright, issue #779). Fetch into the remote-tracking namespace and land the work through a PR:
   git fetch <remote>
 Blocking as precaution (fail-closed)."
         exit 0
@@ -1199,7 +1202,7 @@ Blocking as precaution (fail-closed)."
     # to be incomplete. Nothing fires until a protected name is matched, so an
     # ordinary quoted commit message costs nothing.
     if [ "$CREATE_UNREADABLE" = "1" ]; then
-        block_emit "BLOCKED: this command would create the protected branch '''$_matched''' in ${REPO_DIR:-.}, and it carries a word the gate cannot read as a ref name (it contains whitespace). Git still accepts such a word as a REVISION, so it may be the start point, and the gate will not vouch for a creation on a list of candidates it knows is incomplete (issue #781). Name the start point as a full object id:
+        block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.}, and it carries a word the gate cannot read as a ref name (it contains whitespace). Git still accepts such a word as a REVISION, so it may be the start point, and the gate will not vouch for a creation on a list of candidates it knows is incomplete (issue #781). Name the start point as a full object id:
   git branch $_matched <full object id>
 Blocking as precaution (fail-closed)."
         exit 0
@@ -1253,7 +1256,7 @@ Run the parts as SEPARATE calls, so the gate sees the start point at its final v
             # single re-typed command.
             case "$_t" in
                 *...*)
-                    block_emit "BLOCKED: this command would create the protected branch '''$_matched''' in ${REPO_DIR:-.} from '''$_t''', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
+                    block_emit "BLOCKED: this command would create the protected branch '$_matched' in ${REPO_DIR:-.} from '$_t', which names a RANGE rather than one commit — git resolves it to the merge base, and the gate will not vouch for a start point it cannot reduce to a single object (issue #781). Name the commit itself:
   git merge-base <a> <b>
   git branch $_matched <that object id>
 Blocking as precaution (fail-closed)." ;;
@@ -1280,13 +1283,13 @@ Blocking as precaution (fail-closed)." ;;
     local _rtlist="" _rtrc=0 _rtref _rtoid _rtn
     _rtlist=$(git_real for-each-ref --count=512 --format='%(refname) %(objectname)' refs/remotes/ 2>/dev/null) || _rtrc=$?
     if [ "$_rtrc" -ne 0 ] || [ "${#_rtlist}" -ge 65536 ]; then
-        block_emit "BLOCKED: this command names the protected branch '''$_matched''', which does not exist in ${REPO_DIR:-.} yet, and the gate could not read the repository'''s remote-tracking refs (git for-each-ref exited $_rtrc, or the listing is past the 64 KiB this gate reads). Git creates such a branch from refs/remotes/<remote>/$_matched when no start point is given, so an unreadable listing is exactly the case that would hide what it lands. Blocking as precaution (fail-closed)."
+        block_emit "BLOCKED: this command names the protected branch '$_matched', which does not exist in ${REPO_DIR:-.} yet, and the gate could not read the repository's remote-tracking refs (git for-each-ref exited $_rtrc, or the listing is past the 64 KiB this gate reads). Git creates such a branch from refs/remotes/<remote>/$_matched when no start point is given, so an unreadable listing is exactly the case that would hide what it lands. Blocking as precaution (fail-closed)."
         exit 0
     fi
     # shellcheck disable=SC2310  # no match IS the zero answer
     _rtn=$(printf '%s' "$_rtlist" | grep -c '^') || _rtn=0
     if [ "$_rtn" -ge 512 ]; then
-        block_emit "BLOCKED: this command names the protected branch '''$_matched''', which does not exist in ${REPO_DIR:-.} yet, and the repository has more remote-tracking refs than the gate enumerates (512). It cannot rule out that one of them is the refs/remotes/<remote>/$_matched git would create the branch from. Blocking as precaution (fail-closed)."
+        block_emit "BLOCKED: this command names the protected branch '$_matched', which does not exist in ${REPO_DIR:-.} yet, and the repository has more remote-tracking refs than the gate enumerates (512). It cannot rule out that one of them is the refs/remotes/<remote>/$_matched git would create the branch from. Blocking as precaution (fail-closed)."
         exit 0
     fi
     while read -r _rtref _rtoid; do
@@ -1318,7 +1321,7 @@ EOF
     # shellcheck disable=SC2086  # deliberate word split of both ref lists
     _unvouched=$(git_real rev-list --max-count=1 $_cands --not $_not_refs 2>/dev/null) || _rc=$?
     if [ "$_rc" -ne 0 ]; then
-        block_emit "Ref gate: git could not decide whether the start points of this command are already reachable from a protected branch in ${REPO_DIR:-.} (git rev-list exited $_rc rather than answering), so the gate cannot tell whether creating '''$_matched''' would land unreviewed content. Blocking as precaution (fail-closed)."
+        block_emit "Ref gate: git could not decide whether the start points of this command are already reachable from a protected branch in ${REPO_DIR:-.} (git rev-list exited $_rc rather than answering), so the gate cannot tell whether creating '$_matched' would land unreviewed content. Blocking as precaution (fail-closed)."
         exit 0
     fi
     [ -z "$_unvouched" ] && return 0

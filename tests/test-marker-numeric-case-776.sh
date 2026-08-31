@@ -527,83 +527,53 @@ fi
 #
 # Every alternative in a `|`-list shares one span, one empty-alt answer and one closing
 # `)`. Deciding that per candidate re-walked the whole list each time, so a long valid
-# pattern did redundant work; `_case_residue_flags` now settles each list once. The
-# earlier bounded-work probe missed it because its repeated alternatives sit OUTSIDE a
-# real case-pattern state, so none of them was ever a candidate.
+# pattern did redundant work; `_case_residue_flags` now settles each list once.
 #
-# This is an EMPIRICAL regression detector, not a complexity proof, and the distinction
-# matters: at the sizes the classifier's own budget allows, the prior implementation
-# peaked below 1s, so no wall-clock ceiling short of the gate's 5s timeout could separate
-# the two. What does separate them is the SHAPE. Measured N=500 -> N=4000 (8x input),
-# best-of-3, same machine: 13.16 on the implementation this replaced, 2.66 after. The
-# limit is set at 6.0, between the two, and was RUN against that prior commit to confirm
-# it fails there -- a bound the regression slips under is worse than no bound.
-# Both measurements ride the same interpreter start-up and the same budget truncation, so
-# a slower runner moves them together and the ratio holds.
-RATIO_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
-import json, subprocess, sys, time
+# Asserted as WORK, not as wall-clock. A timing ratio was tried and withdrawn: it needed a
+# floor under the fast measurement, and that floor turns "the implementation got faster"
+# into a failure on quick hardware -- the result then depends on the machine rather than on
+# the algorithm. Counting the calls is deterministic, needs no floor, and measures the
+# property directly: one settle per alternative list, however many candidates it holds.
+WORK_OUT=$(python3 - "$CLASSIFIER" <<'PYEOF'
+import importlib.util, io, json, sys
 
-classifier = sys.argv[1]
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "true"}}))
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+
 q, s = chr(39), chr(42)
-FLOOR = 0.05
-LIMIT = 6.0
+calls = []
+_orig = mc._case_pattern_closes_after
+mc._case_pattern_closes_after = lambda pairs, i: (calls.append(i), _orig(pairs, i))[1]
 
+# ONE alternative list holding many digit-negation candidates.
+n = 200
+alts = [q + q] + [s + "[!0-9]" + s] * n + ["bash"]
+cmd = "case x in " + "|".join(alts) + ") : ;; " + s + ") : ;; esac"
+pairs, _ok = mc._split_with_ops(mc._norm_for_scan(cmd))
+flags = mc._case_residue_flags(pairs)
 
-def build(n):
-    alts = [q + q] + [s + "[!0-9]" + s] * n + ["bash"]
-    return "case x in " + "|".join(alts) + ") : ;; " + s + ") : ;; esac"
-
-
-def run(cmd):
-    """Best-of-3 wall time plus the verdict; None if the classifier fails to answer."""
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
-    best = None
-    for _ in range(3):
-        t0 = time.monotonic()
-        try:
-            # A hang is the failure mode this test exists to catch, so it must become a
-            # failed assertion here rather than a stalled job an outer CI timeout kills.
-            p = subprocess.run([sys.executable, "-I", classifier], input=payload,
-                               capture_output=True, text=True, timeout=60)
-        except subprocess.TimeoutExpired:
-            return (None, "TIMEOUT")
-        dt = time.monotonic() - t0
-        # A non-zero exit is not a measurement: the classifier crashed or was killed, and
-        # timing a crash says nothing about scaling. Report it instead of averaging it in.
-        if p.returncode != 0:
-            return (None, "EXIT%d" % p.returncode)
-        if best is None or dt < best[0]:
-            best = (dt, p.stdout.strip())
-    return best
-
-
-small_t, small_v = run(build(500))
-large_t, large_v = run(build(4000))
-if small_t is None or large_t is None:
-    print("BAD 0 0 0 %s %s" % (small_v, large_v))
-    raise SystemExit(0)
-# The floor only guards division. If the small case ever lands at or under it the ratio
-# stops meaning anything -- report inconclusive rather than let a shrunken denominator
-# hide real growth.
-if small_t <= FLOOR:
-    print("BAD 0 %.3f %.3f TOO_FAST_TO_COMPARE %s" % (small_t, large_t, large_v))
-    raise SystemExit(0)
-ratio = large_t / small_t
-# The VERDICTS are asserted too, not merely non-empty: a change that made the valid short
-# case BLOCK would otherwise sail through on timing alone. The long case legitimately
-# reaches the classifier's own budget, so it may be either.
-ok = (ratio <= LIMIT
-      and small_v == "OK|"
-      and (large_v == "OK|" or large_v.startswith("BLOCK_")))
-print("%s %.2f %.3f %.3f %s %s" % ("OK" if ok else "BAD", ratio, small_t, large_t,
-                                   small_v or "<none>", large_v or "<none>"))
+candidates = sum(1 for _op, seg in pairs if mc._is_digit_negation_only_segment(seg))
+marked = sum(1 for f in flags if f)
+# One settle per LIST. Per-candidate would be ~`candidates` calls; a couple of lists in
+# this command is the honest upper bound, so anything at candidate scale is the regression.
+ok = len(calls) <= 4 and candidates >= n and marked >= n
+print("%s calls=%d candidates=%d marked=%d" %
+      ("OK" if ok else "BAD", len(calls), candidates, marked))
 PYEOF
 )
-read -r _r_status _r_ratio _r_small _r_large _r_sv _r_lv <<<"$RATIO_OUT"
-if [[ "$_r_status" == "OK" ]]; then
-  ok "#776 long in-pattern list: 8x input -> ${_r_ratio}x time (limit 6x; was 13.16x)"
+read -r _w_status _w_calls _w_cands _w_marked <<<"$WORK_OUT"
+if [[ "$_w_status" == "OK" ]]; then
+  ok "#776 each alternative list is settled once (${_w_calls}, ${_w_cands})"
 else
-  no "#776 long in-pattern list scaling" "ratio=${_r_ratio} small=${_r_small}s large=${_r_large}s verdicts=${_r_sv}/${_r_lv}"
+  no "#776 each alternative list is settled once" "$WORK_OUT"
 fi
 
 # The same list length as a REAL pipeline must still block (not merely be fast).

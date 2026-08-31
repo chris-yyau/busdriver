@@ -1370,8 +1370,18 @@ ULEOF
     # A FETCH need not carry a refspec at all: `remote.<name>.fetch` supplies
     # one, so a configured destination under refs/heads/ creates a local branch
     # with no word in the command naming it. Read from the config this gate can
-    # see -- which can only ADD refusals, never remove one, so the usual caveat
-    # about config the gate cannot see costs nothing here.
+    # see -- and be precise about what that misses, because an earlier version of
+    # this comment claimed the miss "costs nothing": config the gate cannot see
+    # is a refusal that does not happen, not merely one it declines to add. The
+    # gate runs under `env -i` (ADR 0016) while the COMMAND inherits the session
+    # environment, so an inherited `GIT_CONFIG_COUNT=…` naming
+    # `remote.origin.fetch=<src>:refs/heads/master` steers git and appears in no
+    # command word for this scan to find. An INLINE assignment, `git -c` and
+    # `--config-env` are all operands the gate refuses as unresolvable
+    # (measured, pinned by tests); an INHERITED variable is none of those. The
+    # asymmetry is ADR 0016's and belongs with the launcher that creates it --
+    # closing it here would fix one of eight gates that read config. Recorded in
+    # ADR 0050 rather than papered over.
     if [ "$CREATE_FETCHING" = "1" ] || [ "$CREATE_PUSHING" = "1" ]; then
             local _cfg="" _crc=0 _cline _cdst _cpre _cname_leaf
             local _rscope="" _ro _rt _rn

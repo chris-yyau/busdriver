@@ -613,6 +613,24 @@ unused `.push` refused a fetch — and then, once filtered by operation, it stil
 read EVERY remote's mapping, so an unused `remote.backup.fetch` refused an
 ordinary `git fetch origin`. Each is pinned by an allow-assertion now.
 
+**A residual this amendment does NOT close, named because a comment here used to
+deny it: an INHERITED `GIT_CONFIG_*`.** The gate runs under `env -i` (ADR 0016,
+so a committed `settings.json` cannot inject into it) while the command it gates
+inherits the session environment. An inherited
+`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.fetch GIT_CONFIG_VALUE_0=<src>:refs/heads/master`
+therefore steers `git fetch origin` at a protected branch that no command word
+names and that this gate's own `git config` read cannot see. The three spellings
+that DO appear in the command — an inline assignment, `git -c`, and
+`--config-env` — are refused as operands the gate cannot resolve statically
+(measured for push and fetch, `env`-prefixed included, pinned by tests); an
+inherited variable is none of them. The configured-refspec scan's comment used
+to say the caveat about unseen config "costs nothing here", which is wrong: an
+invisible refspec is a refusal that never happens. The asymmetry is the
+sanitization's, not this arm's, and it applies to every gate that reads git
+config — so it belongs with the launcher, next to the deadline, and not as a
+one-gate patch. Corrected in the comment, recorded here, deliberately not
+"fixed" locally.
+
 **Where this stops.** Every shape above is closed because it was cheap, not
 because the enumeration is complete — it cannot be, and the THREAT MODEL in the
 gate's header says so. In scope is the ROUTINE creation: the command someone

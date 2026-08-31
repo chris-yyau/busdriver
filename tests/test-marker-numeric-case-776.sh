@@ -624,11 +624,10 @@ fi
 # does not split on them, so there is no `(` for the substitution check to see. Two fixed
 # examples do not separate the executable spellings from the ones the shell treats as
 # ordinary characters, so the forms are generated: bare, nested, operator-adjacent, and
-# the three INERT spellings -- backslash-escaped, single-quoted, and inside double quotes
-# (where a backtick still substitutes, so that one is executable too and is asserted as
-# such). Executable rows must BLOCK. The inert rows are asserted only to be VALID bash and
-# to return some verdict, because whether the numeric shape is still allowed there depends
-# on the surrounding pattern, not on the backtick.
+# the INERT spellings -- backslash-escaped and single-quoted. Inside DOUBLE quotes a
+# backtick still substitutes, so that one is executable and is asserted as such.
+# Executable rows must BLOCK and inert rows must be ALLOWED: accepting either verdict for
+# the inert ones is what let a raw `"`" in seg` test over-block them unnoticed.
 BT_PASS=0; BT_FAIL=0
 # shellcheck disable=SC2016  # the generator is python source, not shell
 # shellcheck disable=SC2312  # a failed generator yields no rows, which the
@@ -640,8 +639,8 @@ while IFS=$'\t' read -r want cmd; do
   case "$want" in
     block) if [[ "$got" == BLOCK_* ]]; then BT_PASS=$((BT_PASS + 1)); else
              BT_FAIL=$((BT_FAIL + 1)); printf '  bt MISMATCH want=block got=%s :: %s\n' "$got" "$cmd"; fi ;;
-    any)   if [[ "$got" == "OK|" || "$got" == BLOCK_* ]]; then BT_PASS=$((BT_PASS + 1)); else
-             BT_FAIL=$((BT_FAIL + 1)); printf '  bt NO-VERDICT :: %s\n' "$cmd"; fi ;;
+    allow) if [[ "$got" == "OK|" ]]; then BT_PASS=$((BT_PASS + 1)); else
+             BT_FAIL=$((BT_FAIL + 1)); printf '  bt MISMATCH want=allow got=%s :: %s\n' "$got" "$cmd"; fi ;;
   esac
 done < <(python3 -c '
 q = chr(39); dq = chr(34); s = chr(42); bt = chr(96)
@@ -655,14 +654,14 @@ rows.append(("block", "case x in " + q + q + "|" + bt + neg + bt + ") : ;; " + s
 rows.append(("block", "case x in a) : ;; " + bt + inner + bt + ") : ;; " + s + ") : ;; esac"))
 # Inside DOUBLE quotes a backtick still substitutes -- executable, not inert.
 rows.append(("block", "case x in " + dq + bt + inner + bt + dq + ") : ;; " + s + ") : ;; esac"))
-# Inert spellings: the shell passes the backtick through as an ordinary character.
-rows.append(("any", "case x in " + chr(92) + bt + q + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
-rows.append(("any", "case x in " + q + bt + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
+# Inert spellings: the shell runs nothing, so the numeric shape stays ALLOWED.
+rows.append(("allow", "case x in " + chr(92) + bt + "|" + q + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
+rows.append(("allow", "case x in " + q + bt + q + "|" + q + q + "|" + neg + ") : ;; " + s + ") : ;; esac"))
 for w, c in rows:
     print(w + chr(9) + c)
 ')
 if [[ "$BT_FAIL" -eq 0 && "$BT_PASS" -gt 0 ]]; then
-  ok "#776 backtick matrix (${BT_PASS} spellings: executable block, inert still decide)"
+  ok "#776 backtick matrix (${BT_PASS} spellings: executable block, inert allowed)"
 else
   no "#776 backtick matrix" "pass=${BT_PASS} fail=${BT_FAIL}"
 fi

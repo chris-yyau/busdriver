@@ -2621,6 +2621,8 @@ def _alt_cmd_subst_active(text):
             i = nl + 1
             prev = "\n"
             continue
+        elif ch == "`":
+            return True                       # backtick substitution, still active here
         elif ch == "$" and i + 2 < n and text[i + 1] == "{" and text[i + 2] in " \t\n|":
             return True                       # `${ ` / `${|`, unquoted or double-quoted
         prev = ch
@@ -2639,12 +2641,12 @@ def _pattern_text_executes(pairs, k, seg):
     # Backticks are the POSIX spelling of command substitution and execute exactly the
     # same way, but the tokenizer does not split on them, so there is no `(` operator to
     # detect and the introducer never reaches _opens_substitution: the character itself is
-    # the only marker. `case x in `:; '' | *[!0-9]* | bash`)` is valid bash and really runs
+    # the only marker -- which is why it is judged by the SAME quote/escape/comment scan
+    # as `${ }`. A raw `"`" in seg` test was tried and over-blocked the valid inert
+    # spellings `\`` and `'`'`, where the shell runs nothing. `case x in `:; '' | *[!0-9]* | bash`)` is valid bash and really runs
     # that pipeline. Blocked today by other machinery -- every probed spelling returns
     # BLOCK -- but the STATE was still wrong, and resting a security invariant on a
     # different check happening to fire is how the next spelling gets through.
-    if "`" in seg:
-        return True
     # bash 5.3 ALTERNATE command substitution, `${ cmd; }` and `${| cmd; }`, which run
     # their body like `$( … )` while looking like a parameter expansion. The separator is
     # what distinguishes them: `${` followed by whitespace or `|`. Plain `${VAR}` and

@@ -4018,6 +4018,14 @@ def git_ref_create(cmd):
                     if not t.startswith('-'):
                         unreadable = True
                     continue
+                if t == '-' and _derive:
+                    # A LONE `-` is not an option to checkout/switch: it is
+                    # `@{-1}`, the previous checkout. Dropping it with the other
+                    # `-`-leading words left `git checkout -b master -` vouched by
+                    # HEAD alone while the branch it creates lands wherever that
+                    # previous checkout was.
+                    _add('@{-1}')
+                    continue
                 if t.startswith('-'):
                     if t not in opts:
                         opts.append(t)

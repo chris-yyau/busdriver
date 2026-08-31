@@ -1863,6 +1863,18 @@ run_gate "...while an untracked feature name is still ordinary work" \
     allow "git checkout -b feature-tracked"
 REPO="$SAVED_REPO"
 
+# A lone `-` is NOT an option to checkout/switch: it is `@{-1}`, the previous
+# checkout. Dropped with the other `-`-leading words, it left the creation
+# vouched by HEAD alone while landing wherever that previous checkout was.
+git -C "$REPO" checkout -q feature
+git -C "$REPO" checkout -q main
+run_gate "a lone '-' operand is the previous checkout, not an option" \
+    block "git checkout -b master -" "would CREATE the protected branch"
+run_gate "...and switch -c reads it the same way" \
+    block "git switch -c master -" "would CREATE the protected branch"
+run_gate "...while the same operand on a feature name is ordinary work" \
+    allow "git checkout -b feature-dash -"
+
 # A git builtin reached as its OWN EXECUTABLE names no `git <subcommand>` pair,
 # so nothing reported an alias candidate and the gate exited before looking at
 # the words. The builtin creates the branch just the same.

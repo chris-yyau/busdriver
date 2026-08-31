@@ -211,7 +211,7 @@ WORD over-approximates toward BLOCK instead. That is the same enumeration→clas
 move `_has_companion_command` already made, and it is what makes the fix one
 membership test rather than six parsers to keep in sync.
 
-Review found nine ways a first draft of that membership test still leaked, and
+Review found ten ways a first draft of that membership test still leaked, and
 each is closed the same way — by widening what counts as "a word naming this
 branch", or by refusing a shape whose ref names are not words at all. Never by
 adding a grammar:
@@ -269,6 +269,10 @@ adding a grammar:
   --track origin/master` and `git switch -t origin/master` create `master` while
   carrying no such word. The `worktree add <path>` basename rule now covers the
   `checkout`/`switch` family too.
+- **A lone `-`, which is an OPERAND and not an option.** `checkout`/`switch`
+  read it as `@{-1}`, the previous checkout, so `git checkout -b master -` was
+  dropped with the other `-`-leading words and vouched by HEAD alone while
+  landing wherever that previous checkout was.
 - **A start point that is a REVISION rather than a ref name.** A word carrying
   whitespace cannot be a branch name, which is why it is not matched — but
   `:/unreviewed subject` finds a commit by its message, so it can be the start

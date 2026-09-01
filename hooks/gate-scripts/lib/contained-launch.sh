@@ -271,22 +271,30 @@ fi
 # (#780). Do not forward the raw values — only whether any were set pre-env -i.
 # Includes GIT_CONFIG* / GIT_EXEC_PATH — env -i removes them from the gate while
 # the approved command still sees ambient aliases and config overrides.
-_bd_git_scope=0
-while IFS= read -r _bd_name; do
+# Outer shell never runs shadowable compgen/read. The complete sentinel runs
+# only under a fresh /bin/bash --noprofile --norc -p (Bash 3.2 rejects
+# `-p --noprofile`; -p last still enables privileged mode — no BASH_FUNC_*
+# inheritance). Uses builtin compgen only; no read. Exit 0 = no ambient GIT
+# scope; any non-zero (scope found, enumeration error, or bash failure)
+# fail-closes as present.
+if /bin/bash --noprofile --norc -p -c '
+_bd_names=$(builtin compgen -e) || exit 1
+# Env var names have no whitespace — iterate without read.
+for _bd_name in $_bd_names; do
     case "$_bd_name" in
         GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_NAMESPACE|GIT_INDEX_FILE|\
         GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|\
         GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_EXEC_PATH|\
         GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
-            _bd_git_scope=1
-            break
+            exit 1
             ;;
     esac
-done < <(compgen -e)
-if [[ "$_bd_git_scope" -eq 1 ]]; then
-    /usr/bin/env -i BUSDRIVER_GIT_SCOPE_PRESENT=1 "$@"
-else
+done
+exit 0
+'; then
     /usr/bin/env -i "$@"
+else
+    /usr/bin/env -i BUSDRIVER_GIT_SCOPE_PRESENT=1 "$@"
 fi
 rc=$?
 

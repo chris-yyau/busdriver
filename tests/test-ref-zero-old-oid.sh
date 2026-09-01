@@ -175,8 +175,11 @@ run_format_suite() {  # <format>
     run_gate "genuine create of newbranch → allow" \
         allow "git branch newbranch $UNREVIEWED"
     git -C "$REPO" branch topic HEAD
-    run_gate "branch -f of non-protected topic → allow" \
-        allow "git branch -f topic $UNREVIEWED"
+    # Porcelain force has no old-oid CAS; pre-command probe is TOCTOU, so
+    # fail closed for every current-ref state (direct / absent / symref),
+    # including non-protected topic names (files + reftable).
+    run_gate "branch -f of non-protected topic → block" \
+        block "git branch -f topic $UNREVIEWED" "FORCE-UPDATE the protected branch"
 
     # Off protected HEAD still blocks force of main.
     git -C "$REPO" checkout -q -b feature
@@ -211,12 +214,14 @@ import sys
 from gitcmd_detect import git_zero_old_ref_op, zero_old_ref_exists
 hook_cwd = sys.argv[1]
 ops = git_zero_old_ref_op('git branch -f main abc', hook_cwd=hook_cwd)
-assert ops == [('force', 'main')], ops
+assert ops == [('force', '')], ops
 ops = git_zero_old_ref_op('git checkout -B main abc', hook_cwd=hook_cwd)
-assert ops == [('force', 'main')], ops
+assert ops == [('force', '')], ops
+ops = git_zero_old_ref_op('git branch -f topic abc', hook_cwd=hook_cwd)
+assert ops == [('force', '')], ops
 ops = git_zero_old_ref_op(
     'git update-ref refs/heads/main abc', hook_cwd=hook_cwd)
-assert ops == [('force', 'main')], ops
+assert ops == [('force', '')], ops
 ops = git_zero_old_ref_op(
     'git update-ref refs/heads/main abc def', hook_cwd=hook_cwd)
 assert ops == [], ops

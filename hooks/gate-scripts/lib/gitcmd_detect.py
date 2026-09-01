@@ -4221,18 +4221,43 @@ def _zero_old_ops_from_argv(argv):
                 and not ref_operand.startswith("refs/heads/")):
             return
         if delete:
-            yield ("delete", ref_operand, no_deref)
+            if no_deref:
+                yield ("delete", ref_operand, True)
+            else:
+                # Default-deref follows symrefs at runtime — never
+                # authorize-by-direct-ref (TOCTOU: direct ref → symref to
+                # protected). No snapshot/_zero_old_symref_map. Fail closed.
+                yield ("force", "")
             return
         if len(ops) >= 3:
-            new_oid, old_oid = ops[1], ops[2]
-            if (isinstance(new_oid, str) and len(new_oid) >= 40
-                    and set(new_oid) <= set('0')):
-                yield ("delete", ref_operand, no_deref)
-            elif (isinstance(old_oid, str) and len(old_oid) >= 40
-                    and set(old_oid) <= set('0')):
-                yield ("force", ref_operand, no_deref)
+            # update-ref <ref> <new> <old>:
+            # - all-zero new_oid → deletion
+            # - all-zero old_oid → create CAS (ref must be absent), NOT force
+            # - any other asserted oldvalue → outside ZERO-old detector
+            new_oid = ops[1]
+            old_oid = ops[2]
+            def _is_all_zero_oid(s):
+                return (isinstance(s, str) and len(s) >= 40
+                        and set(s) <= set('0'))
+            if _is_all_zero_oid(new_oid):
+                if no_deref:
+                    yield ("delete", ref_operand, True)
+                else:
+                    yield ("force", "")
+                return
+            if _is_all_zero_oid(old_oid):
+                # Create CAS precondition — cannot overwrite an existing ref.
+                return
             return
-        yield ("force", ref_operand, no_deref)
+        if no_deref:
+            yield ("force", ref_operand, True)
+            return
+        # Default-deref update-ref: fail closed — never authorize-by-name
+        # (TOCTOU: refs/heads/topic → symref to protected under the check).
+        # No _zero_old_symref_map / pre-command snapshot. Porcelain
+        # branch -f / checkout -B still emit force:<name> as 2-tuples from
+        # command shape in _finalize_zero_old_ops.
+        yield ("force", "")
         return
     if sub == "symbolic-ref":
         delete = False
@@ -4451,55 +4476,135 @@ def zero_old_ref_effective_short(ref_operand, no_deref=False, symref_map=None):
         return ""
     return short or ""
 def _zero_old_needs_deref(item):
+    # Only update-ref/--no-deref 3-tuples with default deref need a map.
+    # Porcelain 2-tuple force/delete names the branch directly.
     if len(item) == 3:
         return not item[2]
-    if len(item) == 2 and item[0] == 'force':
-        return True
     return False
 def _zero_old_non_heads_ref(ref_operand):
     return (isinstance(ref_operand, str) and ref_operand.startswith('refs/')
             and not ref_operand.startswith('refs/heads/'))
 def _zero_old_classify_names(kind, ref_operand, symref_map, no_deref=False):
+    # no_deref=false: fail closed — never authorize-by-direct-ref and never
+    # consult a pre-command snapshot or _zero_old_symref_map (TOCTOU).
+    # Only explicit --no-deref may authorize by the original operand name.
+    # Porcelain FORCE-UPDATE names come from 2-tuples in _finalize_zero_old_ops.
+    del symref_map  # unused; never consult a mutable map
     original = _branch_short_from_ref(ref_operand) or ''
+    if isinstance(ref_operand, str) and (
+            ref_operand in _ZERO_OLD_PSEUDO_REFS
+            or ref_operand.upper() == 'HEAD'):
+        return [(kind, '')]
+    if original in _ZERO_OLD_PSEUDO_REFS or (
+            original and original.upper() == 'HEAD'):
+        return [(kind, '')]
     if no_deref:
         if original:
             return [(kind, original)]
         return [] if _zero_old_non_heads_ref(ref_operand) else [(kind, '')]
-    if symref_map is None:
-        return [(kind, '')]
-    # Do not authorize via a pre-command symref snapshot (TOCTOU retarget).
-    if isinstance(ref_operand, str) and (
-            ref_operand in ('HEAD', '@') or ref_operand.upper() == 'HEAD'):
-        lookup = 'HEAD'
-    else:
-        lookup = _zero_old_ref_path(ref_operand) if isinstance(ref_operand, str) else ''
-    if lookup and lookup in symref_map:
-        return [(kind, '')]
-    if original:
-        return [(kind, original)]
-    if _zero_old_non_heads_ref(ref_operand):
-        return []
     return [(kind, '')]
+_ZERO_OLD_CONVENTIONAL_PROTECTED = frozenset({
+    'main', 'master', 'trunk', 'develop', 'development', 'default'})
+def _zero_old_repo_path(repo_dir, hook_cwd=""):
+    if repo_dir and os.path.isabs(repo_dir):
+        return repo_dir
+    if repo_dir and hook_cwd:
+        return os.path.join(hook_cwd, repo_dir)
+    return repo_dir or hook_cwd or ''
+def _zero_old_declared_protected(repo_path):
+    # Operator names from $BUSDRIVER_STATE_DIR/ref-ff-protected.local (default
+    # .claude). Returns (frozenset, True) on success; (None, False) if the
+    # declaration path exists but cannot be trusted/read (caller fail-closes).
+    # Missing file → empty declared set (conventional-only). No symref map.
+    names = set()
+    if not repo_path:
+        return None, False
+    state = os.environ.get('BUSDRIVER_STATE_DIR', '.claude') or '.claude'
+    if (state.startswith('/') or '..' in state.split('/')
+            or any(c in state for c in '\0')):
+        state = '.claude'
+    path = os.path.join(repo_path, state, 'ref-ff-protected.local')
+    try:
+        if not os.path.lexists(path):
+            return frozenset(), True
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None, False
+        # Refuse a symlinked state dir component (same spirit as the gate).
+        st_dir = os.path.join(repo_path, state)
+        if os.path.islink(st_dir):
+            return None, False
+        with open(path, 'r', encoding='utf-8', errors='surrogateescape') as f:
+            raw = f.read(65537)
+        if len(raw) > 65536:
+            return None, False
+        n = 0
+        for line in raw.splitlines():
+            # Match ref-ff-gate.sh: NO comment syntax. '#release' is a valid
+            # branch name; only blank lines are skipped.
+            line = line.strip().rstrip('\r')
+            if not line:
+                continue
+            n += 1
+            if n > 64:
+                return None, False
+            short = _branch_short_from_ref(line) or (
+                line if isinstance(line, str) else '')
+            if (not short or short in _ZERO_OLD_PSEUDO_REFS
+                    or short.upper() == 'HEAD'
+                    or _may_be_substitution(short) or _word_may_split(short, short)):
+                continue
+            names.add(short)
+        return frozenset(names), True
+    except OSError:
+        return None, False
+def _zero_old_porcelain_symref_to_protected(repo_path, name):
+    # True if refs/heads/<name> currently resolves through a symbolic-ref
+    # chain to a conventional OR operator-declared protected target.
+    # False if the named ref is direct (or a chain that never hits
+    # protected). None on probe failure (caller fail-closes). Does not
+    # build or consult _zero_old_symref_map.
+    if not repo_path or not name or not isinstance(name, str):
+        return None
+    if name in _ZERO_OLD_PSEUDO_REFS or name.upper() == 'HEAD':
+        return None
+    declared, dok = _zero_old_declared_protected(repo_path)
+    if not dok or declared is None:
+        return None
+    protected = _ZERO_OLD_CONVENTIONAL_PROTECTED | declared
+    import subprocess
+    cur = name if name.startswith('refs/') else 'refs/heads/' + name
+    seen = set()
+    for _ in range(_ZERO_OLD_MAX_SYMREF_CHAIN):
+        if cur in seen:
+            return None
+        seen.add(cur)
+        try:
+            r = subprocess.run(
+                ['git', '-C', repo_path, 'symbolic-ref', '-q', cur],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=_zero_old_git_env(), text=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode != 0:
+            return False  # not a symref — direct (or absent)
+        tgt = (r.stdout or '').split('\n', 1)[0].strip()
+        if not tgt:
+            return None
+        short = _branch_short_from_ref(tgt) or ''
+        if (short in protected
+                or short in _ZERO_OLD_PSEUDO_REFS
+                or (short and short.upper() == 'HEAD')):
+            return True
+        cur = tgt
+    return None
 def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
-    resolve_dir = repo_dir if repo_dir else hook_cwd
-    if resolve_dir and not os.path.isabs(resolve_dir) and hook_cwd:
-        resolve_dir = os.path.join(hook_cwd, resolve_dir)
-    deref_n = sum(1 for item in found if _zero_old_needs_deref(item))
-    if deref_n > _ZERO_OLD_MAX_DEREF_OPS:
-        out = []
-        for item in found:
-            if _zero_old_needs_deref(item):
-                out.append((item[0], ''))
-            elif len(item) == 3:
-                out.append((item[0], _branch_short_from_ref(item[1]) or ''))
-            elif len(item) == 2 and item[0] == 'delete':
-                out.append((item[0], _branch_name_from_porcelain(item[1]) or ''))
-            else:
-                out.append(item)
-        return out
-    symref_map = None
-    if deref_n and resolve_dir:
-        symref_map = _zero_old_symref_map(resolve_dir)
+    # Never build or consult _zero_old_symref_map / a pre-command snapshot.
+    # no_deref=false 3-tuples fail closed. Porcelain force 2-tuples
+    # (branch -f / checkout -B / switch -C and kin) always emit force:""
+    # — never authorize force:<name> from a pre-command probe of the
+    # current ref (direct, absent, or symref); that probe is TOCTOU.
+    # update-ref path unchanged (3-tuples / --no-deref only).
+    repo_path = _zero_old_repo_path(repo_dir, hook_cwd)
     out = []
     for item in found:
         if len(item) == 3:
@@ -4507,25 +4612,11 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
             if no_deref:
                 out.extend(_zero_old_classify_names(
                     kind, ref_operand, None, no_deref=True))
-            elif not resolve_dir or symref_map is None:
-                out.extend(_zero_old_classify_names(
-                    kind, ref_operand, None, no_deref=False))
             else:
-                out.extend(_zero_old_classify_names(
-                    kind, ref_operand, symref_map, no_deref=False))
-        elif len(item) == 2 and item[0] == 'force':
-            kind, ref_operand = item
-            name = _branch_name_from_porcelain(ref_operand)
-            if not name:
                 out.append((kind, ''))
-                continue
-            ref_path = 'refs/heads/' + name
-            if not resolve_dir or symref_map is None:
-                out.extend(_zero_old_classify_names(
-                    kind, ref_path, None, no_deref=False))
-            else:
-                out.extend(_zero_old_classify_names(
-                    kind, ref_path, symref_map, no_deref=False))
+        elif len(item) == 2 and item[0] == 'force':
+            # Porcelain force: fail closed in all current-ref states.
+            out.append((item[0], ''))
         elif len(item) == 2 and item[0] == 'delete':
             out.append((item[0], _branch_name_from_porcelain(item[1]) or ''))
         else:

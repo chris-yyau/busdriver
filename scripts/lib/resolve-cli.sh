@@ -2922,7 +2922,7 @@ _run_review_with_retries() {
 
 _execute_codex() {
   # #803: no shadowable local; prompt stays in $1.
-  duration="${2:-1200}"
+  _ECX_DURATION="${2:-1200}"
   # Defaults sized for codex rate-limit windows. At the default 3 retries the
   # backoff sequence is 30, 60, 120 seconds — ~3.5 min of waiting before
   # exhausting and escalating to droid. From retry 2 onward (t≥90s) the
@@ -2971,7 +2971,7 @@ _execute_codex() {
   # so validate BEFORE any arithmetic touches it. See _validate_positive_duration
   # for the full rationale (shared with _run_review_with_retries).
   if [[ "$_ECX_RC" -eq 0 ]]; then
-    if ! duration=$(_validate_positive_duration "codex review" "$duration"); then
+    if ! _ECX_DURATION=$(_validate_positive_duration "codex review" "$_ECX_DURATION"); then
       _ECX_RC=1
     fi
   fi
@@ -3048,9 +3048,9 @@ _execute_codex() {
     _bd_exit_as "$_ECX_RC"
   else
 
-  attempt=0
-  exit_code=0
-  output=""
+  _ECX_ATTEMPT=0
+  _ECX_EXIT_CODE=0
+  _ECX_OUTPUT=""
   last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
   timed_out=0           # a single full-duration timeout is droid-eligible (not retried)
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
@@ -3068,47 +3068,47 @@ _execute_codex() {
   start=$(/bin/date +%s)
 
   _ECX_DONE=0
-  while [[ "$attempt" -le "$max_retries" && "$_ECX_DONE" -eq 0 ]]; do
+  while [[ "$_ECX_ATTEMPT" -le "$max_retries" && "$_ECX_DONE" -eq 0 ]]; do
     # Budget gate + backoff FIRST, before the per-attempt state resets below — the
     # bail-outs here must still see the PREVIOUS attempt's exit_code and
     # last_was_transient so a budget-exhausted sequence stays droid-eligible.
-    if [[ "$attempt" -eq 0 ]]; then
+    if [[ "$_ECX_ATTEMPT" -eq 0 ]]; then
       # The FIRST attempt always runs with the full budget — set it directly (not
       # via now-start) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated.
-      remaining="$duration"
+      remaining="$_ECX_DURATION"
     else
-      now=$(/bin/date +%s); remaining=$(( duration - (now - start) ))
+      now=$(/bin/date +%s); remaining=$(( _ECX_DURATION - (now - start) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
       # remaining budget can't fund a 1s attempt, escalate now instead of
       # sleeping the rest of the budget away for a retry that can't run.
       if [[ "$remaining" -le 1 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
       # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
       cap=$(( remaining - 1 ))
       [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
       if [[ "$retry_delay" -gt 0 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex retry $attempt/$max_retries (waiting ${retry_delay}s)..." >&2
+        /usr/bin/printf '%s\n' "⟳ Codex retry $_ECX_ATTEMPT/$max_retries (waiting ${retry_delay}s)..." >&2
         /bin/sleep "$retry_delay"
       fi
       # Exponential backoff: double delay each retry
       retry_delay=$((retry_delay * 2))
-      now=$(/bin/date +%s); remaining=$(( duration - (now - start) ))
+      now=$(/bin/date +%s); remaining=$(( _ECX_DURATION - (now - start) ))
       if [[ "$remaining" -le 0 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
+        [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
         _ECX_DONE=1
       fi
       fi
     fi
 
     if [[ "$_ECX_DONE" -eq 0 ]]; then
-    exit_code=0
+    _ECX_EXIT_CODE=0
     # Reflect only THIS attempt's classification — never carry a prior attempt's
     # transience into the post-loop droid decision. A timeout escalates via its
     # own `timed_out` flag, so resetting here does not weaken timeout handling.
@@ -3130,7 +3130,7 @@ _execute_codex() {
       if [[ -z "$_bd_node_bin" ]]; then
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
         [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-        exit_code=1
+        _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
       # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
@@ -3152,7 +3152,7 @@ _execute_codex() {
           || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
         /usr/bin/printf "%s\n" "busdriver: codex companion unresolved after dual re-check — refusing companion dispatch." >&2
         [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-        exit_code=1
+        _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
       _bd803_cc_disp=
@@ -3162,10 +3162,10 @@ _execute_codex() {
       if [[ -z "${_bd803_cc_disp:-}" ]]; then
         /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
         [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-        exit_code=1
+        _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
-      output=$(PATH="$_bd803_cc_disp" _portable_timeout --review node "$remaining" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
+      _ECX_OUTPUT=$(PATH="$_bd803_cc_disp" _portable_timeout --review node "$remaining" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
       fi
       fi
@@ -3175,14 +3175,14 @@ _execute_codex() {
       if [[ -n "$codex_effort" ]]; then
         config_args=(-c "model_reasoning_effort=\"$codex_effort\"")
       fi
-      output=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$remaining" "$_bd_codex_bin" exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
+      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$remaining" "$_bd_codex_bin" exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
     # or only a bare transient notice (a network/5xx envelope the companion
     # emitted while still exiting 0) is NOT a review; fall through to the
     # retry/droid path, mirroring _run_review_with_retries and dispatch_one.
-    if [[ "$exit_code" -eq 0 && -n "$output" ]] && ! _is_bare_transient_notice "$output"; then
+    if [[ "$_ECX_EXIT_CODE" -eq 0 && -n "$_ECX_OUTPUT" ]] && ! _is_bare_transient_notice "$_ECX_OUTPUT"; then
       _ECX_DONE=1
     fi
 
@@ -3206,13 +3206,13 @@ _execute_codex() {
     # fast, date's 1s resolution can leave a RETRY holding the full window — and
     # that retry's 124 is a genuine timeout, which an attempt-index test would
     # have downgraded and silently discarded.
-    if [[ "$exit_code" -eq 124 ]]; then
-      if [[ "$remaining" -eq "$duration" ]]; then
+    if [[ "$_ECX_EXIT_CODE" -eq 124 ]]; then
+      if [[ "$remaining" -eq "$_ECX_DURATION" ]]; then
         timed_out=1
       else
-        /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${duration}s) — treating as budget exhaustion, not a genuine timeout" >&2
+        /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${_ECX_DURATION}s) — treating as budget exhaustion, not a genuine timeout" >&2
         last_was_transient=1
-        exit_code=1
+        _ECX_EXIT_CODE=1
       fi
       _ECX_DONE=1
     fi
@@ -3234,14 +3234,14 @@ _execute_codex() {
     # review (empty, or a bare transient notice) — a flake, not a verdict.
     # #803: skip if _ECX_DONE=1 (classifier must not reset escalation latch).
     if [[ "$_ECX_DONE" -eq 0 ]]; then
-    if { [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; } \
-       || /usr/bin/printf '%s' "$output" | _is_transient_cli_error; then
+    if { [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; } \
+       || /usr/bin/printf '%s' "$_ECX_OUTPUT" | _is_transient_cli_error; then
       last_was_transient=1
-      attempt=$((attempt + 1))
+      _ECX_ATTEMPT=$((_ECX_ATTEMPT + 1))
     else
       last_was_transient=0
       _ECX_DONE=1
-      /usr/bin/printf "%s\n" "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2
+      /usr/bin/printf "%s\n" "⚠️  Codex failed with non-transient error (exit $_ECX_EXIT_CODE) — not retrying" >&2
     fi
     fi
     fi
@@ -3251,22 +3251,22 @@ _execute_codex() {
   # notice, through exhaustion) is not success — promote it to a transient
   # failure so the droid/builtin fallback below engages instead of returning a
   # blank PASS. Mirrors _run_review_with_retries' exhaustion guard.
-  if [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; then
-    exit_code=1
+  if [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; then
+    _ECX_EXIT_CODE=1
     last_was_transient=1
   fi
 
   # All retries exhausted, non-transient error, or a timeout — try droid (if
   # eligible), else fall back to builtin (or preserve the timeout signal).
-  if [[ "$exit_code" -ne 0 ]]; then
-    attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
+  if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
+    attempts_run=$(( _ECX_ATTEMPT > max_retries ? max_retries + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
     # messages survive and the underlying cause is unrecoverable.
-    if [[ -n "$output" ]]; then
+    if [[ -n "$_ECX_OUTPUT" ]]; then
       /usr/bin/printf '%s\n%s\n%s\n' \
-        "----- codex output (exit $exit_code) -----" \
-        "$output" \
+        "----- codex output (exit $_ECX_EXIT_CODE) -----" \
+        "$_ECX_OUTPUT" \
         "----- end codex output -----" >&2
     fi
 
@@ -3309,14 +3309,14 @@ _execute_codex() {
       _droid_errf=""
       _droid_errf=$(/usr/bin/mktemp -t droid-err 2>/dev/null) || _droid_errf=$(/usr/bin/mktemp 2>/dev/null) || _droid_errf=""
       if [[ -n "$_droid_errf" ]]; then
-        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$duration" "$_bd_droid_bin" exec 2>"$_droid_errf") || droid_exit=$?
+        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || droid_exit=$?
         droid_err=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
         /bin/rm -f "$_droid_errf"
       else
         # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
         # the exit-0+stderr-only false-success). Discard stderr for classification
         # and note the loss so the failure log still explains the gap.
-        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$duration" "$_bd_droid_bin" exec 2>/dev/null) || droid_exit=$?
+        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || droid_exit=$?
         droid_err="(stderr discarded: mktemp unavailable)"
       fi
 
@@ -3344,7 +3344,7 @@ _execute_codex() {
       _git_root=$(/usr/bin/git rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
       if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
         /usr/bin/printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
-          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_bd803_droid_ok" "$_droid_outcome" "$attempts_run" \
+          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$droid_exit" "$_bd803_droid_ok" "$_droid_outcome" "$attempts_run" \
           >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || /usr/bin/true
       fi
       if [[ "$_bd803_droid_ok" -eq 1 ]]; then
@@ -3355,7 +3355,7 @@ _execute_codex() {
         _bd_exit_as 0
       elif [[ "$timed_out" -eq 1 ]]; then
         [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-        /usr/bin/printf '%s' "$output"
+        /usr/bin/printf '%s' "$_ECX_OUTPUT"
         _bd_exit_as 124
       else
         /usr/bin/printf '%s\n' "⚠️  Droid escalation failed (${_droid_outcome}: exit $droid_exit, output_bytes=${#droid_out}, stderr_bytes=${#droid_err}) — falling back to built-in review" >&2
@@ -3371,7 +3371,7 @@ _execute_codex() {
       [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
       # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
       if [[ "$timed_out" -eq 1 ]]; then
-        /usr/bin/printf '%s' "$output"
+        /usr/bin/printf '%s' "$_ECX_OUTPUT"
         _bd_exit_as 124
       else
         /usr/bin/printf "%s\n" "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
@@ -3381,8 +3381,8 @@ _execute_codex() {
     fi
   else
     [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-    /usr/bin/printf '%s' "$output"
-    _bd_exit_as "$exit_code"
+    /usr/bin/printf '%s' "$_ECX_OUTPUT"
+    _bd_exit_as "$_ECX_EXIT_CODE"
   fi
   fi
   fi
@@ -3725,33 +3725,33 @@ grok_preflight_hint() {
 }
 
 execute_review() {
-  cli="$1"
+  _ER_CLI="$1"
   # #803: PASS-minting dispatch uses positional $2 only.
-  duration="${3:-1200}"
+  _ER_DURATION="${3:-1200}"
 
   _bd_review_pinned_bin=""
   _BD_CODEX_PINNED_BIN=""
   _ER_RC=0
   # #803: route resolution may pass an absolute pinned binary; match arms on basename.
   # Absolute pins into checkout refuse via single terminal exit — no fallthrough into main case.
-  case "$cli" in
+  case "$_ER_CLI" in
     /*)
-      if _trusted_cli_dir_in_checkout "$cli"; then
+      if _trusted_cli_dir_in_checkout "$_ER_CLI"; then
         /usr/bin/printf '%s\n' "busdriver: review CLI path resolves inside the reviewed checkout — refusing." >&2
         _ER_RC=1
       else
         # #803: absolute pin must equal the trusted resolver hit for its enum name.
-        _ER_PIN_BASE=$(/usr/bin/basename -- "$cli")
+        _ER_PIN_BASE=$(/usr/bin/basename -- "$_ER_CLI")
         case "$_ER_PIN_BASE" in
           codex.js) _ER_PIN_BASE=codex ;;
         esac
         _ER_TRUSTED=$(_resolve_trusted_cli_bin "$_ER_PIN_BASE") || _ER_TRUSTED=""
-        if [[ -z "$_ER_TRUSTED" || "$cli" != "$_ER_TRUSTED" ]]; then
+        if [[ -z "$_ER_TRUSTED" || "$_ER_CLI" != "$_ER_TRUSTED" ]]; then
           /usr/bin/printf '%s\n' "busdriver: review CLI absolute path is not the trusted resolver hit for '$_ER_PIN_BASE' — refusing." >&2
           _ER_RC=1
         else
-          _bd_review_pinned_bin="$cli"
-          cli="$_ER_PIN_BASE"
+          _bd_review_pinned_bin="$_ER_CLI"
+          _ER_CLI="$_ER_PIN_BASE"
         fi
       fi
       ;;
@@ -3768,12 +3768,12 @@ execute_review() {
   # `none` is NOT handled here — caller intercepts before calling execute_review.
   # Codex uses the app-server protocol via _execute_codex() when the official
   # plugin is installed, falling back to direct CLI. Other CLIs use stdin piping.
-  case "$cli" in
+  case "$_ER_CLI" in
     codex)
       if [[ -n "$_bd_review_pinned_bin" ]]; then
         _BD_CODEX_PINNED_BIN="$_bd_review_pinned_bin"
       fi
-      _execute_codex "$2" "$duration" ;;
+      _execute_codex "$2" "$_ER_DURATION" ;;
     # agy takes the prompt as `--print`'s ARGV VALUE. The former
     # (see _agy_argv_limit / _agy_prompt_oversize above for the size ceiling)
     # `--print /dev/stdin` idiom read fd 0 on agy v1.0.0, but 1.1.x treats the
@@ -3853,14 +3853,14 @@ execute_review() {
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$duration" none-review \
-                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$2"
+               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" none-review \
+                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print "$2"
                fi
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$duration" pipe-review \
-                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
+               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
+                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
              fi
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
@@ -3882,7 +3882,7 @@ execute_review() {
                /usr/bin/printf '%s\n' "busdriver: droid is missing or resolves inside the reviewed checkout — refusing review dispatch." >&2
                _bd_exit_as 1
              else
-               /usr/bin/printf '%s' "$2" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$duration" "$_bd_droid_bin" exec 2>&1
+               /usr/bin/printf '%s' "$2" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ER_DURATION" "$_bd_droid_bin" exec 2>&1
              fi ;;
     # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
     #
@@ -3949,7 +3949,7 @@ execute_review() {
              # them while loading env itself — too early for env's own `-i`.
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
-             _run_review_with_retries grok "$2" "$duration" pipe \
+             _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
@@ -4233,7 +4233,7 @@ execute_review() {
                # XDG_CACHE_HOME shares the inert model/package cache.
                # (Comments BEFORE the command — after a backslash
                # continuation they would terminate the chain.)
-               _run_review_with_retries opencode "$2" "$duration" pipe \
+               _run_review_with_retries opencode "$2" "$_ER_DURATION" pipe \
                  /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
                    OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                    XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
@@ -4257,17 +4257,17 @@ execute_review() {
              # was already emitted to stderr by resolve_role_cli; surface the
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
-             local _removed="${cli#unsupported:}"
+             local _removed="${_ER_CLI#unsupported:}"
              echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
              _bd_exit_as 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
              # unsupported:* above — let the caller see a recognizable failure
              # mode rather than a garbled wildcard match.
-             local _absent="${cli#missing:}"
+             local _absent="${_ER_CLI#missing:}"
              echo "busdriver: review CLI '$_absent' is configured but not installed" >&2
              _bd_exit_as 1 ;;
-    *)       echo "Unsupported CLI: $cli" >&2; _bd_exit_as 1 ;;
+    *)       echo "Unsupported CLI: $_ER_CLI" >&2; _bd_exit_as 1 ;;
   esac
   fi
 }

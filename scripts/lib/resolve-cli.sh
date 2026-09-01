@@ -2940,11 +2940,11 @@ _execute_codex() {
   # rate-limited attempts FAIL FAST, so nearly the whole budget goes to sleeping
   # and 540s still outwaits the per-minute and per-5min windows. What it does cut
   # short is the pathological case — slow attempts that each burn most of the
-  # timeout — which is precisely the case that used to blow the 600s harness cap.
+  # timeout — which is precisely the case that used to blow the 600s harness _ECX_CAP.
   # If a path genuinely needs to outwait an hourly quota, raise ITS duration
   # (LITMUS_TIMEOUT); raising retries alone can no longer buy wall-clock.
-  max_retries="${LITMUS_CODEX_RETRIES:-3}"
-  retry_delay="${LITMUS_CODEX_RETRY_DELAY:-30}"
+  _ECX_MAX_RETRIES="${LITMUS_CODEX_RETRIES:-3}"
+  _ECX_RETRY_DELAY="${LITMUS_CODEX_RETRY_DELAY:-30}"
   # Reasoning effort. Unset (the default) = whatever the codex CLI's own config
   # says — deliberately NOT restated here, because a hardcoded claim about the
   # default drifts silently (#331). Set LITMUS_CODEX_EFFORT to pin a tier for a
@@ -2952,13 +2952,13 @@ _execute_codex() {
   # ladder: retries here fire on rate-limits/5xx/timeouts, which lowering
   # reasoning does not fix — it only makes the attempt that finally succeeds the
   # weakest one, on the gate-of-record review path.
-  codex_effort="${LITMUS_CODEX_EFFORT:-}"
+  _ECX_CODEX_EFFORT="${LITMUS_CODEX_EFFORT:-}"
 
   # Validate env vars are non-negative integers
   # #803: single-exit latch
   _v=
   _ECX_RC=0
-  for _v in "$max_retries" "$retry_delay"; do
+  for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
       ''|*[!0-9]*)
         /usr/bin/printf '%s\n' "busdriver: LITMUS_CODEX_RETRIES and LITMUS_CODEX_RETRY_DELAY must be non-negative integers" >&2
@@ -2976,10 +2976,10 @@ _execute_codex() {
     fi
   fi
 
-  case "$codex_effort" in
+  case "$_ECX_CODEX_EFFORT" in
     ''|minimal|low|medium|high|xhigh) ;;
     *)
-      /usr/bin/printf '%s\n' "busdriver: LITMUS_CODEX_EFFORT must be one of: minimal|low|medium|high|xhigh (got: $codex_effort)" >&2
+      /usr/bin/printf '%s\n' "busdriver: LITMUS_CODEX_EFFORT must be one of: minimal|low|medium|high|xhigh (got: $_ECX_CODEX_EFFORT)" >&2
       _ECX_RC=1
       ;;
   esac
@@ -3031,14 +3031,14 @@ _execute_codex() {
   # is unaffected. The direct codex CLI fallback further down still uses
   # stdin; that path only fires when the companion plugin is uninstalled,
   # and codex exec lacks an equivalent file-input flag at present.
-  _prompt_file=""
+  _ECX_PROMPT_FILE=""
   if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
-    _prompt_file=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _prompt_file=$(/usr/bin/mktemp 2>/dev/null) || _prompt_file=""
-    if [[ -z "$_prompt_file" || ! -f "$_prompt_file" ]]; then
+    _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
+    if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
       /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
       _ECX_RC=1
-    elif ! /usr/bin/printf '%s' "$1" > "$_prompt_file"; then
-      /bin/rm -f "$_prompt_file"
+    elif ! /usr/bin/printf '%s' "$1" > "$_ECX_PROMPT_FILE"; then
+      /bin/rm -f "$_ECX_PROMPT_FILE"
       /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
       _ECX_RC=1
     fi
@@ -3051,38 +3051,38 @@ _execute_codex() {
   _ECX_ATTEMPT=0
   _ECX_EXIT_CODE=0
   _ECX_OUTPUT=""
-  last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
-  timed_out=0           # a single full-duration timeout is droid-eligible (not retried)
+  _ECX_LAST_WAS_TRANSIENT=0  # narrows droid fallback to rate-limit/network exhaustion
+  _ECX_TIMED_OUT=0           # a single full-duration timeout is droid-eligible (not retried)
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
-  # and each backoff is capped to the remaining budget so the sleep itself cannot
+  # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
   # path's 5 retries that is up to 6x the timeout of wall-clock against a 600s
-  # harness cap, and pinned xhigh lengthens each attempt further.
+  # harness _ECX_CAP, and pinned xhigh lengthens each attempt further.
   # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
   # own "$duration" (it is the safety net, and a droid handed 0s is no net at
   # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead
   # disables droid entirely, so that path is bounded at exactly "$duration".
-  start=; now=; remaining=; cap=
-  start=$(/bin/date +%s)
+  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=
+  _ECX_START=$(/bin/date +%s)
 
   _ECX_DONE=0
-  while [[ "$_ECX_ATTEMPT" -le "$max_retries" && "$_ECX_DONE" -eq 0 ]]; do
+  while [[ "$_ECX_ATTEMPT" -le "$_ECX_MAX_RETRIES" && "$_ECX_DONE" -eq 0 ]]; do
     # Budget gate + backoff FIRST, before the per-attempt state resets below — the
     # bail-outs here must still see the PREVIOUS attempt's exit_code and
-    # last_was_transient so a budget-exhausted sequence stays droid-eligible.
+    # _ECX_LAST_WAS_TRANSIENT so a budget-exhausted sequence stays droid-eligible.
     if [[ "$_ECX_ATTEMPT" -eq 0 ]]; then
       # The FIRST attempt always runs with the full budget — set it directly (not
-      # via now-start) so a sub-second clock tick can never zero it out and skip
+      # via _ECX_NOW-_ECX_START) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated.
-      remaining="$_ECX_DURATION"
+      _ECX_REMAINING="$_ECX_DURATION"
     else
-      now=$(/bin/date +%s); remaining=$(( _ECX_DURATION - (now - start) ))
+      _ECX_NOW=$(/bin/date +%s); _ECX_REMAINING=$(( _ECX_DURATION - (_ECX_NOW - _ECX_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
-      # remaining budget can't fund a 1s attempt, escalate now instead of
+      # _ECX_REMAINING budget can't fund a 1s attempt, escalate _ECX_NOW instead of
       # sleeping the rest of the budget away for a retry that can't run.
-      if [[ "$remaining" -le 1 ]]; then
+      if [[ "$_ECX_REMAINING" -le 1 ]]; then
         /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
@@ -3090,16 +3090,16 @@ _execute_codex() {
         _ECX_DONE=1
       else
       # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
-      cap=$(( remaining - 1 ))
-      [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
-      if [[ "$retry_delay" -gt 0 ]]; then
-        /usr/bin/printf '%s\n' "⟳ Codex retry $_ECX_ATTEMPT/$max_retries (waiting ${retry_delay}s)..." >&2
-        /bin/sleep "$retry_delay"
+      _ECX_CAP=$(( _ECX_REMAINING - 1 ))
+      [[ "$_ECX_RETRY_DELAY" -gt "$_ECX_CAP" ]] && _ECX_RETRY_DELAY="$_ECX_CAP"
+      if [[ "$_ECX_RETRY_DELAY" -gt 0 ]]; then
+        /usr/bin/printf '%s\n' "⟳ Codex retry $_ECX_ATTEMPT/$_ECX_MAX_RETRIES (waiting ${_ECX_RETRY_DELAY}s)..." >&2
+        /bin/sleep "$_ECX_RETRY_DELAY"
       fi
       # Exponential backoff: double delay each retry
-      retry_delay=$((retry_delay * 2))
-      now=$(/bin/date +%s); remaining=$(( _ECX_DURATION - (now - start) ))
-      if [[ "$remaining" -le 0 ]]; then
+      _ECX_RETRY_DELAY=$((_ECX_RETRY_DELAY * 2))
+      _ECX_NOW=$(/bin/date +%s); _ECX_REMAINING=$(( _ECX_DURATION - (_ECX_NOW - _ECX_START) ))
+      if [[ "$_ECX_REMAINING" -le 0 ]]; then
         /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
         [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
         _ECX_DONE=1
@@ -3111,11 +3111,11 @@ _execute_codex() {
     _ECX_EXIT_CODE=0
     # Reflect only THIS attempt's classification — never carry a prior attempt's
     # transience into the post-loop droid decision. A timeout escalates via its
-    # own `timed_out` flag, so resetting here does not weaken timeout handling.
-    last_was_transient=0
-    effort_args=()
-    if [[ -n "$codex_effort" ]]; then
-      effort_args=(--effort "$codex_effort")
+    # own `_ECX_TIMED_OUT` flag, so resetting here does not weaken timeout handling.
+    _ECX_LAST_WAS_TRANSIENT=0
+    _ECX_EFFORT_ARGS=()
+    if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
+      _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
     fi
 
     if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
@@ -3123,13 +3123,13 @@ _execute_codex() {
       # pre-loop comment for the EAGAIN background. Omit --json to get raw
       # review output (--json wraps in an envelope that breaks downstream
       # extract_review_json.py parsing).
-      # ${effort_args[@]+...} guards against "unbound variable" when array is
+      # ${_ECX_EFFORT_ARGS[@]+...} guards against "unbound variable" when array is
       # empty under set -u (macOS bash 3.2).
       _bd_node_bin=""
       _bd_node_bin="$(_resolve_trusted_cli_bin node)" || _bd_node_bin=""
       if [[ -z "$_bd_node_bin" ]]; then
         /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
@@ -3151,7 +3151,7 @@ _execute_codex() {
       if [[ -z "${_bd803_cc_a:-}" || "$_bd803_cc_a" == "none" || "$_bd803_cc_a" != /* \
           || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
         /usr/bin/printf "%s\n" "busdriver: codex companion unresolved after dual re-check — refusing companion dispatch." >&2
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
@@ -3161,21 +3161,21 @@ _execute_codex() {
       fi
       if [[ -z "${_bd803_cc_disp:-}" ]]; then
         /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
-      _ECX_OUTPUT=$(PATH="$_bd803_cc_disp" _portable_timeout --review node "$remaining" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
+      _ECX_OUTPUT=$(PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
       fi
       fi
     else
       # Fallback: direct CLI invocation
-      config_args=()
-      if [[ -n "$codex_effort" ]]; then
-        config_args=(-c "model_reasoning_effort=\"$codex_effort\"")
+      _ECX_CONFIG_ARGS=()
+      if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
+        _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$remaining" "$_bd_codex_bin" exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
+      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
@@ -3192,26 +3192,26 @@ _execute_codex() {
     # Classify a 124 by the window the attempt was actually GRANTED, not by its
     # attempt index. An attempt that ran with the FULL "$duration" timed out
     # honestly — Codex couldn't finish in the configured window — so preserve
-    # the timeout signal (droid-eligible via timed_out; if droid can't rescue
+    # the timeout signal (droid-eligible via _ECX_TIMED_OUT; if droid can't rescue
     # it, the caller sees exit 124 and correctly reads "split the diff"). An
-    # attempt granted only a TRUNCATED "$remaining" (the budget is shared across
+    # attempt granted only a TRUNCATED "$_ECX_REMAINING" (the budget is shared across
     # every attempt plus every backoff sleep) hit the shared budget, not a real
     # Codex limit: treat it as budget exhaustion — droid-eligible via
-    # last_was_transient (same as the explicit budget-exhaustion breaks above),
-    # but NOT timed_out, so a droid-less path falls through to BUILTIN_FALLBACK
+    # _ECX_LAST_WAS_TRANSIENT (same as the explicit budget-exhaustion breaks above),
+    # but NOT _ECX_TIMED_OUT, so a droid-less path falls through to BUILTIN_FALLBACK
     # (return 3) rather than a misleading "genuine timeout" exit 124.
     #
-    # Keying on `remaining == duration` rather than `attempt == 0` matters at
+    # Keying on `_ECX_REMAINING == duration` rather than `attempt == 0` matters at
     # the edges: with LITMUS_CODEX_RETRY_DELAY=0 and a first attempt that fails
     # fast, date's 1s resolution can leave a RETRY holding the full window — and
     # that retry's 124 is a genuine timeout, which an attempt-index test would
     # have downgraded and silently discarded.
     if [[ "$_ECX_EXIT_CODE" -eq 124 ]]; then
-      if [[ "$remaining" -eq "$_ECX_DURATION" ]]; then
-        timed_out=1
+      if [[ "$_ECX_REMAINING" -eq "$_ECX_DURATION" ]]; then
+        _ECX_TIMED_OUT=1
       else
-        /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${_ECX_DURATION}s) — treating as budget exhaustion, not a genuine timeout" >&2
-        last_was_transient=1
+        /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated _ECX_REMAINING budget (${_ECX_REMAINING}s of ${_ECX_DURATION}s) — treating as budget exhaustion, not a genuine timeout" >&2
+        _ECX_LAST_WAS_TRANSIENT=1
         _ECX_EXIT_CODE=1
       fi
       _ECX_DONE=1
@@ -3223,7 +3223,7 @@ _execute_codex() {
     #
     # EAGAIN history: the primary historical trigger was the codex-companion
     # reading stdin via fs.readFileSync(0) under Claude Code's Bash tool,
-    # where fd 0 has O_NONBLOCK set. That path is now bypassed by writing the
+    # where fd 0 has O_NONBLOCK set. That path is _ECX_NOW bypassed by writing the
     # prompt to a temp file and passing --prompt-file (see pre-loop block).
     # EAGAIN remains in the retry regex as defense-in-depth in case a future
     # codex version or codepath regresses. We match only the `EAGAIN` token
@@ -3236,10 +3236,10 @@ _execute_codex() {
     if [[ "$_ECX_DONE" -eq 0 ]]; then
     if { [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; } \
        || /usr/bin/printf '%s' "$_ECX_OUTPUT" | _is_transient_cli_error; then
-      last_was_transient=1
+      _ECX_LAST_WAS_TRANSIENT=1
       _ECX_ATTEMPT=$((_ECX_ATTEMPT + 1))
     else
-      last_was_transient=0
+      _ECX_LAST_WAS_TRANSIENT=0
       _ECX_DONE=1
       /usr/bin/printf "%s\n" "⚠️  Codex failed with non-transient error (exit $_ECX_EXIT_CODE) — not retrying" >&2
     fi
@@ -3253,13 +3253,13 @@ _execute_codex() {
   # blank PASS. Mirrors _run_review_with_retries' exhaustion guard.
   if [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; then
     _ECX_EXIT_CODE=1
-    last_was_transient=1
+    _ECX_LAST_WAS_TRANSIENT=1
   fi
 
   # All retries exhausted, non-transient error, or a timeout — try droid (if
   # eligible), else fall back to builtin (or preserve the timeout signal).
   if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
-    attempts_run=$(( _ECX_ATTEMPT > max_retries ? max_retries + 1 : _ECX_ATTEMPT + 1 ))
+    _ECX_ATTEMPTS_RUN=$(( _ECX_ATTEMPT > _ECX_MAX_RETRIES ? _ECX_MAX_RETRIES + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
     # messages survive and the underlying cause is unrecoverable.
@@ -3290,16 +3290,16 @@ _execute_codex() {
     [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
     [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
     _bd_droid_bin=""
-    if { [[ "$last_was_transient" -eq 1 ]] || [[ "$timed_out" -eq 1 ]]; } && \
+    if { [[ "$_ECX_LAST_WAS_TRANSIENT" -eq 1 ]] || [[ "$_ECX_TIMED_OUT" -eq 1 ]]; } && \
        [[ "$_droid_disabled" != "1" ]]; then
       # #803: resolve trusted abs droid first (never shadowable is_cli_available).
       _bd_droid_bin="$(_resolve_trusted_cli_bin droid)" || _bd_droid_bin=""
     fi
     if [[ -n "$_bd_droid_bin" ]]; then
-      _fail_reason="transient errors"
-      [[ "$timed_out" -eq 1 ]] && _fail_reason="timeout"
-      /usr/bin/printf "%s\n" "⚠️  Codex failed after ${attempts_run} attempt(s) (${_fail_reason}) — escalating to droid" >&2
-      droid_out='' droid_err='' droid_exit=0
+      _ECX_FAIL_REASON="transient errors"
+      [[ "$_ECX_TIMED_OUT" -eq 1 ]] && _ECX_FAIL_REASON="timeout"
+      /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) (${_ECX_FAIL_REASON}) — escalating to droid" >&2
+      _ECX_DROID_OUT='' _ECX_DROID_ERR='' _ECX_DROID_EXIT=0
       # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
       # execute_review's posture and the codex `-s read-only` posture this is
       # escalating from. See execute_review droid case for PR #97 historical context.
@@ -3309,30 +3309,30 @@ _execute_codex() {
       _droid_errf=""
       _droid_errf=$(/usr/bin/mktemp -t droid-err 2>/dev/null) || _droid_errf=$(/usr/bin/mktemp 2>/dev/null) || _droid_errf=""
       if [[ -n "$_droid_errf" ]]; then
-        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || droid_exit=$?
-        droid_err=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || _ECX_DROID_EXIT=$?
+        _ECX_DROID_ERR=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
         /bin/rm -f "$_droid_errf"
       else
         # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
         # the exit-0+stderr-only false-success). Discard stderr for classification
         # and note the loss so the failure log still explains the gap.
-        droid_out=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || droid_exit=$?
-        droid_err="(stderr discarded: mktemp unavailable)"
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || _ECX_DROID_EXIT=$?
+        _ECX_DROID_ERR="(stderr discarded: mktemp unavailable)"
       fi
 
-      # Classify before the post-escalation timed_out check: empty stdout inside
+      # Classify before the post-escalation _ECX_TIMED_OUT check: empty stdout inside
       # budget is a refusal/no-output, not a timeout (#804). Spent-budget 124
       # stays timeout so the caller can still react (split the diff).
       # #803: no shadowable return — refusals exit via _bd_exit_as in if/elif/else.
-      _droid_outcome=$(_classify_droid_escalation_outcome "$droid_exit" "$droid_out")
+      _droid_outcome=$(_classify_droid_escalation_outcome "$_ECX_DROID_EXIT" "$_ECX_DROID_OUT")
       _bd803_droid_ok=0
       [[ "$_droid_outcome" == "ok" ]] && _bd803_droid_ok=1
       if [[ "$_droid_outcome" == "no-output" ]]; then
-        timed_out=0
+        _ECX_TIMED_OUT=0
       elif [[ "$_droid_outcome" == "timeout" ]]; then
         # Spent-budget droid 124 is a real timeout even when Codex only failed
         # transiently — preserve exit 124 for callers that split the diff.
-        timed_out=1
+        _ECX_TIMED_OUT=1
       fi
 
       # Telemetry: log every escalation regardless of outcome, with droid_ok
@@ -3344,43 +3344,43 @@ _execute_codex() {
       _git_root=$(/usr/bin/git rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
       if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
         /usr/bin/printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
-          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$droid_exit" "$_bd803_droid_ok" "$_droid_outcome" "$attempts_run" \
+          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$_ECX_DROID_EXIT" "$_bd803_droid_ok" "$_droid_outcome" "$_ECX_ATTEMPTS_RUN" \
           >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || /usr/bin/true
       fi
       if [[ "$_bd803_droid_ok" -eq 1 ]]; then
         # Capture emit payload before any further builtins so stdout cannot be forged.
-        _bd803_droid_emit="$droid_out"
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+        _bd803_droid_emit="$_ECX_DROID_OUT"
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         /usr/bin/printf '%s' "$_bd803_droid_emit"
         _bd_exit_as 0
-      elif [[ "$timed_out" -eq 1 ]]; then
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+      elif [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
         /usr/bin/printf '%s' "$_ECX_OUTPUT"
         _bd_exit_as 124
       else
-        /usr/bin/printf '%s\n' "⚠️  Droid escalation failed (${_droid_outcome}: exit $droid_exit, output_bytes=${#droid_out}, stderr_bytes=${#droid_err}) — falling back to built-in review" >&2
-        if [[ -n "$droid_err" ]]; then
-          /usr/bin/printf '%s\n%s\n%s\n' "----- droid stderr -----" "$droid_err" "----- end droid stderr -----" >&2
+        /usr/bin/printf '%s\n' "⚠️  Droid escalation failed (${_droid_outcome}: exit $_ECX_DROID_EXIT, output_bytes=${#_ECX_DROID_OUT}, stderr_bytes=${#_ECX_DROID_ERR}) — falling back to built-in review" >&2
+        if [[ -n "$_ECX_DROID_ERR" ]]; then
+          /usr/bin/printf '%s\n%s\n%s\n' "----- droid stderr -----" "$_ECX_DROID_ERR" "----- end droid stderr -----" >&2
         fi
-        [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
-        /usr/bin/printf '%s\n' "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        /usr/bin/printf '%s\n' "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
         /usr/bin/printf '%s\n' "BUILTIN_FALLBACK"
         _bd_exit_as 3
       fi
     else
-      [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+      [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
       # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
-      if [[ "$timed_out" -eq 1 ]]; then
+      if [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
         /usr/bin/printf '%s' "$_ECX_OUTPUT"
         _bd_exit_as 124
       else
-        /usr/bin/printf "%s\n" "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
+        /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
         /usr/bin/printf "%s\n" "BUILTIN_FALLBACK"
         _bd_exit_as 3
       fi
     fi
   else
-    [[ -n "$_prompt_file" ]] && /bin/rm -f "$_prompt_file"
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     /usr/bin/printf '%s' "$_ECX_OUTPUT"
     _bd_exit_as "$_ECX_EXIT_CODE"
   fi

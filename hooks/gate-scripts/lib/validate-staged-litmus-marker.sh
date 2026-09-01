@@ -211,7 +211,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         return 1
     fi
 
-    local staged_hash="" hash_cmd=() hash_rc=0 diff_out="" hash_line=""
+    local staged_hash="" hash_cmd=() hash_rc=0 hash_line=""
     if command -v sha256sum >/dev/null 2>&1; then
         hash_cmd=(sha256sum)
     elif command -v shasum >/dev/null 2>&1; then
@@ -221,14 +221,16 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         GATE_VALIDATE_REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $state_dir/skip-litmus.local to bypass."
         return 1
     fi
-    # --no-ext-diff --no-textconv: ignore inherited drivers; -c diff.external= clears config.
-    # --no-replace-objects: claim/RT also ignore replacements — keep the reviewed tree honest.
-    diff_out=$(git -C "$repo_dir" --no-replace-objects -c diff.external= -c diff.ignoreSubmodules=none diff --cached --no-ext-diff --no-textconv 2>/dev/null) || hash_rc=$?
-    if [[ "$hash_rc" -ne 0 ]]; then
-        GATE_VALIDATE_REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $state_dir/skip-litmus.local to bypass."
-        return 1
-    fi
-    hash_line=$({ printf '%s\n' "$diff_out" | "${hash_cmd[@]}"; }) || hash_rc=$?
+    # Pipe binary diff straight into the hasher — never materialize in a Bash
+    # variable (command substitution strips NUL and would let a NUL-only edit
+    # keep the reviewed hash). --no-replace-objects matches claim/RT.
+    # pipefail only inside the substitution subshell so caller options are unchanged.
+    hash_rc=0
+    hash_line=$(
+        set -o pipefail
+        git -C "$repo_dir" --no-replace-objects -c diff.external= -c diff.ignoreSubmodules=none \
+            diff --cached --no-ext-diff --no-textconv 2>/dev/null | "${hash_cmd[@]}"
+    ) || hash_rc=$?
     if [[ "$hash_rc" -ne 0 ]]; then
         GATE_VALIDATE_REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $state_dir/skip-litmus.local to bypass."
         return 1

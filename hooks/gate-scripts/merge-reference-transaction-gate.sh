@@ -134,9 +134,12 @@ def parents_of(oid):
     if len(parts) < 3 or parts[1] == b"missing":
         return None
     typ, size = parts[1], int(parts[2])
+    # Refuse oversized/non-commits without draining — finally kills the batch proc.
+    if typ != b"commit" or size > size_lim:
+        return None
     body = proc.stdout.read(size)
     nl = proc.stdout.read(1)
-    if typ != b"commit" or size > size_lim or nl not in (b"\n", b""):
+    if nl not in (b"\n", b""):
         return None
     ps = []
     for line in body.splitlines():
@@ -177,25 +180,33 @@ finally:
   }
   # Linear multi-commit FF: single-parent chain from NEW back to OLD (no merges).
   if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 ]]; then
-    walk_rc=0
-    walk_to_old linear "$OLD" "$NEW" || walk_rc=$?
+    set +e
+    walk_to_old linear "$OLD" "$NEW"
+    walk_rc=$?
+    set -e
     [[ "$walk_rc" -eq 0 ]] && exit 0
     refuse 'refusing unauthorized merge commit.'
   fi
   # New branch (zero OLD): exact tip republish only (no merge-base/grafts).
   if [[ "$OLD" =~ ^0+$ ]]; then
-    tw_rc=0
-    tip_witnessed "$NEW" || tw_rc=$?
+    set +e
+    tip_witnessed "$NEW"
+    tw_rc=$?
+    set -e
     [[ "$tw_rc" -eq 0 ]] && exit 0
     refuse 'refusing unauthorized merge commit.'
   fi
   # Multi-parent NEW: must be another direct-head tip AND OLD ancestor of NEW (true FF).
   if [[ "$parents" -ge 2 ]]; then
-    tw_rc=0
-    tip_witnessed "$NEW" || tw_rc=$?
+    set +e
+    tip_witnessed "$NEW"
+    tw_rc=$?
+    set -e
     [[ "$tw_rc" -eq 0 ]] || refuse 'refusing unauthorized merge commit.'
-    walk_rc=0
-    walk_to_old ancestor "$OLD" "$NEW" || walk_rc=$?
+    set +e
+    walk_to_old ancestor "$OLD" "$NEW"
+    walk_rc=$?
+    set -e
     [[ "$walk_rc" -eq 0 ]] && exit 0
     refuse 'refusing unauthorized merge commit.'
   fi

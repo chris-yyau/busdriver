@@ -1003,15 +1003,12 @@ if [ -n "$ZERO_OLD_OPS" ]; then
             exit 0
         fi
         case " $PROTECTED_SET " in *" $_zo_name "*) ;; *)
-            # Absence from PROTECTED_SET authorizes only when trustworthy:
-            # an operator declaration, or a discovery surface that cannot
-            # change under the check. A conventional name ABSENT from the
-            # set was not present at discovery — authorizing a named
-            # ZERO-old force/delete (incl. --no-deref update-ref) races
-            # create-after-check. When remotes / non-conventional
-            # init.defaultBranch make the set mutable (`git remote
-            # set-head`), fail closed. Do not trust mutable PROTECTED_SET
-            # or remote HEAD redirects.
+            # Name absent from PROTECTED_SET at discovery cannot authorize a
+            # named ZERO-old force/delete. Remotes and init.defaultBranch
+            # can appear or change under the check (same create-after-check
+            # / redirect TOCTOU as an absent conventional name). Do not
+            # trust discovery-time absence of remotes or a conventional
+            # init.defaultBranch. Existing DECLARED=1 continue unchanged.
             case "$_zo_name" in
                 main|master|trunk|develop|development|default)
                     if [ "$_zo_kind" = "delete" ]; then
@@ -1025,21 +1022,12 @@ if [ -n "$ZERO_OLD_OPS" ]; then
             if [ "$DECLARED" = "1" ]; then
                 continue
             fi
-            _zo_mutable=0
-            if [ "${_NREMOTES:-0}" -gt 0 ]; then
-                _zo_mutable=1
+            if [ "$_zo_kind" = "delete" ]; then
+                block_emit "BLOCKED: this would DELETE the protected branch '$_zo_name' (issue #780)."
+            else
+                block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
             fi
-            if [ -n "${_INIT_DEFAULT:-}" ]; then
-                case "$_INIT_DEFAULT" in
-                    main|master|trunk|develop|development|default) ;;
-                    *) _zo_mutable=1 ;;
-                esac
-            fi
-            if [ "$_zo_mutable" -eq 1 ]; then
-                block_emit "BLOCKED: a force-update or delete of '$_zo_name' cannot be authorized — protected-branch discovery may depend on a mutable remote HEAD or init.defaultBranch that can change under the check (issue #780). Declare protected branches in $STATE_DIR/ref-ff-protected.local (one per line), or an empty file if this repository has none."
-                exit 0
-            fi
-            continue
+            exit 0
             ;;
         esac
         if [ "$_zo_kind" = "delete" ]; then

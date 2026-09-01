@@ -52,6 +52,11 @@ EXT=$(mktemp -d "$WORK/ext.XXXXXX")
 printf '#!/bin/sh\necho REAL\n' > "$EXT/codex"
 chmod +x "$EXT/codex"
 
+DROID_EXT=$(mktemp -d "$WORK/droid-ext.XXXXXX")
+printf '#!/bin/sh\necho REAL_DROID\n' > "$DROID_EXT/droid"
+chmod +x "$DROID_EXT/droid"
+
+
 
 LINKDIR=$(mktemp -d "$WORK/link.XXXXXX")
 ln -s "$REPO/bin/codex" "$LINKDIR/codex"
@@ -713,7 +718,7 @@ fi
 # 22) #803: clean should_escalate_to_droid behavior intact (codex timeout still escalates).
 set +e
 setd_clean=$(
-  cd "$REPO" && /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; should_escalate_to_droid codex 124 /dev/null; echo RC=\$?"
+  cd "$REPO" && PATH="$DROID_EXT:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; should_escalate_to_droid codex 124 /dev/null; echo RC=\$?"
 )
 set -e
 if [[ "$setd_clean" == *"RC=0"* ]]; then
@@ -721,6 +726,7 @@ if [[ "$setd_clean" == *"RC=0"* ]]; then
 else
   bad "#803: clean should_escalate_to_droid codex timeout broken: '$setd_clean'"
 fi
+
 
 
 echo ""

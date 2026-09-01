@@ -4040,13 +4040,12 @@ execute_review() {
              # mktemp/dirname/basename/command/env; a repo-injected PATH (a fork's
              # settings.json, #325 class) could otherwise trojan those. Pin a
              # system-only PATH for the duration of this arm — the operator's real
-             # opencode install dir is added explicitly via _oc_trust (HOME-based)
+             # opencode install dir is added explicitly via _ER_OC_TRUST (HOME-based)
              # at resolution, so a clean utility PATH costs nothing here.
              # (HOME itself: if a fork could rewrite HOME the whole session is
              # compromised — every tool trusts it — so that is the gate's env
              # sanitization boundary, #325/ADR 0016, not this arm's to re-solve.)
-             local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-             # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
+                          # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
              # would be repo-INJECTABLE: a reviewed fork's `.claude/settings.json`
              # `env` block enters the operator's session (the #325 / ADR 0016
              # class), so a hostile branch could point it at a tracked JSON that
@@ -4056,44 +4055,45 @@ execute_review() {
                echo "busdriver: cannot resolve the plugin lib dir — refusing to dispatch the opencode Auditor (cannot locate its read-only config)." >&2
                _bd_exit_as 1
              else
-             local _oc_cfg="${_bd_lib_dir}/opencode-review-config.json"
+             _ER_OC_CFG="${_bd_lib_dir}/opencode-review-config.json"
              # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
              # it silently loads the user's default config, restoring write/bash.
-             # `-f "$_oc_cfg"` alone is the correct guard: an empty _bd_lib_dir
+             # `-f "$_ER_OC_CFG"` alone is the correct guard: an empty _bd_lib_dir
              # yields a non-existent path (`/opencode-review-config.json`) → not
              # a file → blocked. There is NO env override for this path (see the
              # "NO env override" comment above) — the only recovery is repairing
              # or reinstalling the plugin asset, NOT setting an env var.
-             if [[ ! -f "$_oc_cfg" ]]; then
-               echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_oc_cfg} exists." >&2
+             if [[ ! -f "$_ER_OC_CFG" ]]; then
+               echo "busdriver: opencode review config not found at '${_ER_OC_CFG}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_ER_OC_CFG} exists." >&2
                _bd_exit_as 1
              else
              # CANONICALIZE to absolute. We dispatch with the child CWD set to the
              # neutral dir, so a relative path would resolve against THAT dir,
              # not here — the file would be missing and opencode would fail OPEN to
              # the user default. Resolve it absolute now, while CWD is still here.
-             _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")"
-             if [[ ! -f "$_oc_cfg" ]]; then
+             _ER_OC_CFG="$(cd "$(/usr/bin/dirname -- "$_ER_OC_CFG")" 2>/dev/null && pwd -P)/$(/usr/bin/basename -- "$_ER_OC_CFG")"
+             if [[ ! -f "$_ER_OC_CFG" ]]; then
                echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
                _bd_exit_as 1
              else
              # Derive the trusted home from the PASSWORD DATABASE FIRST (not
              # $HOME: repo-injectable) — used for the auth/cache env paths.
              # `~user` tilde expansion reads getpwnam; `id` runs absolute.
-             local _oc_home _oc_user
-             _oc_user="$(/usr/bin/id -un 2>/dev/null)"
-             if ! _bd_valid_username "$_oc_user"; then
+             _ER_OC_HOME=
+             _ER_OC_USER=
+             _ER_OC_USER="$(/usr/bin/id -un 2>/dev/null)"
+             if ! _bd_valid_username "$_ER_OC_USER"; then
                # Fail CLOSED on an empty or non-plain username: the following
                # `~` expansion would fall back to the repo-injectable $HOME
                # (or a hostile name could execute as shell text).
                echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                _bd_exit_as 1
              else
-             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+             _ER_OC_HOME="$(eval echo "~${_ER_OC_USER}" 2>/dev/null)"
              # NO $HOME fallback — $HOME is the repo-injectable value this whole
              # block exists to distrust. If the password-DB lookup fails (a broken
              # system, not a normal state), fail CLOSED rather than trust $HOME.
-             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+             if [[ -z "$_ER_OC_HOME" || ! -d "$_ER_OC_HOME" ]]; then
                echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
                _bd_exit_as 1
              else
@@ -4117,16 +4117,19 @@ execute_review() {
              #       binary's own dir + system dirs.
              #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
              #       empty dir (see the dispatch below), before --dir applies.
-             local _oc_bin _oc_path _oc_trust _oc_cwd=""
-             _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-             _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
-             if [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
+             _ER_OC_BIN=
+             _ER_OC_PATH=
+             _ER_OC_TRUST=
+             _ER_OC_CWD=""
+             _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+             _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)"
+             if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
                echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
-               /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
+               /bin/rmdir "${_ER_OC_CWD:-}" 2>/dev/null || true
                _bd_exit_as 1
              else
-             _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
-             _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+             _ER_OC_PATH="$(CDPATH='' cd -- "$(/usr/bin/dirname -- "$_ER_OC_BIN")" && pwd -P)"
+             _ER_OC_PATH="${_ER_OC_PATH}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
              # PROMPT VIA STDIN (pipe mode), not argv. opencode reads its message
              # from fd 0 when no positional message is given (verified). A full
              # base...HEAD blueprint diff as one argv word can exceed ARG_MAX
@@ -4150,14 +4153,14 @@ execute_review() {
              # the config reader shells out to jq/python3, and leaving that on
              # line ORDER inside a long case arm is a reordering away from being
              # wrong. Stated here, the invariant is local and greppable.
-             # It is the TOOL path (_oc_trust's system half), not the arm's
+             # It is the TOOL path (_ER_OC_TRUST's system half), not the arm's
              # narrower utility pin: on a Mac whose jq/python3 come only from
              # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
              # configured model reads as empty — which now skips the voice via the
              # guard below instead of dispatching somewhere they configured away
              # from. These dirs are root-owned system install paths, not
              # repo-writable.
-             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
+             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
              # No model → no auditor. There is no shipped default (see
              # resolve_auditor_model), so an unconfigured or unparseable
              # `.auditor.model` lands here. Skipping is correct for an ADVISORY
@@ -4172,7 +4175,7 @@ execute_review() {
              # this witness. Collapsing it into 1 makes blueprint-review report the
              # Mechanism Witness as FAILED for a config key the operator simply
              # never set. Reported by Codex on this change.
-             # No cleanup needed on this path: $_oc_cwd is still the empty `local`
+             # No cleanup needed on this path: $_ER_OC_CWD is still the empty `local`
              # init here — the sandbox is not staged until inside the subshell
              # further down — so there is no temp dir to reclaim. Bailing before
              # any allocation is the whole point of guarding this early.
@@ -4194,16 +4197,16 @@ execute_review() {
              # race on a swapped-in mcp/npm payload). Validation runs INSIDE
              # the trap-owned subshell so the staged sandbox is owned from
              # creation (an early TERM cannot orphan credential-bearing dirs).
-             # shellcheck disable=SC2030,SC2031  # _oc_cwd is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
+             # shellcheck disable=SC2030,SC2031  # _ER_OC_CWD is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
              ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT   # best-effort cleanup even on grace-kill
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
+               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"' EXIT   # best-effort cleanup even on grace-kill
+               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"; exit 143' TERM
+               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"; exit 130' INT
                # Pinned SYSTEM-ONLY PATH: the validator stages credentials
-               # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is the
+               # with bare mktemp/mkdir/ln/rm — _ER_OC_PATH's first entry is the
                # operator-WRITABLE opencode dir, which must not shadow those
                # utilities; the system dirs carry them all.
-               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
+               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_ER_OC_HOME"; then
                  exit 1
                fi
                # Neutral cwd INSIDE the validated sandbox (post-validation):
@@ -4212,8 +4215,8 @@ execute_review() {
                # surfaces are never reopened; the 0700 sandbox is private to
                # the operator (no other-user planting; never ${TMPDIR} — repo-
                # injectable).
-               _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
-               /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
+               _ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"
+               /bin/mkdir -p "$_ER_OC_CWD" 2>/dev/null || exit 1
                # Git-init the EMPTY cwd: opencode's project-config discovery
                # scans every ancestor through the worktree root (non-Git = /,
                # reaching the real home); a git repo bounds the worktree AT
@@ -4224,9 +4227,9 @@ execute_review() {
                # the EXECUTION-PROBED git (the CLT shim at /usr/bin/git exists
                # but fails without CLT).
                _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               [[ -d "$_oc_cwd/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               cd "$_oc_cwd" 2>/dev/null || exit 1
+               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
+               cd "$_ER_OC_CWD" 2>/dev/null || exit 1
                # XDG_DATA_HOME points at the SANDBOX data dir — populated
                # with a validated auth.json copy ONLY (auth works, account
                # state absent — nothing merges config after OPENCODE_CONFIG).
@@ -4234,16 +4237,16 @@ execute_review() {
                # (Comments BEFORE the command — after a backslash
                # continuation they would terminate the chain.)
                _run_review_with_retries opencode "$2" "$_ER_DURATION" pipe \
-                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
-                   OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_ER_OC_PATH" \
+                   OPENCODE_CONFIG="$_ER_OC_CFG" XDG_CONFIG_HOME="$_ER_OC_CWD" \
                    XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
-                   XDG_CACHE_HOME="$_oc_home/.cache" \
-                 "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
+                   XDG_CACHE_HOME="$_ER_OC_HOME/.cache" \
+                 "$_ER_OC_BIN" run --dir "$_ER_OC_CWD" --agent busdriver-review \
                    -m "$_BD_AUDITOR_MODEL" )
-             local _oc_rc=$?
+             _ER_OC_RC=$?
               # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
-            /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
-             _bd_exit_as "$_oc_rc"
+            /bin/rm -rf "$_ER_OC_CWD" 2>/dev/null || true
+             _bd_exit_as "$_ER_OC_RC"
              fi
              fi
              fi
@@ -4257,15 +4260,15 @@ execute_review() {
              # was already emitted to stderr by resolve_role_cli; surface the
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
-             local _removed="${_ER_CLI#unsupported:}"
-             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
+             _ER_UNSUPPORTED_CLI="${_ER_CLI#unsupported:}"
+             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
              _bd_exit_as 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
              # unsupported:* above — let the caller see a recognizable failure
              # mode rather than a garbled wildcard match.
-             local _absent="${_ER_CLI#missing:}"
-             echo "busdriver: review CLI '$_absent' is configured but not installed" >&2
+             _ER_MISSING_CLI="${_ER_CLI#missing:}"
+             echo "busdriver: review CLI '$_ER_MISSING_CLI' is configured but not installed" >&2
              _bd_exit_as 1 ;;
     *)       echo "Unsupported CLI: $_ER_CLI" >&2; _bd_exit_as 1 ;;
   esac

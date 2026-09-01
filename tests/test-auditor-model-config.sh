@@ -265,7 +265,8 @@ cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
   # [[:space:]] not \s — \s is a GNU extension, not POSIX ERE, so a BSD/macOS
   # grep can silently fail to match the indented assignment and turn this into a
   # false FAIL (or, worse, a false pass elsewhere).
-  al="$(grep -nE '^[[:space:]]*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"' "$f" | head -1 | cut -d: -f1)"
+  if [[ "$f" == *resolve-cli.sh ]]; then _cwd_re='^[[:space:]]*_ER_OC_CWD="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"'; else _cwd_re='^[[:space:]]*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"'; fi
+  al="$(grep -nE "$_cwd_re" "$f" | head -1 | cut -d: -f1)"
   if [[ -z "$gl" || -z "$al" ]]; then fail "$label: could not locate guard ($gl) or _oc_cwd allocation ($al)"
   elif (( al > gl )); then ok "$label: sandbox allocated at $al, after the guard at $gl (nothing to clean up)"
   else fail "$label: _oc_cwd allocated at $al BEFORE the guard at $gl — the no-cleanup bail now leaks a temp dir"
@@ -279,8 +280,8 @@ cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDIT
 # collapsing this into 1 reports the Mechanism Witness as FAILED for a config key
 # the operator simply never set — the ABSENT-vs-FAILED distinction from ADR 0027.
 LOOP="$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/return 4/{print;exit}' "$LIB" | grep -q 'return 4'; then
-  ok "resolve-cli.sh no-model guard returns 4 (SKIPPED), not a generic failure"
+if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/_bd_exit_as 4/{print;exit}' "$LIB" | grep -q '_bd_exit_as 4'; then
+  ok "resolve-cli.sh no-model guard returns 4 via _bd_exit_as (SKIPPED), not a generic failure"
 else
   fail "resolve-cli.sh no-model guard does not return 4 — blueprint-review will call it FAILED"
 fi
@@ -392,7 +393,7 @@ for f in "$LIB" "$DISPATCH"; do
          | grep -vE '^[0-9]+:[[:space:]]*#' \
          | grep -v 'resolve_auditor_model()' \
          | grep -v 'type resolve_auditor_model' \
-         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_oc_home" resolve_auditor_model' || true)"
+         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_ER_OC_HOME" resolve_auditor_model|HOME="\$_oc_home" resolve_auditor_model' || true)"
   if [[ -n "$bad" ]]; then
     fail "$(basename "$f") calls resolve_auditor_model without pinned PATH+HOME: $bad"
   else

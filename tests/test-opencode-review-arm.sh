@@ -102,8 +102,8 @@ fi
 # The config must be the plugin-owned file, resolved from _bd_lib_dir with an
 # empty-lib-dir bail, and dispatch must block on a missing config file.
 if grep -q 'if \[\[ -z "\$_bd_lib_dir" \]\]; then' "$RC" \
-   && grep -q '_oc_cfg="\${_bd_lib_dir}/opencode-review-config.json"' "$RC" \
-   && grep -q 'if \[\[ ! -f "\$_oc_cfg" \]\]; then' "$RC"; then
+   && grep -q '_ER_OC_CFG="\${_bd_lib_dir}/opencode-review-config.json"' "$RC" \
+   && grep -q 'if \[\[ ! -f "\$_ER_OC_CFG" \]\]; then' "$RC"; then
   pass "resolve-cli.sh: fail-closed on empty lib-dir and missing config"
 else
   fail "resolve-cli.sh: missing fail-closed config guards"
@@ -120,14 +120,33 @@ fi
 # arm must pass --dir <neutral>, isolate XDG_CONFIG_HOME, and mktemp -d it.
 for _f in "$REPO_ROOT/scripts/lib/resolve-cli.sh" \
           "$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"; do
-  # shellcheck disable=SC2016  # literal '$_oc_cwd' is the source text we grep FOR
-  if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
-     && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
-     && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
-     && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
-     && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
-     && grep -q '"\$_oc_bin" run --dir' "$_f" \
-     && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+  # shellcheck disable=SC2016  # literal source tokens we grep FOR
+  if [[ "$(basename "$_f")" == resolve-cli.sh ]]; then
+    if grep -q '"\$_ER_OC_BIN" run --dir "\$_ER_OC_CWD" --agent busdriver-review' "$_f" \
+       && grep -q 'XDG_CONFIG_HOME="\$_ER_OC_CWD"' "$_f" \
+       && grep -qF '_ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
+       && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_ER_OC_CWD"' "$_f" \
+       && grep -q 'PATH="\$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode' "$_f" \
+       && grep -q '"\$_ER_OC_BIN" run --dir' "$_f" \
+       && grep -B1 '"\$_ER_OC_BIN" run' "$_f" | grep -q '\\$'; then
+      _ok=1
+    else
+      _ok=0
+    fi
+  else
+    if grep -q '"\$_oc_bin" run --dir "\$_oc_cwd" --agent busdriver-review' "$_f" \
+       && grep -q 'XDG_CONFIG_HOME="\$_oc_cwd"' "$_f" \
+       && grep -qF '_oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"' "$_f" \
+       && grep -q 'env -i ' "$_f" && grep -q 'cd "\$_oc_cwd"' "$_f" \
+       && grep -q 'PATH="\$_oc_trust" command -v opencode' "$_f" \
+       && grep -q '"\$_oc_bin" run --dir' "$_f" \
+       && grep -B1 '"\$_oc_bin" run' "$_f" | grep -q '\\$'; then
+      _ok=1
+    else
+      _ok=0
+    fi
+  fi
+  if [[ "$_ok" == 1 ]]; then
     pass "$(basename "$_f"): opencode arm isolated (cwd + XDG + env -i + abs-bin + intact chain)"
   else
     fail "$(basename "$_f"): opencode arm not fully isolated (cwd/XDG/env -i/abs-bin/chain — a comment after a backslash continuation would run opencode UNISOLATED)"
@@ -752,7 +771,7 @@ if [[ "$FAULT_GENERATOR" == 0 ]]; then
 fi
 # (g) BOTH opencode arms call the shared guard before dispatch.
 # shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
-if grep -q 'validate_opencode_home_config "\$_oc_home"' "$RC" \
+if grep -q 'validate_opencode_home_config "\$_ER_OC_HOME"' "$RC" \
    && grep -q 'validate_opencode_home_config "\$_oc_home"' "$DP"; then
   pass "both opencode arms (execute_review + dispatch.sh) call validate_opencode_home_config"
 else

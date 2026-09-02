@@ -171,10 +171,11 @@ b=$(/usr/bin/basename -- "$pin") || exit 1
 case $b in *'"'"'
 '"'"'*) exit 1 ;; esac
 pin="$d/$b"
-builtin exec 3< "$pin" || exit 1
+builtin unset -f exec 2>/dev/null || true
+exec 3< "$pin" || exit 1
 staged=$(/usr/bin/mktemp -t bd803-lib.XXXXXX) || exit 1
 /bin/cp /dev/fd/3 "$staged" || { /bin/rm -f "$staged"; exit 1; }
-builtin exec 3<&- 2>/dev/null || true
+exec 3<&- 2>/dev/null || true
 /bin/chmod 500 "$staged" || { /bin/rm -f "$staged"; exit 1; }
 sha=$(/usr/bin/shasum -a 256 "$staged" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done)
 [ -n "$sha" ] || { /bin/rm -f "$staged"; exit 1; }
@@ -255,9 +256,23 @@ _bd803_bash_staged_lib() {
 staged=\${BD803_STAGED_PATH-}
 expected=\${BD803_EXPECTED_SHA-}
 [[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
-builtin exec 4< \"\${staged}\" || exit 1
-builtin exec 5< \"\${staged}\" || exit 1
-sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+builtin unset -f exec 2>/dev/null || true
+exec 4< \"\${staged}\" || exit 1
+py=
+for c in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  if [[ -x \"\$c\" ]] && \"\$c\" -I -c 'import hashlib,os' >/dev/null 2>&1; then
+    py=\$c
+    break
+  fi
+done
+[[ -n \"\$py\" ]] || exit 1
+# -I: no CWD on sys.path (reviewed checkout may plant hashlib.py).
+sha=\$(\"\$py\" -I -c 'import hashlib,os;h=hashlib.sha256();o=0
+while True:
+ b=os.pread(4,65536,o)
+ if not b: break
+ h.update(b);o+=len(b)
+print(h.hexdigest(),end=\"\")') || exit 1
 [[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
 /bin/bash --noprofile --norc /dev/fd/4 \"\$@\"
 exit \$?
@@ -4569,9 +4584,23 @@ execute_review() {
 staged=\${BD803_STAGED_PATH-}
 expected=\${BD803_EXPECTED_SHA-}
 [[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
-builtin exec 4< \"\${staged}\" || exit 1
-builtin exec 5< \"\${staged}\" || exit 1
-sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+builtin unset -f exec 2>/dev/null || true
+exec 4< \"\${staged}\" || exit 1
+py=
+for c in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  if [[ -x \"\$c\" ]] && \"\$c\" -I -c 'import hashlib,os' >/dev/null 2>&1; then
+    py=\$c
+    break
+  fi
+done
+[[ -n \"\$py\" ]] || exit 1
+# -I: no CWD on sys.path (reviewed checkout may plant hashlib.py).
+sha=\$(\"\$py\" -I -c 'import hashlib,os;h=hashlib.sha256();o=0
+while True:
+ b=os.pread(4,65536,o)
+ if not b: break
+ h.update(b);o+=len(b)
+print(h.hexdigest(),end=\"\")') || exit 1
 [[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
 /bin/bash --noprofile --norc /dev/fd/4 --execute-opencode-review
 exit \$?

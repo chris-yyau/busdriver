@@ -805,6 +805,26 @@ else
   bad "#803: latched pin did not survive post-source canonical stub: '$canon_miss'"
 fi
 
+# 26) #803: staged-lib verify uses one held FD (pread) then exec /dev/fd/4 — no dual pathname open.
+if /usr/bin/grep -F 'exec 5<' "$LIB" | /usr/bin/grep -F 'staged' >/dev/null; then
+  bad "#803: staged-lib still dual-opens pathname on fd 5"
+elif ! /usr/bin/grep -F 'os.pread(4,' "$LIB" >/dev/null; then
+  bad "#803: staged-lib missing os.pread(4) hash of held fd"
+else
+  ok "#803: staged-lib hashes held fd via os.pread (no dual pathname open)"
+fi
+set +e
+staged_cli=$(
+  cd "$ROOT" && PATH="$EXT:/usr/bin:/bin:$PATH" /bin/bash --norc -c \
+    ". \"$LIB\" >/dev/null 2>&1; _bd803_bash_staged_lib_ambient --print-trusted-cli codex; echo RC=\$?"
+)
+set -e
+if [[ "$staged_cli" == *RC=0* && "$staged_cli" == /* ]]; then
+  ok "#803: _bd803_bash_staged_lib_ambient --print-trusted-cli succeeds via held fd"
+else
+  bad "#803: staged-lib ambient print-trusted-cli failed: '$staged_cli'"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

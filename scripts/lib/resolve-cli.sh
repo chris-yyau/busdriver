@@ -127,22 +127,28 @@ _bd803_latch_review_lib_pin() {
 }
 
 _bd803_ensure_staged_lib() {
+  # Status from final true/false only — no shadowable `return` / `builtin`.
+  _BESL_OK=0
   if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
-    _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
-    [[ "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]] && return 0
-    /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
-    _BD803_REVIEW_LIB_STAGED=
-    _BD803_REVIEW_LIB_EXEC=
-    _BD803_REVIEW_LIB_SHA=
-  fi
-  [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]] || return 1
-  case "$_BD803_REVIEW_LIB_PIN" in
-    /dev/fd/*) return 1 ;;
-  esac
-  _BESL_OUT=$(
-    # shellcheck disable=SC2016
-    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-      /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c '
+    _BESL_NOW=
+    _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || _BESL_NOW=
+    if [[ -n "$_BESL_NOW" && "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]]; then
+      _BESL_OK=1
+    else
+      # Fail closed: do not clear the latched SHA and re-stage a replacement.
+      /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+      _BD803_REVIEW_LIB_STAGED=
+      _BD803_REVIEW_LIB_EXEC=
+    fi
+  elif [[ -z "${_BD803_REVIEW_LIB_SHA:-}" && -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]]; then
+    case "$_BD803_REVIEW_LIB_PIN" in
+      /dev/fd/*) ;;
+      *)
+        _BESL_OUT=
+        _BESL_OUT=$(
+          # shellcheck disable=SC2016
+          LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+            /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c '
 pin=$1
 case $pin in /dev/fd/*) exit 1 ;; esac
 case $pin in *'"'"'
@@ -181,26 +187,46 @@ sha=$(/usr/bin/shasum -a 256 "$staged" 2>/dev/null | while IFS= read -r line; do
 [ -n "$sha" ] || { /bin/rm -f "$staged"; exit 1; }
 printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
 ' bash "$_BD803_REVIEW_LIB_PIN"
-  ) || return 1
-  _BD803_REVIEW_LIB_PIN=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '1p')
-  _BD803_REVIEW_LIB_STAGED=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '2p')
-  _BD803_REVIEW_LIB_SHA=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '3p')
-  case "$_BD803_REVIEW_LIB_PIN" in *$'\n'*) return 1 ;; esac
-  case "$_BD803_REVIEW_LIB_STAGED" in *$'\n'*) return 1 ;; esac
-  case "$_BD803_REVIEW_LIB_SHA" in *$'\n'*) return 1 ;; esac
-  _BD803_REVIEW_LIB_EXEC="$_BD803_REVIEW_LIB_STAGED"
-  [[ -n "$_BD803_REVIEW_LIB_PIN" && -n "$_BD803_REVIEW_LIB_STAGED" && -f "$_BD803_REVIEW_LIB_STAGED" && -n "$_BD803_REVIEW_LIB_SHA" ]] || return 1
-  # Trap only in the top-level shell. Command-substitution subshells inherit traps and
-  # fire EXIT cleanup when they return, which deletes the staged copy before the caller
-  # can use the path ($(_bd803_review_lib_exec) in _execute_codex).
-  if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
-    _bd803_review_lib_exec_trap_set=1
-    builtin trap '_bd803_cleanup_review_lib_exec' EXIT
+        )
+        if [[ -n "$_BESL_OUT" ]]; then
+          _BD803_REVIEW_LIB_PIN=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '1p')
+          _BD803_REVIEW_LIB_STAGED=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '2p')
+          _BD803_REVIEW_LIB_SHA=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '3p')
+          _BESL_BAD=0
+          case "$_BD803_REVIEW_LIB_PIN" in *$'\n'*) _BESL_BAD=1 ;; esac
+          case "$_BD803_REVIEW_LIB_STAGED" in *$'\n'*) _BESL_BAD=1 ;; esac
+          case "$_BD803_REVIEW_LIB_SHA" in *$'\n'*) _BESL_BAD=1 ;; esac
+          if [[ "$_BESL_BAD" -eq 0 && -n "$_BD803_REVIEW_LIB_PIN" && -n "$_BD803_REVIEW_LIB_STAGED" && -f "$_BD803_REVIEW_LIB_STAGED" && -n "$_BD803_REVIEW_LIB_SHA" ]]; then
+            _BD803_REVIEW_LIB_EXEC="$_BD803_REVIEW_LIB_STAGED"
+            if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
+              _bd803_review_lib_exec_trap_set=1
+              trap '_bd803_cleanup_review_lib_exec' EXIT
+            fi
+            _BESL_OK=1
+          fi
+        fi
+        ;;
+    esac
+  fi
+  if [[ "$_BESL_OK" -eq 1 ]]; then
+    /usr/bin/true
+  else
+    /usr/bin/false
   fi
 }
 
 # #803: latch canonical resolve-cli.sh once at trusted source load.
-builtin unset _BD803_REVIEW_LIB_PIN _BD803_REVIEW_LIB_STAGED _BD803_REVIEW_LIB_EXEC _BD803_REVIEW_LIB_SHA _bd803_pin_latched _bd803_review_lib_exec_trap_set
+# Direct assignment (not `builtin unset`): BASH_FUNC_builtin%% can no-op unset.
+# Remove any prior staged copy before clearing the path (re-source leak).
+if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+  /bin/rm -f "${_BD803_REVIEW_LIB_STAGED}"
+fi
+_BD803_REVIEW_LIB_PIN=
+_BD803_REVIEW_LIB_STAGED=
+_BD803_REVIEW_LIB_EXEC=
+_BD803_REVIEW_LIB_SHA=
+_bd803_pin_latched=
+_bd803_review_lib_exec_trap_set=
 _bd803_pin_src="${BASH_SOURCE[0]-}"
 case "$_bd803_pin_src" in
   /dev/fd/*) ;;
@@ -225,13 +251,20 @@ fi
 _bd803_review_lib_exec() {
   # Lazy staging must run in the caller shell — not inside $() — or the subshell EXIT
   # trap deletes the staged bytes before the returned path is usable.
+  # Never fall back to _BD803_REVIEW_LIB_PIN: that reopens the mutable source.
+  _BRLE_OUT=
   if [[ "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
-    _bd803_ensure_staged_lib || return 1
+    if _bd803_ensure_staged_lib; then
+      :
+    fi
   fi
   if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -r "${_BD803_REVIEW_LIB_STAGED}" ]]; then
-    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_STAGED"
-  elif [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]]; then
-    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_PIN"
+    _BRLE_OUT="$_BD803_REVIEW_LIB_STAGED"
+  fi
+  if [[ -n "$_BRLE_OUT" ]]; then
+    /usr/bin/printf '%s' "$_BRLE_OUT"
+  else
+    /usr/bin/false
   fi
 }
 
@@ -3538,7 +3571,44 @@ _execute_codex() {
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
-      _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
+      # Stage companion bytes under a private path; execute that copy (not the cache pathname).
+      _bd803_cc_staged=
+      _bd803_cc_staged=$(/usr/bin/mktemp -t bd803-cc.XXXXXX) || _bd803_cc_staged=
+      if [[ -z "$_bd803_cc_staged" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: cannot stage codex companion — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      builtin unset -f exec 2>/dev/null || true
+      exec 9< "$_bd803_cc_a" || { /bin/rm -f "$_bd803_cc_staged"; _bd803_cc_staged=; }
+      if [[ -z "$_bd803_cc_staged" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: cannot open codex companion for staging — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      /bin/cp /dev/fd/9 "$_bd803_cc_staged" || { exec 9<&- 2>/dev/null || true; /bin/rm -f "$_bd803_cc_staged"; _bd803_cc_staged=; }
+      exec 9<&- 2>/dev/null || true
+      if [[ -z "$_bd803_cc_staged" || ! -f "$_bd803_cc_staged" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: cannot copy codex companion — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      /bin/chmod 500 "$_bd803_cc_staged" || { /bin/rm -f "$_bd803_cc_staged"; _bd803_cc_staged=; }
+      if [[ -z "$_bd803_cc_staged" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: cannot lock staged codex companion — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_staged" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
+      /bin/rm -f "$_bd803_cc_staged"
+      fi
+      fi
+      fi
+      fi
       fi
       fi
       fi
@@ -4717,7 +4787,14 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
   [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
   cd "$_ER_OC_CWD" 2>/dev/null || exit 1
-  OPENCODE_CONFIG="$_ER_OC_CFG"
+  # Immutable sandbox copy: do not reopen the plugin-tree pathname after checks.
+  _ER_OC_CFG_STAGED="${_BD_OC_SANDBOX_HOME}/opencode-review-config.json"
+  builtin unset -f exec 2>/dev/null || true
+  exec 8< "$_ER_OC_CFG" || exit 1
+  /bin/cp /dev/fd/8 "$_ER_OC_CFG_STAGED" || { exec 8<&- 2>/dev/null || true; /bin/rm -f "$_ER_OC_CFG_STAGED"; exit 1; }
+  exec 8<&- 2>/dev/null || true
+  /bin/chmod 400 "$_ER_OC_CFG_STAGED" || { /bin/rm -f "$_ER_OC_CFG_STAGED"; exit 1; }
+  OPENCODE_CONFIG="$_ER_OC_CFG_STAGED"
   XDG_CONFIG_HOME="$_ER_OC_CWD"
   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"
   XDG_CACHE_HOME="${_ER_OC_HOME}/.cache"

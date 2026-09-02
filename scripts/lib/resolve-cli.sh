@@ -47,6 +47,249 @@ else
   _bd_lib_dir=""
 fi
 
+# #803: minimal trusted-source latch helpers — latch runs immediately after these
+# three definitions, before any other large function bodies are sourced.
+
+_bd803_canonical_file_path() {
+  _BCFP_ARG=${1-}
+  _BCFP_OUT=
+  # shellcheck disable=SC2016
+  _BCFP_SCRIPT='
+p=${1-}
+[ -n "$p" ] || exit 1
+case $p in *'"'"'
+'"'"'*) exit 1 ;; esac
+n=0
+while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+  t=$(/usr/bin/readlink "$p"; /usr/bin/printf BD803_EOF) || exit 1
+  t=${t%BD803_EOF}
+  case $t in *'"'"'
+'"'"'*) exit 1 ;; esac
+  case $t in
+    /*) p=$t ;;
+    *) p=$(/usr/bin/dirname -- "$p")/$t ;;
+  esac
+  n=$((n + 1))
+done
+[ -L "$p" ] && exit 1
+[ -f "$p" ] || exit 1
+case $p in *'"'"'
+'"'"'*) exit 1 ;; esac
+d=$(CDPATH=; cd -- "$(/usr/bin/dirname -- "$p")" && pwd -P) || exit 1
+[ -n "$d" ] || exit 1
+case $d in *'"'"'
+'"'"'*) exit 1 ;; esac
+b=$(/usr/bin/basename -- "$p") || exit 1
+case $b in *'"'"'
+'"'"'*) exit 1 ;; esac
+printf "%s/%s\n" "$d" "$b"
+'
+  _BCFP_OUT="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_BCFP_SCRIPT}" bash "${_BCFP_ARG}")" || _BCFP_OUT=
+  case "${_BCFP_OUT}" in
+    /*) ;;
+    *) _BCFP_OUT= ;;
+  esac
+  case "${_BCFP_OUT}" in
+    *$'\n'*) _BCFP_OUT= ;;
+  esac
+  [[ -n "${_BCFP_OUT}" ]] && /usr/bin/printf '%s\n' "${_BCFP_OUT}"
+}
+
+_bd803_file_sha256() {
+  _BFS_PATH=${1-}
+  # shellcheck disable=SC2016
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PERL5OPT= PERL5LIB= PERLLIB= /bin/bash --noprofile --norc -c 'p=$1; /usr/bin/shasum -a 256 "$p" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done' bash "$_BFS_PATH"
+}
+
+_bd803_cleanup_review_lib_exec() {
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+  fi
+  _BD803_REVIEW_LIB_EXEC=
+}
+
+_bd803_latch_review_lib_pin() {
+  _BRLP_PATH=${1-}
+  case "$_BRLP_PATH" in
+    /dev/fd/*) return 1 ;;
+  esac
+  [[ -n "$_BRLP_PATH" && -f "$_BRLP_PATH" ]] || return 1
+  if [[ "${_BD803_REVIEW_LIB_PIN:-}" != "$_BRLP_PATH" ]]; then
+    if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+      /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    fi
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+  fi
+  _BD803_REVIEW_LIB_PIN="$_BRLP_PATH"
+}
+
+_bd803_ensure_staged_lib() {
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
+    _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
+    [[ "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]] && return 0
+    /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+  fi
+  [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]] || return 1
+  case "$_BD803_REVIEW_LIB_PIN" in
+    /dev/fd/*) return 1 ;;
+  esac
+  _BESL_OUT=$(
+    # shellcheck disable=SC2016
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c '
+pin=$1
+case $pin in /dev/fd/*) exit 1 ;; esac
+case $pin in *'"'"'
+'"'"'*) exit 1 ;; esac
+n=0
+while [ -L "$pin" ] && [ "$n" -lt 32 ]; do
+  t=$(/usr/bin/readlink "$pin"; /usr/bin/printf BD803_EOF) || exit 1
+  t=${t%BD803_EOF}
+  case $t in *'"'"'
+'"'"'*) exit 1 ;; esac
+  case $t in
+    /*) pin=$t ;;
+    *) pin=$(/usr/bin/dirname -- "$pin")/$t ;;
+  esac
+  n=$((n + 1))
+done
+[ -L "$pin" ] && exit 1
+[ -f "$pin" ] || exit 1
+case $pin in *'"'"'
+'"'"'*) exit 1 ;; esac
+d=$(CDPATH=; cd -- "$(/usr/bin/dirname -- "$pin")" && pwd -P) || exit 1
+[ -n "$d" ] || exit 1
+case $d in *'"'"'
+'"'"'*) exit 1 ;; esac
+b=$(/usr/bin/basename -- "$pin") || exit 1
+case $b in *'"'"'
+'"'"'*) exit 1 ;; esac
+pin="$d/$b"
+builtin exec 3< "$pin" || exit 1
+staged=$(/usr/bin/mktemp -t bd803-lib.XXXXXX) || exit 1
+/bin/cp /dev/fd/3 "$staged" || { /bin/rm -f "$staged"; exit 1; }
+builtin exec 3<&- 2>/dev/null || true
+/bin/chmod 500 "$staged" || { /bin/rm -f "$staged"; exit 1; }
+sha=$(/usr/bin/shasum -a 256 "$staged" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done)
+[ -n "$sha" ] || { /bin/rm -f "$staged"; exit 1; }
+printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
+' bash "$_BD803_REVIEW_LIB_PIN"
+  ) || return 1
+  _BD803_REVIEW_LIB_PIN=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '1p')
+  _BD803_REVIEW_LIB_STAGED=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '2p')
+  _BD803_REVIEW_LIB_SHA=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '3p')
+  case "$_BD803_REVIEW_LIB_PIN" in *$'\n'*) return 1 ;; esac
+  case "$_BD803_REVIEW_LIB_STAGED" in *$'\n'*) return 1 ;; esac
+  case "$_BD803_REVIEW_LIB_SHA" in *$'\n'*) return 1 ;; esac
+  _BD803_REVIEW_LIB_EXEC="$_BD803_REVIEW_LIB_STAGED"
+  [[ -n "$_BD803_REVIEW_LIB_PIN" && -n "$_BD803_REVIEW_LIB_STAGED" && -f "$_BD803_REVIEW_LIB_STAGED" && -n "$_BD803_REVIEW_LIB_SHA" ]] || return 1
+  # Trap only in the top-level shell. Command-substitution subshells inherit traps and
+  # fire EXIT cleanup when they return, which deletes the staged copy before the caller
+  # can use the path ($(_bd803_review_lib_exec) in _execute_codex).
+  if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
+    _bd803_review_lib_exec_trap_set=1
+    builtin trap '_bd803_cleanup_review_lib_exec' EXIT
+  fi
+}
+
+# #803: latch canonical resolve-cli.sh once at trusted source load.
+builtin unset _BD803_REVIEW_LIB_PIN _BD803_REVIEW_LIB_STAGED _BD803_REVIEW_LIB_EXEC _BD803_REVIEW_LIB_SHA _bd803_pin_latched _bd803_review_lib_exec_trap_set
+_bd803_pin_src="${BASH_SOURCE[0]-}"
+case "$_bd803_pin_src" in
+  /dev/fd/*) ;;
+  *)
+    _bd803_pin_latched=1
+    case "$_bd803_pin_src" in
+      /*) ;;
+      *) _bd803_pin_src="${PWD%/}/${_bd803_pin_src}" ;;
+    esac
+    case "$_bd803_pin_src" in *$'\n'*) _bd803_pin_src= ;; esac
+    if [[ -n "$_bd803_pin_src" && -f "$_bd803_pin_src" ]]; then
+      _BD803_REVIEW_LIB_PIN="$_bd803_pin_src"
+    fi
+    ;;
+esac
+if [[ "${BASH_SUBSHELL:-0}" -eq 0 && -n "${_BD803_REVIEW_LIB_PIN:-}" ]]; then
+  _bd803_ensure_staged_lib
+fi
+
+
+
+_bd803_review_lib_exec() {
+  # Lazy staging must run in the caller shell — not inside $() — or the subshell EXIT
+  # trap deletes the staged bytes before the returned path is usable.
+  if [[ "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
+    _bd803_ensure_staged_lib || return 1
+  fi
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -r "${_BD803_REVIEW_LIB_STAGED}" ]]; then
+    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_STAGED"
+  elif [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]]; then
+    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_PIN"
+  fi
+}
+
+_bd803_verify_review_lib_bytes() {
+  _bd803_ensure_staged_lib || return 1
+  [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]] || return 1
+  _BRLV_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
+  [[ "$_BRLV_NOW" == "$_BD803_REVIEW_LIB_SHA" ]]
+}
+
+_bd803_bash_staged_lib() {
+  _BSL_ARGS=("$@")
+  _bd803_ensure_staged_lib || return 1
+  _BSL_PATH=/usr/bin:/bin
+  if [[ "${_BD803_STAGED_AMBIENT_PATH:-}" == 1 ]]; then
+    _BSL_PATH="${PATH-}"
+    builtin unset _BD803_STAGED_AMBIENT_PATH
+  fi
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+    /usr/bin/env -i PATH="${_BSL_PATH}" PWD="${PWD-}" BD803_STAGED_PATH="${_BD803_REVIEW_LIB_STAGED}" BD803_EXPECTED_SHA="${_BD803_REVIEW_LIB_SHA}" \
+      /bin/bash --noprofile --norc -c "
+staged=\${BD803_STAGED_PATH-}
+expected=\${BD803_EXPECTED_SHA-}
+[[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
+builtin exec 4< \"\${staged}\" || exit 1
+builtin exec 5< \"\${staged}\" || exit 1
+sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+[[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
+/bin/bash --noprofile --norc /dev/fd/4 \"\$@\"
+exit \$?
+" bash "${_BSL_ARGS[@]}"
+}
+_bd803_bash_staged_lib_ambient() {
+  _BD803_STAGED_AMBIENT_PATH=1
+  _bd803_bash_staged_lib "$@"
+}
+
+# Review-mode _portable_timeout: fd-backed bash when _pt_lib is the staged copy.
+_bd803_bash_pt_lib() {
+  _BPL_ARGS=("$@")
+  if [[ "${_pt_lib}" == "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    _bd803_bash_staged_lib "${_BPL_ARGS[@]}"
+  else
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib}" "${_BPL_ARGS[@]}"
+  fi
+}
+
+_bd803_bash_pt_lib_ambient_path() {
+  _BPL_ARGS=("$@")
+  if [[ "${_pt_lib}" == "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    _BD803_STAGED_AMBIENT_PATH=1
+    _bd803_bash_staged_lib "${_BPL_ARGS[@]}"
+  else
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib}" "${_BPL_ARGS[@]}"
+  fi
+}
+
 # ── Low-level utilities (used by all three systems) ──────────────
 
 # #789/#803: trusted review CLI resolve (env -i children; no shadowable parent builtins).
@@ -109,6 +352,7 @@ exit 1
 '
   LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_TCDIC_SCRIPT}" bash "${_TCDIC_ARG}"
 }
+
 
 _resolve_trusted_cli_bin() {
   # Parent: keywords/assignments/abs paths only; PATH walk in env -i child.
@@ -1527,6 +1771,7 @@ _portable_timeout() {
   _pt_err=
   _pt_lib_src=
   _pt_lib_dir=
+  _pt_lib=
   _pt_launch=
   _pt_fresh=
   _pt_node_fresh=
@@ -1537,19 +1782,73 @@ _portable_timeout() {
     _cli_name="${_pt_argv[1]-}"
     _pt_argv=("${_pt_argv[@]:2}")
     case "$_cli_name" in
-      codex|agy|droid|node) ;;
-      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node (got: ${_cli_name:-empty})" ;;
+      codex|agy|droid|node|opencode) ;;
+      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node|opencode (got: ${_cli_name:-empty})" ;;
     esac
-    # #803: derive lib dir from BASH_SOURCE (not mutable _bd_lib_dir).
-    _pt_lib_src="${BASH_SOURCE[0]-}"
-    case "$_pt_lib_src" in
-      /*) ;;
-      *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
-    esac
-    _pt_lib_dir=
-    # shellcheck disable=SC2016
-    _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+    # #803: canonical lib pin (BD803_REVIEW_LIB) or BASH_SOURCE fallback.
+    _pt_lib=
+    if [[ -n "${BD803_REVIEW_LIB-}" ]]; then
+      case "${BD803_REVIEW_LIB}" in
+        /*) ;;
+        *) _pt_err="busdriver: BD803_REVIEW_LIB must be an absolute path — refusing." ;;
+      esac
+      if [[ -z "$_pt_err" ]]; then
+        case "${BD803_REVIEW_LIB}" in *$'\n'*) _pt_err="busdriver: BD803_REVIEW_LIB contains newline — refusing." ;; esac
+      fi
+      if [[ -z "$_pt_err" ]]; then
+        _pt_lib_exec_ref="${_BD803_REVIEW_LIB_STAGED:-}"
+        case "${_pt_lib_exec_ref}" in *$'\n'*) _pt_lib_exec_ref= ;; esac
+        if [[ -n "$_pt_lib_exec_ref" && "${BD803_REVIEW_LIB}" == "$_pt_lib_exec_ref" && -f "${BD803_REVIEW_LIB}" ]]; then
+          if ! _bd803_verify_review_lib_bytes; then
+            _pt_err="busdriver: review lib bytes changed since trusted load — refusing."
+            _pt_lib=
+          else
+            _pt_lib="${BD803_REVIEW_LIB}"
+            _pt_lib_dir="${_BD803_REVIEW_LIB_PIN%/*}"
+          fi
+        else
+        _pt_lib_pin="$(_bd803_canonical_file_path "${BD803_REVIEW_LIB}")" || _pt_lib_pin=
+        case "${_pt_lib_pin}" in *$'\n'*) _pt_lib_pin= ;; esac
+        _pt_lib_self="${_BD803_REVIEW_LIB_PIN:-}"
+        case "${_pt_lib_self}" in *$'\n'*) _pt_lib_self= ;; esac
+        if [[ -z "$_pt_lib_pin" ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB pin missing or invalid — refusing."
+          _pt_lib=
+        elif [[ "$(/usr/bin/basename -- "$_pt_lib_pin")" != resolve-cli.sh ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB must resolve to resolve-cli.sh — refusing."
+          _pt_lib=
+        elif [[ -z "$_pt_lib_self" || "$_pt_lib_pin" != "$_pt_lib_self" ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB pin does not match disk-fresh resolve-cli.sh — refusing."
+          _pt_lib=
+        else
+          _pt_lib="$_pt_lib_pin"
+          _pt_lib_dir="${_pt_lib%/*}"
+        fi
+        fi
+      fi
+
+    else
+      _pt_lib="${_BD803_REVIEW_LIB_PIN:-}"
+      case "$_pt_lib" in *$'\n'*) _pt_lib= ;; esac
+      if [[ -n "${_pt_lib:-}" ]]; then
+        _pt_lib_dir="${_pt_lib%/*}"
+      else
+        _pt_err="busdriver: cannot canonicalize resolve-cli.sh for review dispatch — refusing."
+      fi
+    fi
   fi
+  if [[ "$_review" -eq 1 && -z "$_pt_err" && -n "${_pt_lib:-}" ]]; then
+    if ! _bd803_verify_review_lib_bytes; then
+      _pt_err="busdriver: review lib bytes changed since trusted load — refusing."
+      _pt_lib=
+    else
+      _pt_lib_exec="$(_bd803_review_lib_exec)"
+      if [[ -n "$_pt_lib_exec" && -f "$_pt_lib_exec" ]]; then
+        _pt_lib="$_pt_lib_exec"
+      fi
+    fi
+  fi
+
 
   if [[ -z "$_pt_err" ]]; then
     _pt_duration="${_pt_argv[0]-}"
@@ -1608,7 +1907,9 @@ _portable_timeout() {
             # shellcheck disable=SC2016
             _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
           fi
-          if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
+          if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+            _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
+          elif [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
             _pt_trusted="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-cli "${_cli_name}")" || _pt_trusted=
           else
             _pt_trusted="$(_resolve_trusted_cli_bin "$_cli_name")" || _pt_trusted=
@@ -1630,10 +1931,10 @@ _portable_timeout() {
         # --review abs argv0 must equal disk-fresh trusted CLI (#803).
         if [[ "$_review" -eq 1 ]]; then
           case "$_cli_name" in
-            codex|agy|droid|node)
+            codex|agy|droid|node|opencode)
               _pt_trusted=
-              if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
-                _pt_trusted="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-cli "${_cli_name}")" || _pt_trusted=
+              if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+                _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
               fi
               _pt_same=0
               if [[ -n "$_pt_trusted" ]]; then
@@ -1649,7 +1950,7 @@ _portable_timeout() {
               fi
               ;;
             *)
-              _pt_err="busdriver: --review requires codex|agy|droid|node before an absolute argv0 (got: ${_cli_name:-empty})"
+              _pt_err="busdriver: --review requires codex|agy|droid|node|opencode before an absolute argv0 (got: ${_cli_name:-empty})"
               ;;
           esac
         fi
@@ -1665,15 +1966,8 @@ _portable_timeout() {
   fi
 
   # Trusted-dir timeout lookup (phys before trust; review: disk-fresh).
-  if [[ "$_review" -eq 1 && -z "${_pt_lib_dir:-}" ]]; then
-    _pt_lib_src="${BASH_SOURCE[0]-}"
-    case "$_pt_lib_src" in
-      /*) ;;
-      *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
-    esac
-    _pt_lib_dir=
-    # shellcheck disable=SC2016
-    _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+  if [[ "$_review" -eq 1 && -z "${_pt_lib:-}" && -z "$_pt_err" ]]; then
+    _pt_err="busdriver: cannot canonicalize resolve-cli.sh for review dispatch — refusing."
   fi
   _to_trust="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
   _pathrest="${_to_trust}:"
@@ -1682,8 +1976,8 @@ _portable_timeout() {
     _pathrest="${_pathrest#*:}"
     if [[ -n "$_d" && -x "$_d/timeout" && ! -d "$_d/timeout" ]]; then
       if [[ "$_review" -eq 1 ]]; then
-        if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]] \
-          && ! /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --outside-checkout "$_d/timeout"; then
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]] \
+          && ! _bd803_bash_pt_lib --outside-checkout "$_d/timeout"; then
           _to_bin="$_d/timeout"
         fi
       elif ! _trusted_cli_dir_in_checkout "$_d/timeout"; then
@@ -1697,8 +1991,8 @@ _portable_timeout() {
     _pathrest="${_pathrest#*:}"
     if [[ -n "$_d" && -x "$_d/gtimeout" && ! -d "$_d/gtimeout" ]]; then
       if [[ "$_review" -eq 1 ]]; then
-        if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]] \
-          && ! /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --outside-checkout "$_d/gtimeout"; then
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]] \
+          && ! _bd803_bash_pt_lib --outside-checkout "$_d/gtimeout"; then
           _to_bin="$_d/gtimeout"
         fi
       elif ! _trusted_cli_dir_in_checkout "$_d/gtimeout"; then
@@ -1733,32 +2027,22 @@ _portable_timeout() {
 
   # #803: disk-fresh HOME/PATH + rebuild existing outside-checkout PATH comps.
   if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
-    if [[ -z "${_pt_lib_dir:-}" ]]; then
-      _pt_lib_src="${BASH_SOURCE[0]-}"
-      case "$_pt_lib_src" in
-        /*) ;;
-        *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
-      esac
-      _pt_lib_dir=
-      # shellcheck disable=SC2016
-      _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
-    fi
-    if [[ -z "${_pt_lib_dir:-}" || ! -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
+    if [[ -z "${_pt_lib:-}" || ! -f "${_pt_lib}" ]]; then
       _pt_err="busdriver: cannot locate resolve-cli.sh for containment check — refusing timed dispatch."
     else
-      _op_home_fresh="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-home)" || _op_home_fresh=
+      _op_home_fresh="$(_bd803_bash_pt_lib --print-trusted-home)" || _op_home_fresh=
       if [[ -z "$_op_home_fresh" || "$_op_home_fresh" != /* || "$_op_home" != "$_op_home_fresh" ]]; then
         _pt_err="busdriver: cannot derive a trusted absolute operator home — refusing timed dispatch."
       else
         _op_home="$_op_home_fresh"
-        if /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --outside-checkout "$_op_home"; then
+        if _bd803_bash_pt_lib --outside-checkout "$_op_home"; then
           _pt_err="busdriver: operator home resolves inside the reviewed checkout — refusing timed dispatch."
         fi
       fi
       if [[ -z "$_pt_err" ]]; then
         _disp_fresh=
         if [[ -n "$_pt_bin" && -n "$_cli_name" && "$_cli_name" != "node" ]]; then
-          _disp_fresh="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-review-dispatch-path "$_pt_bin" "$_cli_name")" || _disp_fresh=
+          _disp_fresh="$(_bd803_bash_pt_lib_ambient_path --print-review-dispatch-path "$_pt_bin" "$_cli_name")" || _disp_fresh=
           if [[ -z "$_disp_fresh" || "$_disp" != "$_disp_fresh" ]]; then
             _pt_err="busdriver: cannot build a trusted review dispatch PATH — refusing timed dispatch."
           else
@@ -1781,7 +2065,7 @@ _portable_timeout() {
           if [[ -z "$_d" || "$_d" != /* ]]; then
             _pt_err="busdriver: review PATH component must be a non-empty absolute directory (got: ${_d:-empty}) — refusing timed dispatch."
           elif [[ -d "$_d" ]]; then
-            if /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --outside-checkout "$_d"; then
+            if _bd803_bash_pt_lib --outside-checkout "$_d"; then
               _pt_err="busdriver: review PATH component resolves inside the reviewed checkout — refusing timed dispatch."
             elif [[ -n "$_disp_ok" ]]; then
               _disp_ok="${_disp_ok}:$_d"
@@ -1796,7 +2080,7 @@ _portable_timeout() {
           else
             _disp_ok=
             for _d in /usr/bin /bin; do
-              if [[ -d "$_d" ]] && ! /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --outside-checkout "$_d"; then
+              if [[ -d "$_d" ]] && ! _bd803_bash_pt_lib --outside-checkout "$_d"; then
                 if [[ -n "$_disp_ok" ]]; then
                   _disp_ok="${_disp_ok}:$_d"
                 else
@@ -1818,8 +2102,8 @@ _portable_timeout() {
   # #803: pre-launch disk-fresh argv0 (== declared CLI); node pins companion argv1.
   if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
     _pt_fresh=
-    if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" && -n "${_cli_name:-}" ]]; then
-      _pt_fresh="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-cli "${_cli_name}")" || _pt_fresh=
+    if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" && -n "${_cli_name:-}" ]]; then
+      _pt_fresh="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_fresh=
     fi
     _pt_same=0
     if [[ -n "${_pt_argv[0]-}" && -n "$_pt_fresh" ]]; then
@@ -1833,8 +2117,8 @@ _portable_timeout() {
       # Companion only when argv[1] present (bare node PATH-scrub has none).
       if [[ -n "${_pt_argv[1]-}" ]]; then
         _pt_cc=
-        if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
-          _pt_cc="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-companion)" || _pt_cc=
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+          _pt_cc="$(_bd803_bash_pt_lib --print-trusted-companion)" || _pt_cc=
         fi
         if [[ -z "$_pt_cc" || "$_pt_cc" == "none" || "${_pt_argv[1]}" != "$_pt_cc" ]]; then
           _pt_err="busdriver: --review node companion argv must match trusted companion — refusing timed dispatch."
@@ -1849,37 +2133,73 @@ _portable_timeout() {
     fi
   fi
 
+  # #803: --review opencode needs staged sandbox HOME + OPENCODE_CONFIG (clean child).
+  if [[ "$_review" -eq 1 && -z "$_pt_err" && "${_cli_name:-}" == "opencode" ]]; then
+    if [[ -z "${_BD_OC_SANDBOX_HOME:-}" || "$_BD_OC_SANDBOX_HOME" != /* \
+      || -z "${OPENCODE_CONFIG:-}" || "$OPENCODE_CONFIG" != /* ]]; then
+      _pt_err="busdriver: --review opencode requires staged sandbox HOME + OPENCODE_CONFIG — refusing."
+    fi
+  fi
+
   # SINGLE exit: absolute printf/false (unshadowable).
   if [[ -n "$_pt_err" ]]; then
     /usr/bin/printf '%s\n' "$_pt_err" >&2
     /usr/bin/false
   elif [[ "$_review" -eq 1 ]]; then
     # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
+    # #803: opencode uses staged sandbox HOME + OPENCODE/XDG from clean child.
+    _pt_rev_home="$_op_home"
+    if [[ "${_cli_name:-}" == "opencode" && -n "${_BD_OC_SANDBOX_HOME:-}" ]]; then
+      _pt_rev_home="$_BD_OC_SANDBOX_HOME"
+    fi
     if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
-      LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
-      DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
-      DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
-      DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-      /usr/bin/env -i \
-        HOME="$_op_home" \
-        PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
-        GIT_NO_REPLACE_OBJECTS=1 \
-        TERM="${TERM:-dumb}" \
-        LANG="${LANG:-C}" \
-        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      if [[ "${_cli_name:-}" == "opencode" ]]; then
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
+          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
+          XDG_DATA_HOME="${XDG_DATA_HOME}" \
+          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
     else
       # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
-      LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
-      DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
-      DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
-      DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
-      /usr/bin/env -i \
-        HOME="$_op_home" \
-        PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
-        GIT_NO_REPLACE_OBJECTS=1 \
-        TERM="${TERM:-dumb}" \
-        LANG="${LANG:-C}" \
-        /usr/bin/perl -e '
+      if [[ "${_cli_name:-}" == "opencode" ]]; then
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
+          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
+          XDG_DATA_HOME="${XDG_DATA_HOME}" \
+          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          /usr/bin/perl -e '
       use POSIX ":sys_wait_h";
       our $pid = fork();
       if (!defined $pid) { die "fork failed: $!"; }
@@ -1901,6 +2221,40 @@ _portable_timeout() {
       if ($? & 127) { exit(128 + ($? & 127)); }
       exit($? >> 8);
     ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          /usr/bin/perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
     fi
   else
     # Non-review: keep ambient PATH. Pin scrub blanks loader/shell inject vars
@@ -2853,7 +3207,7 @@ _run_review_with_retries() {
     if [[ "$_RRWR_STDIN_MODE" == "none" ]]; then
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid)
+          codex|agy|droid|opencode)
             _RRWR_OUTPUT=$(_portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(_portable_timeout "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -2864,7 +3218,7 @@ _run_review_with_retries() {
     else
       if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
         case "$_RRWR_LABEL" in
-          codex|agy|droid)
+          codex|agy|droid|opencode)
             _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
           *)
             _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
@@ -2989,19 +3343,25 @@ _execute_codex() {
   else
 
   # #803: disk-fresh dual companion probe; ignore preexisting _CODEX_COMPANION.
-  _bd803_cc_lib_src="${BASH_SOURCE[0]-}"
-  case "$_bd803_cc_lib_src" in
-    /*) ;;
-    *) _bd803_cc_lib_src="${PWD%/}/${_bd803_cc_lib_src}" ;;
-  esac
-  _bd803_cc_lib_dir=
-  # shellcheck disable=SC2016
-  _bd803_cc_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_bd803_cc_lib_src%/*}")" || _bd803_cc_lib_dir=
+  if ! _bd803_ensure_staged_lib; then
+    /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
+    _bd_exit_as 1
+  fi
+  _bd803_cc_lib="${_BD803_REVIEW_LIB_STAGED:-}"
+  case "$_bd803_cc_lib" in *$'\n'*) _bd803_cc_lib= ;; esac
+  if [[ -z "$_bd803_cc_lib" || ! -f "$_bd803_cc_lib" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
+    _bd_exit_as 1
+  elif ! _bd803_verify_review_lib_bytes; then
+    /usr/bin/printf "%s\n" "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
+    _bd_exit_as 1
+  else
+  # #803: exec copy once — retries reuse this path (do not re-resolve BASH_SOURCE).
   _bd803_cc_a=
   _bd803_cc_b=
-  if [[ -n "${_bd803_cc_lib_dir:-}" && -f "${_bd803_cc_lib_dir}/resolve-cli.sh" ]]; then
-    _bd803_cc_a="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_bd803_cc_lib_dir}/resolve-cli.sh" --print-trusted-companion)" || _bd803_cc_a=
-    _bd803_cc_b="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_bd803_cc_lib_dir}/resolve-cli.sh" --print-trusted-companion)" || _bd803_cc_b=
+  if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then
+    _bd803_cc_a="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_a=
+    _bd803_cc_b="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_b=
   fi
   if [[ -z "${_bd803_cc_a:-}" || "$_bd803_cc_a" == "none" || "$_bd803_cc_a" != /* \
       || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
@@ -3069,6 +3429,12 @@ _execute_codex() {
 
   _ECX_DONE=0
   while [[ "$_ECX_ATTEMPT" -le "$_ECX_MAX_RETRIES" && "$_ECX_DONE" -eq 0 ]]; do
+    if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]] && ! _bd803_verify_review_lib_bytes; then
+      /usr/bin/printf '%s\n' "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
+      _ECX_EXIT_CODE=1
+      _ECX_DONE=1
+      continue
+    fi
     # Budget gate + backoff FIRST, before the per-attempt state resets below — the
     # bail-outs here must still see the PREVIOUS attempt's exit_code and
     # _ECX_LAST_WAS_TRANSIENT so a budget-exhausted sequence stays droid-eligible.
@@ -3134,19 +3500,11 @@ _execute_codex() {
         _ECX_DONE=1
       else
       # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
-      _bd803_cc_lib_src="${BASH_SOURCE[0]-}"
-      case "$_bd803_cc_lib_src" in
-        /*) ;;
-        *) _bd803_cc_lib_src="${PWD%/}/${_bd803_cc_lib_src}" ;;
-      esac
-      _bd803_cc_lib_dir=
-      # shellcheck disable=SC2016
-      _bd803_cc_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_bd803_cc_lib_src%/*}")" || _bd803_cc_lib_dir=
       _bd803_cc_a=
       _bd803_cc_b=
-      if [[ -n "${_bd803_cc_lib_dir:-}" && -f "${_bd803_cc_lib_dir}/resolve-cli.sh" ]]; then
-        _bd803_cc_a="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_bd803_cc_lib_dir}/resolve-cli.sh" --print-trusted-companion)" || _bd803_cc_a=
-        _bd803_cc_b="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_bd803_cc_lib_dir}/resolve-cli.sh" --print-trusted-companion)" || _bd803_cc_b=
+      if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then
+        _bd803_cc_a="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_a=
+        _bd803_cc_b="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_b=
       fi
       if [[ -z "${_bd803_cc_a:-}" || "$_bd803_cc_a" == "none" || "$_bd803_cc_a" != /* \
           || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
@@ -3156,8 +3514,8 @@ _execute_codex() {
         _ECX_DONE=1
       else
       _bd803_cc_disp=
-      if [[ -n "${_bd803_cc_lib_dir:-}" && -f "${_bd803_cc_lib_dir}/resolve-cli.sh" && -n "${_bd_codex_bin:-}" ]]; then
-        _bd803_cc_disp="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_bd803_cc_lib_dir}/resolve-cli.sh" --print-review-dispatch-path "$_bd_codex_bin" codex)" || _bd803_cc_disp=
+      if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" && -n "${_bd_codex_bin:-}" ]]; then
+        _bd803_cc_disp="$(_bd803_bash_staged_lib_ambient --print-review-dispatch-path "$_bd_codex_bin" codex)" || _bd803_cc_disp=
       fi
       if [[ -z "${_bd803_cc_disp:-}" ]]; then
         /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
@@ -3165,7 +3523,7 @@ _execute_codex() {
         _ECX_EXIT_CODE=1
         _ECX_DONE=1
       else
-      _ECX_OUTPUT=$(PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
+      _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
       fi
       fi
       fi
@@ -3175,7 +3533,7 @@ _execute_codex() {
       if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
         _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
+      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
@@ -3309,14 +3667,14 @@ _execute_codex() {
       _droid_errf=""
       _droid_errf=$(/usr/bin/mktemp -t droid-err 2>/dev/null) || _droid_errf=$(/usr/bin/mktemp 2>/dev/null) || _droid_errf=""
       if [[ -n "$_droid_errf" ]]; then
-        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || _ECX_DROID_EXIT=$?
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || _ECX_DROID_EXIT=$?
         _ECX_DROID_ERR=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
         /bin/rm -f "$_droid_errf"
       else
         # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
         # the exit-0+stderr-only false-success). Discard stderr for classification
         # and note the loss so the failure log still explains the gap.
-        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || _ECX_DROID_EXIT=$?
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || _ECX_DROID_EXIT=$?
         _ECX_DROID_ERR="(stderr discarded: mktemp unavailable)"
       fi
 
@@ -3383,6 +3741,7 @@ _execute_codex() {
     [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
     /usr/bin/printf '%s' "$_ECX_OUTPUT"
     _bd_exit_as "$_ECX_EXIT_CODE"
+  fi
   fi
   fi
   fi
@@ -4183,70 +4542,43 @@ execute_review() {
                echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
                _bd_exit_as 4
              else
-             # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
-             # opencode loads these in EVERY environment — including this
-             # sandbox — so they are a fourth config surface the three isolation
-             # boundaries do not cover. An `mcp` entry there would load inside
-             # the sandbox and read_mcp_resource survives the tool denylist
-             # (exactly why XDG_CONFIG_HOME is redirected). Shared guard:
-             # validate_opencode_home_config (single source of truth, also
-             # called by dispatch.sh's opencode arm). On success it also
-             # stages a validated copy at $_BD_OC_SANDBOX_HOME; the run below
-             # uses THAT as HOME so opencode reads exactly the validated bytes
-             # (the real ~/.opencode is never reopened — no validate-then-open
-             # race on a swapped-in mcp/npm payload). Validation runs INSIDE
-             # the trap-owned subshell so the staged sandbox is owned from
-             # creation (an early TERM cannot orphan credential-bearing dirs).
-             # shellcheck disable=SC2030,SC2031  # _ER_OC_CWD is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
-             ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"' EXIT   # best-effort cleanup even on grace-kill
-               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"; exit 143' TERM
-               trap '_bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"; exit 130' INT
-               # Pinned SYSTEM-ONLY PATH: the validator stages credentials
-               # with bare mktemp/mkdir/ln/rm — _ER_OC_PATH's first entry is the
-               # operator-WRITABLE opencode dir, which must not shadow those
-               # utilities; the system dirs carry them all.
-               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_ER_OC_HOME"; then
-                 exit 1
-               fi
-               # Neutral cwd INSIDE the validated sandbox (post-validation):
-               # opencode's project discovery walks UP from the cwd and stops
-               # at the sandbox's OWN validated copy — the real home's config
-               # surfaces are never reopened; the 0700 sandbox is private to
-               # the operator (no other-user planting; never ${TMPDIR} — repo-
-               # injectable).
-               _ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"
-               /bin/mkdir -p "$_ER_OC_CWD" 2>/dev/null || exit 1
-               # Git-init the EMPTY cwd: opencode's project-config discovery
-               # scans every ancestor through the worktree root (non-Git = /,
-               # reaching the real home); a git repo bounds the worktree AT
-               # the empty cwd. The workspace stays EMPTY — auth.json / SDK
-               # symlinks are OUTSIDE the worktree and external_directory is
-               # denied, so the read-enabled reviewer cannot reach them.
-               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable) with
-               # the EXECUTION-PROBED git (the CLT shim at /usr/bin/git exists
-               # but fails without CLT).
-               _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               cd "$_ER_OC_CWD" 2>/dev/null || exit 1
-               # XDG_DATA_HOME points at the SANDBOX data dir — populated
-               # with a validated auth.json copy ONLY (auth works, account
-               # state absent — nothing merges config after OPENCODE_CONFIG).
-               # XDG_CACHE_HOME shares the inert model/package cache.
-               # (Comments BEFORE the command — after a backslash
-               # continuation they would terminate the chain.)
-               _run_review_with_retries opencode "$2" "$_ER_DURATION" pipe \
-                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_ER_OC_PATH" \
-                   OPENCODE_CONFIG="$_ER_OC_CFG" XDG_CONFIG_HOME="$_ER_OC_CWD" \
-                   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
-                   XDG_CACHE_HOME="$_ER_OC_HOME/.cache" \
-                 "$_ER_OC_BIN" run --dir "$_ER_OC_CWD" --agent busdriver-review \
-                   -m "$_BD_AUDITOR_MODEL" )
-             _ER_OC_RC=$?
-              # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
-            /bin/rm -rf "$_ER_OC_CWD" 2>/dev/null || true
+             # #803: validation+dispatch MUST NOT run in an inherited subshell —
+             # BASH_FUNC_local%% can redefine _run_review_with_retries before PASS.
+             # Hand the prompt to a function-clean env -i / --noprofile --norc child
+             # (--execute-opencode-review) that validates, stages, and pipe-reviews
+             # via _portable_timeout --review opencode without returning here.
+             if ! _bd803_ensure_staged_lib; then
+               echo "busdriver: cannot stage resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
+               _bd_exit_as 1
+             fi
+             if [[ -z "${_BD803_REVIEW_LIB_STAGED:-}" || ! -f "${_BD803_REVIEW_LIB_STAGED}" || -z "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
+               echo "busdriver: cannot locate staged resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
+               _bd_exit_as 1
+             else
+             _ER_OC_RC=0
+             /usr/bin/printf '%s' "$2" | \
+             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+             /usr/bin/env -i \
+               PATH="/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin" \
+               BD803_OC_DURATION="$_ER_DURATION" \
+               BD803_OC_LIB_PIN="$_BD803_REVIEW_LIB_PIN" \
+               BD803_OC_LIB_SHA="$_BD803_REVIEW_LIB_SHA" \
+               BD803_STAGED_PATH="$_BD803_REVIEW_LIB_STAGED" \
+               BD803_EXPECTED_SHA="$_BD803_REVIEW_LIB_SHA" \
+               /bin/bash --noprofile --norc -c "
+staged=\${BD803_STAGED_PATH-}
+expected=\${BD803_EXPECTED_SHA-}
+[[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
+builtin exec 4< \"\${staged}\" || exit 1
+builtin exec 5< \"\${staged}\" || exit 1
+sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+[[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
+/bin/bash --noprofile --norc /dev/fd/4 --execute-opencode-review
+exit \$?
+" \
+               || _ER_OC_RC=$?
              _bd_exit_as "$_ER_OC_RC"
+             fi
              fi
              fi
              fi
@@ -4274,6 +4606,100 @@ execute_review() {
   esac
   fi
 }
+
+# #803: disk-fresh opencode validation+dispatch (no inherited BASH_FUNC_*).
+# Prompt on stdin; BD803_OC_DURATION from the parent env -i.
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]]; then
+  _ER_DURATION="${BD803_OC_DURATION-}"
+  if ! _ER_OC_PROMPT="$(/bin/cat)" || [[ -z "$_ER_OC_PROMPT" ]]; then
+    echo "busdriver: cannot read opencode review prompt — refusing." >&2
+    exit 1
+  fi
+  _ER_OC_CWD=
+  _BD_OC_SANDBOX_HOME=
+  if [[ "${BD803_OC_LIB_PIN:-}" == /* ]]; then
+    _ER_OC_CFG_LIB="$BD803_OC_LIB_PIN"
+  else
+    _ER_OC_LIB_SRC="${BASH_SOURCE[0]-}"
+    case "$_ER_OC_LIB_SRC" in
+      /*) ;;
+      *) _ER_OC_LIB_SRC="${PWD%/}/${_ER_OC_LIB_SRC}" ;;
+    esac
+    case "$_ER_OC_LIB_SRC" in *$'
+'*) _ER_OC_LIB_SRC= ;; esac
+    _ER_OC_CFG_LIB="$(_bd803_canonical_file_path "$_ER_OC_LIB_SRC")" || _ER_OC_CFG_LIB=
+    case "$_ER_OC_CFG_LIB" in *$'
+'*) _ER_OC_CFG_LIB= ;; esac
+  fi
+  if [[ -z "$_ER_OC_CFG_LIB" || ! -f "$_ER_OC_CFG_LIB" ]]; then
+    echo "busdriver: cannot locate resolve-cli.sh for opencode review config — refusing." >&2
+    exit 1
+  fi
+  if [[ -n "${BD803_OC_LIB_SHA:-}" && -n "${BD803_OC_LIB_PIN:-}" ]]; then
+    _ER_OC_PIN_CANON="$(_bd803_canonical_file_path "$BD803_OC_LIB_PIN")" || _ER_OC_PIN_CANON=
+    case "$_ER_OC_PIN_CANON" in *$'\n'*) _ER_OC_PIN_CANON= ;; esac
+    if [[ -z "$_ER_OC_PIN_CANON" || "$(/usr/bin/basename -- "$_ER_OC_PIN_CANON")" != resolve-cli.sh ]]; then
+      echo "busdriver: inherited BD803_OC_LIB_PIN is invalid — refusing." >&2
+      exit 1
+    fi
+    _bd803_latch_review_lib_pin "$_ER_OC_PIN_CANON" || { echo "busdriver: cannot latch inherited review lib pin — refusing." >&2; exit 1; }
+    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage inherited review lib — refusing." >&2; exit 1; }
+    if [[ "$_BD803_REVIEW_LIB_SHA" != "$BD803_OC_LIB_SHA" ]]; then
+      echo "busdriver: inherited review lib digest mismatch — refusing." >&2
+      exit 1
+    fi
+  else
+    _ER_OC_LIB="$_ER_OC_CFG_LIB"
+    _bd803_latch_review_lib_pin "$_ER_OC_LIB" || { echo "busdriver: cannot latch review lib pin — refusing." >&2; exit 1; }
+    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage review lib — refusing." >&2; exit 1; }
+  fi
+  _ER_OC_CFG="${_ER_OC_CFG_LIB%/*}/opencode-review-config.json"
+  [[ -f "$_ER_OC_CFG" ]] || { echo "busdriver: opencode review config missing at $_ER_OC_CFG" >&2; exit 1; }
+  _ER_OC_HOME="$(_trusted_operator_home)" || _ER_OC_HOME=
+  if [[ -z "$_ER_OC_HOME" || "$_ER_OC_HOME" != /* || ! -d "$_ER_OC_HOME" ]]; then
+    echo "busdriver: cannot resolve trusted operator home for opencode dispatch — refusing." >&2
+    exit 1
+  fi
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
+  if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
+    echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
+    exit 4
+  fi
+  _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)" || _ER_OC_BIN=
+  if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
+    echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2329
+  _bd803_oc_lane_exit() {
+    _bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"
+    _bd803_cleanup_review_lib_exec
+  }
+  builtin trap '_bd803_oc_lane_exit' EXIT
+  builtin trap '_bd803_oc_lane_exit; exit 143' TERM
+  builtin trap '_bd803_oc_lane_exit; exit 130' INT
+  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_ER_OC_HOME"; then
+    exit 1
+  fi
+  _ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"
+  /bin/mkdir -p "$_ER_OC_CWD" 2>/dev/null || exit 1
+  _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  cd "$_ER_OC_CWD" 2>/dev/null || exit 1
+  OPENCODE_CONFIG="$_ER_OC_CFG"
+  XDG_CONFIG_HOME="$_ER_OC_CWD"
+  XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"
+  XDG_CACHE_HOME="${_ER_OC_HOME}/.cache"
+  export OPENCODE_CONFIG XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
+  export PATH="$_ER_OC_TRUST"
+  # pipe-review → _portable_timeout --review opencode (argv0 = absolute trusted bin).
+  BD803_REVIEW_LIB="$(_bd803_review_lib_exec)" _run_review_with_retries opencode "$_ER_OC_PROMPT" "$_ER_DURATION" pipe-review \
+    "$_ER_OC_BIN" run --dir "$_ER_OC_CWD" --agent busdriver-review \
+      -m "$_BD_AUDITOR_MODEL"
+  exit $?
+fi
 
 # #803: disk-fresh --print-trusted-cli <name>.
 if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-trusted-cli" ]]; then

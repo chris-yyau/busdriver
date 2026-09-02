@@ -1,4 +1,50 @@
-#!/bin/bash
+#!/bin/bash -p
+# #803: re-exec privileged before sourcing anything. Privileged mode makes bash
+# ignore BASH_ENV, and BASH_ENV is the whole environment-reachable path into this
+# process: it is honoured for `bash script.sh`, so a prelude can install a DEBUG
+# trap (which then steers EVERY parent-shell variable, defeating any in-library
+# check) or declare the review-lib state readonly (which neither assignment nor
+# `builtin unset` can clear). Measured both ways against resolve-cli.sh: without
+# -p the planted script executed; with -p both attempts return the correct value.
+# Privileged mode also refuses to import BASH_FUNC_* shadows, which is #803's
+# original class. Same guard and same reasoning as skills/litmus/scripts/
+# run-review-loop.sh — "$BASH", not /bin/bash, so the SAME interpreter is re-exec'd
+# rather than silently downgraded to macOS bash 3.2.
+if [[ "$-" != *p* ]]; then
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves those entries sitting in the
+# ENVIRONMENT, so any unprivileged bash CHILD re-processes them. Measured: with
+# BASH_ENV pointing at a file containing `exit 0`, a child launched from a
+# privileged parent exited 0 without running its body at all. Scrub them here,
+# where -p guarantees `unset` is the real builtin and no shadow was imported.
+# BASH_FUNC_* entries cannot be removed this way -- their names are not valid
+# identifiers, and `unset "BASH_FUNC_x%%"` leaves the environ entry in place
+# (measured; an unprivileged grandchild still imported it) -- so every child this
+# script launches is started with -p rather than relying on the scrub alone.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. After this exec the tree is clean, so the branch cannot
+# repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
+unset BASH_ENV ENV
+_bd803_envclean=()
+while IFS='=' read -r _bd803_n _; do
+  case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
+done < <(/usr/bin/env)
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+unset _bd803_envclean _bd803_n
+# BD803-CLEAN-ENV-END
 # shellcheck disable=SC1091  # dynamic $SCRIPT_DIR/$_PLUGIN_ROOT source paths are not resolvable at lint time
 # Three-tier design review: Agy + Codex (parallel) → Claude arbiter
 #
@@ -335,7 +381,7 @@ log_info ""
 # Check for state file
 STATE_FILE=$(get_state_file)
 if [[ ! -f "$STATE_FILE" ]]; then
-  log_error "State file not found. Run: bash scripts/init-design-review.sh <design_file> first"
+  log_error "State file not found. Run: bash -p scripts/init-design-review.sh <design_file> first"
   exit 1
 fi
 
@@ -357,7 +403,7 @@ if [[ ! -f "$_MARKER_RESOLVER" ]]; then
   # won't exist, so prune would be a silent no-op. Warn rather than pretend.
   log_warning "Marker resolver not found at $_MARKER_RESOLVER; token prune will be skipped on PASS (drain manually if needed)."
 elif [[ -f "$DESIGN_FILE" ]]; then
-  _mk_glob="$(bash "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
+  _mk_glob="$(bash -p "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
   if [[ -n "$_mk_glob" ]]; then
     _MARKER_RESOLVE_OK=true
     shopt -s nullglob 2>/dev/null || true
@@ -2208,13 +2254,13 @@ EOF
     # ADR-D: prune ONLY the tokens snapshotted at loop start (physical-abspath
     # keyed → never cross-clears a divergent branch; re-armed tokens survive).
     # This inline rm inside the trusted loop is invisible to the marker-forge
-    # guard (which sees only the top-level `bash …run-design-review-loop.sh` call);
+    # guard (which sees only the top-level `bash -p …run-design-review-loop.sh` call);
     # a Claude tool-call rm of a token stays blocked. Replaces the old whole-file
     # `rm` of the single CWD-relative marker (divergence 4).
-    if [ "${#_MARKER_SNAP[@]}" -gt 0 ]; then
+    if [[ "${#_MARKER_SNAP[@]}" -gt 0 ]]; then
       rm -f "${_MARKER_SNAP[@]}"
     fi
-    if [ "$_MARKER_RESOLVE_OK" = true ]; then
+    if [[ "$_MARKER_RESOLVE_OK" == true ]]; then
       log_info "Design review state cleaned up (${#_MARKER_SNAP[@]} marker token(s) pruned)."
     else
       log_warning "PASS recorded, but the marker dir was unresolved at loop start — NO tokens were pruned; drain manually if the gate keeps blocking."

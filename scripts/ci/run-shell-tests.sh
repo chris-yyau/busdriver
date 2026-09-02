@@ -1,4 +1,47 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S bash -p
+# #803: re-exec privileged before sourcing resolve-cli.sh below. Privileged bash
+# ignores BASH_ENV, which is the only environment-reachable way to install a DEBUG
+# trap (it steers every parent-shell variable, defeating in-library checks) or to
+# declare the review-lib state readonly (neither assignment nor `builtin unset`
+# clears a readonly). It also refuses BASH_FUNC_* imports. Same guard as
+# skills/litmus/scripts/run-review-loop.sh; "$BASH" keeps the same interpreter.
+# The per-test children are unaffected — the suites that deliberately export
+# BASH_FUNC_* shadows spawn their own shells.
+if [[ "$-" != *p* ]]; then
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves those entries sitting in the
+# ENVIRONMENT, so any unprivileged bash CHILD re-processes them. Measured: with
+# BASH_ENV pointing at a file containing `exit 0`, a child launched from a
+# privileged parent exited 0 without running its body at all. Scrub them here,
+# where -p guarantees `unset` is the real builtin and no shadow was imported.
+# BASH_FUNC_* entries cannot be removed this way -- their names are not valid
+# identifiers, and `unset "BASH_FUNC_x%%"` leaves the environ entry in place
+# (measured; an unprivileged grandchild still imported it) -- so every child this
+# script launches is started with -p rather than relying on the scrub alone.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. After this exec the tree is clean, so the branch cannot
+# repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
+unset BASH_ENV ENV
+_bd803_envclean=()
+while IFS='=' read -r _bd803_n _; do
+  case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
+done < <(/usr/bin/env)
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+unset _bd803_envclean _bd803_n
+# BD803-CLEAN-ENV-END
 # run-shell-tests.sh — full-glob runner for the tests/test-*.sh gate suite.
 #
 # Replaces the hand-picked list that previously ran in CI (only ~15 of the
@@ -136,7 +179,11 @@ skipped_names=()
 # command-substitution pipe's write end would block us past the timeout. A file
 # redirect has no such back-pressure — we read the file after the helper returns.
 out_file="$(mktemp)"
-trap 'rm -f "$out_file"' EXIT
+# #803: compose the staged-lib cleanup — this script sources resolve-cli.sh BEFORE
+# installing this trap, so the library's own EXIT handler is registered and then
+# overwritten here. Without composing, the ~250KB staged copy is left in TMPDIR on
+# every invocation. See run-review-loop.sh for the same composition.
+trap 'rm -f "$out_file"; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 
 shopt -s nullglob
 tests=(tests/test-*.sh)
@@ -151,7 +198,7 @@ echo
 for t in "${tests[@]}"; do
   base="$(basename "$t" .sh)"
   this_timeout="$(test_timeout "$base")"
-  _portable_timeout "$this_timeout" bash "$t" >"$out_file" 2>&1
+  _portable_timeout "$this_timeout" bash -p "$t" >"$out_file" 2>&1
   rc=$?
   last="$(grep -vE '^[[:space:]]*$' "$out_file" | tail -n1)"
 

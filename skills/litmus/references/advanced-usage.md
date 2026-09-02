@@ -207,11 +207,11 @@ echo "Running codex review..."
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 
 # Initialize (--force in case a prior loop is active)
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 3
+bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 3
 
 # run-review-loop.sh exits 0 on PASS, non-zero on FAIL
 # With set -e, a failing review exits the hook automatically
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Integration with Task Management
@@ -300,8 +300,8 @@ for repo in repo1 repo2 repo3; do
     echo "Reviewing $repo..."
 
     LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-    bash "$LITMUS_SCRIPTS/init-review-loop.sh" 3
-    bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+    bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" 3
+    bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 
     if [ $? -eq 0 ]; then
         echo "✅ $repo passed review"

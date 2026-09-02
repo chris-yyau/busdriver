@@ -385,18 +385,18 @@ if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
         pr-review-passed.local)
             WRITER_HINT="
 To write this marker correctly: finish the PR deep review, then run the trusted wrapper (it computes the diff hash and writes the marker — direct writes stay blocked by design):
-  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker" ;;
+  bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker" ;;
         litmus-passed.local)
             WRITER_HINT="
 This marker is written automatically when the /litmus commit review passes — re-run the review loop to completion instead of writing it by hand." ;;
         pr-backstop-verdict.local.json)
             WRITER_HINT="
 This is the PR security/bugs backstop artifact. It is written ONLY by --run-backstop, which dispatches the read-only backstop as a captured claude -p subprocess and pipes the result to an internal strict writer (re-derives the diff hash, fails closed on stale/bad input). There is no manual writer subcommand — that would let the verdict be forged by hand (#350):
-  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop" ;;
+  bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop" ;;
         pr-codex-lead.local.json)
             WRITER_HINT="
 This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, inline on an actual Codex PASS — there is no manual writer subcommand (that would let a PASS be forged without a review). Re-run the PR review to (re)produce it:
-  LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"" ;;
+  LITMUS_MODE=pr bash -p \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"" ;;
     esac
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.

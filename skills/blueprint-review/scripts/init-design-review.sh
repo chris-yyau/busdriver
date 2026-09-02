@@ -1,4 +1,29 @@
-#!/bin/bash
+#!/bin/bash -p
+# #803: same clean-child scrub as run-review-loop.sh -- privileged mode stops THIS
+# shell from honouring BASH_ENV/ENV and importing BASH_FUNC_*, but leaves those
+# entries in the environment for any unprivileged child to re-process.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. After this exec the tree is clean, so the branch cannot
+# repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
+unset BASH_ENV ENV
+_bd803_envclean=()
+while IFS='=' read -r _bd803_n _; do
+  case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
+done < <(/usr/bin/env)
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+unset _bd803_envclean _bd803_n
+# BD803-CLEAN-ENV-END
 # Initialize design review state
 # Usage: init-design-review.sh <design_file> [max_iterations]
 
@@ -111,4 +136,4 @@ log_info "  Design file: $DESIGN_FILE"
 log_info "  Max iterations: $MAX_ITERATIONS"
 log_info "  State file: $STATE_FILE"
 log_info ""
-log_info "Ready to start review. Run: bash scripts/run-design-review-loop.sh"
+log_info "Ready to start review. Run: bash -p scripts/run-design-review-loop.sh"

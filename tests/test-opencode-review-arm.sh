@@ -910,6 +910,7 @@ fi
 # _trusted_operator_home's globals), so the tilde-stack regex now sits on an
 # `elif`. Same regex, same rejection — the behavioural assertion above proves the
 # semantics; this pin only proves the guard is still PRESENT.
+# shellcheck disable=SC2016  # single-quoted pattern is a literal grep for source text
 if grep -qF 'elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then' "$RC"; then
   pass "resolve-cli.sh: allowlist rejects tilde stack forms (^[-+]?[0-9]*$)"
 else

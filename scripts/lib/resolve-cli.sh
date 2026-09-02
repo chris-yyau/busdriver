@@ -127,6 +127,47 @@ _bd803_latch_review_lib_pin() {
 }
 
 _bd803_ensure_staged_lib() {
+  # #803: prove OUR state variables are writable before trusting anything in them.
+  # A sourcing shell can arrive with them already set READONLY: BASH_ENV is honoured
+  # for `bash script.sh`, so an env-injected prelude declares them before this file
+  # is ever read, and NEITHER a plain assignment NOR `builtin unset` can clear a
+  # readonly (both measured). The source-load reset is therefore not sufficient on
+  # its own — without this guard the fast path below accepts any attacker-planted
+  # file whose digest matches the attacker's own _SHA, and the clean children
+  # execute it (measured end-to-end: the planted script ran).
+  # The probe cannot be forged BY A READONLY: a readonly variable cannot accept our
+  # fresh unpredictable value, so a mismatch means the variable is not ours. Values
+  # are restored on success so the staging cache survives; on failure we refuse.
+  #
+  # SCOPE — do not read this as more than it is. It is NOT a defence against an
+  # ambient DEBUG trap. `set -T` plus a DEBUG trap runs attacker code before every
+  # simple command, so it can set these three to $_BESL_RW just before the
+  # comparison and back to a planted path and matching digest just after (measured:
+  # the planted script executed). No parent-shell check survives that, because the
+  # attacker is executing in the parent between any two of our statements.
+  # The authoritative boundary is the entry point, not this function: bash in
+  # privileged mode ignores BASH_ENV, which is the only environment-reachable way to
+  # install that trap or those readonlys, and it refuses BASH_FUNC_* imports too.
+  # Every executable entry point that sources this library starts privileged --
+  # `#!/usr/bin/env -S bash -p` or the `[[ "$-" != *p* ]]` re-exec -- and
+  # tests/test-trusted-review-cli.sh asserts that for each of them. Verified: the
+  # same DEBUG-trap and readonly preludes that win without -p both fail with it.
+  # This probe is the residual guard for a caller that cannot re-exec.
+  _BESL_RW="bd803-rw-$$-${RANDOM}${RANDOM}"
+  _BESL_KEEP_PIN="${_BD803_REVIEW_LIB_PIN:-}"
+  _BESL_KEEP_STAGED="${_BD803_REVIEW_LIB_STAGED:-}"
+  _BESL_KEEP_SHA="${_BD803_REVIEW_LIB_SHA:-}"
+  _BD803_REVIEW_LIB_PIN="$_BESL_RW"
+  _BD803_REVIEW_LIB_STAGED="$_BESL_RW"
+  _BD803_REVIEW_LIB_SHA="$_BESL_RW"
+  if [[ "$_BD803_REVIEW_LIB_PIN" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_STAGED" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_SHA" != "$_BESL_RW" ]]; then
+    return 1
+  fi
+  _BD803_REVIEW_LIB_PIN="$_BESL_KEEP_PIN"
+  _BD803_REVIEW_LIB_STAGED="$_BESL_KEEP_STAGED"
+  _BD803_REVIEW_LIB_SHA="$_BESL_KEEP_SHA"
   if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
     _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
     [[ "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]] && return 0
@@ -218,14 +259,38 @@ printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
   # Trap only in the top-level shell. Command-substitution subshells inherit traps and
   # fire EXIT cleanup when they return, which deletes the staged copy before the caller
   # can use the path ($(_bd803_review_lib_exec) in _execute_codex).
-  if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
+  #
+  # And only when the SOURCING script has no EXIT handler of its own. `trap ... EXIT`
+  # replaces, it does not chain, so installing one here would silently drop a
+  # caller's cleanup of its own temp files, locks or credential-bearing dirs. When
+  # the caller owns EXIT we skip and leave the staged copy to TMPDIR reaping —
+  # this trap is temp-file hygiene, never a trust boundary, so losing it costs a
+  # file and never a decision. (That is also why `builtin trap` being shadowable
+  # is not a fail-open here: a shadow means no trap, which leaks, not admits.)
+  if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]] \
+     && [[ -z "$(builtin trap -p EXIT 2>/dev/null)" ]]; then
     _bd803_review_lib_exec_trap_set=1
     builtin trap '_bd803_cleanup_review_lib_exec' EXIT
   fi
 }
 
 # #803: latch canonical resolve-cli.sh once at trusted source load.
-builtin unset _BD803_REVIEW_LIB_PIN _BD803_REVIEW_LIB_STAGED _BD803_REVIEW_LIB_EXEC _BD803_REVIEW_LIB_SHA _bd803_pin_latched _bd803_review_lib_exec_trap_set
+#
+# Plain assignments, NOT `builtin unset`. `builtin` is itself shadowable — an
+# imported `BASH_FUNC_builtin%%='() { :; }'` makes `builtin unset` a silent no-op
+# (measured), so an attacker-supplied _BD803_REVIEW_LIB_STAGED / _SHA would survive
+# this reset; _bd803_ensure_staged_lib then finds a staged file whose digest
+# matches, never binds it to _BD803_REVIEW_LIB_PIN, and the clean children execute
+# those bytes. Assignment is grammar rather than a command word, so no exported
+# function can intercept it. Every reader here tests emptiness (-n/-z), so an empty
+# value is equivalent to an unset one — and the same idiom is already used by
+# _bd803_cleanup_review_lib_exec above.
+_BD803_REVIEW_LIB_PIN=
+_BD803_REVIEW_LIB_STAGED=
+_BD803_REVIEW_LIB_EXEC=
+_BD803_REVIEW_LIB_SHA=
+_bd803_pin_latched=
+_bd803_review_lib_exec_trap_set=
 _bd803_pin_src="${BASH_SOURCE[0]-}"
 case "$_bd803_pin_src" in
   /dev/fd/*) ;;
@@ -273,7 +338,9 @@ _bd803_bash_staged_lib() {
   _BSL_PATH=/usr/bin:/bin
   if [[ "${_BD803_STAGED_AMBIENT_PATH:-}" == 1 ]]; then
     _BSL_PATH="${PATH-}"
-    builtin unset _BD803_STAGED_AMBIENT_PATH
+    # Assignment, not `builtin unset` — see the source-load reset for why
+    # `builtin` is not a shadow barrier. The reader below tests == 1.
+    _BD803_STAGED_AMBIENT_PATH=
   fi
   LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
     /usr/bin/env -i PATH="${_BSL_PATH}" PWD="${PWD-}" BD803_STAGED_PATH="${_BD803_REVIEW_LIB_STAGED}" BD803_EXPECTED_SHA="${_BD803_REVIEW_LIB_SHA}" \

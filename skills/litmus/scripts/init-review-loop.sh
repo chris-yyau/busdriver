@@ -1,4 +1,29 @@
-#!/bin/bash
+#!/bin/bash -p
+# #803: same clean-child scrub as run-review-loop.sh -- privileged mode stops THIS
+# shell from honouring BASH_ENV/ENV and importing BASH_FUNC_*, but leaves those
+# entries in the environment for any unprivileged child to re-process.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. After this exec the tree is clean, so the branch cannot
+# repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
+unset BASH_ENV ENV
+_bd803_envclean=()
+while IFS='=' read -r _bd803_n _; do
+  case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
+done < <(/usr/bin/env)
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+unset _bd803_envclean _bd803_n
+# BD803-CLEAN-ENV-END
 # Initialize litmus review loop state file
 # Follows Ralph Loop pattern for robust state management
 
@@ -82,7 +107,9 @@ fi
 # both scripts as children. They will inherit rather than re-acquire, and neither will
 # release what it did not take.
 if review_lock_minted_here; then
-    trap 'review_lock_release' EXIT
+    # #803: compose the staging cleanup — see run-review-loop.sh for why the library
+    # will not install its own EXIT trap once this script owns one.
+    trap 'review_lock_release; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 fi
 
 # Guard: prevent re-init while a review loop is active.
@@ -169,7 +196,7 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         # "resume in commit mode" for a legacy file that will actually follow
         # $LITMUS_MODE — contradicting this message's own header two lines up.
         echo "       → resume it in its own mode ($_MODE_SHOWN), which keeps the counter:" >&2
-        echo "         bash $SCRIPT_DIR/run-review-loop.sh" >&2
+        echo "         bash -p $SCRIPT_DIR/run-review-loop.sh" >&2
         exit 1
     fi
 fi
@@ -422,7 +449,7 @@ if [ "$COMPLETION_PROMISE" != "null" ]; then
 fi
 echo ""
 echo "Next steps:"
-echo "   1. Run: bash scripts/run-review-loop.sh"
+echo "   1. Run: bash -p scripts/run-review-loop.sh"
 echo "   2. Fix any issues found"
 echo "   3. Loop continues automatically until PASS"
 echo ""

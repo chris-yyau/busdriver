@@ -29,6 +29,38 @@ if [[ "$-" != *p* ]]; then
     # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
     exec "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves those entries sitting in the
+# ENVIRONMENT, so any unprivileged bash CHILD re-processes them. Measured: with
+# BASH_ENV pointing at a file containing `exit 0`, a child launched from a
+# privileged parent exited 0 without running its body at all. Scrub them here,
+# where -p guarantees `unset` is the real builtin and no shadow was imported.
+# BASH_FUNC_* entries cannot be removed this way -- their names are not valid
+# identifiers, and `unset "BASH_FUNC_x%%"` leaves the environ entry in place
+# (measured; an unprivileged grandchild still imported it) -- so every child this
+# script launches is started with -p rather than relying on the scrub alone.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. After this exec the tree is clean, so the branch cannot
+# repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
+unset BASH_ENV ENV
+_bd803_envclean=()
+while IFS='=' read -r _bd803_n _; do
+  case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
+done < <(/usr/bin/env)
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+unset _bd803_envclean _bd803_n
+# BD803-CLEAN-ENV-END
 # Main litmus review loop script
 # Reads state, runs review, parses results, updates state, handles iteration logic
 
@@ -267,7 +299,12 @@ _diff_rc_file=""
 # exit under `set -e` before the in-flow cleanup, leaking private temp files.
 EXCL_POLICY_PINNED_TMP=""
 EXCL_LOGIC_PINNED_TMP=""
-trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true' EXIT
+# #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
+# resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
+# script already owns one -- replacing it would silently drop the cleanup below --
+# so the owner of the trap has to call it, or the ~250KB staged copy is left in
+# TMPDIR on every run and accumulates without bound.
+trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 
 # #790: every marker publication stamps a fresh generation token beside the marker.
 # The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
@@ -1007,13 +1044,13 @@ if [[ "${1:-}" == "--auto-pr-review" ]]; then
   export LITMUS_PR_FAST=1
   echo "🔍 Auto-triggering PR litmus review..."
   echo ""
-  bash "$SCRIPT_DIR/init-review-loop.sh" --force || {
+  bash -p "$SCRIPT_DIR/init-review-loop.sh" --force || {
     echo "❌ Failed to initialize PR review" >&2
     write_terminal_status setup_error
     exit 1
   }
   # Re-exec as normal review (picks up PR mode from state file + LITMUS_PR_FAST=1)
-  exec bash "$SCRIPT_DIR/run-review-loop.sh"
+  exec bash -p "$SCRIPT_DIR/run-review-loop.sh"
 fi
 
 # Source validation library
@@ -2143,8 +2180,8 @@ else
     # the load-bearing part; the split advice is not.
     write_terminal_status too_large
     # Run suggest-split helper to show grouping advice (only useful for multi-file diffs)
-    if [ "$STAGED_FILE_COUNT" -gt 1 ]; then
-      bash "$SCRIPT_DIR/suggest-split.sh" || true
+    if [[ "$STAGED_FILE_COUNT" -gt 1 ]]; then
+      bash -p "$SCRIPT_DIR/suggest-split.sh" || true
       echo ""
     fi
     echo "EXIT_CODE=2 (TOO_LARGE: split into smaller commits before reviewing)"
@@ -2591,10 +2628,10 @@ elif [ "$REVIEW_EXIT" -eq 124 ]; then
   echo "   The review took too long. This usually means the diff is too complex." >&2
   echo "   Try splitting into smaller commits." >&2
   echo "" >&2
-  bash "$SCRIPT_DIR/suggest-split.sh" >&2
+  bash -p "$SCRIPT_DIR/suggest-split.sh" >&2
   write_terminal_status infra_failure
   exit 124
-elif [ "$REVIEW_EXIT" -ne 0 ]; then
+elif [[ "$REVIEW_EXIT" -ne 0 ]]; then
   echo "❌ Error: $RESOLVED_CLI review failed (exit code $REVIEW_EXIT)" >&2
   echo "" >&2
   echo "   Output:" >&2
@@ -2799,7 +2836,7 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   echo "Next steps:"
   echo "   1. Run tests: npm test (or appropriate test command)"
   echo "   2. Commit: git commit -m 'Your message'"
-  echo "   3. (Optional) Save changelog: bash scripts/save_changelog.sh"
+  echo "   3. (Optional) Save changelog: bash -p scripts/save_changelog.sh"
   echo ""
   exit 0
 else
@@ -2836,7 +2873,7 @@ else
   echo "Next steps:"
   echo "   1. Fix the issues listed above"
   echo "   2. Stage changes: git add <files>"
-  echo "   3. Run review again: bash scripts/run-review-loop.sh"
+  echo "   3. Run review again: bash -p scripts/run-review-loop.sh"
   echo "   4. Loop continues automatically until PASS"
   echo ""
   rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null

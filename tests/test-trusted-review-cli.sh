@@ -81,6 +81,241 @@ else
   bad "#803: staged-lib descriptor chain broken: --print-trusted-home returned '$staged_home'"
 fi
 
+# #803: `builtin` is ITSELF shadowable — an imported BASH_FUNC_builtin%% makes
+# `builtin unset` a silent no-op. The source-load reset must therefore clear the
+# staged-lib state with plain assignments, so attacker-supplied _STAGED/_SHA
+# cannot survive into a dispatch. Attack shape: export a matching pair pointing at
+# planted bytes, shadow `builtin`, source the lib, and see whether the pin re-latches.
+PLANT="$WORK/planted-lib.sh"
+printf 'printf "PLANTED_EXEC\\n"\n' > "$PLANT"
+PLANT_SHA=$(/usr/bin/shasum -a 256 "$PLANT" | /usr/bin/cut -d' ' -f1)
+set +e
+# shellcheck disable=SC2016  # the single-quoted script is expanded by the child, not here
+shadow_out=$(
+  env "BASH_FUNC_builtin%%=() { :; }" \
+      _BD803_REVIEW_LIB_STAGED="$PLANT" \
+      _BD803_REVIEW_LIB_SHA="$PLANT_SHA" \
+    /bin/bash --noprofile --norc -c \
+      '. "$1" >/dev/null 2>&1; printf "STAGED=%s\n" "${_BD803_REVIEW_LIB_STAGED:-}"' bash "$LIB" 2>/dev/null
+)
+set -e
+shadow_staged=$(/usr/bin/printf '%s\n' "$shadow_out" | /usr/bin/grep '^STAGED=' | /usr/bin/head -1 | /usr/bin/cut -d= -f2-)
+if [[ "$shadow_staged" != "$PLANT" ]]; then
+  ok "#803: BASH_FUNC_builtin%% shadow cannot preserve attacker staged-lib state"
+else
+  bad "#803: BASH_FUNC_builtin%% shadow preserved attacker _BD803_REVIEW_LIB_STAGED='$shadow_staged'"
+fi
+
+# #803: the same state, poisoned the OTHER way — READONLY. BASH_ENV is honoured for
+# `bash script.sh`, so an env-injected prelude can declare the staged-lib state
+# readonly before this library is ever sourced, and neither a plain assignment nor
+# `builtin unset` can clear a readonly. Point it at a real planted file whose digest
+# matches the attacker's own _SHA and the staging fast path would hand those bytes to
+# the clean child. Measured end-to-end before the fix: the planted script executed.
+# This asserts the dispatch REFUSES rather than executing planted bytes.
+RO_PLANT="$WORK/readonly-planted.sh"
+printf 'printf "PWNED_EXEC\\n"\n' > "$RO_PLANT"
+chmod 500 "$RO_PLANT"
+RO_SHA=$(/usr/bin/shasum -a 256 "$RO_PLANT" | /usr/bin/cut -d' ' -f1)
+RO_ENV="$WORK/readonly-prelude.sh"
+# %q, not %s: WORK comes from BD789_TEST_TMP_ROOT/RUNNER_TEMP/TMPDIR, so the planted
+# path can carry spaces or shell metacharacters. Unquoted it would emit a malformed
+# declaration, the poison would never load, and the assertion below would pass for
+# the wrong reason — the exploit would look closed because it never ran.
+printf 'readonly _BD803_REVIEW_LIB_STAGED=%q\nreadonly _BD803_REVIEW_LIB_SHA=%q\n' "$RO_PLANT" "$RO_SHA" > "$RO_ENV"
+set +e
+# shellcheck disable=SC2016  # the single-quoted script is expanded by the child, not here
+ro_out=$(
+  BASH_ENV="$RO_ENV" /bin/bash --noprofile -c \
+    '. "$1" >/dev/null 2>&1; _bd803_bash_staged_lib --print-trusted-home' bash "$LIB" 2>/dev/null
+)
+set -e
+if [[ "$ro_out" != *PWNED_EXEC* ]]; then
+  ok "#803: readonly-poisoned staged-lib state cannot execute planted bytes"
+else
+  bad "#803: readonly-poisoned staged-lib state EXECUTED planted bytes (got '$ro_out')"
+fi
+
+# #803: the authoritative boundary. Every EXECUTABLE entry point that sources
+# resolve-cli.sh must start privileged, because privileged bash ignores BASH_ENV —
+# the only environment-reachable way to install the DEBUG trap or the readonly
+# declarations the two assertions above model. Measured: the same preludes that
+# execute planted bytes without -p are inert with it. Sourced libraries are excluded
+# (they cannot re-exec; they inherit their entry point's mode). Generated over the
+# real set rather than a fixed list, so a new entry point is covered on arrival.
+# An entry point here means: it SOURCES the library (not merely mentions it), it is
+# executable, and it is not itself a library under a lib/ directory — a sourced
+# library cannot re-exec and inherits the mode of whatever entry point ran it.
+entry_seen=0
+# BEHAVIOURAL, not substring: an in-script `exec "$BASH" -p "$0"` guard looks right
+# and is defeated, because the first bash has ALREADY imported BASH_FUNC_* and run
+# BASH_ENV before reaching it — a shadowed `exec` returns and the script continues
+# unprivileged (measured: $- went from "hpB" to "hB" and the prelude ran). Only the
+# shebang is applied by the kernel, ahead of any import. So take each entry point's
+# REAL shebang, build a probe carrying that exact interpreter line, execute it under
+# a hostile prelude plus a shadowed `exec`, and require it to come up privileged and
+# blind to BASH_ENV. A guard that merely appears in a comment cannot satisfy this.
+HOSTILE_ENV="$WORK/hostile-prelude.sh"
+printf 'BD803_PRELUDE_RAN=yes\n' > "$HOSTILE_ENV"
+# Enumerate separately (not inside the process substitution) so the grep's own exit
+# status is visible rather than masked by the pipeline — SC2312. grep exits 1 for
+# "no match" and 2 for a real error; only the latter is a broken enumeration, and
+# the vacuity assertion below catches an empty-but-successful listing.
+set +e
+entry_list=$(cd "$ROOT" && /usr/bin/grep -rlE '^[[:space:]]*(\.|source)[[:space:]]+.*resolve-cli\.sh' --include='*.sh' skills scripts 2>/dev/null)
+entry_rc=$?
+set -e
+if [[ "$entry_rc" -gt 1 ]]; then
+  bad "#803: entry-point enumeration failed (grep rc=$entry_rc)"
+fi
+entry_list=$(/usr/bin/printf '%s\n' "$entry_list" | /usr/bin/sort)
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  case "$entry" in
+    */lib/*) continue ;;
+    *) ;;
+  esac
+  [[ -x "$ROOT/$entry" ]] || continue
+  entry_seen=$((entry_seen + 1))
+  shebang=$(/usr/bin/head -1 "$ROOT/$entry")
+  probe="$WORK/probe-$entry_seen.sh"
+  {
+    printf '%s\n' "$shebang"
+    # shellcheck disable=SC2016  # probe text: expanded by the probe, not here
+    printf 'printf "FLAGS=%%s ENVSEEN=%%s\\n" "$-" "${BD803_PRELUDE_RAN:-no}"\n'
+  } > "$probe"
+  chmod 755 "$probe"
+  set +e
+  probe_out=$(BASH_ENV="$HOSTILE_ENV" env "BASH_FUNC_exec%%=() { :; }" "$probe" 2>/dev/null)
+  set -e
+  if [[ "$probe_out" == *FLAGS=*p* && "$probe_out" == *ENVSEEN=no* ]]; then
+    ok "#803: entry point starts privileged at interpreter creation: $entry"
+  else
+    bad "#803: entry point NOT privileged before sourcing resolve-cli.sh: $entry (probe: ${probe_out:-<no output>})"
+  fi
+  # Privileged mode protects only the shell that has it: BASH_ENV/ENV stay in the
+  # ENVIRONMENT and any unprivileged child re-processes them (measured: a child of a
+  # privileged parent ran a BASH_ENV file containing `exit 0` and never executed its
+  # own body). So each entry point must also scrub them. Probe carries the entry
+  # point's real shebang plus its own scrub line lifted from the file — a missing or
+  # renamed scrub produces no scrub line and the child then sees the prelude.
+  scrub_line=$(/usr/bin/grep -m1 '^unset BASH_ENV' "$ROOT/$entry" || true)
+  childprobe="$WORK/childprobe-$entry_seen.sh"
+  {
+    printf '%s\n' "$shebang"
+    printf '%s\n' "$scrub_line"
+    # shellcheck disable=SC2016  # probe text: expanded by the probe, not here
+    printf 'bash -c '\''printf "CHILDSEEN=%%s\\n" "${BD803_PRELUDE_RAN:-no}"'\''\n'
+  } > "$childprobe"
+  chmod 755 "$childprobe"
+  set +e
+  child_out=$(BASH_ENV="$HOSTILE_ENV" "$childprobe" 2>/dev/null)
+  set -e
+  if [[ "$child_out" == *CHILDSEEN=no* ]]; then
+    ok "#803: entry point scrubs BASH_ENV so children start clean: $entry"
+  else
+    bad "#803: entry point leaks BASH_ENV to children: $entry (probe: ${child_out:-<no output>})"
+  fi
+done <<< "$entry_list"
+# #803: BASH_FUNC_* entries cannot be removed with `unset` -- their names are not
+# valid identifiers and the environ entry survives (measured) -- so a privileged entry
+# point that merely ignores them still hands them to every descendant, including a
+# plain `#!/bin/bash` helper reached through a sourced library (load_changelog.sh,
+# ultra_oracle_attach_preflight.sh). Each entry point therefore rebuilds its
+# environment once via `env -u`. Behavioural and TRANSITIVE: lift the real
+# BD803-CLEAN-ENV block out of each entry point, run a plain-shebang helper behind it,
+# and require that helper not to import a forged BASH_FUNC_python3. A deleted or
+# renamed block yields no block and the helper imports the forgery.
+DOWNSTREAM="$WORK/downstream-helper.sh"
+printf '#!/bin/bash\n[ "$(type -t python3 2>/dev/null)" = function ] && echo IMPORTED_FORGERY || echo downstream_clean\n' > "$DOWNSTREAM"
+chmod 755 "$DOWNSTREAM"
+transitive_bad=""
+for _ep in skills/blueprint-review/scripts/run-design-review-loop.sh \
+           skills/blueprint-review/scripts/init-design-review.sh \
+           skills/litmus/scripts/run-review-loop.sh \
+           skills/litmus/scripts/init-review-loop.sh \
+           scripts/ci/run-shell-tests.sh; do
+  # dispatch.sh is deliberately absent: it already re-execs behind a nonce+sentinel
+  # proof that ABORTS on an inherited forged sentinel, and every child it launches is
+  # `env -i`, so it has no plain-shebang descendant to protect. Adding the rebuild
+  # there also broke that proof — the strip removed the sentinel the proof consumes,
+  # and re-execing without the nonce marker re-armed it forever (measured: a hang).
+  [[ -f "$ROOT/$_ep" ]] || continue
+  _blk=$(/usr/bin/sed -n '/BD803-CLEAN-ENV-BEGIN/,/BD803-CLEAN-ENV-END/p' "$ROOT/$_ep")
+  _probe="$WORK/transitive-$(/usr/bin/basename "$_ep")"
+  {
+    /usr/bin/head -1 "$ROOT/$_ep"
+    printf '%s\n' "$_blk"
+    printf '"$1"\n'
+  } > "$_probe"
+  chmod 755 "$_probe"
+  set +e
+  _out=$(env "BASH_FUNC_python3%%=() { printf FORGED\n; }" "$_probe" "$DOWNSTREAM" 2>/dev/null)
+  set -e
+  [[ "$_out" == *downstream_clean* ]] || transitive_bad="${transitive_bad}${_ep} -> ${_out:-<no output>}"$'\n'
+done
+if [[ -z "$transitive_bad" ]]; then
+  ok "#803: entry points rebuild the environment so plain-shebang descendants stay clean"
+else
+  bad "#803: descendant imported a forged BASH_FUNC_python3:"$'\n'"$transitive_bad"
+fi
+
+# #803: the library refuses to install its own EXIT trap when the sourcing script
+# already owns one (replacing it would drop the caller's cleanup), so a caller that
+# owns EXIT must COMPOSE _bd803_cleanup_review_lib_exec into its handler or the
+# ~250KB staged copy is left in TMPDIR on every run and accumulates without bound.
+# Behavioural: stage under a composing caller and require the copy to be gone.
+# PRODUCTION ORDER matters here: dispatch.sh and run-shell-tests.sh source the library
+# BEFORE installing their own EXIT trap, so the library registers its cleanup and the
+# caller then overwrites it — the composing-caller case below would pass while those
+# two still leaked. Model that order explicitly.
+ORDER_T="$WORK/order-caller.sh"
+{
+  printf '#!/bin/bash -p\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '. "$1" >/dev/null 2>&1\n_bd803_ensure_staged_lib >/dev/null 2>&1\n'
+  printf 'trap %s _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true%s EXIT\n' "'declare -F" "'"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "STAGED_DURING=%%s\\n" "${_BD803_REVIEW_LIB_STAGED:-none}"\n'
+} > "$ORDER_T"
+chmod 755 "$ORDER_T"
+set +e
+order_out=$("$ORDER_T" "$LIB" 2>/dev/null)
+set -e
+order_path=${order_out#STAGED_DURING=}
+if [[ -n "$order_path" && "$order_path" != none && ! -e "$order_path" ]]; then
+  ok "#803: source-then-trap caller (dispatch.sh / run-shell-tests.sh order) leaves no staged lib"
+else
+  bad "#803: source-then-trap caller leaked the staged lib: '${order_path:-<none staged>}'"
+fi
+
+COMPOSE_T="$WORK/compose-caller.sh"
+{
+  printf '#!/bin/bash -p\n'
+  printf 'trap %s _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true%s EXIT\n' "'declare -F" "'"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '. "$1" >/dev/null 2>&1\n_bd803_ensure_staged_lib >/dev/null 2>&1\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "STAGED_DURING=%%s\\n" "${_BD803_REVIEW_LIB_STAGED:-none}"\n'
+} > "$COMPOSE_T"
+chmod 755 "$COMPOSE_T"
+set +e
+compose_out=$("$COMPOSE_T" "$LIB" 2>/dev/null)
+set -e
+compose_path=${compose_out#STAGED_DURING=}
+if [[ -n "$compose_path" && "$compose_path" != none && ! -e "$compose_path" ]]; then
+  ok "#803: composing caller cleans the staged lib on exit (no TMPDIR accumulation)"
+else
+  bad "#803: staged lib survived a composing caller's exit: '${compose_path:-<none staged>}'"
+fi
+
+# A silently empty enumeration would make the loop above vacuously green.
+if [[ "$entry_seen" -ge 2 ]]; then
+  ok "#803: entry-point enumeration found $entry_seen executables to check"
+else
+  bad "#803: entry-point enumeration collapsed (found $entry_seen) — the privilege assertions are vacuous"
+fi
+
 
 REPO="$WORK/repo"
 mkdir -p "$REPO"

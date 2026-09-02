@@ -3,8 +3,8 @@
 > **This approach is fully deprecated.** The `execute_review.sh` script has been removed.
 > Use the state-based approach instead (see SKILL.md):
 > ```bash
-> bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 10
-> bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
+> bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 10
+> bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
 > ```
 
 ## Why State-Based is Better
@@ -30,8 +30,8 @@ rm /tmp/litmus-iteration.txt
 
 **After (state-based):**
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 10
-bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
+bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 10
+bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
 # One review pass per invocation — caller handles fix→re-stage→re-run
 # State file tracks iteration count; cleaned up on PASS
 ```

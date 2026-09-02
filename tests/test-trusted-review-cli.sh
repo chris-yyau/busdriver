@@ -35,6 +35,27 @@ fi
 WORK=$(mktemp -d "$_BD789_TMP_ROOT/bd-789-ftest.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
+# #803: review lib pin latches at trusted source load.
+set +e
+pin_check=$(
+  cd "$ROOT" && /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; canon=\$(_bd803_canonical_file_path \"$LIB\"); _bd803_ensure_staged_lib >/dev/null 2>&1; printf 'PIN=%s\nCANON=%s\nSHA=%s\n' \"\${_BD803_REVIEW_LIB_PIN:-}\" \"\$canon\" \"\${_BD803_REVIEW_LIB_SHA:-}\""
+)
+set -e
+pin_val=$(/usr/bin/printf '%s\n' "$pin_check" | /usr/bin/grep '^PIN=' | /usr/bin/head -1 | /usr/bin/cut -d= -f2-)
+canon_val=$(/usr/bin/printf '%s\n' "$pin_check" | /usr/bin/grep '^CANON=' | /usr/bin/head -1 | /usr/bin/cut -d= -f2-)
+sha_val=$(/usr/bin/printf '%s\n' "$pin_check" | /usr/bin/grep '^SHA=' | /usr/bin/head -1 | /usr/bin/cut -d= -f2-)
+if [[ "$pin_val" == /* && -n "$pin_val" && ( "$pin_val" == "$canon_val" || "$pin_val" -ef "$canon_val" ) ]]; then
+  ok "#803: _BD803_REVIEW_LIB_PIN latched at source load"
+else
+  bad "#803: _BD803_REVIEW_LIB_PIN latch failed: pin='$pin_val' canon='$canon_val'"
+fi
+if [[ "$sha_val" =~ ^[0-9a-f]{64}$ ]]; then
+  ok "#803: _BD803_REVIEW_LIB_SHA latched after ensure_staged_lib (64-char hex)"
+else
+  bad "#803: _BD803_REVIEW_LIB_SHA latch failed: sha='$sha_val'"
+fi
+
+
 REPO="$WORK/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q -b main
@@ -728,6 +749,61 @@ else
 fi
 
 
+
+
+# 23) #803: BD803_REVIEW_LIB must resolve to resolve-cli.sh (not arbitrary script).
+printf '#!/bin/sh\necho EVIL_PIN\n' > "$WORK/evil.sh"
+chmod +x "$WORK/evil.sh"
+set +e
+pt803=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" BD803_REVIEW_LIB="$WORK/evil.sh" \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 1 codex 2>&1; echo RC=\$?"
+)
+set -e
+if [[ "$pt803" != *EVIL_PIN* && "$pt803" == *RC=[1-9]* && ( "$pt803" == *BD803_REVIEW_LIB* || "$pt803" == *refusing* ) ]]; then
+  ok "#803: BD803_REVIEW_LIB evil.sh refused for --review"
+else
+  bad "#803: BD803_REVIEW_LIB evil.sh not refused: '$pt803'"
+fi
+
+# 24) #803: _bd803_canonical_file_path sanity; poisoned /bin/sh pin refused.
+set +e
+canon=$(
+  cd "$REPO" && /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _bd803_canonical_file_path \"$LIB\""
+)
+canon_rc=$?
+set -e
+if [[ "$canon_rc" -eq 0 && ( "$canon" == "$LIB" || "$canon" -ef "$LIB" ) ]]; then
+  ok "#803: _bd803_canonical_file_path sanity on LIB"
+else
+  bad "#803: _bd803_canonical_file_path sanity failed: rc=$canon_rc out='$canon'"
+fi
+set +e
+shpin=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" BD803_REVIEW_LIB=/bin/sh \
+    /bin/bash --norc -c ". \"$LIB\" >/dev/null 2>&1; _portable_timeout --review codex 1 codex 2>&1; echo RC=\$?"
+)
+set -e
+if [[ "$shpin" == *RC=[1-9]* && ( "$shpin" == *BD803_REVIEW_LIB* || "$shpin" == *refusing* ) ]]; then
+  ok "#803: BD803_REVIEW_LIB=/bin/sh refused"
+else
+  bad "#803: BD803_REVIEW_LIB=/bin/sh not refused: '$shpin'"
+fi
+
+# 25) #803: latched pin survives post-source canonical stub (no live BASH_SOURCE re-resolve).
+/usr/bin/printf '%s\n' '#!/bin/sh' 'echo REAL' > "$EXT/codex"
+chmod +x "$EXT/codex"
+set +e
+canon_miss=$(
+  cd "$REPO" && PATH="$EXT:/usr/bin:/bin" /bin/bash --norc -c \
+    ". \"$LIB\" >/dev/null 2>&1; _bd803_canonical_file_path() { :; }; _portable_timeout --review codex 1 codex --version 2>&1; echo RC=\$?"
+)
+set -e
+if [[ "$canon_miss" == *REAL* && "$canon_miss" == *RC=0* ]]; then
+  ok "#803: latched pin survives post-source canonical stub for --review"
+else
+  bad "#803: latched pin did not survive post-source canonical stub: '$canon_miss'"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

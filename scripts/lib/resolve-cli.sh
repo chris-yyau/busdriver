@@ -160,7 +160,6 @@ while [ -L "$pin" ] && [ "$n" -lt 32 ]; do
   n=$((n + 1))
 done
 [ -L "$pin" ] && exit 1
-[ -f "$pin" ] || exit 1
 case $pin in *'"'"'
 '"'"'*) exit 1 ;; esac
 d=$(CDPATH=; cd -- "$(/usr/bin/dirname -- "$pin")" && pwd -P) || exit 1
@@ -171,10 +170,37 @@ b=$(/usr/bin/basename -- "$pin") || exit 1
 case $b in *'"'"'
 '"'"'*) exit 1 ;; esac
 pin="$d/$b"
-builtin exec 3< "$pin" || exit 1
 staged=$(/usr/bin/mktemp -t bd803-lib.XXXXXX) || exit 1
-/bin/cp /dev/fd/3 "$staged" || { /bin/rm -f "$staged"; exit 1; }
-builtin exec 3<&- 2>/dev/null || true
+# #803: group redirection, not `exec`. `builtin exec 3< f` redirects the
+# `builtin` COMMAND, so fd 3 is closed again before the next line (measured,
+# bash 3.2 / macOS) — the staging cp then failed and every review dispatch
+# refused. A group redirect holds the descriptor for the whole block and uses
+# no shadowable builtin word at all.
+#
+# TRUST BOUNDARY of this staging step — state it, because the shape invites a
+# stronger reading than it earns:
+#   BOUND: every LATER read of the review lib. The copy is taken from the held
+#     fd 3, not from a second open of "$pin", and the regular-file check below
+#     tests the OPENED descriptor rather than the pathname — so nothing between
+#     here and the last retry minutes from now can re-point what was staged.
+#   NOT BOUND: this first open itself, and be precise about what that means. The
+#     parent goes on executing the inode bash already holds open, so a swap of
+#     "$pin" AFTER sourcing does not change the parent — it makes the STAGED copy
+#     diverge from the sourced bytes, and the env -i children would then run the
+#     swapped code with a digest that matches itself. That divergence is real.
+#     It is not closable from inside this file: bash exposes no descriptor for
+#     the `source` that read it, so there is nothing to stage FROM but the
+#     pathname. Closing it means the launcher stages the artifact first and
+#     sources THAT — a change to every caller that sources this library, not to
+#     this function. What does not change is the capability required: write
+#     access to the pinned lib path. An attacker holding it a moment earlier
+#     subverts the parent directly, which is strictly worse. So this is a blast
+#     radius the staging does not shrink, not a new door it opens.
+#     Owner-adjudicated 2026-09-02 as out of scope for #803, whose threat model
+#     is the shadowable-builtin/poisoned-environment class, not same-uid write.
+# `&&`, not `|| exit 1`: an exit inside the group leaves the mktemp file behind,
+# because the outer cleanup handler never runs. Falling through to it removes it.
+{ [ -f /dev/fd/3 ] && /bin/cp /dev/fd/3 "$staged"; } 3< "$pin" || { /bin/rm -f "$staged"; exit 1; }
 /bin/chmod 500 "$staged" || { /bin/rm -f "$staged"; exit 1; }
 sha=$(/usr/bin/shasum -a 256 "$staged" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done)
 [ -n "$sha" ] || { /bin/rm -f "$staged"; exit 1; }
@@ -255,11 +281,24 @@ _bd803_bash_staged_lib() {
 staged=\${BD803_STAGED_PATH-}
 expected=\${BD803_EXPECTED_SHA-}
 [[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
-builtin exec 4< \"\${staged}\" || exit 1
-builtin exec 5< \"\${staged}\" || exit 1
-sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+# #803: read the lib ONCE, then hash and execute those exact bytes. Hashing one
+# descriptor and executing another (however the two are opened) always leaves a
+# window in which the digest passes while different bytes run. Here the bytes live
+# in \${src} from the single read onward: the digest is taken over \${src} and the
+# process substitution feeds back \${src}, so what was verified is what executes.
+# There is no second open and nothing on disk is consulted after the read.
+# INVARIANT: \$(cat) strips trailing newlines and printf '%s\\n' restores exactly
+# one, so this digest equals shasum(file) only while resolve-cli.sh ends in exactly
+# one newline and holds no NUL. A violation fails closed — every dispatch refuses.
+# The BUILTIN printf, not /usr/bin/printf: the library is ~248 KB and Linux caps a
+# single exec argument at MAX_ARG_STRLEN (128 KB), so handing \${src} to an external
+# printf is E2BIG on the CI runners even though macOS, which caps only the total,
+# allows it. A builtin never execs, so no per-argument limit applies. Safe here
+# because this whole child runs under env -i, where no BASH_FUNC_* shadow survives.
+src=\$(/bin/cat -- \"\${staged}\") || exit 1
+sha=\$(builtin printf '%s\n' \"\${src}\" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -d' ' -f1)
 [[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
-/bin/bash --noprofile --norc /dev/fd/4 \"\$@\"
+/bin/bash --noprofile --norc <(builtin printf '%s\n' \"\${src}\") \"\$@\"
 exit \$?
 " bash "${_BSL_ARGS[@]}"
 }
@@ -4569,11 +4608,13 @@ execute_review() {
 staged=\${BD803_STAGED_PATH-}
 expected=\${BD803_EXPECTED_SHA-}
 [[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
-builtin exec 4< \"\${staged}\" || exit 1
-builtin exec 5< \"\${staged}\" || exit 1
-sha=\$(/usr/bin/shasum -a 256 /dev/fd/5 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d' ' -f1)
+# #803: read-once, hash-and-execute the same bytes — see _bd803_bash_staged_lib.
+# The prompt arrives on this shell's stdin and the lib reads it, so the verified
+# bytes are handed over by process substitution rather than on fd 0.
+src=\$(/bin/cat -- \"\${staged}\") || exit 1
+sha=\$(builtin printf '%s\n' \"\${src}\" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -d' ' -f1)
 [[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
-/bin/bash --noprofile --norc /dev/fd/4 --execute-opencode-review
+/bin/bash --noprofile --norc <(builtin printf '%s\n' \"\${src}\") --execute-opencode-review
 exit \$?
 " \
                || _ER_OC_RC=$?

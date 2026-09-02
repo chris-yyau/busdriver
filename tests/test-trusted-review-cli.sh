@@ -55,6 +55,32 @@ else
   bad "#803: _BD803_REVIEW_LIB_SHA latch failed: sha='$sha_val'"
 fi
 
+# #803: `builtin exec N< file` redirects the `builtin` COMMAND, so the descriptor
+# is closed again before the next line (bash 3.2 / macOS). Every descriptor-bound
+# staging site must use a group redirect instead; reintroducing the idiom silently
+# breaks review-lib staging and makes every review dispatch refuse.
+set +e
+bexec_hits=$(/usr/bin/grep -cE '^[^#]*builtin[[:space:]]+exec[[:space:]]+[0-9]+[<>]' "$LIB")
+set -e
+if [[ "$bexec_hits" -eq 0 ]]; then
+  ok "#803: no 'builtin exec N<' descriptor staging in resolve-cli.sh"
+else
+  bad "#803: 'builtin exec N<' reintroduced in resolve-cli.sh ($bexec_hits site(s)) — use a group redirect"
+fi
+
+# Behavioural half of the same invariant: the descriptor chain must actually run.
+# _bd803_bash_staged_lib reads the staged copy once, hashes those exact bytes, and
+# executes them via process substitution. A broken read, a mismatched digest, or a
+# failed handoff all surface here as empty output.
+set +e
+staged_home=$(/bin/bash --noprofile --norc -c 'source "$1" >/dev/null 2>&1; _bd803_bash_staged_lib --print-trusted-home' bash "$LIB" 2>/dev/null)
+set -e
+if [[ -n "$staged_home" && "$staged_home" == /* ]]; then
+  ok "#803: staged-lib descriptor chain executes (read-once verified bytes, --print-trusted-home='$staged_home')"
+else
+  bad "#803: staged-lib descriptor chain broken: --print-trusted-home returned '$staged_home'"
+fi
+
 
 REPO="$WORK/repo"
 mkdir -p "$REPO"

@@ -1280,7 +1280,10 @@ fi
 # This covers the DISPATCH path only — blueprint-review reaches droid through
 # its own `_bp_droid_rescue` and never consults this predicate; that half is
 # asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | has_match '"\$primary_cli" == "grok"'; then
+# Matched on the COMPARISON, not on the variable name: #803 renamed the local
+# `primary_cli` to `_SETD_PRIMARY` (no shadowable locals), which silently broke a
+# name-keyed pattern while the guard itself was untouched and stronger.
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | has_match '== "grok"'; then
   pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
 else
   fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"

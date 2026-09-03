@@ -1156,6 +1156,15 @@ if (
   set -uo pipefail
   BUSDRIVER_CLI_RETRIES=0 BUSDRIVER_CLI_RETRY_DELAY=0
   export BUSDRIVER_CLI_RETRIES BUSDRIVER_CLI_RETRY_DELAY
+  # Hermetic seam, same reason as the two fakes above. #803 routes availability
+  # through TRUSTED resolution — opencode via the operator home's fixed install
+  # PATH, droid via is_trusted_review_cli_available — so what this block asserts
+  # would otherwise depend on what happens to be installed on the runner. It
+  # failed on Linux CI while passing on the author's machine for exactly that
+  # reason. Pin both: opencode resolvable, droid absent, so the assertion is
+  # about banner normalization and nothing else.
+  _resolve_trusted_cli_bin() { case "$1" in opencode) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
+  is_trusted_review_cli_available() { [ "${1-}" = opencode ]; }
   ok=1
   out=""; rc=0
   out=$(_run_review_with_retries opencode "probe" 5 none \

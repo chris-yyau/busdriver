@@ -633,6 +633,70 @@ else
   bad "#803: a dynamic-loader variable survived the rebuild:"$'\n'"$ld_bad"
 fi
 
+# #803: the Python loader variables must be stripped by the SAME rebuild, and for a
+# sharper reason than the LD_* trio. `python3 -c` is invoked ~37x across these entry
+# points, and one of those calls is the backstop VERDICT VALIDATOR -- so a hostile
+# PYTHONPATH executes its sitecustomize.py before the code that decides whether a
+# review passed, forging the verdict rather than merely observing it. The blanking
+# must be by ASSIGNMENT, not the `-u` list: that list only triggers a re-exec when it
+# is non-empty, so an environment carrying PYTHONPATH and nothing else would skip the
+# rebuild entirely. Same accept-rule as _ld_ok -- `unset` or set-but-EMPTY both pass,
+# because empty is inert to Python (measured) -- and any surviving VALUE fails.
+PYP="$WORK/python-probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/skills/litmus/scripts/run-review-loop.sh"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "BODY py=%%s ph=%%s pu=%%s\\\\n" "${PYTHONPATH-unset}" "${PYTHONHOME-unset}" "${PYTHONUSERBASE-unset}"\n'
+} > "$PYP"
+chmod 755 "$PYP"
+py_bad=""
+_py_ok() { [[ "$1" =~ ^BODY\ py=(unset)?\ ph=(unset)?\ pu=(unset)?$ ]]; }
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin \
+      PYTHONPATH=/tmp/bd803-evil-py PYTHONHOME=/tmp/bd803-evil-home \
+      PYTHONUSERBASE=/tmp/bd803-evil-base "$PYP")
+_py_ok "$_r" || py_bad="${py_bad}python-only -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin PYTHONPATH=/tmp/bd803-evil-py \
+      'BASH_FUNC_bd803py%%=() { :; }' "$PYP")
+_py_ok "$_r" || py_bad="${py_bad}python+shadow -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin "$PYP")
+_py_ok "$_r" || py_bad="${py_bad}clean control -> '$_r'"$'\n'
+if [[ -z "$py_bad" ]]; then
+  ok "#803: Python loader variables are stripped before any descendant runs"
+else
+  bad "#803: a Python loader variable survived the rebuild:"$'\n'"$py_bad"
+fi
+
+# #803: the variable-state assertion above would still pass if Python ignored the
+# blanking, so assert the EFFECT end to end -- plant a real sitecustomize.py, run a
+# real python3 through the block, and require its marker never to appear. The
+# unprotected control runs the same interpreter with the same fixture and MUST show
+# the marker; without that half the assertion could pass on a machine where the
+# fixture simply never loads, which is the vacuous-guard failure this suite exists
+# to avoid.
+PYEVIL="$WORK/pyevil"
+/bin/mkdir -p "$PYEVIL"
+printf 'import sys\nsys.stderr.write("PWNED-SITECUSTOMIZE\\n")\n' > "$PYEVIL/sitecustomize.py"
+PYE="$WORK/python-effect.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/skills/litmus/scripts/run-review-loop.sh"
+  printf 'python3 -c "print(0)" >/dev/null\n'
+} > "$PYE"
+chmod 755 "$PYE"
+set +e
+_pe_guarded=$(/usr/bin/env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$PYEVIL" "$PYE" 2>&1)
+_pe_control=$(/usr/bin/env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$PYEVIL" \
+              python3 -c 'print(0)' 2>&1 >/dev/null)
+set -e
+if [[ "$_pe_control" != *PWNED-SITECUSTOMIZE* ]]; then
+  bad "#803: sitecustomize control never fired — the effect assertion would be vacuous: ${_pe_control:-<empty>}"
+elif [[ "$_pe_guarded" != *PWNED-SITECUSTOMIZE* ]]; then
+  ok "#803: a planted sitecustomize.py does not execute under the rebuilt environment"
+else
+  bad "#803: PYTHONPATH sitecustomize.py executed despite the rebuild: $_pe_guarded"
+fi
+
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
 # still resolves bash through the ambient PATH, so a hostile PATH picks the
 # interpreter before privileged mode or the environment rebuild can start — the entry

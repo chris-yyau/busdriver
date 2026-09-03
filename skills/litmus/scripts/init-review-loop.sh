@@ -47,6 +47,28 @@ LD_PRELOAD=
 LD_AUDIT=
 # shellcheck disable=SC2034
 LD_LIBRARY_PATH=
+# Same treatment for the Python loader variables, and for the same reason the LD_*
+# trio needs the ASSIGNMENT form rather than the `-u` list below: the re-exec is
+# conditional on that list being non-empty, so an environment carrying only
+# PYTHONPATH would skip it entirely and hand every `python3 -c` here an attacker
+# import path. That is not a theoretical descendant -- the backstop VERDICT
+# VALIDATOR is one of those calls, so a forged `sitecustomize.py` runs before the
+# code that decides whether a review passed. Measured: a hostile PYTHONPATH
+# executed sitecustomize.py ahead of the `-c` body, and a hostile PYTHONUSERBASE
+# got its usercustomize.py found, read and executed. Blanking is inert to Python
+# for all three (measured), exactly as an empty LD_PRELOAD is inert to the loader.
+# PYTHONSTARTUP is deliberately NOT here: measured, it applies only to interactive
+# sessions and never to `-c`, so adding it would be hardening with no vector.
+# Residual, stated honestly: with PYTHONUSERBASE blank, site.py derives the user
+# site directory from $HOME, which this block does not strip -- a hostile HOME
+# still reaches usercustomize.py. That is the passwd-home boundary (#811/#813),
+# not something this block can close.
+# shellcheck disable=SC2034
+PYTHONPATH=
+# shellcheck disable=SC2034
+PYTHONHOME=
+# shellcheck disable=SC2034
+PYTHONUSERBASE=
 # Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
 # line per variable: a value holding an embedded newline followed by text shaped like
 # `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM
@@ -84,7 +106,7 @@ while IFS= read -r -d '' _bd803_e; do
   # that the re-exec'd shell and EVERY descendant start loader-clean, which is the
   # same treatment resolve-cli.sh already gives each of its `env -i` children.
   case "$_bd803_e" in
-    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*)
+    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*|PYTHONPATH=*|PYTHONHOME=*|PYTHONUSERBASE=*)
       _bd803_envclean+=(-u "${_bd803_e%%=*}") ;;
   esac
 # `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having

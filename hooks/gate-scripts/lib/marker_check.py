@@ -2392,6 +2392,523 @@ def _glob_helper_targeted(word, deep=None):
     return _glob_helper(word, deep)
 
 
+# Whole-token POSIX/bash digit-negation globs (#776). Optional stars either side.
+_DIGIT_NEGATION_ONLY_RE = re.compile(r"^\*?\[(?:!|\^)0-9\]\*?$")
+
+
+def _is_digit_negation_only_segment(seg) -> bool:
+    """True when `seg` is only a digit-negation glob (POSIX numeric-validation pattern)."""
+    return bool(_DIGIT_NEGATION_ONLY_RE.match(seg.strip()))
+
+
+# Empty-string case alternatives (#776): empty quotes as a whole alt, or straight after
+# `in`. The quotes are OPTIONAL because the scan also runs over a DEQUOTED copy of the
+# command, where `case x in ''|*[!0-9]*)` has already become `case x in |*[!0-9]*)`: the
+# alternative is still empty, it is just spelled as nothing at all. Requiring the literal
+# quotes made the residue rule miss that copy, and a valid numeric case whose subject
+# carried a substitution was blocked on the strength of the dequoted variant alone.
+# Widening is safe here because the caller has already established, from parser state,
+# that these segments sit in a pattern list -- text a case matches, never runs.
+_EMPTY_ALT_SEG_RE = re.compile(r"^\s*(?:''|\"\")*\s*$")
+_EMPTY_ALT_AFTER_IN_RE = re.compile(
+    r"(?<![\w-])in(?![\w-])(?:\s+#[^\n]*)?\s*(?:''|\"\")*\s*$"
+)
+_IN_WORD_RE = re.compile(r"(?<![\w-])in(?![\w-])")
+
+# Where a `case` is, as PARSER STATE rather than as text nearby (#776).
+_CASE_CLOSED, _CASE_HEADER, _CASE_PATTERN, _CASE_BODY = 0, 1, 2, 3
+
+# `NAME=` / `NAME+=` immediately before a `(` -- an ARRAY ASSIGNMENT, not a subshell.
+_ARRAY_ASSIGN_TAIL_RE = re.compile(r"(?:^|[\s;&|])[\w.\[\]-]+\+?=$")
+
+
+def _case_lead_is_command_position(pairs, k):
+    """True when a leading `case` word in pairs[k] could actually START a command.
+
+    `_split_with_ops` splits on `(`, so an array assignment `A=(case x)` leaves the bare
+    word `case` at a segment LEAD while it is only an array element. Reading it as the
+    keyword opened a header that a later `in` closed into a pattern list, and real
+    executing stages were then dropped from the producer text -- a fail-OPEN. A genuine
+    subshell `(case x in ...)` carries no `NAME=` immediately before its `(`.
+    """
+    # The op must be EXACTLY `(`. Operator characters join into one run, so a real
+    # subshell after an empty assignment arrives as `;(` -- `A=;(case x in ...)` is valid
+    # bash and command position, and matching any op CONTAINING `(` over-blocked it.
+    if pairs[k][0] != "(" or k == 0:
+        return True
+    return not _ARRAY_ASSIGN_TAIL_RE.search(pairs[k - 1][1].rstrip())
+
+
+def _opens_substitution(pairs, k):
+    """True when the `(` preceding pairs[k] opens a process or command SUBSTITUTION.
+
+    `<( … )`, `>( … )` and `$( … )` RUN their contents, so unlike the rest of a pattern
+    list they are not inert text -- `case x in <(*[!0-9]* | '' | bash))` really executes
+    that pipeline. The tokenizer splits on `(`, leaving the introducer as the tail of the
+    previous segment.
+    """
+    if "(" not in pairs[k][0] or k == 0:
+        return False
+    # Continuations removed FIRST, so this does not depend on upstream normalization
+    # happening to have done it: bash deletes an unquoted `\<newline>` before parsing, so
+    # `$`, `<` or `>` separated from its `(` by one still opens a substitution while the
+    # raw predecessor ends in a backslash. `_norm_for_scan` already strips them on the
+    # paths measured here, but a check that only works because something else ran first is
+    # the dependency this file keeps removing.
+    return _strip_line_continuations(pairs[k - 1][1]).rstrip().endswith(("<", ">", "$"))
+
+
+# Clause terminators (`;;` ends an arm, `;&` and `;;&` fall through) as operator RUNS.
+# One operator RUN that closes an arm and opens the next pattern list: `)`, a terminator,
+# and the optional case-item `(`. Written whitespace-free, `case x in a);;(''|…)` emits the
+# whole thing as a single op, so the parts are matched together rather than enumerated.
+# `;;&` before `;;` -- alternation is first-match and the longer spelling must win.
+_CASE_ARM_RESTART_RE = re.compile(r"^\)(?:;;&|;;|;&)\(?$")
+# The terminator alone, with the same optional `(`: whitespace before the terminator makes
+# the tokenizer emit `)` and `;;(` as SEPARATE runs, so the body branch needs its own form.
+_CASE_TERM_RUN_RE = re.compile(r"^(?:;;&|;;|;&)\(?$")
+
+
+def _strip_line_continuations(text):
+    r"""`text` with backslash-newline removed everywhere bash removes it.
+
+    bash deletes an unquoted or double-quoted `\<newline>` BEFORE parsing, so
+    `${\<newline> printf x; }` is an alternate command substitution with the separator on
+    the next line. Scanning the raw bytes saw a backslash where the separator belongs and
+    missed it.
+
+    NOT removed inside single quotes, where the pair is literal, and NOT inside a COMMENT:
+    a backslash does not continue a comment, the newline still ends it. Removing it there
+    joined the following line INTO the comment and hid a live substitution behind it --
+    `# note \<newline>${| printf x; }` read as inert, a fail-OPEN.
+
+    Quote, escape and comment-boundary rules are the same ones `_alt_cmd_subst_active`
+    applies; the two are read together.
+    """
+    if "\\\n" not in text:
+        return text
+    out, i, n = [], 0, len(text)
+    in_single = in_double = in_comment = in_ansi = False
+    prev = ""
+    while i < n:
+        ch = text[i]
+        if in_ansi:
+            # Inside `$'…'` a backslash is an ESCAPE, so `\<newline>` is an escape
+            # sequence rather than a line continuation and must survive intact.
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == "'":
+                in_ansi = False
+            prev = "x"
+            i += 1
+            continue
+        if in_comment:
+            out.append(ch)
+            if ch == "\n":
+                in_comment = False
+                prev = "\n"
+            i += 1
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            out.append(ch)
+            prev = "x"
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
+            # REMOVED, so `prev` is left alone: bash deletes the pair before parsing, and
+            # the character before it keeps its meaning for the comment boundary. Setting
+            # `prev = "x"` here hid a boundary -- `case x in \<nl># note` then read as an
+            # ordinary word, the comment never opened, and the next continuation was
+            # removed too, folding a live substitution into text that later scanned as a
+            # comment: a fail-OPEN.
+            i += 2
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            prev = "x"
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "'" and not in_double:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            in_ansi = True
+            prev = "x"
+            continue
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        elif ch == "#" and not in_double and (prev == "" or prev in " \t\n;&|()"):
+            in_comment = True
+        out.append(ch)
+        prev = ch
+        i += 1
+    return "".join(out)
+
+
+def _alt_cmd_subst_active(text):
+    r"""True when `text` opens a bash 5.3 `${ cmd; }` / `${| cmd; }` that would RUN.
+
+    Quote state decides it, so this tracks the three things that change it rather than
+    stripping quotes first. Stripping single-quoted runs was WRONG: an apostrophe inside
+    DOUBLE quotes is a literal character and opens nothing, so
+    `case x in "'${| printf x | '' | *[!0-9]* | bash; }'")` had its live substitution
+    removed and read as inert -- a fail-OPEN on valid bash 5.3.
+
+    Inside single quotes nothing expands, so `'${ '` is inert. Inside double quotes a
+    substitution still runs. A backslash escapes the next character unless single-quoted,
+    so `\${ ` is inert too.
+
+    The separator set is space, TAB, NEWLINE and `|` -- every character bash accepts after
+    `${`. Newline is easy to leave out and is a real spelling: `${\nprintf x; }` runs.
+
+    A `#` at a word boundary opens a COMMENT, which expands nothing, so a `#`-prefixed
+    note is inert. The boundary test matters: `${#V}` is a length expansion and `a#b` is
+    an ordinary word, and neither starts a comment -- and the character before the `#` is
+    judged AS THE SHELL SEES IT, so an escaped one does not create a boundary. Reading the
+    raw byte instead made `\)#` look like a separator-then-comment, and the live
+    substitution behind it was skipped -- a fail-OPEN.
+    """
+    text = _strip_line_continuations(text)
+    in_single = in_double = in_ansi = False
+    i, n = 0, len(text)
+    prev = ""                                 # previous char AS THE SHELL SEES IT: "" at
+    while i < n:                              # the start, "x" for anything escaped
+        ch = text[i]
+        if in_ansi:
+            # ANSI-C `$'…'`: a backslash escapes here, INCLUDING the closing quote, so
+            # `$'a\'b'` is one word and the second `'` is not a delimiter. Treating every
+            # quote alike made the escaped one close the run and the real one OPEN a false
+            # single-quoted region, hiding a live substitution behind it.
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "'":
+                in_ansi = False
+            prev = "x"
+            i += 1
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            prev = "x"
+            i += 1
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "'" and not in_double:
+            in_ansi = True                    # `$'` opens ANSI-C quoting
+            i += 2
+            prev = "x"
+            continue
+        if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
+            i += 2                            # a continuation is absent; `prev` is kept
+            continue
+        if ch == "\\":
+            i += 2                            # escapes the next char, including `$`
+            prev = "x"                        # ...and that char is an ordinary WORD char,
+            continue                          # so it cannot be a word boundary
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        elif (ch == "#" and not in_double
+                and (prev == "" or prev in " \t\n;&|()")):
+            # A COMMENT runs to end of line and expands nothing, so `# ${ note` is inert.
+            # Only at a word boundary: `a#b` and `${#V}` are ordinary characters.
+            nl = text.find("\n", i)
+            if nl < 0:
+                return False
+            i = nl + 1
+            prev = "\n"
+            continue
+        elif ch == "`":
+            return True                       # backtick substitution, still active here
+        elif ch == "$" and i + 2 < n and text[i + 1] == "{" and text[i + 2] in " \t\n|":
+            return True                       # `${ ` / `${|`, unquoted or double-quoted
+        prev = ch
+        i += 1
+    return False
+
+
+def _pattern_text_executes(pairs, k, seg):
+    """True when pairs[k] carries text a case pattern would RUN rather than match.
+
+    A pattern list is inert text except for substitution, so these end the state and the
+    stages keep their text -- the fail-CLOSED direction.
+    """
+    if _opens_substitution(pairs, k):
+        return True
+    # Backticks are the POSIX spelling of command substitution and execute exactly the
+    # same way, but the tokenizer does not split on them, so there is no `(` operator to
+    # detect and the introducer never reaches _opens_substitution: the character itself is
+    # the only marker -- which is why it is judged by the SAME quote/escape/comment scan
+    # as `${ }`. A raw `"`" in seg` test was tried and over-blocked the valid inert
+    # spellings `\`` and `'`'`, where the shell runs nothing. `case x in `:; '' | *[!0-9]* | bash`)` is valid bash and really runs
+    # that pipeline. Blocked today by other machinery -- every probed spelling returns
+    # BLOCK -- but the STATE was still wrong, and resting a security invariant on a
+    # different check happening to fire is how the next spelling gets through.
+    # bash 5.3 ALTERNATE command substitution, `${ cmd; }` and `${| cmd; }`, which run
+    # their body like `$( … )` while looking like a parameter expansion. The separator is
+    # what distinguishes them: `${` followed by whitespace or `|`. Plain `${VAR}` and
+    # `${VAR:-x}` expand without running anything and must NOT match, so the brace name
+    # character class is deliberately excluded. SINGLE-quoted text is inert -- bash runs
+    # nothing inside `'…'` -- so `case x in '${ '|''|*[!0-9]*|bash)` is a valid pattern
+    # and must not be read as a substitution. Double quotes are NOT stripped: `"${ x; }"`
+    # still runs.
+    return _alt_cmd_subst_active(seg)
+
+
+def _case_state_after_op(state, op):
+    """Advance the case walk across the operator that PRECEDES a segment."""
+    if state == _CASE_PATTERN:
+        if op == ")":
+            return _CASE_BODY                 # pattern list closed; the BODY runs
+        if _CASE_ARM_RESTART_RE.match(op):
+            # An EMPTY arm written without whitespace -- `case x in a);;''|…)`, with or
+            # without the optional item `(` -- arrives as ONE operator run. The `)` closes
+            # this list and the terminator ends the (empty) body, so the next alternative
+            # list starts immediately. Falling to CLOSED here over-blocked all six
+            # spellings. Anything else `)`-leading (`))`, a substitution close) still
+            # falls through to CLOSED, which keeps the text and is fail-CLOSED.
+            return _CASE_PATTERN
+        # `;` is a normalized newline, `|` joins alternatives, `(` opens the item.
+        return state if op in (";", "|", "(") else _CASE_CLOSED
+    if state == _CASE_BODY and _CASE_TERM_RUN_RE.match(op):
+        return _CASE_PATTERN                  # next arm -- `;&` / `;;&` fall through
+    return state
+
+
+# Shell blanks only. `str.split()` splits on Python's UNICODE whitespace, which is wider
+# than bash's IFS default: a non-breaking space is a word character to the shell, so
+# `case\u00a0x` is ONE ordinary command name -- and splitting it produced a `case` lead
+# that opened a pattern list over a REAL pipeline, dropping its executing stage.
+_SHELL_WORD_RE = re.compile(r"[^ \t\n]+")
+
+
+def _shell_words(text):
+    """`text` split the way the shell splits it: on space, tab and newline only."""
+    return _SHELL_WORD_RE.findall(text)
+
+
+def _effective_lead(words):
+    """The first word that could be a COMMAND, stepping over compound introducers.
+
+    `case` is a keyword in command position, and bash allows introducers in front of it in
+    the SAME segment: `if case x in …`, `while case …`, `then case …`, `! case …`,
+    `time case …`. Taking `words[0]` literally missed every one, so the pattern list was
+    kept as producer text and valid numeric-validation cases were blocked. `_group_delta`
+    already steps over exactly these words, for exactly this reason -- this reuses its
+    sets rather than hand-listing a second copy that would drift.
+    """
+    for w in words:
+        if w in ("case", "esac"):
+            return w                          # the keywords this walk is looking for
+        if w in _GROUP_CONNECT or w in _GROUP_OPEN or w in _GROUP_CLOSE:
+            continue                          # an introducer, not the command
+        return w
+    return ""
+
+
+def _case_state_after_segment(state, pairs, k, seg):
+    """Advance the case walk across a segment's own WORDS, after its operator."""
+    lead = _effective_lead(_shell_words(seg))
+    if lead == "esac":
+        return _CASE_CLOSED
+    if (lead == "case" and state in (_CASE_CLOSED, _CASE_BODY)
+            and _case_lead_is_command_position(pairs, k)):
+        # Only where a command may START. `case case in case) ...` is valid bash, and
+        # honouring the PATTERN-list `case` reopened the header -- then a body operand
+        # `in` re-entered pattern state and dropped a real stage (fail-OPEN).
+        if _IN_WORD_RE.search(seg):
+            return _CASE_PATTERN          # `case WORD in …` all in one segment
+        return _CASE_HEADER
+    if state == _CASE_HEADER and lead == "in":
+        # The `in` LEADS its segment. Matching it ANYWHERE in the segment instead was a
+        # fail-OPEN: `A=(case x); echo in; …` flipped executing stages to PATTERN on the
+        # strength of an `echo` operand. Requiring the lead also lets a header span the
+        # segments a substitution in the SUBJECT creates -- `case "$(printf x)" in …`
+        # flattens to `case` / `printf x` / `in` in the dequoted scan, and closing on the
+        # inner `printf x` blocked a valid case.
+        return _CASE_PATTERN
+    return state
+
+
+def _case_pattern_segments(pairs):
+    """Per-segment flags: is pairs[k] inside a `case ... in` PATTERN list?
+
+    Searching a fixed window of earlier segments for the WORDS `case` and `in` was both
+    unsound and incomplete. Unsound: `printf case in; ('' | *[!0-9]*) | bash` supplied
+    both words as printf OPERANDS, so a real subshell pipeline read as a case pattern and
+    its digit-negation stage was dropped -- a fail-OPEN. Incomplete: the window needed a
+    bound, and any bound mis-blocks a valid case with more comment lines than the bound.
+    Both go away by tracking the construct instead of guessing at it: a keyword counts
+    only in COMMAND position -- the leading word of a segment -- which is the same rule,
+    for the same reason, that `_group_delta` already applies to compound keywords.
+    Between `in` and the pattern-closing `)` bash executes nothing EXCEPT a substitution
+    -- `<( … )`, `>( … )`, `$( … )` all run their contents -- so those drop the state via
+    `_opens_substitution` and a segment still flagged here cannot be a real pipeline
+    stage. Every unrecognized op drops the state too, so an unreadable shape keeps its
+    text and stays fail-CLOSED.
+    """
+    # ponytail: no nesting stack -- an inner `esac` closes the outer case too, so arms of
+    # an OUTER case following a nested one over-block. That is the fail-CLOSED direction;
+    # add a stack only if a real command needs it.
+    flags = [False] * len(pairs)
+    state = _CASE_CLOSED
+    depth = 0                                 # unclosed `(` inside a case SUBJECT
+    for k, (op, seg) in enumerate(pairs):
+        if state == _CASE_HEADER:
+            # The subject may contain a substitution, and the tokenizer splits on its
+            # parens: `case "$(printf x)" in …` dequotes to `case $` / `printf x` / ` in `
+            # with a `)` op in the middle. Only a `)` that closes nothing ends the header;
+            # a clause terminator always does. Without the depth count the inner `)` cut
+            # the header short and a valid case was blocked; without the close at depth 0,
+            # `(case x); in; …` carried a header across the `);` into an `in` and flipped
+            # a real pipeline to PATTERN.
+            if "(" in op:
+                depth += 1
+            elif op.startswith(")"):
+                if depth > 0:
+                    depth -= 1
+                else:
+                    state = _CASE_CLOSED
+            elif _CASE_TERM_RUN_RE.match(op):
+                state = _CASE_CLOSED
+        state = _case_state_after_op(state, op)
+        _was = state
+        state = _case_state_after_segment(state, pairs, k, seg)
+        if state == _CASE_HEADER and _was != _CASE_HEADER:
+            depth = 0                         # a freshly opened header counts from zero
+        if state == _CASE_PATTERN and _pattern_text_executes(pairs, k, seg):
+            # A pattern list is inert text EXCEPT here: a substitution executes. Dropping
+            # to CLOSED keeps its stages in the producer text, which is fail-CLOSED.
+            #
+            # AFTER the segment transition, not before it. A segment can both OPEN the
+            # pattern list and carry the substitution -- `case x in `:; …`)` is one
+            # segment -- and checking first saw state CLOSED there, skipped, and then let
+            # the header transition mark it PATTERN anyway. The guard never fired on the
+            # very shape it was added for; the BLOCK came from the whole-command backtick
+            # scan instead, which is the "another check happens to fire" dependency this
+            # is supposed to remove. `<( … )` still trips it: that opener arrives on a
+            # LATER segment whose state is already PATTERN, so the move costs it nothing.
+            state = _CASE_CLOSED
+        flags[k] = state == _CASE_PATTERN
+    return flags
+
+
+def _has_empty_string_case_alt(pairs, head, tail):
+    """True when the `|`-list spanning pairs[head:tail] carries an empty-string alternative."""
+    for k in range(head, tail + 1):
+        seg = pairs[k][1]
+        if _EMPTY_ALT_SEG_RE.match(seg) or _EMPTY_ALT_AFTER_IN_RE.search(seg):
+            return True
+    return False
+
+
+def _case_pattern_closes_after(pairs, i):
+    """True when the `|`-alternative list containing pairs[i] ends at a `)` close.
+
+    Only a pattern list that actually closes is case residue; a `|` run that reaches
+    anything else is a pipeline, and its text stays. The walk follows a CONTIGUOUS `|`
+    run and stops at the first operator that is not one, so it cannot wander off through
+    unrelated commands.
+
+    `startswith(")")`, NOT `== ")"`: consecutive operator characters join into one run,
+    so an empty case arm `''|*[!0-9]*);;` presents the close as `');;'`. Requiring a bare
+    `)` re-blocks that shape -- the `#776 empty case arm` regression test covers it.
+
+    KNOWN RESIDUAL: the walk is not bounded by the producer window, so the authorizing
+    `)` need not belong to the same construct the flags were computed for. Bounding it at
+    the window end was TRIED and withdrawn: `last` is the last candidate shell stage, not
+    the pattern close, so `case x in ''|*[!0-9]*|bash) : ;; esac` keeps its `)` at
+    `last + 1` and the bound over-blocked a valid case. This is defence in depth behind
+    `_case_pattern_segments`, which is what actually decides the construct.
+
+    KNOWN OVER-BLOCK, deliberate: a case whose SUBJECT carries a substitution --
+    `case "$(printf x)" in ''|*[!0-9]*) …`, and the backtick and nested spellings -- is
+    BLOCKED even though bash accepts it. The abandoned scan also runs over a copy in which
+    `$( … )` has been flattened to separators, and that copy has lost the pattern-closing
+    `)`, so this check declines and the glob keeps its text. Two ways out were built and
+    measured, and BOTH re-opened a verified fail-open, which is why the over-block stands:
+      * dropping this check entirely let `(case $(printf x)); in; ('' | *[!0-9]* | bash)`
+        through, plus one more;
+      * accepting a later command-position `esac` instead let
+        `case x in "`'' | *[!0-9]* | bash`") …` through, because the variant that erases
+        the `)` erases the backticks too, so the substitution guard cannot see them.
+    In the flattened copy the legitimate case and the spoof are the same text. Blocking
+    both is the fail-CLOSED reading, and it costs an unusual spelling rather than a
+    bypass. `tests/test-marker-numeric-case-776.sh` pins it so it cannot silently widen.
+    """
+    j = i
+    while j + 1 < len(pairs):
+        next_op = pairs[j + 1][0]
+        if next_op.startswith(")"):
+            return True
+        if next_op != "|":
+            return False
+        j += 1
+    return False
+
+
+def _case_residue_flags(pairs):
+    """Per-segment: is pairs[k] a digit-negation-only segment that is #776 case residue?
+
+    ONE linear pass over the alternative lists, not one rescan per candidate. Every
+    member of a `|`-list shares the same span, the same empty-alt answer and the same
+    closing `)`, so deciding per candidate re-walked the whole list each time -- O(n^2)
+    on a long pattern like `case x in \'\'|*[!0-9]*|*[!0-9]*|...|bash)`. This gate treats
+    a timeout as NO decision, which the harness reads as ALLOW, so quadratic work on
+    attacker-shaped input is a fail-open surface even where a later budget trips first.
+    """
+    flags = _case_pattern_segments(pairs)
+    out = [False] * len(pairs)
+    n = len(pairs)
+    start = 0
+    while start < n:
+        end = start                           # extent of one `|`-joined alternative list
+        while end + 1 < n and pairs[end + 1][0] == "|":
+            end += 1
+        if (any(flags[k] for k in range(start, end + 1))
+                and _has_empty_string_case_alt(pairs, start, end)
+                and _case_pattern_closes_after(pairs, end)):
+            for k in range(start, end + 1):
+                if flags[k] and _is_digit_negation_only_segment(pairs[k][1]):
+                    out[k] = True
+        start = end + 1
+    return out
+
+
+def _join_piped_producer_segments(pairs, start, last, flags_box):
+    """Join producer text for pairs[start:last], omitting case-pattern digit-negation residue.
+
+    #776: `''|` + digit-negation inside case is misread as a pipe. Omit a
+    digit-negation-only segment only when the prior op is `|`, the segment really sits in
+    a `case ... in` pattern list, that `|`-list has an empty-string alternative, and a
+    later list op closes the pattern with `)`. Real pipelines -- including one wearing the
+    words `case` and `in` as operands -- keep the glob and stay fail-closed.
+    """
+    for i in range(start, last):
+        if _is_digit_negation_only_segment(pairs[i][1]):
+            # ONCE per command, and only once a candidate shows up: the scan is O(pairs),
+            # and running it per emitted producer made a command of many short pipeline
+            # stages quadratic -- ~6.2s on 50KB, past the hook timeout, and a timed-out
+            # hook writes NO decision, which the harness reads as ALLOW. Same reason and
+            # same shape of fix as the once-per-command probe in _herestring_shell_payloads.
+            if not flags_box:
+                flags_box.append(_case_residue_flags(pairs))
+            break
+    if not flags_box:
+        return " ; ".join(pairs[i][1] for i in range(start, last))
+    residue = flags_box[0]
+    return " ; ".join(pairs[i][1] for i in range(start, last) if not residue[i])
+
+
 # A function definition, an alias definition, or eval can re-point a command name, so a
 # helper sitting in an operand may be what actually runs. See _helper_invoked.
 #
@@ -3637,6 +4154,8 @@ def _piped_shell_producers(pairs):
     # `)` with no opener, so a single counter let it cancel the `case` keyword depth and the
     # `;;` behind it then discarded the producer.
     out, start, last, fed, bare = [], 0, None, False, False
+    # One-element cache for the case-pattern flags, filled on first use (#776).
+    case_flags = []
     pdepth = kdepth = 0
     for i, (op, seg) in enumerate(pairs):
         pdepth = max(0, pdepth + op.count("(") - op.count(")"))
@@ -3657,7 +4176,10 @@ def _piped_shell_producers(pairs):
             pass                          # a normalized newline/comment between | and the shell
         else:
             if last is not None:
-                out.append(" ; ".join(p[1] for p in pairs[start:last]))
+                # #776: omit digit-negation-only segments in an empty-alt case-pattern
+                # `|`...`)` list. Spoofed words / real pipelines keep the glob and stay
+                # fail-closed. Marker-check helper path only.
+                out.append(_join_piped_producer_segments(pairs, start, last, case_flags))
             start, last, fed = i, None, False
         _words = seg.split()
         bare = _carries_no_command(seg)
@@ -3885,7 +4407,7 @@ def _piped_shell_producers(pairs):
                 _stage_recv[seg] = last == i
         kdepth = max(0, kdepth + _group_delta(_words))
     if last is not None:
-        out.append(" ; ".join(p[1] for p in pairs[start:last]))
+        out.append(_join_piped_producer_segments(pairs, start, last, case_flags))
     return out
 
 

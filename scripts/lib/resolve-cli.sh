@@ -1556,7 +1556,24 @@ describe_role_resolution() {
 # We prefer the plugin's companion script when installed; fall back to
 # direct CLI invocation otherwise.
 
-_CODEX_COMPANION=""
+# Honour a value the caller already set. The companion is preferred (see below), but it
+# talks to a LONG-LIVED `codex app-server`, and a wedged one is not recoverable from here:
+# an app-server started from a shell that had `GIT_INDEX_FILE` exported keeps injecting
+# that dead path into every task shell it serves, so the reviewer sees an empty index and
+# reports the whole tree as deleted -- measured, with the server up for over a day. The
+# unconditional assignment left no way to reach the direct-CLI fallback without editing
+# this file. `_CODEX_COMPANION=none` now selects it: the same codex CLI in the same
+# read-only sandbox, just a fresh process instead of the shared daemon.
+# ONLY the sentinel is honoured; any other inherited value is discarded so
+# `_resolve_codex_companion` re-derives the trusted cache path. Accepting arbitrary
+# inherited text would make the reviewer's interpreter path env-injectable -- a committed
+# `settings.json` env block could point it at an attacker-chosen script (#325 / ADR 0016
+# is the same lesson for the gate env). A sentinel selects a transport; it never names one.
+if [[ "${_CODEX_COMPANION-}" == "none" ]]; then
+  _CODEX_COMPANION=none
+else
+  _CODEX_COMPANION=""
+fi
 _resolve_codex_companion() {
   [[ -n "$_CODEX_COMPANION" ]] && return
   # Check common plugin cache locations
@@ -2545,7 +2562,52 @@ grok_preflight_hint() {
   printf '%s\n' "Error: grok dispatch refused — the operator sandbox profile is missing or does not meet the contract. This lane runs under the CUSTOM profile 'busdriver-review' because built-in profiles fail OPEN, and it must be defined in YOUR ~/.grok/sandbox.toml (a repo-local .grok/sandbox.toml would let the reviewed branch define its own containment). Copy docs/examples/grok-sandbox.toml there, then retry. Use --cli codex/agy for this dispatch in the meantime."
 }
 
-execute_review() {
+# The review CLI runs as a SUBPROCESS and must see the REAL repository.
+# run-review-loop.sh pins its own reads to an index SNAPSHOT by exporting
+# GIT_INDEX_FILE, and on macOS `mktemp -t` places that snapshot under
+# _CS_DARWIN_USER_TEMP_DIR (TMPDIR is ignored for `-t`), a path the codex sandbox
+# cannot read. git inside the sandbox then falls back to a near-empty index and
+# reports every tracked file as DELETED -- measured on a linked worktree:
+# `git ls-files` returned 8 entries while the same command with an explicit
+# GIT_INDEX_FILE returned 797, and `diff --cached` claimed 789 deletions. The
+# reviewer reported that as a high-severity finding against a clean tree, which is
+# a fail-CLOSED stall on infrastructure rather than on the code under review.
+#
+# The prompt already carries the pinned diff AS TEXT, so the CLI needs no index
+# pin -- and inheriting litmus's private one is wrong regardless of whether the
+# temp dir happens to be reachable. Unset for the dispatch, restored after it so
+# litmus's own later `--cached` reads stay pinned to the snapshot.
+#
+# Wrapper rather than an inline unset: the `builtin` branch returns early (3), and
+# an inline restore after the `case` would be skipped on that path, leaking the
+# unset back to the caller and silently unpinning the reads that follow.
+execute_review() (
+  # A SUBSHELL body, so the unset below cannot outlive the call and there is nothing to
+  # restore. The save/restore this replaced had to answer "was it exported?", and every
+  # way of asking was wrong in a different way: a `declare -x` prefix match misses the
+  # combined `declare -ix`; `grep -q` on a pipeline is turned into 141 by SIGPIPE under
+  # the callers' `pipefail`; searching `export -p` OUTPUT matches an unrelated exported
+  # VALUE that happens to contain the name; and a plain assignment re-exports under
+  # `set -a`. None of those questions needs asking if the change is scoped to a subshell.
+  #
+  # Not redundant with the caller: run-review-loop.sh already wraps this in `$( … )`, but
+  # run-design-review-loop.sh calls it with a plain redirect, where an unset WOULD leak.
+  if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
+    unset GIT_INDEX_FILE 2>/dev/null || :
+    # VERIFY, do not assume: `unset` fails on a readonly variable and callers run with
+    # errexit neutralised, so an ignored failure would dispatch the review with the
+    # unreadable pin still set. Unresolvable is the fail-CLOSED case.
+    if [[ -n "${GIT_INDEX_FILE+x}" ]]; then
+      echo "busdriver: GIT_INDEX_FILE is set and could not be unset (readonly?) — refusing" >&2
+      echo "  to dispatch a review whose CLI would inherit litmus's private index snapshot." >&2
+      return 1
+    fi
+  fi
+  _execute_review_dispatch "$@"
+)
+
+
+_execute_review_dispatch() {
   local cli="$1"
   local prompt="$2"
   local duration="${3:-1200}"

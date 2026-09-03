@@ -53,7 +53,18 @@ while IFS= read -r -d '' _bd803_e; do
     printf '%s\n' "$0: environment listing too large — refusing to run unprivileged descendants (#803)" >&2
     exit 1
   fi
-  case "$_bd803_e" in BASH_FUNC_*) _bd803_envclean+=(-u "${_bd803_e%%=*}") ;; esac
+  # Dynamic-loader variables are stripped alongside the forged functions. Be exact
+  # about what this does and does not buy: on Linux the loader honours LD_PRELOAD /
+  # LD_AUDIT before bash executes a single instruction, so `-p` cannot protect THIS
+  # process — that residual is unreachable from here, and a parent able to set them
+  # is the parent, which could as easily have exec'd a different binary outright
+  # (the same boundary the shadowable-`exec` note draws). What the strip does buy is
+  # that the re-exec'd shell and EVERY descendant start loader-clean, which is the
+  # same treatment resolve-cli.sh already gives each of its `env -i` children.
+  case "$_bd803_e" in
+    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*)
+      _bd803_envclean+=(-u "${_bd803_e%%=*}") ;;
+  esac
 # `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having
 # written nothing, which would refuse to start every hardened entry point on a
 # platform this repo explicitly supports (bash 3.2 is the macOS default). perl is

@@ -592,6 +592,34 @@ else
   bad "#803: failed re-exec fell through (rc=$xfail_rc): ${xfail_out:-<empty>}"
 fi
 
+# #803: dynamic-loader variables must be stripped by the rebuild too, and their
+# presence ALONE must trigger it. On Linux the loader honours LD_PRELOAD/LD_AUDIT
+# before bash runs an instruction, so `-p` cannot save the first process — that
+# residual is stated in the block. What is testable, and what this asserts, is
+# that nothing BELOW the entry point inherits them.
+LDP="$WORK/loader-probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/skills/litmus/scripts/init-review-loop.sh"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "BODY ld=%%s dyld=%%s\\\\n" "${LD_PRELOAD-unset}" "${DYLD_INSERT_LIBRARIES-unset}"\n'
+} > "$LDP"
+chmod 755 "$LDP"
+ld_bad=""
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin \
+      LD_PRELOAD=/tmp/bd803-evil.so DYLD_INSERT_LIBRARIES=/tmp/bd803-evil.dylib "$LDP")
+[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}loader-only -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin LD_AUDIT=/tmp/bd803-evil.so \
+      'BASH_FUNC_bd803ld%%=() { :; }' "$LDP")
+[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}loader+shadow -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin "$LDP")
+[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}clean control -> '$_r'"$'\n'
+if [[ -z "$ld_bad" ]]; then
+  ok "#803: loader variables are stripped before any descendant runs"
+else
+  bad "#803: a dynamic-loader variable survived the rebuild:"$'\n'"$ld_bad"
+fi
+
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
 # still resolves bash through the ambient PATH, so a hostile PATH picks the
 # interpreter before privileged mode or the environment rebuild can start — the entry

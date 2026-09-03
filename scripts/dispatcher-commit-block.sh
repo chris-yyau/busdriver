@@ -832,7 +832,11 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 # in `wait`), so the reviewer is stopped BEFORE the lock is dropped.
 LITMUS_EXIT=0
 set +e
-run_locked_child env LITMUS_SHORTCIRCUIT_DISABLED=1 \
+# /usr/bin/env, not bare `env`: it is the command word here, so a bare name is
+# resolved through the ambient PATH BEFORE the pinned /bin/bash -p ever starts —
+# a PATH-injected `env` would intercept the review launch and could fabricate the
+# captured output this block then trusts.
+run_locked_child /usr/bin/env LITMUS_SHORTCIRCUIT_DISABLED=1 \
     /bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
 LITMUS_EXIT=$?
 set -e

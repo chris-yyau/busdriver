@@ -552,6 +552,35 @@ else
   ok "#803: every bash -p form names an absolute interpreter ($pathbash_pinned pinned)"
 fi
 
+
+# #803: BD803_OC_LIB_PIN is caller-supplied, and the branch it selects LATCHES and
+# then EXECUTES that path as the review lib, deriving the opencode config beside it.
+# Two guards stand there and both are exercised behaviourally, because both were
+# added after a review found them absent — a pin honoured without its digest, and a
+# pin pointing into the very checkout under review.
+OC_CO="$WORK/oc-checkout"
+/bin/mkdir -p "$OC_CO/.git"
+/bin/cp "$LIB" "$OC_CO/resolve-cli.sh"
+set +e
+oc_nosha=$( (cd "$OC_CO" && /usr/bin/printf 'prompt' | /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" \
+  BD803_OC_LIB_PIN="$OC_CO/resolve-cli.sh" \
+  /bin/bash -p "$LIB" --execute-opencode-review) 2>&1 )
+oc_nosha_rc=$?
+oc_incheckout=$( (cd "$OC_CO" && /usr/bin/printf 'prompt' | /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" \
+  BD803_OC_LIB_PIN="$OC_CO/resolve-cli.sh" BD803_OC_LIB_SHA=0000000000000000000000000000000000000000000000000000000000000000 \
+  /bin/bash -p "$LIB" --execute-opencode-review) 2>&1 )
+oc_incheckout_rc=$?
+set -e
+if [[ "$oc_nosha_rc" -ne 0 && "$oc_nosha" == *"without BD803_OC_LIB_SHA"* ]]; then
+  ok "#803: BD803_OC_LIB_PIN without its digest is refused"
+else
+  bad "#803: pin without digest was not refused (rc=$oc_nosha_rc): $oc_nosha"
+fi
+if [[ "$oc_incheckout_rc" -ne 0 && "$oc_incheckout" == *"resolves inside the reviewed checkout"* ]]; then
+  ok "#803: BD803_OC_LIB_PIN inside the reviewed checkout is refused"
+else
+  bad "#803: in-checkout pin was not refused (rc=$oc_incheckout_rc): $oc_incheckout"
+fi
 # A silently empty enumeration would make the loop above vacuously green.
 if [[ "$entry_seen" -ge 2 ]]; then
   ok "#803: entry-point enumeration found $entry_seen executables to check"

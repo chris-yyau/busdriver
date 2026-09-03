@@ -4807,6 +4807,27 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
       echo "busdriver: inherited BD803_OC_LIB_PIN is invalid — refusing." >&2
       exit 1
     fi
+    # The digest is CALLER-SUPPLIED, so pin+digest agreeing proves integrity, never
+    # provenance: both can name an attacker's own resolve-cli.sh. Add the constraint
+    # the rest of this file uses for trust — the pin must not resolve inside the
+    # reviewed checkout — which is what closes the practical shape (plant a
+    # resolve-cli.sh in the repo under review and name it). Residual, stated: a caller
+    # that can also choose argv is the process that launched this script and could run
+    # any script at all, so the pin grants it nothing it did not already have. That is
+    # the same boundary the shadowable-`exec` note above draws.
+    _ER_OC_PIN_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_ER_OC_PIN_CANON")")"
+    if [[ -z "$_ER_OC_PIN_DIR" ]] || _trusted_cli_dir_in_checkout "$_ER_OC_PIN_DIR"; then
+      echo "busdriver: BD803_OC_LIB_PIN resolves inside the reviewed checkout — refusing." >&2
+      exit 1
+    fi
+    # Adopt the CANONICAL path as the config anchor. Leaving the raw pin here made the
+    # containment check decorative: an in-checkout `resolve-cli.sh` SYMLINK pointing at
+    # the trusted external library canonicalizes past the check, while
+    # `${_ER_OC_CFG_LIB%/*}/opencode-review-config.json` still resolved beside the
+    # in-checkout symlink — a repository-controlled config that can hand the auditor
+    # back shell and write tools. The config must come from the same physical directory
+    # that passed containment, not from the name the caller used to reach it.
+    _ER_OC_CFG_LIB="$_ER_OC_PIN_CANON"
     _bd803_latch_review_lib_pin "$_ER_OC_PIN_CANON" || { echo "busdriver: cannot latch inherited review lib pin — refusing." >&2; exit 1; }
     _bd803_ensure_staged_lib || { echo "busdriver: cannot stage inherited review lib — refusing." >&2; exit 1; }
     if [[ "$_BD803_REVIEW_LIB_SHA" != "$BD803_OC_LIB_SHA" ]]; then

@@ -70,6 +70,9 @@ unset BASH_ENV ENV
 _bd803_envclean=()
 _bd803_last=
 _bd803_count=0
+# shellcheck disable=SC2312  # `env -0`'s status is deliberately not read here: the
+# sentinel below IS the status channel, and splitting the substitution would
+# reintroduce a capture that cannot carry NUL bytes.
 while IFS= read -r -d '' _bd803_e; do
   _bd803_last=$_bd803_e
   _bd803_count=$((_bd803_count + 1))

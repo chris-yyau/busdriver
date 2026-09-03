@@ -581,6 +581,36 @@ if [[ "$oc_incheckout_rc" -ne 0 && "$oc_incheckout" == *"resolves inside the rev
 else
   bad "#803: in-checkout pin was not refused (rc=$oc_incheckout_rc): $oc_incheckout"
 fi
+
+# #803: a missing or altered staged copy is a cache MISS, and the miss path re-stages
+# from the pin. Adopting the pin's NEW digest there would make the byte check verify a
+# replacement against itself — replace the pin, drop the staged copy, and every later
+# review child executes the replacement while the check reports success. The first
+# digest adopted for a pin is latched; same pin with different bytes must refuse.
+SHA0_T="$WORK/sha0-relatch.sh"
+{
+  printf '#!/bin/bash -p\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '. "$1" >/dev/null 2>&1\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '_bd803_latch_review_lib_pin "$2" >/dev/null 2>&1 || { echo LATCH-FAIL; exit 0; }\n'
+  printf '_bd803_ensure_staged_lib >/dev/null 2>&1 || { echo STAGE-FAIL; exit 0; }\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '/bin/rm -f "$_BD803_REVIEW_LIB_STAGED"\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "# bd803 tamper\\n" >> "$2"\n'
+  printf 'if _bd803_ensure_staged_lib >/dev/null 2>&1; then echo RESTAGED; else echo REFUSED; fi\n'
+} > "$SHA0_T"
+chmod 755 "$SHA0_T"
+/bin/cp "$LIB" "$WORK/pin-copy.sh"
+set +e
+sha0_out=$("$SHA0_T" "$LIB" "$WORK/pin-copy.sh" 2>/dev/null)
+set -e
+if [[ "$sha0_out" == "REFUSED" ]]; then
+  ok "#803: re-staging the same pin with different bytes is refused"
+else
+  bad "#803: same-pin byte replacement was re-adopted instead of refused (got: '${sha0_out:-<empty>}')"
+fi
 # A silently empty enumeration would make the loop above vacuously green.
 if [[ "$entry_seen" -ge 2 ]]; then
   ok "#803: entry-point enumeration found $entry_seen executables to check"

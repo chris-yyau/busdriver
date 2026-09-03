@@ -122,6 +122,10 @@ _bd803_latch_review_lib_pin() {
     _BD803_REVIEW_LIB_STAGED=
     _BD803_REVIEW_LIB_EXEC=
     _BD803_REVIEW_LIB_SHA=
+    # A DIFFERENT pin is a different library, so its first-adopted digest is retired
+    # with the rest of the cache. Same pin, different bytes is the case the latch
+    # below exists to refuse.
+    _BD803_REVIEW_LIB_SHA0=
   fi
   _BD803_REVIEW_LIB_PIN="$_BRLP_PATH"
 }
@@ -157,17 +161,21 @@ _bd803_ensure_staged_lib() {
   _BESL_KEEP_PIN="${_BD803_REVIEW_LIB_PIN:-}"
   _BESL_KEEP_STAGED="${_BD803_REVIEW_LIB_STAGED:-}"
   _BESL_KEEP_SHA="${_BD803_REVIEW_LIB_SHA:-}"
+  _BESL_KEEP_SHA0="${_BD803_REVIEW_LIB_SHA0:-}"
   _BD803_REVIEW_LIB_PIN="$_BESL_RW"
   _BD803_REVIEW_LIB_STAGED="$_BESL_RW"
   _BD803_REVIEW_LIB_SHA="$_BESL_RW"
+  _BD803_REVIEW_LIB_SHA0="$_BESL_RW"
   if [[ "$_BD803_REVIEW_LIB_PIN" != "$_BESL_RW" \
      || "$_BD803_REVIEW_LIB_STAGED" != "$_BESL_RW" \
-     || "$_BD803_REVIEW_LIB_SHA" != "$_BESL_RW" ]]; then
+     || "$_BD803_REVIEW_LIB_SHA" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_SHA0" != "$_BESL_RW" ]]; then
     return 1
   fi
   _BD803_REVIEW_LIB_PIN="$_BESL_KEEP_PIN"
   _BD803_REVIEW_LIB_STAGED="$_BESL_KEEP_STAGED"
   _BD803_REVIEW_LIB_SHA="$_BESL_KEEP_SHA"
+  _BD803_REVIEW_LIB_SHA0="$_BESL_KEEP_SHA0"
   if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
     _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
     [[ "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]] && return 0
@@ -254,6 +262,25 @@ printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
   case "$_BD803_REVIEW_LIB_PIN" in *$'\n'*) return 1 ;; esac
   case "$_BD803_REVIEW_LIB_STAGED" in *$'\n'*) return 1 ;; esac
   case "$_BD803_REVIEW_LIB_SHA" in *$'\n'*) return 1 ;; esac
+  # A missing or altered staged copy is a cache MISS, and the branch above clears the
+  # cache and re-stages from the pin. Adopting whatever digest the pin now carries
+  # would make _bd803_verify_review_lib_bytes verify the replacement against itself:
+  # a writer who can replace the pin AND drop the staged copy would get the new bytes
+  # executed by every later review child, with the byte check reporting success.
+  # The first digest adopted for THIS pin is therefore latched and never revised --
+  # same pin, different bytes refuses. A genuinely different pin retires the latch in
+  # _bd803_latch_review_lib_pin, which is the only legitimate way to change libraries.
+  if [[ -n "${_BD803_REVIEW_LIB_SHA0:-}" && "$_BD803_REVIEW_LIB_SHA" != "$_BD803_REVIEW_LIB_SHA0" ]]; then
+    # Remove BEFORE clearing the variable: the copy was already written by the child
+    # above, and dropping the only reference to it leaks an executable file into
+    # TMPDIR on every refused attempt.
+    [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]] && /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+    return 1
+  fi
+  _BD803_REVIEW_LIB_SHA0="$_BD803_REVIEW_LIB_SHA"
   _BD803_REVIEW_LIB_EXEC="$_BD803_REVIEW_LIB_STAGED"
   [[ -n "$_BD803_REVIEW_LIB_PIN" && -n "$_BD803_REVIEW_LIB_STAGED" && -f "$_BD803_REVIEW_LIB_STAGED" && -n "$_BD803_REVIEW_LIB_SHA" ]] || return 1
   # Trap only in the top-level shell. Command-substitution subshells inherit traps and
@@ -289,6 +316,7 @@ _BD803_REVIEW_LIB_PIN=
 _BD803_REVIEW_LIB_STAGED=
 _BD803_REVIEW_LIB_EXEC=
 _BD803_REVIEW_LIB_SHA=
+_BD803_REVIEW_LIB_SHA0=
 _bd803_pin_latched=
 _bd803_review_lib_exec_trap_set=
 _bd803_pin_src="${BASH_SOURCE[0]-}"
@@ -4841,6 +4869,22 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   fi
   _ER_OC_CFG="${_ER_OC_CFG_LIB%/*}/opencode-review-config.json"
   [[ -f "$_ER_OC_CFG" ]] || { echo "busdriver: opencode review config missing at $_ER_OC_CFG" >&2; exit 1; }
+  # Deriving the path beside a canonical library is not enough: the config file is a
+  # separate inode and can itself be a SYMLINK back into the reviewed checkout, which
+  # would hand the auditor a repository-controlled config and restore shell and write
+  # tools. Canonicalize the config and apply the same containment rule the pin passed.
+  _ER_OC_CFG_CANON="$(_bd803_canonical_file_path "$_ER_OC_CFG")" || _ER_OC_CFG_CANON=
+  case "$_ER_OC_CFG_CANON" in *$'\n'*) _ER_OC_CFG_CANON= ;; esac
+  _ER_OC_CFG_DIR=
+  if [[ -n "$_ER_OC_CFG_CANON" ]]; then
+    _ER_OC_CFG_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_ER_OC_CFG_CANON")")"
+  fi
+  if [[ -z "$_ER_OC_CFG_CANON" || -z "$_ER_OC_CFG_DIR" ]] \
+     || _trusted_cli_dir_in_checkout "$_ER_OC_CFG_DIR"; then
+    echo "busdriver: opencode review config resolves inside the reviewed checkout or is unresolvable — refusing." >&2
+    exit 1
+  fi
+  _ER_OC_CFG="$_ER_OC_CFG_CANON"
   _ER_OC_HOME="$(_trusted_operator_home)" || _ER_OC_HOME=
   if [[ -z "$_ER_OC_HOME" || "$_ER_OC_HOME" != /* || ! -d "$_ER_OC_HOME" ]]; then
     echo "busdriver: cannot resolve trusted operator home for opencode dispatch — refusing." >&2
@@ -4874,7 +4918,22 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
   [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
   cd "$_ER_OC_CWD" 2>/dev/null || exit 1
-  OPENCODE_CONFIG="$_ER_OC_CFG"
+  # Bind the config BYTES, not just its pathname. Containment proves where the file
+  # sits; it cannot stop a replacement or an in-place edit between that check and the
+  # moment opencode opens it, and this config is exactly what decides whether the
+  # auditor gets shell, write and MCP tools back. Unlike the codex companion — an ESM
+  # entry point whose imports resolve relative to its real directory — this is plain
+  # JSON with no includes, so it CAN simply be copied: read it once into the private
+  # neutral cwd and hand opencode that copy. The lane's EXIT trap removes the
+  # directory. The dotted name keeps it out of the way of anything opencode discovers
+  # by convention in cwd or XDG_CONFIG_HOME.
+  _ER_OC_CFG_COPY="${_ER_OC_CWD}/.bd803-opencode-review-config.json"
+  if ! /bin/cp -- "$_ER_OC_CFG" "$_ER_OC_CFG_COPY"; then
+    echo "busdriver: cannot bind the opencode review config bytes — refusing." >&2
+    exit 1
+  fi
+  /bin/chmod 600 "$_ER_OC_CFG_COPY" 2>/dev/null || true
+  OPENCODE_CONFIG="$_ER_OC_CFG_COPY"
   XDG_CONFIG_HOME="$_ER_OC_CWD"
   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"
   XDG_CACHE_HOME="${_ER_OC_HOME}/.cache"

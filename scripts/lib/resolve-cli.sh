@@ -376,7 +376,15 @@ case "$_bd803_pin_src" in
     ;;
 esac
 if [[ "${BASH_SUBSHELL:-0}" -eq 0 && -n "${_BD803_REVIEW_LIB_PIN:-}" ]]; then
-  _bd803_ensure_staged_lib
+  # `|| :` is load-bearing. Every entry point sources this library under
+  # `set -euo pipefail`, and a failing command as the last statement of an `if`
+  # body is NOT exempt from `set -e` — so a benign staging failure here (no
+  # mktemp, no shasum, unwritable TMPDIR, E2BIG) killed the sourcing script at
+  # source time with no diagnostic at all: run-shell-tests.sh, dispatch.sh and
+  # both review loops would die before printing a word. This is a warm-the-cache
+  # latch, never a gate; every consumer re-checks staging and fails closed on its
+  # own, so a miss here must degrade to "not staged yet", not to a silent abort.
+  _bd803_ensure_staged_lib || :
 fi
 
 
@@ -403,13 +411,18 @@ _bd803_verify_review_lib_bytes() {
 
 _bd803_bash_staged_lib() {
   _BSL_ARGS=("$@")
+  # Consume the one-shot ambient-PATH flag BEFORE the staging call can bail out.
+  # Reading it afterwards leaked it across a failed attempt: the NEXT call — one
+  # that is supposed to run its clean child on the fixed PATH=/usr/bin:/bin, e.g.
+  # --print-trusted-companion or --print-trusted-home — inherited the flag and
+  # silently used the caller's ambient PATH instead. Assignment, not `builtin
+  # unset`, for the usual shadow reason.
+  _BSL_AMBIENT="${_BD803_STAGED_AMBIENT_PATH:-}"
+  _BD803_STAGED_AMBIENT_PATH=
   _bd803_ensure_staged_lib || return 1
   _BSL_PATH=/usr/bin:/bin
-  if [[ "${_BD803_STAGED_AMBIENT_PATH:-}" == 1 ]]; then
+  if [[ "$_BSL_AMBIENT" == 1 ]]; then
     _BSL_PATH="${PATH-}"
-    # Assignment, not `builtin unset` — see the source-load reset for why
-    # `builtin` is not a shadow barrier. The reader below tests == 1.
-    _BD803_STAGED_AMBIENT_PATH=
   fi
   LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
     /usr/bin/env -i PATH="${_BSL_PATH}" PWD="${PWD-}" BD803_STAGED_PATH="${_BD803_REVIEW_LIB_STAGED}" BD803_EXPECTED_SHA="${_BD803_REVIEW_LIB_SHA}" \
@@ -3545,11 +3558,24 @@ _execute_codex() {
   else
 
   # #803: disk-fresh dual companion probe; ignore preexisting _CODEX_COMPANION.
-  if ! _bd803_ensure_staged_lib; then
+  #
+  # The refusal must DENY the next block its input, not merely print. `_bd_exit_as`
+  # sets $? and nothing else (a bare `return` is shadowable), so this `if ... fi`
+  # falls through to the code below it. The downstream `_bd803_verify_review_lib_bytes`
+  # happens to catch every reachable case today, so this is not exploitable here as
+  # written — but an inert refusal is one relaxed downstream check away from becoming
+  # a dispatch, and the sibling opencode arm had exactly that shape and WAS
+  # exploitable. Route the staging status into _bd803_cc_lib so the existing guard
+  # below refuses on its own terms.
+  _bd803_stage_rc=0
+  _bd803_ensure_staged_lib || _bd803_stage_rc=1
+  if [[ "$_bd803_stage_rc" -ne 0 ]]; then
     /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
     _bd_exit_as 1
+    _bd803_cc_lib=
+  else
+    _bd803_cc_lib="${_BD803_REVIEW_LIB_STAGED:-}"
   fi
-  _bd803_cc_lib="${_BD803_REVIEW_LIB_STAGED:-}"
   case "$_bd803_cc_lib" in *$'\n'*) _bd803_cc_lib= ;; esac
   if [[ -z "$_bd803_cc_lib" || ! -f "$_bd803_cc_lib" ]]; then
     /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
@@ -3920,7 +3946,13 @@ _execute_codex() {
       # user ran `git commit` in, so a cwd-relative check would silently drop
       # events for any non-root invocation.
       _git_root=""
-      _git_root=$(/usr/bin/git rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
+      # NOT /usr/bin/git: on a CLT-less macOS that is a developer-tools SHIM that
+      # fails when run (and can pop the Xcode install dialog), which would silently
+      # drop this telemetry event. _bd_resolve_git probes candidates by execution.
+      _git_root=""
+      if _bd_resolve_git; then
+        _git_root=$("$_bd_git" rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
+      fi
       if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
         /usr/bin/printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
           "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$_ECX_DROID_EXIT" "$_bd803_droid_ok" "$_droid_outcome" "$_ECX_ATTEMPTS_RUN" \
@@ -4768,12 +4800,28 @@ execute_review() {
              # Hand the prompt to a function-clean env -i / --noprofile --norc child
              # (--execute-opencode-review) that validates, stages, and pipe-reviews
              # via _portable_timeout --review opencode without returning here.
+             # ONE if/elif chain, deliberately. `_bd_exit_as` only SETS $? (it runs
+             # /usr/bin/false — a bare `return` is shadowable, which is why this file
+             # never uses one after a refusal), so a `then ... _bd_exit_as 1; fi`
+             # followed by more code does not refuse anything: execution falls
+             # straight through. It did here. The staging failure that matters is the
+             # readonly probe — attacker-pinned state the source-load reset could not
+             # clear — and it leaves _BD803_REVIEW_LIB_STAGED/_SHA holding an
+             # attacker-chosen CONSISTENT pair. The next test only asked whether the
+             # file exists and the digest is non-empty, then exported both to the
+             # clean child, which verifies them against EACH OTHER and executes those
+             # bytes. The printed refusal was followed by running exactly what it
+             # refused. Chaining with elif is what makes the refusal terminal.
              if ! _bd803_ensure_staged_lib; then
                echo "busdriver: cannot stage resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
                _bd_exit_as 1
-             fi
-             if [[ -z "${_BD803_REVIEW_LIB_STAGED:-}" || ! -f "${_BD803_REVIEW_LIB_STAGED}" || -z "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
+             elif [[ -z "${_BD803_REVIEW_LIB_STAGED:-}" || ! -f "${_BD803_REVIEW_LIB_STAGED}" || -z "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
                echo "busdriver: cannot locate staged resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
+               _bd_exit_as 1
+             elif ! _bd803_verify_review_lib_bytes; then
+               # Bind the BYTES to the trusted pin, not just to the digest travelling
+               # beside them — the sibling _execute_codex path has always done this.
+               echo "busdriver: review lib bytes changed since trusted load — refusing opencode dispatch." >&2
                _bd_exit_as 1
              else
              _ER_OC_RC=0

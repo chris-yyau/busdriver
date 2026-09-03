@@ -9,7 +9,7 @@ Detailed iteration examples and workflow patterns referenced from SKILL.md.
 ### Automation Rules
 
 1. **Initialize counter ONCE** at start of review loop
-2. **Run review** with `run_in_background=true`
+2. **Run review** as a BLOCKING call (never `run_in_background`) — see SKILL.md CRITICAL RULES and #368: nothing reliably holds the gate until the process exits, so backgrounding lets the loop advance while the review is still deciding
 3. **If FAIL:** Fix issues, stage changes, increment counter, **IMMEDIATELY return to step 2**
 4. **No permission needed** to continue iterating
 5. **Only stop** when PASS or max iterations reached

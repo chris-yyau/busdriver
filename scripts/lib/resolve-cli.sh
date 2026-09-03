@@ -779,7 +779,6 @@ resolve_trusted() {
         ;;
     esac
     break
-    break
   done
   case $found in
     /*) ;;

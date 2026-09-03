@@ -21,8 +21,13 @@ If not installed, install it according to your system's package manager.
 **Solution:** This is normal for large diffs (700+ lines). Consider:
 - Reviewing in smaller chunks (per-file or per-feature)
 - Reading the reasoning output to start fixing issues early (look for "thinking" sections)
-- Running in background with `run_in_background=true`
-- Using TaskOutput tool to monitor background progress
+- Lowering `LITMUS_TIMEOUT`, or splitting the change, so the pass FITS
+
+Do **not** background the review to get around this. SKILL.md's CRITICAL RULES
+forbid it, and #368 is why: nothing here reliably holds the gate until the process
+EXITS — `run_in_background` returns immediately and `TaskOutput` can return with
+the task still running — so backgrounding lets the session commit while the review
+is still deciding. A pass that cannot fit is an unsolved case, not a licence.
 
 ### Issue: Output contains reasoning/thinking text mixed with JSON
 
@@ -173,8 +178,11 @@ def run_litmus():
 **Optimization strategies:**
 1. Review smaller chunks (< 300 lines per review)
 2. Focus on high-risk files first
-3. Use background execution and continue with other work
-4. Consider breaking large refactorings into multiple commits
+3. Consider breaking large refactorings into multiple commits
+4. Lower `LITMUS_TIMEOUT` so a slow pass fails fast and can be split
+
+(Backgrounding the review is deliberately absent from this list — see the
+blocking-call rule above and #368.)
 
 ### Issue: Running out of memory
 

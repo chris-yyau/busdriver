@@ -86,16 +86,25 @@ LD_LIBRARY_PATH=
 # for all three (measured), exactly as an empty LD_PRELOAD is inert to the loader.
 # PYTHONSTARTUP is deliberately NOT here: measured, it applies only to interactive
 # sessions and never to `-c`, so adding it would be hardening with no vector.
-# Residual, stated honestly: with PYTHONUSERBASE blank, site.py derives the user
-# site directory from $HOME, which this block does not strip -- a hostile HOME
-# still reaches usercustomize.py. That is the passwd-home boundary (#811/#813),
-# not something this block can close.
+# Blanking PYTHONUSERBASE is NOT sufficient on its own: with it empty, site.py
+# falls back to deriving the user site directory from $HOME, which this block does
+# not strip -- so a hostile HOME still reaches usercustomize.py by a second route
+# (measured: it executed). PYTHONNOUSERSITE closes that, because it disables user
+# site-packages outright rather than relocating them, so no $HOME value can point
+# at anything. It is the one entry here that must be EXPORTED and NON-EMPTY: the
+# other three arrive exported already and are being emptied, while this one is
+# usually absent and is a flag Python tests for presence, not value. It is
+# deliberately absent from the `-u` strip list below -- this is the one Python
+# variable that must SURVIVE into every descendant. Measured: ENABLE_USER_SITE
+# becomes False, and ordinary stdlib use (json, sys -- all these call sites import)
+# is unaffected.
 # shellcheck disable=SC2034
 PYTHONPATH=
 # shellcheck disable=SC2034
 PYTHONHOME=
 # shellcheck disable=SC2034
 PYTHONUSERBASE=
+export PYTHONNOUSERSITE=1
 # Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
 # line per variable: a value holding an embedded newline followed by text shaped like
 # `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM

@@ -697,6 +697,46 @@ else
   bad "#803: PYTHONPATH sitecustomize.py executed despite the rebuild: $_pe_guarded"
 fi
 
+# #803: blanking PYTHONUSERBASE alone leaves a SECOND route to the same code --
+# site.py then derives the user site directory from $HOME, which this block does not
+# strip, and a planted usercustomize.py there executes exactly like sitecustomize
+# would. PYTHONNOUSERSITE is what closes it (it disables user site-packages outright
+# rather than relocating them), so assert that route on its own, control first.
+PYHOME="$WORK/pyhome"
+# Compute this under `env -u`, not merely `python3 -E`. A non-empty ambient
+# PYTHONUSERBASE overrides HOME inside getusersitepackages(), which would point _usd
+# at the developer's REAL user-site directory -- and the write below would then
+# clobber their actual usercustomize.py. `-E` does NOT prevent that (measured):
+# it suppresses PYTHON* at interpreter STARTUP, while site._getuserbase() re-reads
+# os.environ when the function is CALLED, so the variable still wins. Removing the
+# entries from the child's environment is what actually decides it.
+# The prefix check below is the second, independent half: the computation should now
+# always land inside $PYHOME, but only a containment test makes the destructive write
+# impossible to aim outside this test's workspace whatever the environment does --
+# and it fails CLOSED, refusing to write rather than proceeding on a surprising path.
+_usd=$(/usr/bin/env -u PYTHONUSERBASE -u PYTHONPATH -u PYTHONHOME -u PYTHONNOUSERSITE \
+       HOME="$PYHOME" python3 -c 'import site;print(site.getusersitepackages())' 2>/dev/null || true)
+if [[ -z "$_usd" ]]; then
+  bad "#803: could not compute the user site directory — the HOME-route assertion never ran"
+elif [[ "$_usd" != "$PYHOME"/* ]]; then
+  bad "#803: computed user site '$_usd' is outside the test workspace — refusing to write there"
+else
+  /bin/mkdir -p "$_usd"
+  printf 'import sys\nsys.stderr.write("PWNED-USERCUSTOMIZE\\n")\n' > "$_usd/usercustomize.py"
+  set +e
+  _uh_guarded=$(/usr/bin/env -i PATH="$PATH" HOME="$PYHOME" "$PYE" 2>&1)
+  _uh_control=$(/usr/bin/env -i PATH="$PATH" HOME="$PYHOME" PYTHONUSERBASE= \
+                python3 -c 'print(0)' 2>&1 >/dev/null)
+  set -e
+  if [[ "$_uh_control" != *PWNED-USERCUSTOMIZE* ]]; then
+    bad "#803: usercustomize control never fired — the HOME-route assertion would be vacuous: ${_uh_control:-<empty>}"
+  elif [[ "$_uh_guarded" != *PWNED-USERCUSTOMIZE* ]]; then
+    ok "#803: a hostile HOME cannot reach usercustomize.py through the user-site fallback"
+  else
+    bad "#803: usercustomize.py executed via HOME despite the rebuild: $_uh_guarded"
+  fi
+fi
+
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
 # still resolves bash through the ambient PATH, so a hostile PATH picks the
 # interpreter before privileged mode or the environment rebuild can start — the entry

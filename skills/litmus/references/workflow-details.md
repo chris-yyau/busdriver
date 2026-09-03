@@ -164,7 +164,7 @@ Review → FAIL → Fix → ... (10 iterations) → Max reached → Ask user
 ```python
 def run_litmus(iteration_num):
     return Bash(
-        command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
         description=f"Run Codex review iteration {iteration_num}",
         run_in_background=True,  # Always included
         timeout=600000

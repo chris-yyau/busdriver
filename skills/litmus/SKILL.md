@@ -94,19 +94,19 @@ These thoughts mean you're about to violate the requirement:
    ```
 3. **If hooks don't exist:** See "Manual Workflow" below
 
-### Manual Workflow (5 Steps)
+### Manual Workflow (4 Steps)
 
 Use this only if pre-commit hooks aren't available:
 
-**1. Set script path:**
-```bash
-LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-```
-
-**2. Initialize:** `/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
+**1. Initialize:** `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"`
    (Defaults to 10 max iterations)
 
-**3. Run Review (BLOCKING - wait for result):**
+   Use the plugin-root path INLINE and QUOTED. A shell variable set in one Bash
+   call does not survive into the next, so a separate "set the path first" step
+   silently expands to `/skills/...` and fails with exit 127; the quotes keep a
+   plugin root containing whitespace from splitting.
+
+**2. Run Review (BLOCKING - wait for result):**
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
@@ -118,9 +118,9 @@ Bash(
 )
 ```
 
-**4. Auto-Continue Loop (fully silent):**
-- **PASS (exit 0)** → Proceed to step 5 (tests & commit)
-- **FAIL (exit 1)** → **Silently** fix all issues, stage, re-run step 3
+**3. Auto-Continue Loop (fully silent):**
+- **PASS (exit 0)** → Proceed to step 4 (tests & commit)
+- **FAIL (exit 1)** → **Silently** fix all issues, stage, re-run step 2
   - Do NOT show user each iteration
   - Do NOT ask for permission between iterations
   - Do NOT use background tasks or polling
@@ -130,7 +130,7 @@ Bash(
 - **Max iterations (10)** → see "Auto-Escalation on Logical Failure" — dispatch `/codex:rescue` once before surfacing to user
 - **Only talk to user when:** PASS, setup_error, codex quota error, infra_failure (codex→droid→builtin chain exhausted OR JSON/schema/timeout fault), or post-rescue still failing
 
-**5. Run Tests & Commit:** Only after review passes, tests pass
+**4. Run Tests & Commit:** Only after review passes, tests pass
 ```bash
 npm test                    # Run test suite
 git commit -m "Message"

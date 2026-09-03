@@ -203,11 +203,23 @@ result = json.loads(output['output'])
 
 set -e
 
+# CLAUDE_PLUGIN_ROOT is set only inside Claude's skill renderer. A git hook runs
+# outside it, so resolve an explicit root and fail loudly rather than expanding to
+# `/skills/...` and dying with exit 127. Quoted throughout: the path may contain
+# whitespace.
+#
+# EXPORT it as BUSDRIVER_PLUGIN_ROOT, not a name of your own: run-review-loop.sh
+# locates its shared JSON extractor via `${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}`,
+# so a root under any other variable leaves that lookup empty and silently demotes
+# the run to the narrative parser, which can reject valid review output.
+export BUSDRIVER_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/marketplaces/busdriver}}"
+[ -d "$BUSDRIVER_PLUGIN_ROOT" ] || { echo "busdriver plugin root not found: $BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+
 # Initialize
-/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 3
+/bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/init-review-loop.sh" 3
 
 # Run review
-RESULT=$(/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh)
+RESULT=$(/bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/run-review-loop.sh")
 STATUS=$(echo "$RESULT" | jq -r '.status')
 
 if [ "$STATUS" != "PASS" ]; then
@@ -224,9 +236,13 @@ echo "✅ Codex review passed"
 # .github/workflows/review.yml
 - name: Review Code
   run: |
-    cd $GITHUB_WORKSPACE
-    /bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 5
-    /bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
+    cd "$GITHUB_WORKSPACE"
+    # Same reason as the pre-commit hook above: no skill renderer in CI. Use the
+    # variable run-review-loop.sh actually reads, and export it so the extractor
+    # lookup inside the script sees it too.
+    export BUSDRIVER_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:?set this to the busdriver plugin root}"
+    /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/init-review-loop.sh" 5
+    /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/run-review-loop.sh"
 ```
 
 ## Environment Variables

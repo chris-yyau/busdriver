@@ -627,7 +627,9 @@ The review loop uses three mechanisms to ensure convergence:
 
 **Scope control:** The prompt includes the staged diff (`git diff --cached`) explicitly, so the LLM reviews exactly what will be committed — not unstaged work or untracked files.
 
-**Iteration history:** After each FAIL, the issues found are saved to `/tmp/litmus-iteration-history.jsonl`. On the next iteration, this history is injected into the prompt so the LLM knows what was already reported and can focus on verifying fixes.
+**Iteration history:** After each FAIL, the issues found are saved to `.claude/litmus-iteration-history.local.jsonl`. On the next iteration, this history is injected into the prompt so the LLM knows what was already reported and can focus on verifying fixes. This file is per-loop-run — `init-review-loop.sh` clears it on init and a PASS clears it too.
+
+**Cross-run PR history (#811):** per-run history is right for commit mode (the staged diff is gone after the commit) but wrong for PR mode, where the diff is `base...HEAD` and every re-triggered `gh pr create` reviews a strictly larger superset. PR mode therefore records each verdict — PASS and FAIL — to `.claude/litmus-pr-history.local.jsonl` stamped with the commit it reviewed, and injects that store instead of the per-run file. Entries are shown only while their commit is still an ancestor of `HEAD` and is not yet an ancestor of the PR base, so a rebase, force-push, or merged PR drops them and the next pass starts cold — the pre-#811 behaviour. **It does not narrow what PR mode reads:** the reviewer still gets the full `base...HEAD` diff every pass. Cap the injected entries with `LITMUS_PR_HISTORY_MAX` (default 20).
 
 **Convergence rules in prompt:**
 - Do NOT re-report fixed issues from previous iterations

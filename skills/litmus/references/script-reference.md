@@ -10,7 +10,7 @@ Detailed documentation for all scripts in the litmus skill.
 
 **Usage:**
 ```bash
-bash -p scripts/init-review-loop.sh [max_iterations] [completion_promise]
+/bin/bash -p scripts/init-review-loop.sh [max_iterations] [completion_promise]
 ```
 
 **Arguments:**
@@ -20,13 +20,13 @@ bash -p scripts/init-review-loop.sh [max_iterations] [completion_promise]
 **Examples:**
 ```bash
 # Basic initialization
-bash -p scripts/init-review-loop.sh
+/bin/bash -p scripts/init-review-loop.sh
 
 # Custom max iterations
-bash -p scripts/init-review-loop.sh 15
+/bin/bash -p scripts/init-review-loop.sh 15
 
 # With completion promise
-bash -p scripts/init-review-loop.sh 10 "REVIEW PASSED"
+/bin/bash -p scripts/init-review-loop.sh 10 "REVIEW PASSED"
 ```
 
 **Output:**
@@ -44,7 +44,7 @@ bash -p scripts/init-review-loop.sh 10 "REVIEW PASSED"
 
 **Usage:**
 ```bash
-bash -p scripts/run-review-loop.sh
+/bin/bash -p scripts/run-review-loop.sh
 ```
 
 **Requirements:**
@@ -171,14 +171,14 @@ LITMUS_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
 ```python
 # Initialize review loop
 Bash(
-    command="bash -p scripts/init-review-loop.sh 10",
+    command="/bin/bash -p scripts/init-review-loop.sh 10",
     description="Initialize codex review loop",
     timeout=5000
 )
 
 # Run review (with background execution)
 task = Bash(
-    command="bash -p scripts/run-review-loop.sh",
+    command="/bin/bash -p scripts/run-review-loop.sh",
     description=f"Run Codex review iteration {iteration}",
     run_in_background=True,  # CRITICAL for automation
     timeout=600000
@@ -204,10 +204,10 @@ result = json.loads(output['output'])
 set -e
 
 # Initialize
-bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 3
+/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 3
 
 # Run review
-RESULT=$(bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh)
+RESULT=$(/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh)
 STATUS=$(echo "$RESULT" | jq -r '.status')
 
 if [ "$STATUS" != "PASS" ]; then
@@ -225,8 +225,8 @@ echo "✅ Codex review passed"
 - name: Review Code
   run: |
     cd $GITHUB_WORKSPACE
-    bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 5
-    bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
+    /bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 5
+    /bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
 ```
 
 ## Environment Variables

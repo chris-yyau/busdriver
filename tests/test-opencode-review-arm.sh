@@ -1164,7 +1164,7 @@ if (
   # reason. Pin both: opencode resolvable, droid absent, so the assertion is
   # about banner normalization and nothing else.
   _resolve_trusted_cli_bin() { case "$1" in opencode) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
-  is_trusted_review_cli_available() { [ "${1-}" = opencode ]; }
+  is_trusted_review_cli_available() { [[ "${1-}" == opencode ]]; }
   ok=1
   out=""; rc=0
   out=$(_run_review_with_retries opencode "probe" 5 none \

@@ -164,7 +164,7 @@ Review → FAIL → Fix → ... (10 iterations) → Max reached → Ask user
 ```python
 def run_litmus(iteration_num):
     return Bash(
-        command="bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description=f"Run Codex review iteration {iteration_num}",
         run_in_background=True,  # Always included
         timeout=600000
@@ -177,7 +177,7 @@ def run_litmus(iteration_num):
 # CORRECT - automated every iteration
 for iteration in range(1, 11):
     result = Bash(
-        command="bash -p scripts/run-review-loop.sh",
+        command="/bin/bash -p scripts/run-review-loop.sh",
         run_in_background=True,  # EVERY iteration
         timeout=600000
     )
@@ -199,10 +199,10 @@ Bash(command="...")  # Second iteration - MISSING FLAG!
 git add -A
 
 # 3. Initialize review loop
-bash -p scripts/init-review-loop.sh 10
+/bin/bash -p scripts/init-review-loop.sh 10
 
 # 4. Run review (loops automatically)
-bash -p scripts/run-review-loop.sh
+/bin/bash -p scripts/run-review-loop.sh
 
 # 5. If FAIL: fix issues, stage, run again
 # Loop continues until PASS

@@ -81,8 +81,31 @@ while IFS= read -r -d '' _bd803_e; do
     exit 1
   fi
   case "$_bd803_e" in BASH_FUNC_*) _bd803_envclean+=(-u "${_bd803_e%%=*}") ;; esac
-done < <(/usr/bin/env -0 && /usr/bin/printf 'BD803-ENV-OK\0')
-if [[ "$_bd803_last" != "BD803-ENV-OK" ]]; then
+# `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having
+# written nothing, which would refuse to start every hardened entry point on a
+# platform this repo explicitly supports (bash 3.2 is the macOS default). perl is
+# the fallback because it is already the portable stand-in `_portable_timeout`
+# relies on, and %ENV is read straight from environ, so a BASH_FUNC_x%% key —
+# not a valid shell identifier — is still visible to it. If BOTH are unavailable
+# the sentinel never arrives and the entry point refuses, which is the correct
+# direction: unknowable environment, no unprivileged descendants.
+#
+# The perl arm is itself environment-steerable, and it is reached with the hostile
+# environment still in place: PERL5OPT/PERL5LIB load attacker code BEFORE the
+# script runs, and a module that merely exits 0 produces an EMPTY enumeration that
+# the outer `&&` still stamps with the sentinel — "nothing to strip", every
+# BASH_FUNC_* inherited (measured: 0 bytes, rc 0). Closed twice over: `-T` makes
+# perl ignore PERL5LIB/PERLLIB/PERL5OPT outright, the assignment prefixes blank
+# them for belt and braces, and the count check after the loop refuses an
+# enumeration that returned nothing at all — no real environment is empty, so a
+# silent zero is a failure however it was produced.
+done < <( { /usr/bin/env -0 2>/dev/null \
+            || PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV'; } \
+          && /usr/bin/printf 'BD803-ENV-OK\0' )
+# -lt 2, not -lt 1: the SENTINEL is itself one of the entries the loop counted, so
+# an enumeration that returned nothing at all still arrives here with a count of 1.
+# Any real environment carries at least PATH alongside it.
+if [[ "$_bd803_last" != "BD803-ENV-OK" || "$_bd803_count" -lt 2 ]]; then
   printf '%s\n' "$0: cannot enumerate the environment — refusing to run unprivileged descendants (#803)" >&2
   exit 1
 fi

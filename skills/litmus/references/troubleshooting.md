@@ -89,7 +89,7 @@ git add -A  # Stage all changes
    ```python
    # CORRECT - blocking gate
    Bash(
-     command="bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+     command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
      timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
    )
    ```
@@ -103,8 +103,8 @@ git add -A  # Stage all changes
 **Solution:** Use `--force` flag to re-initialize:
 ```bash
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
-bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Issue: Automation works for first iteration, then prompts on second
@@ -113,7 +113,7 @@ bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```python
 # Each call does ONE pass — caller re-runs on FAIL
 Bash(
-    command="bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+    command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
     timeout=600000  # blocking; harness caps at 600000 (see SKILL.md CRITICAL RULES)
 )
 ```
@@ -122,7 +122,7 @@ Bash(
 ```python
 def run_litmus():
     return Bash(
-        command="bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",
         timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )

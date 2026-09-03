@@ -363,8 +363,8 @@ When you want litmus coverage on the handover's output:
 
 1. **Run retroactive PR-mode litmus before opening the PR.** After the handover converges, dispatch:
    ```bash
-   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
-   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
    ```
    Reviews the aggregate branch diff in one pass (equivalent coverage to per-commit, less wall-clock).
 2. **Iterate on findings as you would on any litmus FAIL.** A follow-up `chore(scripts): litmus cleanup` commit is a fine pattern when codex's output trips stylistic findings (SC2292, SC2312, etc.).

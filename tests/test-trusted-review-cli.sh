@@ -474,10 +474,88 @@ BASH_FUNC_bd803phantom%%=() { :; }' "$ENVP")
 _r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin 'BD803EVIL=x
 BASH_FUNC_bd803phantom%%=() { :; }' 'BASH_FUNC_bd803probe%%=() { :; }' "$ENVP")
 [[ "$_r" == "BODY funcs=0" ]] || env_bad="${env_bad}phantom + real shadow -> '$_r'"$'\n'
+# `env -0` is GNU-only; the block falls back to perl so a BSD/older-macOS `env`
+# cannot brick every entry point. Assert the fallback ENUMERATOR actually sees a
+# BASH_FUNC_x%% entry — its name is not a valid shell identifier, and a reader
+# that dropped such keys would strip nothing while still emitting the sentinel.
+# shellcheck disable=SC2016  # the perl program is literal, expanded by perl
+fallback_seen=$(/usr/bin/env -i PATH=/usr/bin:/bin 'BASH_FUNC_bd803fb%%=() { :; }' \
+  /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV' 2>/dev/null \
+  | /usr/bin/tr '\0' '\n' | /usr/bin/grep -c '^BASH_FUNC_bd803fb%%=' || true)
+if [[ "$fallback_seen" -ne 1 ]]; then
+  env_bad="${env_bad}perl fallback enumerator did not see BASH_FUNC_bd803fb%% (saw $fallback_seen)"$'\n'
+fi
+if ! /usr/bin/grep -q "keys %ENV" "$ROOT/scripts/ci/run-shell-tests.sh"; then
+  env_bad="${env_bad}clean-env block lost its non-GNU enumeration fallback"$'\n'
+fi
 if [[ -z "$env_bad" ]]; then
-  ok "#803: clean-env rebuild strips real shadows and cannot be looped by a phantom entry"
+  ok "#803: clean-env rebuild strips real shadows, resists a phantom loop, and keeps a non-GNU fallback"
 else
   bad "#803: clean-env rebuild misbehaved (expected 'BODY funcs=0' each time):"$'\n'"$env_bad"
+fi
+
+# #803: the perl fallback runs with the hostile environment STILL in place, so it
+# is itself steerable — PERL5OPT/PERL5LIB load attacker code before the program
+# runs, and a module that merely exits 0 yields an EMPTY enumeration that the
+# outer `&&` still stamps with the sentinel: "nothing to strip", every
+# BASH_FUNC_* inherited. Measured at 0 bytes / rc 0 before `-T` landed. Probe the
+# real block from a shipped entry point, under exactly that injection.
+PERLP="$WORK/perl-inject"
+/bin/mkdir -p "$PERLP"
+/usr/bin/printf 'package BD803Evil;\nexit(0);\n1;\n' > "$PERLP/BD803Evil.pm"
+ENVP2="$WORK/cleanenv-perl-probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/scripts/ci/run-shell-tests.sh"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "BODY funcs=%%s\\\\n" "$(/usr/bin/env -0 | /usr/bin/tr "\\\\n" "\\\\001" | /usr/bin/tr "\\\\0" "\\\\n" | /usr/bin/grep -c "^BASH_FUNC_")"\n'
+} > "$ENVP2"
+chmod 755 "$ENVP2"
+# The enumeration must survive the injection: either env -0 answers (GNU) or the
+# hardened perl arm does. Either way a real shadow is still stripped.
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin \
+      PERL5LIB="$PERLP" PERL5OPT=-MBD803Evil \
+      'BASH_FUNC_bd803perl%%=() { :; }' "$ENVP2")
+if [[ "$_r" == "BODY funcs=0" ]]; then
+  ok "#803: clean-env rebuild survives PERL5OPT/PERL5LIB injection into its fallback"
+else
+  bad "#803: PERL5OPT injection changed the rebuild's outcome (expected 'BODY funcs=0', got '$_r')"
+fi
+# And the fallback arm ALONE, isolated, must not be silently emptied by it.
+# shellcheck disable=SC2016  # the perl program is literal, expanded by perl
+_pf=$(/usr/bin/env -i PATH=/usr/bin:/bin PERL5LIB="$PERLP" PERL5OPT=-MBD803Evil \
+      'BASH_FUNC_bd803perl%%=() { :; }' \
+      /bin/sh -c 'PERL5OPT='"'"''"'"' PERL5LIB='"'"''"'"' PERLLIB='"'"''"'"' exec /usr/bin/perl -T -e '\''print map { "$_=$ENV{$_}\0" } keys %ENV'\''' 2>/dev/null \
+      | /usr/bin/tr '\0' '\n' | /usr/bin/grep -c '^BASH_FUNC_bd803perl%%=' || true)
+if [[ "$_pf" -eq 1 ]]; then
+  ok "#803: hardened perl enumerator still reports BASH_FUNC entries under PERL5OPT injection"
+else
+  bad "#803: hardened perl enumerator was silenced by PERL5OPT injection (saw $_pf)"
+fi
+
+# #803: an enumerator that produces NOTHING but exits 0 must refuse, not proceed.
+# The sentinel alone cannot carry that: it is emitted by the `&&`, so a silenced
+# enumerator still stamps a successful-looking stream, and the count check that
+# catches it is off by one unless the sentinel's own entry is excluded (it was:
+# `-lt 1` accepted the empty case, because the sentinel made the count 1).
+# Probed on the shipped block with BOTH arms neutered to succeed silently.
+EMPTYP="$WORK/cleanenv-empty-probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/scripts/ci/run-shell-tests.sh" \
+    | /usr/bin/sed -e 's|/usr/bin/env -0 2>/dev/null|false|' \
+                   -e "s|/usr/bin/perl -T -e .*keys %ENV.;|true;|"
+  printf 'echo REACHED-BODY\n'
+} > "$EMPTYP"
+chmod 755 "$EMPTYP"
+set +e
+empty_out=$(/usr/bin/env -i PATH=/usr/bin:/bin "$EMPTYP" 2>/dev/null)
+empty_rc=$?
+set -e
+if [[ "$empty_rc" -ne 0 && "$empty_out" != *REACHED-BODY* ]]; then
+  ok "#803: a silent empty enumeration refuses instead of reading as 'nothing to strip'"
+else
+  bad "#803: empty enumeration was accepted (rc=$empty_rc, out='${empty_out:-<empty>}')"
 fi
 
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
@@ -652,6 +730,7 @@ fdcopy_pinned=$(/usr/bin/grep -c '[})] 3< "\$\(pin\|_ER_OC_CFG\)"' "$LIB" || tru
 # Counting the redirection alone is not enough: swapping the body back to
 # `cp -- "$pin"` while keeping `3< "$pin"` would still count two and leave the
 # behavioural probe green. Require the READ side to name the descriptor too.
+# shellcheck disable=SC2016  # a literal grep pattern, not an expansion
 fdcopy_reads=$(/usr/bin/grep -c '/bin/cp /dev/fd/3 ' "$LIB" || true)
 if [[ "$fdcopy_pinned" -eq 2 && "$fdcopy_reads" -eq 2 ]]; then
   ok "#803: both trust-sensitive copies hold a descriptor AND read /dev/fd/3"
@@ -665,7 +744,9 @@ fi
 # EMPTY repo and a config symlink into the real reviewed checkout passes. Ordering is
 # the guard, so ordering is what gets asserted — a line-number comparison, because the
 # defect is invisible to any check of the statements themselves.
+# shellcheck disable=SC2016  # literal grep patterns, not expansions
 cfg_check_ln=$(/usr/bin/grep -n '_trusted_cli_dir_in_checkout "\$_oc_dir"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
+# shellcheck disable=SC2016  # literal grep pattern, not an expansion
 cfg_cd_ln=$(/usr/bin/grep -n '^  cd "\$_ER_OC_CWD"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
 if [[ -z "$cfg_check_ln" || -z "$cfg_cd_ln" ]]; then
   bad "#803: config-containment ordering check is vacuous (check line='${cfg_check_ln:-none}', cd line='${cfg_cd_ln:-none}')"

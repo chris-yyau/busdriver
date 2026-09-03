@@ -103,7 +103,7 @@ Use this only if pre-commit hooks aren't available:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 ```
 
-**2. Initialize:** `bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
+**2. Initialize:** `/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
    (Defaults to 10 max iterations)
 
 **3. Run Review (BLOCKING - wait for result):**
@@ -182,7 +182,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 3. Group files into logical commits (same module/feature together, using the suggestions as a starting point)
 4. For each group:
    a. `git add <files in group>`
-   b. `bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
+   b. `/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
    c. `/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
@@ -257,7 +257,7 @@ Never treat a killed-at-the-cap call as a verdict, and never read `$?` for the r
 # 0. Initialize first — same reason as pattern B: run-review-loop.sh takes review_mode
 #    from the state file OVER $LITMUS_MODE, so a leftover pr-mode state file makes this
 #    "commit review" review the BRANCH diff instead of your staged changes (#363).
-Bash(command='bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10')
+Bash(command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10')
 
 # ✅ CORRECT - blocking, silent
 Bash(
@@ -297,7 +297,7 @@ Until #368 settles, the **invariant** is what binds, not a recipe:
    review" silently reviews `git diff --cached` and the PR gate is bypassed. That is this
    very issue (#363).
    ```bash
-   LITMUS_MODE=pr bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10
+   LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10
    grep review_mode .claude/litmus-state.md    # MUST show: review_mode: "pr"
    ```
    If init REFUSES, read its message before acting — it distinguishes three cases, and
@@ -342,7 +342,7 @@ Bash(command="...", timeout=1260000)  # clamped to 600000, killed at 10 min,
 **If a run IS killed at the cap** it leaves an active state file behind. `init-review-loop.sh` will then refuse (it cannot tell a killed loop from a live one) and — this is the trap — `run-review-loop.sh` reads `review_mode` from that file and it OVERRIDES `$LITMUS_MODE`, so re-running silently reviews the *previous* mode's diff. Discard the stale state, carrying the mode you want:
 
 ```bash
-LITMUS_MODE=pr bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
+LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
 ```
 
 **Note:** If project has pre-commit hooks, just use `git commit` normally.
@@ -409,7 +409,7 @@ git commit -m "Your message"  # Hooks will enforce review
 
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash -p $LITMUS_SCRIPTS/init-review-loop.sh 10
+/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh 10
 /bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
 ```
@@ -435,7 +435,7 @@ git push                # Push after review passes
 ```bash
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash -p $LITMUS/init-review-loop.sh 10                                  # Initialize
+/bin/bash -p $LITMUS/init-review-loop.sh 10                                  # Initialize
 /bin/bash -p $LITMUS/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests

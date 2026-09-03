@@ -1803,13 +1803,73 @@ run_gate "a -C target outside every repo cannot silence the alias arm" \
 # failure is the honest answer.
 run_gate "...while a real subcommand there is still git's own problem" \
     allow "git -C $TMPROOT/not-a-repo worktree list"
+# The refusal is scoped to a COMMAND-CHOSEN anchor. When the gate derived the
+# anchor itself — the session simply runs outside every repo — the original
+# unconditional exit stands, or an ordinary global alias (`git lg`, not a builtin,
+# so an unknown candidate) would block with no escape hatch: a skip file inside a
+# non-repo directory is not something the tooling describes. #812 never touched
+# this shape, and the guard above must not either.
+NOREPO_HOLDER="$REPO"
+REPO="$TMPROOT/not-a-repo"
+run_gate "an unknown word from a non-repo cwd is untouched (no -C chose it)" \
+    allow "git lg -1"
+REPO="$NOREPO_HOLDER"
 # A BARE repo answers exit-0 `false` to --is-inside-work-tree, so it resolves
 # `proceed` rather than `outside-repo` and is refused by the ordinary alias path.
-git init -q --bare "$TMPROOT/bare-scoped"
+# CLONED, not `init --bare`: a freshly-initialised bare repo has no branches, so
+# it would block at the "cannot identify a protected branch" exit instead and the
+# case would pass without ever reaching the path it documents.
+git clone -q --bare "$SCOPED_REPO" "$TMPROOT/bare-scoped"
 git -C "$TMPROOT/bare-scoped" config alias.zz merge
 run_gate "...and a bare repo is refused by the ordinary alias path" \
-    block "git -C $TMPROOT/bare-scoped zz feature"
+    block "git -C $TMPROOT/bare-scoped zz feature" "is a git alias reaching"
+
 git -C "$SCOPED_REPO" config --unset alias.zz
+
+# Consent is per-repo. A command-chosen anchor must not spend the consent
+# artifacts of the repository it points at, because a `!`-shell alias resolved
+# there acts on whichever repository its body names — the same consent/effect
+# divergence as the outside-repo case, reached through a real work tree.
+#
+# The empty declaration is the leg that can be exercised here (the skip file is
+# the other, and is the operator's to create). Reaching it needs a repo whose
+# PROTECTED_SET really is empty, so the fixture has NO conventional branch and no
+# remote: discovery finds nothing, and the empty file is then the whole answer.
+NOCONV="$TMPROOT/noconv"
+rm -rf "$NOCONV"
+(
+    set -e
+    git init -q -b wip "$NOCONV"
+    cd "$NOCONV"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    echo base > f; git add f; git commit -qm base
+) >/dev/null 2>&1 || { printf '  FAIL  fixture setup (noconv)\n'; FAIL=$((FAIL + 1)); }
+mkdir -p "$NOCONV/$ISO_STATE"
+: > "$NOCONV/$ISO_STATE/ref-ff-protected.local"
+run_gate "a command-chosen anchor cannot spend that repo's empty declaration" \
+    block "git -C $NOCONV zz feature" "chose its own anchor"
+# A literal no-op merge does not launder the unresolved word riding behind it.
+# Keying the guard on an empty KIND left exactly this hole: KIND is `merge`, so
+# the anchor looked gate-derived and the declaration was spent as before.
+run_gate "...and a literal no-op merge alongside it does not launder the word" \
+    block "git -C $NOCONV merge HEAD && git -C $NOCONV zz feature" "chose its own anchor"
+# The same divergence one step away: when the LITERAL merge carries no `-C`, the
+# scan matches it first and target_dir is empty, so the gate would anchor on the
+# cwd — spending the cwd repo's consent while `zz` resolves in $NOCONV. The alias
+# scope is therefore decided for the whole command, not only when no literal
+# merge/pull was found.
+run_gate "...and a cwd-scoped merge does not launder a -C-scoped word either" \
+    block "git merge HEAD && git -C $NOCONV zz feature" "cannot be resolved"
+# ...while the same file still speaks for the repo the session is actually IN,
+# which is where the operator wrote it. This is the pre-#812 behaviour and the
+# guard above must not disturb it.
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...but the same declaration is honoured for the session's own repo" \
+    allow "git zz feature"
+REPO="$NOCONV_HOLDER"
+rm -f "$NOCONV/$ISO_STATE/ref-ff-protected.local"
 
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

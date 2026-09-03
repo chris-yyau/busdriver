@@ -3418,7 +3418,22 @@ def _static_alias_scope(chunks):
                                            wrapper_operands=True)
             if not argv or not _is_exe(argv[0], 'git'):
                 continue
-            here = _literal_c_target(argv, raw_argv, _git_subcommand(argv)[1])
+            sub_idx = _git_subcommand(argv)[1]
+            # The same three tests the MERGE path applies to this exemption
+            # (_scan_ref_op), for the same reason: a `-C` says where git RUNS, and
+            # `--git-dir=`/`-c`/an env assignment says which CONFIG it reads, so
+            # anchoring the alias lookup on the `-C` alone would resolve
+            # `alias.zz` from a config the command will not use. Every shape is
+            # already refused upstream — an unrecognized subcommand carrying one
+            # yields REF_OP_UNRESOLVABLE before this arm is reached, verified —
+            # so this is defense in depth, and it keeps the exemption's safety
+            # margin equal on both paths rather than leaving one to a distant
+            # caller.
+            if (_has_unaccounted_global(argv, sub_idx)
+                    or _wrapper_chdir_in_prefix(seg, argv)
+                    or _seg_env_scope(seg)):
+                return None
+            here = _literal_c_target(argv, raw_argv, sub_idx)
             if here is None or (here and depth):
                 return None
             if scope is not None and scope != here:
@@ -3945,12 +3960,19 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     # Alias candidates are reported even when no literal merge/pull was found:
     # that is exactly the case a config-file alias produces.
     aliases = _alias_candidates(chunks)
+    # Decided for EVERY command carrying alias candidates, not only the ones with
+    # no literal merge/pull. Scoping it to `not r[0]` left the same divergence one
+    # step away: in `git merge HEAD && git -C /x zz feature` the scan matches the
+    # no-op merge first, so target_dir is empty and the gate anchors on the cwd —
+    # spending the cwd repo's consent while `zz` resolves, and possibly acts, in
+    # /x. The alias question is about the whole command, so it is asked of the
+    # whole command.
+    scope = _static_alias_scope(chunks) if aliases else ''
+    if scope is None:
+        # The gate resolves alias names against ONE repository, and this command
+        # moves it somewhere the parser cannot follow.
+        return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
     if not r[0]:
-        scope = _static_alias_scope(chunks) if aliases else ''
-        if scope is None:
-            # The gate resolves alias names against ONE repository, and this
-            # command moves it somewhere the parser cannot follow.
-            return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
         if scope:
             # A literal absolute `git -C`: the repository git will use is known,
             # so hand it over as the target_dir and let the gate resolve the

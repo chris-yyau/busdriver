@@ -1062,6 +1062,11 @@ source "$SCRIPT_DIR/lib/markdown-checker.sh"
 # Capture diff for scope control (excluding auto-generated files)
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
+  # Pin HEAD before the captures below and re-check it after (#811). Every capture
+  # here resolves the symbolic HEAD, so a commit landing mid-capture would leave
+  # the cross-run history stamped with a commit whose diff was never the one
+  # reviewed. Recording nothing is the fail-safe: the next pass just starts cold.
+  PR_REVIEWED_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
   ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
@@ -1072,6 +1077,13 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
   PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE_BRANCH" 2>/dev/null || true)
+  # The other half of the #811 pin above: if HEAD moved while the captures ran,
+  # none of them describe the pinned commit, so drop the stamp rather than file a
+  # verdict against a commit whose diff was never reviewed.
+  _PR_HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ "$PR_REVIEWED_HEAD_SHA" != "$_PR_HEAD_AFTER" ]; then
+    PR_REVIEWED_HEAD_SHA=""
+  fi
   FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
   echo "📋 Capturing staged changes..."
@@ -1577,8 +1589,19 @@ DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF" || t
 # Load previous changelog for context continuity
 PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 
-# Load iteration history for convergence
-ITER_HISTORY=$(load_iteration_history)
+# Load iteration history for convergence.
+# PR mode reads the cross-run, SHA-anchored store instead of the per-run file
+# (#811): the per-run file is cleared on every loop init, so a re-triggered
+# `gh pr create` used to review a strictly larger diff with zero memory of the
+# passes before it. The store is a superset of the per-run file for this run —
+# it records every verdict, PASS and FAIL, and this run's own commits are
+# ancestors of HEAD — so reading both would only duplicate. The per-run file
+# still backs stall detection either way.
+if [ "$REVIEW_MODE" = "pr" ]; then
+  ITER_HISTORY=$(load_pr_history "$PR_BASE_BRANCH")
+else
+  ITER_HISTORY=$(load_iteration_history)
+fi
 
 # All placeholder values are computed first, then spliced in a single pass by
 # render_prompt (below) — see lib/inject.sh for why one-at-a-time substitution
@@ -1786,6 +1809,14 @@ fi
 
 # Log metrics for persistent trend analysis
 log_review_metrics "$REVIEW_STATUS" "$ISSUE_COUNT" "$ITERATION" "$REVIEW_MODE" "$RESOLVED_CLI" "$JSON_OUTPUT"
+
+# Record the verdict against the commit it reviewed so the next PR-mode run can
+# start from it instead of cold (#811). Here rather than in the PASS/FAIL
+# branches below because both outcomes are worth carrying forward, and because
+# the PASS branch exits before it could record anything.
+if [ "$REVIEW_MODE" = "pr" ]; then
+  append_pr_history "$JSON_OUTPUT" "$PR_REVIEWED_HEAD_SHA"
+fi
 
 # Check for completion promise
 if [ "$COMPLETION_PROMISE" != "null" ] && [ -n "$COMPLETION_PROMISE" ]; then

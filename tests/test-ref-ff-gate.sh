@@ -1744,5 +1744,51 @@ run_gate "a marker in ANOTHER repo does not authorize this one" \
     block "git merge --ff-only $FEATURE_OID"
 rm -f "$MARKER_HOLDER/$ISO_STATE/ref-ff-authorized.local"
 
+# ── A LITERAL `git -C` is a scope the gate can follow (#812) ─────────
+# The alias arm used to refuse ANY scope change beside an unrecognized
+# subcommand, so ordinary read-only commands were blocked with a message about
+# merge operands. But `_has_unaccounted_global` already exempts a bare `-C` on
+# the merge path — a literal target IS the repository git will use — so the gate
+# resolves the aliases THERE instead of refusing. Everything it cannot resolve
+# statically still fails closed.
+setup_repo scoped || { printf '  FAIL  fixture setup (scoped)\n'; exit 1; }
+SCOPED_REPO="$REPO"
+setup_repo main || { printf '  FAIL  fixture re-setup (scoped)\n'; exit 1; }
+
+run_gate "git -C <literal> worktree list is not a merge" \
+    allow "git -C $SCOPED_REPO worktree list"
+run_gate "...nor is git -C <literal> branch -a" \
+    allow "git -C $SCOPED_REPO branch -a"
+
+# THE proof that the scope is actually used: `zz` is an alias for merge in the
+# `-C` repo and does not exist in the session repo. Resolving it against the
+# session repo would give the "resolves to neither a git command nor a git alias"
+# refusal instead, so the reason string is what distinguishes the two.
+git -C "$SCOPED_REPO" config alias.zz merge
+run_gate "an alias is resolved in the -C repo, not the session repo" \
+    block "git -C $SCOPED_REPO zz feature" "is a git alias reaching"
+run_gate "...and the same name in the SESSION repo resolves to nothing" \
+    block "git zz feature" "resolves to neither a git command nor a git alias"
+
+# Everything the parser cannot pin to one directory still fails closed.
+run_gate "a substituted -C target is still unresolvable" \
+    block 'git -C "$(pwd)" worktree list' "cannot be resolved"
+run_gate "...and a variable one" \
+    block 'git -C $SOMEDIR worktree list' "cannot be resolved"
+run_gate "...and a relative one (CDPATH can send it elsewhere)" \
+    block "git -C sub worktree list" "cannot be resolved"
+run_gate "...and a chained -C, whose later operand may be relative" \
+    block "git -C $SCOPED_REPO -C sub worktree list" "cannot be resolved"
+run_gate "...and a cd, which the exemption never covered" \
+    block "cd $SCOPED_REPO && git worktree list" "cannot be resolved"
+run_gate "...and a -C inside a nested payload" \
+    block "bash -c 'git -C $SCOPED_REPO zz feature'" "cannot be resolved"
+# Two invocations DISAGREEING about the directory is as unresolvable as an opaque
+# target: `zz` here runs in the session repo, so anchoring on the -C repo would
+# hide the session repo's own alias.
+run_gate "...and invocations that disagree about the directory" \
+    block "git -C $SCOPED_REPO worktree list && git zz feature" "cannot be resolved"
+git -C "$SCOPED_REPO" config --unset alias.zz
+
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -3368,22 +3368,63 @@ def _seg_env_scope(seg):
     return any(_GIT_SCOPE_ENV_RE.match(t) for t in _env_assignment_toks(seg))
 
 
-def _has_scope_change(chunks):
-    """True when the command moves the repo the gate would query.
+def _literal_c_target(argv, raw_argv, sub_idx):
+    """The pre-subcommand `git -C` operand when it is an absolute plain literal,
+    '' when the invocation has none, or None when it cannot be trusted.
+
+    Rejects a chained `-C` (git applies them in order, and only the first is
+    absolute by construction), a dangling one, and — via `_abs_cd_target` — any
+    relative, `..`-bearing, tilde, glob, whitespace or CR/LF operand, plus a live
+    or literal `$(...)`, which `_mask_literal_substitution` re-quotes so both
+    spellings still carry the `$` that predicate refuses."""
+    seen = ''
+    k = 1
+    while k < sub_idx:
+        if argv[k] != '-C':
+            k += 1
+            continue
+        if seen or k + 1 >= sub_idx or raw_argv is None:
+            return None
+        seen = _abs_cd_target(_mask_literal_substitution(
+            argv[k + 1], _raw_spelling(raw_argv, k + 1)))
+        if not seen:
+            return None
+        k += 2
+    return seen
+
+
+def _static_alias_scope(chunks):
+    """The ONE directory the gate may resolve alias names in, or None to refuse.
 
     _alias_candidates reports NAMES only, with no scope attached, and the gate
-    resolves them against one repository. `cd /other && git m topic` and
-    `git -C /other m topic` would send it to the wrong one — where a repo-local
-    `alias.m = merge` is invisible — so a scoped command is refused instead."""
-    for chunk in chunks:
+    resolves them against a single repository — so `cd /other && git m topic`
+    would have it read `alias.m` from the wrong config. A LITERAL absolute
+    `git -C` is the one scope change it can follow: that is exactly the
+    repository git will use, and `_has_unaccounted_global` already exempts the
+    same token on the merge path for the same reason (#812). Returned as the
+    target_dir, which `gate_resolve_repo_dir` already anchors on.
+
+    Refused: a `cd` anywhere, a `-C` in a NESTED chunk (`_apply_global_c` does not
+    honour that one for scoping either), an operand `_literal_c_target` will not
+    vouch for, and — as much as opacity — invocations that DISAGREE about the
+    target. `git -C /other worktree list && git m feature` runs `m` in the cwd
+    repo, so anchoring on /other would hide the cwd's own `alias.m = merge`."""
+    scope = None
+    for depth, chunk in enumerate(chunks):
         if _all_cds(chunk):
-            return True
+            return None
         for _op, seg in split_segments(chunk):
-            argv = _command_argv(seg, 'git', wrapper_operands=True)
-            if argv and _is_exe(argv[0], 'git') \
-               and '-C' in argv[1:_git_subcommand(argv)[1]]:
-                return True
-    return False
+            argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
+                                           wrapper_operands=True)
+            if not argv or not _is_exe(argv[0], 'git'):
+                continue
+            here = _literal_c_target(argv, raw_argv, _git_subcommand(argv)[1])
+            if here is None or (here and depth):
+                return None
+            if scope is not None and scope != here:
+                return None
+            scope = here
+    return scope or ''
 
 
 def _has_git_scope_env(chunks):
@@ -3905,10 +3946,17 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     # that is exactly the case a config-file alias produces.
     aliases = _alias_candidates(chunks)
     if not r[0]:
-        if aliases and _has_scope_change(chunks):
-            # The gate resolves alias names against ONE repository; a cd or
-            # `git -C` means that may not be the repository git will use.
+        scope = _static_alias_scope(chunks) if aliases else ''
+        if scope is None:
+            # The gate resolves alias names against ONE repository, and this
+            # command moves it somewhere the parser cannot follow.
             return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
+        if scope:
+            # A literal absolute `git -C`: the repository git will use is known,
+            # so hand it over as the target_dir and let the gate resolve the
+            # aliases THERE rather than refuse a read-only command (#812).
+            return ('', scope, [], '', 0,
+                    _has_companion_command(chunks), aliases)
         # The companion fact matters even with no literal merge/pull: `git config
         # alias.m merge && git m feature` has none at parse time, and the gate's
         # alias lookup finds nothing because the command has not created the

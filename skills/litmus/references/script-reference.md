@@ -176,20 +176,16 @@ Bash(
     timeout=5000
 )
 
-# Run review (with background execution)
-task = Bash(
+# Run review — BLOCKING, never backgrounded. SKILL.md's CRITICAL RULES are
+# explicit ("Do NOT use background tasks or polling"), and the reason is not
+# style: while the call blocks, the session cannot advance and therefore cannot
+# read half-written review artifacts or build a verdict from partial state. A
+# backgrounded gate is an incomplete gate that orchestration can walk past.
+output = Bash(
     command="/bin/bash -p scripts/run-review-loop.sh",
     description=f"Run Codex review iteration {iteration}",
-    run_in_background=True,  # CRITICAL for automation
-    timeout=600000
+    timeout=600000  # 10 min — the harness CAPS this; larger values are clamped
 )
-
-# Poll for completion
-task_id = task['task_id']
-while True:
-    output = TaskOutput(task_id=task_id, block=True, timeout=30000)
-    if output['status'] == 'completed':
-        break
 
 # Parse result
 result = json.loads(output['output'])

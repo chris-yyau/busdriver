@@ -113,7 +113,7 @@ Run the review as a **blocking** call (never in background).
 def run_litmus():
     # Requires prior: /bin/bash -p init-review-loop.sh --force 10
     return Bash(
-        command="/bin/bash -p ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
         description="Run Codex review (blocking gate)",
         timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )

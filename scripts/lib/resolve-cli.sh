@@ -494,6 +494,14 @@ case $out in
   /*) ;;
   *) exit 1 ;;
 esac
+# Colon refusal, same as the phys_dir copies: a physical directory whose name
+# contains ":" becomes TWO entries when components are joined into a PATH, and
+# the injected half can point back into the reviewed checkout. PATH has no
+# quoting to escape with, so refuse. This copy is an embedded SCRIPT, not a
+# function, so it exits rather than returns. (No apostrophes -- single-quoted.)
+case $out in
+  *:*) exit 1 ;;
+esac
 printf "%s\n" "$out"
 '
   LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_TCPD_SCRIPT}" bash "${_TCPD_ARG}"
@@ -559,6 +567,16 @@ phys_dir() {
     /*) ;;
     *) return 1 ;;
   esac
+  # A physical directory whose name contains a colon cannot be represented in a
+  # PATH at all: the components below are joined with ":", so one such directory
+  # silently becomes TWO entries, and the injected half can point back into the
+  # reviewed checkout and win a companion bare-command lookup. There is no
+  # escaping to fall back on -- PATH has no quoting -- so refuse it. A symlink
+  # can physicalize into exactly this shape, which is why the check is here, on
+  # the resolved physical path, rather than on the input.
+  case $out in
+    *:*) return 1 ;;
+  esac
   [ -n "$out" ] || return 1
   printf "%s\n" "$out"
 }
@@ -582,6 +600,12 @@ exit 1
   case $out in
     /*) ;;
     *) return 1 ;;
+  esac
+  # Same colon refusal as phys_dir: this walk builds its own path rather than
+  # returning the one phys_dir produced, so it needs the guard independently.
+  # (No apostrophes in this comment -- it lives inside a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
   esac
   [ -n "$out" ] || return 1
   printf "%s\n" "$out"
@@ -673,6 +697,14 @@ phys_dir() {
   case $out in
     /*) ;;
     *) return 1 ;;
+  esac
+  # Colon refusal, same as the other phys_dir copies: a physical directory whose
+  # name contains ":" becomes TWO entries when components are joined into a PATH,
+  # and the injected half can point back into the reviewed checkout. PATH has no
+  # quoting to escape with, so refuse. (No apostrophes -- some copies live inside
+  # a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
   esac
   [ -n "$out" ] || return 1
   printf "%s\n" "$out"
@@ -1891,6 +1923,14 @@ phys_dir() {
   case $out in
     /*) ;;
     *) return 1 ;;
+  esac
+  # Colon refusal, same as the other phys_dir copies: a physical directory whose
+  # name contains ":" becomes TWO entries when components are joined into a PATH,
+  # and the injected half can point back into the reviewed checkout. PATH has no
+  # quoting to escape with, so refuse. (No apostrophes -- some copies live inside
+  # a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
   esac
   [ -n "$out" ] || return 1
   printf "%s\n" "$out"

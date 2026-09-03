@@ -383,4 +383,4 @@ jobs:
         # does not depend on codex/agy/droid/grok being installed (see
         # docs/ci/shell-test-inventory.md). Per-test timeout is portable via
         # scripts/lib/resolve-cli.sh's _portable_timeout.
-        run: bash -p scripts/ci/run-shell-tests.sh
+        run: /bin/bash -p scripts/ci/run-shell-tests.sh

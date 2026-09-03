@@ -1076,13 +1076,13 @@ if [[ "${1:-}" == "--auto-pr-review" ]]; then
   export LITMUS_PR_FAST=1
   echo "🔍 Auto-triggering PR litmus review..."
   echo ""
-  bash -p "$SCRIPT_DIR/init-review-loop.sh" --force || {
+  /bin/bash -p "$SCRIPT_DIR/init-review-loop.sh" --force || {
     echo "❌ Failed to initialize PR review" >&2
     write_terminal_status setup_error
     exit 1
   }
   # Re-exec as normal review (picks up PR mode from state file + LITMUS_PR_FAST=1)
-  exec bash -p "$SCRIPT_DIR/run-review-loop.sh"
+  exec /bin/bash -p "$SCRIPT_DIR/run-review-loop.sh"
 fi
 
 # Source validation library
@@ -2213,7 +2213,7 @@ else
     write_terminal_status too_large
     # Run suggest-split helper to show grouping advice (only useful for multi-file diffs)
     if [[ "$STAGED_FILE_COUNT" -gt 1 ]]; then
-      bash -p "$SCRIPT_DIR/suggest-split.sh" || true
+      /bin/bash -p "$SCRIPT_DIR/suggest-split.sh" || true
       echo ""
     fi
     echo "EXIT_CODE=2 (TOO_LARGE: split into smaller commits before reviewing)"
@@ -2660,7 +2660,7 @@ elif [ "$REVIEW_EXIT" -eq 124 ]; then
   echo "   The review took too long. This usually means the diff is too complex." >&2
   echo "   Try splitting into smaller commits." >&2
   echo "" >&2
-  bash -p "$SCRIPT_DIR/suggest-split.sh" >&2
+  /bin/bash -p "$SCRIPT_DIR/suggest-split.sh" >&2
   write_terminal_status infra_failure
   exit 124
 elif [[ "$REVIEW_EXIT" -ne 0 ]]; then
@@ -2868,7 +2868,7 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   echo "Next steps:"
   echo "   1. Run tests: npm test (or appropriate test command)"
   echo "   2. Commit: git commit -m 'Your message'"
-  echo "   3. (Optional) Save changelog: bash -p scripts/save_changelog.sh"
+  echo "   3. (Optional) Save changelog: /bin/bash -p scripts/save_changelog.sh"
   echo ""
   exit 0
 else
@@ -2905,7 +2905,7 @@ else
   echo "Next steps:"
   echo "   1. Fix the issues listed above"
   echo "   2. Stage changes: git add <files>"
-  echo "   3. Run review again: bash -p scripts/run-review-loop.sh"
+  echo "   3. Run review again: /bin/bash -p scripts/run-review-loop.sh"
   echo "   4. Loop continues automatically until PASS"
   echo ""
   rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null

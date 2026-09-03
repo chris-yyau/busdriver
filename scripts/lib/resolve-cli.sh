@@ -3481,6 +3481,23 @@ _execute_codex() {
     _bd_exit_as 1
   else
   # #803: exec copy once — retries reuse this path (do not re-resolve BASH_SOURCE).
+  #
+  # TRUST BOUNDARY of the dual companion re-check — state it, because the shape
+  # invites a stronger reading. What the two disk-fresh resolutions bind is the
+  # PATHNAME's provenance: a poisoned parent `_CODEX_COMPANION` is never trusted,
+  # the answer is recomputed in a clean child, and it must still land under the
+  # password-DB operator home's plugin cache, physicalized and outside every git
+  # checkout (see `_resolve_codex_companion`). What they do NOT bind is the BYTES:
+  # node reopens that pathname later, so a writer who can swap the file in that
+  # cache between the check and the open executes unverified JavaScript. That
+  # writer is out of #803's threat model by construction — #803 is a poisoned
+  # ENVIRONMENT and a hostile reviewed CHECKOUT, and anyone holding write access
+  # to the operator's own plugin cache has already defeated every trusted-home
+  # anchor in this file, the codex binary included. Byte-binding is not available
+  # here either: the companion is an ESM entry point that resolves its imports
+  # relative to its real directory, so staging a copy (the technique used for the
+  # review lib) breaks the module graph. Residual, accepted, deliberately not
+  # papered over.
   _bd803_cc_a=
   _bd803_cc_b=
   if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then
@@ -3624,6 +3641,8 @@ _execute_codex() {
         _ECX_DONE=1
       else
       # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
+      # Binds the pathname's provenance, not the bytes node later opens — see the
+      # TRUST BOUNDARY note at the first dual re-check above for the residual.
       _bd803_cc_a=
       _bd803_cc_b=
       if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then

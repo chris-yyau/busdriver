@@ -228,7 +228,7 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         # "resume in commit mode" for a legacy file that will actually follow
         # $LITMUS_MODE — contradicting this message's own header two lines up.
         echo "       → resume it in its own mode ($_MODE_SHOWN), which keeps the counter:" >&2
-        echo "         bash -p $SCRIPT_DIR/run-review-loop.sh" >&2
+        echo "         /bin/bash -p $SCRIPT_DIR/run-review-loop.sh" >&2
         exit 1
     fi
 fi
@@ -481,7 +481,7 @@ if [ "$COMPLETION_PROMISE" != "null" ]; then
 fi
 echo ""
 echo "Next steps:"
-echo "   1. Run: bash -p scripts/run-review-loop.sh"
+echo "   1. Run: /bin/bash -p scripts/run-review-loop.sh"
 echo "   2. Fix any issues found"
 echo "   3. Loop continues automatically until PASS"
 echo ""

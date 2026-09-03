@@ -236,7 +236,7 @@ echo
 for t in "${tests[@]}"; do
   base="$(basename "$t" .sh)"
   this_timeout="$(test_timeout "$base")"
-  _portable_timeout "$this_timeout" bash -p "$t" >"$out_file" 2>&1
+  _portable_timeout "$this_timeout" /bin/bash -p "$t" >"$out_file" 2>&1
   rc=$?
   last="$(grep -vE '^[[:space:]]*$' "$out_file" | tail -n1)"
 

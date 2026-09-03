@@ -714,7 +714,7 @@ trap '_dispatcher_signal_exit HUP' HUP
 # refusal the plain call would have honoured — off the common path entirely.
 # shellcheck disable=SC2310  # set -e suspension is intended: the else branch below
 # handles the failure explicitly, which is the whole point of testing the call here.
-if run_locked_child bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
+if run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1; then
     LITMUS_INIT_DONE=1
 else
     LITMUS_INIT_DONE=0
@@ -799,7 +799,7 @@ if [ "$LITMUS_INIT_DONE" != "1" ]; then
     # like instead.
     if [[ "$STATE_ACTIVE" == "true" && "$STATE_FINISHED" == "1" ]]; then
         # shellcheck disable=SC2310  # intended: the `||` arm emits the bail explicitly.
-        run_locked_child bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
+        run_locked_child /bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force >/dev/null 2>&1 || \
             emit_bail "judgment" "litmus init-review-loop.sh --force failed on a state that reported terminal_status '${STATE_TERMINAL}'"
     elif [[ "$STATE_ACTIVE" == "true" ]]; then
         emit_bail "judgment" "litmus state is active with no recognized terminal_status (saw '${STATE_TERMINAL}') — a review running now, one initialized and not yet started, or one killed before it could record its outcome. Refusing to force-reset it; resolve with 'init-review-loop.sh --force' if it is genuinely dead."
@@ -833,7 +833,7 @@ LITMUS_OUT="$RUN_DIR/litmus.out"
 LITMUS_EXIT=0
 set +e
 run_locked_child env LITMUS_SHORTCIRCUIT_DISABLED=1 \
-    bash -p "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
+    /bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh" > "$LITMUS_OUT" 2>&1
 LITMUS_EXIT=$?
 set -e
 

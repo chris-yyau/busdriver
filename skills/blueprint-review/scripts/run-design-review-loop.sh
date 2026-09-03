@@ -413,7 +413,7 @@ log_info ""
 # Check for state file
 STATE_FILE=$(get_state_file)
 if [[ ! -f "$STATE_FILE" ]]; then
-  log_error "State file not found. Run: bash -p scripts/init-design-review.sh <design_file> first"
+  log_error "State file not found. Run: /bin/bash -p scripts/init-design-review.sh <design_file> first"
   exit 1
 fi
 
@@ -435,7 +435,7 @@ if [[ ! -f "$_MARKER_RESOLVER" ]]; then
   # won't exist, so prune would be a silent no-op. Warn rather than pretend.
   log_warning "Marker resolver not found at $_MARKER_RESOLVER; token prune will be skipped on PASS (drain manually if needed)."
 elif [[ -f "$DESIGN_FILE" ]]; then
-  _mk_glob="$(bash -p "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
+  _mk_glob="$(/bin/bash -p "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
   if [[ -n "$_mk_glob" ]]; then
     _MARKER_RESOLVE_OK=true
     shopt -s nullglob 2>/dev/null || true

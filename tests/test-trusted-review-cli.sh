@@ -405,6 +405,41 @@ else
   bad "#803: entry point resolves its interpreter through PATH:"$'\n'"$shebang_bad"
 fi
 
+# #803: the shebang is not the only place an interpreter gets chosen. `bash -p foo.sh`
+# runs the FIRST `bash` on PATH — a script's own `#!/bin/bash -p` is never consulted
+# when bash is invoked explicitly — so a bare `bash -p` inside a hardened script hands
+# the entry boundary back to the very PATH it exists to distrust, and a block message
+# printing that form propagates the defect to whoever pastes it. Every invocation and
+# every printed hint must name the interpreter absolutely. Comment lines are skipped:
+# they describe the shape, they do not execute it.
+set +e
+pathbash_raw=$(cd "$ROOT" && /usr/bin/grep -rnE '(^|[^/[:alnum:]_-])bash[[:space:]]+-p[[:space:]]' \
+  --include='*.sh' --include='*.yml' skills scripts hooks .github 2>/dev/null)
+pathbash_rc=$?
+pathbash_pinned=$(cd "$ROOT" && /usr/bin/grep -rnE '/bin/bash[[:space:]]+-p[[:space:]]' \
+  --include='*.sh' --include='*.yml' skills scripts hooks .github 2>/dev/null | /usr/bin/grep -cvE ':[[:space:]]*#')
+set -e
+if [[ "$pathbash_rc" -gt 1 ]]; then
+  bad "#803: PATH-bash scan failed (grep rc=$pathbash_rc)"
+fi
+pathbash_bad=""
+while IFS= read -r hit; do
+  [[ -n "$hit" ]] || continue
+  _pb_body=${hit#*:}
+  _pb_body=${_pb_body#*:}
+  case "${_pb_body#"${_pb_body%%[![:space:]]*}"}" in
+    '#'*) continue ;;
+  esac
+  pathbash_bad="${pathbash_bad}${hit}"$'\n'
+done <<< "$pathbash_raw"
+if [[ -n "$pathbash_bad" ]]; then
+  bad "#803: PATH-resolved bash invocation — a hostile PATH picks the interpreter:"$'\n'"$pathbash_bad"
+elif [[ "$pathbash_pinned" -lt 20 ]]; then
+  bad "#803: PATH-bash scan is vacuous — only $pathbash_pinned pinned '/bin/bash -p' forms found"
+else
+  ok "#803: every bash -p form names an absolute interpreter ($pathbash_pinned pinned)"
+fi
+
 # A silently empty enumeration would make the loop above vacuously green.
 if [[ "$entry_seen" -ge 2 ]]; then
   ok "#803: entry-point enumeration found $entry_seen executables to check"

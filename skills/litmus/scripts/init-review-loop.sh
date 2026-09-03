@@ -15,14 +15,46 @@
 # the environment once, here. After this exec the tree is clean, so the branch cannot
 # repeat. SHELLOPTS/BASHOPTS are readonly and cannot be unset; -p already ignores them.
 unset BASH_ENV ENV
+# Capture once rather than reading from a process substitution, which would mask
+# env's own exit status. A FAILED enumeration must not be treated as an empty
+# one: empty means "nothing to strip" and skips the clean re-exec entirely, so
+# a failing env would hand every descendant the inherited BASH_FUNC_* entries.
+# There is no safe way to continue without knowing the environment, so refuse.
+if ! _bd803_envlist=$(/usr/bin/env); then
+  printf '%s\n' "$0: cannot enumerate the environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+# Parse in-process. A here-string (`<<<`) materializes a temporary file; if that
+# open fails (unwritable/missing TMPDIR, exhausted temp space), the loop is skipped
+# with `_bd803_envclean` left empty — the same shape as "nothing to strip" — and
+# every unprivileged descendant re-imports the inherited BASH_FUNC_* entries.
+# Checking the while-read status cannot close that: a normal EOF also yields
+# non-zero. Split on newlines in-shell so parsing cannot fail open.
 _bd803_envclean=()
-while IFS='=' read -r _bd803_n _; do
+_bd803_rest=${_bd803_envlist}
+_bd803_line_count=0
+while [[ -n ${_bd803_rest} ]]; do
+  _bd803_line_count=$((_bd803_line_count + 1))
+  # Bound the parse: in-process prefix stripping is O(n^2) in newline count.
+  # A hostile environment value with many newlines must not stall these entry
+  # points before any timeout is active. 4096 lines is far above a normal env.
+  if [[ ${_bd803_line_count} -gt 4096 ]]; then
+    printf '%s\n' "$0: environment listing too large — refusing to run unprivileged descendants (#803)" >&2
+    exit 1
+  fi
+  _bd803_line=${_bd803_rest%%$'\n'*}
+  if [[ ${_bd803_rest} == *$'\n'* ]]; then
+    _bd803_rest=${_bd803_rest#*$'\n'}
+  else
+    _bd803_rest=
+  fi
+  _bd803_n=${_bd803_line%%=*}
   case "$_bd803_n" in BASH_FUNC_*) _bd803_envclean+=(-u "$_bd803_n") ;; esac
-done < <(/usr/bin/env)
+done
 if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
   exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
 fi
-unset _bd803_envclean _bd803_n
+unset _bd803_envclean _bd803_n _bd803_envlist _bd803_rest _bd803_line _bd803_line_count
 # BD803-CLEAN-ENV-END
 # Initialize litmus review loop state file
 # Follows Ralph Loop pattern for robust state management

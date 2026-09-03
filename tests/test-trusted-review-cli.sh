@@ -217,6 +217,35 @@ while IFS= read -r entry; do
     bad "#803: entry point leaks BASH_ENV to children: $entry (probe: ${child_out:-<no output>})"
   fi
 done <<< "$entry_list"
+# The hardened entry points are PINNED here, deliberately, not discovered.
+# Discovering them by searching for the hardening marker is circular: removing the
+# block from a script also removes it from the list, so the assertions below would
+# still pass on a smaller set. A pinned list makes that removal a FAILURE, which is
+# the whole point. It does mean a newly hardened entry point must be added here — the
+# cross-check below fails loudly when one carries the marker but is missing from the
+# list, so the omission surfaces rather than silently narrowing coverage.
+BD803_ENTRY_POINTS="skills/blueprint-review/scripts/run-design-review-loop.sh
+skills/blueprint-review/scripts/init-design-review.sh
+skills/litmus/scripts/run-review-loop.sh
+skills/litmus/scripts/init-review-loop.sh
+scripts/ci/run-shell-tests.sh"
+hardened_list="$BD803_ENTRY_POINTS"
+# `grep | sort` would report SORT's status, so run grep on its own first.
+set +e
+marked_raw=$(cd "$ROOT" && /usr/bin/grep -rl 'BD803-CLEAN-ENV-BEGIN' --include='*.sh' skills scripts 2>/dev/null)
+marked_rc=$?
+set -e
+if [[ "$marked_rc" -gt 1 ]]; then
+  bad "#803: hardened-entry-point cross-check failed (grep rc=$marked_rc)"
+fi
+marked_list=$(/usr/bin/printf '%s\n' "$marked_raw" | /usr/bin/sort)
+expected_list=$(/usr/bin/printf '%s\n' "$BD803_ENTRY_POINTS" | /usr/bin/sort)
+if [[ "$marked_list" == "$expected_list" ]]; then
+  ok "#803: hardened entry points match the pinned list exactly"
+else
+  bad "#803: hardened-entry-point drift — a script gained or lost the rebuild block:"$'\n'"pinned:"$'\n'"$expected_list"$'\n'"on disk:"$'\n'"$marked_list"
+fi
+
 # #803: BASH_FUNC_* entries cannot be removed with `unset` -- their names are not
 # valid identifiers and the environ entry survives (measured) -- so a privileged entry
 # point that merely ignores them still hands them to every descendant, including a
@@ -227,14 +256,12 @@ done <<< "$entry_list"
 # and require that helper not to import a forged BASH_FUNC_python3. A deleted or
 # renamed block yields no block and the helper imports the forgery.
 DOWNSTREAM="$WORK/downstream-helper.sh"
+# shellcheck disable=SC2016  # probe text: expanded by the probe, not here
 printf '#!/bin/bash\n[ "$(type -t python3 2>/dev/null)" = function ] && echo IMPORTED_FORGERY || echo downstream_clean\n' > "$DOWNSTREAM"
 chmod 755 "$DOWNSTREAM"
 transitive_bad=""
-for _ep in skills/blueprint-review/scripts/run-design-review-loop.sh \
-           skills/blueprint-review/scripts/init-design-review.sh \
-           skills/litmus/scripts/run-review-loop.sh \
-           skills/litmus/scripts/init-review-loop.sh \
-           scripts/ci/run-shell-tests.sh; do
+while IFS= read -r _ep; do
+  [[ -n "$_ep" ]] || continue
   # dispatch.sh is deliberately absent: it already re-execs behind a nonce+sentinel
   # proof that ABORTS on an inherited forged sentinel, and every child it launches is
   # `env -i`, so it has no plain-shebang descendant to protect. Adding the rebuild
@@ -246,6 +273,7 @@ for _ep in skills/blueprint-review/scripts/run-design-review-loop.sh \
   {
     /usr/bin/head -1 "$ROOT/$_ep"
     printf '%s\n' "$_blk"
+    # shellcheck disable=SC2016  # probe text: expanded by the probe, not here
     printf '"$1"\n'
   } > "$_probe"
   chmod 755 "$_probe"
@@ -253,11 +281,42 @@ for _ep in skills/blueprint-review/scripts/run-design-review-loop.sh \
   _out=$(env "BASH_FUNC_python3%%=() { printf FORGED\n; }" "$_probe" "$DOWNSTREAM" 2>/dev/null)
   set -e
   [[ "$_out" == *downstream_clean* ]] || transitive_bad="${transitive_bad}${_ep} -> ${_out:-<no output>}"$'\n'
-done
+done <<< "$hardened_list"
 if [[ -z "$transitive_bad" ]]; then
   ok "#803: entry points rebuild the environment so plain-shebang descendants stay clean"
 else
   bad "#803: descendant imported a forged BASH_FUNC_python3:"$'\n'"$transitive_bad"
+fi
+
+# #803: env-list parsing must not depend on a writable TMPDIR here-string temporary.
+# An unwritable TMPDIR that broke `<<<` used to leave `_bd803_envclean` empty — the
+# same shape as "nothing to strip" — and skip the scrub (fail-open). In-process
+# split closes that class; this asserts the scrub still reaches the descendant.
+tmpdir_bad=""
+BADTMP=$(mktemp -d "$WORK/badtmp.XXXXXX")
+chmod 000 "$BADTMP"
+while IFS= read -r _ep; do
+  [[ -n "$_ep" ]] || continue
+  [[ -f "$ROOT/$_ep" ]] || continue
+  _blk=$(/usr/bin/sed -n '/BD803-CLEAN-ENV-BEGIN/,/BD803-CLEAN-ENV-END/p' "$ROOT/$_ep")
+  _probe="$WORK/tmpdir-$(/usr/bin/basename "$_ep")"
+  {
+    /usr/bin/head -1 "$ROOT/$_ep"
+    printf '%s\n' "$_blk"
+    # shellcheck disable=SC2016  # probe text: expanded by the probe, not here
+    printf '"$1"\n'
+  } > "$_probe"
+  chmod 755 "$_probe"
+  set +e
+  _out=$(env TMPDIR="$BADTMP" "BASH_FUNC_python3%%=() { printf FORGED\n; }" "$_probe" "$DOWNSTREAM" 2>/dev/null)
+  set -e
+  [[ "$_out" == *downstream_clean* ]] || tmpdir_bad="${tmpdir_bad}${_ep} -> ${_out:-<no output>}"$'\n'
+done <<< "$hardened_list"
+chmod 755 "$BADTMP"
+if [[ -z "$tmpdir_bad" ]]; then
+  ok "#803: clean-env scrub survives an unwritable TMPDIR (no here-string fail-open)"
+else
+  bad "#803: unwritable TMPDIR let a forged BASH_FUNC reach a descendant:"$'\n'"$tmpdir_bad"
 fi
 
 # #803: the library refuses to install its own EXIT trap when the sourcing script
@@ -307,6 +366,43 @@ if [[ -n "$compose_path" && "$compose_path" != none && ! -e "$compose_path" ]]; 
   ok "#803: composing caller cleans the staged lib on exit (no TMPDIR accumulation)"
 else
   bad "#803: staged lib survived a composing caller's exit: '${compose_path:-<none staged>}'"
+fi
+
+# #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
+# still resolves bash through the ambient PATH, so a hostile PATH picks the
+# interpreter before privileged mode or the environment rebuild can start — the entry
+# boundary would be decided by the thing it exists to distrust.
+# Generated from the SAME enumeration as the assertions above, so a newly added entry
+# point is covered on arrival rather than needing this list edited. dispatch.sh is the
+# one documented exception: its pi lane requires bash 4+, which on macOS only PATH
+# resolution supplies (/bin/bash is 3.2), and its own nonce+sentinel proof plus
+# `env -i` children bound the residual.
+# The `/env` match tolerates any whitespace run (a tab after `#!/usr/bin/env` is the
+# same defect as a space), so a reformat cannot slip an env-resolved shebang through.
+shebang_bad=""
+shebang_seen=0
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  case "$entry" in
+    */lib/*) continue ;;
+    skills/dispatch-cli/scripts/dispatch.sh) continue ;;
+    *) ;;
+  esac
+  [[ -x "$ROOT/$entry" ]] || continue
+  shebang_seen=$((shebang_seen + 1))
+  _sb=$(/usr/bin/head -1 "$ROOT/$entry")
+  if [[ "$_sb" == '#!/'* ]] && ! /usr/bin/printf '%s' "$_sb" | /usr/bin/grep -qE '/env[[:space:]]'; then
+    :
+  else
+    shebang_bad="${shebang_bad}${entry}: ${_sb}"$'\n'
+  fi
+done <<< "$hardened_list"
+if [[ -z "$shebang_bad" && "$shebang_seen" -ge 4 ]]; then
+  ok "#803: entry-point shebangs pin an absolute interpreter ($shebang_seen checked)"
+elif [[ "$shebang_seen" -lt 2 ]]; then
+  bad "#803: shebang enumeration collapsed (found $shebang_seen) — the assertion is vacuous"
+else
+  bad "#803: entry point resolves its interpreter through PATH:"$'\n'"$shebang_bad"
 fi
 
 # A silently empty enumeration would make the loop above vacuously green.
@@ -380,6 +476,45 @@ ext_phys=""
 ext_phys="$(CDPATH='' cd -P -- "$EXT" 2>/dev/null && pwd -P)" || ext_phys=""
 want="${ext_phys}/codex"
 if [[ "$pinned" == "$want" ]]; then ok "trusted resolver returns the external absolute path, not the planted one"; else bad "expected pinned=$want, got '$pinned'"; fi
+
+# #803: opencode availability must use the SAME fixed trusted PATH as dispatch
+# (<trusted-home>/.opencode/bin + .local/bin + system dirs), not ambient PATH.
+# Checkout-planted and arbitrary-external installs are refused; only a stub under
+# a mocked trusted home is accepted. Symlink-into-checkout remains refused.
+# Negatives mock an EMPTY trusted home so a real operator install cannot make them
+# vacuously green; the positive case plants under a separate mocked home.
+printf '#!/bin/sh\necho FORGED_OPENCODE\n' > "$REPO/bin/opencode"
+chmod +x "$REPO/bin/opencode"
+OC_EXT=$(mktemp -d "$WORK/oc-ext.XXXXXX")
+printf '#!/bin/sh\necho ARBITRARY_EXTERNAL\n' > "$OC_EXT/opencode"
+chmod +x "$OC_EXT/opencode"
+OC_LINK=$(mktemp -d "$WORK/oc-link.XXXXXX")
+ln -s "$REPO/bin/opencode" "$OC_LINK/opencode"
+OC_HOME=$(mktemp -d "$WORK/oc-home.XXXXXX")
+OC_EMPTY=$(mktemp -d "$WORK/oc-empty.XXXXXX")
+mkdir -p "$OC_HOME/.opencode/bin"
+printf '#!/bin/sh\necho TRUSTED_HOME_OPENCODE\n' > "$OC_HOME/.opencode/bin/opencode"
+chmod +x "$OC_HOME/.opencode/bin/opencode"
+run_avail_oc() {
+  # $1=PATH $2=mocked trusted home
+  # shellcheck disable=SC2016
+  ( cd "$REPO" && PATH="$1" OC_HOME="$2" LIB="$LIB" bash -c '
+    . "$LIB" >/dev/null 2>&1
+    _trusted_operator_home() { printf "%s\n" "$OC_HOME"; }
+    is_trusted_review_cli_available opencode
+  ' )
+}
+set +e
+run_avail_oc "$REPO/bin:/usr/bin:/bin" "$OC_EMPTY"; oc_planted=$?
+run_avail_oc "$OC_EXT:/usr/bin:/bin" "$OC_EMPTY"; oc_ext=$?
+run_avail_oc "$OC_LINK:/usr/bin:/bin" "$OC_EMPTY"; oc_link=$?
+run_avail_oc "/usr/bin:/bin" "$OC_HOME"; oc_home=$?
+set -e
+if [[ "$oc_planted" -ne 0 && "$oc_ext" -ne 0 && "$oc_link" -ne 0 && "$oc_home" -eq 0 ]]; then
+  ok "#803: opencode availability matches dispatch PATH (planted/arbitrary/symlink refused, trusted-home accepted)"
+else
+  bad "#803: opencode trusted-home PATH wrong: planted=$oc_planted ext=$oc_ext link=$oc_link home=$oc_home (want !=0,!=0,!=0,0)"
+fi
 
 printf '#!/bin/sh\necho PLANTED_TIMEOUT\n' > "$REPO/bin/timeout"
 chmod +x "$REPO/bin/timeout"

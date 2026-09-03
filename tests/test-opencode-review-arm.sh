@@ -240,6 +240,12 @@ if (
   # missing-binary artifact; droid present proves route/defaults fallback works.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  # #803: opencode now goes through trusted outside-checkout resolution (a
+  # checkout-planted binary must not be selectable), so faking is_cli_available
+  # alone no longer makes it "installed". Fake the trusted resolver too, or these
+  # positive controls resolve to none on a hermetic runner with no CLIs installed.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 
@@ -299,6 +305,12 @@ if (
   source "$RC"
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  # #803: opencode now goes through trusted outside-checkout resolution (a
+  # checkout-planted binary must not be selectable), so faking is_cli_available
+  # alone no longer makes it "installed". Fake the trusted resolver too, or these
+  # positive controls resolve to none on a hermetic runner with no CLIs installed.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  _resolve_trusted_cli_bin() { case "$1" in opencode|droid) printf '/usr/bin/true\n' ;; *) return 1 ;; esac; }
   cd "$_tmp_repo" || exit 1
   ok=1
 

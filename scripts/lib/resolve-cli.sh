@@ -775,8 +775,26 @@ is_cli_available() {
 is_trusted_review_cli_available() {
   # #803: no shadowable local — use immutable $1.
   case "${1-}" in
+    # #803: opencode belongs here too -- the auditor routing below calls this for it,
+    # and without trusted resolution a checkout-planted `opencode` is reported
+    # available and selected, instead of the advisory voice being treated as absent.
     codex|agy|droid|node)
       _resolve_trusted_cli_bin "$1" >/dev/null
+      ;;
+    opencode)
+      # Availability must use the SAME fixed trusted PATH as dispatch
+      # (execute_review / --execute-opencode), not the caller's ambient PATH.
+      # An arbitrary outside-checkout PATH entry would otherwise select a route
+      # that dispatch later rejects, while a trusted-home install looks absent
+      # when that directory is not exported in PATH.
+      _ITRCA_OC_HOME=
+      _ITRCA_OC_HOME="$(_trusted_operator_home)" || _ITRCA_OC_HOME=
+      if [[ -z "$_ITRCA_OC_HOME" || "$_ITRCA_OC_HOME" != /* || ! -d "$_ITRCA_OC_HOME" ]]; then
+        /usr/bin/false
+      else
+        PATH="${_ITRCA_OC_HOME}/.opencode/bin:${_ITRCA_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+          _resolve_trusted_cli_bin opencode >/dev/null
+      fi
       ;;
     *)
       is_cli_available "$1"

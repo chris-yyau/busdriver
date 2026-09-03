@@ -180,11 +180,17 @@ if [ "${MECHANISM_WITNESS:-0}" = 1 ] && [[ "$AUDITOR_CLI" != "none" && "$AUDITOR
   # HARD 900 (not the oracle's 3600 ceiling): COUNCIL_AUDITOR_TIMEOUT is
   # repo-injectable (#325), so a higher ceiling would let a fork extend an
   # ultimate-council past the Bash-tool timeout. The witness is advisory; 900s is ample.
-  _AUD_TO="${COUNCIL_AUDITOR_TIMEOUT:-900}"; case "$_AUD_TO" in ''|*[!0-9]*) _AUD_TO=900 ;; esac
-  _AUD_TO="${_AUD_TO#"${_AUD_TO%%[!0]*}"}"; [[ -z "$_AUD_TO" ]] && _AUD_TO=0   # strip leading zeros (000900 → 900); all-zeros → 0
-  [[ "${#_AUD_TO}" -ge 8 ]] && _AUD_TO=900   # >7 digits → clamp to max, keeping 10# off any oversized input (never octal, never 64-bit overflow)
-  _AUD_TO=$((10#$_AUD_TO))
-  [[ "$_AUD_TO" -lt 1 ]] && _AUD_TO=900; [[ "$_AUD_TO" -gt 900 ]] && _AUD_TO=900   # clamp: a repo-injected value must not stall the ultimate-council past the oracle window
+  # ONE regex replaces the old case-glob + leading-zero-strip + length-clamp chain.
+  # Identical semantics (non-numeric / empty / >7-digit → 900; leading zeros dropped;
+  # 10# so a 0-prefixed value is never read as octal), minus the two negated-character-
+  # class globs it used. That matters here specifically: this block is pasted into a Bash
+  # tool call, where hooks/gate-scripts/lib/marker_check.py scans the command string,
+  # and a glob carrying literals at a guarded helper's character offsets is a KNOWN
+  # standing over-block there (see _glob_helper_targeted: only a pattern of nothing but
+  # star is released; every pattern with a literal in it still blocks). #573, #813.
+  _AUD_TO=900
+  [[ "${COUNCIL_AUDITOR_TIMEOUT:-}" =~ ^0*([0-9]{1,7})$ ]] && _AUD_TO=$((10#${BASH_REMATCH[1]}))
+  [[ "$_AUD_TO" -lt 1 || "$_AUD_TO" -gt 900 ]] && _AUD_TO=900   # clamp: a repo-injected value must not stall the ultimate-council past the oracle window
   "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "$_AUD_TO" <<'AUDITOR_PROMPT' &
 <Mechanism Witness prompt>
 AUDITOR_PROMPT
@@ -199,10 +205,10 @@ fi
 # them). Override with COUNCIL_AUDITOR_GRACE to force an earlier reap.
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 if [[ -n "$AUDITOR_PID" ]]; then
-  _ag_cap="${COUNCIL_AUDITOR_GRACE:-$(( _AUD_TO + 10 ))}"; case "$_ag_cap" in ''|*[!0-9]*) _ag_cap=$(( _AUD_TO + 10 )) ;; esac
-  _ag_cap="${_ag_cap#"${_ag_cap%%[!0]*}"}"; [[ -z "$_ag_cap" ]] && _ag_cap=0   # strip leading zeros; all-zeros → 0
-  [[ "${#_ag_cap}" -ge 8 ]] && _ag_cap=$(( _AUD_TO + 10 ))   # >7 digits → default, keeping 10# off any oversized input
-  _ag_cap=$((10#$_ag_cap))   # base-10 on a bounded value: never octal, never overflow
+  # Same regex form as _AUD_TO above, and for the same two reasons (identical
+  # semantics; no glob for marker_check.py to read as a helper name).
+  _ag_cap=$(( _AUD_TO + 10 ))
+  [[ "${COUNCIL_AUDITOR_GRACE:-}" =~ ^0*([0-9]{1,7})$ ]] && _ag_cap=$((10#${BASH_REMATCH[1]}))
   # The override may only SHORTEN the reap, never extend past budget+10 (also corrals any wrapped value).
   [[ "$_ag_cap" -gt $(( _AUD_TO + 10 )) ]] && _ag_cap=$(( _AUD_TO + 10 )); [[ "$_ag_cap" -lt 1 ]] && _ag_cap=1
   _ag=0

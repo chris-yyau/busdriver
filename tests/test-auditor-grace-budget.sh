@@ -53,8 +53,16 @@ assert_present "$LOOP" '\[\[ "\$_aud_grace_cap" -gt \$\(\( _AUD_TIMEOUT \+ 10 \)
   "blueprint grace override may only shorten" "blueprint grace override can extend past budget+10"
 assert_absent  "$COUNCIL" 'COUNCIL_AUDITOR_GRACE:-20' \
   "council 20s tail reap removed" "council still has COUNCIL_AUDITOR_GRACE:-20"
-assert_present "$COUNCIL" '_ag_cap="\$\{COUNCIL_AUDITOR_GRACE:-\$\(\( _AUD_TO \+ 10 \)\)\}"' \
+assert_present "$COUNCIL" '_ag_cap=\$\(\( _AUD_TO \+ 10 \)\)' \
   "council reap default = _AUD_TO + 10" "council reap default is not _AUD_TO+10 (regressed #435)"
+# #813: both council normalizers moved from a case-glob chain to one regex, because
+# this block is pasted into a Bash tool call whose command string marker_check.py
+# scans, and a glob with literals in it is a known over-block there. Pin the regex
+# validation itself so a silent drop back to an unvalidated env read fails here.
+assert_present "$COUNCIL" '\[\[ "\$\{COUNCIL_AUDITOR_TIMEOUT:-\}" =~ ' \
+  "council timeout is numerically validated" "council timeout lost its numeric validation (#813)"
+assert_present "$COUNCIL" '\[\[ "\$\{COUNCIL_AUDITOR_GRACE:-\}" =~ ' \
+  "council grace is numerically validated" "council grace lost its numeric validation (#813)"
 assert_present "$COUNCIL" '\[\[ "\$_ag_cap" -gt \$\(\( _AUD_TO \+ 10 \)\) \]\]' \
   "council grace override may only shorten" "council grace override can extend past budget+10"
 
@@ -70,7 +78,7 @@ bp_norm() {  # <BLUEPRINT_AUDITOR_TIMEOUT value> -> normalized _AUD_TIMEOUT
 cn_norm() {  # <COUNCIL_AUDITOR_TIMEOUT value> -> normalized _AUD_TO
   # shellcheck disable=SC2034  # COUNCIL_AUDITOR_TIMEOUT is read by the eval'd source below
   local COUNCIL_AUDITOR_TIMEOUT="$1" _AUD_TO code
-  code="$(awk '/_AUD_TO="\$\{COUNCIL_AUDITOR_TIMEOUT/{p=1} p{print} p&&/_AUD_TO" -gt 900/{exit}' "$COUNCIL")"
+  code="$(awk '/^  _AUD_TO=900$/{p=1} p{print} p&&/_AUD_TO" -gt 900/{exit}' "$COUNCIL")"
   eval "$code"; echo "$_AUD_TO"
 }
 
@@ -101,6 +109,8 @@ eq "$(cn_norm 3600)"     900  "council 3600 (repo-injected → clamped to 900)"
 eq "$(cn_norm 12345678)" 900  "council 12345678 (>7 digits → length guard → max)"
 eq "$(cn_norm 0)"        900  "council 0 (→ default)"
 eq "$(cn_norm 9999999)"  900  "council 9999999 (DoS bound)"
+eq "$(cn_norm 07)"       7    "council 07 (leading zero → 7, never octal)"
+eq "$(cn_norm 0012345678)" 900 "council 0012345678 (padded, >7 significant digits → max)"
 
 # Actual >64-bit overflow-sized digit strings must land on EXACTLY each
 # normalizer's ceiling — bp 1800, cn 900. Asserting an exact value rather than a

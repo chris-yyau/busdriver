@@ -14,7 +14,7 @@ append_iteration_history() {
 
   # Extract issues array and add iteration metadata
   local entry
-  entry=$(echo "$json_output" | python3 -c "
+  entry=$(echo "$json_output" | python3 -I -c "
 import sys, json
 data = json.load(sys.stdin)
 entry = {
@@ -36,7 +36,7 @@ load_iteration_history() {
     return 0
   fi
 
-  python3 -c "
+  python3 -I -c "
 import sys, json
 
 lines = open(sys.argv[1]).read().strip().split('\n')
@@ -99,7 +99,7 @@ print(hashlib.md5("|".join(blocking).encode()).hexdigest() if blocking else "emp
 # Used for stall detection: if fingerprint matches previous iteration, loop is stuck
 compute_issue_fingerprint() {
   local json_output="$1"
-  echo "$json_output" | python3 -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
+  echo "$json_output" | python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
 }
 
 # Check if current issue set matches the previous iteration (stall detection)
@@ -109,7 +109,7 @@ is_stalled() {
   [ ! -f "$ITERATION_HISTORY_FILE" ] && return 1
   local prev_fingerprint
   # Extract issues array from the last JSONL entry, then fingerprint
-  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
+  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
   [ "$current_fingerprint" = "$prev_fingerprint" ]
 }
 
@@ -148,14 +148,93 @@ clear_iteration_history() {
 # Stall detection is NOT moved here on purpose. is_stalled compares against the
 # per-run file; pointing it at this one would let iteration 1 of a fresh run stall
 # against the last run's FAIL and refuse to review at all.
-# Anchored at the repo top, not the CWD. $STATE_DIR is relative, and unlike the
-# per-run file — created and cleared inside one run, so a relative path is at
-# least self-consistent — this store is only useful if every run of a branch
-# finds the SAME file. A run launched from a subdirectory would otherwise open
-# its own empty store and start cold, silently. Same construction as
-# run-review-loop.sh's PR_STATE_DIR.
-_PR_HISTORY_TOP="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
-PR_HISTORY_FILE="$_PR_HISTORY_TOP/$STATE_DIR/litmus-pr-history.local.jsonl"
+# The store lives OUTSIDE the repository, under the operator's home — not in
+# $STATE_DIR with the gate markers. That is the one structural decision here, and
+# it is what makes the rest of this file short.
+#
+# Every other `.claude/` marker is safe in-tree because a gate reads it as a
+# token, and the per-run iteration history is safe because it is cleared before
+# any load, so committed content never reaches a prompt. This store is neither:
+# it persists by design and its contents are injected into the reviewer's prompt
+# under trusted framing. In-tree, that is a prompt-injection channel the reviewed
+# branch owns, and every spelling of "keep it in-tree but check it" leaks —
+# gitignore is not a trust boundary (`git add -f`), a pathname check misses a
+# differently-cased entry on a case-insensitive filesystem, a listing scoped to
+# $STATE_DIR misses a committed symlink pointing elsewhere, and even an inode
+# scan over every tracked file misses a gitlink, whose contents git never lists.
+# A path the repo cannot reach ends the series instead of extending it.
+#
+# The home comes from the password database, not $HOME: an inherited HOME is
+# repo-injectable via a committed settings.json env block (#325 / ADR 0016), and
+# this script — unlike a hook — does not run behind sanitized-gate.sh. Same
+# reasoning as dispatch.sh's prompt-file home; `pwd.getpwuid` rather than that
+# file's `eval echo ~user` only because python3 is already required here, so the
+# lookup needs neither a shell nor PATH.
+#
+# The key is the ROOT COMMIT: stable across worktrees, clones and renames, and
+# already 40 hex characters so nothing needs hashing. Both failure shapes are
+# safe — no commits yet gives an empty key and no store at all, and a shallow
+# clone gives a different root, hence a cold review.
+#
+# ponytail: one file per repo, so every branch shares the 200-entry tail window.
+# Key by branch too if a busy repo starts scrolling its own entries out — entries
+# are SHA-filtered either way, so the failure mode is noise, never a wrong verdict.
+#
+# Not a gate marker: nothing reads it as authorization, so it is deliberately NOT
+# wired into design-clear.sh --skip. Deleting it costs one cold review.
+_PR_HISTORY_HOME="$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)"
+# `|| true` is required, not decorative. Both scripts that source this file run
+# under `set -euo pipefail`, and with pipefail a failing `git rev-list` (exit 128
+# on an unborn HEAD, or outside a repo) makes the whole pipeline non-zero even
+# though `sort | head` succeed — which under `set -e` aborts the SOURCING script
+# at source time, with git's stderr already discarded. That kills a commit-mode
+# review before the first commit, and kills init-review-loop.sh before it can
+# reach its own friendly not-a-repo message.
+_PR_HISTORY_KEY="$(git rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -1 || true)"
+case "$_PR_HISTORY_KEY" in
+  *[!0-9a-f]* | "") _PR_HISTORY_KEY="" ;;
+esac
+[ "${#_PR_HISTORY_KEY}" -eq 40 ] || _PR_HISTORY_KEY=""
+if [ -n "$_PR_HISTORY_HOME" ] && [ -d "$_PR_HISTORY_HOME" ] && [ -n "$_PR_HISTORY_KEY" ]; then
+  PR_HISTORY_DIR="$_PR_HISTORY_HOME/.claude/litmus-pr-history"
+  PR_HISTORY_FILE="$PR_HISTORY_DIR/$_PR_HISTORY_KEY.jsonl"
+else
+  # Unresolvable home or root commit -> no store, so no cross-run history and a
+  # cold review. Empty is checked by both entry points below.
+  PR_HISTORY_DIR=""
+  PR_HISTORY_FILE=""
+fi
+# "Outside the repo" is enforced, not assumed. The operator's home CAN be inside
+# the reviewed worktree — `~/.claude` is itself a git repository on this very
+# machine, and reviewing it would put the store under the tree being reviewed,
+# handing the whole in-tree problem straight back. Symlinks make the pathnames
+# lie about it, so the comparison is between RESOLVED paths.
+#
+# Returns 0 when <child> is <ancestor> or lies beneath it. Kept as its own
+# function so the containment rule can be exercised directly on synthetic paths;
+# the live wiring below has no other way to reach the case.
+_pr_history_within() {
+  python3 -I -c '
+import os, sys
+child, ancestor = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
+sys.exit(0 if child == ancestor or child.startswith(ancestor + os.sep) else 1)
+' "$1" "$2" 2>/dev/null
+}
+if [ -n "$PR_HISTORY_FILE" ]; then
+  _PR_HISTORY_WORKTREE="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$_PR_HISTORY_WORKTREE" ] \
+     && _pr_history_within "$PR_HISTORY_DIR" "$_PR_HISTORY_WORKTREE"; then
+    PR_HISTORY_DIR=""
+    PR_HISTORY_FILE=""
+  fi
+fi
+
+# There is deliberately NO $HOME fallback when the password-database home is
+# absent or unwritable. Some sandboxes have exactly that shape — a root-owned
+# passwd home beside a writable $HOME pointing into a workspace — and there the
+# store simply never materialises and every pass is cold, which is the behaviour
+# this feature replaced. Falling back to $HOME would buy that back by reopening
+# the repo-injectable path the passwd lookup exists to close.
 
 # The store is a plain gitignored file, so both ends check that it still IS one
 # before touching it. A symlink planted at that path (committed, or dropped by
@@ -180,25 +259,37 @@ PR_HISTORY_FILE="$_PR_HISTORY_TOP/$STATE_DIR/litmus-pr-history.local.jsonl"
 # by the caller. Resolving HEAD here instead would stamp the verdict onto a commit
 # that landed mid-review, and the next pass would read it as a completed review of
 # code nobody reviewed. Missing or malformed → record nothing.
-# Usage: append_pr_history <json_output> <reviewed_head_sha>
+#
+# <reviewed_base_sha> is the merge-base the reviewed diff was taken against. The
+# head alone does not identify a diff: retarget the PR, force-push the base, or
+# merge only part of the branch, and an old head stays reachable from HEAD while
+# `base...HEAD` means something materially different. Recording the merge-base
+# lets the loader present a verdict only for the scope it was actually reached on.
+# Usage: append_pr_history <json_output> <reviewed_head_sha> <reviewed_base_sha>
 append_pr_history() {
   local json_output="$1"
   local head_sha="${2:-}"
-  case "$head_sha" in
-    *[!0-9a-f]* | "") return 0 ;;
-  esac
-  [ "${#head_sha}" -eq 40 ] || return 0
-  mkdir -p "$_PR_HISTORY_TOP/$STATE_DIR" 2>/dev/null || return 0
-  printf '%s' "$json_output" | python3 -c '
+  local base_sha="${3:-}"
+  local _sha
+  for _sha in "$head_sha" "$base_sha"; do
+    case "$_sha" in
+      *[!0-9a-f]* | "") return 0 ;;
+    esac
+    [ "${#_sha}" -eq 40 ] || return 0
+  done
+  [ -n "$PR_HISTORY_FILE" ] || return 0
+  mkdir -p "$PR_HISTORY_DIR" 2>/dev/null || return 0
+  printf '%s' "$json_output" | python3 -I -c '
 import json, os, stat, sys
 
-path, head_sha = sys.argv[1], sys.argv[2]
+path, head_sha, base_sha = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(sys.stdin)
 except ValueError:
     sys.exit(0)
 record = json.dumps({
     "head_sha": head_sha,
+    "base_sha": base_sha,
     "status": data.get("status", "UNKNOWN"),
     "issues": data.get("issues", []),
 }) + "\n"
@@ -219,7 +310,7 @@ with os.fdopen(fd, "w") as fh:
     if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
         sys.exit(0)
     fh.write(record)
-' "$PR_HISTORY_FILE" "$head_sha" 2>/dev/null || return 0
+' "$PR_HISTORY_FILE" "$head_sha" "$base_sha" 2>/dev/null || return 0
 }
 
 # Render the branch's prior verdicts for prompt injection.
@@ -227,8 +318,9 @@ with os.fdopen(fd, "w") as fh:
 # Emits nothing when no entry survives the ancestry filters.
 load_pr_history() {
   local base_ref="${1:-}"
+  [ -n "$PR_HISTORY_FILE" ] || { echo ""; return 0; }
   [ -s "$PR_HISTORY_FILE" ] || { echo ""; return 0; }
-  python3 - "$PR_HISTORY_FILE" "$base_ref" "${LITMUS_PR_HISTORY_MAX:-20}" <<'PY' 2>/dev/null || echo ""
+  python3 -I - "$PR_HISTORY_FILE" "$base_ref" "${LITMUS_PR_HISTORY_MAX:-20}" <<'PY' 2>/dev/null || echo ""
 import functools, json, os, stat, subprocess, sys
 
 path, base_ref = sys.argv[1], sys.argv[2]
@@ -260,6 +352,19 @@ def is_ancestor(sha, ref):
     ).returncode
     return True if rc == 0 else (False if rc == 1 else None)
 
+
+def current_merge_base(ref):
+    """The merge-base of `ref` and HEAD, or None if git cannot say."""
+    if not ref:
+        return None
+    proc = subprocess.run(
+        ["git", "merge-base", ref, "HEAD"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("ascii", "replace").strip() or None
+
 try:
     # O_NOFOLLOW / O_NONBLOCK / S_ISREG for the same reasons as the append: a
     # symlinked store would make this read an injection channel straight into the
@@ -279,6 +384,17 @@ if size > TAIL_BYTES:
 lines = chunk.decode("utf-8", "replace").strip().split("\n")[-SCAN_LINES:]
 
 HEX = set("0123456789abcdef")
+
+# A verdict describes one diff, and `base...HEAD` is pinned by BOTH ends. Binding
+# only the head would let a retargeted PR, a force-pushed base, or a partially
+# merged branch keep an old head reachable from HEAD while the diff it names has
+# changed underneath. Requiring the recorded merge-base to equal the current one
+# also subsumes the "already merged into base" case: if base advanced to contain
+# the commit, the merge-base moved and the entry drops on its own.
+BASE = current_merge_base(base_ref)
+if BASE is None:
+    sys.exit(0)
+
 kept = []
 for line in lines:
     try:
@@ -290,11 +406,11 @@ for line in lines:
     # but a `-`-leading string would be read as a flag. Reject anything odd.
     if len(sha) != 40 or not set(sha) <= HEX:
         continue
-    # Both filters demand a definite answer; an unanswerable one drops the entry
-    # and the pass starts cold, which is exactly the pre-#811 behaviour.
-    if is_ancestor(sha, "HEAD") is not True:
+    if entry.get("base_sha") != BASE:
         continue
-    if base_ref and is_ancestor(sha, base_ref) is not False:
+    # An unanswerable ancestry check drops the entry and the pass starts cold,
+    # which is exactly the pre-#811 behaviour.
+    if is_ancestor(sha, "HEAD") is not True:
         continue
     kept.append(entry)
 

@@ -1067,6 +1067,13 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # the cross-run history stamped with a commit whose diff was never the one
   # reviewed. Recording nothing is the fail-safe: the next pass just starts cold.
   PR_REVIEWED_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+  _PR_BASE_TIP_BEFORE=$(git rev-parse "$PR_BASE_BRANCH" 2>/dev/null || true)
+  # The merge-base pins the OTHER end of `base...HEAD`. Recorded with the head so
+  # a later pass can tell whether a stored verdict describes the same scope, or
+  # whether the base moved under it (retarget, force-push, partial merge). Both
+  # operands are the pinned object ids, not the symbolic names, so this value
+  # cannot drift even if either ref moves while it is being computed.
+  PR_REVIEWED_MERGE_BASE=$(git merge-base "$_PR_BASE_TIP_BEFORE" "$PR_REVIEWED_HEAD_SHA" 2>/dev/null || true)
   ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
@@ -1077,12 +1084,19 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
   PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE_BRANCH" 2>/dev/null || true)
-  # The other half of the #811 pin above: if HEAD moved while the captures ran,
-  # none of them describe the pinned commit, so drop the stamp rather than file a
-  # verdict against a commit whose diff was never reviewed.
+  # The other half of the #811 pin above. The captures resolve the SYMBOLIC HEAD
+  # and base, so if either endpoint moved while they ran, none of them describe
+  # the pinned pair — drop the stamp rather than file a verdict against a diff
+  # that was never reviewed. Documented residual: an endpoint that moves away and
+  # back within the capture window (ABA) still reads as unchanged; closing that
+  # needs the captures themselves to name the pinned ids, which would change the
+  # gate-binding diff hash and is out of scope here.
   _PR_HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null || true)
-  if [ "$PR_REVIEWED_HEAD_SHA" != "$_PR_HEAD_AFTER" ]; then
+  _PR_BASE_TIP_AFTER=$(git rev-parse "$PR_BASE_BRANCH" 2>/dev/null || true)
+  if [ "$PR_REVIEWED_HEAD_SHA" != "$_PR_HEAD_AFTER" ] \
+     || [ "$_PR_BASE_TIP_BEFORE" != "$_PR_BASE_TIP_AFTER" ]; then
     PR_REVIEWED_HEAD_SHA=""
+    PR_REVIEWED_MERGE_BASE=""
   fi
   FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
@@ -1815,7 +1829,7 @@ log_review_metrics "$REVIEW_STATUS" "$ISSUE_COUNT" "$ITERATION" "$REVIEW_MODE" "
 # branches below because both outcomes are worth carrying forward, and because
 # the PASS branch exits before it could record anything.
 if [ "$REVIEW_MODE" = "pr" ]; then
-  append_pr_history "$JSON_OUTPUT" "$PR_REVIEWED_HEAD_SHA"
+  append_pr_history "$JSON_OUTPUT" "$PR_REVIEWED_HEAD_SHA" "$PR_REVIEWED_MERGE_BASE"
 fi
 
 # Check for completion promise

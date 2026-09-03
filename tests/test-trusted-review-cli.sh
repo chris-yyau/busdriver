@@ -704,11 +704,16 @@ PYE="$WORK/python-effect.sh"
   # into the body would then be parsed as syntax -- the guarded run would fail
   # while the quoted control succeeded, and the missing marker would be scored as
   # a successful clean-up.
-  # `2>&1 >/dev/null` sends the interpreter's STDERR -- where sitecustomize and
-  # usercustomize write the marker -- to this script's stdout, which is the only
-  # channel _envprobe captures. Order matters: stderr is duped to the original
-  # stdout first, then stdout is discarded.
-  printf '"$1" -c "print(0)" 2>&1 >/dev/null\n'
+  # `2>&1` merges the interpreter's STDERR -- where sitecustomize and usercustomize
+  # write the marker -- into this script's stdout, the only channel _envprobe
+  # captures. The PYRAN sentinel is printed by PYTHON ITSELF, not by the shell, and
+  # is what makes the assertion non-vacuous: _envprobe drops stderr, so every way
+  # the block can REFUSE (env list too large, unenumerable environment, failed
+  # re-exec -- all exit 1 with a stderr-only message) leaves the captured output
+  # EMPTY, which would otherwise satisfy "no marker" and be scored as a clean pass.
+  # Absence of the marker only means something once the interpreter is known to
+  # have run; the control proves the fixture CAN fire, never that it was reached.
+  printf '"$1" -c "print(\\"PYRAN\\")" 2>&1\n'
 } > "$PYE"
 chmod 755 "$PYE"
 set +e
@@ -723,6 +728,8 @@ if [[ -z "$_PYBIN" ]]; then
   bad "#803: no absolute python3 interpreter resolved — the effect assertions never ran"
 elif [[ "$_pe_control" != *PWNED-SITECUSTOMIZE* ]]; then
   bad "#803: sitecustomize control never fired — the effect assertion would be vacuous: ${_pe_control:-<empty>}"
+elif [[ "$_pe_guarded" != *PYRAN* && "$_pe_guarded" != HUNG ]]; then
+  bad "#803: the guarded run never reached python (block refused?) — assertion would be vacuous: ${_pe_guarded:-<empty>}"
 elif [[ "$_pe_guarded" == HUNG ]]; then
   # _envprobe's timeout sentinel. Checked BEFORE the marker test, because "no
   # marker" is exactly what a hang looks like — the exec-loop regression this
@@ -767,6 +774,8 @@ else
   set -e
   if [[ "$_uh_control" != *PWNED-USERCUSTOMIZE* ]]; then
     bad "#803: usercustomize control never fired — the HOME-route assertion would be vacuous: ${_uh_control:-<empty>}"
+  elif [[ "$_uh_guarded" != *PYRAN* && "$_uh_guarded" != HUNG ]]; then
+    bad "#803: the guarded HOME-route run never reached python (block refused?): ${_uh_guarded:-<empty>}"
   elif [[ "$_uh_guarded" == HUNG ]]; then
     bad "#803: the rebuilt environment hung (exec loop?) instead of running python3 (HOME route)"
   elif [[ "$_uh_guarded" != *PWNED-USERCUSTOMIZE* ]]; then

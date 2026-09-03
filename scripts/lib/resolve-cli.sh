@@ -4917,7 +4917,9 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
     echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch." >&2
     exit 1
   fi
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2329,SC2317  # invoked through the three traps below, which
+  # older shellcheck does not follow: it reports the definition as never-invoked
+  # (SC2329) AND its body as unreachable (SC2317). CI runs one of those versions.
   _bd803_oc_lane_exit() {
     _bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"
     _bd803_cleanup_review_lib_exec

@@ -25,6 +25,28 @@ fi
 # the environment once, here. SHELLOPTS/BASHOPTS are readonly and cannot be unset;
 # -p already ignores them.
 unset BASH_ENV ENV
+# Blank the dynamic-loader variables BEFORE anything below runs a binary. The
+# `-u` list built further down only cleans the FINAL re-exec's child, but the
+# enumerator (`env -0` / `perl`) and `printf` are themselves dynamically linked:
+# on Linux a hostile LD_PRELOAD/LD_AUDIT executes inside THOSE processes first,
+# and a preloaded enumerator can simply lie about the environment it reports.
+# Assignment, not `unset`: `unset` is a shadowable builtin (see the note above),
+# while assignment is grammar no exported function can intercept — and an EMPTY
+# LD_PRELOAD/LD_AUDIT is inert to the loader, so blanking is as good as removing.
+# Scope, stated honestly: this protects the binaries this block runs and every
+# descendant. It CANNOT protect the interpreter already executing these lines --
+# the loader acted before bash ran its first instruction, which no in-script step
+# can undo. DYLD_* is not blanked here (it is a family, not a fixed name); it is
+# still carried into the `-u` list below, and macOS ignores DYLD_* for the
+# SIP-protected /usr/bin binaries this block invokes.
+# Not locals: these arrive EXPORTED from the caller's environment, so assigning
+# empty keeps them exported and inert for every child -- hence SC2034 per line.
+# shellcheck disable=SC2034
+LD_PRELOAD=
+# shellcheck disable=SC2034
+LD_AUDIT=
+# shellcheck disable=SC2034
+LD_LIBRARY_PATH=
 # Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
 # line per variable: a value holding an embedded newline followed by text shaped like
 # `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM

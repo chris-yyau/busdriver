@@ -612,14 +612,21 @@ LDP="$WORK/loader-probe.sh"
 } > "$LDP"
 chmod 755 "$LDP"
 ld_bad=""
+# Accept EITHER `unset` or set-but-EMPTY. The block now blanks LD_PRELOAD/LD_AUDIT/
+# LD_LIBRARY_PATH by assignment BEFORE the enumerator runs (so `env -0`/`perl` are
+# not themselves preloaded), and after the `-u` re-exec those assignments re-run in
+# the clean child — leaving a NON-EXPORTED empty, which no descendant inherits and
+# which the loader ignores. What must never appear is the injected VALUE, so the
+# planted path still fails this check exactly as before.
+_ld_ok() { [[ "$1" == "BODY ld=unset dyld=unset" || "$1" == "BODY ld= dyld=unset" ]]; }
 _r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin \
       LD_PRELOAD=/tmp/bd803-evil.so DYLD_INSERT_LIBRARIES=/tmp/bd803-evil.dylib "$LDP")
-[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}loader-only -> '$_r'"$'\n'
+_ld_ok "$_r" || ld_bad="${ld_bad}loader-only -> '$_r'"$'\n'
 _r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin LD_AUDIT=/tmp/bd803-evil.so \
       'BASH_FUNC_bd803ld%%=() { :; }' "$LDP")
-[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}loader+shadow -> '$_r'"$'\n'
+_ld_ok "$_r" || ld_bad="${ld_bad}loader+shadow -> '$_r'"$'\n'
 _r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin "$LDP")
-[[ "$_r" == "BODY ld=unset dyld=unset" ]] || ld_bad="${ld_bad}clean control -> '$_r'"$'\n'
+_ld_ok "$_r" || ld_bad="${ld_bad}clean control -> '$_r'"$'\n'
 if [[ -z "$ld_bad" ]]; then
   ok "#803: loader variables are stripped before any descendant runs"
 else

@@ -97,7 +97,16 @@ if [[ "$_bd803_last" != "BD803-ENV-OK" || "$_bd803_count" -lt 2 ]]; then
   exit 1
 fi
 if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  # A FAILED exec must not fall through. Non-interactive bash normally exits when
+  # exec cannot run the command, but that behaviour is switchable (`execfail`), and
+  # relying on an implicit exit for a security boundary means relying on a shell
+  # option to stay off. The realistic failure is E2BIG: every stripped name adds a
+  # `-u NAME` argument to an environment that is already large, and past ARG_MAX
+  # the exec fails — at which point falling through would run the whole script with
+  # exactly the BASH_FUNC_* entries this block exists to remove.
   exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+  printf '%s\n' "$0: cannot re-exec with a rebuilt environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
 fi
 unset _bd803_envclean _bd803_e _bd803_last _bd803_count
 # BD803-CLEAN-ENV-END

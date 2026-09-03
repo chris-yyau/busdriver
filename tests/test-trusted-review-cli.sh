@@ -558,6 +558,40 @@ else
   bad "#803: empty enumeration was accepted (rc=$empty_rc, out='${empty_out:-<empty>}')"
 fi
 
+# #803: a FAILED re-exec must not fall through into the script body with the
+# BASH_FUNC_* entries still present. Non-interactive bash normally exits when exec
+# fails, but that is switchable (`execfail`), so the block carries an explicit
+# refusal after the exec rather than resting on a shell option staying off. The
+# realistic trigger is E2BIG — every stripped name adds a `-u NAME` argument to an
+# already-large environment. Probed by pointing the exec at an unusable target.
+XFAIL_D="$WORK/execfail"
+/bin/mkdir -p "$XFAIL_D"
+: > "$XFAIL_D/not-executable"
+/bin/chmod 000 "$XFAIL_D/not-executable"
+XFAILP="$XFAIL_D/probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  # `shopt -s execfail` is what makes this assertion non-vacuous. WITHOUT it, a
+  # failed exec terminates non-interactive bash on its own, so the probe would
+  # refuse whether or not the block carries its explicit refusal — the test would
+  # pass with the protection deleted. With it, bash CONTINUES past a failed exec,
+  # which is precisely the fall-through the added printf/exit exists to stop.
+  printf 'shopt -s execfail\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/scripts/ci/run-shell-tests.sh" \
+    | /usr/bin/sed "s|exec /usr/bin/env |exec ${XFAIL_D}/not-executable |"
+  printf 'echo REACHED-BODY\n'
+} > "$XFAILP"
+chmod 755 "$XFAILP"
+set +e
+xfail_out=$(/usr/bin/env -i PATH=/usr/bin:/bin 'BASH_FUNC_bd803xf%%=() { :; }' "$XFAILP" 2>&1)
+xfail_rc=$?
+set -e
+if [[ "$xfail_rc" -ne 0 && "$xfail_out" != *REACHED-BODY* ]]; then
+  ok "#803: a failed environment re-exec refuses instead of running the body unscrubbed"
+else
+  bad "#803: failed re-exec fell through (rc=$xfail_rc): ${xfail_out:-<empty>}"
+fi
+
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
 # still resolves bash through the ambient PATH, so a hostile PATH picks the
 # interpreter before privileged mode or the environment rebuild can start — the entry

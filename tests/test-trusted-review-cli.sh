@@ -611,6 +611,69 @@ if [[ "$sha0_out" == "REFUSED" ]]; then
 else
   bad "#803: same-pin byte replacement was re-adopted instead of refused (got: '${sha0_out:-<empty>}')"
 fi
+
+# #803: every trust-sensitive copy in resolve-cli.sh must read an ALREADY-OPEN
+# descriptor, never reopen the pathname it just validated. `cp -- "$path"` opens the
+# name a second time, so a rename or replace landing between the check and that open
+# is what gets copied — containment then describes an inode nobody uses. Two sites
+# depend on this: the review-lib staging and the opencode config bind.
+#
+# Behavioural, and it discriminates: the pathname is UNLINKED inside the group, after
+# the redirection has opened it. A descriptor copy still succeeds and yields the
+# original bytes; a pathname reopen has nothing left to open and fails. Running the
+# probe both ways in one test means neither outcome can be mistaken for the other.
+FD_SRC="$WORK/fdcopy-src"
+FD_DST="$WORK/fdcopy-dst"
+/usr/bin/printf 'TRUSTED-BYTES\n' > "$FD_SRC"
+set +e
+# shellcheck disable=SC2094  # unlinking the redirected name mid-group IS the probe
+( { /bin/rm -f "$FD_SRC"; [[ -f /dev/fd/3 ]] && /bin/cp /dev/fd/3 "$FD_DST"; } 3< "$FD_SRC" ) 2>/dev/null
+fd_desc_rc=$?
+set -e
+fd_desc_bytes=$(/bin/cat "$FD_DST" 2>/dev/null || true)
+/usr/bin/printf 'TRUSTED-BYTES\n' > "$FD_SRC"
+/bin/rm -f "$FD_DST"
+set +e
+# shellcheck disable=SC2094  # the negative control: a name reopen after the unlink
+( { /bin/rm -f "$FD_SRC"; /bin/cp -- "$FD_SRC" "$FD_DST"; } 3< "$FD_SRC" ) 2>/dev/null
+fd_name_rc=$?
+set -e
+if [[ "$fd_desc_rc" -eq 0 && "$fd_desc_bytes" == "TRUSTED-BYTES" && "$fd_name_rc" -ne 0 ]]; then
+  ok "#803: descriptor copy survives an unlinked pathname where a name reopen fails"
+else
+  bad "#803: descriptor-copy probe did not discriminate (fd rc=$fd_desc_rc bytes='$fd_desc_bytes', name rc=$fd_name_rc)"
+fi
+
+# The probe above proves the TECHNIQUE. This pins that production still USES it at
+# both sites — a silent regression to `cp -- "$path"` would leave the probe green.
+# `}` for the review-lib brace group, `)` for the config subshell — both are the same
+# held-descriptor shape, and pinning only one form silently drops a site.
+fdcopy_pinned=$(/usr/bin/grep -c '[})] 3< "\$\(pin\|_ER_OC_CFG\)"' "$LIB" || true)
+# Counting the redirection alone is not enough: swapping the body back to
+# `cp -- "$pin"` while keeping `3< "$pin"` would still count two and leave the
+# behavioural probe green. Require the READ side to name the descriptor too.
+fdcopy_reads=$(/usr/bin/grep -c '/bin/cp /dev/fd/3 ' "$LIB" || true)
+if [[ "$fdcopy_pinned" -eq 2 && "$fdcopy_reads" -eq 2 ]]; then
+  ok "#803: both trust-sensitive copies hold a descriptor AND read /dev/fd/3"
+else
+  bad "#803: expected 2 held-descriptor sites and 2 /dev/fd/3 reads in resolve-cli.sh, found $fdcopy_pinned and $fdcopy_reads"
+fi
+
+# #803: `_trusted_cli_dir_in_checkout` derives the reviewed root from the CURRENT
+# working directory. The opencode lane later chdirs into a freshly git-init'd neutral
+# repo, so running the config containment check after that `cd` compares against the
+# EMPTY repo and a config symlink into the real reviewed checkout passes. Ordering is
+# the guard, so ordering is what gets asserted — a line-number comparison, because the
+# defect is invisible to any check of the statements themselves.
+cfg_check_ln=$(/usr/bin/grep -n '_trusted_cli_dir_in_checkout "\$_oc_dir"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
+cfg_cd_ln=$(/usr/bin/grep -n '^  cd "\$_ER_OC_CWD"' "$LIB" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
+if [[ -z "$cfg_check_ln" || -z "$cfg_cd_ln" ]]; then
+  bad "#803: config-containment ordering check is vacuous (check line='${cfg_check_ln:-none}', cd line='${cfg_cd_ln:-none}')"
+elif [[ "$cfg_check_ln" -lt "$cfg_cd_ln" ]]; then
+  ok "#803: opencode config containment runs before the neutral-cwd chdir ($cfg_check_ln < $cfg_cd_ln)"
+else
+  bad "#803: config containment at line $cfg_check_ln runs AFTER the chdir at $cfg_cd_ln — it would validate against the empty neutral repo"
+fi
 # A silently empty enumeration would make the loop above vacuously green.
 if [[ "$entry_seen" -ge 2 ]]; then
   ok "#803: entry-point enumeration found $entry_seen executables to check"

@@ -131,6 +131,35 @@ _bd803_latch_review_lib_pin() {
 }
 
 _bd803_ensure_staged_lib() {
+  # TRUST BOUNDARY of this staging step, and of the two sibling lanes that share its
+  # shape — state it once, because the shape invites a stronger reading.
+  #
+  # WHAT IS BOUND. The pin is opened ONCE and copied through that descriptor, the copy
+  # is hashed, and every review child executes the copy — so the bytes hashed are the
+  # bytes executed, and the first digest adopted for a pin is latched and never revised
+  # (below). No later rename or replace of the pin can reach a child. An in-place write
+  # racing the copy is NOT excluded — a descriptor stays attached to a mutable inode,
+  # so a concurrent writer can still tear the bytes cp is reading. What that cannot do
+  # is desynchronize hash from execution: whatever landed in the copy is what gets
+  # hashed and what gets run.
+  #
+  # WHAT IS NOT BOUND, and cannot be at this layer. Bash sourced this file by PATHNAME
+  # before any of the above ran, and there is no way to hash what the interpreter has
+  # already parsed — so the PARENT's own copy of the library is authenticated by
+  # nothing, and a writer who replaces the file between that source and this staging
+  # gets the replacement hashed against itself for the children. The codex companion is
+  # the same shape with no remedy at all: node reopens its pathname, and it is an ESM
+  # entry point resolving imports relative to its real directory, so it cannot be
+  # staged the way this file is (attempted; it breaks the module graph).
+  #
+  # WHO THAT ATTACKER IS. All three windows require WRITE ACCESS to the busdriver
+  # installation or the operator's plugin cache — outside the reviewed checkout, which
+  # is the whole trust anchor this file rests on. Anyone holding it can replace the
+  # library, the companion, the gate scripts or the operator's shell rc outright, so
+  # nothing here would still be standing to defend. #803's threat model is a poisoned
+  # ENVIRONMENT and a hostile reviewed CHECKOUT, and both are closed. Residual,
+  # owner-adjudicated, deliberately not papered over.
+  #
   # #803: prove OUR state variables are writable before trusting anything in them.
   # A sourcing shell can arrive with them already set READONLY: BASH_ENV is honoured
   # for `bash script.sh`, so an env-injected prelude declares them before this file
@@ -4869,22 +4898,9 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   fi
   _ER_OC_CFG="${_ER_OC_CFG_LIB%/*}/opencode-review-config.json"
   [[ -f "$_ER_OC_CFG" ]] || { echo "busdriver: opencode review config missing at $_ER_OC_CFG" >&2; exit 1; }
-  # Deriving the path beside a canonical library is not enough: the config file is a
-  # separate inode and can itself be a SYMLINK back into the reviewed checkout, which
-  # would hand the auditor a repository-controlled config and restore shell and write
-  # tools. Canonicalize the config and apply the same containment rule the pin passed.
-  _ER_OC_CFG_CANON="$(_bd803_canonical_file_path "$_ER_OC_CFG")" || _ER_OC_CFG_CANON=
-  case "$_ER_OC_CFG_CANON" in *$'\n'*) _ER_OC_CFG_CANON= ;; esac
-  _ER_OC_CFG_DIR=
-  if [[ -n "$_ER_OC_CFG_CANON" ]]; then
-    _ER_OC_CFG_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_ER_OC_CFG_CANON")")"
-  fi
-  if [[ -z "$_ER_OC_CFG_CANON" || -z "$_ER_OC_CFG_DIR" ]] \
-     || _trusted_cli_dir_in_checkout "$_ER_OC_CFG_DIR"; then
-    echo "busdriver: opencode review config resolves inside the reviewed checkout or is unresolvable — refusing." >&2
-    exit 1
-  fi
-  _ER_OC_CFG="$_ER_OC_CFG_CANON"
+  # Existence only. Canonicalization, containment and the byte copy all happen together
+  # further down, UNDER one held descriptor — validating here and copying there would
+  # leave exactly the window this config must not have.
   _ER_OC_HOME="$(_trusted_operator_home)" || _ER_OC_HOME=
   if [[ -z "$_ER_OC_HOME" || "$_ER_OC_HOME" != /* || ! -d "$_ER_OC_HOME" ]]; then
     echo "busdriver: cannot resolve trusted operator home for opencode dispatch — refusing." >&2
@@ -4917,7 +4933,6 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
   /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
   [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-  cd "$_ER_OC_CWD" 2>/dev/null || exit 1
   # Bind the config BYTES, not just its pathname. Containment proves where the file
   # sits; it cannot stop a replacement or an in-place edit between that check and the
   # moment opencode opens it, and this config is exactly what decides whether the
@@ -4927,12 +4942,50 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
   # neutral cwd and hand opencode that copy. The lane's EXIT trap removes the
   # directory. The dotted name keeps it out of the way of anything opencode discovers
   # by convention in cwd or XDG_CONFIG_HOME.
+  #
+  # This runs BEFORE the `cd` below, and the order is load-bearing.
+  # `_trusted_cli_dir_in_checkout` derives the reviewed root from the CURRENT working
+  # directory, so once we have moved into the freshly git-init'd neutral cwd the
+  # "reviewed checkout" it compares against is that empty repo — and a config symlink
+  # pointing into the REAL reviewed checkout sails through. The destination directory
+  # already exists by this point, so nothing is gained by waiting.
   _ER_OC_CFG_COPY="${_ER_OC_CWD}/.bd803-opencode-review-config.json"
-  if ! /bin/cp -- "$_ER_OC_CFG" "$_ER_OC_CFG_COPY"; then
-    echo "busdriver: cannot bind the opencode review config bytes — refusing." >&2
+  # Validate and copy the config UNDER ONE HELD DESCRIPTOR, and prove at the end that
+  # the descriptor still names what was validated.
+  #
+  # Copying from a descriptor alone is not enough, and the earlier revision that did
+  # only that was right to be flagged: `3< "$path"` is itself a fresh open, so a swap
+  # landing between an EARLIER containment check and that open is simply opened and
+  # copied — and re-comparing the fd to the same path afterwards cannot see it, because
+  # by then both name the attacker's file. Ordering is what closes it. fd 3 is opened
+  # first; canonicalization and containment then run while it is held; and the final
+  # `-ef` asserts the held inode is still the one the canonical path names. A swap
+  # before the open is validated as itself (so what is checked is what is copied); a
+  # swap after the open makes the fd and the path diverge and `-ef` refuses; a swap
+  # after the checks cannot reach the fd at all.
+  #
+  # A subshell, not a brace group: `exit 1` inside a group would end this script, and
+  # nothing needs to escape but the status — the copy is the output.
+  # `builtin exec 3< file` is deliberately NOT used: it redirects the `builtin` command
+  # rather than this shell, and the fd is closed again by the next line (bash 3.2,
+  # measured).
+  # shellcheck disable=SC2094  # nothing here WRITES $_ER_OC_CFG: the redirection and
+  # the canonicalizer both only read it, which is the whole point of holding the fd.
+  if ! (
+        [[ -f /dev/fd/3 ]] || exit 1
+        _oc_canon="$(_bd803_canonical_file_path "$_ER_OC_CFG")" || exit 1
+        case "$_oc_canon" in ""|*$'\n'*) exit 1 ;; esac
+        _oc_dir="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_oc_canon")")" || exit 1
+        [[ -n "$_oc_dir" ]] || exit 1
+        if _trusted_cli_dir_in_checkout "$_oc_dir"; then exit 1; fi
+        [[ /dev/fd/3 -ef "$_oc_canon" ]] || exit 1
+        /bin/cp /dev/fd/3 "$_ER_OC_CFG_COPY" || exit 1
+      ) 3< "$_ER_OC_CFG"; then
+    echo "busdriver: opencode review config failed containment or changed under the open descriptor — refusing." >&2
     exit 1
   fi
   /bin/chmod 600 "$_ER_OC_CFG_COPY" 2>/dev/null || true
+  cd "$_ER_OC_CWD" 2>/dev/null || exit 1
   OPENCODE_CONFIG="$_ER_OC_CFG_COPY"
   XDG_CONFIG_HOME="$_ER_OC_CWD"
   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"

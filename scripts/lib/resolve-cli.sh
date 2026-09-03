@@ -1858,7 +1858,16 @@ while [ -n "$pathrest" ]; do
     /*) ;;
     *) exit 1 ;;
   esac
-  [ -d "$d" ] || exit 1
+  # A component that does not exist contributes nothing to command resolution, so
+  # SKIP it -- rejecting the whole PATH here is not stricter, it is a fail-open by
+  # fallback. _review_dispatch_path always appends /opt/homebrew/bin, which is absent
+  # on every Linux and Intel-mac host, so the reject branch fired unconditionally
+  # there: the caller fell back to the node-dir-only PATH, dropping the codex bindir
+  # that the comment two frames up says the companion needs. The containment filter
+  # in _portable_timeout already skips non-existent components for exactly this
+  # reason. Every component that DOES exist is still physicalized and still refused
+  # if it resolves inside the reviewed checkout, and an all-empty result still exits 1.
+  [ -d "$d" ] || continue
   phys=$(phys_dir "$d") || exit 1
   dir_in_checkout "$phys" && exit 1
   if [ -n "$out" ]; then
@@ -4780,7 +4789,18 @@ if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]
     echo "busdriver: cannot locate resolve-cli.sh for opencode review config — refusing." >&2
     exit 1
   fi
-  if [[ -n "${BD803_OC_LIB_SHA:-}" && -n "${BD803_OC_LIB_PIN:-}" ]]; then
+  # A PIN is honoured ONLY together with its digest. Keying this on "SHA and PIN"
+  # let a PIN supplied WITHOUT a SHA fall to the else branch, which latches and then
+  # EXECUTES that arbitrary absolute path as the review lib and derives
+  # `${pin%/*}/opencode-review-config.json` beside it -- an attacker-chosen opencode
+  # config that can hand the auditor back write and bash tools. The internal caller
+  # always sets both, so argv control was needed too; a guard one unset variable away
+  # from arbitrary execution is not a guard. Missing digest now refuses.
+  if [[ -n "${BD803_OC_LIB_PIN:-}" ]]; then
+    if [[ -z "${BD803_OC_LIB_SHA:-}" ]]; then
+      echo "busdriver: BD803_OC_LIB_PIN supplied without BD803_OC_LIB_SHA — refusing." >&2
+      exit 1
+    fi
     _ER_OC_PIN_CANON="$(_bd803_canonical_file_path "$BD803_OC_LIB_PIN")" || _ER_OC_PIN_CANON=
     case "$_ER_OC_PIN_CANON" in *$'\n'*) _ER_OC_PIN_CANON= ;; esac
     if [[ -z "$_ER_OC_PIN_CANON" || "$(/usr/bin/basename -- "$_ER_OC_PIN_CANON")" != resolve-cli.sh ]]; then

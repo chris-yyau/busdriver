@@ -368,6 +368,118 @@ else
   bad "#803: staged lib survived a composing caller's exit: '${compose_path:-<none staged>}'"
 fi
 
+# #803: the blueprint-review entry points install NO EXIT trap of their own, so the
+# library's own trap is the one that fires. That is the third caller shape (the two
+# above cover source-then-trap and compose); assert it directly rather than reasoning
+# about it, because "no trap anywhere" and "trap replaced" look identical from outside.
+BARE_T="$WORK/bare-caller.sh"
+{
+  printf '#!/bin/bash -p\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf '. "$1" >/dev/null 2>&1\n_bd803_ensure_staged_lib >/dev/null 2>&1\n'
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "STAGED_DURING=%%s\\n" "${_BD803_REVIEW_LIB_STAGED:-none}"\n'
+} > "$BARE_T"
+chmod 755 "$BARE_T"
+set +e
+bare_out=$("$BARE_T" "$LIB" 2>/dev/null)
+set -e
+bare_path=${bare_out#STAGED_DURING=}
+if [[ -n "$bare_path" && "$bare_path" != none && ! -e "$bare_path" ]]; then
+  ok "#803: trapless caller (blueprint-review shape) leaves no staged lib"
+else
+  bad "#803: trapless caller leaked the staged lib: '${bare_path:-<none staged>}'"
+fi
+
+# #803: the clean-env rebuild is duplicated verbatim across every hardened entry
+# point, and the marker-drift check above only proves each one HAS a block — not that
+# they are the same block. A fix applied to four of five is the likely failure, and it
+# is invisible from any per-file assertion, so compare the extracted bodies byte for
+# byte against the first.
+block_ref=""
+block_ref_file=""
+block_bad=""
+block_seen=0
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  [[ -f "$ROOT/$entry" ]] || continue
+  _blk=$(/usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/$entry")
+  [[ -n "$_blk" ]] || { block_bad="${block_bad}${entry}: no block extracted"$'\n'; continue; }
+  block_seen=$((block_seen + 1))
+  if [[ -z "$block_ref" ]]; then
+    block_ref="$_blk"; block_ref_file="$entry"
+  elif [[ "$_blk" != "$block_ref" ]]; then
+    block_bad="${block_bad}${entry}: differs from ${block_ref_file}"$'\n'
+  fi
+done <<< "$hardened_list"
+if [[ -n "$block_bad" ]]; then
+  bad "#803: clean-env rebuild block drifted between entry points:"$'\n'"$block_bad"
+elif [[ "$block_seen" -lt 5 ]]; then
+  bad "#803: clean-env block comparison is vacuous — extracted only $block_seen block(s)"
+else
+  ok "#803: clean-env rebuild block is byte-identical across $block_seen entry points"
+fi
+
+# #803: `env` output is NOT one line per variable. A value carrying an embedded
+# newline followed by `BASH_FUNC_x%%=...` renders as its own line, so a newline parse
+# derives a name that no variable owns; `env -u` then strips nothing, the carrier
+# survives the exec, and the child re-detects the same phantom — an unbounded exec
+# loop, armed by one ordinary variable, by exactly the attacker this block distrusts
+# (measured: hung indefinitely before the NUL parse landed).
+# Probed against the block extracted from a real entry point, so the assertion tracks
+# the shipped code. The positive controls are load-bearing: a block that refused
+# EVERYTHING would satisfy the hang check alone.
+ENVP="$WORK/cleanenv-probe.sh"
+{
+  printf '#!/bin/bash -p\n'
+  /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/scripts/ci/run-shell-tests.sh"
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  # Count entries, not lines: map real newlines out of the way FIRST, then turn the
+  # NUL delimiters into newlines. `tr "\0" "\n"` alone reproduces the very phantom
+  # this probe exists to disprove — a carrier value's embedded newline would be
+  # counted as a BASH_FUNC_ entry that no variable owns.
+  # shellcheck disable=SC2016  # expanded by the probe, not here
+  printf 'printf "BODY funcs=%%s\\n" "$(/usr/bin/env -0 | /usr/bin/tr "\\n" "\\001" | /usr/bin/tr "\\0" "\\n" | /usr/bin/grep -c "^BASH_FUNC_")"\n'
+} > "$ENVP"
+chmod 755 "$ENVP"
+# No portable `timeout` on macOS, so bound the wall clock by hand: background it,
+# poll, and kill. A surviving process IS the finding.
+_envprobe() {
+  _ep_out="$WORK/envprobe.out"
+  : > "$_ep_out"
+  ( "$@" > "$_ep_out" 2>/dev/null ) &
+  _ep_pid=$!
+  _ep_i=0
+  while [[ "$_ep_i" -lt 40 ]] && kill -0 "$_ep_pid" 2>/dev/null; do
+    /bin/sleep 0.2
+    _ep_i=$((_ep_i + 1))
+  done
+  if kill -0 "$_ep_pid" 2>/dev/null; then
+    kill -9 "$_ep_pid" 2>/dev/null || true
+    wait "$_ep_pid" 2>/dev/null || true
+    /usr/bin/printf 'HUNG\n'
+  else
+    wait "$_ep_pid" 2>/dev/null || true
+    /bin/cat "$_ep_out"
+  fi
+}
+env_bad=""
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin "$ENVP")
+[[ "$_r" == "BODY funcs=0" ]] || env_bad="${env_bad}clean env -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin 'BASH_FUNC_bd803probe%%=() { :; }' "$ENVP")
+[[ "$_r" == "BODY funcs=0" ]] || env_bad="${env_bad}real BASH_FUNC shadow -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin 'BD803EVIL=x
+BASH_FUNC_bd803phantom%%=() { :; }' "$ENVP")
+[[ "$_r" == "BODY funcs=0" ]] || env_bad="${env_bad}phantom newline -> '$_r'"$'\n'
+_r=$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin 'BD803EVIL=x
+BASH_FUNC_bd803phantom%%=() { :; }' 'BASH_FUNC_bd803probe%%=() { :; }' "$ENVP")
+[[ "$_r" == "BODY funcs=0" ]] || env_bad="${env_bad}phantom + real shadow -> '$_r'"$'\n'
+if [[ -z "$env_bad" ]]; then
+  ok "#803: clean-env rebuild strips real shadows and cannot be looped by a phantom entry"
+else
+  bad "#803: clean-env rebuild misbehaved (expected 'BODY funcs=0' each time):"$'\n'"$env_bad"
+fi
+
 # #803: the shebang must pin an ABSOLUTE interpreter. `#!/usr/bin/env -S bash -p`
 # still resolves bash through the ambient PATH, so a hostile PATH picks the
 # interpreter before privileged mode or the environment rebuild can start — the entry

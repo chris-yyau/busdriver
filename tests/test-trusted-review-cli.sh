@@ -677,20 +677,57 @@ fi
 PYEVIL="$WORK/pyevil"
 /bin/mkdir -p "$PYEVIL"
 printf 'import sys\nsys.stderr.write("PWNED-SITECUSTOMIZE\\n")\n' > "$PYEVIL/sitecustomize.py"
+# Resolve ONE interpreter from a FIXED list of absolute paths and use it for the
+# probe, the control and the path computation alike. PATH is deliberately not
+# consulted at all: a planted `python3` could emit the marker for the CONTROL
+# environment and nothing for the guarded one, manufacturing a PASS without any
+# real Python ever running -- so a PATH-derived fallback would defeat precisely
+# the assertion it is meant to support. If none of these runs the assertion fails
+# CLOSED rather than reaching for whatever PATH offers.
+# Each candidate is probed through _envprobe under `env -i`: /usr/bin/python3 on a
+# CLT-less macOS is a developer-tools shim, and an ambient sitecustomize can hang,
+# either of which would otherwise stall the suite before the bounded probes below.
+_PYBIN=
+for _pycand in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  [[ -x "$_pycand" ]] || continue
+  if [[ "$(_envprobe /usr/bin/env -i PATH=/usr/bin:/bin "$_pycand" -c 'print("PYOK")')" == "PYOK" ]]; then
+    _PYBIN="$_pycand"
+    break
+  fi
+done
 PYE="$WORK/python-effect.sh"
 {
   printf '#!/bin/bash -p\n'
   /usr/bin/sed -n '/# BD803-CLEAN-ENV-BEGIN/,/# BD803-CLEAN-ENV-END/p' "$ROOT/skills/litmus/scripts/run-review-loop.sh"
-  printf 'python3 -c "print(0)" >/dev/null\n'
+  # The interpreter arrives as "$1", never interpolated into the script text: an
+  # absolute path may contain spaces or shell metacharacters, and a path pasted
+  # into the body would then be parsed as syntax -- the guarded run would fail
+  # while the quoted control succeeded, and the missing marker would be scored as
+  # a successful clean-up.
+  # `2>&1 >/dev/null` sends the interpreter's STDERR -- where sitecustomize and
+  # usercustomize write the marker -- to this script's stdout, which is the only
+  # channel _envprobe captures. Order matters: stderr is duped to the original
+  # stdout first, then stdout is discarded.
+  printf '"$1" -c "print(0)" 2>&1 >/dev/null\n'
 } > "$PYE"
 chmod 755 "$PYE"
 set +e
-_pe_guarded=$(/usr/bin/env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$PYEVIL" "$PYE" 2>&1)
+# Through _envprobe, like every sibling probe: the regression this block guards
+# against is an UNBOUNDED exec loop, and `bad` only counts -- it does not abort --
+# so an unbounded run here would hang the whole suite instead of failing it.
+_pe_guarded=$(_envprobe /usr/bin/env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$PYEVIL" "$PYE" "$_PYBIN")
 _pe_control=$(/usr/bin/env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$PYEVIL" \
-              python3 -c 'print(0)' 2>&1 >/dev/null)
+              "$_PYBIN" -c 'print(0)' 2>&1 >/dev/null)
 set -e
-if [[ "$_pe_control" != *PWNED-SITECUSTOMIZE* ]]; then
+if [[ -z "$_PYBIN" ]]; then
+  bad "#803: no absolute python3 interpreter resolved — the effect assertions never ran"
+elif [[ "$_pe_control" != *PWNED-SITECUSTOMIZE* ]]; then
   bad "#803: sitecustomize control never fired — the effect assertion would be vacuous: ${_pe_control:-<empty>}"
+elif [[ "$_pe_guarded" == HUNG ]]; then
+  # _envprobe's timeout sentinel. Checked BEFORE the marker test, because "no
+  # marker" is exactly what a hang looks like — the exec-loop regression this
+  # block guards against would otherwise be recorded as a pass.
+  bad "#803: the rebuilt environment hung (exec loop?) instead of running python3"
 elif [[ "$_pe_guarded" != *PWNED-SITECUSTOMIZE* ]]; then
   ok "#803: a planted sitecustomize.py does not execute under the rebuilt environment"
 else
@@ -715,7 +752,7 @@ PYHOME="$WORK/pyhome"
 # impossible to aim outside this test's workspace whatever the environment does --
 # and it fails CLOSED, refusing to write rather than proceeding on a surprising path.
 _usd=$(/usr/bin/env -u PYTHONUSERBASE -u PYTHONPATH -u PYTHONHOME -u PYTHONNOUSERSITE \
-       HOME="$PYHOME" python3 -c 'import site;print(site.getusersitepackages())' 2>/dev/null || true)
+       HOME="$PYHOME" "$_PYBIN" -c 'import site;print(site.getusersitepackages())' 2>/dev/null || true)
 if [[ -z "$_usd" ]]; then
   bad "#803: could not compute the user site directory — the HOME-route assertion never ran"
 elif [[ "$_usd" != "$PYHOME"/* ]]; then
@@ -724,12 +761,14 @@ else
   /bin/mkdir -p "$_usd"
   printf 'import sys\nsys.stderr.write("PWNED-USERCUSTOMIZE\\n")\n' > "$_usd/usercustomize.py"
   set +e
-  _uh_guarded=$(/usr/bin/env -i PATH="$PATH" HOME="$PYHOME" "$PYE" 2>&1)
+  _uh_guarded=$(_envprobe /usr/bin/env -i PATH="$PATH" HOME="$PYHOME" "$PYE" "$_PYBIN")
   _uh_control=$(/usr/bin/env -i PATH="$PATH" HOME="$PYHOME" PYTHONUSERBASE= \
-                python3 -c 'print(0)' 2>&1 >/dev/null)
+                "$_PYBIN" -c 'print(0)' 2>&1 >/dev/null)
   set -e
   if [[ "$_uh_control" != *PWNED-USERCUSTOMIZE* ]]; then
     bad "#803: usercustomize control never fired — the HOME-route assertion would be vacuous: ${_uh_control:-<empty>}"
+  elif [[ "$_uh_guarded" == HUNG ]]; then
+    bad "#803: the rebuilt environment hung (exec loop?) instead of running python3 (HOME route)"
   elif [[ "$_uh_guarded" != *PWNED-USERCUSTOMIZE* ]]; then
     ok "#803: a hostile HOME cannot reach usercustomize.py through the user-site fallback"
   else

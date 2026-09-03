@@ -409,8 +409,8 @@ git commit -m "Your message"  # Hooks will enforce review
 
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh 10
-/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -435,8 +435,8 @@ git push                # Push after review passes
 ```bash
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-/bin/bash -p $LITMUS/init-review-loop.sh 10                                  # Initialize
-/bin/bash -p $LITMUS/run-review-loop.sh                                      # Review (auto-loops)
+/bin/bash -p "$LITMUS/init-review-loop.sh" 10                                # Initialize
+/bin/bash -p "$LITMUS/run-review-loop.sh"                                    # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests
 git commit -m "Message"                                             # Commit

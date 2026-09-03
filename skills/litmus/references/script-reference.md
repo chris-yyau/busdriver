@@ -212,7 +212,15 @@ set -e
 # locates its shared JSON extractor via `${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}`,
 # so a root under any other variable leaves that lookup empty and silently demotes
 # the run to the narrative parser, which can reject valid review output.
-export BUSDRIVER_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/marketplaces/busdriver}}"
+#
+# Write the path LITERALLY. Do not fall back to an inherited BUSDRIVER_PLUGIN_ROOT or
+# CLAUDE_PLUGIN_ROOT: environment is repo-injectable (a committed `.claude/settings.json`
+# `env` block sets variables — #325 / ADR 0016), and this hook runs BEFORE any review, so
+# accepting either would let the checkout name the review loop that is about to judge it.
+# There is no skill renderer in a git hook, so CLAUDE_PLUGIN_ROOT is not authoritative
+# here either. $HOME remains an ambient input this example cannot close; the sanitized
+# route is the PreToolUse `pre-commit-gate.sh`, not a hand-written hook.
+export BUSDRIVER_PLUGIN_ROOT="$HOME/.claude/plugins/marketplaces/busdriver"
 [ -d "$BUSDRIVER_PLUGIN_ROOT" ] || { echo "busdriver plugin root not found: $BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
 
 # Initialize
@@ -234,13 +242,39 @@ echo "✅ Codex review passed"
 
 ```yaml
 # .github/workflows/review.yml
+# Check the reviewer out from ITS OWN repository. `actions/checkout` requires a
+# path under $GITHUB_WORKSPACE, so this directory sits inside the workspace — but
+# the action OVERWRITES it with the busdriver ref's content, so what executes comes
+# from busdriver even if the reviewed repo ships a `.busdriver-plugin/` of its own.
+# Location is not the control here; provenance of the content is.
+#
+# Both pins are load-bearing and for the same reason. `uses:` is a COMMIT SHA, not
+# a mutable tag: a moved tag runs unreviewed action code with workflow credentials
+# before the reviewer starts, which is the checkout step compromising the review it
+# is meant to set up. `ref:` pins the reviewer itself to a COMMIT SHA for the same
+# reason -- a tag is mutable, so `ref: v2.1.9` would leave whoever can retarget that
+# tag able to swap the reviewer, which is the property this pin exists to remove.
+# The trailing comment records which release the SHA is, the way `uses:` does.
+# Bump both deliberately.
+- name: Check out busdriver
+  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    repository: chris-yyau/busdriver
+    ref: 34b9035af5b2400fdd61f94e088d82000a1c7261  # v2.1.9
+    path: .busdriver-plugin
+
 - name: Review Code
+  env:
+    # Same reason as the pre-commit hook above: no skill renderer in CI. Set the
+    # variable run-review-loop.sh actually reads, HERE in `env:` rather than from
+    # whatever the job inherited — a workflow-level value is what the operator
+    # controls, and `${{ github.workspace }}` is absolute, so the `cd` below cannot
+    # change what it points at.
+    BUSDRIVER_PLUGIN_ROOT: ${{ github.workspace }}/.busdriver-plugin
   run: |
     cd "$GITHUB_WORKSPACE"
-    # Same reason as the pre-commit hook above: no skill renderer in CI. Use the
-    # variable run-review-loop.sh actually reads, and export it so the extractor
-    # lookup inside the script sees it too.
-    export BUSDRIVER_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:?set this to the busdriver plugin root}"
+    # Fail loudly rather than expanding to `/skills/...` and dying with exit 127.
+    [ -d "$BUSDRIVER_PLUGIN_ROOT" ] || { echo "busdriver plugin root not found: $BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
     /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/init-review-loop.sh" 5
     /bin/bash -p "$BUSDRIVER_PLUGIN_ROOT/skills/litmus/scripts/run-review-loop.sh"
 ```

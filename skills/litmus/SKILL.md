@@ -182,8 +182,8 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 3. Group files into logical commits (same module/feature together, using the suggestions as a starting point)
 4. For each group:
    a. `git add <files in group>`
-   b. `/bin/bash -p $LITMUS_SCRIPTS/init-review-loop.sh`
-   c. `/bin/bash -p $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   b. `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"`
+   c. `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed

@@ -406,10 +406,17 @@ for f in "$LIB" "$DISPATCH"; do
   # safe-looking occurrence shield an unsafe one beside it — e.g.
   #   resolve_auditor_model ; PATH="...pinned..." HOME="$_oc_home" resolve_auditor_model
   # was dropped entirely by `grep -v`, though its FIRST call carries no pin at all.
+  # No `grep -n` here. The ordinals would number the AWK-JOINED text, not the file, so
+  # any call sitting after a backslash-continuation (dispatch.sh's PATH/HOME pin is one)
+  # would be reported at a line the reader cannot find — worst exactly when the location
+  # is what they need. The offending TEXT is the actionable part. The comment filter is
+  # anchored on a bare leading `#` to match: with `-n` gone there is no `N:` prefix left
+  # for it to key on, and leaving that filter untouched would let commented mentions
+  # through and false-fail the guard on a clean tree.
   bad="$(printf '%s\n' "$joined" \
          | /usr/bin/sed -E 's%(^|[[:space:]])PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"[[:space:]]+HOME="\$(_ER_OC_HOME|_oc_home)"[[:space:]]+resolve_auditor_model%\1<PINNED-CALL>%g' \
-         | grep -nE 'resolve_auditor_model' \
-         | grep -vE '^[0-9]+:[[:space:]]*#' \
+         | grep -E 'resolve_auditor_model' \
+         | grep -vE '^[[:space:]]*#' \
          | grep -v 'resolve_auditor_model()' \
          | grep -v 'type resolve_auditor_model' || true)"
   if [[ -n "$bad" ]]; then

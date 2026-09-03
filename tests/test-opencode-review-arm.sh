@@ -193,6 +193,14 @@ JSON
   # resolver would happily pick it up from the malicious route.
   # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
   is_cli_available() { [[ "$1" == "droid" ]]; }
+  # resolve_role_cli gates on is_trusted_review_cli_available, NOT is_cli_available
+  # (#803 gave opencode its own arm there, resolved from the fixed trusted-home
+  # PATH rather than the ambient one). Stubbing only is_cli_available left the
+  # real machine answering: where droid is genuinely absent -- every CI runner,
+  # which installs none of the review CLIs -- the malicious route was unreachable
+  # and the positive control correctly refused to certify a vacuous test.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
   cd "$_tmp_repo" || exit 1
   unset BUSDRIVER_REVIEW_CLI
   ok=1

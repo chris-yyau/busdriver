@@ -523,9 +523,15 @@ else
 fi
 # And the fallback arm ALONE, isolated, must not be silently emptied by it.
 # shellcheck disable=SC2016  # the perl program is literal, expanded by perl
+# No shell intermediary here: on Ubuntu /bin/sh is dash, which DROPS environ
+# entries whose names are not valid identifiers, so BASH_FUNC_bd803perl%% never
+# reached perl and this probe counted 0 on CI while production -- which runs the
+# enumerator directly under bash -- was unaffected. `env` never parses names, so
+# the same three blank prefixes are applied with a nested env instead.
 _pf=$(/usr/bin/env -i PATH=/usr/bin:/bin PERL5LIB="$PERLP" PERL5OPT=-MBD803Evil \
       'BASH_FUNC_bd803perl%%=() { :; }' \
-      /bin/sh -c 'PERL5OPT='"'"''"'"' PERL5LIB='"'"''"'"' PERLLIB='"'"''"'"' exec /usr/bin/perl -T -e '\''print map { "$_=$ENV{$_}\0" } keys %ENV'\''' 2>/dev/null \
+      /usr/bin/env PERL5OPT= PERL5LIB= PERLLIB= \
+      /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV' 2>/dev/null \
       | /usr/bin/tr '\0' '\n' | /usr/bin/grep -c '^BASH_FUNC_bd803perl%%=' || true)
 if [[ "$_pf" -eq 1 ]]; then
   ok "#803: hardened perl enumerator still reports BASH_FUNC entries under PERL5OPT injection"

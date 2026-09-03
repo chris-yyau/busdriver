@@ -22,7 +22,7 @@
 #                   (i.e. the bound did not simply strangle the reviewer)
 #
 # The stub CLI is a plain shell script on PATH, so no network, no real codex,
-# and no framework. Total runtime ~20s.
+# and no framework. Total runtime ~60s.
 
 set -euo pipefail
 
@@ -113,8 +113,17 @@ run_timed() {
   echo "$rc $((end - start))"
 }
 
-BUDGET=8
-SLACK=4   # process startup + coarse 1s clock granularity
+# Sized against the MEASURED fixed per-attempt overhead of `_portable_timeout
+# --review`: it forks a bash child that re-sources and hash-verifies the staged
+# review lib (#803). That is ~3s on a dev machine and ~4-5s on a CI runner, with
+# a 0-second stub. At BUDGET=8 a 3s stub left ~1s of headroom, so a slower runner
+# could not fund the second attempt and _execute_codex CORRECTLY reported
+# "retry budget spent -- escalating" -- turning a real invariant into a flake that
+# only bash 5 / CI reproduced. Keep the budget >= ~3x the overhead so the retry is
+# deterministically funded; the bound assertions still catch a per-attempt-full-
+# duration regression by an order of magnitude.
+BUDGET=20
+SLACK=6   # process startup + coarse 1s clock granularity
 
 # ── Engine 1: _execute_codex ────────────────────────────────────────────────
 # (i) BOUNDED. Unfixed this runs ~110s: 6 attempts x 8s + sleeps 2+4+8+16+32.

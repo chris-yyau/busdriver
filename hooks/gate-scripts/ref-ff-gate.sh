@@ -530,8 +530,17 @@ if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
     block_emit "Ref fast-forward gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the git merge/pull and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo's protected branch would move. Run it from the repo root, join the cd with '&&' (cd /repo && git merge X), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
-# Genuinely not in a git repo → no ref can move (git fails on its own).
-[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
+# Genuinely not in a git repo → no ref can move (git fails on its own) — but that
+# rationale only covers a REAL subcommand. Since #812 the anchor can be a literal
+# `git -C` the COMMAND chose, so this exit became reachable with an agent-picked
+# target, and a `!`-shell alias resolved there is not a git operation at all: with
+# a global `alias.zz = !git -C /session merge feature`, `git -C /any-non-repo zz`
+# runs the merge in the SESSION repo while git never fails here. Defer the exit
+# until the builtin filter below has ruled the words out; an unresolved one blocks.
+# (A BARE repo answers exit-0 `false` to --is-inside-work-tree, so it resolves
+# `proceed` and never reached this line — only a directory outside every repo did.)
+OUTSIDE_REPO=0
+[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && OUTSIDE_REPO=1
 REPO_DIR="$GATE_REPO_DIR"
 
 # Block messages are text an operator PASTES, so anything interpolated into a
@@ -563,6 +572,16 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
         fi
         UNKNOWN_CANDIDATES="$UNKNOWN_CANDIDATES $_cand"
     done
+fi
+if [ "$OUTSIDE_REPO" = "1" ]; then
+    # `--list-cmds` needs no repository, so the filter above is still authoritative
+    # here: every word it recognised is a real git subcommand, which genuinely
+    # cannot move a ref from outside a work tree. A word it did NOT recognise can
+    # still be a `!`-shell alias that operates somewhere else entirely, and this is
+    # the one place that could wave it through, so it fails CLOSED instead.
+    [ -z "$UNKNOWN_CANDIDATES" ] && exit 0
+    block_emit "Ref fast-forward gate:$UNKNOWN_CANDIDATES resolves to no git subcommand, and ${REPO_DIR:-.} is not a work tree — so the gate cannot rule out that it is a '!'-shell alias, which git runs from outside a repository just as happily and can move a protected ref in ANOTHER one. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets. Blocking as precaution (fail-closed)."
+    exit 0
 fi
 if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then
     exit 0

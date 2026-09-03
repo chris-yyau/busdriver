@@ -1788,6 +1788,27 @@ run_gate "...and a -C inside a nested payload" \
 # hide the session repo's own alias.
 run_gate "...and invocations that disagree about the directory" \
     block "git -C $SCOPED_REPO worktree list && git zz feature" "cannot be resolved"
+
+# The anchor is now a directory the COMMAND names, which makes the "not in a git
+# repo → git fails on its own" shortcut reachable on an agent-picked target. It
+# does not hold for an unresolved word: a `!`-shell alias is not a git operation,
+# git runs it from outside a repository just as happily, and its body can name any
+# repo (`alias.zz = !git -C /session merge feature`). Verified: the shell alias
+# really does run, and before this guard the plain-directory shape ALLOWED.
+mkdir -p "$TMPROOT/not-a-repo"
+run_gate "a -C target outside every repo cannot silence the alias arm" \
+    block "git -C $TMPROOT/not-a-repo zz feature" "not a work tree"
+# ...but a REAL subcommand there is exactly what the shortcut is for: `--list-cmds`
+# needs no repository, so the builtin filter still rules it out and git's own
+# failure is the honest answer.
+run_gate "...while a real subcommand there is still git's own problem" \
+    allow "git -C $TMPROOT/not-a-repo worktree list"
+# A BARE repo answers exit-0 `false` to --is-inside-work-tree, so it resolves
+# `proceed` rather than `outside-repo` and is refused by the ordinary alias path.
+git init -q --bare "$TMPROOT/bare-scoped"
+git -C "$TMPROOT/bare-scoped" config alias.zz merge
+run_gate "...and a bare repo is refused by the ordinary alias path" \
+    block "git -C $TMPROOT/bare-scoped zz feature"
 git -C "$SCOPED_REPO" config --unset alias.zz
 
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

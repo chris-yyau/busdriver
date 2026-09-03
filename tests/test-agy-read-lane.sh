@@ -219,7 +219,9 @@ fi
 # on purpose rather than leaving it as an accident of the fixture (#789).
 er_cwd="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_cwd"; exit 1; }
 er_stub="$(mktemp -d)" || { echo "FAIL — mktemp -d failed for er_stub"; exit 1; }
-git -C "$er_cwd" init -q -b main >/dev/null 2>&1 || { echo "FAIL — git init failed for er_cwd"; exit 1; }
+# Plain `git init` (no -b): the branch name is never used here, and `--initial-branch`
+# needs Git >= 2.28 — on an older git this fixture aborted the whole suite.
+git -C "$er_cwd" init -q >/dev/null 2>&1 || { echo "FAIL — git init failed for er_cwd"; exit 1; }
 cat > "$er_stub/agy" <<'STUB'
 #!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.5.0\n'; exit 0; fi

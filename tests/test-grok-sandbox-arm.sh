@@ -1280,10 +1280,16 @@ fi
 # This covers the DISPATCH path only — blueprint-review reaches droid through
 # its own `_bp_droid_rescue` and never consults this predicate; that half is
 # asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
-# Matched on the COMPARISON, not on the variable name: #803 renamed the local
-# `primary_cli` to `_SETD_PRIMARY` (no shadowable locals), which silently broke a
-# name-keyed pattern while the guard itself was untouched and stronger.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | has_match '== "grok"'; then
+# Bound to the CURRENT first-argument variable: #803 renamed the local
+# `primary_cli` to `_SETD_PRIMARY` (no shadowable locals), which silently broke the
+# old name-keyed pattern. A bare `== "grok"` would re-pass on a guard over any
+# other variable, so keep it keyed to the operand.
+# COMMENT LINES ARE STRIPPED FIRST. Without that, commenting the guard OUT while
+# leaving its text behind still satisfied this assertion — the exact shape that
+# re-enables cross-provider escalation while the suite stays green.
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
+   | /usr/bin/grep -vE '^[[:space:]]*#' \
+   | has_match '"\$_SETD_PRIMARY" == "grok"'; then
   pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
 else
   fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"

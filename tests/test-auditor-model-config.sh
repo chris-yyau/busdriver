@@ -389,11 +389,29 @@ for f in "$LIB" "$DISPATCH"; do
   # PATH too: the reader shells out to jq/python3, so an ambient PATH could
   # supply a planted binary. Both are stated at the call site rather than
   # inherited from the arm's pin, so neither depends on line order.
-  bad="$(grep -nE 'resolve_auditor_model' "$f" \
+  # Join backslash-continuations FIRST. dispatch.sh writes the PATH pin and the
+  # HOME-prefixed call on two continued lines, and excluding those two shapes
+  # INDEPENDENTLY (the previous form) meant the call line satisfied the guard on its
+  # own — so deleting or weakening the PATH pin still passed the assertion it exists
+  # to enforce. Validated as ONE command, both pins must be present together.
+  #
+  # The pattern is the EXACT pinned PATH, anchored at a word boundary and joined to
+  # the call by whitespace only — no `.*`, no wildcarded path contents. An
+  # unanchored `PATH=` fragment accepted `NOTPATH="..."`, and a wildcarded body
+  # accepted a prepended repo-writable dir such as `PATH="$PWD/bin:/opt/homebrew/..."`,
+  # either of which false-passes the very regression this guard exists to catch.
+  joined="$(/usr/bin/awk '{ line=$0; while (line ~ /\\$/) { sub(/\\$/,"",line); if ((getline nxt)<=0) break; line=line nxt } print line }' "$f")"
+  # Remove each properly-pinned call OCCURRENCE (note the trailing /g), then flag
+  # whatever still names the function. Excluding whole LINES instead let one
+  # safe-looking occurrence shield an unsafe one beside it — e.g.
+  #   resolve_auditor_model ; PATH="...pinned..." HOME="$_oc_home" resolve_auditor_model
+  # was dropped entirely by `grep -v`, though its FIRST call carries no pin at all.
+  bad="$(printf '%s\n' "$joined" \
+         | /usr/bin/sed -E 's%(^|[[:space:]])PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"[[:space:]]+HOME="\$(_ER_OC_HOME|_oc_home)"[[:space:]]+resolve_auditor_model%\1<PINNED-CALL>%g' \
+         | grep -nE 'resolve_auditor_model' \
          | grep -vE '^[0-9]+:[[:space:]]*#' \
          | grep -v 'resolve_auditor_model()' \
-         | grep -v 'type resolve_auditor_model' \
-         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_ER_OC_HOME" resolve_auditor_model|HOME="\$_oc_home" resolve_auditor_model' || true)"
+         | grep -v 'type resolve_auditor_model' || true)"
   if [[ -n "$bad" ]]; then
     fail "$(basename "$f") calls resolve_auditor_model without pinned PATH+HOME: $bad"
   else

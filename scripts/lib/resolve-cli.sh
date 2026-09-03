@@ -341,6 +341,18 @@ printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
 # function can intercept it. Every reader here tests emptiness (-n/-z), so an empty
 # value is equivalent to an unset one — and the same idiom is already used by
 # _bd803_cleanup_review_lib_exec above.
+#
+# ACCEPTED RESIDUAL (raised in PR review, refused deliberately): re-sourcing this
+# library in one shell drops the path to a previously staged copy WITHOUT deleting
+# it, so each redundant source leaks ~250KB into TMPDIR until the OS reaps it. The
+# obvious repair -- call _bd803_cleanup_review_lib_exec before clearing -- is worse
+# than the leak: that function `/bin/rm -f`s whatever _BD803_REVIEW_LIB_STAGED
+# holds, and the whole reason this reset exists is that the value may be
+# ATTACKER-SUPPLIED from the environment. Honouring it would hand an injected
+# variable an arbitrary-file-delete primitive to buy back a temp file. The other
+# suggested repair -- preserve initialized staging state across a re-source -- is
+# the same fail-open by a different route: it trusts exactly the state this reset
+# is here to distrust. A bounded temp-file leak is the cheaper side of that trade.
 _BD803_REVIEW_LIB_PIN=
 _BD803_REVIEW_LIB_STAGED=
 _BD803_REVIEW_LIB_EXEC=

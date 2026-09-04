@@ -4380,7 +4380,7 @@ def _zero_old_ops_from_argv(argv):
             else:
                 # Default-deref follows symrefs at runtime — never
                 # authorize-by-direct-ref (TOCTOU: direct ref → symref to
-                # protected). No snapshot/_zero_old_symref_map. Fail closed.
+                # protected). No pre-command snapshot of any kind. Fail closed.
                 yield ("force", "")
             return
         if len(ops) >= 3:
@@ -4427,7 +4427,7 @@ def _zero_old_ops_from_argv(argv):
             return
         # Default-deref update-ref: fail closed — never authorize-by-name
         # (TOCTOU: refs/heads/topic → symref to protected under the check).
-        # No _zero_old_symref_map / pre-command snapshot. Porcelain
+        # No pre-command snapshot of the ref graph. Porcelain
         # branch -f / checkout -B still emit force:<name> as 2-tuples from
         # command shape in _finalize_zero_old_ops.
         yield ("force", "")
@@ -4501,6 +4501,66 @@ def _git_dashed_to_argv(argv):
         return argv
     return ['git', sub] + argv[1:]
 _ZERO_OLD_SUBS = frozenset({'branch', 'checkout', 'switch', 'update-ref', 'symbolic-ref'})
+# Subcommands OUTSIDE _ZERO_OLD_SUBS that can still force a branch ref, so a
+# force-ish operand on one is a ZERO-old op the parser does not model in detail.
+# Measured: `git worktree add -B main <path> <oid>` moves refs/heads/main.
+# This is a positive list on purpose. It replaced "anything not in the read-only
+# allowlist", which swept in every other subcommand that merely spells a flag
+# with an f/D/B/C in it -- `git add -f`, `git clean -fd`, `git tag -f`,
+# `git config -f`, `git remote add -f`, `git worktree remove -f` were all
+# refused with a message claiming they force-update a branch ref. None of them
+# writes refs/heads/*. An UNKNOWN word needs no coverage here either: it is not
+# a git subcommand, so the gate's alias arm owns it.
+# sub -> the verb that must follow it. `git worktree remove -f <path>` removes a
+# WORKTREE, not a ref; only the `add` verb can force a branch.
+# {subcommand: (verb, force-letters)}. The FLAG is the whole signal here, and it
+# is not the generic force net: on `worktree add`, `-f` only permits checking out
+# a branch already checked out elsewhere -- it writes no ref -- while `-B` resets
+# refs/heads/<branch>. Measured both. Letters are matched inside a short cluster
+# (`-fB new`), and case-sensitively: `-b` refuses an existing branch.
+#
+# `fast-import` is deliberately ABSENT and is OUT OF SCOPE for #780 (operator
+# decision). It does force-update refs, but its force is not only a flag: the
+# import STREAM can carry `feature force`, which arrives on stdin and is
+# therefore unreachable from the command line this gate reads. A `--force`-only
+# entry would have covered the spelling an attacker does not have to use, which
+# is worse than no entry -- it reads as coverage. Refusing `git fast-import`
+# outright is a scope decision, not a parser one.
+_ZERO_OLD_FORCE_SUBS = {'worktree': ('add', 'B')}
+def _zero_old_force_sub(argv, sub, sub_idx):
+    spec = _ZERO_OLD_FORCE_SUBS.get(sub)
+    if spec is None:
+        return False
+    verb, letters = spec
+    # Everything after `--` is positional by definition, so an unreadable token
+    # there cannot be the `-B` this predicate fails closed on: `git worktree add
+    # -- "$PATH" main` names a path, not a flag. But only a `--` that IS the
+    # end-of-options marker: parse-options hands the next argv element to a
+    # value-taking option whatever it spells, so in `worktree add --lock
+    # --reason -- -B main` the `--` is the reason STRING and `-B` is still an
+    # option. An option token in front of it is the tell -- no vocabulary of
+    # which options take values, which would be one more open-ended list.
+    rest_all = argv[sub_idx + 1:]
+    if '--' in rest_all:
+        _dd = rest_all.index('--')
+        if _dd == 0 or not rest_all[_dd - 1].startswith('-'):
+            rest_all = rest_all[:_dd]
+    rest = [a for a in rest_all if not a.startswith('-')]
+    verb_tok = rest[0] if rest else ''
+    # An operand the gate cannot READ is not a safe one: `worktree "$VERB" -B main`
+    # and `worktree add "${FLAG:--B}" main` both execute `add -B`. This is the rule
+    # the modelled subcommands already apply one subcommand over -- `git branch
+    # "$X" main` blocks -- and it stays keyed to the verb, so a `remove "$DIR"`
+    # that can reset no ref is still read for what it literally is.
+    if verb_tok and (_may_be_substitution(verb_tok) or _word_may_split(verb_tok, verb_tok)):
+        return True
+    if verb_tok != verb:
+        return False
+    if any(_may_be_substitution(a) or _word_may_split(a, a) for a in rest_all):
+        return True
+    return any(a.startswith('-') and not a.startswith('--')
+               and any(c in a[1:] for c in letters)
+               for a in rest_all)
 # Sentinel for an update-ref oldvalue whose CAS-ness depends on the repository.
 _CAS = '\x00cas'
 _UNSET = object()
@@ -4579,85 +4639,6 @@ def _zero_old_ref_path(ref_operand):
         return ref_operand
     return 'refs/heads/' + ref_operand
 _ZERO_OLD_MAX_DEREF_OPS = 32; _ZERO_OLD_MAX_SYMREF_CHAIN = 16
-def _zero_old_symref_map(repo_dir):
-    import subprocess, select, time
-    try:
-        p = subprocess.Popen(
-            ['git', '-C', repo_dir, 'for-each-ref', '--count=4097',
-             '--format=%(refname)\t%(symref)', 'refs/'],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=_zero_old_git_env())
-    except OSError:
-        return None
-    buf = []
-    total = 0
-    deadline = time.monotonic() + 5
-    try:
-        fd = p.stdout.fileno()
-        os.set_blocking(fd, False)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                p.kill(); p.wait(); return None
-            ready, _, _ = select.select([fd], [], [], remaining)
-            if not ready:
-                p.kill(); p.wait(); return None
-            try:
-                chunk = p.stdout.read(8192)
-            except BlockingIOError:
-                continue
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > 256 * 1024:
-                p.kill(); p.wait(); return None
-            buf.append(chunk)
-        rc = p.wait(timeout=max(0.1, deadline - time.monotonic()))
-    except (OSError, subprocess.TimeoutExpired):
-        try: p.kill(); p.wait()
-        except Exception: pass
-        return None
-    if rc != 0:
-        return None
-    raw = b''.join(buf).decode('utf-8', 'surrogateescape')
-    lines = [ln for ln in raw.split('\n') if ln != '']
-    # --count=4096 bound: one extra row means the map is truncated.
-    if len(lines) > 4096:
-        return None
-    sym = {}
-    for line in lines:
-        if '\t' not in line:
-            return None
-        ref, target = line.split('\t', 1)
-        if not ref:
-            return None
-        if target:
-            sym[ref] = target
-    roots = {t for t in sym.values()
-             if t and not t.startswith('refs/') and '/' not in t}
-    for pref in _ZERO_OLD_PSEUDO_REFS:
-        if pref != '@':
-            roots.add(pref)
-    import time
-    dl = time.monotonic() + 2.0
-    for pref in roots:
-        rem = dl - time.monotonic()
-        if rem <= 0: return None
-        try:
-            hr = subprocess.run(
-                ['git', '-C', repo_dir, 'symbolic-ref', '-q', pref],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                env=_zero_old_git_env(), text=True, timeout=max(0.05, rem))
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if hr.returncode == 0 and hr.stdout:
-            tgt = hr.stdout.split('\n', 1)[0]
-            if tgt:
-                sym[pref] = tgt
-                if pref == 'HEAD': sym['@'] = tgt
-        elif hr.returncode not in (0, 1):
-            return None
-    return sym
 def _zero_old_resolve_symref(ref, symref_map):
     seen = set()
     current = ref
@@ -4700,7 +4681,7 @@ def _zero_old_non_heads_ref(ref_operand):
             and not ref_operand.startswith('refs/heads/'))
 def _zero_old_classify_names(kind, ref_operand, symref_map, no_deref=False):
     # no_deref=false: fail closed — never authorize-by-direct-ref and never
-    # consult a pre-command snapshot or _zero_old_symref_map (TOCTOU).
+    # consult a pre-command snapshot of the ref graph (TOCTOU).
     # Only explicit --no-deref may authorize by the original operand name.
     # Porcelain FORCE-UPDATE names come from 2-tuples in _finalize_zero_old_ops.
     del symref_map  # unused; never consult a mutable map
@@ -4725,94 +4706,10 @@ def _zero_old_repo_path(repo_dir, hook_cwd=""):
     if repo_dir and hook_cwd:
         return os.path.join(hook_cwd, repo_dir)
     return repo_dir or hook_cwd or ''
-def _zero_old_declared_protected(repo_path):
-    # Operator names from $BUSDRIVER_STATE_DIR/ref-ff-protected.local (default
-    # .claude). Returns (frozenset, True) on success; (None, False) if the
-    # declaration path exists but cannot be trusted/read (caller fail-closes).
-    # Missing file → empty declared set (conventional-only). No symref map.
-    names = set()
-    if not repo_path:
-        return None, False
-    state = os.environ.get('BUSDRIVER_STATE_DIR', '.claude') or '.claude'
-    if (state.startswith('/') or '..' in state.split('/')
-            or any(c in state for c in '\0')):
-        state = '.claude'
-    path = os.path.join(repo_path, state, 'ref-ff-protected.local')
-    try:
-        if not os.path.lexists(path):
-            return frozenset(), True
-        if os.path.islink(path) or not os.path.isfile(path):
-            return None, False
-        # Refuse a symlinked state dir component (same spirit as the gate).
-        st_dir = os.path.join(repo_path, state)
-        if os.path.islink(st_dir):
-            return None, False
-        with open(path, 'r', encoding='utf-8', errors='surrogateescape') as f:
-            raw = f.read(65537)
-        if len(raw) > 65536:
-            return None, False
-        n = 0
-        for line in raw.splitlines():
-            # Match ref-ff-gate.sh: NO comment syntax. '#release' is a valid
-            # branch name; only blank lines are skipped.
-            line = line.strip().rstrip('\r')
-            if not line:
-                continue
-            n += 1
-            if n > 64:
-                return None, False
-            short = _branch_short_from_ref(line) or (
-                line if isinstance(line, str) else '')
-            if (not short or short in _ZERO_OLD_PSEUDO_REFS
-                    or short.upper() == 'HEAD'
-                    or _may_be_substitution(short) or _word_may_split(short, short)):
-                continue
-            names.add(short)
-        return frozenset(names), True
-    except OSError:
-        return None, False
-def _zero_old_porcelain_symref_to_protected(repo_path, name):
-    # True if refs/heads/<name> currently resolves through a symbolic-ref
-    # chain to a conventional OR operator-declared protected target.
-    # False if the named ref is direct (or a chain that never hits
-    # protected). None on probe failure (caller fail-closes). Does not
-    # build or consult _zero_old_symref_map.
-    if not repo_path or not name or not isinstance(name, str):
-        return None
-    if name in _ZERO_OLD_PSEUDO_REFS or name.upper() == 'HEAD':
-        return None
-    declared, dok = _zero_old_declared_protected(repo_path)
-    if not dok or declared is None:
-        return None
-    protected = _ZERO_OLD_CONVENTIONAL_PROTECTED | declared
-    import subprocess
-    cur = name if name.startswith('refs/') else 'refs/heads/' + name
-    seen = set()
-    for _ in range(_ZERO_OLD_MAX_SYMREF_CHAIN):
-        if cur in seen:
-            return None
-        seen.add(cur)
-        try:
-            r = subprocess.run(
-                ['git', '-C', repo_path, 'symbolic-ref', '-q', cur],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                env=_zero_old_git_env(), text=True, timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if r.returncode != 0:
-            return False  # not a symref — direct (or absent)
-        tgt = (r.stdout or '').split('\n', 1)[0].strip()
-        if not tgt:
-            return None
-        short = _branch_short_from_ref(tgt) or ''
-        if (short in protected
-                or short in _ZERO_OLD_PSEUDO_REFS
-                or (short and short.upper() == 'HEAD')):
-            return True
-        cur = tgt
-    return None
 def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
-    # Never build or consult _zero_old_symref_map / a pre-command snapshot.
+    # Never build or consult a pre-command snapshot of the ref graph.
+    # (The map/probe helpers that once existed for it are deleted, not just
+    # unused, so nothing can quietly wire them back in -- see #780.)
     # no_deref=false 3-tuples fail closed. Porcelain force 2-tuples
     # (branch -f / checkout -B / switch -C and kin) always emit force:""
     # — never authorize force:<name> from a pre-command probe of the
@@ -4842,6 +4739,7 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
         else:
             out.append(item)
     return out
+_ZERO_OLD_PRINT_ONLY = frozenset(('echo', 'printf'))
 def _zero_old_has_risky_companion(chunks):
     n_mut = 0
     for chunk in chunks:
@@ -4882,12 +4780,119 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             argv, raw_argv = _zero_old_git_argv(seg)
             if not argv or not _is_exe(argv[0], 'git'):
                 toks = toks_once(seg)
-                _fi = any(t in ('-f','-D','-B','-C','--force','--delete') or t.startswith('--force')
-                          or (t.startswith('-') and not t.startswith('--') and any(c in t[1:] for c in 'fDBC')) for t in toks)
-                _dyn = any(_may_be_substitution(t) or _word_may_split(t, t) for t in toks)
-                if (any(t in _ZERO_OLD_SUBS or _git_dashed_subcommand(t) in _ZERO_OLD_SUBS for t in toks)
-                        or (_dyn and (_fi or len(toks) >= 4
-                            or any(t.startswith('refs/') or t in ('HEAD', '@') for t in toks)))):
+                # This arm exists for ONE shape: a git invocation the parser
+                # could not read as argv[0]. Two things reach it -- a LITERAL
+                # git that a wrapper hides (`xargs -I{} git branch -f main
+                # <oid>`, `arch -x86_64 git …`) and a DYNAMIC command word
+                # (`GIT=git; "$GIT" branch …`, `env -u FOO "$GIT" …`).
+                #
+                # Both are recognised by INVOCATION SHAPE -- a ref-writing
+                # subcommand word AFTER the candidate -- and deliberately NOT
+                # by position, because position needs a wrapper vocabulary and
+                # that vocabulary is open-ended: every round of review named
+                # another entry it lacked (`env -u FOO`, `sudo -u nobody`,
+                # `arch -x86_64`, `chronic`), and each miss was a ZERO-old op
+                # read as no operation at all. Shape needs no vocabulary.
+                #
+                # Unqualified, this arm's own heuristics fire on any segment --
+                # the subcommand WORDS are ordinary English, so `gh pr checkout
+                # 828`, `npm run switch`, `git status | grep branch` and `echo
+                # checkout` were all refused as force-updates, and a token-count
+                # disjunct took `rm -rf $TMPDIR/x` with them. Requiring a
+                # candidate plus a ref WRITE (a force flag, a refs/ operand, or
+                # a subcommand that writes one by nature) is what excludes them.
+                # The remaining exception is a print-only builtin, which names
+                # the words without running anything: `echo git branch` and
+                # `echo "$X" branch -f main HEAD`. Measured, all of them.
+                _cand_i = next((i for i, t in enumerate(toks)
+                                if _is_exe(t, 'git') or _may_be_substitution(t)
+                                or _word_may_split(t, t)), -1)
+                if _cand_i < 0:
+                    continue
+                _cand_git = _is_exe(toks[_cand_i], 'git')
+                _sub_i = next((i for i, t in enumerate(toks)
+                               if i > _cand_i and (t in _ZERO_OLD_SUBS
+                               or _git_dashed_subcommand(t) in _ZERO_OLD_SUBS)), -1)
+                # `worktree` is modelled by FLAG, not by word -- `git worktree
+                # list` behind a wrapper writes nothing -- so ask the same
+                # predicate the argv path asks.
+                _force_i = next((i for i, t in enumerate(toks)
+                                 if i > _cand_i and t in _ZERO_OLD_FORCE_SUBS), -1)
+                _force_sub = (_force_i >= 0
+                              and _zero_old_force_sub(toks, toks[_force_i], _force_i))
+                # `-m`/`-M` are in here because an unforced RENAME still deletes
+                # the source ref, exactly as the argv path treats it.
+                # `-m`/`-M` are here because an unforced RENAME still deletes the
+                # source ref, exactly as the argv path treats it -- but only as
+                # WHOLE tokens. Scanning them inside a cluster read `find $DIR
+                # -name branch` as a force (single-dash long options are not
+                # clusters), and a real clustered rename spells `-M` or carries
+                # an `f` the cluster scan already catches.
+                _fi = any(t in ('-f','-D','-B','-C','-m','-M','--force','--delete','--move')
+                          or t.startswith('--force') or t.startswith('--move')
+                          or (t.startswith('-') and not t.startswith('--')
+                              and any(c in t[1:] for c in 'fDBC')) for t in toks)
+                # A subcommand the gate cannot read could be any of them.
+                _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
+                                 for t in toks[_cand_i + 1:])
+                _refs_operand = any(t.startswith('refs/') for t in toks)
+                _writes_ref = _fi or _refs_operand
+                # The disjuncts that fire with NO readable subcommand have only
+                # the candidate to go on, so the write has to be the candidate's
+                # OWN: a flag belongs to the command it follows. `rm -rf
+                # $TMPDIR/x` and `cp -f $SRC $DST` spend their f BEFORE the
+                # dynamic token, which is how they stay out without asking who
+                # the leading word is -- and asking that was the last thing
+                # keeping a wrapper vocabulary in the blocking path, along with
+                # the fail-open it left for `arch -x86_64 "$G" -f main <oid>`.
+                _after = toks[_cand_i + 1:]
+                _refs_after = any(t.startswith('refs/') for t in _after)
+                _fi_after = any(
+                    t in ('-f','-D','-B','-C','-m','-M','--force','--delete','--move')
+                    or t.startswith('--force') or t.startswith('--move')
+                    or (t.startswith('-') and not t.startswith('--')
+                        and any(c in t[1:] for c in 'fDBC')) for t in _after)
+                _fi_strong_after = any(
+                    t in ('-f', '-D', '-B', '-C', '--force', '--delete')
+                    or t.startswith('--force')
+                    or (t.startswith('-') and not t.startswith('--')
+                        and any(c in t[1:] for c in 'fDBC')) for t in _after)
+                # A print-only builtin BEFORE the verb consumes it: `echo "$X"
+                # branch -f main HEAD` prints, and so does the same behind a
+                # wrapper whose option VALUE is the substitution (`sudo -u
+                # "$USER" echo branch -f main HEAD`) -- which is why this asks
+                # where the builtin is, not what the segment starts with.
+                _verb_i = _sub_i if _sub_i >= 0 else _force_i
+                # ...and it must not itself be an option's VALUE: in
+                # `xargs -I echo git branch -f main <oid>` the `echo` is the
+                # replacement STRING and git is what runs.
+                _print_i = next((i for i, t in enumerate(toks)
+                                 if t.rsplit('/', 1)[-1] in _ZERO_OLD_PRINT_ONLY
+                                 and not (i and toks[i - 1].startswith('-'))), -1)
+                if _print_i >= 0 and (_verb_i < 0 or _print_i < _verb_i):
+                    continue
+                if (_force_sub
+                        or (_sub_i >= 0
+                            and (_writes_ref
+                                 or toks[_sub_i] in ('update-ref', 'symbolic-ref')))
+                        # A ref writer needs no FLAG, so an unreadable
+                        # subcommand cannot be qualified on one: `S=update-ref;
+                        # "$G" "$S" refs/heads/main <oid>` carries none and the
+                        # refs/ operand is the write. A dashed executable
+                        # (`G=git-update-ref; "$G" refs/heads/main <oid>`)
+                        # spells the subcommand into the NAME, so it has no
+                        # unreadable operand at all -- there the candidate
+                        # itself is the unreadable part.
+                        or (_dyn_after and (_fi_after or _refs_after))
+                        # The candidate's own NAME can carry the subcommand
+                        # (`G=git-branch; "$G" -f main <oid>`), so a dynamic
+                        # candidate is an unreadable subcommand even with no
+                        # unreadable operand after it. It is qualified on the
+                        # narrow force set, not `_fi`: `-m` is a whole-token
+                        # match for renames and admitting it here would refuse
+                        # `"$PYTHON" -m pytest -x tests/`.
+                        or (not _cand_git
+                            and (_fi_strong_after or _refs_after))):
                     raw_all.append(('force', ''))
                     if _zero_old_ambient_scope():
                         ambient_scope = True
@@ -4926,17 +4931,9 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 ambient_scope = True
                 continue
             if not raw and sub not in _ZERO_OLD_SUBS:
-                # Operands AFTER the subcommand only. A PRE-subcommand global is
-                # never a force flag -- `git -C <dir> worktree list` chdirs, it
-                # does not copy a branch -- and scanning argv[1:] read that `-C`
-                # as `branch -C` and refused every scoped read-only command.
-                _forceish = any(
-                    t in ('-f', '-D', '-B', '-C', '--force', '--delete') or t.startswith('--force')
-                    or (t.startswith('-') and not t.startswith('--') and any(c in t[1:] for c in 'fDBC'))
-                    for t in argv[sub_idx + 1:])
                 if sub and (_may_be_substitution(sub) or _word_may_split(sub, sub)):
                     raw_all.append(('force', ''))
-                elif sub and sub not in _REF_SAFE_SUBS and sub not in _REF_OP_SUBS and _forceish:
+                elif _zero_old_force_sub(argv, sub, sub_idx):
                     raw_all.append(('force', ''))
                 elif not scope_fail_closed or sub in _REF_SAFE_SUBS:
                     # A redirected scope decides WHICH repo a ref write lands in.
@@ -5001,26 +4998,6 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
     if with_untrusted_cd:
         return ops, target_dir, untrusted
     return ops
-def zero_old_ref_exists(repo_dir, short_name):
-    import subprocess
-    if not short_name or not isinstance(short_name, str):
-        return None
-    ref = short_name if short_name.startswith('refs/') else 'refs/heads/' + short_name
-    try:
-        r = subprocess.run(
-            ['git', '-C', repo_dir, 'rev-parse', '--verify', '--quiet', ref],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=_zero_old_git_env(),
-            check=False, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode == 0:
-        return True
-    if r.returncode == 1:
-        return False
-    return None
-
-
 def _gh_find_pr_sub(rest, subcommand):
     """Index in `rest` (argv after `gh`) of the `pr` token immediately followed by
     `subcommand`, reached past gh global flags and their values, or None. Split out

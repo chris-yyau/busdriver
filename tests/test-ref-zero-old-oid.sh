@@ -232,10 +232,216 @@ run_format_suite() {  # <format>
         block "git branch -C topic main" "no old-oid precondition"
     run_gate "...and an unforced rename is, because it deletes the source" \
         block "git branch -m main renamed" "no old-oid precondition"
+    # ── Not this gate's business ────────────────────────────────────────
+    # The wrapper-fallback arm exists for ONE shape (a git invocation hidden
+    # behind a wrapper). Its heuristics are English words and common flags, so
+    # without the "segment names git" qualifier it refused ordinary commands —
+    # including the PR workflow's own `gh pr checkout`.
+    run_gate "gh pr checkout is not a protected-ref force" \
+        allow "gh pr checkout 828"
+    run_gate "...nor is an npm script called switch" allow "npm run switch"
+    run_gate "...nor is the word checkout in an echo" allow "echo checkout"
+    run_gate "...nor a variable-bearing rm" allow "rm -rf \$TMPDIR/x"
+    run_gate "...nor a pipeline that greps for branch" \
+        allow "git status | grep branch"
+    # A force-ish flag on a subcommand that cannot write refs/heads/* is not a
+    # ZERO-old op either; only `worktree add` can, of the ones outside the
+    # modelled set (measured: `git worktree add -B main <path> <oid>` moves main).
+    run_gate "git add -f is not a branch force" allow "git add -f path"
+    run_gate "...nor git clean -fd" allow "git clean -fd"
+    run_gate "...nor git tag -f" allow "git tag -f v1"
+    run_gate "...nor removing a worktree" allow "git worktree remove -f /tmp/wt"
+    # On `worktree add`, `-f` only permits checking out a branch already checked
+    # out elsewhere -- it writes no ref. Only `-B` resets one, so the generic
+    # force-flag net does not apply to this subcommand.
+    run_gate "...nor worktree add -f, which resets no ref" \
+        allow "git worktree add -f /tmp/wt-780f main"
+    run_gate "...nor worktree add -b, which refuses an existing branch" \
+        allow "git worktree add -b fresh-780 /tmp/wt-780b main"
+    run_gate "...but worktree add -B is" \
+        block "git worktree add -B main /tmp/wt-780 $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...including inside a short cluster" \
+        block "git worktree add -fB main /tmp/wt-780c $UNREVIEWED" \
+        "no old-oid precondition"
+    # An operand the gate cannot READ is not a safe one — either of these
+    # executes `worktree add -B`. Same rule the modelled subcommands already
+    # apply (`git branch "$X" main` blocks), and it stays keyed to the verb.
+    run_gate "...and an unreadable flag operand is not a missing -B" \
+        block "git worktree add \"\${FLAG:--B}\" main /tmp/wt-780d HEAD" \
+        "no old-oid precondition"
+    run_gate "...nor is an unreadable verb a missing add" \
+        block "git worktree \"\$VERB\" -B main /tmp/wt-780e HEAD" \
+        "no old-oid precondition"
+    run_gate "...but a literal verb that resets no ref still reads as itself" \
+        allow "git worktree remove \"\$WTDIR\""
+    # Everything after `--` is positional, so an unreadable token there cannot
+    # be the -B this fails closed on.
+    run_gate "...and an unreadable operand after -- is a path, not a flag" \
+        allow "git worktree add -- \"\$WTPATH\" main"
+    run_gate "...at either position" \
+        allow "git worktree add -- /tmp/wt-780i \"\$REV\""
+    run_gate "...while a -B before it still counts" \
+        block "git worktree add -B main -- /tmp/wt-780j" \
+        "no old-oid precondition"
+    # A command word that is a substitution runs SOMETHING; nothing in argv says
+    # it is not git. It keeps the wrapper-fallback arm alive -- but only through
+    # the subcommand-word disjunct, so an ordinary dynamic invocation stays out.
+    run_gate "a dynamically named git is still git" \
+        block "GIT=git; \"\$GIT\" branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...unquoted too" \
+        block "GIT=git; \$GIT update-ref -d refs/heads/main" \
+        "no old-oid precondition"
+    # ...and behind a wrapper, which is the shape this whole arm exists for:
+    # the dynamic name may sit at any index BEFORE the subcommand word.
+    run_gate "...and behind a wrapper" \
+        block "xargs -I{} \"\$GIT\" branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...and after env" \
+        block "env \"\$GIT\" update-ref -d refs/heads/main" \
+        "no old-oid precondition"
+    run_gate "...but a dynamic command word alone is not a ref write" \
+        allow "\"\$PYTHON\" -m pytest -x tests/"
+    # A substitution AFTER the word is an operand, not an executable.
+    run_gate "...nor is a grep whose path is a variable" \
+        allow "grep -rn branch \$DIR"
+    # A literal `git` only counts where an EXECUTABLE can stand. Matching it at
+    # any index read these two as protected-ref force-updates (measured).
+    run_gate "...nor is the word git inside an echo" allow "echo git branch"
+    run_gate "...nor git as a grep operand" allow "grep branch git"
+    # Same question asked of a DYNAMIC token: an argument is not an executable
+    # just because it cannot be read.
+    run_gate "...nor a variable echoed in front of the word branch" \
+        allow "echo \"\$X\" branch -f main HEAD"
+    run_gate "...nor the same through printf" \
+        allow "printf %s \"\$X\" branch -f main HEAD"
+    run_gate "...but a wrapper prefix still reaches it" \
+        block "timeout 5 git branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    # The wrapper arm models `worktree` by FLAG, exactly as the argv path does:
+    # the word alone writes no ref, `add -B` resets one.
+    run_gate "...and a wrapped worktree add -B is still a force" \
+        block "xargs -I{} git worktree add -B main /tmp/wt-780g $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...including behind a dynamically named git" \
+        block "GIT=git; \"\$GIT\" worktree add -B main /tmp/wt-780h $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...but a wrapped worktree list is not" \
+        allow "xargs -I{} git worktree list"
+    # The arm asks for an invocation SHAPE, not a position, because the set of
+    # wrappers is open-ended — every review round named another one a
+    # position rule did not know. None of these needs to be in a list.
+    run_gate "...and an unmodelled wrapper does not hide a force" \
+        block "arch -x86_64 git branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...whatever the wrapper is called" \
+        block "chronic git branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...nor does one in front of a dynamically named git" \
+        block "arch -x86_64 \"\$GIT\" branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    # An unforced rename still DELETES the source ref, so it is a ref write —
+    # the same reading the argv path gives it.
+    run_gate "...and a wrapped rename is a ref write too" \
+        block "\"\$GIT\" branch -m main renamed" \
+        "no old-oid precondition"
+    # The subcommand can be spelled into the executable's own NAME, leaving no
+    # unreadable operand at all — there the candidate itself is the unreadable
+    # part, and it must be where an executable goes.
+    run_gate "...and a dashed git in a variable is a ref write" \
+        block "G=git-branch; \"\$G\" -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...including behind a wrapper" \
+        block "xargs -I{} \"\$G\" -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    # ...but an operand is not an executable, however forceful the flag.
+    run_gate "...while a copy naming two variables is not" \
+        allow "cp -f \$SRC \$DST"
+    run_gate "...nor an interpreter with a -m of its own" \
+        allow "\"\$PYTHON\" -m pytest -x tests/"
+    # A print-only word that is an OPTION VALUE is not the command: in
+    # `xargs -I echo …` the echo is the replacement string and git is what runs.
+    run_gate "...and echo as a replacement string does not exempt git" \
+        block "printf x | xargs -I echo git branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    # `fast-import` is OUT OF SCOPE for #780 (operator decision): its force can
+    # arrive as `feature force` inside the import STREAM, which this gate never
+    # sees, so a `--force`-only rule would read as coverage it does not have.
+    run_gate "fast-import is not this issue's business" \
+        allow "git fast-import --force"
+    run_gate "...in either spelling" allow "git fast-import"
+    # `--` is end-of-options only when it IS the marker: parse-options hands the
+    # next argv element to a value-taking option whatever it spells, so here the
+    # `--` is the reason STRING and `-B` is still an option.
+    run_gate "...and a -- consumed as an option value ends nothing" \
+        block "git worktree add --lock --reason -- -B main /tmp/wt-780k $UNREVIEWED" \
+        "no old-oid precondition"
+    # The write has to be the CANDIDATE's own — a flag belongs to the command it
+    # follows. This is what lets an unknown leading word stay unknown.
+    run_gate "...and an unknown wrapper cannot hide a dashed git either" \
+        block "arch -x86_64 \"\$G\" -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...while an f spent BEFORE the variable is that command's own" \
+        allow "cp -f \$SRC \$DST"
+    run_gate "...as in a tar" allow "tar -cf \$ARCHIVE \$DIR"
+    # A ref writer needs no FLAG, so an unreadable subcommand cannot be
+    # qualified on one — the refs/ operand is the write.
+    run_gate "...and a flagless dynamic ref writer is still a write" \
+        block "G=git; S=update-ref; \"\$G\" \"\$S\" refs/heads/main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...including one spelled into the executable name" \
+        block "G=git-update-ref; \"\$G\" refs/heads/main $UNREVIEWED" \
+        "no old-oid precondition"
+    # A print-only builtin consumes the words. Its POSITION is the test, not
+    # the segment's first word: a wrapper option value can be the substitution.
+    run_gate "...but a wrapper option value in front of echo is not a force" \
+        allow "sudo -u \"\$USER\" echo branch -f main HEAD"
+    run_gate "...nor the same through env" \
+        allow "env -u \"\$NAME\" echo branch -f main HEAD"
+    # ...but a single-dash long option is not a cluster: -name is not -m.
+    run_gate "...while a find naming a path variable is not" \
+        allow "find \$DIR -name branch"
+    # A wrapper's OPTION VALUE is not the command word either.
+    run_gate "...and an option value does not hide the executable" \
+        block "GIT=git; env -u FOO \"\$GIT\" branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...the same through sudo" \
+        block "sudo -u nobody \"\$GIT\" branch -f main $UNREVIEWED" \
+        "no old-oid precondition"
+    # With a LITERAL git behind it the earlier arm gets there first: `env -u`
+    # is an env manipulation the gate cannot resolve, so it fails closed on the
+    # operand. Pinned so a later reader does not credit this arm for it.
+    run_gate "...though a literal git behind env is caught before this arm" \
+        block "env -u FOO git update-ref -d refs/heads/main" \
+        "cannot be resolved"
+    # An ordinary topic branch is ordinary feature work — the same reading the
+    # merge arm gives it — and needs no declaration file to say so.
+    run_gate "deleting a topic branch is not deleting a protected one" \
+        allow "git branch -D old-topic-780"
+    # A ref name may legally contain glob metacharacters; the pair must not be
+    # pathname-expanded against the gate's cwd on its way to PROTECTED_SET.
+    run_gate "a glob-metachar ref name is unreadable, not rewritten" \
+        block "git branch -D bad[a-z]name" "no old-oid precondition"
+    # A bounded sweep, not enumeration: every prefix this file knows and every
+    # one it does not, against both spellings of the executable. The oracle is
+    # trivial — each of these runs `branch -f main <oid>` — and it is exactly
+    # the axis where four review rounds each found one more missing entry.
+    for _zo_pre in "" "xargs -I{} " "env " "sudo " "timeout 5 " "nice " \
+                   "arch -x86_64 " "chronic " "caffeinate -i "; do
+        for _zo_exe in "git branch" "\"\$G\""; do
+            # Refused is the whole oracle here — WHICH arm refuses is not this
+            # sweep's business (a `sudo` prefix is an unresolvable scope and is
+            # caught earlier). The named cases above pin the reasons.
+            run_gate "sweep: [${_zo_pre}]${_zo_exe} force → block" \
+                block "${_zo_pre}${_zo_exe} -f main $UNREVIEWED"
+        done
+    done
     # ...and the documented escape the refusal advertises still works.
     run_gate "an honest full-oid CAS is still allowed" \
         allow "git update-ref refs/heads/main $UNREVIEWED $REVIEWED"
     git -C "$REPO" branch topic HEAD
+    git -C "$REPO" branch old-topic-780 HEAD
     # Porcelain force has no old-oid CAS; pre-command probe is TOCTOU, so
     # fail closed for every current-ref state (direct / absent / symref),
     # including non-protected topic names (files + reftable). Measured: `git
@@ -344,7 +550,7 @@ fi
 printf '\n=== #780 detector smoke ===\n'
 DET=$(PYTHONPATH="$REPO_ROOT/hooks/gate-scripts/lib" python3 -S - "$REPO" <<'PY'
 import sys
-from gitcmd_detect import git_zero_old_ref_op, zero_old_ref_exists
+from gitcmd_detect import git_zero_old_ref_op
 hook_cwd = sys.argv[1]
 OID_A = '3cc2f0d6f1a399738b4873e4873e88b2e47356be'
 OID_B = '39f33bdc516ac395d10ff9b84f6da7145084245c'
@@ -372,7 +578,6 @@ ops = git_zero_old_ref_op(
 assert ops == [('force', '')], ops             # wrong length for a sha1 repo
 ops = git_zero_old_ref_op('git branch -D main', hook_cwd=hook_cwd)
 assert ops == [('delete', 'main')], ops
-assert zero_old_ref_exists(hook_cwd, 'main') is True
 print('ok')
 PY
 ) || DET=fail

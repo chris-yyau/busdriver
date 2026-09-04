@@ -183,7 +183,14 @@ moves no ref, and `pre-commit-gate.sh` owns the `git commit` that follows.
 
 **#780 (ZERO-old-oid force-update / delete)** is closed in this same PreToolUse
 gate: `branch -f`, `checkout -B` / `switch -C`, `update-ref` without `<oldvalue>`,
-and deletes of a protected name. At the `reference-transaction` layer, create vs
+`worktree add -B` (measured: it moves refs/heads/main), and deletes of a
+protected name. `git fast-import` is OUT of scope: it force-updates refs, but
+its force is not only a flag -- the import stream can carry `feature force`,
+which arrives on stdin and is unreachable from the command line this gate
+reads, so a `--force`-only rule would cover the spelling an attacker need not
+use. Refusing the command outright is a scope decision, not a parser one. A named delete of an ordinary topic branch is NOT in scope —
+the merge arm reads any other branch as ordinary feature work and so does
+this one. At the `reference-transaction` layer, create vs
 force-update uses the githooks(5) discriminator — prepared-time `git rev-parse
 --verify`. The PreToolUse gate deliberately does NOT run that probe: it would be
 read before the command, and the command can move the ref underneath it. It

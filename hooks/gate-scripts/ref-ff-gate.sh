@@ -477,7 +477,18 @@ try:
             continue
         if chr(10) in _zk or chr(13) in _zk or chr(10) in _zn or chr(13) in _zn:
             raise ValueError('newline in zero-old field')
-        if ' ' in _zk or ' ' in _zn or ':' in _zk or ':' in _zn:
+        # The shell reads this line with IFS word-splitting AND, historically,
+        # pathname expansion. git allows '[' in a ref name, so a pair spelling a
+        # name like foo[a-z] used to be glob-matched against the gate's cwd and
+        # a matching FILE silently rewrote the name compared against
+        # PROTECTED_SET. The loop now runs with pathname expansion off; this
+        # rejects the same shapes at the source, and covers every IFS character
+        # rather than the space alone.
+        # (No backticks in this comment: it is embedded in a double-quoted
+        # shell string, where they would be command substitution.)
+        if (any(c.isspace() for c in _zk + _zn)
+                or ':' in _zk or ':' in _zn
+                or any(c in _zk + _zn for c in '[]*?')):
             _zparts.append('force:')  # unreadable → empty name
         else:
             _zparts.append(_zk + ':' + _zn)
@@ -1121,6 +1132,10 @@ fi
 
 # #780 ZERO-old-oid
 if [ -n "$ZERO_OLD_OPS" ]; then
+    # `set -f`: the loop splits an unquoted expansion on purpose (the pairs are
+    # space-separated), but pathname expansion on the same word is not wanted --
+    # a ref name is allowed to contain glob metacharacters.
+    set -f
     for _zo_pair in $ZERO_OLD_OPS; do
         _zo_kind="${_zo_pair%%:*}"
         _zo_name="${_zo_pair#*:}"
@@ -1155,15 +1170,23 @@ Or, if you are the operator and this is deliberate, the usual override in your o
                     exit 0
                     ;;
             esac
-            if [ "$DECLARED" = "1" ]; then
-                continue
-            fi
-            if [ "$_zo_kind" = "delete" ]; then
-                block_emit "BLOCKED: this would DELETE the protected branch '$_zo_name' (issue #780)."
-            else
-                block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
-            fi
-            exit 0
+            # Neither in the discovered set nor a conventional name: an
+            # ordinary topic branch, and the gate treats it the way the merge
+            # arm treats one — "a merge onto any OTHER branch is ordinary
+            # feature work". Refusing it needed a declaration file to undo, so
+            # `git branch -D old-topic` — the ONLY common shape that produces a
+            # named op — was refused in every repo that has none, and the
+            # message told the operator it was deleting a protected branch,
+            # which was false and pointed the fix in the wrong direction.
+            #
+            # Discovery is CURRENT, not stale: reaching here means the set is
+            # non-empty (an empty one blocks above), and for this name to be
+            # protected a remote HEAD or init.defaultBranch would have to start
+            # naming it. Doing that inside this invocation needs a companion,
+            # which yields an unresolved force and takes the branch above
+            # instead; doing it in an earlier call is already reflected in the
+            # set this run discovered.
+            continue
             ;;
         esac
         if [ "$_zo_kind" = "delete" ]; then
@@ -1177,6 +1200,7 @@ Or, if you are the operator and this is deliberate, the usual override in your o
         block_emit "BLOCKED: this would FORCE-UPDATE the protected branch '$_zo_name' with no old-oid precondition (branch -f / checkout -B / update-ref without <oldvalue>) (issue #780)."
         exit 0
     done
+    set +f
 fi
 
 # Detached HEAD moves no branch ref; a merge onto any OTHER branch is ordinary

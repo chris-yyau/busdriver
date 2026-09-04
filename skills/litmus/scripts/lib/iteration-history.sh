@@ -324,17 +324,32 @@ with os.fdopen(fd, "w") as fh:
 }
 
 # Render the branch's prior verdicts for prompt injection.
-# Usage: load_pr_history <pr_base_ref>
-# Emits nothing when no entry survives the ancestry filters.
+#
+# Usage: load_pr_history <reviewed_merge_base_sha> <reviewed_head_sha>
+#
+# Both are the PINNED ids the caller captured the diff against — never a branch
+# name, and never resolved here. Re-resolving HEAD or the base ref would compare
+# stored records against whatever the refs mean NOW, which is minutes after the
+# diff was captured: a commit landing in between would let verdicts for a LATER
+# scope be injected into the prompt for the older diff, breaking the one property
+# the framing promises the reviewer — that this pass covers a superset of every
+# verdict shown. An empty or malformed pin (the caller's own moved-ref check
+# blanks it) emits nothing, exactly like the append side.
+#
+# Emits nothing when no entry survives the filters.
 load_pr_history() {
-  local base_ref="${1:-}"
+  local base_sha="${1:-}" head_sha="${2:-}" _s
   [ -n "$PR_HISTORY_FILE" ] || { echo ""; return 0; }
   [ -s "$PR_HISTORY_FILE" ] || { echo ""; return 0; }
-  python3 -I - "$PR_HISTORY_FILE" "$base_ref" "${LITMUS_PR_HISTORY_MAX:-20}" \
-    "${LITMUS_PR_HISTORY_MAX_AGE:-604800}" <<'PY' 2>/dev/null || echo ""
-import functools, json, os, stat, subprocess, sys, time
+  for _s in "$base_sha" "$head_sha"; do
+    case "$_s" in *[!0-9a-f]* | "") echo ""; return 0 ;; esac
+    case "${#_s}" in 40|64) ;; *) echo ""; return 0 ;; esac
+  done
+  python3 -I - "$PR_HISTORY_FILE" "$base_sha" "${LITMUS_PR_HISTORY_MAX:-20}" \
+    "${LITMUS_PR_HISTORY_MAX_AGE:-604800}" "$head_sha" <<'PY' 2>/dev/null || echo ""
+import functools, json, math, os, stat, subprocess, sys, time
 
-path, base_ref = sys.argv[1], sys.argv[2]
+path, BASE, HEAD_SHA = sys.argv[1], sys.argv[2], sys.argv[5]
 try:
     max_entries = max(1, int(sys.argv[3]))
 except ValueError:
@@ -364,18 +379,6 @@ def is_ancestor(sha, ref):
     return True if rc == 0 else (False if rc == 1 else None)
 
 
-def current_merge_base(ref):
-    """The merge-base of `ref` and HEAD, or None if git cannot say."""
-    if not ref:
-        return None
-    proc = subprocess.run(
-        ["git", "merge-base", ref, "HEAD"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    )
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.decode("ascii", "replace").strip() or None
-
 try:
     # O_NOFOLLOW / O_NONBLOCK / S_ISREG for the same reasons as the append: a
     # symlinked store would make this read an injection channel straight into the
@@ -398,13 +401,11 @@ HEX = set("0123456789abcdef")
 
 # A verdict describes one diff, and `base...HEAD` is pinned by BOTH ends. Binding
 # only the head would let a retargeted PR, a force-pushed base, or a partially
-# merged branch keep an old head reachable from HEAD while the diff it names has
-# changed underneath. Requiring the recorded merge-base to equal the current one
-# also subsumes the "already merged into base" case: if base advanced to contain
-# the commit, the merge-base moved and the entry drops on its own.
-BASE = current_merge_base(base_ref)
-if BASE is None:
-    sys.exit(0)
+# merged branch keep an old head reachable while the diff it names has changed
+# underneath. Requiring the recorded merge-base to equal the REVIEWED one also
+# subsumes the "already merged into base" case: if base advanced to contain the
+# commit, the merge-base moved and the entry drops on its own. BASE and HEAD_SHA
+# are the caller's pinned ids (see the usage note above), not resolved here.
 
 # Records also EXPIRE. The ancestry and merge-base filters bind a record to a
 # scope, never to a lifetime — a verdict whose wording was shaped by a particular
@@ -414,16 +415,31 @@ if BASE is None:
 # text the branch chose to keep reaching later reviewers. An age cap bounds it.
 # A record with no readable stamp is dropped rather than treated as fresh.
 NOW = time.time()
+CLOCK_SKEW = 300
 try:
     MAX_AGE = max(0, int(sys.argv[4]))
 except (IndexError, ValueError):
     MAX_AGE = 604800
 
+def _reject_constant(name):
+    """Python's JSON parser accepts NaN/Infinity by default; this store does not.
+
+    Defence in depth, and honestly so: removing this alone does NOT turn the test
+    suite red. The two-sided age bound below is what actually covers the one field
+    compared numerically — `NOW - inf` and `NOW - -inf` both fall outside it, and
+    NaN can only arrive through the token this rejects. What this adds is stopping
+    a non-finite value from reaching any OTHER field, where nothing compares it
+    and it would simply render as "nan"/"inf".
+    """
+    raise ValueError("non-finite JSON constant: " + name)
+
 kept = []
 for line in lines:
     try:
-        entry = json.loads(line)
+        entry = json.loads(line, parse_constant=_reject_constant)
     except ValueError:
+        continue
+    if not isinstance(entry, dict):
         continue
     sha = str(entry.get("head_sha") or "")
     # Strict hex: the value reaches git as argv, so it cannot inject a command,
@@ -436,11 +452,30 @@ for line in lines:
     if entry.get("base_sha") != BASE:
         continue
     ts = entry.get("ts")
-    if not isinstance(ts, (int, float)) or NOW - ts > MAX_AGE:
+    # `bool` is an `int` in Python, and a non-finite float defeats the comparison
+    # outright — `NOW - nan > MAX_AGE` is False, so a NaN stamp would sail past an
+    # age check written the obvious way. A FUTURE stamp is rejected for the same
+    # reason it would otherwise be useful to an attacker: it never ages out.
+    # Bounded on both sides, with a little slack for a clock step.
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        continue
+    try:
+        # A JSON integer literal parses to an arbitrary-precision Python int, and
+        # converting one that large to a float RAISES. Uncaught, a single such
+        # record aborts the loader and blanks the entire branch history — one bad
+        # line disabling the store for every later pass, instead of being skipped
+        # like every other malformed record.
+        ts = float(ts)
+    except (OverflowError, ValueError):
+        continue
+    if not math.isfinite(ts):
+        continue
+    age = NOW - ts
+    if age > MAX_AGE or age < -CLOCK_SKEW:
         continue
     # An unanswerable ancestry check drops the entry and the pass starts cold,
     # which is exactly the pre-#811 behaviour.
-    if is_ancestor(sha, "HEAD") is not True:
+    if is_ancestor(sha, HEAD_SHA) is not True:
         continue
     kept.append(entry)
 

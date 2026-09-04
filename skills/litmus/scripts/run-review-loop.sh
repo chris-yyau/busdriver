@@ -1612,7 +1612,11 @@ PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 # ancestors of HEAD — so reading both would only duplicate. The per-run file
 # still backs stall detection either way.
 if [ "$REVIEW_MODE" = "pr" ]; then
-  ITER_HISTORY=$(load_pr_history "$PR_BASE_BRANCH")
+  # The PINNED ids, not the branch name. Resolving refs inside the loader would
+  # compare stored records against what the refs mean now — minutes after the
+  # diff above was captured — so a commit landing in between could inject a
+  # verdict for a LATER scope into the prompt for this older diff.
+  ITER_HISTORY=$(load_pr_history "$PR_REVIEWED_MERGE_BASE" "$PR_REVIEWED_HEAD_SHA")
 else
   ITER_HISTORY=$(load_iteration_history)
 fi

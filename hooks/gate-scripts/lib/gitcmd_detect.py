@@ -3383,7 +3383,11 @@ def _literal_c_target(argv, raw_argv, sub_idx):
         if argv[k] != '-C':
             k += 1
             continue
-        if seen or k + 1 >= sub_idx or raw_argv is None:
+        if seen:            # a chained `-C`; only the first is absolute
+            return None
+        if k + 1 >= sub_idx:  # dangling `-C` with no operand before the subcommand
+            return None
+        if raw_argv is None:  # no raw spelling to check the operand against
             return None
         seen = _abs_cd_target(_mask_literal_substitution(
             argv[k + 1], _raw_spelling(raw_argv, k + 1)))

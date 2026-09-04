@@ -599,18 +599,34 @@ fi
 CMD_CHOSEN_ANCHOR=0
 if [ -n "$TARGET_DIR" ] && { [ -z "$KIND" ] || [ -n "$UNKNOWN_CANDIDATES" ]; }; then
     CMD_CHOSEN_ANCHOR=1
-    # ...unless the directory it chose is the session's OWN repository, where
-    # consent and effect do not actually diverge. Without this the operator's
-    # escape hatch silently depended on whether they typed a redundant `-C`:
-    # `git -C . <word>` and `<word>` from the same shell would disagree about
-    # whether the skip file works.
-    # Sentinel byte for the same reason resolve-repo-dir.sh uses one: `$(...)`
-    # strips ALL trailing newlines, and a directory name may legally end in one
-    # on POSIX, so "/r\n" and "/r" would otherwise compare EQUAL and hand a
-    # genuinely different repository the gate-derived treatment.
-    _CWD_ROOT=$(git -C "${HOOK_CWD:-.}" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
-    _ANCHOR_ROOT=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
-    if [ -n "$_CWD_ROOT" ] && [ "$_CWD_ROOT" = "$_ANCHOR_ROOT" ]; then
+    # ...unless the directory it named IS the session's own, where consent and
+    # effect do not actually diverge. Without this the operator's escape hatch
+    # silently depended on whether they typed a redundant absolute `-C`: that
+    # command and the bare one from the same shell would disagree about whether
+    # the skip file works.
+    #
+    # The test is LEXICAL — the `-C` operand as written against the payload cwd
+    # as written — and deliberately not the equality of the two RESOLVED repo
+    # roots this first shipped with. Resolution reads the filesystem, and the
+    # filesystem is not stable across the gap between this read and git's own
+    # chdir: `ln -sfn /elsewhere /link && git -C /link <word>` resolves into the
+    # session repo HERE, clears the anchor, and spends this repo's skip file or
+    # empty declaration — while git, chdir-ing after the retarget, resolves the
+    # `!`-alias in /elsewhere and can fast-forward a protected ref there. A
+    # string comparison cannot be moved by anything the command does first.
+    # It also answers for a BARE repository, where both `--show-toplevel` calls
+    # fail and the old comparison could never fire at all — so `git -C /bare
+    # merge HEAD && git -C /bare zz` stopped honouring the very override the
+    # equivalent bare-form command was given.
+    #
+    # Fails CLOSED on anything it cannot match exactly: a trailing slash, or any
+    # other spelling of the same directory, keeps the anchor command-chosen.
+    # Residual, named and NOT closed here: when the command names the cwd's OWN
+    # path string, an earlier segment could still rename that directory and put a
+    # symlink in its place. That destroys the operator's live repo directory to
+    # win — a strictly larger attack than the retarget above — and no static test
+    # on this side can see it.
+    if [ -n "$HOOK_CWD" ] && [ "$TARGET_DIR" = "$HOOK_CWD" ]; then
         CMD_CHOSEN_ANCHOR=0
     fi
 fi

@@ -1919,6 +1919,17 @@ REPO="$NOCONV"
 run_gate "...but the same declaration is honoured for the session's own repo" \
     allow "git zz feature"
 REPO="$NOCONV_HOLDER"
+# ...and the "session's own repo" test is the OPERAND, not where it currently
+# resolves to. A symlink that points into the session repo right now resolves
+# there for the gate and somewhere else for git, because the command can retarget
+# it in an earlier segment — so a resolved-root comparison would spend this
+# repo's declaration while the alias ran wherever the link had been pointed.
+ln -sfn "$NOCONV" "$TMPROOT/noconv-link"
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...but a -C through a symlink INTO it is still command-chosen" \
+    block "git -C $TMPROOT/noconv-link zz feature" "chose its own anchor"
+REPO="$NOCONV_HOLDER"
 rm -f "$NOCONV/$ISO_STATE/ref-ff-protected.local"
 
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

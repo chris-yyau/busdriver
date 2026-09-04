@@ -1,5 +1,20 @@
 #!/bin/bash
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Every subprocess this file starts runs with a PINNED PATH and is invoked
+# through the ABSOLUTE /usr/bin/env, never a bare name. Both halves are needed:
+# the pinned PATH stops a repository-controlled PATH selecting planted binaries
+# (a committed settings.json env block can set session env — #325 / ADR 0016),
+# and the absolute path stops a shell FUNCTION standing in for the tool. A bare
+# name is shadowable by a function, and so is `command` itself — but a function
+# name cannot contain a slash, so /usr/bin/env cannot be intercepted. It matters
+# here because this library is sourced by run-review-loop.sh, which has no
+# `env -i` boundary of the kind hooks get (see gate-scripts/lib/sanitized-gate.sh).
+# python3 and git are
+# otherwise resolved through the ambient one, which a committed settings.json env
+# block can set (#325 / ADR 0016) — so sourcing this library, in commit mode or
+# in PR mode, would run repository-local executables. Children inherit it, which
+# is what covers the git calls made from inside the python blocks below.
+_PR_HISTORY_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
 # Iteration history management for litmus review convergence
 # Tracks issues found across iterations so the LLM can converge
 
@@ -14,7 +29,7 @@ append_iteration_history() {
 
   # Extract issues array and add iteration metadata
   local entry
-  entry=$(echo "$json_output" | python3 -I -c "
+  entry=$(echo "$json_output" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c "
 import sys, json
 data = json.load(sys.stdin)
 entry = {
@@ -45,7 +60,7 @@ load_iteration_history() {
     return 0
   fi
 
-  python3 -I -c "
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c "
 import sys, json, unicodedata
 
 # Bounded at the SOURCE. A byte cap applied by the caller does not bound this
@@ -187,7 +202,7 @@ print(hashlib.md5("|".join(blocking).encode()).hexdigest() if blocking else "emp
 # Used for stall detection: if fingerprint matches previous iteration, loop is stuck
 compute_issue_fingerprint() {
   local json_output="$1"
-  echo "$json_output" | python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
+  echo "$json_output" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
 }
 
 # Check if current issue set matches the previous iteration (stall detection)
@@ -197,13 +212,13 @@ is_stalled() {
   [ ! -f "$ITERATION_HISTORY_FILE" ] && return 1
   local prev_fingerprint
   # Extract issues array from the last JSONL entry, then fingerprint
-  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
+  prev_fingerprint=$(export PATH="$_PR_HISTORY_PATH"; /usr/bin/env tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | /usr/bin/env python3 -I -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
   [ "$current_fingerprint" = "$prev_fingerprint" ]
 }
 
 # Clear iteration history (called on PASS or init)
 clear_iteration_history() {
-  rm -f "$ITERATION_HISTORY_FILE"
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env rm -f "$ITERATION_HISTORY_FILE"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -270,7 +285,7 @@ clear_iteration_history() {
 #
 # Not a gate marker: nothing reads it as authorization, so it is deliberately NOT
 # wired into design-clear.sh --skip. Deleting it costs one cold review.
-_PR_HISTORY_HOME="$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)"
+_PR_HISTORY_HOME="$(PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null || true)"
 # `|| true` is required, not decorative. Both scripts that source this file run
 # under `set -euo pipefail`, and with pipefail a failing `git rev-list` (exit 128
 # on an unborn HEAD, or outside a repo) makes the whole pipeline non-zero even
@@ -278,7 +293,7 @@ _PR_HISTORY_HOME="$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid(
 # at source time, with git's stderr already discarded. That kills a commit-mode
 # review before the first commit, and kills init-review-loop.sh before it can
 # reach its own friendly not-a-repo message.
-_PR_HISTORY_KEY="$(git rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -1 || true)"
+_PR_HISTORY_KEY="$(export PATH="$_PR_HISTORY_PATH"; /usr/bin/env git rev-list --max-parents=0 HEAD 2>/dev/null | /usr/bin/env sort | /usr/bin/env head -1 || true)"
 case "$_PR_HISTORY_KEY" in
   *[!0-9a-f]* | "") _PR_HISTORY_KEY="" ;;
 esac
@@ -305,14 +320,14 @@ fi
 # function so the containment rule can be exercised directly on synthetic paths;
 # the live wiring below has no other way to reach the case.
 _pr_history_within() {
-  python3 -I -c '
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
 import os, sys
 child, ancestor = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
 sys.exit(0 if child == ancestor or child.startswith(ancestor + os.sep) else 1)
 ' "$1" "$2" 2>/dev/null
 }
 if [ -n "$PR_HISTORY_FILE" ]; then
-  _PR_HISTORY_WORKTREE="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  _PR_HISTORY_WORKTREE="$(PATH="$_PR_HISTORY_PATH" /usr/bin/env git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$_PR_HISTORY_WORKTREE" ] \
      && _pr_history_within "$PR_HISTORY_DIR" "$_PR_HISTORY_WORKTREE"; then
     PR_HISTORY_DIR=""
@@ -369,8 +384,8 @@ append_pr_history() {
     case "${#_sha}" in 40|64) ;; *) return 0 ;; esac   # sha1 | sha256 repo
   done
   [ -n "$PR_HISTORY_FILE" ] || return 0
-  mkdir -p "$PR_HISTORY_DIR" 2>/dev/null || return 0
-  printf '%s' "$json_output" | python3 -I -c '
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env mkdir -p "$PR_HISTORY_DIR" 2>/dev/null || return 0
+  printf '%s' "$json_output" | PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I -c '
 import errno, fcntl, json, os, stat, sys, time, unicodedata
 
 path, head_sha, base_sha = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -488,6 +503,22 @@ try:
             fh.seek(size - KEEP)
             tail = fh.read()
             _, _, tail = tail.partition(b"\n")   # drop the partial first record
+            # A single record bigger than the window leaves nothing after that
+            # partition. Rewriting then EMPTIES the store and destroys the record
+            # just appended, so skip the prune instead — an oversized file is a
+            # smaller problem than a lost verdict.
+            if not tail.strip():
+                # The newest record is itself bigger than the window, so nothing
+                # survives the partition. Skipping the prune here would let the
+                # file grow without limit; keep exactly that record instead, so
+                # the store stays bounded and the verdict just written is not the
+                # one destroyed.
+                # `record` already ends in the JSONL newline (see its
+                # construction above), so this stays one complete line and the
+                # next append lands on its own. Pinned by a fixture, because the
+                # failure if that ever stops being true is two JSON objects
+                # concatenated into an unparseable line.
+                tail = record.encode("utf-8")
             fh.seek(0)
             fh.write(tail)
             fh.truncate()
@@ -518,7 +549,7 @@ load_pr_history() {
     case "$_s" in *[!0-9a-f]* | "") echo ""; return 0 ;; esac
     case "${#_s}" in 40|64) ;; *) echo ""; return 0 ;; esac
   done
-  python3 -I - "$PR_HISTORY_FILE" "$base_sha" "${LITMUS_PR_HISTORY_MAX:-20}" \
+  PATH="$_PR_HISTORY_PATH" /usr/bin/env python3 -I - "$PR_HISTORY_FILE" "$base_sha" "${LITMUS_PR_HISTORY_MAX:-20}" \
     "${LITMUS_PR_HISTORY_MAX_AGE:-604800}" "$head_sha" <<'PY' 2>/dev/null || echo ""
 import errno, fcntl, functools, json, math, os, stat, subprocess, sys, time, unicodedata
 
@@ -542,6 +573,9 @@ max_entries = min(max_entries, 100)
 SCAN_LINES = 200
 TAIL_BYTES = 512 * 1024
 
+_ANCESTRY_DEADLINE = time.monotonic() + 30.0
+
+
 @functools.lru_cache(maxsize=None)
 def is_ancestor(sha, ref):
     """True / False / None, where None means git could not answer at all.
@@ -551,10 +585,23 @@ def is_ancestor(sha, ref):
     ERROR, and collapsing it to False would read "the base could not be resolved"
     as "not merged yet" and inject verdicts that may belong to a previous PR.
     """
-    rc = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", sha, ref],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode
+    # One budget for the WHOLE scan, not per call. Up to 200 records each with a
+    # distinct sha would otherwise cost 200 x the per-call timeout before the
+    # loader gave up — half an hour inside storage that is advisory by contract.
+    remaining = _ANCESTRY_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        rc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, ref],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=min(10.0, remaining),
+        ).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        # Unanswerable, not "no" — the caller drops the entry either way, which
+        # is the fail-safe direction. A partial clone fetching objects or a
+        # wedged filesystem must not hang the review.
+        return None
     return True if rc == 0 else (False if rc == 1 else None)
 
 

@@ -500,6 +500,65 @@ PRUNED=$(wc -c < "$PR_HISTORY_FILE")
 OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
 echo "$OUT" | grep -q "post-prune" || fail "pruning dropped the record just written:\n$OUT"
 [ -z "$(find "$PR_HISTORY_DIR" -name '*.prune.*' 2>/dev/null)" ] || fail "a prune temp file was left behind"
+# ── 5d3a. a poisoned PATH cannot substitute the tools this lib runs ─────────
+# A committed settings.json env block can set session env, PATH included, and
+# this lib runs python3 and git at SOURCE time — so an ambient PATH would let the
+# reviewed repository execute its own binaries merely by having the lib sourced.
+mkdir -p "$SANDBOX/evil"
+for tool in python3 git sort head tail mkdir rm; do
+  printf '#!/bin/sh\ntouch "%s/evil/RAN-%s"\nexit 0\n' "$SANDBOX" "$tool" > "$SANDBOX/evil/$tool"
+  chmod +x "$SANDBOX/evil/$tool"
+done
+# The probe must REACH the calls. `|| true` alone would let the whole subshell
+# die early — a failed source, a broken append — and the "nothing was executed"
+# assertions below would then pass having proved nothing.
+PROBE=$(
+  PATH="$SANDBOX/evil:$PATH"
+  export PATH
+  # shellcheck source=../skills/litmus/scripts/lib/iteration-history.sh
+  source "$LIB"
+  append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"path-probe"}]}' \
+    "$SHA1" "$BASE_SHA"
+  load_pr_history "$BASE_SHA" "$HEAD_NOW" >/dev/null
+  # The per-run helpers run on the same untrusted path, so probe them too —
+  # is_stalled and compute_issue_fingerprint each start their own subprocesses.
+  append_iteration_history 1 '{"status":"FAIL","issues":[{"severity":"high","file":"a","line":1,"description":"d"}]}'
+  load_iteration_history >/dev/null
+  FP=$(compute_issue_fingerprint '{"status":"FAIL","issues":[{"severity":"high","file":"a","line":1,"description":"d"}]}')
+  is_stalled "$FP" >/dev/null 2>&1 || true
+  clear_iteration_history
+  echo REACHED
+)
+[ "$PROBE" = "REACHED" ] || fail "the PATH probe never reached the calls it tests (got: $PROBE)"
+for tool in python3 git sort head tail mkdir rm; do
+  [ ! -e "$SANDBOX/evil/RAN-$tool" ] \
+    || fail "a PATH-planted $tool was executed by the history lib"
+done
+# A shell FUNCTION of the same name bypasses PATH entirely, which is why the
+# invocations go through `command`.
+FN_PROBE=$(
+  # shellcheck disable=SC2317  # invoked indirectly, by name, if the guard fails
+  git() { touch "$SANDBOX/evil/FN-git"; }
+  # shellcheck disable=SC2317
+  python3() { touch "$SANDBOX/evil/FN-python3"; }
+  # `command` is a shell name too, so a function can intercept it — which is why
+  # the library invokes through the absolute /usr/bin/env instead.
+  # shellcheck disable=SC2317
+  command() { touch "$SANDBOX/evil/FN-command"; }
+  # shellcheck source=../skills/litmus/scripts/lib/iteration-history.sh
+  source "$LIB"
+  append_pr_history '{"status":"FAIL","issues":[]}' "$SHA1" "$BASE_SHA"
+  load_pr_history "$BASE_SHA" "$HEAD_NOW" >/dev/null
+  echo REACHED
+)
+[ "$FN_PROBE" = "REACHED" ] || fail "the function-shadow probe never reached the calls (got: $FN_PROBE)"
+[ ! -e "$SANDBOX/evil/FN-command" ] || fail "a shell function named command intercepted the invocation"
+for tool in git python3; do
+  [ ! -e "$SANDBOX/evil/FN-$tool" ] \
+    || fail "a shell function named $tool stood in for the binary"
+done
+rm -rf "$SANDBOX/evil"
+
 # ── 5d3b. a record packed with tiny findings cannot flood the prompt ────────
 # Rendering can AMPLIFY: a bare `{}` is 2 bytes stored and about 14 rendered, so
 # a record full of them fits the 512 KiB read window and expands into megabytes,
@@ -635,6 +694,48 @@ time.sleep(25)
   [ "$R_ELAPSED" -lt 20 ] || fail "the loader waited ${R_ELAPSED}s on a held lock"
   [ -z "$R_OUT" ] || fail "the loader returned content it could not lock:\n$R_OUT"
 fi
+
+# ── 5d3e. an oversized record leaves the store valid JSONL ──────────────────
+# A record bigger than the retain window takes the prune's oversized branch,
+# which rewrites the file with that record alone. It must keep its trailing
+# newline: without one the NEXT append concatenates onto the same line and both
+# records become unparseable.
+# The store must already be past the prune threshold (4 x the 512 KiB window),
+# or the append simply succeeds and the oversized branch is never reached — the
+# fixture would then pass without exercising anything.
+python3 - "$PR_HISTORY_FILE" "$SHA1" "$BASE_SHA" <<'PY'
+import sys
+path, sha, base = sys.argv[1], sys.argv[2], sys.argv[3]
+pad = "z" * 900
+with open(path, "w") as fh:
+    for _ in range(2200):
+        fh.write('{"head_sha":"%s","base_sha":"%s","ts":0,"status":"FAIL","issues":'
+                 '[{"severity":"low","file":"f","line":1,"description":"%s"}]}\n'
+                 % (sha, base, pad))
+PY
+HUGE=$(python3 -I -c 'import json; print(json.dumps({"status":"FAIL","issues":[{"severity":"high","file":"f","line":1,"description":"H"*900}]*700}))')
+append_pr_history "$HUGE" "$SHA1" "$BASE_SHA"
+OVERSIZE_LINES=$(wc -l < "$PR_HISTORY_FILE" | tr -d ' ')
+[ "$OVERSIZE_LINES" -eq 1 ] \
+  || fail "the oversized-record prune branch was not reached ($OVERSIZE_LINES lines)"
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"f","line":1,"description":"after-oversize"}]}' \
+  "$SHA1" "$BASE_SHA"
+OVERSIZE_BAD=$(python3 -I -c '
+import json, sys
+bad = 0
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        json.loads(line)
+    except ValueError:
+        bad += 1
+print(bad)' "$PR_HISTORY_FILE")
+[ "$OVERSIZE_BAD" -eq 0 ] || fail "an oversized record left $OVERSIZE_BAD unparseable line(s)"
+grep -q 'after-oversize' "$PR_HISTORY_FILE" \
+  || fail "the append after an oversized record was lost"
+rm -f "$PR_HISTORY_FILE"
 
 # ── 5d4. concurrent appends survive a prune ─────────────────────────────────
 # The lock is the only thing that makes this true, and nothing else pins it. The

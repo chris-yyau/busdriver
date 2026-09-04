@@ -353,7 +353,19 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # scan wholesale (#813). STRICT assignment shape only, and written to fail on quotes so zsh's
 # quoted `'a='() { ...; }` -- the one spelling any shell accepts -- is still a header in the
 # raw text. KEEP IN STEP WITH the gate's _ASSIGN_NOT_FUNC.
-_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\s*\(\s*\))"
+# The subscript body is BOUNDED, not `*`: `[^\]]` does not exclude `;`, so an unterminated
+# `[` let the lookahead rescan the whole REST of the command at every separator the prefix
+# alternation matches -- quadratic, and this gate fails OPEN on its timeout. Measured on
+# this compiled pattern against `"a[;" * n`: unbounded 3.9 -> 15.1 -> 59.1ms as n doubles
+# (4x per doubling), 434ms at 65KiB; bounded 0.36 -> 0.72 -> 1.42ms, 4.1ms at 65KiB --
+# linear, and level with the pre-#813 pattern. (434ms is well inside the 5s hook budget, so
+# the reporter's "exceeds the timeout at sub-65KiB" overstated it; the growth curve is the
+# defect, and a longer command rides it up to a fail-OPEN.) 64 is far above any real
+# subscript (`@`, `*`, `0`, `$i`, `$((i+1))`), and overrunning it fails the NEGATIVE
+# lookahead -- the word stays a header candidate -- so the bound can only ever over-block,
+# never open a bypass; 6480 generated inputs differ in 480 verdicts, all that way, none the
+# other. KEEP IN STEP WITH the gate's copy.
+_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
 _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
                           + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
 

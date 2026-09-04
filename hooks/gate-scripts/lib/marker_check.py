@@ -2459,7 +2459,20 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # itself one of the _shell_variants the caller searches, so the quoted spelling is still
 # detected there even though the DEQUOTED copy now looks like an assignment. Verified against
 # all five shells, and pinned in tests/test-marker-glob-specificity.sh section F.
-_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\s*\(\s*\))"
+# The subscript body is BOUNDED, not `*`. `[^\]]` does not exclude `;`, so an unterminated
+# `[` let the lookahead rescan the whole REST of the command at every separator the prefix
+# alternation matches -- quadratic in the command length, and THIS gate fails OPEN when it
+# times out, so a super-linear scan here is a denial-of-gate, not just slowness. Measured on
+# this compiled pattern against `"a[;" * n`: unbounded 4.0 -> 15.1 -> 59.2ms as n doubles
+# (4x per doubling), 433ms at 65KiB; bounded 0.32 -> 0.65 -> 1.34ms, 3.9ms at 65KiB --
+# linear, and level with the pre-#813 pattern. (433ms still fits the 5s budget, so the
+# reporter's "exceeds the timeout at sub-65KiB" overstated it; the GROWTH is the defect, and
+# a longer command rides it up to a fail-OPEN.) 64 is far above any real subscript (`@`, `*`,
+# `0`, `$i`, `$((i+1))`), and overrunning it fails the NEGATIVE lookahead -- the word stays a
+# header candidate -- so the bound can only ever over-block, never open a bypass: 6480
+# generated inputs differ in 480 verdicts, all over-block, none a bypass.
+# KEEP IN STEP WITH cmdword.py's copy.
+_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=\s*\(\s*\))"
 _INDIRECTION_RE = re.compile(
     r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
     + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)"

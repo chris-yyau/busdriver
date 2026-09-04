@@ -95,11 +95,20 @@ test_timeout() {   # <basename> -> prints the effective per-test timeout
 # The ONLY tests permitted to SKIP. Everything else — every gate/security suite
 # included — must run to completion; an unexpected SKIP fails the job (see the
 # skip-masking guard above). Keep this list minimal and justify each entry.
-# Currently EMPTY: the only entry (test-gateway-arbiter-claude-json-residual, a
-# real-claude round-trip gated behind BLUEPRINT_ARBITER_LIVE_TEST=1) was deleted
-# with the gateway rung (ADR 0019). Every discovered test must now run to
-# completion; an unexpected SKIP fails the job.
-SKIP_ALLOWED=()
+# Exactly ONE entry, justified immediately below. (The previous occupant,
+# test-gateway-arbiter-claude-json-residual — a real-claude round-trip gated
+# behind BLUEPRINT_ARBITER_LIVE_TEST=1 — went out with the gateway rung, ADR
+# 0019.) Every other discovered test must run to completion; an unexpected SKIP
+# fails the job.
+# test-litmus-pr-history: the cross-run PR store lives under the PASSWORD-DATABASE
+# home (#811 — $HOME is repo-injectable, so there is no $HOME fallback). Some
+# sandboxes hand the session a writable $HOME while the passwd home is root-owned;
+# there the store cannot exist and the suite has nothing to assert. It skips ONLY
+# in that case — a store missing while the passwd home IS writable is treated as a
+# regression and fails — so this entry cannot mask a code defect, only an
+# environment. GitHub's ubuntu runner has a writable passwd home, so CI never
+# takes the skip path and coverage there is unaffected.
+SKIP_ALLOWED=(test-litmus-pr-history)
 
 is_skip_allowed() {
   local base="$1" n

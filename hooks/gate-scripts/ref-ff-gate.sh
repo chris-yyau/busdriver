@@ -703,6 +703,18 @@ fi
 # so a command that picks its own anchor cannot be the one to redeem it. The
 # operator's escape hatch is unchanged wherever they actually are — run the
 # command from that repo and the anchor is the gate's own again.
+# Same doctrine, second shape: a ZERO-old op that shares its invocation with a
+# COMPANION. The ZERO-old refusal sits after these consent exits (it has to —
+# that ordering is what makes the override reachable at all), so without this a
+# `source /tmp/x.sh && git update-ref -d refs/heads/main` would spend the skip
+# armed for THIS repo while the sourced script exported GIT_DIR or cd'd, and the
+# delete landed in ANOTHER one. REF_WRITER is `_has_companion_command` —
+# "anything besides the git op and a plain cd" — so the honest lone force the
+# refusal advertises an override for is untouched, and only a command that can
+# relocate its own effect loses it.
+if [ -n "$ZERO_OLD_OPS" ] && [ "$REF_WRITER" = "1" ]; then
+    CMD_CHOSEN_ANCHOR=1
+fi
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
 if [ "$CMD_CHOSEN_ANCHOR" != "1" ] && [ -f "$SKIP_FILE" ] \
    && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-litmus.local"; then

@@ -192,7 +192,8 @@ run_format_suite() {  # <format>
     # not an object name either: git sends it through ref DWIM, so a 64-hex
     # BRANCH NAME in a sha1 repo resolves to that branch and the CAS goes vacuous
     # (measured). A fixed (40, 64) predicate would have accepted it.
-    HEX64=$(printf 'a%.0s' $(seq 1 64))
+    HEX64=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    [ "${#HEX64}" -eq 64 ] || { printf '  FAIL  HEX64 literal is not 64 chars\n'; FAIL=$((FAIL + 1)); }
     git -C "$REPO" branch "$HEX64" main
     run_gate "...nor a wrong-length hex operand that is really a branch" \
         block "git update-ref refs/heads/main $UNREVIEWED $HEX64" \
@@ -201,7 +202,8 @@ run_format_suite() {  # <format>
     # ...and the null-oid create CAS is the same rule, not an exception: zeros
     # are hex, so a 64-zero operand in a sha1 repo is a ref DWIM lookup for a
     # branch that can be named exactly that -- not "the ref must be absent".
-    ZERO64=$(printf '0%.0s' $(seq 1 64))
+    ZERO64=0000000000000000000000000000000000000000000000000000000000000000
+    [ "${#ZERO64}" -eq 64 ] || { printf '  FAIL  ZERO64 literal is not 64 chars\n'; FAIL=$((FAIL + 1)); }
     git -C "$REPO" branch "$ZERO64" main
     run_gate "...nor a wrong-length ALL-ZERO operand" \
         block "git update-ref refs/heads/main $UNREVIEWED $ZERO64" \
@@ -257,6 +259,15 @@ run_format_suite() {  # <format>
     run_gate "...nor one an env scope redirect points elsewhere" \
         block "export GIT_DIR=$OTHER_REPO/.git && git update-ref -d refs/heads/main" \
         "cannot be resolved statically"
+    # ...and a COMPANION forfeits it too, for the same reason: the ZERO-old
+    # refusal sits after consent, so a sourced script or any other segment could
+    # export GIT_DIR / cd between the gate's read and git's own chdir, and repo
+    # A's marker would have authorized the write wherever it landed.
+    run_gate "an armed skip does not survive a companion command" \
+        block "source /tmp/redirect.sh && git update-ref -d refs/heads/main" \
+        "issue #780"
+    run_gate "...and the lone force it IS armed for still passes" \
+        allow "git branch -f main $UNREVIEWED"
     rm -f "$REPO/$ISO_STATE/skip-litmus.local"
     rm -rf "$OTHER_REPO"
 

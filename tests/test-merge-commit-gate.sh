@@ -8,7 +8,7 @@
 #   5. Fast-forward merge does not consume a stale marker (no pending claim).
 #   6. GIT_EXTERNAL_DIFF constant output cannot authorize a merge.
 #   7. Pre-created pending tmp blocks merge (claim write failure).
-#   8. Abort after failed merge commit leaves marker for ordinary commits.
+#   8. Abort then an ordinary successor is not locked by the stale arm.
 #   9. Spoofed GIT_REFLOG_ACTION does not prevent marker consumption.
 #  10. Hostile BASH_ENV cannot bypass merge validation.
 #  11. Fast-forward onto a published merge tip keeps HEAD (with RT).
@@ -22,6 +22,16 @@
 #  19. Root amend (zero-parent replace of a root tip) is allowed.
 #  20. Fast-forward from a deeper ancestor onto a witnessed merge tip is allowed.
 #  21. Multi-commit linear fast-forward (no merges) is allowed.
+#  22. Orphan spent marker naming the live tip is retired, not a permanent block.
+#  23. Orphan spent marker naming a NON-tip commit still blocks, and does not
+#      consume an unrelated marker (the decision must not key on marker presence).
+#  24. A CR inside a commit header is unparseable framing and is refused BY THE GATE.
+#  25. A merge touching a non-ASCII path authorizes (validator/writer hash parity).
+#  26. Backward ref moves (reset --hard, incl. onto the root commit) are allowed.
+#  27. A divergent sideways move is still refused.
+#  28. PASS-MERGE authorizes an empty-resolution merge and is consumed once; the
+#      same token against a real resolution is refused and left in place.
+#  29. Retiring an armed claim keeps a marker belonging to a LATER review.
 #
 # Usage: bash tests/test-merge-commit-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -55,9 +65,11 @@ assert() {
     fi
 }
 
-# Match validator hash (scrubbed diff flags).
+# Mint the way litmus MINTS, not the way the validator reads: spelled with the
+# canonical expression (#576) so a validator that drifts away from the writers
+# fails these fixtures instead of silently agreeing with itself.
 staged_hash() {
-    git -C "$1" -c diff.external= diff --cached --no-ext-diff --no-textconv \
+    git -C "$1" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
         | bash -c "source '$REPO_ROOT/$HASH_HELPER'; hash_stdin"
 }
 
@@ -125,11 +137,20 @@ TMP_ROOT_AMEND=$(mktemp -d)
 TMP_FF_DEEP=$(mktemp -d)
 TMP_LINEAR_FF=$(mktemp -d)
 TMP_ANNOTATED=$(mktemp -d)
+TMP_SPENT_ORPHAN=$(mktemp -d)
+TMP_SPENT_STALE=$(mktemp -d)
+TMP_CR_HEADER=$(mktemp -d)
+TMP_UTF8_PATH=$(mktemp -d)
+TMP_BACKWARD=$(mktemp -d)
+TMP_DIVERGENT=$(mktemp -d)
+TMP_PASSMERGE=$(mktemp -d)
+TMP_FOREIGN_MARKER=$(mktemp -d)
+TMP_PM_NONEMPTY=$(mktemp -d)
 HOOKS=$(mktemp -d)
 SHIM=$(mktemp -d)
 EXTDIFF=$(mktemp -d)
 LOGDIR=$(mktemp -d)
-trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_CTREE" "$TMP_TAG_WITNESS" "$TMP_SYM_WITNESS" "$TMP_HIDDEN_MERGE" "$TMP_NEW_BRANCH" "$TMP_STALE_MH" "$TMP_ROOT_CREATE" "$TMP_ROOT_AMEND" "$TMP_FF_DEEP" "$TMP_LINEAR_FF" "$TMP_ANNOTATED" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
+trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$TMP_EXTDIFF" "$TMP_CLAIM" "$TMP_ABORT" "$TMP_SPOOF" "$TMP_BASHENV" "$TMP_SKIP_AGE" "$TMP_SKNONE_STALE" "$TMP_SKNONE_CONTENT" "$TMP_SKNONE_OVERFLOW" "$TMP_SKNONE_FUTURE" "$TMP_SKNONE_LONG" "$TMP_SKNONE_BOUND" "$TMP_REPO_MARKER" "$TMP_FF_MERGE" "$TMP_CTREE" "$TMP_TAG_WITNESS" "$TMP_SYM_WITNESS" "$TMP_HIDDEN_MERGE" "$TMP_NEW_BRANCH" "$TMP_STALE_MH" "$TMP_ROOT_CREATE" "$TMP_ROOT_AMEND" "$TMP_FF_DEEP" "$TMP_LINEAR_FF" "$TMP_ANNOTATED" "$TMP_SPENT_ORPHAN" "$TMP_SPENT_STALE" "$TMP_CR_HEADER" "$TMP_UTF8_PATH" "$TMP_BACKWARD" "$TMP_DIVERGENT" "$TMP_PASSMERGE" "$TMP_FOREIGN_MARKER" "$TMP_PM_NONEMPTY" "$HOOKS" "$SHIM" "$EXTDIFF" "$LOGDIR"' EXIT
 
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
@@ -295,7 +316,7 @@ else
     assert "claim write failure blocks merge" "block" "allow(rc=$CLAIM_RC head=$CLAIM_HEAD err=$CLAIM_ERR)"
 fi
 
-echo "── abort after failed merge commit keeps marker ─"
+echo "── abort then an ordinary successor is not locked by the stale arm ─"
 setup_repo "$TMP_ABORT"
 install_hook "$TMP_ABORT" "$HOOKS"
 mkdir -p "$TMP_ABORT/.claude/hooks"
@@ -305,6 +326,8 @@ git -C "$TMP_ABORT" config core.hooksPath "$TMP_ABORT/.claude/hooks"
 ln -sf "$REPO_ROOT/$GATE_SCRIPT" "$TMP_ABORT/.claude/hooks/pre-merge-commit"
 ln -sf "$REPO_ROOT/$POST_MERGE" "$TMP_ABORT/.claude/hooks/post-merge"
 ln -sf "$REPO_ROOT/$MERGE_PRE_COMMIT" "$TMP_ABORT/.claude/hooks/pre-commit"
+ln -sf "$REPO_ROOT/$MERGE_PREPARE_COMMIT_MSG" "$TMP_ABORT/.claude/hooks/prepare-commit-msg"
+ln -sf "$REPO_ROOT/$MERGE_REFERENCE_TRANSACTION" "$TMP_ABORT/.claude/hooks/reference-transaction"
 ln -sf "$REPO_ROOT/$MERGE_POST_COMMIT" "$TMP_ABORT/.claude/hooks/post-commit"
 git -C "$TMP_ABORT" merge --no-commit topic >/dev/null 2>&1
 ABORT_HASH=$(staged_hash "$TMP_ABORT")
@@ -313,17 +336,34 @@ set +e
 git -C "$TMP_ABORT" commit -q -m "finish merge" 2>"$LOGDIR/abort-fail.err"
 set -e
 git -C "$TMP_ABORT" merge --abort >/dev/null 2>&1
-echo plain >"$TMP_ABORT/plain.txt"
-git -C "$TMP_ABORT" add plain.txt
-set +e
-git -C "$TMP_ABORT" commit -q -m "plain commit" 2>"$LOGDIR/abort-plain.err"
-set -e
-# post-commit runs during commit; invoke again so stale pending cleanup is deterministic
-(cd "$TMP_ABORT" && bash "$REPO_ROOT/$MERGE_POST_COMMIT") >/dev/null 2>&1 || true
-if [[ ! -f "$TMP_ABORT/.claude/litmus-passed.local" ]]; then
-    assert "abort then plain commit clears stale marker" "cleared" "cleared"
+ABORT_GD=$(git -C "$TMP_ABORT" rev-parse --absolute-git-dir)
+# Assert the PRECONDITION, not just the outcome. The whole case is "a stale arm
+# left by an aborted merge does not lock the branch" — but `git merge --abort`
+# does not clear the arm or the claim today, and if hook ordering or the
+# commit-msg stub ever changed so that it did, the allow-assertion below would
+# still pass while testing nothing at all. That is the shape of vacuity this
+# suite has already shipped four times.
+if [[ -f "$ABORT_GD/busdriver-merge-litmus-armed" \
+      && -f "$TMP_ABORT/.claude/merge-litmus-pending.local" ]]; then
+    assert "aborted merge really does leave a stale arm" "armed" "armed"
 else
-    assert "abort then plain commit clears stale marker" "cleared" "present"
+    assert "aborted merge really does leave a stale arm" "armed" \
+        "arm=$([[ -f "$ABORT_GD/busdriver-merge-litmus-armed" ]] && echo yes || echo no) claim=$([[ -f "$TMP_ABORT/.claude/merge-litmus-pending.local" ]] && echo yes || echo no)"
+fi
+ABORT_BEFORE=$(git -C "$TMP_ABORT" rev-parse HEAD)
+ABORT_TREE=$(git -C "$TMP_ABORT" rev-parse 'HEAD^{tree}')
+ABORT_NEXT=$(git -C "$TMP_ABORT" commit-tree "$ABORT_TREE" -p "$ABORT_BEFORE" -m "post-abort successor")
+set +e
+git -C "$TMP_ABORT" update-ref refs/heads/main "$ABORT_NEXT" "$ABORT_BEFORE" >/dev/null 2>"$LOGDIR/abort-rt.err"
+ABORT_RT_RC=$?
+set -e
+ABORT_AFTER=$(git -C "$TMP_ABORT" rev-parse HEAD)
+if [[ "$ABORT_RT_RC" -eq 0 && "$ABORT_AFTER" == "$ABORT_NEXT" ]]; then
+    assert "abort then ordinary successor not locked by stale arm" "allow" "allow"
+else
+    ABORT_RT_ERR=$(tr '\n' ' ' <"$LOGDIR/abort-rt.err" || true)
+    assert "abort then ordinary successor not locked by stale arm" "allow" \
+        "block(rc=$ABORT_RT_RC after=$ABORT_AFTER err=$ABORT_RT_ERR)"
 fi
 
 echo "── spoofed GIT_REFLOG_ACTION still consumes marker ─"
@@ -789,6 +829,301 @@ else
     ANN_ERR=$(tr '\n' ' ' <"$LOGDIR/ann-merge.err" || true)
     assert "annotated-tag merge allowed with peeled claim" "allow" \
         "block(rc=$ANN_RC head=$ANN_HEAD tag=$ANN_TAG_OID commit=$ANN_COMMIT_OID parents=$ANN_PARENTS err=$ANN_ERR)"
+fi
+
+# An interrupted post-publication cleanup retires ARM and the claim before the
+# spent marker, so spent can survive alone. Refusing that state blocked every
+# later reference transaction in the repository, permanently.
+echo "── orphan spent marker naming the live tip is retired ─"
+setup_repo "$TMP_SPENT_ORPHAN"
+install_hook "$TMP_SPENT_ORPHAN" "$HOOKS"
+SO_GD=$(git -C "$TMP_SPENT_ORPHAN" rev-parse --absolute-git-dir)
+SO_OLD=$(git -C "$TMP_SPENT_ORPHAN" rev-parse main)
+SO_TREE=$(git -C "$TMP_SPENT_ORPHAN" rev-parse 'main^{tree}')
+SO_NEW=$(git -C "$TMP_SPENT_ORPHAN" commit-tree "$SO_TREE" -p "$SO_OLD" -m "after publish")
+printf '%s\n' "$SO_OLD" >"$SO_GD/busdriver-merge-litmus-spent"
+set +e
+git -C "$TMP_SPENT_ORPHAN" update-ref refs/heads/main "$SO_NEW" "$SO_OLD" >/dev/null 2>"$LOGDIR/spent-orphan.err"
+SO_RC=$?
+set -e
+SO_HEAD=$(git -C "$TMP_SPENT_ORPHAN" rev-parse main)
+if [[ "$SO_RC" -eq 0 && "$SO_HEAD" == "$SO_NEW" && ! -f "$SO_GD/busdriver-merge-litmus-spent" ]]; then
+    assert "orphan spent at live tip retired" "allow" "allow"
+else
+    SO_ERR=$(tr '\n' ' ' <"$LOGDIR/spent-orphan.err" || true)
+    assert "orphan spent at live tip retired" "allow" \
+        "block(rc=$SO_RC head=$SO_HEAD err=$SO_ERR)"
+fi
+
+# Adversarial on purpose: an UNRELATED valid marker is present. A cleanup that
+# consumes the marker whenever one exists would both destroy that token and let
+# the marker's presence decide the outcome — the gated party can create that file,
+# so the decision must come from the protected spent record alone.
+echo "── orphan spent marker naming a non-tip commit still blocks ─"
+setup_repo "$TMP_SPENT_STALE"
+install_hook "$TMP_SPENT_STALE" "$HOOKS"
+mkdir -p "$TMP_SPENT_STALE/.claude"
+SS_GD=$(git -C "$TMP_SPENT_STALE" rev-parse --absolute-git-dir)
+SS_OLD=$(git -C "$TMP_SPENT_STALE" rev-parse main)
+SS_TREE=$(git -C "$TMP_SPENT_STALE" rev-parse 'main^{tree}')
+SS_NEW=$(git -C "$TMP_SPENT_STALE" commit-tree "$SS_TREE" -p "$SS_OLD" -m "after publish")
+SS_TOPIC=$(git -C "$TMP_SPENT_STALE" rev-parse topic)
+SS_FAKE_HASH=$(printf 'a%.0s' $(seq 64))
+printf '%s\n' "$SS_TOPIC" >"$SS_GD/busdriver-merge-litmus-spent"
+printf 'BUILTIN-%s\n' "$SS_FAKE_HASH" >"$TMP_SPENT_STALE/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_SPENT_STALE" update-ref refs/heads/main "$SS_NEW" "$SS_OLD" >/dev/null 2>"$LOGDIR/spent-stale.err"
+SS_RC=$?
+set -e
+SS_HEAD=$(git -C "$TMP_SPENT_STALE" rev-parse main)
+SS_ERR=$(tr '\n' ' ' <"$LOGDIR/spent-stale.err" || true)
+# A non-zero exit alone is not evidence the GATE refused: a broken fixture or an
+# unrelated git failure produces one too. Require the gate's own message — and
+# specifically THIS branch's message, not the generic refusal, so the case cannot
+# pass on some other rule of the gate happening to refuse first.
+if [[ "$SS_RC" -ne 0 && "$SS_HEAD" == "$SS_OLD" \
+      && "$SS_ERR" == *"could not clear stale merge authorization state"* ]]; then
+    assert "orphan spent at non-tip blocks" "block" "block"
+else
+    assert "orphan spent at non-tip blocks" "block" \
+        "allow(rc=$SS_RC head=$SS_HEAD err=$SS_ERR)"
+fi
+if [[ -f "$TMP_SPENT_STALE/.claude/litmus-passed.local" ]]; then
+    assert "stale spent cleanup leaves an unbound marker alone" "kept" "kept"
+else
+    assert "stale spent cleanup leaves an unbound marker alone" "kept" "consumed"
+fi
+
+# An armed claim whose token has been REPLACED on disk — a later /litmus minted a
+# different marker — must still retire, and must leave that marker alone. It is
+# not this claim's to destroy: retiring the claim already tightens the gate, and
+# consuming the newer token would silently revoke a review the operator just ran.
+echo "── armed-claim retirement keeps a foreign marker ─"
+setup_repo "$TMP_FOREIGN_MARKER"
+mkdir -p "$TMP_FOREIGN_MARKER/.claude"
+FM_HASH=$(printf 'b%.0s' $(seq 64))
+FM_OTHER=$(printf 'c%.0s' $(seq 64))
+printf 'BUILTIN-%s\n' "$FM_HASH" >"$TMP_FOREIGN_MARKER/.claude/litmus-passed.local"
+FM_HEAD=$(git -C "$TMP_FOREIGN_MARKER" rev-parse HEAD)
+set +e
+FM_OUT=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from merge_pending import write_claim
+print("armed" if write_claim(sys.argv[2], ".claude", sys.argv[4], sys.argv[3]) else "arm-failed")
+' "$REPO_ROOT/hooks/gate-scripts/lib" "$TMP_FOREIGN_MARKER" "BUILTIN-$FM_HASH" "$FM_HEAD" 2>&1)
+set -e
+if [[ "$FM_OUT" == "armed" ]]; then
+    printf 'BUILTIN-%s\n' "$FM_OTHER" >"$TMP_FOREIGN_MARKER/.claude/litmus-passed.local"
+    set +e
+    FM_CLEAR=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from merge_pending import clear_stale_abort_state
+print("cleared" if clear_stale_abort_state(sys.argv[2], ".claude") else "refused")
+' "$REPO_ROOT/hooks/gate-scripts/lib" "$TMP_FOREIGN_MARKER" 2>&1)
+    set -e
+    FM_LEFT=$(cat "$TMP_FOREIGN_MARKER/.claude/litmus-passed.local" 2>/dev/null || echo MISSING)
+    if [[ "$FM_CLEAR" == "cleared" && "$FM_LEFT" == "BUILTIN-$FM_OTHER" ]]; then
+        assert "armed-claim retirement keeps a foreign marker" "kept" "kept"
+    else
+        assert "armed-claim retirement keeps a foreign marker" "kept" \
+            "clear=$FM_CLEAR marker=$FM_LEFT"
+    fi
+else
+    assert "armed-claim retirement keeps a foreign marker" "kept" "setup-failed($FM_OUT)"
+fi
+
+# The gate parses commit headers itself; git frames them with LF only, so a CR is
+# junk that `splitlines` would read as a header boundary — `junk\rparent <oid>`
+# would invent a parent. The CR must sit in a header git ITSELF accepts: a CR in a
+# `parent` line is rejected by git ("bad parents in commit") before the
+# reference-transaction hook is invoked at all, so that spelling asserts git's
+# behaviour and passes against an empty gate. Asserting the gate's own message is
+# what keeps this test bound to the guard rather than to git.
+echo "── CR inside a commit header is refused as unparseable framing ─"
+setup_repo "$TMP_CR_HEADER"
+install_hook "$TMP_CR_HEADER" "$HOOKS"
+CR_OLD=$(git -C "$TMP_CR_HEADER" rev-parse main)
+CR_TREE=$(git -C "$TMP_CR_HEADER" rev-parse 'main^{tree}')
+CR_FAKE=$(printf 'b%.0s' $(seq 40))
+CR_RAW=$(printf 'tree %s\nparent %s\nauthor t <t@t.dev> 0 +0000\ncommitter t <t@t.dev> 0 +0000\njunkhdr x\rparent %s\n\ncr header\n' \
+    "$CR_TREE" "$CR_OLD" "$CR_FAKE")
+CR_NEW=$(printf '%s' "$CR_RAW" | git -C "$TMP_CR_HEADER" hash-object -t commit -w --literally --stdin)
+set +e
+git -C "$TMP_CR_HEADER" update-ref refs/heads/main "$CR_NEW" "$CR_OLD" >/dev/null 2>"$LOGDIR/cr-header.err"
+CR_RC=$?
+set -e
+CR_HEAD=$(git -C "$TMP_CR_HEADER" rev-parse main)
+CR_ERR=$(tr '\n' ' ' <"$LOGDIR/cr-header.err" || true)
+if [[ "$CR_RC" -ne 0 && "$CR_HEAD" == "$CR_OLD" && "$CR_ERR" == *"merge reference-transaction gate:"* ]]; then
+    assert "CR in commit header refused by the gate" "block" "block"
+else
+    assert "CR in commit header refused by the gate" "block" \
+        "allow(rc=$CR_RC head=$CR_HEAD err=$CR_ERR)"
+fi
+
+# The validator hashes with the canonical minting expression; core.quotePath alone
+# re-spells a non-ASCII path, so a divergent validator can never match a real marker.
+echo "── merge touching a non-ASCII path authorizes with a matching marker ─"
+setup_repo "$TMP_UTF8_PATH"
+install_hook "$TMP_UTF8_PATH" "$HOOKS"
+mkdir -p "$TMP_UTF8_PATH/.claude"
+git -C "$TMP_UTF8_PATH" checkout -q topic
+printf 'accented\n' >"$TMP_UTF8_PATH/café.txt"
+git -C "$TMP_UTF8_PATH" add "café.txt"
+git -C "$TMP_UTF8_PATH" commit -q -m "utf8 path" --no-verify
+git -C "$TMP_UTF8_PATH" checkout -q main
+git -C "$TMP_UTF8_PATH" merge --no-commit --no-ff topic >/dev/null 2>&1
+U8_HASH=$(staged_hash "$TMP_UTF8_PATH")
+git -C "$TMP_UTF8_PATH" merge --abort >/dev/null 2>&1
+printf 'BUILTIN-%s\n' "$U8_HASH" >"$TMP_UTF8_PATH/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_UTF8_PATH" merge --no-ff topic --no-edit >/dev/null 2>"$LOGDIR/utf8-merge.err"
+U8_RC=$?
+set -e
+U8_PARENTS=$(git -C "$TMP_UTF8_PATH" log -1 --format=%P)
+if [[ "$U8_RC" -eq 0 && "$U8_PARENTS" == *" "* ]]; then
+    assert "non-ASCII path merge authorized" "allow" "allow"
+else
+    U8_ERR=$(tr '\n' ' ' <"$LOGDIR/utf8-merge.err" || true)
+    assert "non-ASCII path merge authorized" "allow" \
+        "block(rc=$U8_RC parents=$U8_PARENTS err=$U8_ERR)"
+fi
+
+
+# A backward move rewinds the ref into its OWN published history, so there is
+# nothing to authorize. Refusing it broke `git reset --hard HEAD~1` and also
+# _rollback_merge's undo update-ref. The root-commit case is separate: NEW then
+# has zero parents, which the zero-parent rule refuses unless the backward rule
+# is reached first.
+echo "── backward ref moves are allowed (incl. onto the root commit) ─"
+setup_repo "$TMP_BACKWARD"
+# setup_repo leaves main two commits deep, so `main^` IS the root and both moves
+# below would land there — the second on identical old and new OIDs, a no-op that
+# asserts nothing. A third commit (before the hook is installed, so making it is
+# not itself gated) gives root -> mid -> tip, and the guard under it keeps the
+# case from degenerating back to that silently.
+echo third >"$TMP_BACKWARD/third.txt"
+git -C "$TMP_BACKWARD" add third.txt
+git -C "$TMP_BACKWARD" commit -q -m third --no-verify
+install_hook "$TMP_BACKWARD" "$HOOKS"
+BW_ROOT=$(git -C "$TMP_BACKWARD" rev-list --max-parents=0 main | head -1)
+BW_TIP=$(git -C "$TMP_BACKWARD" rev-parse main)
+BW_MID=$(git -C "$TMP_BACKWARD" rev-parse 'main^')
+if [[ "$BW_MID" != "$BW_ROOT" && "$BW_MID" != "$BW_TIP" ]]; then
+    assert "backward fixture has a non-root midpoint" "distinct" "distinct"
+else
+    assert "backward fixture has a non-root midpoint" "distinct" \
+        "root=$BW_ROOT mid=$BW_MID tip=$BW_TIP"
+fi
+set +e
+git -C "$TMP_BACKWARD" update-ref refs/heads/main "$BW_MID" "$BW_TIP" >/dev/null 2>"$LOGDIR/bw1.err"
+BW_RC1=$?
+set -e
+BW_AT1=$(git -C "$TMP_BACKWARD" rev-parse main)
+set +e
+git -C "$TMP_BACKWARD" update-ref refs/heads/main "$BW_ROOT" "$BW_AT1" >/dev/null 2>"$LOGDIR/bw2.err"
+BW_RC2=$?
+set -e
+BW_AT2=$(git -C "$TMP_BACKWARD" rev-parse main)
+if [[ "$BW_RC1" -eq 0 && "$BW_AT1" == "$BW_MID" ]]; then
+    assert "backward move onto a non-root commit allowed" "allow" "allow"
+else
+    assert "backward move onto a non-root commit allowed" "allow" "block(rc=$BW_RC1 at=$BW_AT1)"
+fi
+if [[ "$BW_RC2" -eq 0 && "$BW_AT2" == "$BW_ROOT" ]]; then
+    assert "backward move onto root commit allowed" "allow" "allow"
+else
+    BW_ERR2=$(tr '\n' ' ' <"$LOGDIR/bw2.err" || true)
+    assert "backward move onto root commit allowed" "allow" \
+        "block(rc=$BW_RC2 at=$BW_AT2 err=$BW_ERR2)"
+fi
+
+# The backward rule must not become a general "any move to a commit that exists"
+# allow: a sideways move to unrelated ancestry is still unreviewed publication.
+echo "── divergent sideways move is still refused ─"
+setup_repo "$TMP_DIVERGENT"
+install_hook "$TMP_DIVERGENT" "$HOOKS"
+DV_BASE=$(git -C "$TMP_DIVERGENT" rev-list --max-parents=0 main | head -1)
+DV_OLD=$(git -C "$TMP_DIVERGENT" rev-parse main)
+DV_TREE=$(git -C "$TMP_DIVERGENT" rev-parse "$DV_BASE^{tree}")
+DV_D1=$(git -C "$TMP_DIVERGENT" commit-tree "$DV_TREE" -p "$DV_BASE" -m div1)
+DV_D2=$(git -C "$TMP_DIVERGENT" commit-tree "$DV_TREE" -p "$DV_D1" -m div2)
+set +e
+git -C "$TMP_DIVERGENT" update-ref refs/heads/main "$DV_D2" "$DV_OLD" >/dev/null 2>"$LOGDIR/div.err"
+DV_RC=$?
+set -e
+DV_AT=$(git -C "$TMP_DIVERGENT" rev-parse main)
+if [[ "$DV_RC" -ne 0 && "$DV_AT" == "$DV_OLD" ]]; then
+    assert "divergent sideways move refused" "block" "block"
+else
+    assert "divergent sideways move refused" "block" "allow(rc=$DV_RC at=$DV_AT)"
+fi
+
+# PASS-MERGE is the empty-resolution token: litmus mints it for a merge whose
+# resolution changed nothing, so authorize_pass_merge must bind staged tree ==
+# HEAD^{tree} and spend the marker exactly once.
+echo "── PASS-MERGE authorizes an empty-resolution merge and is consumed ─"
+setup_repo "$TMP_PASSMERGE"
+install_hook "$TMP_PASSMERGE" "$HOOKS"
+mkdir -p "$TMP_PASSMERGE/.claude"
+PM_NOW=$(date +%s)
+printf 'PASS-MERGE-%s\n' "$PM_NOW" >"$TMP_PASSMERGE/.claude/litmus-passed.local"
+# `-s ours` is the canonical empty resolution: two real parents, tree identical to
+# HEAD's, so `git diff --cached` is empty and PASS-MERGE is the only marker that
+# can authorize it.
+set +e
+git -C "$TMP_PASSMERGE" merge --no-ff -s ours topic --no-edit >/dev/null 2>"$LOGDIR/passmerge.err"
+PM_RC=$?
+set -e
+PM_PARENTS=$(git -C "$TMP_PASSMERGE" log -1 --format=%P | wc -w | tr -d ' ')
+PM_HEAD_TREE=$(git -C "$TMP_PASSMERGE" rev-parse 'HEAD^{tree}')
+PM_PARENT_TREE=$(git -C "$TMP_PASSMERGE" rev-parse 'HEAD^1^{tree}')
+if [[ "$PM_RC" -eq 0 && "$PM_PARENTS" -eq 2 && "$PM_HEAD_TREE" == "$PM_PARENT_TREE" ]]; then
+    assert "PASS-MERGE authorizes empty-resolution merge" "allow" "allow"
+else
+    PM_ERR=$(tr '\n' ' ' <"$LOGDIR/passmerge.err" || true)
+    assert "PASS-MERGE authorizes empty-resolution merge" "allow" \
+        "block(rc=$PM_RC parents=$PM_PARENTS err=$PM_ERR)"
+fi
+if [[ ! -f "$TMP_PASSMERGE/.claude/litmus-passed.local" ]]; then
+    assert "PASS-MERGE marker consumed exactly once" "consumed" "consumed"
+else
+    assert "PASS-MERGE marker consumed exactly once" "consumed" "still-present"
+fi
+
+# The same token against a merge with a REAL resolution must be refused — and the
+# token must survive. It authorizes only a write-tree == HEAD^{tree} merge, which
+# Python enforces, so keeping it grants nothing; destroying it would revoke a
+# review on every unrelated reason authorize_pass_merge can return false (a lost
+# index race, a failed claim write), which the shell cannot tell apart from this.
+echo "── PASS-MERGE against a non-empty resolution is refused, marker kept ─"
+setup_repo "$TMP_PM_NONEMPTY"
+install_hook "$TMP_PM_NONEMPTY" "$HOOKS"
+mkdir -p "$TMP_PM_NONEMPTY/.claude"
+printf 'PASS-MERGE-%s\n' "$(date +%s)" >"$TMP_PM_NONEMPTY/.claude/litmus-passed.local"
+set +e
+git -C "$TMP_PM_NONEMPTY" merge --no-ff topic --no-edit >/dev/null 2>"$LOGDIR/pm-nonempty.err"
+PMN_RC=$?
+set -e
+PMN_PARENTS=$(git -C "$TMP_PM_NONEMPTY" log -1 --format=%P | wc -w | tr -d ' ')
+PMN_ERR=$(tr '\n' ' ' <"$LOGDIR/pm-nonempty.err" || true)
+# Same reason as the non-tip case above, and it matters more here: `git merge`
+# fails for plenty of reasons that have nothing to do with this gate. The message
+# is the validator's, not the RT gate's — this refusal happens in the commit
+# chain, before any ref moves.
+if [[ "$PMN_RC" -ne 0 && "$PMN_PARENTS" -ne 2 \
+      && "$PMN_ERR" == *"PASS-MERGE review marker present but it did not authorize this merge"* ]]; then
+    assert "PASS-MERGE against a real resolution refused" "block" "block"
+else
+    assert "PASS-MERGE against a real resolution refused" "block" \
+        "allow(rc=$PMN_RC parents=$PMN_PARENTS err=$PMN_ERR)"
+fi
+if [[ -f "$TMP_PM_NONEMPTY/.claude/litmus-passed.local" ]]; then
+    assert "refused PASS-MERGE leaves the marker in place" "kept" "kept"
+else
+    assert "refused PASS-MERGE leaves the marker in place" "kept" "destroyed"
 fi
 
 echo ""

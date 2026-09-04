@@ -39,6 +39,9 @@ MARKER_WRITER="skills/litmus/scripts/write-review-marker.sh"
 PRODUCER="skills/litmus/scripts/run-review-loop.sh"
 DISPATCHER="scripts/dispatcher-commit-block.sh"
 PRODUCER_LIB="scripts/lib/exclusion-integrity.sh"
+# The native-Git merge gate validates markers the writers above minted (#622), so it
+# is a fourth hash-bearing file and belongs in the parity pin below.
+MERGE_VALIDATOR="hooks/gate-scripts/lib/validate-staged-litmus-marker.sh"
 
 # THE CANONICAL FORM under test. Deliberately spelled out here rather than sourced
 # from the scripts: a test that derives the expression from the code it checks
@@ -321,14 +324,39 @@ echo "── 4. Flag parity: the sites that must agree, do ───"
 # every commit carrying a binary change. Prose saying "keep these identical" is not
 # enforcement; this is.
 parity_fail=0
-for f in "$GATE_SCRIPT" "$PRODUCER" "$DISPATCHER"; do
-    n=$(grep -c -- "$CANON_FLAGS" "$f" || true)
+for f in "$GATE_SCRIPT" "$PRODUCER" "$DISPATCHER" "$MERGE_VALIDATOR"; do
+    # Comment LINES are stripped before counting. Without that, a comment quoting
+    # the canonical form satisfies the pin, and these files are exactly the kind
+    # that narrate their own hash recipe in prose directly above the code. An
+    # anchor like '^[^#]*' cannot do this job: pre-commit-gate.sh spells the real
+    # call on a line holding ${#HASH_CMD[@]}, whose '#' is code, not a comment.
+    n=$(grep -v '^[[:space:]]*#' "$f" | grep -c -- "$CANON_FLAGS" || true)
     if [ "$n" -eq 0 ]; then
         bad "no canonical hash expression found in $f"
         parity_fail=1
     fi
 done
-[ "$parity_fail" -eq 0 ] && ok "all three hash-bearing files spell the canonical form identically"
+[ "$parity_fail" -eq 0 ] && ok "all four hash-bearing files spell the canonical form identically"
+
+# ...and the merge validator serves BOTH reads from one frozen index snapshot.
+# `git diff --cached` streams the live index and `write-tree` reads it again at a
+# different instant, so reading both live leaves an X->Y->X window in which a review
+# of Y authorizes tree X. Structural, like the producer's snapshot pin above: the
+# race has no deterministic functional test.
+# Each pin below is anchored to a line START and counted EXACTLY, not `-ge`: the
+# rationale comment sitting directly above the code it pins already narrates both
+# reads, so an unanchored grep or a >= count is satisfied by one comment plus one
+# surviving use — the pin would then pass while the second read went live.
+snap_mktemp=$(grep -cE '^[[:space:]]*idx_snap=\$\(mktemp' "$MERGE_VALIDATOR" || true)
+snap_tree=$(grep -cE '^[[:space:]]*auth_tree=\$\(GIT_INDEX_FILE="\$idx_snap" git ' "$MERGE_VALIDATOR" || true)
+# The diff read is welded to the parity pin: it must be the SAME line that carries
+# the canonical flags, so neither can drift without the other failing.
+snap_diff=$(grep -c -- '^[[:space:]]*GIT_INDEX_FILE="\$idx_snap" git .*'"$CANON_FLAGS" "$MERGE_VALIDATOR" || true)
+if [ "$snap_mktemp" -eq 1 ] && [ "$snap_tree" -eq 1 ] && [ "$snap_diff" -eq 1 ]; then
+    ok "the merge validator hashes and write-trees the SAME frozen index snapshot"
+else
+    bad "the merge validator reads the live index for its hash or its tree (X->Y->X window) [mktemp=$snap_mktemp write-tree=$snap_tree diff=$snap_diff]"
+fi
 
 # ...and nobody quietly reintroduces a bare re-hash into a marker write.
 if grep -nE 'diff --cached[^|]*\|[^|]*(sha256sum|shasum)' "$PRODUCER" "$MARKER_WRITER" \

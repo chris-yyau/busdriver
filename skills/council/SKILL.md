@@ -84,21 +84,37 @@ Agent(
 
 **4b. Pre-check CLI availability, then dispatch:**
 
-**First, write each voice's prompt to a file with the `Write` tool** — one file per voice, into `~/.claude/council/`:
+**First, make a private prompt directory** with a single Bash call, and use the path it prints for everything below:
+
+```bash
+mktemp -d "${TMPDIR:-/tmp}/busdriver-council.XXXXXX"
+```
+
+`mktemp -d` is doing real work here, and a hand-picked directory name is not a substitute. It creates the directory **atomically** and fails rather than reusing one that already exists, and it creates it mode 0700 — so two councils running at once cannot land in the same directory, and a stale directory from an interrupted run cannot be silently reused. A fixed or hand-rolled name gives none of that: whichever run loses the race has its prompts overwritten between the write and the read, and a council prompt routinely carries repo and design context, so the loser would ship its material to the other session's external voice.
+
+**Then write each voice's prompt to a file with the `Write` tool**, one file per voice, inside that directory:
 
 | Voice | File |
 |---|---|
-| Pragmatist | `~/.claude/council/pragmatist.txt` |
-| Critic | `~/.claude/council/critic.txt` |
-| Researcher | `~/.claude/council/researcher.txt` |
-| Mechanism Witness (ultimate-council only) | `~/.claude/council/witness.txt` |
-| UltraOracle (ultra-/ultimate-council only) | `~/.claude/council/oracle.txt` |
+| Pragmatist | `<PROMPT-DIR>/pragmatist.txt` |
+| Critic | `<PROMPT-DIR>/critic.txt` |
+| Researcher | `<PROMPT-DIR>/researcher.txt` |
+| Mechanism Witness (ultimate-council only) | `<PROMPT-DIR>/witness.txt` |
+| UltraOracle (ultra-/ultimate-council only) | `<PROMPT-DIR>/oracle.txt` |
 
-Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message (a separate, earlier turn) — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (i) below.
+Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (i) below.
+
+Substitute the same printed path into the `D=` line of the dispatch block. If the two do not match, the block stops with an error rather than convening a council with no voices.
 
 Then dispatch. This block checks CLI availability and finds the dispatch script:
 
 ```bash
+# Prompts come from FILES written before this call, never inline heredocs — see (d) and (i).
+# The mktemp -d path from Step 4b, pasted literally. The trap is the cleanup — see (j).
+D="<PROMPT-DIR>"
+[ -d "$D" ] || { echo "council: prompt dir $D missing — write the prompt files first (Step 4b)" >&2; exit 1; }
+trap 'rm -f "$D/pragmatist.txt" "$D/critic.txt" "$D/researcher.txt" "$D/witness.txt" "$D/oracle.txt"; rmdir "$D" 2>/dev/null || true' EXIT
+
 # Resolve the plugin root ONCE — see "Why the block is written this way" (a) below.
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 if [ -z "$PLUGIN_ROOT" ]; then
@@ -123,8 +139,6 @@ DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 # whose Step 4.6 gate printed MYTHOS_ATTEMPT=1. See (c) below.
 MECHANISM_WITNESS=0
 
-# Prompts come from FILES written before this call, never inline heredocs — see (d) and (i).
-D="$HOME/.claude/council"
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes.
 PIDS=()
 if [ -r "$D/pragmatist.txt" ] && [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
@@ -172,15 +186,12 @@ if [[ -n "$AUDITOR_PID" ]]; then
   done
   wait "$AUDITOR_PID" 2>/dev/null || true
 fi
-# The question text may carry sensitive repo/design context, so the prompt files do not
-# outlive the run. Named explicitly, never a glob — see (g).
-rm -f "$D/pragmatist.txt" "$D/critic.txt" "$D/researcher.txt" "$D/witness.txt"
 ```
 
 **Why the block is written this way.** This rationale lives out here, in prose, rather than as comments inside the fence — and it must stay out here. The fence is pasted **verbatim** into a Bash tool call, where `hooks/gate-scripts/lib/marker_check.py` scans the command string against a **4000-token budget** for the gate-state-helper walk, and comment text is charged to that budget exactly like code. When the rationale sat inline the block measured **12 tokens over**, and an over-budget command is refused `BLOCKED: too large or too deeply nested` — fail-CLOSED, correctly, but on the plugin's own documented workflow (#813). Keep in-fence comments to one line each; put the reasoning here.
 
 - **(a) `PLUGIN_ROOT` resolved ONCE.** `CLAUDE_PLUGIN_ROOT` is NOT populated in the Bash tool env of every harness (empty in SDK/child sessions), and a bare `"${CLAUDE_PLUGIN_ROOT}/..."` would collapse to `/scripts/...` — every voice and witness would silently fail to launch. Falls back to the newest installed cache dir; override with `BUSDRIVER_PLUGIN_ROOT`. This `PLUGIN_ROOT` is in scope for the Step 4.5 UltraOracle snippet, which is inserted into THIS same block and shares this shell (alongside `PIDS`). Step 4.6 (Mythos Witness) runs as standalone Bash calls and re-resolves `PLUGIN_ROOT` independently.
-- **(b) Version pick.** `grep` keeps only pure `X.Y.Z` dirs — prereleases like `2.0.0-beta.1` tie with `2.0.0` on the numeric key and would win the line tie-break. Then a numeric field sort on major.minor.patch: NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime / `ls -t` (a reinstalled older version can carry a newer mtime). `sort -t. -kN,Nn` is portable across BSD and GNU sort.
+- **(b) Version pick.** One `awk` stage does the whole job: it keeps only pure `X.Y.Z` names and tracks the maximum by comparing major, then minor, then patch numerically. The name filter matters because prereleases like `2.0.0-beta.1` compare equal to `2.0.0` on the numeric keys and would win a tie-break. It replaced a `grep | sort | tail` pipeline whose only defect was cost: a 4-stage pipeline spent ~1000 of the classifier's 4000-token budget on its own (see (i)), and this is 2 stages. Output verified identical to that pipeline under bash and zsh, on synthetic input and on the real plugin cache. Deliberately NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime / `ls -t` (a reinstalled older version can carry a newer mtime).
 - **(c) `MECHANISM_WITNESS` is a LITERAL, not an inherited value.** A committed `.claude/settings.json` `env` block can set env vars (#325 / ADR 0016 class), so the dispatch guard must not trust an ambient `MECHANISM_WITNESS` — otherwise a plain council could be forced to transmit its prompt to the configured `.auditor.model`. Claude flips the literal to `1` **iff** the Step 4.6 gate printed `MYTHOS_ATTEMPT=1` (Step 4.7, same authorization as the fable Mythos Witness); a plain or ultra-council leaves it `0`. Fail-SAFE: the literal default is `0`. Same injection-proofing as the Step 4.6 `_forced` literal default.
 - **(d) Prompt FILES, not `--prompt "..."` and not heredocs.** `--prompt` loses to shell escaping bugs with quotes, backticks, `$`, and newlines; a file has neither that problem nor the one in (i). `dispatch.sh` reads the prompt from stdin either way, so `< file` is a drop-in for the old `<<'DELIM'`.
 - **(e) `DROID_AUTO_LEVEL=low`.** If Pragmatist or Critic falls back to droid (per the route array's droid fallback), the agent is constrained to file-write tier — these are synthesis roles needing no installs, network fetches, or git ops. No effect when the CLI is agy (the env var is ignored by non-droid CLIs). If droid fails at low tier the voice drops cleanly rather than running at the default `high` privilege.
@@ -189,6 +200,8 @@ rm -f "$D/pragmatist.txt" "$D/critic.txt" "$D/researcher.txt" "$D/witness.txt"
 - **(h) The reap waits for the witness's OWN budget** (`_AUD_TO + 10s`), not a stingy tail after the fixed voices: it is a slow reasoning model and a 20s tail reaped it mid-flight. `dispatch`'s own `--timeout` hard-stops the process at `_AUD_TO`, so this loop only POLLS to that ceiling and cannot stall the council unboundedly; the `+10` is slack to finish writing (`execute_review` and opencode are descendants, so killing only `$AUDITOR_PID` orphans them — hence the recursive `_kt`).
 
 - **(i) The prompts live in FILES because the block is scanned, and the scan is not free.** Measured on the shipped block (#813): with the prompts inline as heredocs, **~100 words per voice was already over budget** — the walk cost scales with the pasted prompt, so no amount of comment-trimming fixes it and every longer council question re-breaks the block. Worse, the classifier reads a heredoc payload aimed at `"$DISPATCH"` (an unresolved command word) as a possible *program*, so a council **question** containing an ordinary glob-shaped token — `*.py`, `test_*`, `foo?` — was itself enough to get the command refused as "calling" a gate helper. That is the shape that makes a council *about* the gates nearly impossible to convene, since its question quotes the gates' own command strings. With the prompts in files the block's cost is **constant** — it no longer moves with the length of the council question at all — and the measured margin is 30-plus comment lines of the kind that used to sit in the fence, pinned by a headroom row in `tests/test-marker-glob-specificity.sh`. Do not inline them again.
+
+- **(j) Cleanup runs from a `trap`, not from the last line.** The question text can carry sensitive repo and design context, so the prompt files and their directory must not outlive the run — and a tail cleanup only runs on normal fallthrough. The `exit 1` above it, a failed `source`, an interrupt, or a Bash-tool timeout all skip it, and because each run now gets its own `mktemp -d` directory, nothing later overwrites or reuses those files: they would sit there indefinitely. An `EXIT` trap fires on every one of those paths. `oracle.txt` is on the list even though the Step 4.5 snippet removes it too, because that snippet is absent from a plain council — relying on it alone would make whether the directory can be removed depend on which council tier ran. `rm -f` on an absent file is a no-op, so listing it costs nothing. Named explicitly rather than `"$D"/*` for the reason in (g) — no globs in this fence.
 
 > **Note.** `_kt` (h) is a genuine function definition, which still makes the classifier re-read *this block's own words* as glob patterns. That is why (g)'s "no globs in the fence" rule applies to the skeleton and its comments — it is not belt-and-braces, it is the live constraint.
 
@@ -227,7 +240,7 @@ Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). The
 ```bash
 # The prompt file is written with the Write tool BEFORE this call, like every other
 # voice's (see the Step 4b table) — same text, never an inline heredoc (#813, see (i)).
-ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$HOME/.claude/council/oracle.txt"
+ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$D/oracle.txt"
 # Background the wrapper so its consult overlaps the voices; it blocks internally
 # until done, so `wait "${PIDS[@]}"` covers it. ULTRA_ORACLE_COUNCIL_FORCE is the
 # plain (non-exported) per-run escalation; pass it as arg 2 (a normal council

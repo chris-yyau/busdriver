@@ -1300,6 +1300,7 @@ echo "── F. an empty ARRAY assignment is not a function definition (#813) �
 # is section A); the definition alone measures ALLOW; TOGETHER they blocked, which is why
 # five operator probes of the glob in isolation all came back clean and the report recorded
 # the hypothesis as disproven. It was not: the missing half was the definition.
+# shellcheck disable=SC2016  # the $ must reach the CLASSIFIER literally, not this shell
 _F_GLOB='case "$x" in '"''"'|*[!0-9]*) x=900 ;; esac'
 assert_ok  "$_F_GLOB" "#813: the negated-class normalizer ALONE -> allowed"
 assert_ok  'PIDS=()'  "#813: an empty array assignment ALONE -> allowed"
@@ -1313,6 +1314,7 @@ _kt() { kill \$1; }" "#813: a REAL function definition + that glob still BLOCKS 
 # block was refused for "calling" a helper it spells nowhere, the third report of that class.
 assert_ok "$_F_GLOB
 PIDS=()" "#813: an empty array assignment + that glob -> allowed"
+# shellcheck disable=SC2016  # literal fixture text, expansion would change the input
 assert_ok 'PIDS=()
 PIDS+=("$!")
 case "$v" in *[!0-9]*) v=0 ;; esac' "#813: the shipped array-then-append shape -> allowed"
@@ -1342,8 +1344,10 @@ assert_block '--opt=()
 *.py'      "#813 anti-forge: an option flag is not an assignment -> still a name"
 assert_block 'a/b=()
 *.py'      "#813 anti-forge: a path is not an assignment -> still a name"
+# shellcheck disable=SC2016  # literal fixture text, expansion would change the input
 assert_block 'echo() { "$@"; }; echo sh -c x
 *.py'      "#813 anti-forge: the shadowing attack still BLOCKS"
+# shellcheck disable=SC2016  # literal fixture text, expansion would change the input
 assert_block 'PIDS=(); eval "$Q"
 *.py'      "#813 anti-forge: an array literal does not launder eval in the same command"
 
@@ -1399,6 +1403,64 @@ if grep -qE "^ *[A-Z_]*\"?\\\$DISPATCH\"? .*<<'" "$_F_SKILL"; then
     no "#813: council prompts stay in files" "a heredoc prompt was reinlined into a dispatch line"
 else
     ok "#813: council prompts stay in files, not inline heredocs"
+fi
+
+echo "── F2. generated sweep over the assignment / function-header boundary (#813) ──"
+_f_gen_pass=0
+_f_gen_fail=0
+_f_gen() {  # <command> <want:ok|block> <label>
+    local got
+    got="$(verdict "$1")"
+    case "$2:$got" in
+        ok:OK\|)      _f_gen_pass=$((_f_gen_pass + 1)) ;;
+        block:BLOCK*) _f_gen_pass=$((_f_gen_pass + 1)) ;;
+        *) _f_gen_fail=$((_f_gen_fail + 1))
+           printf '  FAIL  %s :: want=%s got=%s\n' "$3" "$2" "${got:-<empty>}" ;;
+    esac
+}
+# The glob is the payload every case carries: without it there is nothing for the
+# abandoned scan to match, so a released case would pass for the wrong reason.
+_F_PAYLOAD='*.py'
+for _f_name in PIDS _x A1 a_b__c; do            # valid identifiers -> assignment
+  # shellcheck disable=SC2016  # literal subscript text, expansion would change the input
+  for _f_sub in '' '[0]' '[i]' '[$n]'; do       # optional array subscript
+    for _f_op in '=' '+='; do                   # plain and append forms
+      for _f_par in '()' '( )' '(  )'; do       # empty parens, spaced
+        _f_gen "${_f_name}${_f_sub}${_f_op}${_f_par}
+$_F_PAYLOAD" ok "bare ${_f_name}${_f_sub}${_f_op}${_f_par} is an array literal"
+      done
+    done
+  done
+done
+# ...and the complement. Each of these is NOT a bare valid assignment, so each must still
+# be read as a function-definition header and keep the glob blocked.
+for _f_bad in \
+    '1x=()' 'x-y=()' 'x.y=()' 'a/b=()' '--opt=()' '=()' 'x=[]()' \
+    "'a='()" '"a="()' 'a\=()' 'f()' '_kt()' 'echo()' 'x[0]()'; do
+  _f_gen "$_f_bad { :; }
+$_F_PAYLOAD" block "not a bare assignment: $_f_bad"
+done
+# A NON-EMPTY array literal was never a header candidate to begin with -- the pattern
+# requires EMPTY parens -- so it is released by the shape rule rather than by this fix, and
+# it is still not a function definition in any shell. Asserted so a future widening of the
+# header pattern to non-empty parens shows up here.
+for _f_arr in 'PIDS=(a)' 'PIDS=(a b)'; do
+  _f_gen "$_f_arr
+$_F_PAYLOAD" ok "non-empty array literal: $_f_arr"
+done
+# Separator sensitivity: the header pattern anchors on command position, so the release
+# must hold behind each opener that puts a word there -- and must NOT leak to a word that
+# merely CONTAINS an assignment-looking run.
+for _f_lead in '' 'if true; then ' '{ ' 'case x in x) ' 'while :; do ' '; ' '| '; do
+  _f_gen "${_f_lead}PIDS=()
+$_F_PAYLOAD" ok "array literal behind lead '${_f_lead:-<none>}'"
+  _f_gen "${_f_lead}f()
+$_F_PAYLOAD" block "function header behind lead '${_f_lead:-<none>}'"
+done
+if [[ "$_f_gen_fail" -eq 0 ]]; then
+    ok "#813 generated sweep: $_f_gen_pass cases across the boundary"
+else
+    no "#813 generated sweep" "$_f_gen_fail of $((_f_gen_pass + _f_gen_fail)) generated cases wrong"
 fi
 
 echo

@@ -348,8 +348,13 @@ try:
     # swapped in between could be followed after all, which is exactly the
     # guarantee this block exists to make.
     with os.fdopen(fd, "r+b") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            sys.exit(0)
+        # LOCK FIRST, then validate. Every check below describes the file this
+        # block is about to write, so running any of them before the lock leaves a
+        # window in which the answer can change before the write happens. (POSIX
+        # cannot stop a link being created at any moment, so this is not a proof
+        # of exclusivity — it is the check made as late as it can be made, which
+        # is immediately before the write it guards.)
+        #
         # NON-BLOCKING with a short bounded retry. A plain LOCK_EX waits forever,
         # so any process holding the lock — including one wedged — would hang the
         # review inside storage that is advisory by contract. Giving up costs one
@@ -366,6 +371,21 @@ try:
                 if time.monotonic() >= deadline:
                     sys.exit(0)
                 time.sleep(0.05)
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            sys.exit(0)
+        # A hard link means a second name for this inode that nothing here
+        # controls, so the store would not be the private file it is meant to be.
+        if st.st_nlink != 1:
+            sys.exit(0)
+        # The 0o600 on os.open applies only when the file is CREATED. An existing
+        # store left group- or world-readable would stay that way while findings
+        # — which can quote whatever the diff contained — keep being appended.
+        try:
+            if stat.S_IMODE(st.st_mode) != 0o600:
+                os.fchmod(fh.fileno(), 0o600)
+        except OSError:
+            sys.exit(0)
         fh.seek(0, os.SEEK_END)
         fh.write(record.encode("utf-8"))
         fh.flush()
@@ -413,6 +433,12 @@ try:
     max_entries = max(1, int(sys.argv[3]))
 except ValueError:
     max_entries = 20
+# Ceilings are enforced in CODE, not left to the environment. Both limits arrive
+# from env vars, and a committed settings.json env block can set session env
+# (#325 / ADR 0016) — so the reviewed branch could otherwise raise the very
+# bounds described as containment and keep its own text in front of the reviewer
+# indefinitely. The env vars may tighten these; they can never loosen them.
+max_entries = min(max_entries, 100)
 
 # Only the tail is considered — the file is append-only and never pruned, but a
 # verdict old enough to have scrolled past this window is old enough to be noise.
@@ -479,6 +505,9 @@ try:
     MAX_AGE = max(0, int(sys.argv[4]))
 except (IndexError, ValueError):
     MAX_AGE = 604800
+# Hard ceiling, for the reason given at max_entries above: the lifetime bound is
+# only a containment control if the reviewed branch cannot raise it.
+MAX_AGE = min(MAX_AGE, 30 * 86400)
 
 def _reject_constant(name):
     """Python's JSON parser accepts NaN/Infinity by default; this store does not.
@@ -639,11 +668,16 @@ for entry in reversed(kept):
             # come from a merge or write that lost them. Rendering it as a clean
             # pass would hand the next reviewer the opposite of what it recorded,
             # so "No issues found" stays reserved for a verdict that actually was.
-            if str(entry.get("status", "")).strip().upper() == "FAIL":
-                block.append("  (this record is a FAIL that carries no findings — "
-                             "treat this verdict as incomplete)")
-            else:
+            # Only a RECOGNISED clean verdict may make a clean claim. Testing for
+            # "FAIL" instead would let null, a missing key, or any garbage status
+            # fall through to "No issues found" — turning a malformed record into
+            # a false report of a clean review, which is the one direction this
+            # renderer must never fail in.
+            if str(entry.get("status", "")).strip().upper() == "PASS":
                 block.append("  No issues found.")
+            else:
+                block.append("  (this record carries no readable findings and no "
+                             "clean verdict — treat it as incomplete)")
         block.append("")
     except Exception:
         continue

@@ -238,6 +238,50 @@ OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
 if echo "$OUT" | grep -q "badts-"; then fail "a record with an unusable ts was rendered:\n$OUT"; fi
 echo "$OUT" | grep -q "commit ${SHA1:0:8}" || fail "good records lost among bad stamps:\n$OUT"
 
+# ── 4c4. the lifetime ceiling cannot be raised from the environment ─────────
+# Both limits arrive from env vars, and a committed settings.json env block can
+# set session env — so an unbounded LITMUS_PR_HISTORY_MAX_AGE would let the
+# reviewed branch keep its own text in front of the reviewer forever, defeating
+# the very bound documented as containment.
+OLD_TS=$(python3 -c 'import time; print(int(time.time()) - 60*86400)')
+printf '{"head_sha":"%s","base_sha":"%s","ts":%s,"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"ancient-entry"}]}\n' \
+  "$SHA1" "$BASE_SHA" "$OLD_TS" >> "$PR_HISTORY_FILE"
+OUT=$(LITMUS_PR_HISTORY_MAX_AGE=999999999 load_pr_history "$BASE_SHA" "$HEAD_NOW")
+if echo "$OUT" | grep -q "ancient-entry"; then
+  fail "an enormous LITMUS_PR_HISTORY_MAX_AGE lifted the lifetime ceiling:\n$OUT"
+fi
+# The env var may still TIGHTEN the window.
+OUT=$(LITMUS_PR_HISTORY_MAX_AGE=0 load_pr_history "$BASE_SHA" "$HEAD_NOW")
+[ -z "$OUT" ] || fail "a zero age window still rendered records:\n$OUT"
+
+# ── 4c5. a record with no recognised verdict never claims a clean review ────
+printf '{"head_sha":"%s","base_sha":"%s","ts":%s,"status":null,"issues":[]}\n' \
+  "$SHA1" "$BASE_SHA" "$(date +%s)" >> "$PR_HISTORY_FILE"
+printf '{"head_sha":"%s","base_sha":"%s","ts":%s,"issues":[]}\n' \
+  "$SHA1" "$BASE_SHA" "$(date +%s)" >> "$PR_HISTORY_FILE"
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+NOVERDICT=$(echo "$OUT" | awk '
+  /^--- commit / { clean = ($0 ~ /status: PASS/) }
+  /No issues found/ { if (!clean) print "yes" }' | head -1)
+[ -z "$NOVERDICT" ] || fail "a record without a PASS verdict claimed 'No issues found':\n$OUT"
+echo "$OUT" | grep -q "no clean verdict" \
+  || fail "a verdict-less record was not marked incomplete:\n$OUT"
+
+# ── 4c6. the store is kept private, and is never a hard link ────────────────
+chmod 0644 "$PR_HISTORY_FILE"
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"perm-check"}]}' \
+  "$SHA1" "$BASE_SHA"
+MODE=$(python3 -I -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$PR_HISTORY_FILE")
+[ "$MODE" = "0o600" ] || fail "an existing store kept loose permissions ($MODE)"
+echo "$OUT" >/dev/null
+ln "$PR_HISTORY_FILE" "$SANDBOX/hardlink-to-store"
+BEFORE_LINK=$(wc -c < "$PR_HISTORY_FILE")
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"via-hardlink"}]}' \
+  "$SHA1" "$BASE_SHA"
+[ "$BEFORE_LINK" -eq "$(wc -c < "$PR_HISTORY_FILE")" ] \
+  || fail "the store was written while a second hard link to it existed"
+rm -f "$SANDBOX/hardlink-to-store"
+
 # ── 4d. a record whose own base is null is never rendered ────────────────────
 # `base_sha != BASE` is a string compare against the caller's pinned merge-base,
 # so a record carrying a null base must not match it. (This fixture previously

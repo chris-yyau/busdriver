@@ -84,27 +84,51 @@ Agent(
 
 **4b. Pre-check CLI availability, then dispatch:**
 
-Before dispatching, check CLI availability and find the dispatch script:
+**First, make a private prompt directory** with a single Bash call. It prints two things, and they go to different places: the FIRST `suffix=` line is six alphanumeric characters and is the ONLY thing that goes into the dispatch block; `dir=` is the absolute path, and goes only to the `Write` tool:
 
 ```bash
-# Resolve the plugin root ONCE. CLAUDE_PLUGIN_ROOT is NOT populated in the Bash
-# tool env of every harness (empty in SDK/child sessions), and a bare
-# "${CLAUDE_PLUGIN_ROOT}/..." would then collapse to "/scripts/..." and every
-# voice + witness would silently fail to launch. Fall back to the newest
-# installed cache dir; override with BUSDRIVER_PLUGIN_ROOT. This PLUGIN_ROOT is
-# in scope for the Step 4.5 witness snippet (UltraOracle), which is inserted into THIS
-# same block (it shares this shell, alongside PIDS). Step 4.6 (Mythos Witness) runs as
-# standalone Bash calls and re-resolves PLUGIN_ROOT independently (see there).
+_d="$(mkdir -p "$HOME/.claude" && mktemp -d "$HOME/.claude/council.XXXXXX")" || exit 1
+_s="${_d##*/council.}"
+[[ "$_s" =~ ^[A-Za-z0-9]{6}$ ]] || { echo "council: refusing a malformed suffix" >&2; exit 1; }
+printf 'suffix=%s\n' "$_s"
+printf 'dir=%s\n' "$_d"
+```
+
+`mktemp -d` is doing real work here, and a hand-picked directory name is not a substitute. It creates the directory **atomically** and fails rather than reusing one that already exists, and it creates it mode 0700 — so two councils running at once cannot land in the same directory, and a stale directory from an interrupted run cannot be silently reused. A fixed or hand-rolled name gives none of that: whichever run loses the race has its prompts overwritten between the write and the read, and a council prompt routinely carries repo and design context, so the loser would ship its material to the other session's external voice.
+
+**Only the suffix crosses over — never the path.** Whatever you carry from this step is retyped into the dispatch block, where it becomes shell source and is parsed. A full path is therefore an execution point: it contains the parent directory, and every candidate parent is ambient. `$TMPDIR` is settable by a committed `.claude/settings.json` `env` block (#325 / ADR 0016 class) and `$HOME` is settable too, so a value carrying `$(…)`, a backtick, a quote or a backslash is inert inside the quoted `mktemp` call and then executes when the printed path is pasted. Stripping the name down to `mktemp`'s own suffix leaves six characters of `[A-Za-z0-9]` — the `XXXXXX` template's width — and the regex pins exactly that rather than trusting it — a `$HOME` carrying a newline could otherwise emit a second, forged `suffix=` line, so the genuine one is printed FIRST and the check runs before either line. Written as a command substitution and a parameter expansion rather than a pipe into `sed`, because a pipeline reports the LAST stage's status: a failed `mktemp` — collision retries exhausted, `~/.claude` unwritable, disk full — would print nothing and still exit 0, and the contract here is that this step either hands you a suffix or fails visibly. Take the FIRST `suffix=` line; if nothing is printed, stop, and do not invent a suffix. The block rebuilds the path from that suffix and its own quoted `"$HOME"`, exactly as it already does for the plugin cache — so this step introduces no expansion the fence was not already performing. The absolute `dir=` line is printed for the `Write` calls, which take a filesystem path rather than shell source and so carry none of this hazard; do not paste it into the block.
+
+**What this step does NOT claim.** It removes the execution point that carrying a PATH would have introduced. It does not make the fence safe against an environment that is already hostile, and it would be theater to pretend otherwise: `PLUGIN_ROOT` is derived from `$HOME` eleven lines below and the block then `source`s a file from it and executes `dispatch.sh` from it, so an injected `HOME` owns this shell regardless of where the prompts live; and an injected `PATH` that could substitute `mkdir` or `mktemp` substitutes `ls`, `awk`, `sed`, `pgrep`, `kill`, `rmdir` and `bash` in the same fence, plus `dispatch.sh` itself. Hardening two commands out of a dozen would move nothing. Those are whole-plugin preconditions and belong wherever the plugin decides to address them, not in this hunk.
+
+**Then write each voice's prompt to a file with the `Write` tool**, one file per voice, inside that directory. Use the absolute `dir=` path verbatim — `Write` takes a filesystem path and expands neither `~` nor `$HOME`, so the `~/…` spelling below is shorthand for reading, not a path to pass:
+
+| Voice | File |
+|---|---|
+| Pragmatist | `~/.claude/council.<SUFFIX>/pragmatist.txt` |
+| Critic | `~/.claude/council.<SUFFIX>/critic.txt` |
+| Researcher | `~/.claude/council.<SUFFIX>/researcher.txt` |
+| Mechanism Witness (ultimate-council only) | `~/.claude/council.<SUFFIX>/witness.txt` |
+| UltraOracle (ultra-/ultimate-council only) | `~/.claude/council.<SUFFIX>/oracle.txt` |
+
+Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (i) below.
+
+Substitute the `suffix=` value — not the path — into the `D=` line of the dispatch block. If the two do not match, the block stops with an error rather than convening a council with no voices. A prompt file that is individually missing is **not** guarded for, deliberately: the redirection then fails loudly for that voice, which is what you want to see. Guarding it would make a forgotten `Write` indistinguishable from an unavailable CLI, and the report would show the voice as `(unavailable)` rather than as the mistake it is.
+
+Then dispatch. This block checks CLI availability and finds the dispatch script:
+
+```bash
+# Prompts come from FILES written before this call, never inline heredocs — see (d) and (i).
+# The SUFFIX from Step 4b, nothing more — see there. The trap is the cleanup — see (j).
+D="$HOME/.claude/council.<SUFFIX>"
+[ -d "$D" ] || { echo "council: prompt dir $D missing — write the prompt files first (Step 4b)" >&2; exit 1; }
+trap 'rm -f "$D/pragmatist.txt" "$D/critic.txt" "$D/researcher.txt" "$D/witness.txt" "$D/oracle.txt"; rmdir "$D" 2>/dev/null || true' EXIT
+
+# Resolve the plugin root ONCE — see "Why the block is written this way" (a) below.
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 if [ -z "$PLUGIN_ROOT" ]; then
-  # newest installed STABLE cache version. grep keeps only pure X.Y.Z dirs
-  # (drops prereleases like 2.0.0-beta.1, whose numeric key ties with 2.0.0 and
-  # would win the line tie-break). Then numeric field sort by major.minor.patch:
-  # NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime/`ls -t`
-  # (a reinstalled older version can carry a newer mtime). `sort -t. -kN,Nn` is
-  # portable across BSD and GNU sort.
+  # newest installed STABLE cache version — see (b) below.
   _cache="$HOME/.claude/plugins/cache/busdriver/busdriver"
-  _v="$(ls "$_cache" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  _v="$(ls "$_cache" 2>/dev/null | awk -F. '/^[0-9]+[.][0-9]+[.][0-9]+$/ { if (!n || $1>a || ($1==a && ($2>b || ($2==b && $3>c)))) { a=$1; b=$2; c=$3; n=1; v=$0 } } END { if (n) print v }')"
   [ -n "$_v" ] && PLUGIN_ROOT="$_cache/$_v"
 fi
 PLUGIN_ROOT="${PLUGIN_ROOT%/}"
@@ -118,92 +142,46 @@ RESEARCHER_CLI=$(resolve_role_cli "council.researcher")
 AUDITOR_CLI=$(resolve_role_cli "council.auditor")
 DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
-# Mechanism Witness authorization (ultimate-council ONLY). This LITERAL 0 shadows
-# any repo-injected ambient MECHANISM_WITNESS — a committed `.claude/settings.json`
-# `env` block can set env vars (#325 / ADR 0016 class), so the dispatch guard below
-# must NOT trust an inherited value or a plain council could be forced to transmit
-# its prompt to the configured `.auditor.model`. For an ultimate-council where the Step 4.6 gate
-# returned MYTHOS_ATTEMPT=1, change this literal to `MECHANISM_WITNESS=1` (Step 4.7);
-# a plain or ultra-council leaves it 0. Same injection-proofing as the Step 4.6
-# `_forced` literal default.
+# Mechanism Witness authorization (ultimate-council ONLY). This LITERAL 0 shadows any
+# repo-injected ambient MECHANISM_WITNESS; flip it to 1 ONLY for an ultimate-council
+# whose Step 4.6 gate printed MYTHOS_ATTEMPT=1. See (c) below.
 MECHANISM_WITNESS=0
 
-# Dispatch available voices — capture PIDs so wait blocks on the actual processes
-# IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
-# with quotes, backticks, $, and newlines in prompt text.
+# Dispatch available voices — capture PIDs so wait blocks on the actual processes.
 PIDS=()
 if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
-  # DROID_AUTO_LEVEL=low: if Pragmatist falls back to droid (per the route
-  # array's droid fallback), constrain the agent to file-write tier only.
-  # Pragmatist is a synthesis role — no need for installs, network fetches,
-  # or git ops. Has no effect when PRAGMATIST_CLI=agy (env var is ignored
-  # by non-droid CLIs). If droid fails at low tier, the voice drops cleanly
-  # rather than running at the default 'high' privilege.
-  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 <<'PRAGMATIST_PROMPT' &
-<Pragmatist prompt>
-PRAGMATIST_PROMPT
+  # DROID_AUTO_LEVEL=low: file-write tier only if this voice falls back to droid — see (e).
+  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 < "$D/pragmatist.txt" &
   PIDS+=("$!")
 fi
 if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^(missing|unsupported): ]]; then
-  # DROID_AUTO_LEVEL=low: same reasoning as Pragmatist above — Critic is a
-  # synthesis role; if it falls back to droid, file-write tier is sufficient.
-  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 <<'CRITIC_PROMPT' &
-<Critic prompt>
-CRITIC_PROMPT
+  # DROID_AUTO_LEVEL=low: same reasoning as Pragmatist — see (e).
+  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 < "$D/critic.txt" &
   PIDS+=("$!")
 fi
 if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^(missing|unsupported): ]]; then
-  "$DISPATCH" --cli "$RESEARCHER_CLI" --timeout 300 <<'RESEARCHER_PROMPT' &
-<Researcher prompt>
-RESEARCHER_PROMPT
+  "$DISPATCH" --cli "$RESEARCHER_CLI" --timeout 300 < "$D/researcher.txt" &
   PIDS+=("$!")
 fi
 AUDITOR_PID=""
-# Mechanism Witness — ULTIMATE-COUNCIL ONLY. Gated on the LITERAL
-# MECHANISM_WITNESS=0/1 set in the preamble above (NOT an inherited env value —
-# that literal shadows any repo-injected MECHANISM_WITNESS). Claude flips it to 1
-# iff the Step 4.6 gate printed MYTHOS_ATTEMPT=1 (see Step 4.7 — same authorization
-# as the fable Mythos Witness). 0 in a plain or ultra-council → the witness never
-# dispatches. Fail-SAFE: the literal default is 0.
+# Mechanism Witness — ULTIMATE-COUNCIL ONLY, gated on the LITERAL MECHANISM_WITNESS
+# above (never an inherited env value). See (c) and (f) below.
 if [ "${MECHANISM_WITNESS:-0}" = 1 ] && [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
-  # Runs read-only via the plugin-owned opencode config (deny-all tools except
-  # read/glob/grep). See the opencode) arm in resolve-cli.sh for the four-round
-  # probe history — enumerated denylists all leaked. Its own budget (default
-  # AND clamp 900s — TRUE UltraOracle-parity: the oracle's own cap
-  # `ultra_oracle_timeout_cap` DEFAULTS to 900s too, so the witness rides that window
-  # instead of extending it; the old 120s silently timed out; see ADR 0027). PID
-  # kept OUT of the blocking PIDS array — see the bounded reap. The reap waits for
-  # THIS budget (+10s), like the fable witness, not a stingy tail after the fixed
-  # voices. The witness runs CONCURRENTLY with the oracle (both start at t=0) and its own
-  # dispatch --timeout hard-kills it at _AUD_TO ≤ 900s, so the block finishes
-  # within the oracle's own budget+90s window — no serial addition. The clamp is
-  # HARD 900 (not the oracle's 3600 ceiling): COUNCIL_AUDITOR_TIMEOUT is
-  # repo-injectable (#325), so a higher ceiling would let a fork extend an
-  # ultimate-council past the Bash-tool timeout. The witness is advisory; 900s is ample.
-  _AUD_TO="${COUNCIL_AUDITOR_TIMEOUT:-900}"; case "$_AUD_TO" in ''|*[!0-9]*) _AUD_TO=900 ;; esac
-  _AUD_TO="${_AUD_TO#"${_AUD_TO%%[!0]*}"}"; [[ -z "$_AUD_TO" ]] && _AUD_TO=0   # strip leading zeros (000900 → 900); all-zeros → 0
-  [[ "${#_AUD_TO}" -ge 8 ]] && _AUD_TO=900   # >7 digits → clamp to max, keeping 10# off any oversized input (never octal, never 64-bit overflow)
-  _AUD_TO=$((10#$_AUD_TO))
-  [[ "$_AUD_TO" -lt 1 ]] && _AUD_TO=900; [[ "$_AUD_TO" -gt 900 ]] && _AUD_TO=900   # clamp: a repo-injected value must not stall the ultimate-council past the oracle window
-  "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "$_AUD_TO" <<'AUDITOR_PROMPT' &
-<Mechanism Witness prompt>
-AUDITOR_PROMPT
+  # Budget: default AND hard clamp 900s (UltraOracle-parity). One regex, no glob — see (g).
+  _AUD_TO=900
+  [[ "${COUNCIL_AUDITOR_TIMEOUT:-}" =~ ^0*[0-9]{1,7}$ ]] && _AUD_TO=$((10#$COUNCIL_AUDITOR_TIMEOUT))
+  [[ "$_AUD_TO" -lt 1 || "$_AUD_TO" -gt 900 ]] && _AUD_TO=900   # clamp — see (g)
+  "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "$_AUD_TO" < "$D/witness.txt" &
   AUDITOR_PID="$!"
 fi
-# Block on the FIXED voices only. The Mechanism Witness is reaped separately, but
-# it waits for its OWN budget (_AUD_TO + 10s) — the witness is a slow reasoning model and
-# a 20s tail after the fixed voices reaped it mid-flight. dispatch's own timeout
-# hard-stops the process at _AUD_TO, so this loop only POLLS to that ceiling and
-# still cannot stall the council unboundedly; the +10 is slack to finish writing
-# (execute_review + opencode are descendants; killing only $AUDITOR_PID orphans
-# them). Override with COUNCIL_AUDITOR_GRACE to force an earlier reap.
+# Block on the FIXED voices only; the Mechanism Witness is reaped separately on its
+# OWN budget (_AUD_TO + 10s). Override with COUNCIL_AUDITOR_GRACE. See (h).
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 if [[ -n "$AUDITOR_PID" ]]; then
-  _ag_cap="${COUNCIL_AUDITOR_GRACE:-$(( _AUD_TO + 10 ))}"; case "$_ag_cap" in ''|*[!0-9]*) _ag_cap=$(( _AUD_TO + 10 )) ;; esac
-  _ag_cap="${_ag_cap#"${_ag_cap%%[!0]*}"}"; [[ -z "$_ag_cap" ]] && _ag_cap=0   # strip leading zeros; all-zeros → 0
-  [[ "${#_ag_cap}" -ge 8 ]] && _ag_cap=$(( _AUD_TO + 10 ))   # >7 digits → default, keeping 10# off any oversized input
-  _ag_cap=$((10#$_ag_cap))   # base-10 on a bounded value: never octal, never overflow
-  # The override may only SHORTEN the reap, never extend past budget+10 (also corrals any wrapped value).
+  # Same regex form as _AUD_TO, for the same two reasons — see (g).
+  _ag_cap=$(( _AUD_TO + 10 ))
+  [[ "${COUNCIL_AUDITOR_GRACE:-}" =~ ^0*[0-9]{1,7}$ ]] && _ag_cap=$((10#$COUNCIL_AUDITOR_GRACE))
+  # The override may only SHORTEN the reap, never extend past budget+10.
   [[ "$_ag_cap" -gt $(( _AUD_TO + 10 )) ]] && _ag_cap=$(( _AUD_TO + 10 )); [[ "$_ag_cap" -lt 1 ]] && _ag_cap=1
   _ag=0
   while kill -0 "$AUDITOR_PID" 2>/dev/null; do
@@ -218,11 +196,28 @@ if [[ -n "$AUDITOR_PID" ]]; then
 fi
 ```
 
+**Why the block is written this way.** This rationale lives out here, in prose, rather than as comments inside the fence — and it must stay out here. The fence is pasted **verbatim** into a Bash tool call, where `hooks/gate-scripts/lib/marker_check.py` scans the command string against a **4000-token budget** for the gate-state-helper walk, and comment text is charged to that budget exactly like code. When the rationale sat inline the block measured **12 tokens over**, and an over-budget command is refused `BLOCKED: too large or too deeply nested` — fail-CLOSED, correctly, but on the plugin's own documented workflow (#813). Keep in-fence comments to one line each; put the reasoning here.
+
+- **(a) `PLUGIN_ROOT` resolved ONCE.** `CLAUDE_PLUGIN_ROOT` is NOT populated in the Bash tool env of every harness (empty in SDK/child sessions), and a bare `"${CLAUDE_PLUGIN_ROOT}/..."` would collapse to `/scripts/...` — every voice and witness would silently fail to launch. Falls back to the newest installed cache dir; override with `BUSDRIVER_PLUGIN_ROOT`. This `PLUGIN_ROOT` is in scope for the Step 4.5 UltraOracle snippet, which is inserted into THIS same block and shares this shell (alongside `PIDS`). Step 4.6 (Mythos Witness) runs as standalone Bash calls and re-resolves `PLUGIN_ROOT` independently.
+- **(b) Version pick.** One `awk` stage does the whole job: it keeps only pure `X.Y.Z` names and tracks the maximum by comparing major, then minor, then patch numerically. The name filter matters because prereleases like `2.0.0-beta.1` compare equal to `2.0.0` on the numeric keys and would win a tie-break. It replaced a `grep | sort | tail` pipeline whose only defect was cost: a 4-stage pipeline spent ~1000 of the classifier's 4000-token budget on its own (see (i)), and this is 2 stages. Output verified identical to that pipeline under bash and zsh, on synthetic input and on the real plugin cache. Deliberately NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime / `ls -t` (a reinstalled older version can carry a newer mtime).
+- **(c) `MECHANISM_WITNESS` is a LITERAL, not an inherited value.** A committed `.claude/settings.json` `env` block can set env vars (#325 / ADR 0016 class), so the dispatch guard must not trust an ambient `MECHANISM_WITNESS` — otherwise a plain council could be forced to transmit its prompt to the configured `.auditor.model`. Claude flips the literal to `1` **iff** the Step 4.6 gate printed `MYTHOS_ATTEMPT=1` (Step 4.7, same authorization as the fable Mythos Witness); a plain or ultra-council leaves it `0`. Fail-SAFE: the literal default is `0`. Same injection-proofing as the Step 4.6 `_forced` literal default.
+- **(d) Prompt FILES, not `--prompt "..."` and not heredocs.** `--prompt` loses to shell escaping bugs with quotes, backticks, `$`, and newlines; a file has neither that problem nor the one in (i). `dispatch.sh` reads the prompt from stdin either way, so `< file` is a drop-in for the old `<<'DELIM'`.
+- **(e) `DROID_AUTO_LEVEL=low`.** If Pragmatist or Critic falls back to droid (per the route array's droid fallback), the agent is constrained to file-write tier — these are synthesis roles needing no installs, network fetches, or git ops. No effect when the CLI is agy (the env var is ignored by non-droid CLIs). If droid fails at low tier the voice drops cleanly rather than running at the default `high` privilege.
+- **(f) The witness runs read-only** via the plugin-owned opencode config (deny-all tools except read/glob/grep) — see the `opencode)` arm in `resolve-cli.sh` for the four-round probe history; enumerated denylists all leaked. Its PID is kept OUT of the blocking `PIDS` array, and it runs CONCURRENTLY with the oracle (both start at t=0), so the block still finishes inside the oracle's own budget+90s window — no serial addition.
+- **(g) Budget normalizers are ONE regex each, deliberately glob-free.** Semantics are the old chain's exactly: non-numeric / empty / >7-significant-digit → the default, leading zeros dropped, `10#` so a `0`-prefixed value is never read as octal. What changed is the shape. The old form used `case "$x" in ''|*[!0-9]*)`, and a negated character class fnmatches a guarded gate-state helper's filename while spelling none of it — so the whole block was refused for "calling" a script it never names. That fired because a **function definition anywhere in the command** (the `_kt` reap helper below, and until #813 also the bare `PIDS=()` array literal, which the detector misread as a definition) makes the classifier drop its structured walk WHOLESALE and re-read every word of the command — comment prose included — as a bare glob pattern. Glob and function definition are each harmless alone; together they block. Two consequences for anyone editing this fence: **do not reintroduce a glob**, and **do not spell a guarded helper's filename even in a comment** — the literal-name probe reads a comment exactly like a command. Pinned in `tests/test-marker-glob-specificity.sh` section F. The 900s clamp is HARD (not the oracle's 3600 ceiling) because `COUNCIL_AUDITOR_TIMEOUT` is repo-injectable (#325) and a higher ceiling would let a fork stall an ultimate-council past the Bash-tool timeout; the witness is advisory and 900s is ample (ADR 0027 — the old 120s silently timed out). **And no capture group, deliberately:** this block is pasted into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh** — and zsh populates `$match`, not `$BASH_REMATCH`, so a capture-group form evaluates to `$((10#))` and silently pins the value at the default, killing the operator override on the very shell the rest of this file warns about (see the Step 4.5 `source` note). `10#` already eats the leading zeros the capture group was there to strip and the `{1,7}` bound already rules out an overflow, so validating the variable and then reading it directly is both shorter and shell-agnostic. Verified identical under bash and zsh across ten boundary inputs, and pinned by the zsh rows in `tests/test-auditor-grace-budget.sh` — **locally only**: those rows are guarded by `command -v zsh` and the `ubuntu-latest` runner ships no zsh, so CI proves the bash half alone and a zsh-only regression would still land green. Closing that is tracked in #821; it needs zsh installed on the runner, which also un-skips the zsh paths in six other suites and so is not a change this fence can make on its own.
+- **(h) The reap waits for the witness's OWN budget** (`_AUD_TO + 10s`), not a stingy tail after the fixed voices: it is a slow reasoning model and a 20s tail reaped it mid-flight. `dispatch`'s own `--timeout` hard-stops the process at `_AUD_TO`, so this loop only POLLS to that ceiling and cannot stall the council unboundedly; the `+10` is slack to finish writing (`execute_review` and opencode are descendants, so killing only `$AUDITOR_PID` orphans them — hence the recursive `_kt`).
+
+- **(i) The prompts live in FILES because the block is scanned, and the scan is not free.** Measured on the shipped block (#813): with the prompts inline as heredocs, **~100 words per voice was already over budget** — the walk cost scales with the pasted prompt, so no amount of comment-trimming fixes it and every longer council question re-breaks the block. Worse, the classifier reads a heredoc payload aimed at `"$DISPATCH"` (an unresolved command word) as a possible *program*, so a council **question** containing an ordinary glob-shaped token — `*.py`, `test_*`, `foo?` — was itself enough to get the command refused as "calling" a gate helper. That is the shape that makes a council *about* the gates nearly impossible to convene, since its question quotes the gates' own command strings. With the prompts in files the block's cost is **constant** — it no longer moves with the length of the council question at all — and the measured margin is 30-plus comment lines of the kind that used to sit in the fence, pinned by a headroom row in `tests/test-marker-glob-specificity.sh`. Do not inline them again.
+
+- **(j) Cleanup runs from a `trap`, not from the last line.** The question text can carry sensitive repo and design context, so the prompt files and their directory must not outlive the run — and a tail cleanup only runs on normal fallthrough. The `exit 1` above it, a failed `source`, an interrupt, or a Bash-tool timeout all skip it, and because each run now gets its own `mktemp -d` directory, nothing later overwrites or reuses those files: they would sit there indefinitely. An `EXIT` trap fires on every one of those paths. `oracle.txt` is on the list even though the Step 4.5 snippet removes it too, because that snippet is absent from a plain council — relying on it alone would make whether the directory can be removed depend on which council tier ran. `rm -f` on an absent file is a no-op, so listing it costs nothing. Named explicitly rather than `"$D"/*` for the reason in (g) — no globs in this fence. **Residual, stated rather than claimed away:** the trap covers the dispatch call, which is where the run actually spends its time, but not the gap between the `Write` turn and that call. A session cancelled in that window, or one whose dispatch never launches, leaves one `~/.claude/council.XXXXXX` directory behind. It is mode 0700 under the operator's own home rather than in a shared temp directory, and it is inert — nothing reads it again, since the next run mints its own — so the cost is a stale directory to delete, not an exposure. Closing it properly would need a writer that owns the whole lifecycle, which is a bigger change than this fix.
+
+> **Note.** `_kt` (h) is a genuine function definition, which still makes the classifier re-read *this block's own words* as glob patterns. That is why (g)'s "no globs in the fence" rule applies to the skeleton and its comments — it is not belt-and-braces, it is the live constraint.
+
 This is a **single Bash call** with all CLI dispatches as background processes. This is critical — if Agy, Codex, Grok (and opencode, in an ultimate-council) are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
-**Prompt template** for Agy/Codex/Grok/opencode (same structure as Skeptic but with their role/lens). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
+**Prompt template** for Agy/Codex/Grok/opencode (same structure as Skeptic but with their role/lens) — this is the text that goes into each voice's prompt FILE (Step 4b table). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
@@ -232,7 +227,7 @@ This is a **single Bash call** with all CLI dispatches as background processes. 
 
 **For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Provide links, quotes, and sources — NOT conclusions stated as settled fact. Your factual/empirical claims are treated as UNVERIFIED by default until checked against local evidence, so for each load-bearing claim name the cheap local check (command / file / grep) that would confirm or refute it. Cite what you find; flag claims that lack grounding."
 
-**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes — plus opencode only in an ultimate-council) in the **same message** so all external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+**IMPORTANT:** The prompt-file `Write` calls come first, in their own turn. Then launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes — plus opencode only in an ultimate-council) in the **same message** so all external voices run concurrently. Do NOT use separate Bash tool calls for the dispatches — one failing will cancel the others. (The `Write` calls are cheap and non-blocking; only the dispatches need to share a call.)
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
@@ -251,17 +246,16 @@ Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). The
 > **⚠ Bash-tool timeout (caller contract — #477 Cause 1).** The wrapper **blocks internally for the full ChatGPT-Pro browser consult** and then polls up to the **oracle budget + 90s** for the completion marker (`ultra-oracle-run.sh` waits `timeout_cap + 90`). Because Step 4's closing `wait "${PIDS[@]}"` blocks on it, the **entire Step 4 dispatch Bash tool call must be invoked with an explicit `timeout` ≥ `ultra_oracle_timeout_cap + 90s + LAUNCH_WAIT_SECONDS`**, rounded up for headroom. Size it from that **formula, not a fixed number**: `ultra_oracle_timeout_cap` reads USER config and only *falls back* to **900s** (`scripts/lib/ultra-oracle-config.sh`) — 3600s is the configurable **ceiling**, not the default — and `scripts/lib/ultra-oracle-attach-preflight.sh` runs its `LAUNCH_WAIT_SECONDS` (15s) synchronously *before* the poll starts. So at the default cap that is ≥1005s (`timeout: 1100000` ms), and at the 3600s ceiling ≥3705s (`timeout: 3710000` ms). Pinning the number to the budget alone under-sizes the contract for any raised cap and re-creates #477 Cause 1. A bare `≥ budget` is not enough — the wrapper's 90s grace can outlast it. The default ~120s Bash-tool ceiling would SIGTERM the whole process group mid-consult, before the wrapper writes a verdict → a spurious `ORACLE_FAILED [no wrapper output]`. This is the ONE extra thing an ultra-council needs over a plain council; a plain council's voices finish well inside the default.
 
 ```bash
-ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$(mktemp)"
-cat > "$ULTRA_ORACLE_PROMPT_FILE" <<'ULTRA_ORACLE_PROMPT'
-<the council question + context — same text composed into the other voices' heredocs>
-ULTRA_ORACLE_PROMPT
+# The prompt file is written with the Write tool BEFORE this call, like every other
+# voice's (see the Step 4b table) — same text, never an inline heredoc (#813, see (i)).
+ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$D/oracle.txt"
 # Background the wrapper so its consult overlaps the voices; it blocks internally
 # until done, so `wait "${PIDS[@]}"` covers it. ULTRA_ORACLE_COUNCIL_FORCE is the
 # plain (non-exported) per-run escalation; pass it as arg 2 (a normal council
 # leaves it unset → 0). arg 4 is where the verdict markdown + .rc marker land.
 # The `{ ...; rm -f ...; }` group deletes the prompt file once the wrapper exits
 # (VERDICT, FAILED, or NOT_ATTEMPTED alike) so the council question text — which
-# may carry sensitive repo/design context — never lingers in $TMPDIR after an
+# may carry sensitive repo/design context — never lingers on disk after an
 # off-by-default (NOT_ATTEMPTED) run; the wrapper has already fully read the file
 # by the time it exits, so this is not a race.
 { bash "${PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \

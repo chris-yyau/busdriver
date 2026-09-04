@@ -53,8 +53,24 @@ assert_present "$LOOP" '\[\[ "\$_aud_grace_cap" -gt \$\(\( _AUD_TIMEOUT \+ 10 \)
   "blueprint grace override may only shorten" "blueprint grace override can extend past budget+10"
 assert_absent  "$COUNCIL" 'COUNCIL_AUDITOR_GRACE:-20' \
   "council 20s tail reap removed" "council still has COUNCIL_AUDITOR_GRACE:-20"
-assert_present "$COUNCIL" '_ag_cap="\$\{COUNCIL_AUDITOR_GRACE:-\$\(\( _AUD_TO \+ 10 \)\)\}"' \
+assert_present "$COUNCIL" '_ag_cap=\$\(\( _AUD_TO \+ 10 \)\)' \
   "council reap default = _AUD_TO + 10" "council reap default is not _AUD_TO+10 (regressed #435)"
+# #813: both council normalizers moved from a case-glob chain to ONE regex each. That block
+# is pasted into a Bash tool call whose command string the gate classifier scans, and a glob
+# carrying literals at a guarded helper's character offsets is a known over-block there. Pin
+# the regex validation itself, so a silent drop back to an unvalidated env read fails here
+# rather than shipping a repo-injectable timeout.
+assert_present "$COUNCIL" '\[\[ "\$\{COUNCIL_AUDITOR_TIMEOUT:-\}" =~ ' \
+  "council timeout is numerically validated" "council timeout lost its numeric validation (#813)"
+assert_present "$COUNCIL" '\[\[ "\$\{COUNCIL_AUDITOR_GRACE:-\}" =~ ' \
+  "council grace is numerically validated" "council grace lost its numeric validation (#813)"
+# #813, and this one is not cosmetic. The block is pasted into the executor's Bash tool,
+# which on a zsh-default machine runs ZSH — and zsh populates $match, not $BASH_REMATCH.
+# A capture-group form therefore evaluates to $((10#)) there and pins the value at the
+# default, silently killing the operator override on the shell this skill elsewhere warns
+# about. Measured: zsh 5.9 answered 0 for both 07 and 900 through BASH_REMATCH.
+assert_absent "$COUNCIL" 'BASH_REMATCH\[' \
+  "council normalizers are zsh-safe" "council normalizer uses BASH_REMATCH — dead under zsh (#813)"
 assert_present "$COUNCIL" '\[\[ "\$_ag_cap" -gt \$\(\( _AUD_TO \+ 10 \)\) \]\]' \
   "council grace override may only shorten" "council grace override can extend past budget+10"
 
@@ -70,7 +86,11 @@ bp_norm() {  # <BLUEPRINT_AUDITOR_TIMEOUT value> -> normalized _AUD_TIMEOUT
 cn_norm() {  # <COUNCIL_AUDITOR_TIMEOUT value> -> normalized _AUD_TO
   # shellcheck disable=SC2034  # COUNCIL_AUDITOR_TIMEOUT is read by the eval'd source below
   local COUNCIL_AUDITOR_TIMEOUT="$1" _AUD_TO code
-  code="$(awk '/_AUD_TO="\$\{COUNCIL_AUDITOR_TIMEOUT/{p=1} p{print} p&&/_AUD_TO" -gt 900/{exit}' "$COUNCIL")"
+  # Anchored on the literal default line the #813 regex form opens with. The old anchor was
+  # the `_AUD_TO="${COUNCIL_AUDITOR_TIMEOUT...` assignment, which no longer exists — the
+  # extractor would have captured ZERO bytes and every boundary case below would have run
+  # against nothing, passing vacuously.
+  code="$(awk '/^  _AUD_TO=900$/{p=1} p{print} p&&/_AUD_TO" -gt 900/{exit}' "$COUNCIL")"
   eval "$code"; echo "$_AUD_TO"
 }
 
@@ -101,6 +121,32 @@ eq "$(cn_norm 3600)"     900  "council 3600 (repo-injected → clamped to 900)"
 eq "$(cn_norm 12345678)" 900  "council 12345678 (>7 digits → length guard → max)"
 eq "$(cn_norm 0)"        900  "council 0 (→ default)"
 eq "$(cn_norm 9999999)"  900  "council 9999999 (DoS bound)"
+eq "$(cn_norm 07)"       7    "council 07 (leading zero -> 7, never octal)"
+eq "$(cn_norm 0012345678)" 900 "council 0012345678 (padded, >7 significant digits -> max)"
+
+# ...and the SAME extracted lines under ZSH, which is what the executor actually runs on a
+# macOS default shell. This file is bash, so every case above proves only the bash half; a
+# zsh-only regression (the BASH_REMATCH shape) would pass all of them. Skipped, not failed,
+# where zsh is absent — the assertion is about portability, not about having zsh installed.
+if command -v zsh >/dev/null 2>&1; then
+  _zsh_cn() {  # <COUNCIL_AUDITOR_TIMEOUT value> -> normalized _AUD_TO, under zsh
+    # Through a FILE, never `zsh -c "$code"`: the double quotes would let THIS bash expand
+    # ${COUNCIL_AUDITOR_TIMEOUT} and $((10#...)) before zsh ever saw them, and the rows would
+    # measure bash wearing a zsh costume.
+    local f
+    f="$(mktemp)"
+    awk '/^  _AUD_TO=900$/{p=1} p{print} p&&/_AUD_TO" -gt 900/{exit}' "$COUNCIL" > "$f"
+    printf '%s\n' 'print -r -- "$_AUD_TO"' >> "$f"
+    COUNCIL_AUDITOR_TIMEOUT="$1" zsh "$f" 2>/dev/null
+    rm -f "$f"
+  }
+  eq "$(_zsh_cn 120)"  120 "council 120 under zsh (override survives a non-bash shell)"
+  eq "$(_zsh_cn 07)"   7   "council 07 under zsh (leading zero, never octal)"
+  eq "$(_zsh_cn 3600)" 900 "council 3600 under zsh (clamped)"
+  eq "$(_zsh_cn abc)"  900 "council abc under zsh (non-numeric -> default)"
+else
+  echo "SKIP: zsh not installed — zsh-portability rows not exercised"
+fi
 
 # Actual >64-bit overflow-sized digit strings must land on EXACTLY each
 # normalizer's ceiling — bp 1800, cn 900. Asserting an exact value rather than a

@@ -575,8 +575,25 @@ def clip(value, limit):
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return text if len(text) <= limit else text[:limit] + "…"
 
+# Two hard bounds on what this block can grow to, because the per-field clamps
+# alone do not bound it: MAX_ISSUES_PER_RECORD caps the findings rendered from
+# any one record, and MAX_OUTPUT_BYTES is the backstop over all of them. Together
+# with the record cap they make the injected size deterministic rather than a
+# function of what a reviewer once wrote.
+MAX_ISSUES_PER_RECORD = 50
+MAX_OUTPUT_BYTES = 256 * 1024
+
 out = []
-for entry in kept:
+out_bytes = 0
+truncated_records = 0
+rendered = []
+# NEWEST FIRST for the budget, then flipped back to chronological order for
+# output. `kept` is in append order, so spending the budget front-to-back would
+# fill it with the OLDEST verdicts and silently drop the newest — the ones that
+# describe the code closest to the diff under review, and the whole reason this
+# store exists. The reversal is what makes the byte cap a backstop rather than an
+# inversion of the feature.
+for entry in reversed(kept):
     # Rendering is per-record fail-safe. Nothing here may abort the loop: this
     # whole script runs behind `|| echo ""`, so ONE unusable record would blank
     # the entire branch history rather than being skipped — one bad line
@@ -598,12 +615,22 @@ for entry in kept:
         # field, and reporting it as a clean pass is precisely the mistake this
         # branch exists to prevent.
         dropped = (len(raw) - len(issues)) if isinstance(raw, list) else 1
-        for issue in issues:
+        # The COUNT of findings needs its own bound, not just their lengths. The
+        # 512 KiB input window bounds what is READ, and rendering usually shrinks
+        # a record — but it can also amplify: a bare `{}` is 2 bytes stored and
+        # renders as a ~14-byte line, so a record packed with tiny objects fits
+        # the window and expands into megabytes of prompt, crowding out the very
+        # diff this pass is meant to review.
+        shown = issues[:MAX_ISSUES_PER_RECORD]
+        for issue in shown:
             block.append("  [{}] {}:{} - {}".format(
                 clip(issue.get("severity", "?"), 16),
                 clip(issue.get("file", "?"), 200),
                 clip(issue.get("line", "?"), 16),
                 clip(issue.get("description", "?"), 500)))
+        if len(issues) > len(shown):
+            block.append("  ({} further finding(s) in this record not shown)".format(
+                len(issues) - len(shown)))
         if dropped:
             block.append("  ({} finding(s) in this record were unreadable and are "
                          "not shown — treat this verdict as incomplete)".format(dropped))
@@ -620,7 +647,18 @@ for entry in kept:
         block.append("")
     except Exception:
         continue
+    block_bytes = sum(len(line.encode("utf-8")) + 1 for line in block)
+    if out_bytes + block_bytes > MAX_OUTPUT_BYTES:
+        truncated_records += 1
+        continue
+    rendered.append(block)
+    out_bytes += block_bytes
+rendered.reverse()
+for block in rendered:
     out.extend(block)
+if truncated_records:
+    out.append("({} record(s) omitted to bound the size of this block — the newest "
+               "verdicts are the ones kept)".format(truncated_records))
 print("\n".join(out))
 PY
 }

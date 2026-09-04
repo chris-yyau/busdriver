@@ -407,6 +407,56 @@ PRUNED=$(wc -c < "$PR_HISTORY_FILE")
 OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
 echo "$OUT" | grep -q "post-prune" || fail "pruning dropped the record just written:\n$OUT"
 [ -z "$(find "$PR_HISTORY_DIR" -name '*.prune.*' 2>/dev/null)" ] || fail "a prune temp file was left behind"
+# ── 5d3b. a record packed with tiny findings cannot flood the prompt ────────
+# Rendering can AMPLIFY: a bare `{}` is 2 bytes stored and about 14 rendered, so
+# a record full of them fits the 512 KiB read window and expands into megabytes,
+# crowding out the diff this pass exists to review. Field-length clamps do not
+# bound the COUNT.
+python3 - "$PR_HISTORY_FILE" "$SHA1" "$BASE_SHA" "$(date +%s)" <<'PY'
+import sys
+path, sha, base, ts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(path, "a") as fh:
+    fh.write('{"head_sha":"%s","base_sha":"%s","ts":%s,"status":"FAIL","issues":[%s]}\n'
+             % (sha, base, ts, ",".join(["{}"] * 20000)))
+PY
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+FLOOD_BYTES=$(printf '%s' "$OUT" | wc -c | tr -d ' ')
+[ "$FLOOD_BYTES" -lt 300000 ] || fail "one record rendered ${FLOOD_BYTES} bytes into the prompt"
+echo "$OUT" | grep -q "further finding(s) in this record not shown" \
+  || fail "the omitted findings were not disclosed:\n$OUT"
+
+# ...and MANY records each at the per-record cap still cannot exceed the total.
+# The per-record cap alone does not bound this: 12 records x 50 findings x the
+# 500-char description clamp is ~300 KB rendered.
+rm -f "$PR_HISTORY_FILE"
+# Each record is TAGGED so the fixture can tell WHICH end the budget dropped.
+# Identical records would render the same bytes whichever subset survived, and a
+# budget that silently discarded the newest verdicts — the ones describing code
+# closest to the diff under review — would look identical to one that worked.
+python3 - "$PR_HISTORY_FILE" "$SHA1" "$BASE_SHA" "$(date +%s)" <<'PY'
+import sys
+path, sha, base, ts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(path, "w") as fh:
+    for n in range(12):
+        issue = ('{"severity":"high","file":"f","line":1,"description":"rec%02d-%s"}'
+                 % (n, "D" * 480))
+        fh.write('{"head_sha":"%s","base_sha":"%s","ts":%s,"status":"FAIL","issues":[%s]}\n'
+                 % (sha, base, ts, ",".join([issue] * 50)))
+PY
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+TOTAL_BYTES=$(printf '%s' "$OUT" | wc -c | tr -d ' ')
+[ "$TOTAL_BYTES" -lt 300000 ] || fail "the whole block rendered ${TOTAL_BYTES} bytes into the prompt"
+echo "$OUT" | grep -q "record(s) omitted to bound the size" \
+  || fail "the omitted records were not disclosed:\n$(echo "$OUT" | tail -3)"
+echo "$OUT" | grep -q "rec11-" || fail "the NEWEST record was dropped by the byte budget"
+echo "$OUT" | grep -q "rec00-" && fail "the budget kept the oldest record over the newest"
+# Output stays chronological even though the budget is spent newest-first.
+FIRST_TAG=$(echo "$OUT" | grep -o 'rec[0-9][0-9]-' | head -1)
+LAST_TAG=$(echo "$OUT" | grep -o 'rec[0-9][0-9]-' | tail -1)
+[ "$FIRST_TAG" \< "$LAST_TAG" ] || fail "records were rendered newest-first ($FIRST_TAG then $LAST_TAG)"
+rm -f "$PR_HISTORY_FILE"
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"one.txt","line":3,"description":"unchecked return"}]}' "$SHA1" "$BASE_SHA"
+
 # ── 5d4. concurrent appends survive a prune ─────────────────────────────────
 # The lock is the only thing that makes this true, and nothing else pins it. The
 # store is pre-filled to just under the threshold so the prune fires DURING the

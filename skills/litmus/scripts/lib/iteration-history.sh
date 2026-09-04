@@ -283,7 +283,7 @@ append_pr_history() {
   [ -n "$PR_HISTORY_FILE" ] || return 0
   mkdir -p "$PR_HISTORY_DIR" 2>/dev/null || return 0
   printf '%s' "$json_output" | python3 -I -c '
-import json, os, stat, sys, time
+import fcntl, json, os, stat, sys, time
 
 path, head_sha, base_sha = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
@@ -305,21 +305,80 @@ record = json.dumps({
 }) + "\n"
 try:
     # O_NOFOLLOW refuses a symlink at the path; O_APPEND keeps a concurrent
-    # reviewer'"'"'s record from interleaving with this one. O_NONBLOCK and the
+    # reviewer record from interleaving with this one. O_NONBLOCK and the
     # S_ISREG check together cover the non-symlink shapes: a FIFO planted at the
     # path would otherwise make this open BLOCK until someone reads it, hanging
     # the review inside the store meant to speed it up.
+    # O_RDWR, not O_WRONLY|O_APPEND: the prune below rewrites this same fd in
+    # place, and the seek-to-end under the lock is what O_APPEND would otherwise
+    # have provided.
     fd = os.open(
         path,
-        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
         0o600,
     )
 except OSError:
     sys.exit(0)
-with os.fdopen(fd, "w") as fh:
-    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-        sys.exit(0)
-    fh.write(record)
+# Append and prune both happen under an EXCLUSIVE lock on the store, and both
+# operate on the SAME inode — the prune rewrites in place rather than renaming a
+# replacement over the path.
+#
+# That combination is the point. A temp-file-plus-rename prune cannot be made
+# safe by locking the store: the lock lives on the inode, so a second process
+# that opens the path after the rename locks the NEW inode and excludes nobody,
+# and any record it appended between the tail read and the rename is simply
+# gone. Rewriting in place keeps one inode for the lifetime of the file, so the
+# lock actually means something and no concurrent append is lost.
+#
+# The read side is already bounded — a 512 KiB tail window, 200 records, an age
+# cap — so an unpruned file never costs review time or prompt space. It would
+# only grow on disk forever, since nothing else ever deletes it. A full read
+# window is retained, so pruning can never drop a record the loader could still
+# have shown.
+#
+# Crash safety: a rewrite interrupted mid-write can leave one torn line. Records
+# are line-delimited and the loader skips a record it cannot parse, so the cost
+# is one dropped verdict, never a corrupt read.
+# (No apostrophes in this block: it lives inside a single-quoted shell string.)
+KEEP = 512 * 1024
+try:
+    # Binary, and every read and write goes through THIS descriptor. Reopening
+    # the pathname to read the tail would resolve it a second time, after the
+    # O_NOFOLLOW check and while the lock is held on the first inode — so a path
+    # swapped in between could be followed after all, which is exactly the
+    # guarantee this block exists to make.
+    with os.fdopen(fd, "r+b") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            sys.exit(0)
+        # NON-BLOCKING with a short bounded retry. A plain LOCK_EX waits forever,
+        # so any process holding the lock — including one wedged — would hang the
+        # review inside storage that is advisory by contract. Giving up costs one
+        # unrecorded verdict, which is a colder next review and nothing more.
+        # MONOTONIC, not wall clock: a backward clock step (NTP, a VM resume)
+        # would push a wall-clock deadline into the future and turn this bounded
+        # wait back into the unbounded one it replaced.
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    sys.exit(0)
+                time.sleep(0.05)
+        fh.seek(0, os.SEEK_END)
+        fh.write(record.encode("utf-8"))
+        fh.flush()
+        size = os.fstat(fh.fileno()).st_size
+        if size > 4 * KEEP:
+            fh.seek(size - KEEP)
+            tail = fh.read()
+            _, _, tail = tail.partition(b"\n")   # drop the partial first record
+            fh.seek(0)
+            fh.write(tail)
+            fh.truncate()
+except OSError:
+    sys.exit(0)
 ' "$PR_HISTORY_FILE" "$head_sha" "$base_sha" 2>/dev/null || return 0
 }
 
@@ -516,19 +575,52 @@ def clip(value, limit):
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return text if len(text) <= limit else text[:limit] + "…"
 
+out = []
 for entry in kept:
-    print("--- commit {} (status: {}) ---".format(
-        entry["head_sha"][:8], clip(entry.get("status", "UNKNOWN"), 16)))
-    issues = entry.get("issues") or []
-    if issues:
+    # Rendering is per-record fail-safe. Nothing here may abort the loop: this
+    # whole script runs behind `|| echo ""`, so ONE unusable record would blank
+    # the entire branch history rather than being skipped — one bad line
+    # disabling the store for every later pass. The shapes below are the ones
+    # that reach an attribute access (`{"issues":[null]}`, `"issues": "text"`),
+    # and the try/except is the backstop for whatever shape comes next.
+    try:
+        block = ["--- commit {} (status: {}) ---".format(
+            entry["head_sha"][:8], clip(entry.get("status", "UNKNOWN"), 16))]
+        raw = entry.get("issues")
+        issues = [i for i in raw if isinstance(i, dict)] \
+            if isinstance(raw, list) else []
+        # "No issues found" is a CLAIM about the review, so it may only be made
+        # when the record genuinely carried no findings. A record whose findings
+        # were unreadable says exactly that instead — otherwise a corrupt FAIL
+        # would be presented to the next reviewer as a clean pass.
+        # Only an actual empty LIST is a claim of "no findings". Null, a string,
+        # an object, a missing key — every one of those is a malformed findings
+        # field, and reporting it as a clean pass is precisely the mistake this
+        # branch exists to prevent.
+        dropped = (len(raw) - len(issues)) if isinstance(raw, list) else 1
         for issue in issues:
-            print("  [{}] {}:{} - {}".format(
+            block.append("  [{}] {}:{} - {}".format(
                 clip(issue.get("severity", "?"), 16),
                 clip(issue.get("file", "?"), 200),
                 clip(issue.get("line", "?"), 16),
                 clip(issue.get("description", "?"), 500)))
-    else:
-        print("  No issues found.")
-    print("")
+        if dropped:
+            block.append("  ({} finding(s) in this record were unreadable and are "
+                         "not shown — treat this verdict as incomplete)".format(dropped))
+        elif not issues:
+            # A FAIL carrying no findings is internally inconsistent — it can only
+            # come from a merge or write that lost them. Rendering it as a clean
+            # pass would hand the next reviewer the opposite of what it recorded,
+            # so "No issues found" stays reserved for a verdict that actually was.
+            if str(entry.get("status", "")).strip().upper() == "FAIL":
+                block.append("  (this record is a FAIL that carries no findings — "
+                             "treat this verdict as incomplete)")
+            else:
+                block.append("  No issues found.")
+        block.append("")
+    except Exception:
+        continue
+    out.extend(block)
+print("\n".join(out))
 PY
 }

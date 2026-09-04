@@ -355,6 +355,129 @@ mkdir -p sub/dir
 SUB_OUT=$(cd sub/dir && source "$LIB" && load_pr_history "$BASE_SHA" "$HEAD_NOW")
 echo "$SUB_OUT" | grep -q "commit ${SHA1:0:8}" || fail "store not found from a subdirectory:\n$SUB_OUT"
 
+# ── 5d2. a malformed issues field skips its record, never the whole store ────
+# The loader runs behind `|| echo ""`, so an uncaught exception blanks the ENTIRE
+# branch history — one bad line disabling the store for every later pass. These
+# are the shapes that reach an attribute access.
+for BAD_ISSUES in '[null]' 'null' '"just a string"' '{"not":"a list"}' '[1,2,3]' '[{"severity":{"nested":1}}]' '[]'; do
+  printf '{"head_sha":"%s","base_sha":"%s","ts":%s,"status":"FAIL","issues":%s}\n' \
+    "$SHA1" "$BASE_SHA" "$(date +%s)" "$BAD_ISSUES" >> "$PR_HISTORY_FILE"
+done
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+echo "$OUT" | grep -q "commit ${SHA1:0:8}" || fail "a malformed issues field blanked the store:\n$OUT"
+# A corrupt FAIL must never be presented as a clean pass: "No issues found" is a
+# claim about the review, not a description of an unreadable field.
+echo "$OUT" | grep -q "unreadable and are" \
+  || fail "a record with unreadable findings did not say so:\n$OUT"
+# Scoped per record: a genuine PASS block SHOULD say "No issues found", so the
+# assertion is that no FAIL block does.
+BAD_CLAIM=$(echo "$OUT" | awk '
+  /^--- commit /   { fail = ($0 ~ /status: FAIL/) }
+  /No issues found/ { if (fail) print "yes" }' | head -1)
+[ -z "$BAD_CLAIM" ] || fail "a FAIL record claimed 'No issues found':\n$OUT"
+
+# A PARTLY bad list keeps its good findings. This is what separates the element
+# type-filter from the per-record try/except backstop behind it: the backstop
+# alone would discard the whole record, losing a real finding to a stray null.
+printf '{"head_sha":"%s","base_sha":"%s","ts":%s,"status":"FAIL","issues":[null,{"severity":"high","file":"f","line":9,"description":"survives-a-stray-null"}]}\n' \
+  "$SHA1" "$BASE_SHA" "$(date +%s)" >> "$PR_HISTORY_FILE"
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+echo "$OUT" | grep -q "survives-a-stray-null" \
+  || fail "a good finding was discarded along with a malformed sibling:\n$OUT"
+
+# ── 5d3. the store is pruned, not grown forever ──────────────────────────────
+# The read side is bounded, so an unpruned file never costs review time — but it
+# would grow on disk without limit, and nothing else deletes it.
+python3 - "$PR_HISTORY_FILE" "$SHA1" "$BASE_SHA" <<'PY'
+import sys
+path, sha, base = sys.argv[1], sys.argv[2], sys.argv[3]
+pad = "x" * 900
+with open(path, "a") as fh:
+    for i in range(3000):
+        fh.write('{"head_sha":"%s","base_sha":"%s","ts":0,"status":"FAIL",'
+                 '"issues":[{"severity":"low","file":"f","line":1,'
+                 '"description":"%s"}]}\n' % (sha, base, pad))
+PY
+GREW=$(wc -c < "$PR_HISTORY_FILE")
+[ "$GREW" -gt 2097152 ] || fail "fixture did not grow the store past the prune threshold ($GREW)"
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"post-prune"}]}' \
+  "$SHA1" "$BASE_SHA"
+PRUNED=$(wc -c < "$PR_HISTORY_FILE")
+[ "$PRUNED" -lt "$GREW" ] || fail "the store was never pruned ($GREW -> $PRUNED)"
+OUT=$(load_pr_history "$BASE_SHA" "$HEAD_NOW")
+echo "$OUT" | grep -q "post-prune" || fail "pruning dropped the record just written:\n$OUT"
+[ -z "$(find "$PR_HISTORY_DIR" -name '*.prune.*' 2>/dev/null)" ] || fail "a prune temp file was left behind"
+# ── 5d4. concurrent appends survive a prune ─────────────────────────────────
+# The lock is the only thing that makes this true, and nothing else pins it. The
+# store is pre-filled to just under the threshold so the prune fires DURING the
+# concurrent run — which is exactly when a rename-based prune would drop records
+# appended between its tail read and its rename.
+python3 - "$PR_HISTORY_FILE" "$SHA1" "$BASE_SHA" <<'PY'
+import sys
+path, sha, base = sys.argv[1], sys.argv[2], sys.argv[3]
+pad = "x" * 900
+with open(path, "w") as fh:
+    for _ in range(2150):
+        fh.write('{"head_sha":"%s","base_sha":"%s","ts":0,"status":"FAIL","issues":'
+                 '[{"severity":"low","file":"f","line":1,"description":"%s"}]}\n'
+                 % (sha, base, pad))
+PY
+for w in 1 2 3 4 5 6 7 8; do
+  (
+    # shellcheck source=../skills/litmus/scripts/lib/iteration-history.sh
+    source "$LIB"
+    for i in $(seq 1 20); do
+      append_pr_history "{\"status\":\"FAIL\",\"issues\":[{\"severity\":\"high\",\"file\":\"f\",\"line\":1,\"description\":\"concur-${w}-${i}\"}]}" \
+        "$SHA1" "$BASE_SHA"
+    done
+  ) &
+done
+wait
+CONCUR=$(grep -c 'concur-' "$PR_HISTORY_FILE" || true)
+[ "$CONCUR" -eq 160 ] || fail "concurrent appends lost records across a prune (got $CONCUR/160)"
+TORN=$(python3 -I -c '
+import json, sys
+bad = 0
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        json.loads(line)
+    except ValueError:
+        bad += 1
+print(bad)' "$PR_HISTORY_FILE")
+[ "$TORN" -eq 0 ] || fail "the prune left $TORN torn line(s) behind"
+
+# ── 5d5. a held lock is given up on, never waited on forever ────────────────
+# Storage is advisory by contract, so it must never hang the review. A plain
+# blocking LOCK_EX would wait on any process holding the lock, including a wedged
+# one. Hold it from outside and require the append to return well before the
+# holder lets go.
+python3 -I -c '
+import fcntl, sys, time
+fh = open(sys.argv[1], "a")
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+sys.stdout.write("held\n"); sys.stdout.flush()
+time.sleep(25)
+' "$PR_HISTORY_FILE" > "$SANDBOX/holder.out" &
+HOLDER=$!
+for _ in $(seq 1 100); do
+  grep -q held "$SANDBOX/holder.out" 2>/dev/null && break
+  sleep 0.1
+done
+grep -q held "$SANDBOX/holder.out" || fail "fixture: the lock holder never started"
+LOCK_T0=$(date +%s)
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"x","line":1,"description":"during-held-lock"}]}' \
+  "$SHA1" "$BASE_SHA"
+LOCK_ELAPSED=$(( $(date +%s) - LOCK_T0 ))
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null || true
+[ "$LOCK_ELAPSED" -lt 20 ] || fail "append waited ${LOCK_ELAPSED}s on a held lock instead of giving up"
+
+# Start the later fixtures from a clean store.
+rm -f "$PR_HISTORY_FILE"
+append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"one.txt","line":3,"description":"unchecked return"}]}' "$SHA1" "$BASE_SHA"
+
 # ── 5e. the loader honours the PINNED head, not the live one ─────────────────
 # The headline property of the pin: the diff was captured against HEAD_NOW, so a
 # verdict recorded for a commit that landed AFTER that describes a scope this

@@ -84,34 +84,40 @@ Agent(
 
 **4b. Pre-check CLI availability, then dispatch:**
 
-**First, make a private prompt directory** with a single Bash call, and use the path it prints for everything below:
+**First, make a private prompt directory** with a single Bash call. It prints two things, and they go to different places: the FIRST `suffix=` line is six alphanumeric characters and is the ONLY thing that goes into the dispatch block; `dir=` is the absolute path, and goes only to the `Write` tool:
 
 ```bash
-mktemp -d "${TMPDIR:-/tmp}/busdriver-council.XXXXXX"
+_d="$(mkdir -p "$HOME/.claude" && mktemp -d "$HOME/.claude/council.XXXXXX")" || exit 1
+_s="${_d##*/council.}"
+[[ "$_s" =~ ^[A-Za-z0-9]+$ ]] || { echo "council: refusing a non-alphanumeric suffix" >&2; exit 1; }
+printf 'suffix=%s\n' "$_s"
+printf 'dir=%s\n' "$_d"
 ```
 
 `mktemp -d` is doing real work here, and a hand-picked directory name is not a substitute. It creates the directory **atomically** and fails rather than reusing one that already exists, and it creates it mode 0700 — so two councils running at once cannot land in the same directory, and a stale directory from an interrupted run cannot be silently reused. A fixed or hand-rolled name gives none of that: whichever run loses the race has its prompts overwritten between the write and the read, and a council prompt routinely carries repo and design context, so the loser would ship its material to the other session's external voice.
 
-**Then write each voice's prompt to a file with the `Write` tool**, one file per voice, inside that directory:
+**Only the suffix crosses over — never the path.** Whatever you carry from this step is retyped into the dispatch block, where it becomes shell source and is parsed. A full path is therefore an execution point: it contains the parent directory, and every candidate parent is ambient. `$TMPDIR` is settable by a committed `.claude/settings.json` `env` block (#325 / ADR 0016 class) and `$HOME` is settable too, so a value carrying `$(…)`, a backtick, a quote or a backslash is inert inside the quoted `mktemp` call and then executes when the printed path is pasted. Stripping the name down to `mktemp`'s own suffix leaves `[A-Za-z0-9]`, and the regex REFUSES anything else rather than trusting that — a `$HOME` carrying a newline could otherwise emit a second, forged `suffix=` line, so the genuine one is printed FIRST and the check runs before either line. Written as a command substitution and a parameter expansion rather than a pipe into `sed`, because a pipeline reports the LAST stage's status: a failed `mktemp` — collision retries exhausted, `~/.claude` unwritable, disk full — would print nothing and still exit 0, and the contract here is that this step either hands you a suffix or fails visibly. Take the FIRST `suffix=` line; if nothing is printed, stop, and do not invent a suffix. The block rebuilds the path from that suffix and its own quoted `"$HOME"`, exactly as it already does for the plugin cache — so this step introduces no expansion the fence was not already performing. The absolute `dir=` line is printed for the `Write` calls, which take a filesystem path rather than shell source and so carry none of this hazard; do not paste it into the block.
+
+**Then write each voice's prompt to a file with the `Write` tool**, one file per voice, inside that directory. Use the absolute `dir=` path verbatim — `Write` takes a filesystem path and expands neither `~` nor `$HOME`, so the `~/…` spelling below is shorthand for reading, not a path to pass:
 
 | Voice | File |
 |---|---|
-| Pragmatist | `<PROMPT-DIR>/pragmatist.txt` |
-| Critic | `<PROMPT-DIR>/critic.txt` |
-| Researcher | `<PROMPT-DIR>/researcher.txt` |
-| Mechanism Witness (ultimate-council only) | `<PROMPT-DIR>/witness.txt` |
-| UltraOracle (ultra-/ultimate-council only) | `<PROMPT-DIR>/oracle.txt` |
+| Pragmatist | `~/.claude/council.<SUFFIX>/pragmatist.txt` |
+| Critic | `~/.claude/council.<SUFFIX>/critic.txt` |
+| Researcher | `~/.claude/council.<SUFFIX>/researcher.txt` |
+| Mechanism Witness (ultimate-council only) | `~/.claude/council.<SUFFIX>/witness.txt` |
+| UltraOracle (ultra-/ultimate-council only) | `~/.claude/council.<SUFFIX>/oracle.txt` |
 
 Write only the files whose voice will actually be dispatched, and write them **before** the dispatch message — the dispatch block reads them, so they must already exist. Prompt CONTENT is unchanged; only its transport is. **Do not inline the prompts back into the block as heredocs** — that is what #813 fixed, and the reason is in (i) below.
 
-Substitute the same printed path into the `D=` line of the dispatch block. If the two do not match, the block stops with an error rather than convening a council with no voices.
+Substitute the `suffix=` value — not the path — into the `D=` line of the dispatch block. If the two do not match, the block stops with an error rather than convening a council with no voices. A prompt file that is individually missing is **not** guarded for, deliberately: the redirection then fails loudly for that voice, which is what you want to see. Guarding it would make a forgotten `Write` indistinguishable from an unavailable CLI, and the report would show the voice as `(unavailable)` rather than as the mistake it is.
 
 Then dispatch. This block checks CLI availability and finds the dispatch script:
 
 ```bash
 # Prompts come from FILES written before this call, never inline heredocs — see (d) and (i).
-# The mktemp -d path from Step 4b, pasted literally. The trap is the cleanup — see (j).
-D="<PROMPT-DIR>"
+# The SUFFIX from Step 4b, nothing more — see there. The trap is the cleanup — see (j).
+D="$HOME/.claude/council.<SUFFIX>"
 [ -d "$D" ] || { echo "council: prompt dir $D missing — write the prompt files first (Step 4b)" >&2; exit 1; }
 trap 'rm -f "$D/pragmatist.txt" "$D/critic.txt" "$D/researcher.txt" "$D/witness.txt" "$D/oracle.txt"; rmdir "$D" 2>/dev/null || true' EXIT
 
@@ -141,24 +147,24 @@ MECHANISM_WITNESS=0
 
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes.
 PIDS=()
-if [ -r "$D/pragmatist.txt" ] && [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
+if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
   # DROID_AUTO_LEVEL=low: file-write tier only if this voice falls back to droid — see (e).
   DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 < "$D/pragmatist.txt" &
   PIDS+=("$!")
 fi
-if [ -r "$D/critic.txt" ] && [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^(missing|unsupported): ]]; then
+if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^(missing|unsupported): ]]; then
   # DROID_AUTO_LEVEL=low: same reasoning as Pragmatist — see (e).
   DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 < "$D/critic.txt" &
   PIDS+=("$!")
 fi
-if [ -r "$D/researcher.txt" ] && [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^(missing|unsupported): ]]; then
+if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^(missing|unsupported): ]]; then
   "$DISPATCH" --cli "$RESEARCHER_CLI" --timeout 300 < "$D/researcher.txt" &
   PIDS+=("$!")
 fi
 AUDITOR_PID=""
 # Mechanism Witness — ULTIMATE-COUNCIL ONLY, gated on the LITERAL MECHANISM_WITNESS
 # above (never an inherited env value). See (c) and (f) below.
-if [ "${MECHANISM_WITNESS:-0}" = 1 ] && [ -r "$D/witness.txt" ] && [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
+if [ "${MECHANISM_WITNESS:-0}" = 1 ] && [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
   # Budget: default AND hard clamp 900s (UltraOracle-parity). One regex, no glob — see (g).
   _AUD_TO=900
   [[ "${COUNCIL_AUDITOR_TIMEOUT:-}" =~ ^0*[0-9]{1,7}$ ]] && _AUD_TO=$((10#$COUNCIL_AUDITOR_TIMEOUT))
@@ -201,7 +207,7 @@ fi
 
 - **(i) The prompts live in FILES because the block is scanned, and the scan is not free.** Measured on the shipped block (#813): with the prompts inline as heredocs, **~100 words per voice was already over budget** — the walk cost scales with the pasted prompt, so no amount of comment-trimming fixes it and every longer council question re-breaks the block. Worse, the classifier reads a heredoc payload aimed at `"$DISPATCH"` (an unresolved command word) as a possible *program*, so a council **question** containing an ordinary glob-shaped token — `*.py`, `test_*`, `foo?` — was itself enough to get the command refused as "calling" a gate helper. That is the shape that makes a council *about* the gates nearly impossible to convene, since its question quotes the gates' own command strings. With the prompts in files the block's cost is **constant** — it no longer moves with the length of the council question at all — and the measured margin is 30-plus comment lines of the kind that used to sit in the fence, pinned by a headroom row in `tests/test-marker-glob-specificity.sh`. Do not inline them again.
 
-- **(j) Cleanup runs from a `trap`, not from the last line.** The question text can carry sensitive repo and design context, so the prompt files and their directory must not outlive the run — and a tail cleanup only runs on normal fallthrough. The `exit 1` above it, a failed `source`, an interrupt, or a Bash-tool timeout all skip it, and because each run now gets its own `mktemp -d` directory, nothing later overwrites or reuses those files: they would sit there indefinitely. An `EXIT` trap fires on every one of those paths. `oracle.txt` is on the list even though the Step 4.5 snippet removes it too, because that snippet is absent from a plain council — relying on it alone would make whether the directory can be removed depend on which council tier ran. `rm -f` on an absent file is a no-op, so listing it costs nothing. Named explicitly rather than `"$D"/*` for the reason in (g) — no globs in this fence.
+- **(j) Cleanup runs from a `trap`, not from the last line.** The question text can carry sensitive repo and design context, so the prompt files and their directory must not outlive the run — and a tail cleanup only runs on normal fallthrough. The `exit 1` above it, a failed `source`, an interrupt, or a Bash-tool timeout all skip it, and because each run now gets its own `mktemp -d` directory, nothing later overwrites or reuses those files: they would sit there indefinitely. An `EXIT` trap fires on every one of those paths. `oracle.txt` is on the list even though the Step 4.5 snippet removes it too, because that snippet is absent from a plain council — relying on it alone would make whether the directory can be removed depend on which council tier ran. `rm -f` on an absent file is a no-op, so listing it costs nothing. Named explicitly rather than `"$D"/*` for the reason in (g) — no globs in this fence. **Residual, stated rather than claimed away:** the trap covers the dispatch call, which is where the run actually spends its time, but not the gap between the `Write` turn and that call. A session cancelled in that window, or one whose dispatch never launches, leaves one `~/.claude/council.XXXXXX` directory behind. It is mode 0700 under the operator's own home rather than in a shared temp directory, and it is inert — nothing reads it again, since the next run mints its own — so the cost is a stale directory to delete, not an exposure. Closing it properly would need a writer that owns the whole lifecycle, which is a bigger change than this fix.
 
 > **Note.** `_kt` (h) is a genuine function definition, which still makes the classifier re-read *this block's own words* as glob patterns. That is why (g)'s "no globs in the fence" rule applies to the skeleton and its comments — it is not belt-and-braces, it is the live constraint.
 

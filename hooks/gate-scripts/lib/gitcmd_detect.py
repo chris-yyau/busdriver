@@ -4381,6 +4381,11 @@ def _zero_old_ops_from_argv(argv):
             new_oid = ops[1]
             old_oid = ops[2]
             def _is_all_zero_oid(s):
+                # new_oid only. Length-loose on purpose: every reading of a
+                # wrong-length all-zero NEW value blocks anyway (delete of the
+                # named ref, or an unresolvable force), so the loose test costs
+                # message precision, never a decision. The OLD value is the one
+                # that authorizes, and it goes through _is_literal_oid.
                 return (isinstance(s, str) and len(s) >= 40
                         and set(s) <= set('0'))
             if _is_all_zero_oid(new_oid):
@@ -4389,9 +4394,23 @@ def _zero_old_ops_from_argv(argv):
                 else:
                     yield ("force", "")
                 return
-            if _is_all_zero_oid(old_oid):
-                # Create CAS precondition — cannot overwrite an existing ref.
-                return
+            # The all-zero create CAS needs no case of its own: zeros ARE hex,
+            # so _is_literal_oid accepts them at the repo's own oid length and
+            # refuses them at any other -- which is the point, because a 64-zero
+            # operand in a sha1 repo is not "the null oid", it is a ref DWIM
+            # lookup for a branch that can be named exactly that.
+            #
+            # An asserted oldvalue is a precondition only if it pins CONTENT.
+            # git resolves it as a rev, so anything that is not a literal object
+            # name is re-resolved when the command runs -- and the most useful
+            # spelling is the ref itself: `update-ref refs/heads/main <new>
+            # refs/heads/main` reads main's CURRENT value as its own
+            # precondition, so the CAS is vacuous and the force-update lands
+            # (measured). `HEAD`, `@`, a bare branch name, `main@{1}` and
+            # `<oid>^` are the same class. Decided in _finalize_zero_old_ops,
+            # because "is this an object name?" is answered by the REPOSITORY's
+            # object format, which is not visible from argv -- see _CAS there.
+            yield (_CAS, old_oid)
             return
         if no_deref:
             yield ("force", ref_operand, True)
@@ -4472,6 +4491,47 @@ def _git_dashed_to_argv(argv):
         return argv
     return ['git', sub] + argv[1:]
 _ZERO_OLD_SUBS = frozenset({'branch', 'checkout', 'switch', 'update-ref', 'symbolic-ref'})
+# Sentinel for an update-ref oldvalue whose CAS-ness depends on the repository.
+_CAS = '\x00cas'
+_UNSET = object()
+def _zero_old_oid_len(repo_path):
+    """Hex length of an object name in this repo, or None if unknown.
+
+    Length is the whole discriminator, and it is NOT a free choice: git reads a
+    hex operand of exactly the repo's oid length as an object name, and sends
+    any OTHER length through ref DWIM. Measured in a sha1 repo: a 64-hex BRANCH
+    NAME as `<oldvalue>` resolves to that branch and the CAS goes vacuous, while
+    a 40-hex branch name is read as the (absent) object and the update is
+    refused. So a fixed (40, 64) predicate is a bypass in both directions.
+
+    This reads the repository's storage FORMAT, not any ref's value -- the
+    TOCTOU that rules out a ref-existence probe does not apply, because changing
+    a repository's object format means recreating it, which destroys the ref an
+    attacker is trying to keep. Same sanitized env as the other helpers.
+    Unreadable ⇒ None ⇒ the caller fails closed."""
+    import subprocess
+    if not repo_path:
+        return None
+    try:
+        r = subprocess.run(
+            ['git', '-C', repo_path, 'rev-parse', '--show-object-format'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=_zero_old_git_env(), timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    fmt = (r.stdout or b'').decode('utf-8', 'replace').strip()
+    return {'sha1': 40, 'sha256': 64}.get(fmt)
+def _is_literal_oid(s, oid_len):
+    """True only for a full hex object name OF THIS REPO'S FORMAT.
+
+    Not a general rev: an abbreviation is refused too. It does name a fixed
+    object, but it is one `git config core.abbrev` / a colliding prefix away
+    from resolving elsewhere, and the gate gains nothing by accepting it -- the
+    caller has the full oid in hand whenever the precondition is honest."""
+    return (isinstance(s, str) and oid_len is not None and len(s) == oid_len
+            and all(c in '0123456789abcdefABCDEF' for c in s))
 def _zero_old_git_argv(seg):
     argv, raw_argv = _command_argv(seg, 'git', with_raw=True, wrapper_operands=True)
     argv = _git_dashed_to_argv(argv)
@@ -4750,6 +4810,7 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
     # update-ref path unchanged (3-tuples / --no-deref only).
     repo_path = _zero_old_repo_path(repo_dir, hook_cwd)
     out = []
+    _cas_oid_len = _UNSET   # resolved at most once, and only if a CAS appears
     for item in found:
         if len(item) == 3:
             kind, ref_operand, no_deref = item
@@ -4761,6 +4822,11 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
         elif len(item) == 2 and item[0] == 'force':
             # Porcelain force: fail closed in all current-ref states.
             out.append((item[0], ''))
+        elif len(item) == 2 and item[0] == _CAS:
+            if _cas_oid_len is _UNSET:
+                _cas_oid_len = _zero_old_oid_len(repo_path)
+            if not _is_literal_oid(item[1], _cas_oid_len):
+                out.append(('force', ''))
         elif len(item) == 2 and item[0] == 'delete':
             out.append((item[0], _branch_name_from_porcelain(item[1]) or ''))
         else:

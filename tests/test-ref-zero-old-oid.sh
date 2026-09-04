@@ -60,6 +60,7 @@ setup_repo() {  # <tag> <ref-format>
         mkdir -p "$ISO_STATE"
     ) >/dev/null 2>&1 || return 1
     UNREVIEWED=$(git -C "$REPO" rev-parse unreviewed)
+    REVIEWED=$(git -C "$REPO" rev-parse main)
 }
 
 run_gate() {  # <name> <expected: allow|block> <command> [reason substring]
@@ -174,6 +175,43 @@ run_format_suite() {  # <format>
         block "git branch -D main && git branch main $UNREVIEWED" "issue #780"
     run_gate "genuine create of newbranch → allow" \
         allow "git branch newbranch $UNREVIEWED"
+    # A three-operand update-ref is only exempt when its oldvalue pins CONTENT.
+    # git resolves that operand as a rev, so naming the ref itself reads main's
+    # CURRENT value as its own precondition -- the CAS is vacuous and the
+    # force-update lands (measured against real git, not inferred).
+    run_gate "self-referential CAS is not a precondition" \
+        block "git update-ref refs/heads/main $UNREVIEWED refs/heads/main" \
+        "no old-oid precondition"
+    run_gate "...nor is a bare branch name" \
+        block "git update-ref refs/heads/main $UNREVIEWED main" \
+        "no old-oid precondition"
+    run_gate "...nor HEAD" \
+        block "git update-ref refs/heads/main $UNREVIEWED HEAD" \
+        "no old-oid precondition"
+    # ...and a hex operand of the WRONG length for this repo's object format is
+    # not an object name either: git sends it through ref DWIM, so a 64-hex
+    # BRANCH NAME in a sha1 repo resolves to that branch and the CAS goes vacuous
+    # (measured). A fixed (40, 64) predicate would have accepted it.
+    HEX64=$(printf 'a%.0s' $(seq 1 64))
+    git -C "$REPO" branch "$HEX64" main
+    run_gate "...nor a wrong-length hex operand that is really a branch" \
+        block "git update-ref refs/heads/main $UNREVIEWED $HEX64" \
+        "no old-oid precondition"
+    git -C "$REPO" branch -D "$HEX64" >/dev/null 2>&1
+    # ...and the null-oid create CAS is the same rule, not an exception: zeros
+    # are hex, so a 64-zero operand in a sha1 repo is a ref DWIM lookup for a
+    # branch that can be named exactly that -- not "the ref must be absent".
+    ZERO64=$(printf '0%.0s' $(seq 1 64))
+    git -C "$REPO" branch "$ZERO64" main
+    run_gate "...nor a wrong-length ALL-ZERO operand" \
+        block "git update-ref refs/heads/main $UNREVIEWED $ZERO64" \
+        "no old-oid precondition"
+    git -C "$REPO" branch -D "$ZERO64" >/dev/null 2>&1
+    run_gate "...while the right-length create CAS is still allowed" \
+        allow "git update-ref refs/heads/main $UNREVIEWED 0000000000000000000000000000000000000000"
+    # ...and the documented escape the refusal advertises still works.
+    run_gate "an honest full-oid CAS is still allowed" \
+        allow "git update-ref refs/heads/main $UNREVIEWED $REVIEWED"
     git -C "$REPO" branch topic HEAD
     # Porcelain force has no old-oid CAS; pre-command probe is TOCTOU, so
     # fail closed for every current-ref state (direct / absent / symref),
@@ -254,6 +292,8 @@ DET=$(PYTHONPATH="$REPO_ROOT/hooks/gate-scripts/lib" python3 -S - "$REPO" <<'PY'
 import sys
 from gitcmd_detect import git_zero_old_ref_op, zero_old_ref_exists
 hook_cwd = sys.argv[1]
+OID_A = '3cc2f0d6f1a399738b4873e4873e88b2e47356be'
+OID_B = '39f33bdc516ac395d10ff9b84f6da7145084245c'
 ops = git_zero_old_ref_op('git branch -f main abc', hook_cwd=hook_cwd)
 assert ops == [('force', '')], ops
 ops = git_zero_old_ref_op('git checkout -B main abc', hook_cwd=hook_cwd)
@@ -265,7 +305,17 @@ ops = git_zero_old_ref_op(
 assert ops == [('force', '')], ops
 ops = git_zero_old_ref_op(
     'git update-ref refs/heads/main abc def', hook_cwd=hook_cwd)
-assert ops == [], ops
+assert ops == [('force', '')], ops            # 'def' is not an object name
+ops = git_zero_old_ref_op(
+    'git update-ref refs/heads/main ' + OID_A + ' ' + OID_B, hook_cwd=hook_cwd)
+assert ops == [], ops                          # a full-oid CAS is a real one
+ops = git_zero_old_ref_op(
+    'git update-ref refs/heads/main ' + OID_A + ' refs/heads/main',
+    hook_cwd=hook_cwd)
+assert ops == [('force', '')], ops             # self-referential CAS is vacuous
+ops = git_zero_old_ref_op(
+    'git update-ref refs/heads/main ' + OID_A + ' ' + 'a' * 64, hook_cwd=hook_cwd)
+assert ops == [('force', '')], ops             # wrong length for a sha1 repo
 ops = git_zero_old_ref_op('git branch -D main', hook_cwd=hook_cwd)
 assert ops == [('delete', 'main')], ops
 assert zero_old_ref_exists(hook_cwd, 'main') is True

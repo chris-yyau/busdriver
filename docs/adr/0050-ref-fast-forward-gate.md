@@ -191,7 +191,19 @@ instead refuses every porcelain force outright, for any name — because `git
 branch -f <symref>` DEREFERENCES (measured: with `refs/heads/alias` a symref to
 `refs/heads/main`, `git branch -f alias <oid>` moves main), so a non-protected
 name in argv is not evidence a non-protected ref moves. A CAS-bearing `update-ref
-<ref> <new> <old>` states its own precondition and passes; the shared
+<ref> <new> <old>` states its own precondition and passes — but only when `<old>`
+is a full hex oid of the REPOSITORY'S object format (`rev-parse
+--show-object-format`, read once). Length is the whole discriminator and it
+is not a free choice: git reads a hex operand of exactly that length as an
+object name and sends any other length through ref DWIM, so a 64-hex BRANCH
+NAME in a sha1 repo resolves to that branch (measured) and a fixed (40, 64)
+predicate is a bypass in both directions. That reads the storage format, not
+a ref's value — the TOCTOU that rules out a ref-existence probe does not
+apply, since changing a repo's object format means recreating it. git resolves it as a rev, so `update-ref
+refs/heads/main <new> refs/heads/main` reads main's current value as its own
+precondition and force-updates anyway (measured); every non-literal spelling
+(`HEAD`, `@`, a branch name, `main@{1}`, `<oid>^`) fails closed with the
+porcelain forces. the shared
 `skip-litmus.local` is the operator override, and the refusal is ordered AFTER
 the skip check so that override is actually reachable. Deletes abort so
 delete-then-recreate cannot re-mint a protected name. Migrating that check into a native

@@ -1030,9 +1030,99 @@ PROMPT_EOF
   # the loop with that attempt's remaining budget -- building it here with the
   # full $TIMEOUT_S is what gave every attempt the whole window (set -u-safe
   # empty-array expansion for bash 3.2).
+  #
+  # A wrapper is MANDATORY, not best-effort: with none, a hanging dispatch runs
+  # unbounded and the harness kills the whole call at its cap with no verdict --
+  # the exact failure #823 exists to prevent, just relocated. macOS ships neither
+  # `timeout` nor `gtimeout`, so falling straight to fail-closed there would
+  # disable the backstop on this repo's primary platform; perl is the repo's
+  # established portable stand-in (lib/smart-context.sh, scripts/lib/resolve-cli.sh
+  # `_portable_timeout`). Order: timeout -> gtimeout -> perl -> refuse.
+  # Resolved by ABSOLUTE path from a fixed list, never `command -v` off the
+  # inherited PATH. PATH is repo-injectable (#325 / ADR 0016) and line 224 only
+  # PREPENDS /usr/bin:/bin — it does not sanitize the rest. On macOS neither of
+  # those carries `timeout`, so a planted PATH entry named `timeout` would be
+  # selected AHEAD of the trusted /usr/bin/perl and could ignore the budget or
+  # print a forged envelope, which the strict writer would persist as a PASS.
+  #
+  # Scope this honestly: it removes a rung, it does not close the class. `claude`
+  # itself is still PATH-resolved by design (see the PATH comment above — a
+  # planted reviewer can forge a PASS regardless, tracked as #789), so a fully
+  # attacker-controlled PATH already wins by a shorter route. What this buys is
+  # that the security WRAPPER this fix introduces cannot itself become the
+  # easier target, and that the trusted perl stand-in is never preempted.
+  #
+  # The homebrew/local prefixes are operator-owned, not repo-writable, so they
+  # are trusted here; a host with coreutils somewhere else simply falls through
+  # to the perl arm, which is a complete stand-in, not a degradation.
   _TO_BIN=""
-  if command -v timeout >/dev/null 2>&1; then _TO_BIN=timeout
-  elif command -v gtimeout >/dev/null 2>&1; then _TO_BIN=gtimeout; fi
+  _TO_MODE=""
+  for _cand in /usr/bin/timeout /bin/timeout \
+               /opt/homebrew/bin/timeout /usr/local/bin/timeout \
+               /opt/homebrew/bin/gtimeout /usr/local/bin/gtimeout; do
+    if [[ -x "$_cand" ]]; then _TO_BIN="$_cand"; _TO_MODE=coreutils; break; fi
+  done
+  if [[ -z "$_TO_BIN" ]]; then
+    for _cand in /usr/bin/perl /bin/perl; do
+      if [[ -x "$_cand" ]]; then _TO_BIN="$_cand"; _TO_MODE=perl; break; fi
+    done
+  fi
+  if [[ -z "$_TO_BIN" ]]; then
+    echo "❌ backstop: no timeout implementation at a trusted absolute path (/usr/bin, /bin, /opt/homebrew/bin, /usr/local/bin: timeout/gtimeout/perl) — refusing to dispatch an unbounded review (fail-closed; install coreutils)" >&2
+    exit 1
+  fi
+  # SIGTERM alone does not bound anything a child can ignore. GNU coreutils'
+  # own `timeout --help` says the default action is TERM and that "it may be
+  # necessary to use the KILL signal"; a TERM-ignoring `claude` (or one of its
+  # descendants) would otherwise outlive the budget and hit the harness cap with
+  # no verdict. `-k` adds a bounded grace, then KILL. The overshoot is at most
+  # this many seconds past the budget on the LAST attempt (540 + 5 is still well
+  # under the 600s cap); mid-sequence it self-corrects, because every subsequent
+  # remaining-budget figure is recomputed from the wall clock, not accumulated.
+  _BS_KILL_AFTER=5
+  # The perl arm is ENVIRONMENT-STEERABLE and is reached with a repo-injectable
+  # environment still in place (#325 / ADR 0016): PERL5OPT / PERL5LIB / PERLLIB
+  # load attacker-controlled code BEFORE the wrapper body runs, and a module that
+  # simply prints a forged `claude -p` envelope and exits 0 is indistinguishable
+  # from a clean dispatch — the strict writer would then persist a false PASS.
+  # The #803 header block does NOT strip these (its own perl enumeration is
+  # protected by `-T` instead), so they arrive intact here.
+  #
+  # `-T` is not available to us the way it is there: taint mode marks @ARGV
+  # tainted, and this arm `exec`s @ARGV — perl refuses that outright ("Insecure
+  # dependency in exec"). So strip the three by name instead, which is the other
+  # half of the idiom that block already uses.
+  _BS_PERL_ENVSTRIP=(/usr/bin/env -u PERL5OPT -u PERL5LIB -u PERLLIB)
+  # perl fork+alarm stand-in, mirroring _portable_timeout: the child gets its own
+  # process group so the TERM/grace/KILL escalation reaches descendants too (a
+  # reaped direct child can leave TERM-ignoring grandchildren behind). Exits 124
+  # on timeout, like coreutils. NOTE the one honest divergence: after
+  # the grace expires this arm still reports 124, whereas coreutils `-k` reports
+  # 137 for the same event. Both are terminal below, so the gate behaves
+  # identically; only the diagnostic number differs by platform. Documented as
+  # such in SKILL.md rather than papered over. (A child KILLed by something else
+  # — OOM — still surfaces as 137 through the `$? & 127` path.)
+  # shellcheck disable=SC2016  # single-quoted perl body on purpose
+  _BS_PERL_TO='
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+  '
   _TO=()
 
   # Accepted residual (ADR 0006, "Claude is the trusted dispatcher"): the backstop
@@ -1094,7 +1184,11 @@ PROMPT_EOF
     # would leave every attempt on the full window and make the arithmetic below
     # cosmetic -- the exact defect #823 reports.
     _TO=()
-    if [[ -n "$_TO_BIN" ]]; then _TO=("$_TO_BIN" "$_bs_remaining"); fi
+    if [[ "$_TO_MODE" == "coreutils" ]]; then
+      _TO=("$_TO_BIN" -k "$_BS_KILL_AFTER" "$_bs_remaining")
+    else
+      _TO=("${_BS_PERL_ENVSTRIP[@]}" "$_TO_BIN" -e "$_BS_PERL_TO" -- "$_bs_remaining")
+    fi
     set +e
     ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
@@ -1177,8 +1271,15 @@ print(json.dumps(out))
     # out, and retrying it is what multiplied the sequence past the harness cap
     # (#823). Fail closed on the first one and let the operator split the diff.
     # Mirrors the "timeout -> don't retry" posture in _run_review_with_retries.
-    if [[ "$RC" -eq 124 ]]; then
-      echo "❌ backstop: dispatch timed out after ${TIMEOUT_S}s — not retried (split the PR, or raise LITMUS_PR_BACKSTOP_TIMEOUT and run the pass detached)" >&2
+    # 137 (128+SIGKILL) is the same event seen through the -k grace: the child
+    # ignored or outlived TERM and the wrapper force-killed it. Terminal for the
+    # same reason as 124 — and retrying a dispatch that had to be KILLed is how a
+    # sequence outruns its budget. Any other SIGKILL cause (OOM) also fails
+    # closed, which is the correct direction for a gate.
+    if [[ "$RC" -eq 124 || "$RC" -eq 137 ]]; then
+      _bs_how="timed out"
+      if [[ "$RC" -eq 137 ]]; then _bs_how="timed out and had to be force-killed (SIGTERM ignored)"; fi
+      echo "❌ backstop: dispatch ${_bs_how} after ${TIMEOUT_S}s — not retried (split the PR, or raise LITMUS_PR_BACKSTOP_TIMEOUT and run the pass detached)" >&2
       exit 1
     fi
 

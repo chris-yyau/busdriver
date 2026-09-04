@@ -103,10 +103,14 @@ cat >/dev/null 2>&1 || true
 # COUNT under a timeout — a stub that merely `exit 124`s would prove the branch
 # fires without proving the wrapper was rebuilt with the remaining budget.
 # Mutually exclusive with STUB_FAIL_FIRST/STUB_BAD_FIRST (which count separately).
+# STUB_IGNORE_TERM=1: additionally ignore SIGTERM while hanging, so only the
+# wrapper's KILL escalation can end this dispatch (rc=137). Models a `claude`
+# that traps/ignores TERM — without `-k` it would outrun the budget entirely.
 if [ -n "${STUB_SLEEP:-}" ]; then
   if [ -n "${STUB_COUNT_FILE:-}" ]; then
     n=$(cat "$STUB_COUNT_FILE" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT_FILE"
   fi
+  [ -n "${STUB_IGNORE_TERM:-}" ] && trap '' TERM
   sleep "$STUB_SLEEP"
 fi
 # STUB_FAIL_FIRST=N: fail transiently (is_error envelope) on the first N dispatches
@@ -327,6 +331,133 @@ echo "== 9j. the default budget sits UNDER the 600s harness Bash cap (#823/#368)
 # before the dispatch, so the call is killed at the boundary with no verdict.
 ok "$(grep -c 'LITMUS_PR_BACKSTOP_TIMEOUT:-540' "$RL")" "1" "default budget is 540, not 600"
 ok "$(grep -c 'LITMUS_PR_BACKSTOP_TIMEOUT:-600' "$RL")" "0" "no 600s default remains"
+
+echo "== 9k. --run-backstop: a TERM-ignoring dispatch is force-killed, not retried =="
+# SIGTERM alone bounds nothing a child can ignore: without a `-k` grace the
+# wrapper would return only after the hang finished on its own, so the sequence
+# outruns its budget and the harness kills the call with no verdict — #823's
+# failure relocated. The escalation must end the attempt within the grace AND
+# the resulting 137 must be terminal (one dispatch, no re-dispatch).
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+  _t0=$(date +%s)
+  STUB_SLEEP=60 STUB_IGNORE_TERM=1 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=2 \
+    LITMUS_PR_BACKSTOP_RETRIES=2 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    bash "$RL" --run-backstop >/dev/null 2>&1
+  _rc=$?; _el=$(( $(date +%s) - _t0 ))
+  ok "$_rc" "1" "TERM-ignoring dispatch fails closed"
+  ok "$(has_art)" "n" "no artifact when the dispatch had to be killed"
+  ok "$(cat "$CF" 2>/dev/null)" "1" "force-kill NOT retried — exactly 1 dispatch"
+  ok "$([[ "$_el" -lt 40 ]] && echo y || echo n)" "y" "killed within the grace, not after the 60s hang (took ${_el}s)"
+else
+  echo "  SKIP  no timeout/gtimeout on PATH — cannot exercise the -k escalation"
+fi
+
+echo "== 9l. --run-backstop: a wrapper is MANDATORY — perl stand-in, else refuse =="
+# With no wrapper at all the budget cannot interrupt anything and a hanging
+# dispatch runs unbounded until the harness kills the call with no verdict —
+# #823's failure relocated. macOS ships neither GNU binary, so failing closed
+# there would disable the backstop on this repo's primary platform: perl is the
+# stand-in, and only when all three are absent may the dispatch be refused.
+# The refusal is a genuine last resort (the script prepends /usr/bin:/bin, which
+# carries perl), so it is asserted structurally; the perl ARM is exercised live.
+# Assert the STRUCTURE, not the prose: the perl arm exists, the fail-closed
+# refusal exists, and perl is reached only AFTER the coreutils candidates (so a
+# host with real coreutils never silently drops to the stand-in). Keyed on
+# _TO_MODE and the refusal's stable clause so a reworded message does not
+# masquerade as a missing guard.
+ok "$(grep -c '_TO_MODE=perl' "$RL")" "1" "perl stand-in wired"
+ok "$(grep -c 'refusing to dispatch an unbounded review' "$RL")" "1" "fail-closed refusal when none of the candidates exists"
+_L_CORE=$(grep -n '_TO_MODE=coreutils' "$RL" | head -1 | cut -d: -f1)
+_L_PERL=$(grep -n '_TO_MODE=perl' "$RL" | head -1 | cut -d: -f1)
+ok "$([[ -n "$_L_CORE" && -n "$_L_PERL" && "$_L_CORE" -lt "$_L_PERL" ]] && echo y || echo n)" "y" "coreutils is preferred over the perl stand-in"
+# The perl arm itself, driven directly — PLATFORM-INDEPENDENT. The live
+# integration check below can only run where /usr/bin carries no `timeout`
+# (macOS), and the script prepends /usr/bin:/bin unconditionally, so on Linux CI
+# it always skips: without this the perl arm would be covered nowhere CI runs.
+# Extracted from the script rather than restated, so the two cannot drift.
+_PERLTO=$(python3 -c '
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"_BS_PERL_TO=\x27(.*?)\n  \x27", src, re.S)
+sys.stdout.write(m.group(1) if m else "")
+' "$RL")
+ok "$([[ -n "$_PERLTO" ]] && echo y || echo n)" "y" "perl wrapper body extractable from the script"
+if [[ -n "$_PERLTO" ]]; then
+  _t0=$(date +%s)
+  perl -e "$_PERLTO" -- 2 /bin/sh -c 'trap "" TERM; sleep 60' >/dev/null 2>&1
+  _rc=$?; _el=$(( $(date +%s) - _t0 ))
+  ok "$_rc" "124" "perl arm reports a timeout (124) on a TERM-ignoring child"
+  ok "$([[ "$_el" -lt 30 ]] && echo y || echo n)" "y" "perl arm KILLed it after the grace, not after 60s (took ${_el}s)"
+fi
+# The wrapper must be resolved by ABSOLUTE path, never from the inherited PATH:
+# PATH is repo-injectable, and on macOS (no timeout in /usr/bin:/bin) a planted
+# `timeout` would otherwise be picked ahead of the trusted /usr/bin/perl and
+# could print a forged envelope. Behavioural, not structural: a hostile PATH
+# carrying a `timeout` that writes a marker must not run it.
+_BADBIN="$WORK/badpath"; mkdir -p "$_BADBIN"
+printf '#!/bin/sh\nprintf pwned > "$PWN2_MARKER"\nshift\nexec "$@"\n' > "$_BADBIN/timeout"
+cp "$_BADBIN/timeout" "$_BADBIN/gtimeout"
+chmod +x "$_BADBIN/timeout" "$_BADBIN/gtimeout"
+rm -f "$BS" "$WORK/pwn2-marker"; seed_codex_lead
+PWN2_MARKER="$WORK/pwn2-marker" PATH="$_BADBIN:$PATH" \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$([[ -e "$WORK/pwn2-marker" ]] && echo y || echo n)" "n" "a PATH-planted 'timeout' is never selected as the wrapper"
+ok "$(grep -c 'command -v timeout' "$RL")" "0" "wrapper resolution does not consult PATH via command -v"
+
+# The perl arm must run with PERL5OPT/PERL5LIB/PERLLIB stripped. They are
+# repo-injectable (#325 / ADR 0016) and load attacker code BEFORE the wrapper
+# body runs; a module that prints a forged envelope and exits 0 is
+# indistinguishable from a clean dispatch, so the strict writer would persist a
+# false PASS. Drives the script's OWN _TO construction (extracted, not
+# restated) so it cannot drift, and is platform-independent — unlike the live
+# integration case below, which only runs where /usr/bin carries no `timeout`.
+# shellcheck disable=SC2016  # literal search string; expansion is NOT wanted
+_TO_PERL_LINE=$(grep -F '_TO=("${_BS_PERL_ENVSTRIP[@]}"' "$RL" | head -1)
+ok "$([[ -n "$_TO_PERL_LINE" ]] && echo y || echo n)" "y" "perl arm is built through the env-strip prefix"
+# shellcheck disable=SC2016  # literal search string; expansion is NOT wanted
+_ENVSTRIP_LINE=$(grep -F '_BS_PERL_ENVSTRIP=(' "$RL" | head -1)
+for _v in PERL5OPT PERL5LIB PERLLIB; do
+  ok "$(printf '%s' "$_ENVSTRIP_LINE" | grep -c -- "-u $_v")" "1" "env-strip removes $_v"
+done
+if [[ -n "$_PERLTO" && -n "$_ENVSTRIP_LINE" && -n "$_TO_PERL_LINE" ]]; then
+  _PWNDIR="$WORK/perlpwn"; mkdir -p "$_PWNDIR"
+  printf 'package Pwn;\nopen(my $f, ">", $ENV{PWN_MARKER}); print $f "pwned"; close $f;\n1;\n' > "$_PWNDIR/Pwn.pm"
+  rm -f "$WORK/pwn-marker"
+  # Rebuild the arm exactly as the script does, from the extracted lines.
+  eval "$_ENVSTRIP_LINE"
+  _TO_BIN=perl; _BS_PERL_TO="$_PERLTO"; _bs_remaining=5
+  eval "$_TO_PERL_LINE"
+  PWN_MARKER="$WORK/pwn-marker" PERL5LIB="$_PWNDIR" PERL5OPT="-MPwn" \
+    "${_TO[@]}" /bin/sh -c 'exit 0' >/dev/null 2>&1
+  ok "$([[ -e "$WORK/pwn-marker" ]] && echo y || echo n)" "n" "hostile PERL5OPT/PERL5LIB does not execute in the perl arm"
+  # Non-vacuity: the SAME hostile env against a bare perl (no strip) must fire,
+  # or the assertion above would pass for the wrong reason.
+  rm -f "$WORK/pwn-marker"
+  PWN_MARKER="$WORK/pwn-marker" PERL5LIB="$_PWNDIR" PERL5OPT="-MPwn" \
+    perl -e "$_PERLTO" -- 5 /bin/sh -c 'exit 0' >/dev/null 2>&1
+  ok "$([[ -e "$WORK/pwn-marker" ]] && echo y || echo n)" "y" "control: unstripped perl DOES execute the injected module"
+  unset _TO _TO_BIN _BS_PERL_TO _bs_remaining _BS_PERL_ENVSTRIP
+fi
+
+# Live: a PATH with NO timeout/gtimeout must still bound the hang via perl.
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+_PERLDIR="$WORK/perlonlybin"; mkdir -p "$_PERLDIR"
+cp "$STUBDIR/claude" "$_PERLDIR/claude"
+if PATH="$_PERLDIR:/usr/bin:/bin" command -v timeout >/dev/null 2>&1 \
+   || PATH="$_PERLDIR:/usr/bin:/bin" command -v gtimeout >/dev/null 2>&1; then
+  echo "  SKIP  coreutils timeout lives in /usr/bin here — cannot isolate the perl arm"
+else
+  _t0=$(date +%s)
+  STUB_SLEEP=60 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=2 \
+    LITMUS_PR_BACKSTOP_RETRIES=2 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    PATH="$_PERLDIR" /bin/bash "$RL" --run-backstop >/dev/null 2>&1
+  _rc=$?; _el=$(( $(date +%s) - _t0 ))
+  ok "$_rc" "1" "perl arm: hang fails closed"
+  ok "$(has_art)" "n" "perl arm: no artifact on timeout"
+  ok "$(cat "$CF" 2>/dev/null)" "1" "perl arm: timeout NOT retried — exactly 1 dispatch"
+  ok "$([[ "$_el" -lt 40 ]] && echo y || echo n)" "y" "perl arm bounded the 60s hang (took ${_el}s)"
+fi
 
 echo "== 10. --run-backstop: no fresh Codex-lead ⇒ fail-closed (dispatch skipped) =="
 rm -f "$BS" .claude/pr-codex-lead.local.json

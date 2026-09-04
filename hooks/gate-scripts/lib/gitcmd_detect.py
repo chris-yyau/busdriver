@@ -3416,10 +3416,15 @@ def _lead_cd_target(chunks):
     so it cannot be compared against a `-C` faithfully."""
     if sum(len(_all_cds(c)) for c in chunks) != 1:
         return ''
-    first = next(iter(split_segments(chunks[0])), None)
-    if first is None:
+    segs = list(split_segments(chunks[0]))
+    # '&&'-joined, like every other trusted cd in this module. A `cd /x` reached
+    # through '|' runs in a pipeline SUBSHELL and one behind '||'/'&' may not run
+    # at all, so neither moves the shell for what follows — the ambiguous forms
+    # effective_cwd documents. Reporting /x as the scope for those would be a
+    # guess, and here a wrong scope makes two invocations AGREE that should not.
+    if len(segs) < 2 or segs[1][0] != '&&':
         return ''
-    target = _cd_target_loose(first[1])
+    target = _cd_target_loose(segs[0][1])
     return _abs_cd_target(target) if target is not None else ''
 
 
@@ -3462,7 +3467,7 @@ def _static_alias_scope(chunks, cd_poisons=True):
                                            wrapper_operands=True)
             if not argv or not _is_exe(argv[0], 'git'):
                 continue
-            sub_idx = _git_subcommand(argv)[1]
+            sub, sub_idx = _git_subcommand(argv)
             # The same three tests the MERGE path applies to this exemption
             # (_scan_ref_op), for the same reason: a `-C` says where git RUNS, and
             # `--git-dir=`/`-c`/an env assignment says which CONFIG it reads, so
@@ -3473,9 +3478,17 @@ def _static_alias_scope(chunks, cd_poisons=True):
             # so this is defense in depth, and it keeps the exemption's safety
             # margin equal on both paths rather than leaving one to a distant
             # caller.
-            if (_has_unaccounted_global(argv, sub_idx)
-                    or _wrapper_chdir_in_prefix(seg, argv)
-                    or _seg_env_scope(seg)):
+            # Carrying the upstream arm's qualifier too, not just its tests. Without
+            # `sub not in _REF_SAFE_SUBS` a global on a READ-SAFE subcommand poisoned
+            # the whole command whenever any alias candidate appeared elsewhere:
+            # `git --no-pager diff && git add -A` blocked, with the merge-operand
+            # message, where it used to exit 0. It buys nothing either — all three
+            # tests are per-invocation, so a prefix on `git diff` cannot change where
+            # `add` resolves.
+            if (sub is not None and sub not in _REF_SAFE_SUBS
+                    and (_has_unaccounted_global(argv, sub_idx)
+                         or _wrapper_chdir_in_prefix(seg, argv)
+                         or _seg_env_scope(seg))):
                 return None
             here = _literal_c_target(argv, raw_argv, sub_idx)
             if here is None or (here and depth):

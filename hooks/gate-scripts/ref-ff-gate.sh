@@ -642,7 +642,7 @@ if [ "$OUTSIDE_REPO" = "1" ]; then
     [ -z "$UNKNOWN_CANDIDATES" ] && exit 0
     block_emit "Ref fast-forward gate:$UNKNOWN_CANDIDATES resolves to no git subcommand, and ${REPO_DIR:-.} is not a work tree — so the gate cannot rule out that it is a '!'-shell alias, which git runs from outside a repository just as happily and can move a protected ref in ANOTHER one. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets.
 
-There is no skip file for this one: the target is not a work tree, so no $STATE_DIR/skip-litmus.local can live there, and a command-chosen anchor does not spend another repository's. Drop the '-C' and run it from a directory the gate can anchor itself on — the same command from a non-repo cwd is not blocked. Blocking as precaution (fail-closed)."
+There is no skip file for this one: the target is not a work tree, so no $STATE_DIR/skip-litmus.local can live there, and a command-chosen anchor does not spend another repository's. Run it as its own call, without the 'git -C ${REPO_DIR:-.}' or the leading 'cd' that pointed the gate there — whichever this command used — so the gate anchors on the session directory itself. Blocking as precaution (fail-closed)."
     exit 0
 fi
 if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then

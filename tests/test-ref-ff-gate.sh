@@ -1888,6 +1888,14 @@ run_gate "an equivalent -C agrees with the exempted leading cd" \
 # a guess in the fail-OPEN direction.
 run_gate "...but the inferred scope never reaches a nested chunk" \
     block "cd $REPO && git merge HEAD && bash -c 'git zz feature'" "cannot be resolved"
+# The scope tests carry the upstream arm's QUALIFIER as well as its tests. Without
+# it a global on a read-safe subcommand poisoned the whole command whenever any
+# alias candidate appeared elsewhere — and bought nothing, since all three tests
+# are per-invocation.
+run_gate "a global on a read-safe subcommand does not poison the command" \
+    allow "git --no-pager diff && git add -A"
+run_gate "...nor does a -c on one" \
+    allow "git -c color.ui=false log && git add -A"
 # The anchor a command names can BE the session's own repo, and then consent and
 # effect do not diverge — the escape hatch must not depend on whether the
 # operator typed a redundant `-C`.

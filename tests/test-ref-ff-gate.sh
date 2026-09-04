@@ -1744,5 +1744,205 @@ run_gate "a marker in ANOTHER repo does not authorize this one" \
     block "git merge --ff-only $FEATURE_OID"
 rm -f "$MARKER_HOLDER/$ISO_STATE/ref-ff-authorized.local"
 
+# ── A LITERAL `git -C` is a scope the gate can follow (#812) ─────────
+# The alias arm used to refuse ANY scope change beside an unrecognized
+# subcommand, so ordinary read-only commands were blocked with a message about
+# merge operands. But `_has_unaccounted_global` already exempts a bare `-C` on
+# the merge path — a literal target IS the repository git will use — so the gate
+# resolves the aliases THERE instead of refusing. Everything it cannot resolve
+# statically still fails closed.
+setup_repo scoped || { printf '  FAIL  fixture setup (scoped)\n'; exit 1; }
+SCOPED_REPO="$REPO"
+setup_repo main || { printf '  FAIL  fixture re-setup (scoped)\n'; exit 1; }
+
+run_gate "git -C <literal> worktree list is not a merge" \
+    allow "git -C $SCOPED_REPO worktree list"
+run_gate "...nor is git -C <literal> branch -a" \
+    allow "git -C $SCOPED_REPO branch -a"
+
+# THE proof that the scope is actually used: `zz` is an alias for merge in the
+# `-C` repo and does not exist in the session repo. Resolving it against the
+# session repo would give the "resolves to neither a git command nor a git alias"
+# refusal instead, so the reason string is what distinguishes the two.
+git -C "$SCOPED_REPO" config alias.zz merge
+run_gate "an alias is resolved in the -C repo, not the session repo" \
+    block "git -C $SCOPED_REPO zz feature" "is a git alias reaching"
+run_gate "...and the same name in the SESSION repo resolves to nothing" \
+    block "git zz feature" "resolves to neither a git command nor a git alias"
+
+# Everything the parser cannot pin to one directory still fails closed.
+run_gate "a substituted -C target is still unresolvable" \
+    block 'git -C "$(pwd)" worktree list' "cannot be resolved"
+run_gate "...and a variable one" \
+    block 'git -C $SOMEDIR worktree list' "cannot be resolved"
+run_gate "...and a relative one (CDPATH can send it elsewhere)" \
+    block "git -C sub worktree list" "cannot be resolved"
+run_gate "...and a chained -C, whose later operand may be relative" \
+    block "git -C $SCOPED_REPO -C sub worktree list" "cannot be resolved"
+run_gate "...and a cd, which the exemption never covered" \
+    block "cd $SCOPED_REPO && git worktree list" "cannot be resolved"
+run_gate "...and a -C inside a nested payload" \
+    block "bash -c 'git -C $SCOPED_REPO zz feature'" "cannot be resolved"
+# Two invocations DISAGREEING about the directory is as unresolvable as an opaque
+# target: `zz` here runs in the session repo, so anchoring on the -C repo would
+# hide the session repo's own alias.
+run_gate "...and invocations that disagree about the directory" \
+    block "git -C $SCOPED_REPO worktree list && git zz feature" "cannot be resolved"
+
+# The anchor is now a directory the COMMAND names, which makes the "not in a git
+# repo → git fails on its own" shortcut reachable on an agent-picked target. It
+# does not hold for an unresolved word: a `!`-shell alias is not a git operation,
+# git runs it from outside a repository just as happily, and its body can name any
+# repo (`alias.zz = !git -C /session merge feature`). Verified: the shell alias
+# really does run, and before this guard the plain-directory shape ALLOWED.
+mkdir -p "$TMPROOT/not-a-repo"
+run_gate "a -C target outside every repo cannot silence the alias arm" \
+    block "git -C $TMPROOT/not-a-repo zz feature" "not a work tree"
+# ...but a REAL subcommand there is exactly what the shortcut is for: `--list-cmds`
+# needs no repository, so the builtin filter still rules it out and git's own
+# failure is the honest answer.
+run_gate "...while a real subcommand there is still git's own problem" \
+    allow "git -C $TMPROOT/not-a-repo worktree list"
+# The refusal is scoped to a COMMAND-CHOSEN anchor. When the gate derived the
+# anchor itself — the session simply runs outside every repo — the original
+# unconditional exit stands, or an ordinary global alias (`git lg`, not a builtin,
+# so an unknown candidate) would block with no escape hatch: a skip file inside a
+# non-repo directory is not something the tooling describes. #812 never touched
+# this shape, and the guard above must not either.
+NOREPO_HOLDER="$REPO"
+REPO="$TMPROOT/not-a-repo"
+run_gate "an unknown word from a non-repo cwd is untouched (no -C chose it)" \
+    allow "git lg -1"
+REPO="$NOREPO_HOLDER"
+# A BARE repo answers exit-0 `false` to --is-inside-work-tree, so it resolves
+# `proceed` rather than `outside-repo` and is refused by the ordinary alias path.
+# CLONED, not `init --bare`: a freshly-initialised bare repo has no branches, so
+# it would block at the "cannot identify a protected branch" exit instead and the
+# case would pass without ever reaching the path it documents.
+git clone -q --bare "$SCOPED_REPO" "$TMPROOT/bare-scoped"
+git -C "$TMPROOT/bare-scoped" config alias.zz merge
+run_gate "...and a bare repo is refused by the ordinary alias path" \
+    block "git -C $TMPROOT/bare-scoped zz feature" "is a git alias reaching"
+
+git -C "$SCOPED_REPO" config --unset alias.zz
+
+# Consent is per-repo. A command-chosen anchor must not spend the consent
+# artifacts of the repository it points at, because a `!`-shell alias resolved
+# there acts on whichever repository its body names — the same consent/effect
+# divergence as the outside-repo case, reached through a real work tree.
+#
+# The empty declaration is the leg that can be exercised here (the skip file is
+# the other, and is the operator's to create). Reaching it needs a repo whose
+# PROTECTED_SET really is empty, so the fixture has NO conventional branch and no
+# remote: discovery finds nothing, and the empty file is then the whole answer.
+NOCONV="$TMPROOT/noconv"
+rm -rf "$NOCONV"
+(
+    set -e
+    git init -q -b wip "$NOCONV"
+    cd "$NOCONV"
+    git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    echo base > f; git add f; git commit -qm base
+) >/dev/null 2>&1 || { printf '  FAIL  fixture setup (noconv)\n'; FAIL=$((FAIL + 1)); }
+mkdir -p "$NOCONV/$ISO_STATE"
+: > "$NOCONV/$ISO_STATE/ref-ff-protected.local"
+run_gate "a command-chosen anchor cannot spend that repo's empty declaration" \
+    block "git -C $NOCONV zz feature" "chose its own anchor"
+# A literal no-op merge does not launder the unresolved word riding behind it.
+# Keying the guard on an empty KIND left exactly this hole: KIND is `merge`, so
+# the anchor looked gate-derived and the declaration was spent as before.
+run_gate "...and a literal no-op merge alongside it does not launder the word" \
+    block "git -C $NOCONV merge HEAD && git -C $NOCONV zz feature" "chose its own anchor"
+# The same divergence one step away: when the LITERAL merge carries no `-C`, the
+# scan matches it first and target_dir is empty, so the gate would anchor on the
+# cwd — spending the cwd repo's consent while `zz` resolves in $NOCONV. The alias
+# scope is therefore decided for the whole command, not only when no literal
+# merge/pull was found.
+run_gate "...and a cwd-scoped merge does not launder a -C-scoped word either" \
+    block "git merge HEAD && git -C $NOCONV zz feature" "cannot be resolved"
+# ...but a plain `cd` must not poison the LITERAL-merge path. There the scan
+# already folds a trusted '&&'-joined cd into the match's own target_dir, so
+# re-refusing it here only flipped this to a block and explained it with the
+# merge-operand message rather than the companion one — which is the
+# wrong-explanation class #812 was filed about. (`fetch` is an alias candidate,
+# so this command reaches the scope check at all.)
+run_gate "a leading cd still only scopes a literal merge, as its message says" \
+    block "cd $REPO && git fetch origin && git merge feature" "SEPARATE call"
+# ...and the exemption buys the LEADING cd only. A cd AFTER the merge is folded
+# into neither target_dir nor untrusted_cd (the scan matched before reaching it),
+# so nothing but the companion refusal would see it — and that sits after the
+# consent exits, so an armed skip file would have waved it through while `zz`
+# resolved elsewhere.
+run_gate "...but a cd AFTER the merge still poisons the alias scope" \
+    block "git merge HEAD && cd $NOCONV && git zz feature" "cannot be resolved"
+# The exempted cd is also the SCOPE of every invocation that carries no `-C`, so
+# an equivalent absolute `-C` agrees with it rather than reading as a second,
+# conflicting directory. Blocked here by the companion refusal — the accurate
+# reason — not by an unresolvable-operand message.
+run_gate "an equivalent -C agrees with the exempted leading cd" \
+    block "cd $REPO && git merge HEAD && git -C $REPO zz feature" "ALONGSIDE"
+# The inferred scope is the MAIN chunk's only. A nested chunk's ordering against
+# the cd is not decidable here, and a redirection attached to the cd runs BEFORE
+# the directory changes, so attributing the nested git to the cd target would be
+# a guess in the fail-OPEN direction.
+run_gate "...but the inferred scope never reaches a nested chunk" \
+    block "cd $REPO && git merge HEAD && bash -c 'git zz feature'" "cannot be resolved"
+# The scope tests carry the upstream arm's QUALIFIER as well as its tests. Without
+# it a global on a read-safe subcommand poisoned the whole command whenever any
+# alias candidate appeared elsewhere — and bought nothing, since all three tests
+# are per-invocation.
+# The exemption is the BARE `-C` only. `-C<path>` is an unaccounted global like
+# any other attached spelling, so it never reaches the scope inference at all —
+# `_has_unaccounted_global` refuses it upstream and the command is unresolvable.
+# Pinned because that is load-bearing: were it read as a scope, a session repo's
+# consent could authorize a word resolving under another repo's config.
+run_gate "the attached -C<path> form is not the exemption" \
+    block "git -C$SCOPED_REPO zz feature" "cannot be resolved"
+run_gate "a global on a read-safe subcommand does not poison the command" \
+    allow "git --no-pager diff && git add -A"
+run_gate "...nor does a -c on one" \
+    allow "git -c color.ui=false log && git add -A"
+# The anchor a command names can BE the session's own repo, and then consent and
+# effect do not diverge — the escape hatch must not depend on whether the
+# operator typed a redundant `-C`.
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...and a -C naming the session's own repo is not command-chosen" \
+    allow "git -C $NOCONV zz feature"
+REPO="$NOCONV_HOLDER"
+# ...but only for the LONE command that names its own cwd. The lexical test was
+# chosen to survive a retarget, and the retarget can be aimed at the cwd's OWN
+# pathname just as well — rename it, put a symlink there, and the string still
+# matches while git chdirs somewhere else. A companion segment is what that shape
+# needs, and REF_WRITER (_has_companion_command) already sees one, so the
+# exemption is refused rather than the residual being merely named.
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...but a companion alongside it forfeits that exemption" \
+    block "ln -sfn $TMPROOT/elsewhere $NOCONV && git -C $NOCONV zz feature" \
+    "chose its own anchor"
+REPO="$NOCONV_HOLDER"
+# ...while the same file still speaks for the repo the session is actually IN,
+# which is where the operator wrote it. This is the pre-#812 behaviour and the
+# guard above must not disturb it.
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...but the same declaration is honoured for the session's own repo" \
+    allow "git zz feature"
+REPO="$NOCONV_HOLDER"
+# ...and the "session's own repo" test is the OPERAND, not where it currently
+# resolves to. A symlink that points into the session repo right now resolves
+# there for the gate and somewhere else for git, because the command can retarget
+# it in an earlier segment — so a resolved-root comparison would spend this
+# repo's declaration while the alias ran wherever the link had been pointed.
+ln -sfn "$NOCONV" "$TMPROOT/noconv-link"
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...but a -C through a symlink INTO it is still command-chosen" \
+    block "git -C $TMPROOT/noconv-link zz feature" "chose its own anchor"
+REPO="$NOCONV_HOLDER"
+rm -f "$NOCONV/$ISO_STATE/ref-ff-protected.local"
+
 printf '\nRESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

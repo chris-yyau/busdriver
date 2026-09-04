@@ -163,11 +163,11 @@ run_format_suite() {  # <format>
 
     # PreToolUse gate — the shipped observation point (same machinery as #779).
     run_gate "branch -f main → block" \
-        block "git branch -f main $UNREVIEWED" "FORCE-UPDATE the protected branch"
+        block "git branch -f main $UNREVIEWED" "force-updates a branch ref with no old-oid precondition"
     run_gate "checkout -B main → block" \
-        block "git checkout -B main $UNREVIEWED" "FORCE-UPDATE the protected branch"
+        block "git checkout -B main $UNREVIEWED" "force-updates a branch ref with no old-oid precondition"
     run_gate "update-ref without oldvalue → block" \
-        block "git update-ref refs/heads/main $UNREVIEWED" "FORCE-UPDATE the protected branch"
+        block "git update-ref refs/heads/main $UNREVIEWED" "force-updates a branch ref with no old-oid precondition"
     run_gate "branch -D main → block (closes delete-recreate)" \
         block "git branch -D main" "DELETE the protected branch"
     run_gate "delete then recreate in one call → block on delete" \
@@ -177,14 +177,25 @@ run_format_suite() {  # <format>
     git -C "$REPO" branch topic HEAD
     # Porcelain force has no old-oid CAS; pre-command probe is TOCTOU, so
     # fail closed for every current-ref state (direct / absent / symref),
-    # including non-protected topic names (files + reftable).
+    # including non-protected topic names (files + reftable). Measured: `git
+    # branch -f <symref> <oid>` DEREFERENCES, so `-f topic` where topic is a
+    # symref to refs/heads/main moves main -- the name alone cannot clear it.
     run_gate "branch -f of non-protected topic → block" \
-        block "git branch -f topic $UNREVIEWED" "FORCE-UPDATE the protected branch"
+        block "git branch -f topic $UNREVIEWED" "force-updates a branch ref with no old-oid precondition"
+
+    # The refusal names skip-litmus.local as the override, so that has to be
+    # REACHABLE: the ZERO-old arm must run after the skip check, not before it.
+    # (Aged mtime because the shared anti-self-bypass rule refuses a marker the
+    # session could have just created itself.)
+    touch -t 202001010000 "$REPO/$ISO_STATE/skip-litmus.local"
+    run_gate "the advertised skip-litmus.local override is reachable" \
+        allow "git branch -f main $UNREVIEWED"
+    rm -f "$REPO/$ISO_STATE/skip-litmus.local"
 
     # Off protected HEAD still blocks force of main.
     git -C "$REPO" checkout -q -b feature
     run_gate "branch -f main from feature branch → block" \
-        block "git branch -f main $UNREVIEWED" "FORCE-UPDATE the protected branch"
+        block "git branch -f main $UNREVIEWED" "force-updates a branch ref with no old-oid precondition"
 
     # reference-transaction layer — stay off main so Git itself does not reject
     # branch -f/-D of the checked-out branch (that would mask a missing hook).

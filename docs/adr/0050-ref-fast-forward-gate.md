@@ -183,10 +183,18 @@ moves no ref, and `pre-commit-gate.sh` owns the `git commit` that follows.
 
 **#780 (ZERO-old-oid force-update / delete)** is closed in this same PreToolUse
 gate: `branch -f`, `checkout -B` / `switch -C`, `update-ref` without `<oldvalue>`,
-and deletes of a protected name. Create vs force-update uses the githooks(5)
-discriminator — pre-command `git rev-parse --verify` (identical to prepared-time
-inspection inside `reference-transaction`). Deletes abort so delete-then-recreate
-cannot re-mint a protected name. Migrating that check into a native
+and deletes of a protected name. At the `reference-transaction` layer, create vs
+force-update uses the githooks(5) discriminator — prepared-time `git rev-parse
+--verify`. The PreToolUse gate deliberately does NOT run that probe: it would be
+read before the command, and the command can move the ref underneath it. It
+instead refuses every porcelain force outright, for any name — because `git
+branch -f <symref>` DEREFERENCES (measured: with `refs/heads/alias` a symref to
+`refs/heads/main`, `git branch -f alias <oid>` moves main), so a non-protected
+name in argv is not evidence a non-protected ref moves. A CAS-bearing `update-ref
+<ref> <new> <old>` states its own precondition and passes; the shared
+`skip-litmus.local` is the operator override, and the refusal is ordered AFTER
+the skip check so that override is actually reachable. Deletes abort so
+delete-then-recreate cannot re-mint a protected name. Migrating that check into a native
 `reference-transaction` hook remains the #622-installer follow-up; the
 discriminator does not change.
 

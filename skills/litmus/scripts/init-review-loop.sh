@@ -1,4 +1,165 @@
-#!/bin/bash
+#!/bin/bash -p
+# #803: same clean-child scrub as run-review-loop.sh -- privileged mode stops THIS
+# shell from honouring BASH_ENV/ENV and importing BASH_FUNC_*, but leaves those
+# entries in the environment for any unprivileged child to re-process.
+# #803: last-resort -p re-exec, matching the run-* sibling. The shebang above covers
+# direct execution, but a caller that runs this as `bash <script>` bypasses it, and the
+# clean-env rebuild below only fires when a BASH_FUNC_* entry is present -- so a
+# BASH_ENV-only poisoning would already have executed its startup code in THIS shell
+# (DEBUG trap, readonly pins, function definitions) before the `unset` below runs.
+# `exec` is itself shadowable, so this closes the ordinary case, not a hostile parent
+# -- the same accepted residual the run-* siblings document.
+if [[ "$-" != *p* ]]; then
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. SHELLOPTS/BASHOPTS are readonly and cannot be unset;
+# -p already ignores them.
+unset BASH_ENV ENV
+# Blank the dynamic-loader variables BEFORE anything below runs a binary. The
+# `-u` list built further down only cleans the FINAL re-exec's child, but the
+# enumerator (`env -0` / `perl`) and `printf` are themselves dynamically linked:
+# on Linux a hostile LD_PRELOAD/LD_AUDIT executes inside THOSE processes first,
+# and a preloaded enumerator can simply lie about the environment it reports.
+# Assignment, not `unset`: `unset` is a shadowable builtin (see the note above),
+# while assignment is grammar no exported function can intercept — and an EMPTY
+# LD_PRELOAD/LD_AUDIT is inert to the loader, so blanking is as good as removing.
+# Scope, stated honestly: this protects the binaries this block runs and every
+# descendant. It CANNOT protect the interpreter already executing these lines --
+# the loader acted before bash ran its first instruction, which no in-script step
+# can undo. DYLD_* is not blanked here (it is a family, not a fixed name); it is
+# still carried into the `-u` list below, and macOS ignores DYLD_* for the
+# SIP-protected /usr/bin binaries this block invokes.
+# Not locals: these arrive EXPORTED from the caller's environment, so assigning
+# empty keeps them exported and inert for every child -- hence SC2034 per line.
+# shellcheck disable=SC2034
+LD_PRELOAD=
+# shellcheck disable=SC2034
+LD_AUDIT=
+# shellcheck disable=SC2034
+LD_LIBRARY_PATH=
+# Same treatment for the Python loader variables, and for the same reason the LD_*
+# trio needs the ASSIGNMENT form rather than the `-u` list below: the re-exec is
+# conditional on that list being non-empty, so an environment carrying only
+# PYTHONPATH would skip it entirely and hand every `python3 -c` here an attacker
+# import path. That is not a theoretical descendant -- the backstop VERDICT
+# VALIDATOR is one of those calls, so a forged `sitecustomize.py` runs before the
+# code that decides whether a review passed. Measured: a hostile PYTHONPATH
+# executed sitecustomize.py ahead of the `-c` body, and a hostile PYTHONUSERBASE
+# got its usercustomize.py found, read and executed. Blanking is inert to Python
+# for all three (measured), exactly as an empty LD_PRELOAD is inert to the loader.
+# PYTHONSTARTUP is deliberately NOT here: measured, it applies only to interactive
+# sessions and never to `-c`, so adding it would be hardening with no vector.
+# Blanking PYTHONUSERBASE is NOT sufficient on its own: with it empty, site.py
+# falls back to deriving the user site directory from $HOME, which this block does
+# not strip -- so a hostile HOME still reaches usercustomize.py by a second route
+# (measured: it executed). PYTHONNOUSERSITE closes that, because it disables user
+# site-packages outright rather than relocating them, so no $HOME value can point
+# at anything. It is the one entry here that must be EXPORTED and NON-EMPTY: the
+# other three arrive exported already and are being emptied, while this one is
+# usually absent and is a flag Python tests for presence, not value. It is
+# deliberately absent from the `-u` strip list below -- this is the one Python
+# variable that must SURVIVE into every descendant. Measured: ENABLE_USER_SITE
+# becomes False, and ordinary stdlib use (json, sys -- all these call sites import)
+# is unaffected.
+# shellcheck disable=SC2034
+PYTHONPATH=
+# shellcheck disable=SC2034
+PYTHONHOME=
+# shellcheck disable=SC2034
+PYTHONUSERBASE=
+export PYTHONNOUSERSITE=1
+# Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
+# line per variable: a value holding an embedded newline followed by text shaped like
+# `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM
+# names no real variable -- so `env -u` strips nothing, the carrier survives the exec,
+# the child re-detects the same phantom, and the block re-execs forever. Measured: an
+# unbounded exec loop, armed by one ordinary variable, by the very poisoned environment
+# this block exists to strip. A NUL can appear in neither an environment name nor a
+# value, so NUL-delimited entries are exact and that phantom cannot be constructed.
+# The trailing sentinel is the exit-status channel `env -0` otherwise loses through the
+# process substitution: `&&` emits it only when env succeeded, and it can only arrive
+# LAST. A final entry that is not the sentinel therefore covers BOTH a failed
+# enumeration AND a substitution that never opened (no /dev/fd, unwritable TMPDIR).
+# Neither may be read as "nothing to strip" -- that skips the clean re-exec and hands
+# every descendant the inherited entries -- so both refuse. The count bound stays as a
+# backstop against a pathological environment; NUL parsing is already O(n).
+_bd803_envclean=()
+_bd803_last=
+_bd803_count=0
+# shellcheck disable=SC2312  # `env -0`'s status is deliberately not read here: the
+# sentinel below IS the status channel, and splitting the substitution would
+# reintroduce a capture that cannot carry NUL bytes.
+while IFS= read -r -d '' _bd803_e; do
+  _bd803_last=$_bd803_e
+  _bd803_count=$((_bd803_count + 1))
+  if [[ ${_bd803_count} -gt 4096 ]]; then
+    printf '%s\n' "$0: environment listing too large — refusing to run unprivileged descendants (#803)" >&2
+    exit 1
+  fi
+  # Dynamic-loader variables are stripped alongside the forged functions. Be exact
+  # about what this does and does not buy: on Linux the loader honours LD_PRELOAD /
+  # LD_AUDIT before bash executes a single instruction, so `-p` cannot protect THIS
+  # process — that residual is unreachable from here, and a parent able to set them
+  # is the parent, which could as easily have exec'd a different binary outright
+  # (the same boundary the shadowable-`exec` note draws). What the strip does buy is
+  # that the re-exec'd shell and EVERY descendant start loader-clean, which is the
+  # same treatment resolve-cli.sh already gives each of its `env -i` children.
+  case "$_bd803_e" in
+    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*|PYTHONPATH=*|PYTHONHOME=*|PYTHONUSERBASE=*)
+      _bd803_envclean+=(-u "${_bd803_e%%=*}") ;;
+  esac
+# `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having
+# written nothing, which would refuse to start every hardened entry point on a
+# platform this repo explicitly supports (bash 3.2 is the macOS default). perl is
+# the fallback because it is already the portable stand-in `_portable_timeout`
+# relies on, and %ENV is read straight from environ, so a BASH_FUNC_x%% key —
+# not a valid shell identifier — is still visible to it. If BOTH are unavailable
+# the sentinel never arrives and the entry point refuses, which is the correct
+# direction: unknowable environment, no unprivileged descendants.
+#
+# The perl arm is itself environment-steerable, and it is reached with the hostile
+# environment still in place: PERL5OPT/PERL5LIB load attacker code BEFORE the
+# script runs, and a module that merely exits 0 produces an EMPTY enumeration that
+# the outer `&&` still stamps with the sentinel — "nothing to strip", every
+# BASH_FUNC_* inherited (measured: 0 bytes, rc 0). Closed twice over: `-T` makes
+# perl ignore PERL5LIB/PERLLIB/PERL5OPT outright, the assignment prefixes blank
+# them for belt and braces, and the count check after the loop refuses an
+# enumeration that returned nothing at all — no real environment is empty, so a
+# silent zero is a failure however it was produced.
+done < <( { /usr/bin/env -0 2>/dev/null \
+            || PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV'; } \
+          && /usr/bin/printf 'BD803-ENV-OK\0' )
+# -lt 2, not -lt 1: the SENTINEL is itself one of the entries the loop counted, so
+# an enumeration that returned nothing at all still arrives here with a count of 1.
+# Any real environment carries at least PATH alongside it.
+if [[ "$_bd803_last" != "BD803-ENV-OK" || "$_bd803_count" -lt 2 ]]; then
+  printf '%s\n' "$0: cannot enumerate the environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  # A FAILED exec must not fall through. Non-interactive bash normally exits when
+  # exec cannot run the command, but that behaviour is switchable (`execfail`), and
+  # relying on an implicit exit for a security boundary means relying on a shell
+  # option to stay off. The realistic failure is E2BIG: every stripped name adds a
+  # `-u NAME` argument to an environment that is already large, and past ARG_MAX
+  # the exec fails — at which point falling through would run the whole script with
+  # exactly the BASH_FUNC_* entries this block exists to remove.
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+  printf '%s\n' "$0: cannot re-exec with a rebuilt environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+unset _bd803_envclean _bd803_e _bd803_last _bd803_count
+# BD803-CLEAN-ENV-END
 # Initialize litmus review loop state file
 # Follows Ralph Loop pattern for robust state management
 
@@ -82,7 +243,9 @@ fi
 # both scripts as children. They will inherit rather than re-acquire, and neither will
 # release what it did not take.
 if review_lock_minted_here; then
-    trap 'review_lock_release' EXIT
+    # #803: compose the staging cleanup — see run-review-loop.sh for why the library
+    # will not install its own EXIT trap once this script owns one.
+    trap 'review_lock_release; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 fi
 
 # Guard: prevent re-init while a review loop is active.
@@ -169,7 +332,7 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         # "resume in commit mode" for a legacy file that will actually follow
         # $LITMUS_MODE — contradicting this message's own header two lines up.
         echo "       → resume it in its own mode ($_MODE_SHOWN), which keeps the counter:" >&2
-        echo "         bash $SCRIPT_DIR/run-review-loop.sh" >&2
+        echo "         /bin/bash -p $SCRIPT_DIR/run-review-loop.sh" >&2
         exit 1
     fi
 fi
@@ -422,7 +585,7 @@ if [ "$COMPLETION_PROMISE" != "null" ]; then
 fi
 echo ""
 echo "Next steps:"
-echo "   1. Run: bash scripts/run-review-loop.sh"
+echo "   1. Run: /bin/bash -p scripts/run-review-loop.sh"
 echo "   2. Fix any issues found"
 echo "   3. Loop continues automatically until PASS"
 echo ""

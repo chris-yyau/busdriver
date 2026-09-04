@@ -1,3 +1,10 @@
+## [2.1.12](https://github.com/chris-yyau/busdriver/compare/v2.1.11...v2.1.12) (2026-09-04)
+
+
+### Bug Fixes
+
+* **gate:** an empty array literal is not a function definition ([#813](https://github.com/chris-yyau/busdriver/issues/813)) ([#818](https://github.com/chris-yyau/busdriver/issues/818)) ([6135e89](https://github.com/chris-yyau/busdriver/commit/6135e8918425722d801b3d9e3d664f520f5e0176)), closes [#573-class](https://github.com/chris-yyau/busdriver/issues/573-class) [#821](https://github.com/chris-yyau/busdriver/issues/821)
+
 ## [2.1.11](https://github.com/chris-yyau/busdriver/compare/v2.1.10...v2.1.11) (2026-09-04)
 
 

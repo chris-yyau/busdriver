@@ -211,6 +211,18 @@ run_format_suite() {  # <format>
     git -C "$REPO" branch -D "$ZERO64" >/dev/null 2>&1
     run_gate "...while the right-length create CAS is still allowed" \
         allow "git update-ref refs/heads/main $UNREVIEWED 0000000000000000000000000000000000000000"
+    # The dashed spelling is not a laundering route: `git-branch -f main
+    # <rev>` is still a porcelain force, and a trailing operand that merely
+    # LOOKS like another dashed command (`git-status` is a legal rev name) does
+    # not re-read the invocation as that safe subcommand.
+    run_gate "the dashed form is not laundered by a git-* looking operand" \
+        block "git-branch -f main git-status" "no old-oid precondition"
+    # A companion is the only thing that could swap the repository under the
+    # object-format read, and it forfeits the CAS exemption before it gets the
+    # chance -- so the format read has no TOCTOU window to exploit.
+    run_gate "a companion forfeits the CAS exemption too" \
+        block "ln -sfn /other $REPO && git update-ref refs/heads/main $UNREVIEWED $REVIEWED" \
+        "issue #780"
     # ...and the documented escape the refusal advertises still works.
     run_gate "an honest full-oid CAS is still allowed" \
         allow "git update-ref refs/heads/main $UNREVIEWED $REVIEWED"

@@ -4116,6 +4116,8 @@ def _zero_old_ops_from_argv(argv):
                     is_force = len(_zero_old_long_hits(a, ("--force",))) == 1
                 is_move = a in ("-M", "-m", "--move")
                 is_copy = a in ("-c", "-C", "--copy")
+                if a == "-C":
+                    is_force = True
                 if not is_move and a.startswith("--"):
                     is_move = len(_zero_old_long_hits(a, ("--move",))) == 1
                 if not is_copy and a.startswith("--"):
@@ -4131,8 +4133,10 @@ def _zero_old_ops_from_argv(argv):
                             is_force = True
                         elif ch in "Mm":
                             is_move = is_force = True
-                        elif ch in "Cc":
+                        elif ch == "C":
                             is_copy = is_force = True
+                        elif ch == "c":
+                            is_copy = True
                 if is_del:
                     delete = True
                 if is_force:
@@ -4189,6 +4193,12 @@ def _zero_old_ops_from_argv(argv):
                 return
             for n in names:
                 yield ("delete", _branch_name_from_porcelain(n) or "")
+            return
+        if copy and not (force or move or delete):
+            # Plain copy: refuses an existing destination, leaves the source
+            # alone. Nothing this gate guards can move, so it is not a ZERO-old
+            # op at all. (`-m`/`--move` stays in scope even unforced -- a rename
+            # DELETES the source ref, and the source can be the protected one.)
             return
         if force or move or copy:
             if not names:
@@ -4855,6 +4865,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
     untrusted = ''
     resolve_base = ''
     first = True
+    ambient_scope = False
     prev_scope_key = None
     for chunk in chunks:
         allow_cd = first
@@ -4878,6 +4889,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         or (_dyn and (_fi or len(toks) >= 4
                             or any(t.startswith('refs/') or t in ('HEAD', '@') for t in toks)))):
                     raw_all.append(('force', ''))
+                    if _zero_old_ambient_scope():
+                        ambient_scope = True
                 continue
             sub, sub_idx = _git_subcommand(argv)
             scope_fail_closed = (
@@ -4892,8 +4905,25 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             scope_untrusted = _commit_untrusted(
                 cds, allow_cd, auth, tilde_c, nested_c)
             raw = list(_zero_old_ops_from_argv(argv))
-            if (raw or sub in _ZERO_OLD_SUBS) and _zero_old_ambient_scope():
+            # Qualified by `raw`, not by the subcommand WORD: the parser has
+            # already looked, and it fails closed on its own for every shape
+            # that writes a ref (`branch -f`, `checkout -B`, a default-deref
+            # `update-ref`, any `symbolic-ref` -- verified). Keying on the word
+            # made `git branch --list`, `git checkout main` and a plain
+            # `branch -c` refusals the moment a scope was inherited, which is a
+            # read-only over-block and buys nothing the parser did not cover.
+            if raw and _zero_old_ambient_scope():
+                # An INHERITED GIT_DIR/GIT_WORK_TREE/config override points git
+                # at a repository the gate cannot see (the gate's own env is
+                # sanitized; the launcher passes the sentinel). Appending an
+                # unresolved force is not enough on its own: with no scope
+                # marker the gate anchors on the session cwd, reads THAT repo's
+                # skip-litmus.local, and an armed marker redeemed a force whose
+                # effect landed elsewhere (measured). Mark the scope so the
+                # refusal happens BEFORE consent, exactly as the per-segment
+                # `GIT_DIR=... git ...` prefix already does.
                 raw_all.append(('force', ''))
+                ambient_scope = True
                 continue
             if not raw and sub not in _ZERO_OLD_SUBS:
                 # Operands AFTER the subcommand only. A PRE-subcommand global is
@@ -4957,6 +4987,10 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
         else:
             continue
         break
+    if ambient_scope:
+        untrusted = '-git-scope-env'
+        target_dir = ''
+        resolve_base = ''
     if not raw_all:
         if with_untrusted_cd:
             return [], target_dir, untrusted

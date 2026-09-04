@@ -223,6 +223,15 @@ run_format_suite() {  # <format>
     run_gate "a companion forfeits the CAS exemption too" \
         block "ln -sfn /other $REPO && git update-ref refs/heads/main $UNREVIEWED $REVIEWED" \
         "issue #780"
+    # A lowercase copy is not a force: it refuses an existing destination and
+    # leaves the source alone, so no ref this gate guards can move. `-C` can
+    # overwrite one, and `-m` DELETES the source even unforced -- both stay in.
+    run_gate "a plain branch copy is not a force" \
+        allow "git branch -c topic topic-copy"
+    run_gate "...but the forcing copy is" \
+        block "git branch -C topic main" "no old-oid precondition"
+    run_gate "...and an unforced rename is, because it deletes the source" \
+        block "git branch -m main renamed" "no old-oid precondition"
     # ...and the documented escape the refusal advertises still works.
     run_gate "an honest full-oid CAS is still allowed" \
         allow "git update-ref refs/heads/main $UNREVIEWED $REVIEWED"
@@ -280,6 +289,28 @@ run_format_suite() {  # <format>
         "issue #780"
     run_gate "...and the lone force it IS armed for still passes" \
         allow "git branch -f main $UNREVIEWED"
+    # An INHERITED git scope is the third relocating shape. The gate's own env is
+    # sanitized, so it learns of one only through the launcher's sentinel -- and
+    # without marking the scope it would anchor on the session cwd, read THIS
+    # repo's marker, and redeem a force whose effect landed in the repo GIT_DIR
+    # actually names.
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "an armed skip does not survive an inherited git scope" \
+        block "git branch -f main $UNREVIEWED" "cannot be resolved"
+    # ...including when a wrapper hides the git word from the parser: that path
+    # yields the same unresolved force, so it needs the same scope marker.
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...nor when a wrapper hides the force" \
+        block "xargs -I{} git branch -f main $UNREVIEWED" "cannot be resolved"
+    # ...while an inherited scope must not make every `branch`/`checkout` WORD a
+    # refusal. The parser has already looked and fails closed on its own for the
+    # shapes that write a ref, so read-only forms stay read-only.
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...and a read-only branch listing is still not a force" \
+        allow "git branch --list"
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...nor is a plain copy under one" \
+        allow "git branch -c topic topic-copy2"
     rm -f "$REPO/$ISO_STATE/skip-litmus.local"
     rm -rf "$OTHER_REPO"
 

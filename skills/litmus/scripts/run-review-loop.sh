@@ -434,12 +434,71 @@ _bs_in=""
 # reassigned by the next attempt's mktemp, which would drop the un-removed path
 # and leak a private prompt or captured response past the trap. Append instead.
 _bs_leaked=()
+# The backstop wrapper's pid, doubling as a process-GROUP handle. Declared HERE,
+# before the traps below are installed, so a signal arriving at ANY point -- including
+# before the first dispatch -- finds the variable defined rather than unbound.
+_bs_pid=""
+
+# Reap the process group the backstop wrapper leads. ONE implementation, shared by
+# the post-dispatch reap and by the EXIT cleanup, so the two cannot drift.
+#
+# No-op unless there is genuinely something alive: an empty handle returns
+# immediately, and `kill -0` is probed before any signal is sent, so a healthy
+# dispatch signals nothing and adds no latency. TERM first, then a 2s grace, then
+# KILL -- a descendant mid-flush of the CLI transcript gets to finish.
+#
+# Signals a GROUP as well as the leader pid -- which handle does the work differs
+# per arm, and the body says which. The group matters because the writer is
+# typically a grandchild, and on the normal path the direct child has already
+# been reaped by the time this runs.
+_bs_reap_group() {
+  local _p="${1:-}"
+  [[ -n "$_p" ]] || return 0
+  # Alive check spans BOTH handles, because the two arms leave different things
+  # behind: coreutils leaves a GROUP (the leader is inside it), perl leaves only
+  # the LEADER (see below). Neither alive ⇒ nothing to do, no signals sent, no
+  # latency added to a healthy dispatch.
+  kill -0 "$_p" 2>/dev/null || kill -0 -- "-$_p" 2>/dev/null || return 0
+  # Signal the group AND the leader pid. The group is what reaches the coreutils
+  # arm's tree: `timeout` setpgid()s itself and its child, so one group signal
+  # collapses the whole thing. The leader pid is the ONLY thing that reaches the
+  # perl arm: perl does NOT setpgrp itself -- only its fork()ed CHILD does -- so
+  # perl stays in the SCRIPT's own group and "-$_p" names nothing there. Perl
+  # carries a TERM handler that reaps its child group before exiting, so the one
+  # pid-directed signal below collapses that tree too.
+  kill -TERM -- "-$_p" 2>/dev/null || true
+  kill -TERM "$_p" 2>/dev/null || true
+  # The grace must OUTLAST the perl arm's own escalation, not merely be "long
+  # enough to be polite". On that arm the TERM above is delivered to perl, whose
+  # handler then spends up to 50 x 0.1s waiting for its child group before it
+  # KILLs and reaps. A 2s grace here would KILL perl in the middle of that,
+  # leaving the very child group the handler was about to collapse -- turning the
+  # reap into the orphan it exists to prevent. 8s clears perl's 5s with margin.
+  # Nothing waits this long on a healthy run: the loop returns the moment both
+  # handles are dead, so the cost is paid only by something actively resisting
+  # TERM.
+  local _i
+  for _i in $(seq 1 40); do
+    kill -0 "$_p" 2>/dev/null || kill -0 -- "-$_p" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL -- "-$_p" 2>/dev/null || true
+  kill -KILL "$_p" 2>/dev/null || true
+}
+
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap 'review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap '_bs_reap_group "${_bs_pid:-}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+# No separate TERM/INT/HUP traps: bash runs the EXIT trap when it is killed by an
+# untrapped fatal signal, so the reap above already covers a cancelled run. Measured
+# on both /bin/bash 3.2.57 (the `/bin/bash -p` the dispatcher invokes) and bash
+# 5.3.15 -- the EXIT trap fired in both. Adding signal traps that only re-enter the
+# same handler would be redundancy, not defence; the test suite asserts the
+# behaviour rather than the trap list, so a bash that ever broke this would fail
+# loudly instead of silently losing the reap.
 
 # #790: every marker publication stamps a fresh generation token beside the marker.
 # The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
@@ -1117,15 +1176,30 @@ PROMPT_EOF
       our $pid = fork();
       if (!defined $pid) { die "fork failed: $!"; }
       if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub {
+      our $reap = sub {
         if ($pid) {
           kill "TERM", -$pid; kill "TERM", $pid;
           for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
           kill "KILL", -$pid; kill "KILL", $pid;
           waitpid($pid, 0);
         }
-        exit 124;
       };
+      $SIG{ALRM} = sub { $reap->(); exit 124; };
+      # TERM/INT reach perl but NOT its child: the child put itself in a new
+      # process group, so a pid-directed signal to perl leaves that group behind.
+      # Without this the caller cancelling the review would orphan the whole
+      # claude tree until the alarm that is about to be cancelled would have
+      # fired. The caller signals perl BY PID because perl shares the same group as
+      # the caller -- so this handler is the only thing on the perl arm that reaches
+      # the child group at all. Status is the conventional 128+signo.
+      $SIG{TERM} = sub { $reap->(); exit 143; };
+      $SIG{INT}  = sub { $reap->(); exit 130; };
+      # HUP as well, and it is not redundant: a HUP is typically delivered to a
+      # whole process GROUP, and perl sits in the callers group while its child
+      # does not -- so the same signal that kills perl on the default disposition
+      # never reaches the child. The shell reaper would then find no live perl pid
+      # and no child pgid to aim at, and the tree would survive both.
+      $SIG{HUP}  = sub { $reap->(); exit 129; };
       alarm $ARGV[0];
       waitpid($pid, 0);
       alarm 0;
@@ -1316,14 +1390,7 @@ PROMPT_EOF
     # nothing and this is a no-op -- which is the case for the perl arm, where
     # the fork()ed CHILD calls setpgrp, so the new pgid is the child's pid rather
     # than perl's; that arm carries the equivalent reap inside $_BS_PERL_TO.
-    if kill -0 -- "-$_bs_pid" 2>/dev/null; then
-      kill -TERM -- "-$_bs_pid" 2>/dev/null || true
-      for _bs_i in 1 2 3 4 5 6 7 8 9 10; do
-        kill -0 -- "-$_bs_pid" 2>/dev/null || break
-        sleep 0.2
-      done
-      kill -KILL -- "-$_bs_pid" 2>/dev/null || true
-    fi
+    _bs_reap_group "$_bs_pid"
     _bs_pid=""
     if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
     _bs_in=""

@@ -154,6 +154,13 @@ if [ -n "${STUB_ORPHAN:-}" ]; then
   # outlived. `exec` keeps the subshell's pid, so $! names the sleep itself.
   if [ -n "${STUB_ORPHAN_PID_FILE:-}" ]; then echo $! > "$STUB_ORPHAN_PID_FILE"; fi
 fi
+# STUB_HANG=N: keep the LEADER itself alive N seconds before emitting the verdict.
+# Only useful with STUB_ORPHAN: it holds the dispatch open so a caller can signal
+# the review loop while it is genuinely blocked in `wait`, which is the only way
+# to exercise the signal path rather than the post-dispatch reap.
+if [ -n "${STUB_HANG:-}" ]; then
+  sleep "$STUB_HANG"
+fi
 # STUB_ORPHAN_APPEND=N: a descendant that not only holds the captured stdout but
 # keeps WRITING to it for N seconds. Strictly nastier than STUB_ORPHAN: against a
 # regular file an unbounded reader can be kept behind a receding EOF forever, so
@@ -463,6 +470,22 @@ if [[ -n "$_PERLTO" ]]; then
   perl -e "$_PERLTO" -- 2 /bin/sh -c 'trap "" TERM; sleep 60' >/dev/null 2>&1
   _rc=$?; _el=$(( $(date +%s) - _t0 ))
   ok "$_rc" "124" "perl arm reports a timeout (124) on a TERM-ignoring child"
+  # Cancellation, not timeout: signal PERL ITSELF and assert it reaps the child
+  # group on the way out. This is the arm the group-handle reap cannot reach --
+  # perl does not setpgrp itself, so the caller can only signal it by pid -- and a
+  # machine with coreutils installed never exercises it through the live dispatch.
+  _CPIDF=$(mktemp -t perlcancel-XXXXXX)
+  perl -e "$_PERLTO" -- 60 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > '"$_CPIDF"'; wait' >/dev/null 2>&1 &
+  _PLPID=$!
+  for _i in $(seq 1 100); do [[ -s "$_CPIDF" ]] && break; sleep 0.1; done
+  _CPID=$(cat "$_CPIDF" 2>/dev/null)
+  ok "$([[ -n "$_CPID" ]] && echo y || echo n)" "y" "perl arm: grandchild pid recorded"
+  kill -TERM "$_PLPID" 2>/dev/null
+  wait "$_PLPID" 2>/dev/null
+  sleep 3
+  ok "$(kill -0 "$_CPID" 2>/dev/null && echo alive || echo gone)" "gone" "perl arm reaps its child group when the wrapper is cancelled"
+  kill -9 "$_CPID" 2>/dev/null || true
+  rm -f "$_CPIDF"
   ok "$([[ "$_el" -lt 30 ]] && echo y || echo n)" "y" "perl arm KILLed it after the grace, not after 60s (took ${_el}s)"
 fi
 # The wrapper must be resolved by ABSOLUTE path, never from the inherited PATH:
@@ -560,12 +583,12 @@ _bs_tmps() {
 _tmp0=$(_bs_tmps)
 ok "$([[ "$_tmp0" =~ ^[0-9]+$ ]] && echo y || echo n)" "y" "temp-file scan actually ran (baseline is a count)"
 _t0=$(date +%s)
-STUB_ORPHAN=20 LITMUS_PR_BACKSTOP_TIMEOUT=10 \
+STUB_ORPHAN=60 LITMUS_PR_BACKSTOP_TIMEOUT=10 \
   STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
 _rc=$?; _el=$(( $(date +%s) - _t0 ))
 ok "$_rc" "0" "verdict captured even though the CLI left a descendant behind"
 ok "$(art_status "$BS")" "PASS" "PASS artifact written despite the straggler"
-ok "$([[ "$_el" -lt 10 ]] && echo y || echo n)" "y" "attempt ended with the leader, not the 20s straggler (took ${_el}s)"
+ok "$([[ "$_el" -lt 20 ]] && echo y || echo n)" "y" "attempt ended with the leader (plus the reap grace), not the 60s straggler (took ${_el}s)"
 # And the capture file must not be left behind in TMPDIR -- the straggler's fd
 # keeps the inode alive for its own writes, but the path is unlinked.
 ok "$(_bs_tmps)" "$_tmp0" "no capture temp leaked"
@@ -593,6 +616,27 @@ kill -TERM "$_CTLPID" 2>/dev/null
 sleep 1
 ok "$(kill -0 "$_CTLPID" 2>/dev/null && echo alive || echo gone)" "alive" "control: a TERM-ignoring straggler DOES survive a plain TERM"
 kill -9 "$_CTLPID" 2>/dev/null; wait "$_CTLPID" 2>/dev/null || true
+
+# ...and the reap must also fire when the SCRIPT ITSELF is cancelled mid-wait,
+# not only when the dispatch returns on its own. This is the signal path: TERM the
+# review-loop process while it is blocked in `wait`, then assert the wrapper's
+# group died with it rather than being orphaned still holding the capture.
+rm -f "$BS"; seed_codex_lead
+_PIDF2="$WORK/orphan-sig.pid"; rm -f "$_PIDF2"
+STUB_ORPHAN=60 STUB_ORPHAN_PID_FILE="$_PIDF2" STUB_HANG=30 LITMUS_PR_BACKSTOP_TIMEOUT=60 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1 &
+_RLPID=$!
+# Wait for the stub to actually record its straggler — signalling before the
+# dispatch exists would prove nothing about the trap.
+for _i in $(seq 1 100); do [[ -s "$_PIDF2" ]] && break; sleep 0.1; done
+_OPID2=$(cat "$_PIDF2" 2>/dev/null)
+ok "$([[ -n "$_OPID2" ]] && echo y || echo n)" "y" "signal case: stub recorded the straggler pid"
+kill -TERM "$_RLPID" 2>/dev/null
+wait "$_RLPID" 2>/dev/null
+# Give the reap its TERM->grace->KILL ladder room to complete.
+sleep 3
+ok "$(kill -0 "$_OPID2" 2>/dev/null && echo alive || echo gone)" "gone" "a cancelled run reaps the dispatch group instead of orphaning it"
+kill -9 "$_OPID2" 2>/dev/null || true
 
 echo "== 9n. --run-backstop: an APPENDING straggler cannot stall the read (#823) =="
 # 9m's straggler only HOLDS the descriptor; moving the capture to a file is enough
@@ -645,7 +689,18 @@ ok "$(grep -c 'wc -c < "\$_bs_out"' "$RL")" "0" "capture size does not come from
 # The dispatch must be backgrounded and waited on — that is the only way the
 # wrapper's pid survives as a process-GROUP handle for the reap.
 ok "$(grep -c 'wait "\$_bs_pid"' "$RL")" "1" "dispatch is waited on by pid"
-ok "$(grep -c 'kill -KILL -- "-\$_bs_pid"' "$RL")" "1" "reap escalates to a group KILL"
+ok "$(grep -c 'kill -KILL -- "-\$_p"' "$RL")" "1" "reap escalates to a group KILL"
+# ONE implementation of the reap. Two copies were how the EXIT path drifted from
+# the dispatch path in the first place.
+ok "$(grep -c '^_bs_reap_group()' "$RL")" "1" "the reap has exactly one implementation"
+# ...reached from the EXIT trap, which is what covers a CANCELLED run: bash runs
+# the EXIT trap even when killed by an untrapped fatal signal (measured on bash
+# 3.2.57 and 5.3.15), so no separate TERM/INT/HUP traps are needed and none should
+# be added back. The behavioural assertion below is what proves it actually fires.
+ok "$(grep -c '_bs_reap_group "\${_bs_pid:-}"' "$RL")" "1" "reap is wired into the EXIT trap"
+# The reap must precede the unlink in the EXIT trap: ending the writer is what
+# bounds it, and unlinking first just hides the inode while it keeps growing.
+ok "$(grep -c "trap '_bs_reap_group \"\${_bs_pid:-}\"; review_lock_release" "$RL")" "1" "EXIT trap reaps before it unlinks"
 # The perl arm creates its group inside the fork()ed child, so its pgid is
 # invisible to the shell — it must carry the equivalent reap in its own body.
 ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"

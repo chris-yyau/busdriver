@@ -21,8 +21,13 @@ If not installed, install it according to your system's package manager.
 **Solution:** This is normal for large diffs (700+ lines). Consider:
 - Reviewing in smaller chunks (per-file or per-feature)
 - Reading the reasoning output to start fixing issues early (look for "thinking" sections)
-- Running in background with `run_in_background=true`
-- Using TaskOutput tool to monitor background progress
+- **Splitting the change** so the pass fits (lowering `LITMUS_TIMEOUT` does NOT make a slow review finish — it only makes the reviewer give up sooner; reach for it to fail fast, or to undo an above-cap override, not to make a large diff pass)
+
+Do **not** background the review to get around this. SKILL.md's CRITICAL RULES
+forbid it, and #368 is why: nothing here reliably holds the gate until the process
+EXITS — `run_in_background` returns immediately and `TaskOutput` can return with
+the task still running — so backgrounding lets the session commit while the review
+is still deciding. A pass that cannot fit is an unsolved case, not a licence.
 
 ### Issue: Output contains reasoning/thinking text mixed with JSON
 
@@ -89,7 +94,7 @@ git add -A  # Stage all changes
    ```python
    # CORRECT - blocking gate
    Bash(
-     command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+     command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
      timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
    )
    ```
@@ -103,8 +108,8 @@ git add -A  # Stage all changes
 **Solution:** Use `--force` flag to re-initialize:
 ```bash
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Issue: Automation works for first iteration, then prompts on second
@@ -113,7 +118,7 @@ bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```python
 # Each call does ONE pass — caller re-runs on FAIL
 Bash(
-    command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # blocking; harness caps at 600000 (see SKILL.md CRITICAL RULES)
 )
 ```
@@ -122,7 +127,7 @@ Bash(
 ```python
 def run_litmus():
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
         description="Run Codex review (blocking gate)",
         timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )
@@ -173,8 +178,11 @@ def run_litmus():
 **Optimization strategies:**
 1. Review smaller chunks (< 300 lines per review)
 2. Focus on high-risk files first
-3. Use background execution and continue with other work
-4. Consider breaking large refactorings into multiple commits
+3. Consider breaking large refactorings into multiple commits
+4. Lower `LITMUS_TIMEOUT` only to FAIL FAST on a diff you already intend to split — it shortens the wait, it does not make a slow review finish
+
+(Backgrounding the review is deliberately absent from this list — see the
+blocking-call rule above and #368.)
 
 ### Issue: Running out of memory
 

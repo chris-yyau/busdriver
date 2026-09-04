@@ -530,8 +530,17 @@ if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
     block_emit "Ref fast-forward gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the git merge/pull and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo's protected branch would move. Run it from the repo root, join the cd with '&&' (cd /repo && git merge X), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
-# Genuinely not in a git repo → no ref can move (git fails on its own).
-[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
+# Genuinely not in a git repo → no ref can move (git fails on its own) — but that
+# rationale only covers a REAL subcommand. Since #812 the anchor can be a literal
+# `git -C` the COMMAND chose, so this exit became reachable with an agent-picked
+# target, and a `!`-shell alias resolved there is not a git operation at all: with
+# a global `alias.zz = !git -C /session merge feature`, `git -C /any-non-repo zz`
+# runs the merge in the SESSION repo while git never fails here. Defer the exit
+# until the builtin filter below has ruled the words out; an unresolved one blocks.
+# (A BARE repo answers exit-0 `false` to --is-inside-work-tree, so it resolves
+# `proceed` and never reached this line — only a directory outside every repo did.)
+OUTSIDE_REPO=0
+[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && OUTSIDE_REPO=1
 REPO_DIR="$GATE_REPO_DIR"
 
 # Block messages are text an operator PASTES, so anything interpolated into a
@@ -564,13 +573,108 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
         UNKNOWN_CANDIDATES="$UNKNOWN_CANDIDATES $_cand"
     done
 fi
+# Everything below keys off whether the anchor was chosen by the COMMAND, which
+# is what $TARGET_DIR being non-empty means: the parser fills it from a literal
+# `git -C` or a trusted `cd`, and leaves it empty when the gate is to anchor on
+# the session cwd itself.
+#
+# Why that has to be distinguished: the gate reads its CONSENT artifacts —
+# `skip-litmus.local`, `ref-ff-protected.local` — from $REPO_DIR, but a resolved
+# alias's EFFECT is not confined to $REPO_DIR, because a `!`-shell alias runs an
+# arbitrary command and can name any repository. While the anchor was always the
+# session cwd those were the same repo, so consent covered effect. A
+# command-chosen anchor separates them: `git -C /any-other-worktree zz` would
+# spend THAT repo's skip file — the routine, per-worktree, operator-created
+# escape hatch — and exit before the alias refusals ever run, while the alias
+# fast-forwards a protected ref somewhere else entirely.
+#
+# Qualified by UNKNOWN_CANDIDATES, not by an empty $KIND. Keying on $KIND was the
+# first shape and it had a hole: `git -C /x merge HEAD && git -C /x zz feature`
+# carries a literal (no-op) merge, so KIND is `merge`, and the unresolved `zz`
+# rode through behind it. Keying on $TARGET_DIR ALONE is the opposite error — it
+# would stop honouring the skip file for an ordinary `cd /repo && git merge
+# feature`, which is exactly what the operator armed it for. The unresolved word
+# is the thing consent cannot cover, so its presence is the right qualifier, and
+# it must be the post-filter set: ALIAS_CANDIDATES still holds `add`/`commit`.
+CMD_CHOSEN_ANCHOR=0
+if [ -n "$TARGET_DIR" ] && { [ -z "$KIND" ] || [ -n "$UNKNOWN_CANDIDATES" ]; }; then
+    CMD_CHOSEN_ANCHOR=1
+    # ...unless the directory it named IS the session's own, where consent and
+    # effect do not actually diverge. Without this the operator's escape hatch
+    # silently depended on whether they typed a redundant absolute `-C`: that
+    # command and the bare one from the same shell would disagree about whether
+    # the skip file works.
+    #
+    # The test is LEXICAL — the `-C` operand as written against the payload cwd
+    # as written — and deliberately not the equality of the two RESOLVED repo
+    # roots this first shipped with. Resolution reads the filesystem, and the
+    # filesystem is not stable across the gap between this read and git's own
+    # chdir: `ln -sfn /elsewhere /link && git -C /link <word>` resolves into the
+    # session repo HERE, clears the anchor, and spends this repo's skip file or
+    # empty declaration — while git, chdir-ing after the retarget, resolves the
+    # `!`-alias in /elsewhere and can fast-forward a protected ref there. A
+    # string comparison cannot be moved by anything the command does first.
+    # It also answers for a BARE repository, where both `--show-toplevel` calls
+    # fail and the old comparison could never fire at all — so `git -C /bare
+    # merge HEAD && git -C /bare zz` stopped honouring the very override the
+    # equivalent bare-form command was given.
+    #
+    # Fails CLOSED on anything it cannot match exactly: a trailing slash, or any
+    # other spelling of the same directory, keeps the anchor command-chosen.
+    # Residual, named and NOT closed here: when the command names the cwd's OWN
+    # path string, an earlier segment could still rename that directory and put a
+    # symlink in its place. That destroys the operator's live repo directory to
+    # win — a strictly larger attack than the retarget above — and no static test
+    # on this side can see it.
+    if [ -n "$HOOK_CWD" ] && [ "$TARGET_DIR" = "$HOOK_CWD" ]; then
+        CMD_CHOSEN_ANCHOR=0
+    fi
+fi
+if [ "$OUTSIDE_REPO" = "1" ]; then
+    # Anchor the gate derived ITSELF → the original unconditional exit, unchanged:
+    # genuinely not in a git repo, so no ref can move and git fails on its own.
+    # Kept, rather than folded into the refusal below, because that refusal is a
+    # BLOCK and this shape reaches it in ordinary use: run from a directory
+    # outside every repo, a global alias (`git lg -1` from /tmp) is not in
+    # --list-cmds and so lands in UNKNOWN_CANDIDATES. #812 never touched that
+    # shape, and it has no escape hatch here — a skip file inside a non-repo
+    # directory is not a thing the tooling describes.
+    #
+    # STANDING RESIDUAL, named deliberately and NOT introduced here: this exit was
+    # UNCONDITIONAL before #812, so a global `alias.zz = !git -C /protected merge
+    # feature` run as `git zz` from a non-repo cwd has always passed. Closing it
+    # means blocking every non-builtin git word in every directory outside a
+    # repository, with no escape hatch reachable there — a broad over-block of the
+    # exact kind #812 was filed about, and a change to behaviour this issue does
+    # not touch. It belongs in its own issue, with its own cost discussion. What
+    # #812 must not do is make it WORSE, and the branch below is what stops the
+    # new command-chosen anchor from reaching it.
+    [ "$CMD_CHOSEN_ANCHOR" = "1" ] || exit 0
+    # `--list-cmds` needs no repository, so the filter above is still authoritative
+    # here: every word it recognised is a real git subcommand, which genuinely
+    # cannot move a ref from outside a work tree. A word it did NOT recognise can
+    # still be a `!`-shell alias that operates somewhere else entirely, and this is
+    # the one place that could wave it through, so it fails CLOSED instead.
+    [ -z "$UNKNOWN_CANDIDATES" ] && exit 0
+    block_emit "Ref fast-forward gate:$UNKNOWN_CANDIDATES resolves to no git subcommand, and ${REPO_DIR:-.} is not a work tree — so the gate cannot rule out that it is a '!'-shell alias, which git runs from outside a repository just as happily and can move a protected ref in ANOTHER one. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets.
+
+There is no skip file for this one: the target is not a work tree, so no $STATE_DIR/skip-litmus.local can live there, and a command-chosen anchor does not spend another repository's. Run it as its own call, without the 'git -C ${REPO_DIR:-.}' or the leading 'cd' that pointed the gate there — whichever this command used — so the gate anchors on the session directory itself. Blocking as precaution (fail-closed)."
+    exit 0
+fi
 if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then
     exit 0
 fi
 
 # ── Skip override (same anti-self-bypass shape as the sibling gates) ──
+# NOT honoured on a command-chosen anchor: the operator armed this file for the
+# repository they were working in, and a `git -C <that repo> <word>` issued from
+# elsewhere would spend it while the alias acts on a DIFFERENT repository. Consent
+# is per-repo (`tests/…: a marker in ANOTHER repo does not authorize this one`),
+# so a command that picks its own anchor cannot be the one to redeem it. The
+# operator's escape hatch is unchanged wherever they actually are — run the
+# command from that repo and the anchor is the gate's own again.
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
-if [ -f "$SKIP_FILE" ] \
+if [ "$CMD_CHOSEN_ANCHOR" != "1" ] && [ -f "$SKIP_FILE" ] \
    && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-litmus.local"; then
     SKIP_AGE=999
     _SKIP_MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
@@ -868,7 +972,19 @@ Check the spelling against:
   git -C $Q_REPO branch --format='%(refname:short)'"
         exit 0
     fi
+    # The empty declaration is the other per-repo consent artifact, and it is
+    # withheld from a command-chosen anchor for the same reason as the skip file:
+    # "this repository has no protected branch" is a statement about THAT
+    # repository, and a `!`-shell alias resolved there acts on whichever one its
+    # body names. Refused with its own message rather than falling through to the
+    # "cannot identify a protected branch" one below — the operator DID answer
+    # that question, and #812 is itself a report of a block explaining the wrong
+    # thing.
     if [ "$DECLARED" = "1" ]; then
+        if [ "$CMD_CHOSEN_ANCHOR" != "1" ]; then
+            exit 0
+        fi
+        block_emit "BLOCKED:$UNKNOWN_CANDIDATES resolves to no git subcommand, and this command chose its own anchor with 'git -C ${REPO_DIR:-.}'. That repository's $STATE_DIR/ref-ff-protected.local declares it has no protected branch — but an unresolved word there can be a '!'-shell alias, which runs an arbitrary command and can fast-forward a protected ref in a DIFFERENT repository, one this declaration says nothing about. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets. Blocking as precaution (fail-closed)."
         exit 0
     fi
     block_emit "BLOCKED: this command runs a git merge/pull, and the gate cannot identify a protected branch in ${REPO_DIR:-.} — none of main, master, trunk, develop, development or default exists locally, no remote publishes a HEAD, and init.defaultBranch names nothing that exists. It therefore cannot tell whether this would fast-forward a protected ref, which creates no commit object and so passes every other review gate unseen (issue #779).

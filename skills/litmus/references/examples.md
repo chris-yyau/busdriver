@@ -87,8 +87,8 @@ supabase functions deploy my-function
 ```bash
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 git reset --soft HEAD~1
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, re-stage, re-run until PASS, then commit again
 ```
 
@@ -96,8 +96,8 @@ bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```bash
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 git reset --soft HEAD~1
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, re-stage, re-run until PASS
 git push --force-with-lease
 ```
@@ -111,9 +111,9 @@ Run the review as a **blocking** call (never in background).
 
 ```python
 def run_litmus():
-    # Requires prior: bash init-review-loop.sh --force 10
+    # Requires prior: /bin/bash -p init-review-loop.sh --force 10
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
         description="Run Codex review (blocking gate)",
         timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )
@@ -127,14 +127,14 @@ def run_litmus():
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 
 # Initialize state-based review loop (max 10 iterations)
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
 
 # Each call does ONE review pass:
 #   Exit 0 = PASS → proceed to commit
 #   Exit 1 = FAIL → fix issues, stage, call again
 #   Exit 2 = TOO_LARGE → split into smaller commits
 set -e  # Ensure failed review blocks commit
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # If we reach here, review PASSED
 
 npm test
@@ -156,7 +156,7 @@ git commit -m "Refactor authentication system"
 
 # --- ITERATION 10 ---
 # run-review-loop.sh tracks iteration internally
-bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Result: FAIL - 3 issues (1 high, 2 medium)
 
 # Max iterations reached - ASK USER

@@ -1,3 +1,17 @@
+## [2.1.11](https://github.com/chris-yyau/busdriver/compare/v2.1.10...v2.1.11) (2026-09-04)
+
+
+### Bug Fixes
+
+* **hooks:** resolve alias candidates against a literal git -C ([#812](https://github.com/chris-yyau/busdriver/issues/812)) ([#820](https://github.com/chris-yyau/busdriver/issues/820)) ([e661023](https://github.com/chris-yyau/busdriver/commit/e66102322d14cc45f4a8bc782c56dcfdf6b9d75d))
+
+## [2.1.10](https://github.com/chris-yyau/busdriver/compare/v2.1.9...v2.1.10) (2026-09-04)
+
+
+### Bug Fixes
+
+* **review:** close the shadowable-environment class in the trusted review chain ([#803](https://github.com/chris-yyau/busdriver/issues/803)) ([#810](https://github.com/chris-yyau/busdriver/issues/810)) ([bdb9b77](https://github.com/chris-yyau/busdriver/commit/bdb9b7769d93ce081159cf7a344377d213341c62)), closes [811/#813](https://github.com/chris-yyau/busdriver/issues/813) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#817](https://github.com/chris-yyau/busdriver/issues/817) [#548](https://github.com/chris-yyau/busdriver/issues/548)
+
 ## [2.1.9](https://github.com/chris-yyau/busdriver/compare/v2.1.8...v2.1.9) (2026-08-31)
 
 

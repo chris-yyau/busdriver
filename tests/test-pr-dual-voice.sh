@@ -22,7 +22,11 @@
 
 # SC2312: assertions read `ok "$(fn)" ...` throughout — the masked-return caveat
 # does not apply (the helpers only compare + count), so disable it file-wide.
-# shellcheck disable=SC2312
+# SC2016: this file is full of DELIBERATE single-quoted literals — stub script
+#         bodies whose `$VAR`s belong to the stub at runtime, perl module
+#         sources, and grep patterns that search for literal shell text in
+#         run-review-loop.sh. Expansion is never wanted in any of them.
+# shellcheck disable=SC2312,SC2016
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 REPO="$(pwd)"
@@ -130,8 +134,60 @@ if { [ -n "${STUB_FAIL_FIRST:-}" ] || [ -n "${STUB_BAD_FIRST:-}" ]; } && [ -n "$
     exit 0
   fi
 fi
+# STUB_SILENT=1: exit 0 having written nothing. An empty capture is a TRANSIENT
+# condition the retry loop exists for — it must NOT be treated as terminal.
+if [ -n "${STUB_SILENT:-}" ]; then
+  if [ -n "${STUB_COUNT_FILE:-}" ]; then
+    n=$(cat "$STUB_COUNT_FILE" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT_FILE"
+  fi
+  exit 0
+fi
 [ "${STUB_RC:-0}" != "0" ] && exit "${STUB_RC}"
+# STUB_ORPHAN=N: leave a TERM-ignoring descendant holding the CAPTURED STDOUT for
+# N seconds and then exit normally. Models a `claude` that spawns a helper which
+# outlives it: the wrapper's timer is cancelled when the leader is reaped, so
+# nothing bounds the straggler — only the capture mechanism decides whether the
+# caller is still blocked on it. (SIG_IGN survives exec, so the sleep keeps it.)
+if [ -n "${STUB_ORPHAN:-}" ]; then
+  ( trap '' TERM; exec sleep "$STUB_ORPHAN" ) &
+  # Record the pid so a caller can assert the straggler was REAPED, not merely
+  # outlived. `exec` keeps the subshell's pid, so $! names the sleep itself.
+  if [ -n "${STUB_ORPHAN_PID_FILE:-}" ]; then echo $! > "$STUB_ORPHAN_PID_FILE"; fi
+fi
+# STUB_ORPHAN_APPEND=N: a descendant that not only holds the captured stdout but
+# keeps WRITING to it for N seconds. Strictly nastier than STUB_ORPHAN: against a
+# regular file an unbounded reader can be kept behind a receding EOF forever, so
+# this is what proves the read takes a bounded snapshot rather than merely that
+# the capture is a file.
+if [ -n "${STUB_ORPHAN_APPEND:-}" ]; then
+  ( trap '' TERM
+    # BOUNDED write, then hold. The capture file is unlinked while this fd is
+    # still open, so an unbounded writer would keep allocating blocks that
+    # nothing can reclaim until it exits — gigabytes of CI temp disk for no
+    # extra coverage. A few MiB is enough to model "the straggler wrote into
+    # the capture"; holding the descriptor afterwards is the rest of the model.
+    head -c 2097152 /dev/zero | tr '\0' 'Y'
+    exec sleep "$STUB_ORPHAN_APPEND" ) &
+fi
 python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"type":"result","subtype":"success","is_error":os.environ.get("STUB_ERR")=="1","result":os.environ.get("STUB_VERDICT","")}))'
+# STUB_PAD=1: follow a COMPLETE valid envelope with padding past the 4 MiB
+# ceiling. A reader that truncates at the cap would parse the valid prefix as a
+# clean PASS; the capture must be rejected instead.
+if [ -n "${STUB_PAD:-}" ]; then
+  # Count this dispatch too, so a caller can assert how many times an oversize
+  # capture was produced (it must be terminal, not retried).
+  if [ -n "${STUB_COUNT_FILE:-}" ]; then
+    n=$(cat "$STUB_COUNT_FILE" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT_FILE"
+  fi
+  head -c 4259840 /dev/zero | tr '\0' ' '
+fi
+# STUB_NULPAD=1: follow a COMPLETE valid envelope with NUL bytes, staying UNDER
+# the size ceiling so the oversize branch cannot be what rejects it. This is the
+# shape bash silently normalized away: a command substitution DROPS NULs, so the
+# capture came back as the bare valid prefix and parsed as a clean PASS.
+if [ -n "${STUB_NULPAD:-}" ]; then
+  head -c 4096 /dev/zero
+fi
 STUB
   chmod +x "$STUBDIR/claude"
 }
@@ -285,6 +341,25 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   ok "$?" "1" "real timeout fails closed"
   ok "$(has_art)" "n" "no artifact on timeout"
   ok "$(cat "$CF" 2>/dev/null)" "1" "timeout NOT retried — exactly 1 dispatch (was 3)"
+  # The timeout must report ITS OWN diagnostic. When oversize and empty shared a
+  # branch this said "captured envelope exceeded ..." instead, because a killed
+  # dispatch leaves an empty capture — the message users need, never printed.
+  rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+  _TOERR=$(STUB_SLEEP=20 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=2 \
+    LITMUS_PR_BACKSTOP_RETRIES=0 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    bash "$RL" --run-backstop 2>&1 >/dev/null)
+  ok "$(printf '%s' "$_TOERR" | grep -c 'timed out')" "1" "timeout reports the timeout diagnostic"
+  ok "$(printf '%s' "$_TOERR" | grep -c 'exceeded')" "0" "timeout is not misreported as an oversize capture"
+  # BOTH conditions at once: the stub pads past the ceiling and then hangs. The
+  # timeout is the actionable diagnosis (split the PR / raise the budget), so it
+  # must win; reporting "oversize envelope" would send the operator after the
+  # wrong thing entirely.
+  rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+  _BOTHERR=$(STUB_PAD=1 STUB_SLEEP=20 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=2 \
+    LITMUS_PR_BACKSTOP_RETRIES=0 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    bash "$RL" --run-backstop 2>&1 >/dev/null)
+  ok "$(printf '%s' "$_BOTHERR" | grep -c 'timed out')" "1" "oversize AND timed out reports the TIMEOUT"
+  ok "$(has_art)" "n" "no artifact when both conditions fire"
 else
   echo "  SKIP  no timeout/gtimeout on PATH — cannot exercise the real 124 path"
 fi
@@ -412,10 +487,8 @@ ok "$(grep -c 'command -v timeout' "$RL")" "0" "wrapper resolution does not cons
 # false PASS. Drives the script's OWN _TO construction (extracted, not
 # restated) so it cannot drift, and is platform-independent — unlike the live
 # integration case below, which only runs where /usr/bin carries no `timeout`.
-# shellcheck disable=SC2016  # literal search string; expansion is NOT wanted
 _TO_PERL_LINE=$(grep -F '_TO=("${_BS_PERL_ENVSTRIP[@]}"' "$RL" | head -1)
 ok "$([[ -n "$_TO_PERL_LINE" ]] && echo y || echo n)" "y" "perl arm is built through the env-strip prefix"
-# shellcheck disable=SC2016  # literal search string; expansion is NOT wanted
 _ENVSTRIP_LINE=$(grep -F '_BS_PERL_ENVSTRIP=(' "$RL" | head -1)
 for _v in PERL5OPT PERL5LIB PERLLIB; do
   ok "$(printf '%s' "$_ENVSTRIP_LINE" | grep -c -- "-u $_v")" "1" "env-strip removes $_v"
@@ -458,6 +531,197 @@ else
   ok "$(cat "$CF" 2>/dev/null)" "1" "perl arm: timeout NOT retried — exactly 1 dispatch"
   ok "$([[ "$_el" -lt 40 ]] && echo y || echo n)" "y" "perl arm bounded the 60s hang (took ${_el}s)"
 fi
+
+echo "== 9m. --run-backstop: a straggler holding stdout cannot outrun the budget (#823) =="
+# The wrapper stops supervising the moment the direct child is reaped, so a
+# descendant that `claude` leaves behind is on no clock at all. While the capture
+# went through a PIPE, the surrounding command substitution stayed blocked until
+# that descendant closed its end — the dispatch ran for the straggler's lifetime,
+# not the budget, and a long enough one puts the call past the harness cap with no
+# verdict. Capturing to a regular file removes the wait: the attempt ends when the
+# leader ends. Both the exit status and the ELAPSED time discriminate (pre-fix this
+# blocked for the full STUB_ORPHAN window).
+rm -f "$BS"; seed_codex_lead
+# Baseline the capture temps rather than asserting an absolute 0: an unrelated
+# leftover in a shared TMPDIR would otherwise fail a run that leaked nothing.
+# Counts BOTH per-attempt temps — the capture AND the prompt file (the latter is
+# newer than this check). `find` errors are not discarded into a silent `0`: a
+# find that cannot run must fail the assertion, not report "nothing leaked".
+# (`-maxdepth` is fine on BSD find as well as GNU — verified here.)
+_bs_tmps() {
+  local _out _rc
+  _out=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'busdriver-backstop-env-*' -o -name 'busdriver-backstop-prompt-*' 2>/dev/null); _rc=$?
+  # A find that could not run must NOT report "0 leaked". Emit a non-numeric
+  # sentinel: the baseline assertion below rejects it, so a broken scan fails
+  # visibly instead of comparing 0 with 0 and passing without inspecting anything.
+  if [[ "$_rc" -ne 0 ]]; then printf 'SCAN_FAILED'; return 0; fi
+  printf '%s' "$_out" | grep -c . | tr -d ' '
+}
+_tmp0=$(_bs_tmps)
+ok "$([[ "$_tmp0" =~ ^[0-9]+$ ]] && echo y || echo n)" "y" "temp-file scan actually ran (baseline is a count)"
+_t0=$(date +%s)
+STUB_ORPHAN=20 LITMUS_PR_BACKSTOP_TIMEOUT=10 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+_rc=$?; _el=$(( $(date +%s) - _t0 ))
+ok "$_rc" "0" "verdict captured even though the CLI left a descendant behind"
+ok "$(art_status "$BS")" "PASS" "PASS artifact written despite the straggler"
+ok "$([[ "$_el" -lt 10 ]] && echo y || echo n)" "y" "attempt ended with the leader, not the 20s straggler (took ${_el}s)"
+# And the capture file must not be left behind in TMPDIR -- the straggler's fd
+# keeps the inode alive for its own writes, but the path is unlinked.
+ok "$(_bs_tmps)" "$_tmp0" "no capture temp leaked"
+# ...and the straggler must be REAPED, not merely outlived. Holding the capture
+# descriptor open is what lets it keep writing to an inode nothing can reclaim,
+# and a shell cannot revoke an fd it has handed out — so the only available bound
+# is ending the process. Signalled as a GROUP: the writer is usually a grandchild.
+rm -f "$BS"; seed_codex_lead
+_PIDF="$WORK/orphan.pid"; rm -f "$_PIDF"
+STUB_ORPHAN=60 STUB_ORPHAN_PID_FILE="$_PIDF" LITMUS_PR_BACKSTOP_TIMEOUT=10 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+_OPID=$(cat "$_PIDF" 2>/dev/null)
+ok "$([[ -n "$_OPID" ]] && echo y || echo n)" "y" "stub recorded the straggler pid"
+ok "$(kill -0 "$_OPID" 2>/dev/null && echo alive || echo gone)" "gone" "TERM-ignoring straggler is reaped, not left running"
+# Non-vacuity: this straggler shape genuinely survives a plain TERM, so the
+# assertion above is proving the KILL escalation and not a self-exiting sleep.
+( trap '' TERM; exec sleep 30 ) & _CTLPID=$!
+# Settle before signalling. Without it the TERM can arrive before the subshell has
+# installed its handler, the straggler dies on the default disposition, and the
+# control reports "gone" — failing for a reason that has nothing to do with the
+# property under test. (The stub's straggler has no such race: it prints its
+# envelope through python3 afterwards, which is far longer than the trap takes.)
+sleep 0.5
+kill -TERM "$_CTLPID" 2>/dev/null
+sleep 1
+ok "$(kill -0 "$_CTLPID" 2>/dev/null && echo alive || echo gone)" "alive" "control: a TERM-ignoring straggler DOES survive a plain TERM"
+kill -9 "$_CTLPID" 2>/dev/null; wait "$_CTLPID" 2>/dev/null || true
+
+echo "== 9n. --run-backstop: an APPENDING straggler cannot stall the read (#823) =="
+# 9m's straggler only HOLDS the descriptor; moving the capture to a file is enough
+# for that. This one keeps WRITING, which is the harder case: the read happens
+# after the wrapper's timer is gone, so an unbounded `cat` sits behind a receding
+# EOF — past the budget, and consuming unbounded disk and memory on the way. The
+# read must take a bounded snapshot. Asserted on WALL CLOCK, because that is the
+# property that actually failed.
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+_t0=$(date +%s)
+STUB_ORPHAN_APPEND=20 LITMUS_PR_BACKSTOP_TIMEOUT=10 LITMUS_PR_BACKSTOP_RETRIES=0 \
+  STUB_COUNT_FILE="$CF" STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+_rc=$?; _el=$(( $(date +%s) - _t0 ))
+# BOUNDED is the property under test; the VERDICT here is correctly refused. An
+# appending descendant interleaves its bytes with the leader's, and nothing can
+# separate them after the fact — so the envelope no longer parses and the run
+# fails closed. That is the right direction for a gate: a capture that an
+# uncontrolled process wrote into must never become a PASS artifact. Contrast
+# 9m, where the straggler only HOLDS the descriptor, the capture stays clean,
+# and the verdict is accepted.
+# Smoke bound only — be honest about what it proves. `cat` on a REGULAR file
+# stops at the EOF it reaches (unlike a pipe), so a shell-loop appender does not
+# stall it and this assertion would pass pre-fix too. The discriminating guards
+# are the structural ones below plus the byte check that follows: measured
+# against a FAST appender (dd from /dev/zero), an unbounded read pulled 4 GB
+# into a shell variable in 21s where the bounded snapshot took 4 MiB in 1s.
+ok "$([[ "$_el" -lt 18 ]] && echo y || echo n)" "y" "read ended with the leader, not the 20s appender (took ${_el}s)"
+# NO assertion on the verdict here — it is genuinely race-dependent. Whether the
+# straggler's bytes land before or after the snapshot decides whether the
+# envelope still parses, and BOTH outcomes are correct: a clean snapshot is a
+# real PASS, a corrupted one fails closed. Asserting either would flake. The
+# deterministic soundness case is 9o, where the padding is emitted by the leader
+# itself and the outcome cannot race. What 9n owns is BOUNDEDNESS, above.
+# The cap must not be overridable from the environment — it is the bound itself.
+ok "$(grep -c '_BS_MAX_ENVELOPE=4194304' "$RL")" "1" "envelope ceiling is a constant, not a tunable"
+# The DISK bound is separate from the memory bound and must exist too: the
+# envelope ceiling caps what is read, RLIMIT_FSIZE caps what can be written by a
+# descendant we cannot revoke. It must sit ABOVE the envelope ceiling, or it
+# could kill a capture that would have been accepted.
+# No RLIMIT_FSIZE here, by decision rather than omission: `ulimit -f` is per-FILE,
+# so it never bounded total disk — it bounded one file we already reject when
+# oversize — while applying to EVERY file the CLI writes, so a legitimate session
+# transcript past the ceiling would take SIGXFSZ and fail a healthy review.
+# Pinned so it cannot come back as an apparent hardening.
+ok "$(grep -c '^[^#]*ulimit -f' "$RL")" "0" "no file-size rlimit on the dispatch"
+# O(1) size query, never a scanning read: `wc -c` is not guaranteed byte-bounded,
+# and where it is not fstat-optimized a fast appender could keep it scanning.
+ok "$(grep -c 'wc -c < "\$_bs_out"' "$RL")" "0" "capture size does not come from a scanning wc"
+# The dispatch must be backgrounded and waited on — that is the only way the
+# wrapper's pid survives as a process-GROUP handle for the reap.
+ok "$(grep -c 'wait "\$_bs_pid"' "$RL")" "1" "dispatch is waited on by pid"
+ok "$(grep -c 'kill -KILL -- "-\$_bs_pid"' "$RL")" "1" "reap escalates to a group KILL"
+# The perl arm creates its group inside the fork()ed child, so its pgid is
+# invisible to the shell — it must carry the equivalent reap in its own body.
+ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"
+# The stdin side must be a file too. A `printf | claude` pipeline puts the writer
+# outside the wrapper, and a descendant holding the read end blocks it forever on
+# any prompt past the pipe buffer — the same stall, entered from the other end.
+ok "$(grep -c "printf '%s' \"\$REVIEW_PROMPT\" | " "$RL")" "0" "no pipeline feeds the dispatch"
+ok "$(grep -c '< "\$_bs_in" > "\$_bs_out"' "$RL")" "1" "dispatch reads stdin from a file and writes stdout to a file"
+# Behavioural, standalone: a reader that exits without draining, leaving a
+# descendant on the read end, blocks a PIPE writer indefinitely while a file
+# redirect is unaffected. Proves the premise rather than asserting the shape.
+_BIGIN=$(mktemp -t bigprompt-XXXXXX)
+head -c 1048576 /dev/zero | tr '\0' 'P' > "$_BIGIN"
+_HOLDER="$WORK/holder.sh"
+# The descendant must EXPLICITLY re-attach the pipe: bash sends a background
+# job's stdin to /dev/null unless told otherwise, so a plain `( … ) &` holds
+# nothing and the control would pass for the wrong reason (it did, first try).
+printf '#!/bin/bash\nexec 9<&0\n( exec sleep 10 ) 0<&9 &\nexit 0\n' > "$_HOLDER"; chmod +x "$_HOLDER"
+_t0=$(date +%s); ( cat "$_BIGIN" | "$_HOLDER" ) >/dev/null 2>&1; _pipe_el=$(( $(date +%s) - _t0 ))
+_t0=$(date +%s); "$_HOLDER" < "$_BIGIN" >/dev/null 2>&1;      _file_el=$(( $(date +%s) - _t0 ))
+ok "$([[ "$_pipe_el" -ge 5 ]] && echo y || echo n)" "y" "control: a held pipe DOES block the writer (${_pipe_el}s)"
+ok "$([[ "$_file_el" -lt 5 ]] && echo y || echo n)" "y" "a file redirect does not block (${_file_el}s)"
+rm -f "$_BIGIN"
+ok "$(grep -c 'ENVELOPE=$(cat ' "$RL")" "0" "no unbounded cat of the capture file remains"
+# The MEMORY bound, asserted on bytes rather than wall clock — at test-safe sizes
+# time does not discriminate, but the byte ceiling always does. The cap is read
+# out of the script so the two cannot drift.
+_CAP=$(grep -o '_BS_MAX_ENVELOPE=[0-9]*' "$RL" | head -1 | cut -d= -f2)
+ok "$([[ -n "$_CAP" && "$_CAP" -gt 0 ]] && echo y || echo n)" "y" "envelope cap is readable from the script"
+if [[ -n "$_CAP" && "$_CAP" -gt 0 ]]; then
+  _BF="$WORK/oversize-capture"
+  head -c "$(( _CAP + 65536 ))" /dev/zero | tr '\0' 'X' > "$_BF"
+  _WHOLE=$(wc -c < "$_BF" | tr -d '[:space:]')
+  _SZ="$_WHOLE"; [[ "$_SZ" -gt "$_CAP" ]] && _SZ="$_CAP"
+  _READ=$(head -c "$_SZ" "$_BF" | wc -c | tr -d '[:space:]')
+  ok "$([[ "$_WHOLE" -gt "$_CAP" ]] && echo y || echo n)" "y" "control: the capture really is larger than the cap"
+  ok "$([[ "$_READ" -le "$_CAP" ]] && echo y || echo n)" "y" "the read never exceeds the cap"
+  rm -f "$_BF"
+fi
+
+echo "== 9o. --run-backstop: an oversize capture is REJECTED, not truncated (#823) =="
+# Truncating at the ceiling is unsound, not merely lossy: the first N bytes can be
+# a COMPLETE valid envelope followed by more content, so a truncating reader would
+# parse a clean PASS and silently discard whatever else was written. The stub emits
+# a valid envelope and then pads far past the cap; the run must fail closed.
+rm -f "$BS"; seed_codex_lead
+STUB_PAD=1 LITMUS_PR_BACKSTOP_RETRIES=0 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "oversize capture fails closed"
+ok "$(has_art)" "n" "no PASS artifact from a valid-prefix oversize capture"
+# The NUL variant, UNDER the ceiling — so the size branch cannot be what rejects
+# it. Bash drops NULs from a command substitution, so routing the capture through
+# a shell variable turned "valid envelope + NUL padding" back into a clean PASS.
+# Piping the file straight into the parser is what makes this fail closed.
+rm -f "$BS"; seed_codex_lead
+STUB_NULPAD=1 LITMUS_PR_BACKSTOP_RETRIES=0 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "NUL-padded capture fails closed"
+ok "$(has_art)" "n" "no PASS artifact from a NUL-padded capture"
+ok "$(grep -c 'printf .%s. "\$ENVELOPE" | python3' "$RL")" "0" "capture is not round-tripped through a shell variable"
+# An oversize capture must be TERMINAL: retrying is a fresh paid dispatch that can
+# leave another growing capture behind, multiplying the condition the ceiling
+# limits. With retries ALLOWED, exactly one dispatch must still happen.
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+STUB_PAD=1 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_RETRIES=2 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "oversize capture still fails closed with retries available"
+ok "$(cat "$CF" 2>/dev/null)" "1" "oversize is terminal — exactly 1 dispatch, not 3"
+# ...but an EMPTY capture is TRANSIENT and must still be retried. Sharing a branch
+# with oversize aborted it on attempt 1 with retries unused, and stole the
+# timeout's diagnostic in the case that produces it.
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+STUB_SILENT=1 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_RETRIES=2 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "an empty capture still fails closed once retries are exhausted"
+ok "$(cat "$CF" 2>/dev/null)" "3" "empty is TRANSIENT — retried to 3 dispatches, not terminal at 1"
 
 echo "== 10. --run-backstop: no fresh Codex-lead ⇒ fail-closed (dispatch skipped) =="
 rm -f "$BS" .claude/pr-codex-lead.local.json

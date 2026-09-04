@@ -425,12 +425,21 @@ _diff_rc_file=""
 # exit under `set -e` before the in-flow cleanup, leaking private temp files.
 EXCL_POLICY_PINNED_TMP=""
 EXCL_LOGIC_PINNED_TMP=""
+# Same blanking, same reason, for the backstop capture file: it is created inside the
+# retry loop and several guarded exits (timeout, budget spent) sit between its
+# creation and its explicit removal. Same for the prompt file handed to stdin.
+_bs_out=""
+_bs_in=""
+# Paths whose unlink FAILED. They cannot be left in $_bs_out/$_bs_in: those are
+# reassigned by the next attempt's mktemp, which would drop the un-removed path
+# and leak a private prompt or captured response past the trap. Append instead.
+_bs_leaked=()
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap 'review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 
 # #790: every marker publication stamps a fresh generation token beside the marker.
 # The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
@@ -1120,8 +1129,21 @@ PROMPT_EOF
       alarm $ARGV[0];
       waitpid($pid, 0);
       alarm 0;
-      if ($? & 127) { exit(128 + ($? & 127)); }
-      exit($? >> 8);
+      my $st = $?;
+      # Same reap as the coreutils arm, but from in here: the new process group
+      # belongs to the fork()ed child, so its pgid is invisible to the calling
+      # shell. Runs on the NORMAL exit path -- the ALRM handler above already
+      # escalates on the timeout path. `kill 0` first so a clean run signals
+      # nothing. $? is snapshotted BEFORE the kills, so the status reported
+      # below is the one waitpid saw and never one these kills disturbed.
+      # (No apostrophes in here: the whole body is a single-quoted shell string.)
+      if (kill(0, -$pid)) {
+        kill "TERM", -$pid;
+        for (1 .. 10) { last unless kill(0, -$pid); select(undef, undef, undef, 0.2); }
+        kill "KILL", -$pid;
+      }
+      if ($st & 127) { exit(128 + ($st & 127)); }
+      exit($st >> 8);
   '
   _TO=()
 
@@ -1166,8 +1188,14 @@ PROMPT_EOF
   if [[ "$BACKSTOP_RETRIES" -gt 5 ]]; then BACKSTOP_RETRIES=5; fi
   if [[ "$BACKSTOP_RETRY_DELAY" -gt 120 ]]; then BACKSTOP_RETRY_DELAY=120; fi
 
+  # Hard ceiling on the captured envelope, in bytes. Not a tunable: it exists so
+  # the post-dispatch read is bounded even against a straggler writing as fast as
+  # it can, and a repo-injectable override would hand that bound straight back.
+  # 4 MiB is far above any real `claude -p --output-format json` envelope.
+  _BS_MAX_ENVELOPE=4194304
   PAYLOAD=""
   _bs_attempt=0
+  _bs_oversize=0
   # The WHOLE sequence -- every attempt plus every backoff sleep -- is bounded to
   # ~$TIMEOUT_S: each attempt's wrapper gets the REMAINING budget (the full budget
   # on the first, set directly so a sub-second tick cannot zero out the only
@@ -1180,9 +1208,58 @@ PROMPT_EOF
   _bs_start=$(date +%s)
   _bs_remaining="$TIMEOUT_S"
   while : ; do
-    # Rebuild the wrapper with THIS attempt's share of the budget. A static _TO
-    # would leave every attempt on the full window and make the arithmetic below
-    # cosmetic -- the exact defect #823 reports.
+    # Both temp files are created BEFORE the wrapper is built, deliberately. The
+    # wrapper is stamped with $_bs_remaining, so any unbudgeted work between the
+    # two is wall-clock the attempt gets on top of its share. Setup is only
+    # milliseconds, but ordering it correctly costs nothing and removes the
+    # question. Neither file's creation is inside the budget it precedes.
+    #
+    # Capture to a per-attempt FILE, never through a pipe. A command substitution
+    # blocks until EOF on the pipe -- i.e. until the LAST writer closes it -- but
+    # the wrapper's timer is cancelled when the LEADER exits. So a `claude` that
+    # exits while leaving a descendant holding the captured stdout leaves the
+    # outer shell waiting for that descendant with no clock on it at all: the
+    # dispatch outruns $TIMEOUT_S and the harness kills the call with no verdict.
+    # That is #823's failure with a different trigger, and neither wrapper arm can
+    # fix it (both stop supervising once the direct child is reaped). A regular
+    # file has no EOF to wait for, so the attempt ends exactly when the leader
+    # ends and the budget arithmetic below stays true. A FRESH file per attempt,
+    # not one reused across the loop: a straggler from attempt N still holds its
+    # fd, and must not be able to write into attempt N+1's capture.
+    _bs_out=$(mktemp -t busdriver-backstop-env-XXXXXX) || {
+      echo "❌ backstop: cannot create a capture file in ${TMPDIR:-/tmp} — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    # Feed stdin from a FILE too, not a pipe -- the mirror image of the capture
+    # above, and blocking for the same reason. `printf ... | claude` puts the
+    # writer OUTSIDE the timeout wrapper: if the prompt exceeds the pipe buffer
+    # (~64 KiB, which a real review prompt always does) and `claude` exits
+    # without draining it while a descendant keeps the read end open, `printf`
+    # blocks on a pipe nobody is reading and bash waits for it after the timed
+    # leader is gone. The attempt then outruns $TIMEOUT_S with no clock on it --
+    # #823's failure once more, entered from the other end. A regular file has no
+    # writer to block, so the pipeline disappears entirely.
+    _bs_in=$(mktemp -t busdriver-backstop-prompt-XXXXXX) || {
+      echo "❌ backstop: cannot create a prompt file in ${TMPDIR:-/tmp} — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    printf '%s' "$REVIEW_PROMPT" > "$_bs_in" || {
+      if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
+      _bs_in=""
+      echo "❌ backstop: cannot write the prompt file — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    # Wrapper built HERE, after setup, and stamped with a FRESHLY recomputed
+    # remaining budget. Reusing the value computed back in the retry branch would
+    # hand the attempt its share PLUS however long setup took -- small, but it is
+    # exactly the "budget plus extra" shape #823 is about, so measure it rather
+    # than argue about the size. A static _TO would be worse still: every attempt
+    # on the full window, making the arithmetic cosmetic.
+    _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+    if [[ "$_bs_remaining" -lt 1 ]]; then
+      echo "❌ backstop: budget (${TIMEOUT_S}s) spent before attempt $((_bs_attempt + 1)) could start — no verdict (fail-closed)" >&2
+      exit 1
+    fi
     _TO=()
     if [[ "$_TO_MODE" == "coreutils" ]]; then
       _TO=("$_TO_BIN" -k "$_BS_KILL_AFTER" "$_bs_remaining")
@@ -1190,7 +1267,14 @@ PROMPT_EOF
       _TO=("${_BS_PERL_ENVSTRIP[@]}" "$_TO_BIN" -e "$_BS_PERL_TO" -- "$_bs_remaining")
     fi
     set +e
-    ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
+    # Dispatched in the BACKGROUND and immediately waited on, purely so the
+    # wrapper's pid survives as a process-GROUP handle. `timeout` puts itself and
+    # its child in a NEW process group whose pgid == its own pid (measured), and
+    # descendants inherit it -- so once the leader is reaped, `-$_bs_pid` names
+    # exactly the tree it left behind and nothing else. Foreground execution
+    # gives us no such handle. Blocking semantics are unchanged: `wait` returns
+    # the same status the foreground call did, including 124/137.
+    "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
       --allowedTools "Read,Grep,Glob" \
@@ -1198,19 +1282,139 @@ PROMPT_EOF
       --setting-sources user \
       --strict-mcp-config \
       --append-system-prompt "$AGENT_SYS" \
-      --output-format json 2>/dev/null)
+      --output-format json < "$_bs_in" > "$_bs_out" 2>/dev/null &
+    _bs_pid=$!
+    wait "$_bs_pid"
     RC=$?
+    # Reap what the leader left behind. This is what bounds the disk a straggler
+    # can consume: unlinking the capture below does NOT revoke the descriptor a
+    # descendant inherited, and POSIX gives a shell no way to revoke one it has
+    # already handed out -- but it CAN end the process holding it.
+    #
+    # Signals a GROUP, not a pid: the writer is typically a grandchild, and the
+    # direct child is already reaped by the time we get here.
+    #
+    # `kill -0` first, so a healthy dispatch with nothing left alive sends no
+    # signals and adds no latency; only a real straggler pays the grace. TERM
+    # before KILL so a descendant mid-flush of the CLI's own transcript gets to
+    # finish -- that collateral is what made the RLIMIT_FSIZE attempt below
+    # strictly negative, and it must not be reintroduced here in another shape.
+    #
+    # It cannot reach THIS script's own group: a group with pgid == the wrapper's
+    # pid can only be one the wrapper created, because the script's group leader
+    # and the wrapper are two distinct LIVE pids and no two live processes share
+    # a pid.
+    #
+    # Stated exactly rather than absolutely: `wait` reaps the wrapper, which
+    # RELEASES its pid, so between that line and the probe a recycled pid could
+    # in principle name a stranger's group. The window is microseconds and needs
+    # the kernel to both reallocate that exact pid and have its owner become a
+    # group leader inside it; every tool that reaps this way (GNU `timeout`
+    # itself included) carries the same residual, and closing it needs a handle
+    # POSIX gives no shell. Named here so the guard is not read as stronger than
+    # it is. On an arm that creates no such group the probe finds
+    # nothing and this is a no-op -- which is the case for the perl arm, where
+    # the fork()ed CHILD calls setpgrp, so the new pgid is the child's pid rather
+    # than perl's; that arm carries the equivalent reap inside $_BS_PERL_TO.
+    if kill -0 -- "-$_bs_pid" 2>/dev/null; then
+      kill -TERM -- "-$_bs_pid" 2>/dev/null || true
+      for _bs_i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 -- "-$_bs_pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      kill -KILL -- "-$_bs_pid" 2>/dev/null || true
+    fi
+    _bs_pid=""
+    if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
+    _bs_in=""
+    # Read a BOUNDED SNAPSHOT, never an open-ended `cat`. This read happens after
+    # the wrapper's timer is already gone, so a straggler that keeps APPENDING can
+    # move EOF faster than a reader reaches it: `cat` would not terminate, would
+    # outrun $TIMEOUT_S exactly as the pipe did, and would consume unbounded disk
+    # and memory on the way. Snapshot the size the leader left behind and read at
+    # most that many bytes, hard-capped -- a real envelope is a few KB, and past
+    # the cap it is not a verdict the strict writer would accept anyway. A
+    # truncated or empty read is not a valid envelope, so it fails closed through
+    # the existing parser path rather than needing a branch of its own.
+    # `stat`, not `wc -c`: the size must come from an O(1) inode query. `wc -c` is
+    # not guaranteed to be byte-bounded — where it is not fstat-optimized it READS
+    # the file, and a fast appender could keep it scanning, recreating the very
+    # post-timeout stall this change exists to prevent. Both spellings, GNU then
+    # BSD, the same dual form used elsewhere in this repo.
+    _bs_size=$(stat -c %s "$_bs_out" 2>/dev/null || stat -f %z "$_bs_out" 2>/dev/null || echo 0)
+    _bs_size=$(printf '%s' "$_bs_size" | tr -d '[:space:]')
+    case "$_bs_size" in ''|*[!0-9]*) _bs_size=0 ;; esac
+    # OVERSIZE and EMPTY are different conditions and must not share a branch.
+    # Oversize is terminal; EMPTY is transient — a `claude` killed by the timeout
+    # normally leaves nothing behind, and the loop header lists an empty response
+    # among the noise it deliberately retries. Collapsing them made an empty
+    # capture abort on attempt 1 with retries unused, and made the timeout's own
+    # diagnostic dead code in the very case it exists for.
+    if [[ "$_bs_size" -gt "$_BS_MAX_ENVELOPE" ]]; then
+      # REJECT an oversize capture; never TRUNCATE it. Truncating is not merely
+      # lossy, it is unsound: the first N bytes can be a COMPLETE, valid envelope
+      # followed by more bytes, so the parser would see a clean PASS while
+      # whatever else was written into the capture is silently discarded. A
+      # capture bigger than the ceiling is not a verdict — refuse it and let the
+      # existing empty-envelope path fail closed.
+      _bs_have_envelope=0
+      _bs_oversize=1
+    elif [[ "$_bs_size" -le 0 ]]; then
+      # Empty: fall through to the ordinary parser path (_PARSE_RC=90), which
+      # classifies it as a transient dispatch failure and retries it.
+      _bs_have_envelope=0
+      _bs_oversize=0
+    else
+      _bs_have_envelope=1
+      _bs_oversize=0
+    fi
     set -e
+    # Unlink immediately: nothing is left in TMPDIR and the guarded exits below
+    # cannot leak it. (The EXIT trap covers the window before this line.)
+    #
+    # RESIDUAL, stated plainly rather than implied: unlinking does NOT revoke an
+    # inherited descriptor, and POSIX gives a shell no way to revoke one it has
+    # already handed out. What bounds a straggler's writes is therefore the group
+    # reap ABOVE, which ends the process instead of revoking its fd -- by the
+    # time this line runs, the tree the wrapper created is gone.
+    #
+    # What survives that is narrow, and named rather than implied: (a) the
+    # sub-second window between the leader exiting and the reap completing, and
+    # (b) a descendant that removed ITSELF from the group with its own
+    # setsid/setpgid, which no group signal can reach. Neither can influence the
+    # VERDICT -- the envelope was snapshotted above, and an oversize capture is
+    # rejected outright -- so both are disk-consumption only, and (b) is the same
+    # trust question as a planted `claude` returning a forged PASS (#789).
+    #
+    # An RLIMIT_FSIZE (`ulimit -f`) was tried here and REMOVED, deliberately;
+    # do not reintroduce it. It cannot deliver what it appears to: the limit is
+    # PER FILE, not per process or per tree, so it never bounded total disk in
+    # the first place -- it bounded one file we already reject when oversize.
+    # Meanwhile it applies to EVERY file the CLI and its descendants write, so a
+    # legitimate session transcript or cache past the ceiling takes SIGXFSZ and
+    # fails the gate on a healthy run. Strictly negative: no real bound, and a
+    # new way for a good review to fail. The group reap above is what actually
+    # bounds the writer, and it does so without touching a single file the CLI
+    # writes legitimately.
 
     # Extract the agent's verdict text from the --output-format json envelope, then
     # reshape to EXACTLY {status, issues, model, reviewed_diff_hash} for the strict
     # writer (which rejects unknown top-level fields). model = the model we
     # dispatched (opus). Distinct exit codes drive per-mode diagnostics + retry.
+    #
+    # The capture is piped STRAIGHT from the file into the parser. It used to go
+    # through a shell variable, which cannot carry it faithfully: bash silently
+    # DROPS NUL bytes from a command substitution (it warns, to a stderr nobody
+    # reads), so a capture of "valid envelope + NUL padding" was normalized back
+    # into the valid prefix and parsed as a clean PASS — exactly the extra content
+    # the size check above exists to refuse. Bytes now reach python untouched, so
+    # anything past a complete envelope makes json.loads fail and the run fails
+    # closed. It also keeps a multi-MiB capture out of the shell's memory.
     _PARSE_RC=0
-    if [[ "$RC" -eq 0 && -n "$ENVELOPE" ]]; then
+    if [[ "$RC" -eq 0 && "$_bs_have_envelope" -eq 1 ]]; then
       set +e
       # shellcheck disable=SC2016  # python template is a literal; values via argv
-      PAYLOAD=$(printf '%s' "$ENVELOPE" | python3 -c '
+      PAYLOAD=$(head -c "$_bs_size" "$_bs_out" 2>/dev/null | python3 -c '
 import json, sys, re
 try:
     # strict=False so a control character INSIDE a JSON string value (e.g. the CLI
@@ -1251,6 +1455,13 @@ print(json.dumps(out))
     else
       _PARSE_RC=90  # dispatch failure (rc!=0 or empty output) — never reached parser
     fi
+    # Always clear the slot, but remember a FAILED unlink separately. Keeping the
+    # path in $_bs_out instead would lose it the moment the next attempt's mktemp
+    # reassigns the variable — the trap would then clean the new file and leak
+    # the old one. (An rm of our own file in our own TMPDIR effectively cannot
+    # fail; this is the cheap correct handling of the case where it does.)
+    if ! rm -f "$_bs_out" 2>/dev/null; then _bs_leaked+=("$_bs_out"); fi
+    _bs_out=""
 
     # A syntactically valid verdict object was captured → stop retrying. The writer
     # below is TERMINAL: only TRANSIENT dispatch/parse failures are retried here.
@@ -1280,6 +1491,21 @@ print(json.dumps(out))
       _bs_how="timed out"
       if [[ "$RC" -eq 137 ]]; then _bs_how="timed out and had to be force-killed (SIGTERM ignored)"; fi
       echo "❌ backstop: dispatch ${_bs_how} after ${TIMEOUT_S}s — not retried (split the PR, or raise LITMUS_PR_BACKSTOP_TIMEOUT and run the pass detached)" >&2
+      exit 1
+    fi
+
+    # Checked AFTER the timeout, deliberately. A dispatch that wrote past the
+    # ceiling AND then timed out is a TIMEOUT: that is the actionable diagnosis
+    # (split the PR / raise the budget), and reporting "oversize envelope" there
+    # would send the operator after the wrong thing. Reaching here means the
+    # dispatch finished on its own and simply produced too much.
+    #
+    # It is TERMINAL for the same reason a timeout is: not a transient failure,
+    # so retrying cannot help -- and each retry is a fresh PAID dispatch that can
+    # leave another growing capture behind, multiplying the very disk-consumption
+    # condition the ceiling exists to limit.
+    if [[ "$_bs_oversize" -eq 1 ]]; then
+      echo "❌ backstop: captured envelope exceeded ${_BS_MAX_ENVELOPE} bytes — refusing it, not retrying (fail-closed)" >&2
       exit 1
     fi
 

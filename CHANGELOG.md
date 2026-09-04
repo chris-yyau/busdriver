@@ -1,3 +1,10 @@
+## [2.1.11](https://github.com/chris-yyau/busdriver/compare/v2.1.10...v2.1.11) (2026-09-04)
+
+
+### Bug Fixes
+
+* **hooks:** resolve alias candidates against a literal git -C ([#812](https://github.com/chris-yyau/busdriver/issues/812)) ([#820](https://github.com/chris-yyau/busdriver/issues/820)) ([e661023](https://github.com/chris-yyau/busdriver/commit/e66102322d14cc45f4a8bc782c56dcfdf6b9d75d))
+
 ## [2.1.10](https://github.com/chris-yyau/busdriver/compare/v2.1.9...v2.1.10) (2026-09-04)
 
 

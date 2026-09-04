@@ -96,6 +96,66 @@ unauthorized merge tip is never published.
   support and the hook installed; `scripts/install-git-hooks.sh` owns that, and
   installs the RT gate alongside the five commit-chain hooks rather than in
   place of them.
+- **The installed wrapper pins the gate closure by digest.** Unlike a PreToolUse
+  hook, which evaluates before the command mutates anything, `pre-merge-commit`
+  and `reference-transaction prepared` run AFTER git has updated the worktree.
+  Where the gated repo IS the busdriver checkout — `PLUGIN_ROOT == REPO_ROOT`,
+  the documented default invocation — the merge being gated would otherwise
+  supply the gate's own code, and hostile branch content could turn both gates
+  into no-ops before either evaluated. That is the "gate scoped by input the
+  gated party controls" anti-pattern, so the installer digests every file under
+  `hooks/gate-scripts/**` (the whole closure: the six gates source only
+  `$_SCRIPT_DIR/lib/`) and embeds both the digest and the checking code in the
+  generated wrapper, which lives in the hooks directory and not in the worktree.
+  A mismatch refuses to `exec` and names the reinstall. It is a LISTING digest,
+  so an added or deleted file is caught, not only an edited one. The wrapper
+  then execs a **snapshot** of the verified tree, kept beside it under
+  `<hooks dir>/.busdriver-gates/<digest>/` and refreshed whenever the digest
+  changes. Hashing by pathname and then re-opening by pathname are two separate
+  reads, and only the first is verified; a writer racing that window executes
+  bytes the digest never saw. Exec-from-snapshot closes it — verified bytes and
+  executed bytes become the same bytes — and it is why source-adjacent bytecode
+  needs no special handling. An UNCHECKED hash-based `.pyc` executes in place of
+  its `.py` without Python reading the source at all (measured — the source says
+  `SOURCE`, the interpreter prints `HOSTILE-BYTECODE`), which while the wrapper
+  still exec-ed the live tree was a real bypass and forced the digest to PURGE
+  `__pycache__` rather than exempt it. From the snapshot, `$_SCRIPT_DIR` resolves
+  inside the snapshot, so libs are sourced and bytecode written there; the live
+  tree is only ever hashed, never imported, and planted bytecode is inert where
+  it lies. The purge is therefore gone, and with it the race it created with
+  concurrent gate runs sharing one plugin root. `-X pycache_prefix=<dir outside
+  the tree>` also survives `-I` and was measured to block the planted bytecode,
+  but it was rejected before the snapshot existed and remains rejected: it has to
+  be added to every python invocation in every gate, and missing one silently
+  reopens the hole. (`.gate-integrity.lock` keeps its `__pycache__` exemption —
+  it is visibility, not prevention, and rescoping it is not this ticket's.)
+  Snapshotting is NOT the "copy the scripts aside" option this ADR previously
+  rejected: that one replaced the digest, so a stale install kept running the old
+  gate silently, and on a repo whose gate scripts churn daily the gate you are
+  developing is never the one running. Here the live-tree digest still runs
+  first and still fails LOUD on stale — the snapshot only decides which bytes
+  execute once staleness has been ruled out. The installer also refuses a
+  `core.hooksPath` inside the work tree but outside the git dir: the wrapper
+  carries the digest check, so a merge able to replace the WRAPPER skips the
+  check entirely and pinning the gates behind it would be theatre — and it is
+  what makes the snapshot's location trustworthy, since the snapshot sits in
+  that same directory. Three further details the review rounds forced, each with
+  a test: the snapshot is re-hashed AFTER the copy and rebuilt when it does not
+  match the digest it is named by — hashing the live tree and copying it are two
+  reads of two different moments, and a directory's name is not evidence about
+  its contents; the snapshot is built after preflight, because pruning
+  superseded snapshots is destructive and a preflight that then refuses would
+  leave the already-installed wrappers pointing at a snapshot the refused run
+  had deleted; and containment compares `(st_dev, st_ino)` rather than string
+  prefixes, because macOS volumes are case-insensitive by default while
+  `realpath()` preserves whatever spelling it was handed, so `<WT>/hooks` and
+  `<wt>/hooks` are one directory that no prefix test relates.
+  `tests/test-install-git-hooks.sh` proves it refuses an
+  edit, an addition and a deletion, clears on restore, execs the snapshot rather
+  than the live tree (a break planted in the snapshot alone is carried through),
+  does not copy planted bytecode into the snapshot on re-pin, rebuilds a
+  tampered snapshot, leaves working hooks intact when an install is refused, and
+  refuses a case-variant path into tracked content.
 - The gate validates the staged-diff hash with the canonical minting expression
   (#576), pinned against the other three hash-bearing files by
   `tests/test-litmus-marker-binding.sh`. A validator that spells the hash

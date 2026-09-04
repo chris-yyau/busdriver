@@ -102,8 +102,12 @@ $G5 init -q .
 mkdir -p "$TMP5/.claude"
 printf 'skip\n' > "$TMP5/.claude/skip-litmus.local"
 gate_skip_litmus_too_young "$TMP5" "$REL"; assert $? "fresh skip file is too young"
-sleep 31
-! gate_skip_litmus_too_young "$TMP5" "$REL"; assert $? "aged single-link skip file is not too young"
+# The aged boundary is exercised by skip_age.py --self-check, which drives
+# _MIN_AGE directly. A shell-level version would have to sleep 30s of wall clock
+# (mtime AND ctime AND birth are all checked, so backdating cannot fake it), and
+# a 31s security suite is a security suite people skip.
+python3 -I -S "$REPO_ROOT/hooks/gate-scripts/lib/skip_age.py" --self-check >/dev/null 2>&1
+assert $? "skip_age self-check covers the aged and hard-linked boundaries"
 printf 'old\n' > "$TMP5/old-skip.txt"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '2 minutes ago' '+%Y%m%d%H%M.%S')" \
     "$TMP5/old-skip.txt" 2>/dev/null || true

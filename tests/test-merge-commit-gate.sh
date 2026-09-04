@@ -868,7 +868,7 @@ SS_OLD=$(git -C "$TMP_SPENT_STALE" rev-parse main)
 SS_TREE=$(git -C "$TMP_SPENT_STALE" rev-parse 'main^{tree}')
 SS_NEW=$(git -C "$TMP_SPENT_STALE" commit-tree "$SS_TREE" -p "$SS_OLD" -m "after publish")
 SS_TOPIC=$(git -C "$TMP_SPENT_STALE" rev-parse topic)
-SS_FAKE_HASH=$(printf 'a%.0s' $(seq 64))
+SS_FAKE_HASH=$(printf 'a%.0s' {1..64})
 printf '%s\n' "$SS_TOPIC" >"$SS_GD/busdriver-merge-litmus-spent"
 printf 'BUILTIN-%s\n' "$SS_FAKE_HASH" >"$TMP_SPENT_STALE/.claude/litmus-passed.local"
 set +e
@@ -901,8 +901,8 @@ fi
 echo "── armed-claim retirement keeps a foreign marker ─"
 setup_repo "$TMP_FOREIGN_MARKER"
 mkdir -p "$TMP_FOREIGN_MARKER/.claude"
-FM_HASH=$(printf 'b%.0s' $(seq 64))
-FM_OTHER=$(printf 'c%.0s' $(seq 64))
+FM_HASH=$(printf 'b%.0s' {1..64})
+FM_OTHER=$(printf 'c%.0s' {1..64})
 printf 'BUILTIN-%s\n' "$FM_HASH" >"$TMP_FOREIGN_MARKER/.claude/litmus-passed.local"
 FM_HEAD=$(git -C "$TMP_FOREIGN_MARKER" rev-parse HEAD)
 set +e
@@ -946,7 +946,7 @@ setup_repo "$TMP_CR_HEADER"
 install_hook "$TMP_CR_HEADER" "$HOOKS"
 CR_OLD=$(git -C "$TMP_CR_HEADER" rev-parse main)
 CR_TREE=$(git -C "$TMP_CR_HEADER" rev-parse 'main^{tree}')
-CR_FAKE=$(printf 'b%.0s' $(seq 40))
+CR_FAKE=$(printf 'b%.0s' {1..40})
 CR_RAW=$(printf 'tree %s\nparent %s\nauthor t <t@t.dev> 0 +0000\ncommitter t <t@t.dev> 0 +0000\njunkhdr x\rparent %s\n\ncr header\n' \
     "$CR_TREE" "$CR_OLD" "$CR_FAKE")
 CR_NEW=$(printf '%s' "$CR_RAW" | git -C "$TMP_CR_HEADER" hash-object -t commit -w --literally --stdin)

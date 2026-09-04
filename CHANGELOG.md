@@ -1,3 +1,10 @@
+## [2.1.13](https://github.com/chris-yyau/busdriver/compare/v2.1.12...v2.1.13) (2026-09-04)
+
+
+### Bug Fixes
+
+* **litmus:** carry PR-mode review verdicts across loop runs ([#811](https://github.com/chris-yyau/busdriver/issues/811)) ([#828](https://github.com/chris-yyau/busdriver/issues/828)) ([ebdd67f](https://github.com/chris-yyau/busdriver/commit/ebdd67f470fc09a0a5c708725944cb9435fa73c0)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [2.1.12](https://github.com/chris-yyau/busdriver/compare/v2.1.11...v2.1.12) (2026-09-04)
 
 

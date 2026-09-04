@@ -80,9 +80,9 @@ validate_state_file() {
     echo "   Location: $(pwd)" >&2
     echo "" >&2
     echo "   To initialize the review loop:" >&2
-    echo "   1. Run: bash scripts/init-review-loop.sh" >&2
+    echo "   1. Run: /bin/bash -p scripts/init-review-loop.sh" >&2
     echo "   2. This will create the state file" >&2
-    echo "   3. Then run: bash scripts/run-review-loop.sh" >&2
+    echo "   3. Then run: /bin/bash -p scripts/run-review-loop.sh" >&2
     return 1
   fi
   return 0

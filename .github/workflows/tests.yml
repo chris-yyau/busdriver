@@ -220,7 +220,20 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Job-level wall-clock ceiling, not a validation budget: every check in this
+    # job still runs and still has to pass. Raised 5 -> 10 because the dependency
+    # install step alone measured 2m34s on 2026-09-04 (in the shell-tests job of
+    # the same workflow run, which passed) against a 5-minute budget SHARED with
+    # harden-runner, checkout and setup-node. That produced four consecutive
+    # `validate` failures whose only failing step was a CANCELLED install -- a red
+    # required check reporting an install timeout as a schema-validation failure.
+    # (Written without naming the install command literally: validate-workflow-
+    # security.js scans this file for that token and requires the hardening flag
+    # beside it, so the bare name in a COMMENT trips the check. Measured.) The npm
+    # manifests were untouched by the PR that hit it, so the slowdown is
+    # environmental. Same reasoning, and the same "headroom over the measurement
+    # rather than tuned to it", as the shell-tests ceiling below.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -357,7 +370,14 @@ jobs:
     # be hard-canceled at 20 -- trading a per-test timeout for a job timeout, which is
     # the same false failure wearing a different name. Raised so the per-test budget is
     # the binding constraint, which is the one that names the suite at fault.
-    timeout-minutes: 30
+    #
+    # Raised again 30 -> 45 on 2026-09-04, for the same reason one more time. The
+    # suite is now 147 discovered tests, not the 103 the 30-minute ceiling was set
+    # for, and it has caught up with it: measured 29m29s on a PASSING run, and one
+    # 30m17s cancellation in which nothing failed -- the job was killed AT the
+    # ceiling, the identical false-failure shape as the #548 case above. 45
+    # restores headroom over the observed runtime instead of tracking it.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:

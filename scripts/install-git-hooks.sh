@@ -331,6 +331,33 @@ src, root, digest, digest_py = sys.argv[1:5]
 snap = os.path.join(root, digest)
 os.makedirs(root, exist_ok=True)
 
+def rm_any(path):
+    """Remove `path` without ever following it out of `root`."""
+    if os.path.islink(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.exists(path):
+        os.unlink(path)
+
+
+def check_root(root):
+    # Refuse a symlinked snapshot root. Pruning recursively deletes every entry
+    # under it that is not the current digest, so following a link here turns a
+    # hook install into an rm -rf of whatever it points at. The same reasoning
+    # applies to each entry, which is why rm_any unlinks rather than descends.
+    if os.path.islink(root):
+        sys.stderr.write(
+            "install-git-hooks: %s is a symlink. The snapshot root is pruned\n"
+            "recursively, so following it would delete the target's contents.\n"
+            "Remove it and rerun.\n" % root)
+        raise SystemExit(1)
+
+
+check_root(root)
+if os.path.islink(snap):
+    os.unlink(snap)
+
 
 def digest_of(path):
     """Run the wrapper's own digest program over `path`."""
@@ -350,12 +377,12 @@ for attempt in range(3):
     if os.path.isdir(snap) and digest_of(snap) == digest:
         break
     tmp = snap + ".tmp.%d" % os.getpid()
-    shutil.rmtree(tmp, ignore_errors=True)
+    rm_any(tmp)
     # Build under a temp name and rename, so a snapshot dir named by a digest
     # is never half-populated: the wrapper's exec target either is not there
     # or is complete.
     shutil.copytree(src, tmp, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.rmtree(snap, ignore_errors=True)
+    rm_any(snap)
     os.rename(tmp, snap)
 else:
     sys.stderr.write(
@@ -392,7 +419,32 @@ import shutil
 import sys
 
 root, digest = sys.argv[1:3]
+
+def rm_any(path):
+    """Remove `path` without ever following it out of `root`."""
+    if os.path.islink(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.exists(path):
+        os.unlink(path)
+
+
+def check_root(root):
+    # Refuse a symlinked snapshot root. Pruning recursively deletes every entry
+    # under it that is not the current digest, so following a link here turns a
+    # hook install into an rm -rf of whatever it points at. The same reasoning
+    # applies to each entry, which is why rm_any unlinks rather than descends.
+    if os.path.islink(root):
+        sys.stderr.write(
+            "install-git-hooks: %s is a symlink. The snapshot root is pruned\n"
+            "recursively, so following it would delete the target's contents.\n"
+            "Remove it and rerun.\n" % root)
+        raise SystemExit(1)
+
+
+check_root(root)
 for name in os.listdir(root):
     if name != digest:
-        shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+        rm_any(os.path.join(root, name))
 PY

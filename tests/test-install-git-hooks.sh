@@ -285,6 +285,26 @@ out=$(run_hook); rc=$?
 assert "the refused install left the working hooks intact" "0" "$rc"
 
 
+# 8h. The snapshot root is pruned RECURSIVELY, so a symlink there turns a hook
+# install into an rm -rf of whatever it points at. Refuse it rather than follow
+# it. The hooks dir is out of the worktree and so not merge-writable, but a
+# stale or hand-made link costs nothing to guard and the blast radius if it is
+# wrong is unbounded.
+REPO4="$WORK/repo4"
+git init -q "$REPO4"
+mkdir -p "$REPO4/.git/fixture-hooks" "$WORK/precious"
+printf 'do not delete\n' > "$WORK/precious/keep.txt"
+mkdir -p "$WORK/precious/some-dir"
+git -C "$REPO4" config core.hooksPath "$REPO4/.git/fixture-hooks"
+ln -s "$WORK/precious" "$REPO4/.git/fixture-hooks/.busdriver-gates"
+err=$(bash "$PR/scripts/install-git-hooks.sh" "$REPO4" 2>&1); rc=$?
+assert "a symlinked snapshot root is refused" "1" "$rc"
+assert "the refusal says why following it is unsafe" "yes" \
+    "$([[ "$err" == *"pruned"* ]] && echo yes || echo no)"
+assert "the symlink target is untouched" "yes" \
+    "$([[ -f "$WORK/precious/keep.txt" && -d "$WORK/precious/some-dir" ]] && echo yes || echo no)"
+
+
 # 9. The listing digest separates records with a real NUL. A filename cannot
 # contain NUL, so that separator is what makes the listing encoding injective;
 # with the two-byte sequence backslash-zero instead, a file named

@@ -599,6 +599,20 @@ fi
 CMD_CHOSEN_ANCHOR=0
 if [ -n "$TARGET_DIR" ] && { [ -z "$KIND" ] || [ -n "$UNKNOWN_CANDIDATES" ]; }; then
     CMD_CHOSEN_ANCHOR=1
+    # ...unless the directory it chose is the session's OWN repository, where
+    # consent and effect do not actually diverge. Without this the operator's
+    # escape hatch silently depended on whether they typed a redundant `-C`:
+    # `git -C . <word>` and `<word>` from the same shell would disagree about
+    # whether the skip file works.
+    # Sentinel byte for the same reason resolve-repo-dir.sh uses one: `$(...)`
+    # strips ALL trailing newlines, and a directory name may legally end in one
+    # on POSIX, so "/r\n" and "/r" would otherwise compare EQUAL and hand a
+    # genuinely different repository the gate-derived treatment.
+    _CWD_ROOT=$(git -C "${HOOK_CWD:-.}" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
+    _ANCHOR_ROOT=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
+    if [ -n "$_CWD_ROOT" ] && [ "$_CWD_ROOT" = "$_ANCHOR_ROOT" ]; then
+        CMD_CHOSEN_ANCHOR=0
+    fi
 fi
 if [ "$OUTSIDE_REPO" = "1" ]; then
     # Anchor the gate derived ITSELF → the original unconditional exit, unchanged:
@@ -616,7 +630,9 @@ if [ "$OUTSIDE_REPO" = "1" ]; then
     # still be a `!`-shell alias that operates somewhere else entirely, and this is
     # the one place that could wave it through, so it fails CLOSED instead.
     [ -z "$UNKNOWN_CANDIDATES" ] && exit 0
-    block_emit "Ref fast-forward gate:$UNKNOWN_CANDIDATES resolves to no git subcommand, and ${REPO_DIR:-.} is not a work tree — so the gate cannot rule out that it is a '!'-shell alias, which git runs from outside a repository just as happily and can move a protected ref in ANOTHER one. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets. Blocking as precaution (fail-closed)."
+    block_emit "Ref fast-forward gate:$UNKNOWN_CANDIDATES resolves to no git subcommand, and ${REPO_DIR:-.} is not a work tree — so the gate cannot rule out that it is a '!'-shell alias, which git runs from outside a repository just as happily and can move a protected ref in ANOTHER one. Run the underlying 'git merge' / 'git pull' directly, from the repository it targets.
+
+There is no skip file for this one: the target is not a work tree, so no $STATE_DIR/skip-litmus.local can live there, and a command-chosen anchor does not spend another repository's. Drop the '-C' and run it from a directory the gate can anchor itself on — the same command from a non-repo cwd is not blocked. Blocking as precaution (fail-closed)."
     exit 0
 fi
 if [ -z "$KIND" ] && [ -z "$UNKNOWN_CANDIDATES" ]; then

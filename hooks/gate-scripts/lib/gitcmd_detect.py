@@ -3393,7 +3393,25 @@ def _literal_c_target(argv, raw_argv, sub_idx):
     return seen
 
 
-def _static_alias_scope(chunks):
+def _lead_cd_only(chunks):
+    """True when the command's ONLY `cd` is the FIRST segment of the main chunk.
+
+    That one shape — `cd /repo && git … && git merge …` — is the one the literal
+    merge/pull scan already accounts for: it precedes every git word, so it is the
+    cd the scan folds into the match's own target_dir. Every other placement is
+    not accounted for anywhere. `git merge HEAD && cd /other && git zz feature`
+    is the case that matters: the scan matches the merge BEFORE reaching the cd,
+    so the cd lands in neither target_dir NOR untrusted_cd (verified — both come
+    back empty), and only the companion refusal catches it, which sits AFTER the
+    consent exits. With a skip file armed it would have been waved through while
+    `zz` resolved in /other."""
+    if sum(len(_all_cds(c)) for c in chunks) != 1:
+        return False
+    first = next(iter(split_segments(chunks[0])), None)
+    return first is not None and _cd_target_loose(first[1]) is not None
+
+
+def _static_alias_scope(chunks, cd_poisons=True):
     """The ONE directory the gate may resolve alias names in, or None to refuse.
 
     _alias_candidates reports NAMES only, with no scope attached, and the gate
@@ -3408,10 +3426,24 @@ def _static_alias_scope(chunks):
     honour that one for scoping either), an operand `_literal_c_target` will not
     vouch for, and — as much as opacity — invocations that DISAGREE about the
     target. `git -C /other worktree list && git m feature` runs `m` in the cwd
-    repo, so anchoring on /other would hide the cwd's own `alias.m = merge`."""
+    repo, so anchoring on /other would hide the cwd's own `alias.m = merge`.
+
+    `cd_poisons` is False on the LITERAL-merge path, where the caller already has
+    its own cd handling: the scan folds a trusted `&&`-joined `cd` into the
+    match's target_dir, and reports an unproven one separately for
+    gate_resolve_repo_dir to refuse. Re-refusing it here bought nothing and cost
+    two things — `cd /repo && git fetch origin && git merge feature` flipped from
+    the empty-declaration exit to a block, and where it still blocked it did so
+    with the merge-operand message instead of the companion one, whose own text
+    reads "A leading cd is fine — it only scopes the command". Explaining the
+    wrong thing is the class #812 was filed about. The `-C` disagreement, which
+    the caller does NOT handle, still refuses on both paths. It buys exactly the
+    LEADING cd (_lead_cd_only) and nothing else: disabling the cd test wholesale
+    let a mid-command `cd` move scope for a later alias word invisibly."""
+    cd_exempt = not cd_poisons and _lead_cd_only(chunks)
     scope = None
     for depth, chunk in enumerate(chunks):
-        if _all_cds(chunk):
+        if _all_cds(chunk) and not cd_exempt:
             return None
         for _op, seg in split_segments(chunk):
             argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
@@ -3967,7 +3999,7 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     # spending the cwd repo's consent while `zz` resolves, and possibly acts, in
     # /x. The alias question is about the whole command, so it is asked of the
     # whole command.
-    scope = _static_alias_scope(chunks) if aliases else ''
+    scope = _static_alias_scope(chunks, cd_poisons=not r[0]) if aliases else ''
     if scope is None:
         # The gate resolves alias names against ONE repository, and this command
         # moves it somewhere the parser cannot follow.

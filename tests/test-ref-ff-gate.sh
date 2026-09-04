@@ -1861,6 +1861,29 @@ run_gate "...and a literal no-op merge alongside it does not launder the word" \
 # merge/pull was found.
 run_gate "...and a cwd-scoped merge does not launder a -C-scoped word either" \
     block "git merge HEAD && git -C $NOCONV zz feature" "cannot be resolved"
+# ...but a plain `cd` must not poison the LITERAL-merge path. There the scan
+# already folds a trusted '&&'-joined cd into the match's own target_dir, so
+# re-refusing it here only flipped this to a block and explained it with the
+# merge-operand message rather than the companion one — which is the
+# wrong-explanation class #812 was filed about. (`fetch` is an alias candidate,
+# so this command reaches the scope check at all.)
+run_gate "a leading cd still only scopes a literal merge, as its message says" \
+    block "cd $REPO && git fetch origin && git merge feature" "SEPARATE call"
+# ...and the exemption buys the LEADING cd only. A cd AFTER the merge is folded
+# into neither target_dir nor untrusted_cd (the scan matched before reaching it),
+# so nothing but the companion refusal would see it — and that sits after the
+# consent exits, so an armed skip file would have waved it through while `zz`
+# resolved elsewhere.
+run_gate "...but a cd AFTER the merge still poisons the alias scope" \
+    block "git merge HEAD && cd $NOCONV && git zz feature" "cannot be resolved"
+# The anchor a command names can BE the session's own repo, and then consent and
+# effect do not diverge — the escape hatch must not depend on whether the
+# operator typed a redundant `-C`.
+NOCONV_HOLDER="$REPO"
+REPO="$NOCONV"
+run_gate "...and a -C naming the session's own repo is not command-chosen" \
+    allow "git -C $NOCONV zz feature"
+REPO="$NOCONV_HOLDER"
 # ...while the same file still speaks for the repo the session is actually IN,
 # which is where the operator wrote it. This is the pre-#812 behaviour and the
 # guard above must not disturb it.

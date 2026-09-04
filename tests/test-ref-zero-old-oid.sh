@@ -192,6 +192,36 @@ run_format_suite() {  # <format>
         allow "git branch -f main $UNREVIEWED"
     rm -f "$REPO/$ISO_STATE/skip-litmus.local"
 
+    # ...and it authorizes THIS repo only. The ZERO-old arm sits after the skip
+    # check, so the standing question is whether repo A's consent can reach a
+    # protected ref in repo B. It cannot: a scope the command chose is either
+    # refused as an unresolvable operand (an env redirect) or forfeits the skip
+    # outright (a command-chosen `-C` anchor, #812) -- both BEFORE consent is
+    # read. Pinned with the marker still armed, which is the only state in which
+    # the question has teeth.
+    OTHER_REPO="$TMPROOT/other-$fmt"
+    rm -rf "$OTHER_REPO"
+    (
+        set -e
+        git init -q -b main "$OTHER_REPO"
+        cd "$OTHER_REPO"
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        git config core.hooksPath "$(pwd)/.git/hooks"
+        echo base > f; git add f; git commit -qm base
+    ) >/dev/null 2>&1 || { printf "  FAIL  fixture setup (other repo)\n"; FAIL=$((FAIL + 1)); return; }
+    touch -t 202001010000 "$REPO/$ISO_STATE/skip-litmus.local"
+    run_gate "an armed skip does not reach a -C-scoped delete in another repo" \
+        block "git -C $OTHER_REPO branch -D main" "DELETE the protected branch 'main'"
+    run_gate "...nor a -C-scoped default-deref update-ref there" \
+        block "git -C $OTHER_REPO update-ref refs/heads/main $UNREVIEWED" \
+        "no old-oid precondition"
+    run_gate "...nor one an env scope redirect points elsewhere" \
+        block "export GIT_DIR=$OTHER_REPO/.git && git update-ref -d refs/heads/main" \
+        "cannot be resolved statically"
+    rm -f "$REPO/$ISO_STATE/skip-litmus.local"
+    rm -rf "$OTHER_REPO"
+
     # Off protected HEAD still blocks force of main.
     git -C "$REPO" checkout -q -b feature
     run_gate "branch -f main from feature branch → block" \

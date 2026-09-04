@@ -1008,11 +1008,32 @@ This is an independent cross-model check of the Codex lead — be adversarial ab
 security. Output ONE JSON object per your output contract and NOTHING else.
 PROMPT_EOF
 )
-  # Optional timeout wrapper (set -u-safe empty-array expansion for bash 3.2).
-  TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-600}"
+  # Wall-clock budget for the WHOLE dispatch sequence -- every attempt PLUS every
+  # backoff sleep -- not per attempt (#823). It now feeds $(( )) arithmetic, and
+  # the value comes from repo-injectable env (#325 / ADR 0016), so validate it
+  # with the same idiom the retry tunables below use: digits-only, length-capped
+  # BEFORE any conversion, base-10 forced. A malformed or zero value falls back
+  # to the default rather than aborting under set -e.
+  #
+  # Default 540, not 600: the harness Bash tool CAPS a blocking call at 600s, so
+  # a 600s budget leaves no headroom for the startup/diff/context phases that run
+  # before the dispatch, and the call is killed at the boundary with no verdict.
+  # 540 is the same headroom LITMUS_TIMEOUT already takes (#368). Deliberately NOT
+  # clamped from above: an operator running the pass detached (nohup + poll) is
+  # not bound by the harness cap and may legitimately want a larger budget.
+  TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-540}"
+  case "$TIMEOUT_S" in ''|*[!0-9]*) TIMEOUT_S=540 ;; esac
+  if [[ "${#TIMEOUT_S}" -gt 9 ]]; then TIMEOUT_S=540; fi
+  TIMEOUT_S=$((10#$TIMEOUT_S))
+  if [[ "$TIMEOUT_S" -lt 1 ]]; then TIMEOUT_S=540; fi
+  # Resolve the wrapper BINARY once. The per-attempt _TO array is rebuilt INSIDE
+  # the loop with that attempt's remaining budget -- building it here with the
+  # full $TIMEOUT_S is what gave every attempt the whole window (set -u-safe
+  # empty-array expansion for bash 3.2).
+  _TO_BIN=""
+  if command -v timeout >/dev/null 2>&1; then _TO_BIN=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then _TO_BIN=gtimeout; fi
   _TO=()
-  if command -v timeout >/dev/null 2>&1; then _TO=(timeout "$TIMEOUT_S")
-  elif command -v gtimeout >/dev/null 2>&1; then _TO=(gtimeout "$TIMEOUT_S"); fi
 
   # Accepted residual (ADR 0006, "Claude is the trusted dispatcher"): the backstop
   # reviews UNTRUSTED code, so the reviewed branch's own content — its diff, and any
@@ -1057,7 +1078,23 @@ PROMPT_EOF
 
   PAYLOAD=""
   _bs_attempt=0
+  # The WHOLE sequence -- every attempt plus every backoff sleep -- is bounded to
+  # ~$TIMEOUT_S: each attempt's wrapper gets the REMAINING budget (the full budget
+  # on the first, set directly so a sub-second tick cannot zero out the only
+  # invocation), and each backoff is capped so the sleep itself cannot overrun.
+  # Before #823 the wrapper was built once with the full $TIMEOUT_S, so a
+  # 3-attempt sequence could reach 3x the timeout plus backoff -- past the 600s
+  # harness Bash cap at ANY setting, which is why no value fitted. Mirrors the
+  # budget arithmetic in _run_review_with_retries / _execute_codex
+  # (scripts/lib/resolve-cli.sh), which got this treatment and this loop did not.
+  _bs_start=$(date +%s)
+  _bs_remaining="$TIMEOUT_S"
   while : ; do
+    # Rebuild the wrapper with THIS attempt's share of the budget. A static _TO
+    # would leave every attempt on the full window and make the arithmetic below
+    # cosmetic -- the exact defect #823 reports.
+    _TO=()
+    if [[ -n "$_TO_BIN" ]]; then _TO=("$_TO_BIN" "$_bs_remaining"); fi
     set +e
     ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
@@ -1135,11 +1172,38 @@ print(json.dumps(out))
       *)  _bs_reason="unexpected parser failure (rc=$_PARSE_RC)" ;;
     esac
 
+    # A real TIMEOUT (124) is NOT transient: re-running the same review on the
+    # same diff cannot succeed with LESS budget than the attempt that just ran
+    # out, and retrying it is what multiplied the sequence past the harness cap
+    # (#823). Fail closed on the first one and let the operator split the diff.
+    # Mirrors the "timeout -> don't retry" posture in _run_review_with_retries.
+    if [[ "$RC" -eq 124 ]]; then
+      echo "❌ backstop: dispatch timed out after ${TIMEOUT_S}s — not retried (split the PR, or raise LITMUS_PR_BACKSTOP_TIMEOUT and run the pass detached)" >&2
+      exit 1
+    fi
+
     if [[ "$_bs_attempt" -lt "$BACKSTOP_RETRIES" ]]; then
       _bs_attempt=$((_bs_attempt + 1))
       _bs_delay=$((BACKSTOP_RETRY_DELAY * _bs_attempt))
+      # A retry needs budget for the backoff PLUS at least a 1s attempt. If what
+      # is left cannot fund that, stop now rather than sleeping the remainder
+      # away for an attempt that could not run.
+      _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+      if [[ "$_bs_remaining" -le 1 ]]; then
+        echo "❌ backstop: ${_bs_reason} — budget (${TIMEOUT_S}s) spent after ${_bs_attempt} attempt(s), no verdict (fail-closed)" >&2
+        exit 1
+      fi
+      # Cap the backoff to leave >= 1s for the attempt -- never sleep the whole
+      # remaining budget. (`if`, not `&&`: a false `[[ ]]` returns 1 under set -e.)
+      _bs_cap=$(( _bs_remaining - 1 ))
+      if [[ "$_bs_delay" -gt "$_bs_cap" ]]; then _bs_delay="$_bs_cap"; fi
       echo "⚠️  backstop: ${_bs_reason} — retry ${_bs_attempt}/${BACKSTOP_RETRIES} in ${_bs_delay}s (fail-closed if exhausted)" >&2
-      sleep "$_bs_delay"
+      if [[ "$_bs_delay" -gt 0 ]]; then sleep "$_bs_delay"; fi
+      _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+      if [[ "$_bs_remaining" -le 0 ]]; then
+        echo "❌ backstop: ${_bs_reason} — budget (${TIMEOUT_S}s) spent after ${_bs_attempt} attempt(s), no verdict (fail-closed)" >&2
+        exit 1
+      fi
       continue
     fi
     echo "❌ backstop: ${_bs_reason} — no verdict written after $((BACKSTOP_RETRIES + 1)) attempt(s) (fail-closed)" >&2

@@ -121,7 +121,7 @@ This one command (all inside the trusted script — the orchestrating model is n
 - extracts the agent's JSON verdict from the envelope, binds it to the computed `reviewed_diff_hash`, and pipes it to an **internal** trusted writer (same strict validation: any `high` ⇒ FAIL, TOCTOU-bound, atomic write). There is **no public `--write-backstop-verdict` subcommand** — the writer is reachable only from `--run-backstop`, so the verdict cannot be produced by hand-typed JSON (that retype path was the #350 hole);
 - **fails closed** on any dispatch/parse failure (missing `claude`, non-zero exit, empty/malformed output, timeout) — no artifact is written, so the gate stays blocked.
 
-On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) directly; go straight to Step 3b. Tunables: `LITMUS_PR_BACKSTOP_TIMEOUT` (default 600s), `LITMUS_PR_BACKSTOP_MAX_DIFF` (oversize ⇒ fail-closed).
+On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) directly; go straight to Step 3b. Tunables: `LITMUS_PR_BACKSTOP_TIMEOUT` (default 540s — the budget for the whole dispatch SEQUENCE, attempts plus backoff, not per attempt; a real timeout is terminal and never retried — #823), `LITMUS_PR_BACKSTOP_MAX_DIFF` (oversize ⇒ fail-closed).
 
 ## Step 3: Gate Decision
 

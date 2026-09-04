@@ -98,6 +98,17 @@ write_stub() {
 #!/bin/bash
 if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
 cat >/dev/null 2>&1 || true
+# STUB_SLEEP=N: hang for N seconds so the REAL `timeout` wrapper fires (rc=124).
+# Counts the dispatch itself, because the point of the #823 cases is the attempt
+# COUNT under a timeout — a stub that merely `exit 124`s would prove the branch
+# fires without proving the wrapper was rebuilt with the remaining budget.
+# Mutually exclusive with STUB_FAIL_FIRST/STUB_BAD_FIRST (which count separately).
+if [ -n "${STUB_SLEEP:-}" ]; then
+  if [ -n "${STUB_COUNT_FILE:-}" ]; then
+    n=$(cat "$STUB_COUNT_FILE" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT_FILE"
+  fi
+  sleep "$STUB_SLEEP"
+fi
 # STUB_FAIL_FIRST=N: fail transiently (is_error envelope) on the first N dispatches
 # of this run, then succeed — exercises the backstop retry loop. Counter persists in
 # a per-run file so retries within one --run-backstop advance it.
@@ -253,6 +264,69 @@ STUB_FAIL_FIRST=999 STUB_COUNT_FILE="$CF" \
   STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
 ok "$?" "1" "overflow-length RETRIES still fail-closed cleanly"
 ok "$(cat "$CF" 2>/dev/null)" "6" "overflow RETRIES snaps to 5 ⇒ exactly 6 attempts"
+
+echo "== 9g. --run-backstop: a real timeout is NOT retried (#823) =="
+# Pre-#823 the loop classified rc=124 as a transient dispatch failure and
+# re-dispatched with a FRESH full window, so the sequence could reach
+# (retries+1) x TIMEOUT — past the 600s harness Bash cap at ANY setting, which is
+# why no LITMUS_PR_BACKSTOP_TIMEOUT value fitted. A real timeout must now fail
+# closed after exactly ONE attempt. Driven through the REAL wrapper (a stub that
+# just `exit 124`s would prove the branch fires without proving the wrapper was
+# rebuilt with this attempt's remaining budget).
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+  STUB_SLEEP=20 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=2 \
+    LITMUS_PR_BACKSTOP_RETRIES=2 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    bash "$RL" --run-backstop >/dev/null 2>&1
+  ok "$?" "1" "real timeout fails closed"
+  ok "$(has_art)" "n" "no artifact on timeout"
+  ok "$(cat "$CF" 2>/dev/null)" "1" "timeout NOT retried — exactly 1 dispatch (was 3)"
+else
+  echo "  SKIP  no timeout/gtimeout on PATH — cannot exercise the real 124 path"
+fi
+
+echo "== 9h. --run-backstop: the budget bounds the whole retry SEQUENCE (#823) =="
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+# Fast transient failures plus a real (non-zero) backoff. Pre-#823 the budget
+# bounded a single attempt only, so 5 retries at 2s linear backoff slept
+# 2+4+6+8+10 = 30s on their own and ran all 6 attempts. Bounded to a 3s SEQUENCE
+# the loop must stop early — both the elapsed time and the attempt count discriminate.
+_t0=$(date +%s)
+STUB_FAIL_FIRST=999 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_TIMEOUT=3 \
+  LITMUS_PR_BACKSTOP_RETRY_DELAY=2 LITMUS_PR_BACKSTOP_RETRIES=5 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+_rc=$?; _el=$(( $(date +%s) - _t0 ))
+ok "$_rc" "1" "budget-exhausted sequence fails closed"
+ok "$(has_art)" "n" "no artifact when the budget is spent"
+ok "$([[ "$_el" -lt 12 ]] && echo y || echo n)" "y" "sequence bounded to the 3s budget (took ${_el}s; pre-fix backoff alone was 30s)"
+ok "$([[ "$(cat "$CF" 2>/dev/null || echo 0)" -lt 6 ]] && echo y || echo n)" "y" "stopped before all 6 attempts"
+
+echo "== 9i. --run-backstop: malformed budget falls back, never aborts (#823) =="
+# TIMEOUT_S now feeds $(( )) arithmetic and comes from repo-injectable env
+# (#325 / ADR 0016), so it is validated with the same digits-only / length-cap /
+# base-10 idiom as the retry tunables. Each bad shape must degrade to the default
+# and still produce a clean verdict — never abort under set -e, never run octal.
+for badval in "abc" "0" "08" "1e9" "9999999999999999999999" "-5"; do
+  rm -f "$BS"; seed_codex_lead
+  LITMUS_PR_BACKSTOP_TIMEOUT="$badval" STUB_VERDICT='{"status":"PASS","issues":[]}' \
+    bash "$RL" --run-backstop >/dev/null 2>&1
+  ok "$?" "0" "TIMEOUT='$badval' degrades to a usable budget"
+  ok "$(art_status "$BS")" "PASS" "TIMEOUT='$badval' still writes the PASS artifact"
+done
+# Arithmetic injection: $(( )) evaluates its operands RECURSIVELY, so a
+# numeric-prefixed string like `1+a[$(cmd)]` would EXECUTE cmd during expansion.
+# The digits-only case must reject it before any arithmetic sees it.
+rm -f "$BS" "$WORK/pwned"; seed_codex_lead
+LITMUS_PR_BACKSTOP_TIMEOUT="1+a[\$(touch $WORK/pwned)]" \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "0" "injection-shaped TIMEOUT degrades cleanly"
+ok "$([[ -e "$WORK/pwned" ]] && echo y || echo n)" "n" "injection-shaped TIMEOUT never reaches \$(( ))"
+
+echo "== 9j. the default budget sits UNDER the 600s harness Bash cap (#823/#368) =="
+# A 600s budget leaves no headroom for the startup/diff/context phases that run
+# before the dispatch, so the call is killed at the boundary with no verdict.
+ok "$(grep -c 'LITMUS_PR_BACKSTOP_TIMEOUT:-540' "$RL")" "1" "default budget is 540, not 600"
+ok "$(grep -c 'LITMUS_PR_BACKSTOP_TIMEOUT:-600' "$RL")" "0" "no 600s default remains"
 
 echo "== 10. --run-backstop: no fresh Codex-lead ⇒ fail-closed (dispatch skipped) =="
 rm -f "$BS" .claude/pr-codex-lead.local.json

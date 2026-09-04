@@ -21,7 +21,7 @@ If not installed, install it according to your system's package manager.
 **Solution:** This is normal for large diffs (700+ lines). Consider:
 - Reviewing in smaller chunks (per-file or per-feature)
 - Reading the reasoning output to start fixing issues early (look for "thinking" sections)
-- Lowering `LITMUS_TIMEOUT`, or splitting the change, so the pass FITS
+- **Splitting the change** so the pass fits (lowering `LITMUS_TIMEOUT` does NOT make a slow review finish — it only makes the reviewer give up sooner; reach for it to fail fast, or to undo an above-cap override, not to make a large diff pass)
 
 Do **not** background the review to get around this. SKILL.md's CRITICAL RULES
 forbid it, and #368 is why: nothing here reliably holds the gate until the process
@@ -179,7 +179,7 @@ def run_litmus():
 1. Review smaller chunks (< 300 lines per review)
 2. Focus on high-risk files first
 3. Consider breaking large refactorings into multiple commits
-4. Lower `LITMUS_TIMEOUT` so a slow pass fails fast and can be split
+4. Lower `LITMUS_TIMEOUT` only to FAIL FAST on a diff you already intend to split — it shortens the wait, it does not make a slow review finish
 
 (Backgrounding the review is deliberately absent from this list — see the
 blocking-call rule above and #368.)

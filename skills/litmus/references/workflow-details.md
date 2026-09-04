@@ -166,27 +166,26 @@ def run_litmus(iteration_num):
     return Bash(
         command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
         description=f"Run Codex review iteration {iteration_num}",
-        run_in_background=True,  # Always included
-        timeout=600000
+        timeout=600000  # BLOCKING. No run_in_background — see step 2 above and #368.
     )
 ```
 
 ### Consistent Automation
 
 ```python
-# CORRECT - automated every iteration
+# CORRECT - automated every iteration, each one BLOCKING
 for iteration in range(1, 11):
     result = Bash(
         command="/bin/bash -p scripts/run-review-loop.sh",
-        run_in_background=True,  # EVERY iteration
         timeout=600000
     )
     if result['status'] == 'PASS':
         break
 
-# WRONG - inconsistent automation
-Bash(command="...", run_in_background=True)  # First iteration
-Bash(command="...")  # Second iteration - MISSING FLAG!
+# WRONG - backgrounding the gate. The loop advances while the review is still
+# deciding, so the next iteration (or a commit) can run against an unfinished
+# verdict. This is the #368 hazard, not a style preference.
+Bash(command="...", run_in_background=True)
 ```
 
 ## Using State-Based Approach

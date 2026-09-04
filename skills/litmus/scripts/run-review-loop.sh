@@ -438,6 +438,18 @@ _bs_leaked=()
 # before the traps below are installed, so a signal arriving at ANY point -- including
 # before the first dispatch -- finds the variable defined rather than unbound.
 _bs_pid=""
+# What the EXIT trap is still ALLOWED to do with `_bs_pid`, which is not the same
+# question as whether the handle is set. Two distinct hazards meet here and a
+# single variable cannot express both:
+#   * while `wait` is outstanding the pid is genuinely ours -> `leader`, and the
+#     pid may be signalled directly (the only way to reach the perl arm).
+#   * once `wait` returns the pid is RELEASED -> `group`. Signalling it could hit
+#     whatever the kernel has since given that pid to. But the GROUP handle stays
+#     valid and must still be reaped, because a fatal signal can arrive DURING the
+#     post-wait reap, and dropping the handle there would leave the straggler group
+#     alive holding the capture.
+# So the handle survives the whole dispatch and only the PERMISSION narrows.
+_bs_mode=group
 
 # Reap the process group the backstop wrapper leads. ONE implementation, shared by
 # the post-dispatch reap and by the EXIT cleanup, so the two cannot drift.
@@ -451,23 +463,41 @@ _bs_pid=""
 # per arm, and the body says which. The group matters because the writer is
 # typically a grandchild, and on the normal path the direct child has already
 # been reaped by the time this runs.
+#
+# $2 says whether the LEADER PID is still ours to signal:
+#   group  (default) -- `wait` has already reaped the leader, so its pid is
+#                       RELEASED. Signal the GROUP ONLY. A pid-directed signal
+#                       here could name a stranger the kernel has since given
+#                       that pid to, which is a far wider window than the group
+#                       probe carries (that one additionally needs the new owner
+#                       to have become a group leader).
+#   leader           -- `wait` has NOT returned, so the pid is still held by our
+#                       own child and is safe to signal directly. This is the
+#                       cancellation path, and it is the ONLY way to reach the
+#                       perl arm: perl does not setpgrp itself -- only its
+#                       fork()ed CHILD does -- so perl stays in the SCRIPT's own
+#                       group and "-$_p" names nothing there. Perl carries a TERM
+#                       handler that reaps its child group before exiting, so the
+#                       single pid-directed signal collapses that tree too.
 _bs_reap_group() {
-  local _p="${1:-}"
+  local _p="${1:-}" _mode="${2:-group}"
   [[ -n "$_p" ]] || return 0
-  # Alive check spans BOTH handles, because the two arms leave different things
-  # behind: coreutils leaves a GROUP (the leader is inside it), perl leaves only
-  # the LEADER (see below). Neither alive ⇒ nothing to do, no signals sent, no
-  # latency added to a healthy dispatch.
-  kill -0 "$_p" 2>/dev/null || kill -0 -- "-$_p" 2>/dev/null || return 0
-  # Signal the group AND the leader pid. The group is what reaches the coreutils
-  # arm's tree: `timeout` setpgid()s itself and its child, so one group signal
-  # collapses the whole thing. The leader pid is the ONLY thing that reaches the
-  # perl arm: perl does NOT setpgrp itself -- only its fork()ed CHILD does -- so
-  # perl stays in the SCRIPT's own group and "-$_p" names nothing there. Perl
-  # carries a TERM handler that reaps its child group before exiting, so the one
-  # pid-directed signal below collapses that tree too.
+  # Alive check. In `leader` mode it spans both handles, because the two arms leave
+  # different things behind: coreutils leaves a GROUP (the leader is inside it),
+  # perl leaves only the LEADER. In `group` mode it probes the GROUP ONLY -- the
+  # pid is released there, so probing it could both read a stranger as "alive" and
+  # hold the grace loop open for the full 8s on that stranger. Nothing alive ⇒ no
+  # signals sent, no latency added to a healthy dispatch.
+  _bs_alive() {
+    if [[ "$2" == leader ]]; then
+      kill -0 "$1" 2>/dev/null || kill -0 -- "-$1" 2>/dev/null
+    else
+      kill -0 -- "-$1" 2>/dev/null
+    fi
+  }
+  _bs_alive "$_p" "$_mode" || return 0
   kill -TERM -- "-$_p" 2>/dev/null || true
-  kill -TERM "$_p" 2>/dev/null || true
+  [[ "$_mode" == leader ]] && kill -TERM "$_p" 2>/dev/null
   # The grace must OUTLAST the perl arm's own escalation, not merely be "long
   # enough to be polite". On that arm the TERM above is delivered to perl, whose
   # handler then spends up to 50 x 0.1s waiting for its child group before it
@@ -477,13 +507,17 @@ _bs_reap_group() {
   # Nothing waits this long on a healthy run: the loop returns the moment both
   # handles are dead, so the cost is paid only by something actively resisting
   # TERM.
+  # Bash arithmetic, never `seq`: an external command here would make the grace
+  # depend on PATH, and a loop that silently runs ZERO iterations degrades to an
+  # immediate KILL -- precisely the orphan-making behaviour the grace prevents.
   local _i
-  for _i in $(seq 1 40); do
-    kill -0 "$_p" 2>/dev/null || kill -0 -- "-$_p" 2>/dev/null || return 0
+  for (( _i = 0; _i < 40; _i++ )); do
+    _bs_alive "$_p" "$_mode" || return 0
     sleep 0.2
   done
   kill -KILL -- "-$_p" 2>/dev/null || true
-  kill -KILL "$_p" 2>/dev/null || true
+  [[ "$_mode" == leader ]] && kill -KILL "$_p" 2>/dev/null
+  return 0
 }
 
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
@@ -491,7 +525,7 @@ _bs_reap_group() {
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap '_bs_reap_group "${_bs_pid:-}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap '_bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
 # No separate TERM/INT/HUP traps: bash runs the EXIT trap when it is killed by an
 # untrapped fatal signal, so the reap above already covers a cancelled run. Measured
 # on both /bin/bash 3.2.57 (the `/bin/bash -p` the dispatcher invokes) and bash
@@ -1348,6 +1382,13 @@ PROMPT_EOF
     # exactly the tree it left behind and nothing else. Foreground execution
     # gives us no such handle. Blocking semantics are unchanged: `wait` returns
     # the same status the foreground call did, including 124/137.
+    # Arm the permission BEFORE the dispatch, never after capturing the pid. A fatal
+    # signal landing between `_bs_pid=$!` and a later arming would run the trap in
+    # `group` mode against a perl-arm wrapper that is in no such group, reaching
+    # neither the wrapper nor its child tree. Armed first, the only intermediate
+    # state reachable is "permission armed, handle still empty", where the reap
+    # returns immediately and signals nothing.
+    _bs_mode=leader
     "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
@@ -1360,6 +1401,10 @@ PROMPT_EOF
     _bs_pid=$!
     wait "$_bs_pid"
     RC=$?
+    # `wait` has RELEASED the pid. Narrow the trap's permission FIRST -- before the
+    # reap below, which can spend the full 8s grace -- so a fatal signal in that
+    # window reaps the GROUP (still ours) without ever signalling the released pid.
+    _bs_mode=group
     # Reap what the leader left behind. This is what bounds the disk a straggler
     # can consume: unlinking the capture below does NOT revoke the descriptor a
     # descendant inherited, and POSIX gives a shell no way to revoke one it has
@@ -1390,7 +1435,7 @@ PROMPT_EOF
     # nothing and this is a no-op -- which is the case for the perl arm, where
     # the fork()ed CHILD calls setpgrp, so the new pgid is the child's pid rather
     # than perl's; that arm carries the equivalent reap inside $_BS_PERL_TO.
-    _bs_reap_group "$_bs_pid"
+    _bs_reap_group "$_bs_pid" "$_bs_mode"
     _bs_pid=""
     if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
     _bs_in=""

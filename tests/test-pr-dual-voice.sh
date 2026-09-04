@@ -37,7 +37,34 @@ GATE="$REPO/hooks/gate-scripts/pre-pr-gate.sh"
 export BUSDRIVER_STATE_DIR=.claude
 
 PASS=0; FAIL=0
-ok() { if [ "$1" = "$2" ]; then echo "  PASS  $3"; PASS=$((PASS+1)); else echo "  FAIL  $3 (got '$1' want '$2')"; FAIL=$((FAIL+1)); fi; }
+ok() { if [[ "$1" == "$2" ]]; then echo "  PASS  $3"; PASS=$((PASS+1)); else echo "  FAIL  $3 (got '$1' want '$2')"; FAIL=$((FAIL+1)); fi; }
+
+# Liveness for the reap assertions. `kill -0` is the wrong probe on its own: a
+# process that has just been KILLed lingers as a ZOMBIE until its parent reaps it,
+# and kill -0 succeeds against a zombie -- so a correct reap can read as "alive"
+# purely on the timing of the reparented init wait. Treat Z (and "no such process")
+# as gone. Used by the control assertion too, where it is strictly stronger: a
+# control that died would otherwise report "alive" from its own zombie and pass.
+proc_gone() {
+  local st rc
+  st=$(ps -o stat= -p "$1" 2>/dev/null); rc=$?
+  # Empty stdout is NOT proof of death, and treating it as such is a fail-OPEN that
+  # silently disarms every reap assertion in this file: a `ps` that is denied,
+  # missing, or otherwise unable to run also prints nothing. Discriminate on the
+  # EXIT STATUS instead:
+  #   rc==0 with output  -> ps ran and the process exists; Z means reaped-but-unwaited
+  #   rc==1 with no output -> ps ran and found nothing; a genuine "gone"
+  #   anything else      -> the probe never ran, so we learned NOTHING
+  # The last case reports `unknown`, which matches neither expected value and so
+  # FAILS the assertion loudly rather than passing on a check that never happened.
+  if [[ $rc -eq 0 && -n "$st" ]]; then
+    if [[ "$st" == Z* ]]; then echo gone; else echo alive; fi
+  elif [[ $rc -eq 1 && -z "$st" ]]; then
+    echo gone
+  else
+    echo unknown
+  fi
+}
 
 # Run the gate over a payload and classify its JSON decision. Distinguishes a
 # genuine "allow" (gate ran and chose not to block) from a "crash" (gate failed
@@ -483,7 +510,7 @@ if [[ -n "$_PERLTO" ]]; then
   kill -TERM "$_PLPID" 2>/dev/null
   wait "$_PLPID" 2>/dev/null
   sleep 3
-  ok "$(kill -0 "$_CPID" 2>/dev/null && echo alive || echo gone)" "gone" "perl arm reaps its child group when the wrapper is cancelled"
+  ok "$(proc_gone "$_CPID")" "gone" "perl arm reaps its child group when the wrapper is cancelled"
   kill -9 "$_CPID" 2>/dev/null || true
   rm -f "$_CPIDF"
   ok "$([[ "$_el" -lt 30 ]] && echo y || echo n)" "y" "perl arm KILLed it after the grace, not after 60s (took ${_el}s)"
@@ -602,7 +629,7 @@ STUB_ORPHAN=60 STUB_ORPHAN_PID_FILE="$_PIDF" LITMUS_PR_BACKSTOP_TIMEOUT=10 \
   STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
 _OPID=$(cat "$_PIDF" 2>/dev/null)
 ok "$([[ -n "$_OPID" ]] && echo y || echo n)" "y" "stub recorded the straggler pid"
-ok "$(kill -0 "$_OPID" 2>/dev/null && echo alive || echo gone)" "gone" "TERM-ignoring straggler is reaped, not left running"
+ok "$(proc_gone "$_OPID")" "gone" "TERM-ignoring straggler is reaped, not left running"
 # Non-vacuity: this straggler shape genuinely survives a plain TERM, so the
 # assertion above is proving the KILL escalation and not a self-exiting sleep.
 ( trap '' TERM; exec sleep 30 ) & _CTLPID=$!
@@ -614,8 +641,15 @@ ok "$(kill -0 "$_OPID" 2>/dev/null && echo alive || echo gone)" "gone" "TERM-ign
 sleep 0.5
 kill -TERM "$_CTLPID" 2>/dev/null
 sleep 1
-ok "$(kill -0 "$_CTLPID" 2>/dev/null && echo alive || echo gone)" "alive" "control: a TERM-ignoring straggler DOES survive a plain TERM"
+ok "$(proc_gone "$_CTLPID")" "alive" "control: a TERM-ignoring straggler DOES survive a plain TERM"
 kill -9 "$_CTLPID" 2>/dev/null; wait "$_CTLPID" 2>/dev/null || true
+
+# The liveness probe is itself a guard, so prove it can fail. A `ps` that cannot run
+# must report `unknown` -- never `gone`. Litmus reproduced the fail-open shape in a
+# restricted environment where ps was denied and the helper called its own live
+# shell "gone", which would let every reap assertion above pass vacuously.
+ok "$(proc_gone $$)" "alive" "probe: reports a live process as alive"
+ok "$(PATH=/nonexistent proc_gone $$)" "unknown" "probe: a ps that cannot run reports unknown, never gone"
 
 # ...and the reap must also fire when the SCRIPT ITSELF is cancelled mid-wait,
 # not only when the dispatch returns on its own. This is the signal path: TERM the
@@ -635,7 +669,7 @@ kill -TERM "$_RLPID" 2>/dev/null
 wait "$_RLPID" 2>/dev/null
 # Give the reap its TERM->grace->KILL ladder room to complete.
 sleep 3
-ok "$(kill -0 "$_OPID2" 2>/dev/null && echo alive || echo gone)" "gone" "a cancelled run reaps the dispatch group instead of orphaning it"
+ok "$(proc_gone "$_OPID2")" "gone" "a cancelled run reaps the dispatch group instead of orphaning it"
 kill -9 "$_OPID2" 2>/dev/null || true
 
 echo "== 9n. --run-backstop: an APPENDING straggler cannot stall the read (#823) =="
@@ -700,7 +734,44 @@ ok "$(grep -c '^_bs_reap_group()' "$RL")" "1" "the reap has exactly one implemen
 ok "$(grep -c '_bs_reap_group "\${_bs_pid:-}"' "$RL")" "1" "reap is wired into the EXIT trap"
 # The reap must precede the unlink in the EXIT trap: ending the writer is what
 # bounds it, and unlinking first just hides the inode while it keeps growing.
-ok "$(grep -c "trap '_bs_reap_group \"\${_bs_pid:-}\"; review_lock_release" "$RL")" "1" "EXIT trap reaps before it unlinks"
+ok "$(grep -c "trap '_bs_reap_group \"\${_bs_pid:-}\" \"\${_bs_mode:-group}\"; review_lock_release" "$RL")" "1" "EXIT trap reaps before it unlinks"
+# Default PERMISSION is the safe one, so a trap firing before any dispatch (or
+# after the handle is stale) can never pid-signal.
+ok "$(grep -c '^_bs_mode=group$' "$RL")" "1" "the trap's default permission is group-only"
+# PID-reuse containment. After `wait` the leader pid is RELEASED, so the
+# post-dispatch reap must be GROUP-ONLY -- a pid-directed signal there could name
+# a stranger the kernel has since handed that pid to. The pid is only signalled on
+# the cancellation path, where `wait` never returned and the pid is still ours.
+ok "$(grep -c '_bs_reap_group "\$_bs_pid" "\$_bs_mode"' "$RL")" "1" "post-dispatch reap goes through the mode"
+# TWO opposing hazards, both asserted as line order, because that is exactly what
+# the invariant is. `wait` releases the pid, so the trap must lose the RIGHT to
+# signal it before the reap runs (that reap can spend the full 8s grace) -- but it
+# must KEEP the handle across the reap, since a signal landing mid-reap still has a
+# live straggler group to collapse. Downgrade first, clear last.
+_L_DOWN=$(grep -n '^    _bs_mode=group$' "$RL" | head -1 | cut -d: -f1)
+_L_REAP=$(grep -n '_bs_reap_group "\$_bs_pid" "\$_bs_mode"' "$RL" | head -1 | cut -d: -f1)
+_L_CLEAR=$(grep -n '^    _bs_pid=""$' "$RL" | head -1 | cut -d: -f1)
+ok "$([[ -n "$_L_DOWN" && -n "$_L_REAP" && "$_L_DOWN" -lt "$_L_REAP" ]] && echo y || echo n)" "y" "the pid right is dropped before the post-wait reap"
+ok "$([[ -n "$_L_CLEAR" && -n "$_L_REAP" && "$_L_REAP" -lt "$_L_CLEAR" ]] && echo y || echo n)" "y" "the group handle survives the post-wait reap"
+# ...and `leader` is armed BEFORE the dispatch that creates the handle, not after.
+# Arming afterwards leaves a window where the handle is set but the permission is
+# still `group` -- and on the perl arm no group by that name exists, so a trap
+# firing there would reach neither the wrapper nor its children.
+_L_ARM=$(grep -n '^    _bs_mode=leader$' "$RL" | head -1 | cut -d: -f1)
+_L_CAP=$(grep -n '^    _bs_pid=\$!$' "$RL" | head -1 | cut -d: -f1)
+ok "$([[ -n "$_L_ARM" && -n "$_L_CAP" && "$_L_ARM" -lt "$_L_CAP" ]] && echo y || echo n)" "y" "leader mode is armed before the handle exists"
+# ...and group mode must not even PROBE the released pid: a kill -0 against a
+# recycled pid reads a stranger as alive and holds the grace open on it.
+ok "$(grep -c '^      kill -0 -- "-\$1" 2>/dev/null$' "$RL")" "1" "group mode probes the group only"
+# The pid-directed PROBE exists exactly once, in the leader branch. Two would mean
+# group mode had regained one.
+ok "$(grep -c 'kill -0 "\$1" 2>/dev/null' "$RL")" "1" "the pid probe lives only in leader mode"
+ok "$(grep -c '\[\[ "\$_mode" == leader \]\] && kill -TERM' "$RL")" "1" "pid-directed TERM is gated on a live leader"
+ok "$(grep -c '\[\[ "\$_mode" == leader \]\] && kill -KILL' "$RL")" "1" "pid-directed KILL is gated on a live leader"
+# No external command in the reap: the dispatch runs under a minimal PATH in the
+# perl-only test, and a grace loop that silently runs zero iterations degrades to
+# an immediate KILL -- the orphan-making behaviour the grace exists to prevent.
+ok "$(grep -c 'seq 1 40' "$RL")" "0" "the reap grace does not depend on an external seq"
 # The perl arm creates its group inside the fork()ed child, so its pgid is
 # invisible to the shell — it must carry the equivalent reap in its own body.
 ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"

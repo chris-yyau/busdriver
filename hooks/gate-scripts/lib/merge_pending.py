@@ -70,6 +70,67 @@ def _unlink_if_exists(dfd, name):
     except OSError:
         return False
 
+# _open_marker_for_consume's fourth state. False and _MARKER_FOREIGN must not
+# collapse into one another: False is a file no gate should ever spend (multi-
+# linked, non-regular, unreadable, malformed), while _MARKER_FOREIGN is a
+# well-formed token that simply belongs to a LATER /litmus run and is not ours
+# to destroy. The two want opposite treatment on cleanup.
+_MARKER_FOREIGN = "foreign"
+
+def _is_marker_fd(value):
+    """True only for a real descriptor — bool subclasses int, the sentinels do not."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+def _open_marker_for_consume(dfd, expected_content=None):
+    """Open litmus-passed.local for one-use inode consumption. None if absent."""
+    try:
+        fd = os.open(MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            os.close(fd)
+            return False
+        raw = os.read(fd, 4096)
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if len(lines) != 1 or not lines[0].strip():
+            os.close(fd)
+            return False
+        if expected_content is not None and lines[0].strip() != expected_content:
+            os.close(fd)
+            return _MARKER_FOREIGN
+        # Rewind not required — we only unlink by inode identity.
+        return fd
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+
+def _finish_marker_consume(dfd, marker_fd):
+    """Unlink the held marker inode. ENOENT / identity mismatch fail closed."""
+    try:
+        try:
+            held = os.fstat(marker_fd)
+            try:
+                named = os.stat(MARKER, dir_fd=dfd, follow_symlinks=False)
+            except OSError:
+                return False
+            if not stat.S_ISREG(named.st_mode):
+                return False
+            if (named.st_ino, named.st_dev) != (held.st_ino, held.st_dev):
+                return False
+            os.unlink(MARKER, dir_fd=dfd)
+            return os.fstat(marker_fd).st_nlink == 0
+        except OSError:
+            return False
+    finally:
+        os.close(marker_fd)
+
 def _in_repo(repo, fn):
     cwd = os.getcwd()
     try:
@@ -264,11 +325,15 @@ def _write_claim_body(
         return False
     return True
 
-def _retire_claim(dfd):
-    """Disarm first, then drop claim/marker. Fail closed if disarm fails."""
+def _retire_claim(dfd, *, unlink_marker=True):
+    """Disarm first, then drop claim/marker. Fail closed if disarm fails.
+
+    unlink_marker=False when the caller has already spent this claim's token by
+    INODE, or has established the marker on disk is not this claim's to destroy.
+    """
     if not _disarm_merge("."):
         return False
-    ok = _unlink_marker(dfd)
+    ok = _unlink_marker(dfd) if unlink_marker else True
     ok = _unlink_if_exists(dfd, PENDING) and ok
     ok = _unlink_if_exists(dfd, ARMED) and ok
     return ok
@@ -369,6 +434,15 @@ def _read_spent_oid(repo):
         return None
     return oid if _is_commit_oid(oid) else None
 
+def _spent_names_tip(repo):
+    """True when SPENT records the commit HEAD currently points at."""
+    spent = _read_spent_oid(repo)
+    if not spent:
+        return False
+    r = _git(repo, "rev-parse", "--verify", "HEAD^{commit}")
+    tip = r.stdout.strip() if r.returncode == 0 else ""
+    return bool(tip) and spent == tip
+
 def _arm_merge(repo, claim_head, payload, *, prior_payload=None):
     """Arm merge authorization under .git/, bound to claim_head + claim digest."""
     if not _is_commit_oid(claim_head):
@@ -456,6 +530,96 @@ def write_claim(repo, state_dir, claim_head, marker_content):
 
     return _in_repo(repo, _write)
 
+def _claim_tree_bound(dfd, expected_tree):
+    """Claim tree AND the live index tree both equal expected_tree.
+
+    The caller hashed `git diff --cached` against a fixed HEAD, and that diff
+    determines the tree, so a matching reviewed hash plus this equality is the
+    whole binding — re-hashing the same content a second time proved nothing
+    and streamed every staged byte twice.
+    """
+    if not _is_commit_oid(expected_tree):
+        return False
+    if _staged_tree(".") != expected_tree:
+        return False
+    claim = _read_claim(dfd)
+    if not claim:
+        return False
+    return claim[2] == expected_tree
+
+def verify_claim_tree(repo, state_dir, expected_tree):
+    """Fail closed unless claim tree and current write-tree both equal expected_tree."""
+
+    def _verify():
+        dfd = open_state_dir(state_dir)
+        if dfd is None:
+            return False
+        try:
+            return _claim_tree_bound(dfd, expected_tree)
+        finally:
+            os.close(dfd)
+
+    return _in_repo(repo, _verify)
+
+def authorize_pass_merge(repo, state_dir, claim_head, marker_content):
+    """Authorize empty-resolution PASS-MERGE: staged tree must equal claim_head^{tree}."""
+
+    def _auth():
+        if not _is_commit_oid(claim_head):
+            return False
+        head_tree = _git(".", "rev-parse", "--verify", f"{claim_head}^{{tree}}")
+        if head_tree.returncode != 0:
+            return False
+        head_tree = head_tree.stdout.strip()
+        staged_tree = _staged_tree(".")
+        if not head_tree or not staged_tree or staged_tree != head_tree:
+            return False
+        dfd = open_state_dir(state_dir)
+        if dfd is None:
+            return False
+        marker_fd = None
+        try:
+            marker_fd = _open_marker_for_consume(dfd, marker_content)
+            if not _is_marker_fd(marker_fd):
+                return False
+            merge_heads = _merge_heads(".")
+            if merge_heads is None:
+                return False
+            # SPEND FIRST, ARM SECOND. The reverse order leaves a window in which
+            # the claim is armed and the token still on disk: a concurrent
+            # reference transaction spends the arm, and if the consume then fails
+            # (the token was renamed aside, or hard-linked) the token survives to
+            # be restored and used again. Consuming first cannot produce that
+            # pair. Its own failure mode — token spent, claim never written — is
+            # the fail-CLOSED one: nothing is authorized and the operator re-runs
+            # /litmus, which is strictly better than a live arm nobody has paid
+            # for. Pathname ENOENT is a failure here, not a no-op.
+            if not _finish_marker_consume(dfd, marker_fd):
+                marker_fd = None
+                return False
+            marker_fd = None
+            # unlink_marker=False below only because the token is ALREADY gone —
+            # the only thing a pathname unlink could still find is a file someone
+            # else put there after the consume, which is not ours to destroy.
+            if not _write_claim_body(
+                dfd, state_dir, claim_head, marker_content, staged_tree, merge_heads
+            ):
+                return False
+            if not _claim_tree_bound(dfd, staged_tree):
+                if not _retire_claim(dfd, unlink_marker=False):
+                    return False
+                return False
+            return True
+        finally:
+            if _is_marker_fd(marker_fd):
+                try:
+                    os.close(marker_fd)
+                except OSError:
+                    pass
+            os.close(dfd)
+
+    return _in_repo(repo, _auth)
+
 def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_content):
     """Consume skip-litmus.local and write audit + pending claim without shell redirects."""
 
@@ -492,21 +656,29 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
                 dfd, state_dir, claim_head, marker_content, staged_tree, merge_heads
             ):
                 return False
+            # Consume the held inode immediately so it cannot be renamed aside and
+            # restored for a second merge. Abort/retry requires a fresh aged skip.
             try:
                 consumed = finish_skip_consume(dfd, SKIP, skip_fd)
-                skip_fd = None
             except OSError:
+                # finish_skip_consume swallows its own OSErrors, but its finally
+                # closes the fd and that close can itself raise. Letting it escape
+                # here would skip _retire_claim and leave the claim it just wrote
+                # armed with no in-band recovery.
                 consumed = False
+            # Cleared unconditionally: the fd is closed on every exit from
+            # finish_skip_consume, so the finally below must not close it again.
+            skip_fd = None
             if not consumed:
                 if not _retire_claim(dfd):
                     return False
                 return False
-            completed = dict(started)
-            completed["ts"] = datetime.datetime.now(datetime.timezone.utc).strftime(
+            bound = dict(started)
+            bound["ts"] = datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
-            completed["event"] = "skip-review-consumed"
-            if not append_at(dfd, json.dumps(completed, separators=(",", ":"))):
+            bound["event"] = "skip-review-consumed"
+            if not append_at(dfd, json.dumps(bound, separators=(",", ":"))):
                 if not _retire_claim(dfd):
                     return False
                 return False
@@ -554,6 +726,126 @@ def unlink_marker(repo, state_dir):
 
 def clear_claim_repo(repo, state_dir):
     return _in_repo(repo, lambda: clear_claim(state_dir))
+
+def clear_stale_abort_state(repo, state_dir):
+    """Clear stale merge auth after abort; fail closed on rename-aside.
+
+    Retiring an ARMED claim spends its bound token by inode when that token is
+    present, and proceeds without spending when it is absent (already consumed) or
+    foreign (a later /litmus minted different content). Retiring only ever
+    TIGHTENS: with no claim, the next merge is refused until re-authorized. An
+    unarmed claim is refused as a forgery unless spent names the live tip, which
+    is the interrupted-publication shape; with no claim at all the spent record
+    decides alone and the marker is never touched.
+
+    Refusing on "cannot prove the token was consumed" was tried and reverted
+    twice: it leaves the claim armed, and the shell only clears state AFTER this
+    returns, so every later refs/heads update is refused with no in-band recovery.
+    """
+
+    def _clear():
+        dfd = open_state_dir(state_dir)
+        if dfd is None:
+            return False
+        try:
+            claim = _read_claim(dfd)
+            if claim is False:
+                return False
+            if claim is None:
+                # No claim binds the marker to this merge, so there is nothing to
+                # securely consume. Consuming it anyway would destroy an unrelated
+                # review token AND let the marker's mere PRESENCE decide the
+                # outcome — a fail-open keyed on a file the gated party can create.
+                # Decide on the protected spent record alone. The one recoverable
+                # shape is a publication interrupted after the claim was retired
+                # but before spent was; refusing that refused every later
+                # transaction forever. Finishing the retirement authorizes nothing
+                # — the caller still has to justify its own ref update.
+                if not _spent_names_tip("."):
+                    return False
+                return _finish_published_cleanup(
+                    dfd, ".", state_dir, unlink_marker=False
+                )
+            # Four states: an fd (a REGULAR, single-link marker holding this
+            # claim's exact reviewed content), None (absent), _MARKER_FOREIGN (a
+            # well-formed token from a LATER /litmus), or False (a file that is
+            # not a valid one-use token at all — multi-linked, non-regular,
+            # unreadable, malformed). None of the three non-fd states is grounds
+            # to REFUSE: refusing leaves the claim armed and every later
+            # refs/heads update blocked with no in-band recovery.
+            #
+            # They differ in whether the file survives, which is why False and
+            # _MARKER_FOREIGN cannot stay collapsed. A foreign token is a review
+            # the operator just ran; destroying it would revoke it. A
+            # structurally refused file is one NO path should ever spend — and
+            # consume_if_pending reads and removes the marker by PATHNAME without
+            # checking nlink, so leaving a hard-linked or malformed file there
+            # would let that path spend it later. It goes.
+            #
+            # What removing it does NOT do is reach the second hard link: that
+            # entry lives in a directory this code never names. ADR 0051 records
+            # the residual rather than pretending otherwise.
+            marker_fd = _open_marker_for_consume(dfd, expected_content=claim[1])
+            claim_head, marker_content, staged_tree, merge_heads = claim
+            payload = _claim_arm_payload(
+                claim_head, marker_content, staged_tree, merge_heads
+            )
+            # Refuse fake claim prefixes that do not match the protected arm,
+            # unless spent names the live tip (interrupted publish cleanup).
+            if not _is_armed(".", payload):
+                if _spent_names_tip("."):
+                    # A marker here can only be one whose content matches this
+                    # claim's, so it IS the reviewed token: consume it by INODE.
+                    # Letting _finish_published_cleanup unlink it by pathname would
+                    # let a rename-aside survive the retirement and be restored,
+                    # turning a one-use authorization into a reusable one.
+                    drop_invalid = marker_fd is False
+                    if _is_marker_fd(marker_fd):
+                        consumed = _finish_marker_consume(dfd, marker_fd)
+                        marker_fd = None
+                        if not consumed:
+                            return False
+                    if _is_regular(dfd, "skip-litmus.bound.local"):
+                        if not _unlink_if_exists(dfd, "skip-litmus.bound.local"):
+                            return False
+                    return _finish_published_cleanup(
+                        dfd, ".", state_dir, unlink_marker=drop_invalid
+                    )
+                if _is_marker_fd(marker_fd):
+                    try:
+                        os.close(marker_fd)
+                    except OSError:
+                        pass
+                return False
+            # Armed claim, merge NOT published: retire it. Nothing is being spent
+            # on this path and nothing granted, so retiring is strictly TIGHTENING.
+            # Spend the bound token if it is actually here
+            # — by INODE, so a rename-aside cannot survive and be restored. If it
+            # is absent (already consumed by a PASS-MERGE/SKIPPED-OPERATOR
+            # authorization, or dropped as stale) or foreign (a later /litmus minted
+            # different content), there is nothing of this claim's to spend and the
+            # other token is not ours to destroy. Retiring is strictly TIGHTENING:
+            # with no claim, the next merge is refused until it is re-authorized.
+            drop_invalid = marker_fd is False
+            if _is_marker_fd(marker_fd):
+                if not _finish_marker_consume(dfd, marker_fd):
+                    return False
+            if _is_regular(dfd, "skip-litmus.bound.local"):
+                if not _unlink_if_exists(dfd, "skip-litmus.bound.local"):
+                    return False
+            # No trailing "marker must now be absent" assertion: a FOREIGN marker
+            # (a later /litmus minted different content) is legitimately still here
+            # and is not this claim's to destroy. Asserting its absence re-created
+            # exactly the permanent refusal this branch exists to avoid.
+            #
+            # unlink_marker=False for the same reason: this claim's own token was
+            # already spent by inode above, so the only file _unlink_marker could
+            # still find HERE is the foreign one the comment above says to keep.
+            return _retire_claim(dfd, unlink_marker=drop_invalid)
+        finally:
+            os.close(dfd)
+
+    return _in_repo(repo, _clear)
 
 def clear_claim(state_dir):
     """Remove pending claim files without creating a state directory."""
@@ -679,10 +971,11 @@ def _unlink_git_state(repo, name):
     except OSError:
         return False
 
-def _finish_published_cleanup(dfd, repo, state_dir):
+def _finish_published_cleanup(dfd, repo, state_dir, *, unlink_marker=True):
+    """Retire a published arming. unlink_marker=False when no claim bound it."""
     if not _unlink_git_state(repo, ARMED_GIT):
         return False
-    ok = _unlink_marker(dfd)
+    ok = _unlink_marker(dfd) if unlink_marker else True
     ok = _unlink_if_exists(dfd, PENDING) and ok
     ok = _unlink_if_exists(dfd, ARMED) and ok
     ok = _unlink_if_exists(dfd, _BLOCK_COUNT) and ok
@@ -895,7 +1188,11 @@ def consume_if_pending(repo, state_dir, gate_name):
             if not marker_content:
                 return _retire_claim(dfd)
             if claim_marker and marker_content != claim_marker:
-                return _retire_claim(dfd)
+                # This claim's own token is already gone; what sits at MARKER is a
+                # LATER mint. Same reasoning as the armed-claim path above — it is
+                # not ours to destroy, and destroying it would revoke a review the
+                # operator had just run.
+                return _retire_claim(dfd, unlink_marker=False)
 
             ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             commit_sha = _git(".", "rev-parse", "HEAD").stdout.strip() or "unknown"

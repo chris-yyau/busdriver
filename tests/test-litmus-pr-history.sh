@@ -267,6 +267,33 @@ rm -rf "$OTHER"
 [ -n "$OTHER_FILE" ] || fail "an ordinary repo resolved to no store at all"
 [ "$OTHER_FILE" != "$PR_HISTORY_FILE" ] || fail "an unrelated repo shares this repo's store"
 
+# ── 5cc. a sha256 repository is supported, not silently disabled ─────────────
+# Object ids are 64 hex characters there. Hardcoding 40 clears the key and turns
+# the whole feature off on such a repo with no error at all — a cold review every
+# pass, forever. Skipped where git is too old to create one.
+SHA256_REPO=$(mktemp -d)
+if git init -q -b main --object-format=sha256 "$SHA256_REPO" 2>/dev/null; then
+  S256_OUT=$(
+    cd "$SHA256_REPO"
+    git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    echo "s256 $$-${RANDOM}" > f.txt && git add f.txt && git commit -qm s256 >/dev/null
+    B=$(git rev-parse HEAD)
+    # shellcheck source=../skills/litmus/scripts/lib/iteration-history.sh
+    source "$LIB"
+    [ -n "$PR_HISTORY_FILE" ] || { echo "NO_STORE"; exit 0; }
+    mkdir -p "$PR_HISTORY_DIR"
+    echo two > g.txt && git add g.txt && git commit -qm two >/dev/null
+    append_pr_history '{"status":"FAIL","issues":[{"severity":"high","file":"f","line":1,"description":"sha256 finding"}]}' "$B" "$B"
+    load_pr_history "$B"
+    rm -f "$PR_HISTORY_FILE"
+  )
+  echo "$S256_OUT" | grep -q "sha256 finding" \
+    || fail "sha256 repository silently disabled the store:\n$S256_OUT"
+else
+  echo "note: git cannot create a sha256 repository here — fixture 5cc not exercised"
+fi
+rm -rf "$SHA256_REPO"
+
 # ── 5d. the store is found from a subdirectory ───────────────────────────────
 # PR_HISTORY_FILE is resolved at source time, so re-source there: this is the
 # shape that matters, the loop launched with a subdirectory as its CWD.

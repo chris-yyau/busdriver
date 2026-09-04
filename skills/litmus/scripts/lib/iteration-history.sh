@@ -172,7 +172,7 @@ clear_iteration_history() {
 # lookup needs neither a shell nor PATH.
 #
 # The key is the ROOT COMMIT: stable across worktrees, clones and renames, and
-# already 40 hex characters so nothing needs hashing. Both failure shapes are
+# already a hex object id so nothing needs hashing. Both failure shapes are
 # safe — no commits yet gives an empty key and no store at all, and a shallow
 # clone gives a different root, hence a cold review.
 #
@@ -194,7 +194,10 @@ _PR_HISTORY_KEY="$(git rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -
 case "$_PR_HISTORY_KEY" in
   *[!0-9a-f]* | "") _PR_HISTORY_KEY="" ;;
 esac
-[ "${#_PR_HISTORY_KEY}" -eq 40 ] || _PR_HISTORY_KEY=""
+# 40 for sha1, 64 for a sha256 repository (`git init --object-format=sha256`).
+# Hardcoding 40 would clear the key on such a repo and silently disable the whole
+# feature there — no error, just a cold review every pass, forever.
+case "${#_PR_HISTORY_KEY}" in 40|64) ;; *) _PR_HISTORY_KEY="" ;; esac
 if [ -n "$_PR_HISTORY_HOME" ] && [ -d "$_PR_HISTORY_HOME" ] && [ -n "$_PR_HISTORY_KEY" ]; then
   PR_HISTORY_DIR="$_PR_HISTORY_HOME/.claude/litmus-pr-history"
   PR_HISTORY_FILE="$PR_HISTORY_DIR/$_PR_HISTORY_KEY.jsonl"
@@ -275,7 +278,7 @@ append_pr_history() {
     case "$_sha" in
       *[!0-9a-f]* | "") return 0 ;;
     esac
-    [ "${#_sha}" -eq 40 ] || return 0
+    case "${#_sha}" in 40|64) ;; *) return 0 ;; esac   # sha1 | sha256 repo
   done
   [ -n "$PR_HISTORY_FILE" ] || return 0
   mkdir -p "$PR_HISTORY_DIR" 2>/dev/null || return 0
@@ -404,7 +407,10 @@ for line in lines:
     sha = str(entry.get("head_sha") or "")
     # Strict hex: the value reaches git as argv, so it cannot inject a command,
     # but a `-`-leading string would be read as a flag. Reject anything odd.
-    if len(sha) != 40 or not set(sha) <= HEX:
+    # 40 = sha1, 64 = a sha256 repository. Strict hex either way: the value
+    # reaches git as argv, so it cannot inject a command, but a `-`-leading
+    # string would be read as a flag.
+    if len(sha) not in (40, 64) or not set(sha) <= HEX:
         continue
     if entry.get("base_sha") != BASE:
         continue

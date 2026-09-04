@@ -3483,6 +3483,15 @@ def _static_alias_scope(chunks, cd_poisons=True):
             # Under an exempted leading `cd`, an invocation with no `-C` runs in
             # that directory — not in the session cwd — so it must be compared as
             # such or it reads as disagreeing with an equivalent absolute `-C`.
+            # MAIN chunk only. A nested chunk's ordering relative to the cd is not
+            # decidable here, and the redirection forms attached to a `cd` run
+            # BEFORE the directory changes: in `cd /other > >(git merge feature)`
+            # the nested merge runs in the SESSION repo while this would attribute
+            # it to /other, and both words being recognised subcommands leaves
+            # UNKNOWN_CANDIDATES empty, so /other's skip file could authorize a
+            # move of the session repo's protected ref. Refuse instead.
+            if lead and depth:
+                return None
             here = here or lead
             if scope is not None and scope != here:
                 return None

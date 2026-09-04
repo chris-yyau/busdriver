@@ -1882,6 +1882,12 @@ run_gate "...but a cd AFTER the merge still poisons the alias scope" \
 # reason — not by an unresolvable-operand message.
 run_gate "an equivalent -C agrees with the exempted leading cd" \
     block "cd $REPO && git merge HEAD && git -C $REPO zz feature" "ALONGSIDE"
+# The inferred scope is the MAIN chunk's only. A nested chunk's ordering against
+# the cd is not decidable here, and a redirection attached to the cd runs BEFORE
+# the directory changes, so attributing the nested git to the cd target would be
+# a guess in the fail-OPEN direction.
+run_gate "...but the inferred scope never reaches a nested chunk" \
+    block "cd $REPO && git merge HEAD && bash -c 'git zz feature'" "cannot be resolved"
 # The anchor a command names can BE the session's own repo, and then consent and
 # effect do not diverge — the escape hatch must not depend on whether the
 # operator typed a redundant `-C`.

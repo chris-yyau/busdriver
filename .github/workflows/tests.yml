@@ -27,7 +27,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,6 +81,31 @@ jobs:
             tests/test-gateguard-containment.sh \
             tests/test-gate-env-containment.sh \
             tests/test-node-hook-containment.sh
+      - name: Lint gate-integrity content lock (#742)
+        # scripts/gate-integrity.sh is the content lock over hooks/gate-scripts/**
+        # and scripts/hooks/** — the control that makes a launcher body edit
+        # impossible to land without a lockfile diff. Required, not soft.
+        run: |
+          shellcheck --severity=warning \
+            scripts/gate-integrity.sh \
+            tests/test-gate-integrity.sh
+      - name: Verify gate-integrity content lock (#742)
+        # The ENFORCEMENT, not just the lint. tests/test-gate-integrity.sh already
+        # runs `--check` as its first assertion and is discovered by the full-glob
+        # shell-tests job, but that job `needs: shellcheck` and takes ~15m — so a
+        # stale lock would only surface at the far end of the run, and the wiring
+        # would be implicit-by-glob rather than stated anywhere. This step fails
+        # fast, here, and names the one-line fix.
+        # `env -i` + an absolute interpreter, for what they actually buy — and no
+        # more. They stop THIS hop inheriting a hostile env and stop PATH selecting
+        # the interpreter. They do NOT establish a clean first hop: Actions has
+        # already started the outer `run:` shell, which processed any inherited
+        # BASH_ENV before reaching this line. Nothing inside the repo can fix that,
+        # and it is not this control's boundary anyway — a BASH_ENV set from the repo
+        # lands in the workflow diff, the same visible self-bypass as running
+        # `--update`, and one set from outside means the runner is already
+        # compromised. ADR 0016 / ADR 0049: the first hop is the caller's.
+        run: env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash scripts/gate-integrity.sh --check
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true
@@ -107,14 +132,14 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Generate SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           format: spdx-json
           output-file: sbom.spdx.json
@@ -142,7 +167,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,7 +184,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,12 +220,25 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Job-level wall-clock ceiling, not a validation budget: every check in this
+    # job still runs and still has to pass. Raised 5 -> 10 because the dependency
+    # install step alone measured 2m34s on 2026-09-04 (in the shell-tests job of
+    # the same workflow run, which passed) against a 5-minute budget SHARED with
+    # harden-runner, checkout and setup-node. That produced four consecutive
+    # `validate` failures whose only failing step was a CANCELLED install -- a red
+    # required check reporting an install timeout as a schema-validation failure.
+    # (Written without naming the install command literally: validate-workflow-
+    # security.js scans this file for that token and requires the hardening flag
+    # beside it, so the bare name in a COMMENT trips the check. Measured.) The npm
+    # manifests were untouched by the PR that hit it, so the slowdown is
+    # environmental. Same reasoning, and the same "headroom over the measurement
+    # rather than tuned to it", as the shell-tests ceiling below.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,7 +276,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -332,12 +370,19 @@ jobs:
     # be hard-canceled at 20 -- trading a per-test timeout for a job timeout, which is
     # the same false failure wearing a different name. Raised so the per-test budget is
     # the binding constraint, which is the one that names the suite at fault.
-    timeout-minutes: 30
+    #
+    # Raised again 30 -> 45 on 2026-09-04, for the same reason one more time. The
+    # suite is now 147 discovered tests, not the 103 the 30-minute ceiling was set
+    # for, and it has caught up with it: measured 29m29s on a PASSING run, and one
+    # 30m17s cancellation in which nothing failed -- the job was killed AT the
+    # ceiling, the identical false-failure shape as the #548 case above. 45
+    # restores headroom over the observed runtime instead of tracking it.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -358,4 +403,4 @@ jobs:
         # does not depend on codex/agy/droid/grok being installed (see
         # docs/ci/shell-test-inventory.md). Per-test timeout is portable via
         # scripts/lib/resolve-cli.sh's _portable_timeout.
-        run: bash scripts/ci/run-shell-tests.sh
+        run: /bin/bash -p scripts/ci/run-shell-tests.sh

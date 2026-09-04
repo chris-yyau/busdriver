@@ -783,6 +783,64 @@ deny = []' > "$tmp/commented.toml"
   else
     fail "preflight only checks the file for symlinks — a symlinked ~/.grok would hand the repo the profile and the grok binary"
   fi
+  # #785: the runtime-socket refusal. Behavioural and host-independent — the
+  # check sits outside the real-run branch precisely so it can be driven with a
+  # VALID fixture profile plus a socket path, which is the only way CI (no
+  # ~/.grok) can reach it at all. $2 is its socket-path override, the same
+  # test-only seam as $1. good.toml is the accepted fixture asserted above, so a
+  # refusal here can only be the socket.
+  _sock_probe=""
+  if ! _sock_probe="$(mktemp -d)" || [[ -z "$_sock_probe" || ! -d "$_sock_probe" ]]; then
+    fail "could not create a temp dir for the runtime-socket fixtures"
+    _sock_probe=""
+  fi
+  if [[ -n "$_sock_probe" ]]; then
+    : > "$_sock_probe/real"
+    ln -s "$_sock_probe/real" "$_sock_probe/link"
+    # A negative case treats ANY refusal as success, so prove the fixture is
+    # really a symlink first — same discipline as link.toml above.
+    [[ -L "$_sock_probe/link" ]] || fail "the runtime-socket fixture is not a symlink — its case would pass for the wrong reason"
+    _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/link" 2>/dev/null)"
+    if [[ "$_sock_out" == "WHY=runtime-socket" ]]; then
+      pass "preflight refuses WHY=runtime-socket when the runtime socket is a symlink (#785)"
+    else
+      fail "a symlinked runtime socket produced '${_sock_out:-<empty>}' instead of WHY=runtime-socket — grok would be dispatched, die applying strict's runtime-socket deny, and the slot would read runtime-failed"
+    fi
+    # ...and it must fire on a SYMLINK only, or every host loses the lane. The
+    # accept direction is asserted whole: with a compliant profile and a
+    # non-symlink socket the preflight must still SUCCEED.
+    for _s in real absent; do
+      if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" "$_sock_probe/$_s" 2>/dev/null)" \
+         && [[ "$_sock_out" == HOME=* ]]; then
+        pass "the runtime-socket check does not fire on a $_s socket path"
+      else
+        fail "a $_s socket path was refused ('${_sock_out:-<empty>}') — the check must fire on a symlink only, or it refuses the lane on every host"
+      fi
+    done
+    # The seam must stay a seam: with no $2 the fixture path is unaffected, so
+    # the ~40 profile-body cases above never touch the host's real socket.
+    if _sock_out="$(/usr/bin/env -i /bin/bash -p "$CHILD" "$tmp/good.toml" 2>/dev/null)" \
+       && [[ "$_sock_out" == HOME=* ]]; then
+      pass "a fixture run with no socket override is unaffected by the host's real socket"
+    else
+      fail "the fixture path now consults the host runtime socket — every profile-body case would refuse on a Docker Desktop Mac"
+    fi
+    rm -rf "$_sock_probe"
+  fi
+
+  # Production callers pass no $2, so the real-run DEFAULT is the check.
+  if /usr/bin/grep -q 'sock=/var/run/docker.sock' "$CHILD"; then
+    pass "the runtime-socket check defaults to the path grok names in its refusal"
+  else
+    fail "the runtime-socket default path changed — production passes no \$2, so a changed default silently disables the #785 check"
+  fi
+  # ...and only in real-run mode, or the default would leak into the fixtures.
+  if /usr/bin/grep -q '\[\[ "\$realrun" == 1 \]\] && sock=' "$CHILD"; then
+    pass "the socket default applies to real runs only, never under a fixture"
+  else
+    fail "the socket default is no longer conditioned on real-run mode"
+  fi
+
   [[ -e "$tmp/missing.toml" ]] && fail "missing.toml exists — the missing-file case is not testing what it claims"
 
   _cases=(
@@ -878,6 +936,8 @@ if declare -F grok_preflight_hint >/dev/null; then
   _h_identity="$(grok_preflight_hint)"
   _GROK_PREFLIGHT_WHY=profile
   _h_profile="$(grok_preflight_hint)"
+  _GROK_PREFLIGHT_WHY=runtime-socket
+  _h_socket="$(grok_preflight_hint)"
   unset _GROK_PREFLIGHT_WHY
 
   if [[ "$_h_containment" == *"INSIDE the checkout"* ]]; then
@@ -900,8 +960,67 @@ if declare -F grok_preflight_hint >/dev/null; then
   else
     fail "the profile refusal no longer names docs/examples/grok-sandbox.toml"
   fi
+  # #785's hint must NOT send the operator to the example profile: the failing
+  # deny is grok's built-in strict base, and no profile edit can fix it.
+  if [[ "$_h_socket" == *"docker.sock"* && "$_h_socket" != *"docs/examples/grok-sandbox.toml"* ]]; then
+    pass "the runtime-socket refusal names the socket, not the example profile"
+  else
+    fail "the runtime-socket refusal reuses the generic profile message — it would send the operator to edit a profile that cannot fix a host symlink"
+  fi
 else
   fail "grok_preflight_hint is not defined — the refusal messages have no source"
+fi
+
+# #785 (PR #791): the route-time warning. Two properties, and the SCOPING one
+# is the load-bearing half — `runtime-socket` warns, every other refusal reason
+# stays silent. Without that, a host that simply has no grok (WHY=binary, the
+# common case) prints a docker.sock error on every council and blueprint run.
+#
+# Behavioural, not textual, and driven through a command substitution exactly as
+# production wraps the resolver (`REVIEWER_3_CLI=$(resolve_role_cli ...)`): a
+# guard held in a shell VARIABLE is discarded when that subshell exits, so a
+# source grep would pass a guard that never fires. stderr is what is counted —
+# `$(...)` does not capture it, which is why the operator sees the hint at all.
+if declare -F _grok_available >/dev/null; then
+  _warn_prog='
+    . "'"$RESOLVE"'" >/dev/null 2>&1 || exit 9
+    grok_sandbox_preflight() { _GROK_PREFLIGHT_WHY="$WHY_FIXTURE"; return 1; }
+    grok_preflight_hint() { echo "SOCKET-HINT-FIXTURE"; }
+    _ignored=$(_grok_available)
+    _ignored=$(_grok_available)
+  '
+  _warn_out="$(WHY_FIXTURE=runtime-socket /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+  _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+  if [[ "$_warn_n" -ge 1 ]]; then
+    pass "a runtime-socket refusal warns at route time, through the command substitution production wraps the resolver in"
+  else
+    fail "a runtime-socket refusal emitted no hint — the route-time refusal is silent again, which is #785's defect (the slot reads resolve-droid-fallback, naming the fallback but never the cause)"
+  fi
+
+  # The other half. A host with no grok at all refuses `binary`, and must say
+  # nothing — this is the scoping decision that keeps the lane quiet for every
+  # operator who never had grok.
+  for _why in binary configdir containment identity profile; do
+    _warn_out="$(WHY_FIXTURE="$_why" /bin/bash -c "$_warn_prog" 2>&1 >/dev/null)"
+    _warn_n="$(printf '%s\n' "$_warn_out" | /usr/bin/grep -c 'SOCKET-HINT-FIXTURE')"
+    if [[ "$_warn_n" -eq 0 ]]; then
+      pass "a $_why refusal stays silent at route time"
+    else
+      fail "a $_why refusal emitted the socket hint $_warn_n time(s) — every host without grok would print a docker.sock error on every council and blueprint run, and would be told to fix the wrong thing"
+    fi
+  done
+
+  # No dedup state, deliberately (see the comment on _grok_available). A marker
+  # file bought a HIGH-severity symlink truncation on shared /tmp to suppress an
+  # advisory line, and every atomic variant of it fails silent on an unwritable
+  # TMPDIR — restoring the silence #785 exists to break.
+  if /usr/bin/grep -q '_grok_socket_warn_once\|_GROK_SOCKET_WARNED' "$RESOLVE"; then
+    fail "a dedup guard is back on the runtime-socket warning — a variable one does not survive the caller's command substitution, and a marker-file one is a symlink-truncation surface that fails silent when it cannot write"
+  else
+    pass "the runtime-socket warning carries no dedup state to attack or to go stale"
+  fi
+else
+  fail "_grok_available is not defined — the route-time warning has no source"
 fi
 
 # The strongest statement available: run the real preflight against the file the
@@ -1161,7 +1280,16 @@ fi
 # This covers the DISPATCH path only — blueprint-review reaches droid through
 # its own `_bp_droid_rescue` and never consults this predicate; that half is
 # asserted below and exercised behaviourally in tests/test-droid-escalation.sh.
-if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" | has_match '"\$primary_cli" == "grok"'; then
+# Bound to the CURRENT first-argument variable: #803 renamed the local
+# `primary_cli` to `_SETD_PRIMARY` (no shadowable locals), which silently broke the
+# old name-keyed pattern. A bare `== "grok"` would re-pass on a guard over any
+# other variable, so keep it keyed to the operand.
+# COMMENT LINES ARE STRIPPED FIRST. Without that, commenting the guard OUT while
+# leaving its text behind still satisfied this assertion — the exact shape that
+# re-enables cross-provider escalation while the suite stays green.
+if /usr/bin/sed -n '/^should_escalate_to_droid()/,/^}/p' "$RESOLVE" \
+   | /usr/bin/grep -vE '^[[:space:]]*#' \
+   | has_match '"\$_SETD_PRIMARY" == "grok"'; then
   pass "should_escalate_to_droid refuses grok by name, so a runtime sandbox failure cannot fall through to droid"
 else
   fail "should_escalate_to_droid does not exclude grok — a runtime sandbox failure (preflight passed, profile unappliable) leaves _grok_refused=0 and forwards the prompt and quoted repo content to droid, a different provider"

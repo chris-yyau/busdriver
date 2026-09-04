@@ -1,8 +1,255 @@
-#!/bin/bash
+#!/bin/bash -p
+
+# #576: exported shell functions must never be IMPORTED, because once they are, nothing
+# in-script can undo it — in bash a function shadows a builtin, and `unset`, `set`,
+# `builtin` and `exec` are all shadowable. Measured: with `sha256sum` and `unset`
+# exported, a plain `bash script` ran the FORGED digest and `unset -f` silently did
+# nothing. A forged hash utility emits one constant digest for every diff and defeats
+# marker binding; a forged `od` makes the exclusion pin challenge predictable.
+#
+# So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
+#   1. The re-exec below, using "$BASH" so the interpreter is preserved. Privileged
+#      mode makes bash ignore
+#      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
+#      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
+#      #713). The kernel applies a shebang — nothing in the environment can shadow it.
+#   2. Callers that run this as `bash <script>` bypass the shebang, so they pass -p
+#      explicitly; skills/litmus/SKILL.md does. The GATES need neither: hooks.json execs
+#      contained-launch.sh (itself `#!/bin/bash -p`), which re-execs through `env -i`,
+#      so no BASH_FUNC_* survives to reach them.
+#   3. The re-exec below is a LAST-RESORT fallback for a caller that did neither. It
+#      calls `exec`, which is itself shadowable, so it closes the ordinary case and not
+#      a hostile parent — a parent that can forge `exec` in this script's environment is
+#      the process that launched it and could replace the script outright.
+if [[ "$-" != *p* ]]; then
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves those entries sitting in the
+# ENVIRONMENT, so any unprivileged bash CHILD re-processes them. Measured: with
+# BASH_ENV pointing at a file containing `exit 0`, a child launched from a
+# privileged parent exited 0 without running its body at all. Scrub them here,
+# where -p guarantees `unset` is the real builtin and no shadow was imported.
+# BASH_FUNC_* entries cannot be removed this way -- their names are not valid
+# identifiers, and `unset "BASH_FUNC_x%%"` leaves the environ entry in place
+# (measured; an unprivileged grandchild still imported it) -- so every child this
+# script launches is started with -p rather than relying on the scrub alone.
+# BD803-CLEAN-ENV-BEGIN
+# #803: privileged mode protects THIS shell only. It makes bash ignore BASH_ENV/ENV
+# and refuse BASH_FUNC_* imports, but it leaves every one of those entries sitting in
+# the ENVIRONMENT, so any unprivileged descendant re-imports them -- including a
+# plain `#!/bin/bash` helper reached through a sourced library, which no amount of
+# care in THIS file would cover. Measured: BASH_ENV pointing at a file containing
+# `exit 0` made a child exit 0 without running its body, and a forged
+# BASH_FUNC_python3%% was imported by an unprivileged grandchild.
+# BASH_FUNC_* entries cannot be removed with `unset` -- their names are not valid
+# identifiers and the environ entry survives (measured) -- so strip them by rebuilding
+# the environment once, here. SHELLOPTS/BASHOPTS are readonly and cannot be unset;
+# -p already ignores them.
+unset BASH_ENV ENV
+# Blank the dynamic-loader variables BEFORE anything below runs a binary. The
+# `-u` list built further down only cleans the FINAL re-exec's child, but the
+# enumerator (`env -0` / `perl`) and `printf` are themselves dynamically linked:
+# on Linux a hostile LD_PRELOAD/LD_AUDIT executes inside THOSE processes first,
+# and a preloaded enumerator can simply lie about the environment it reports.
+# Assignment, not `unset`: `unset` is a shadowable builtin (see the note above),
+# while assignment is grammar no exported function can intercept — and an EMPTY
+# LD_PRELOAD/LD_AUDIT is inert to the loader, so blanking is as good as removing.
+# Scope, stated honestly: this protects the binaries this block runs and every
+# descendant. It CANNOT protect the interpreter already executing these lines --
+# the loader acted before bash ran its first instruction, which no in-script step
+# can undo. DYLD_* is not blanked here (it is a family, not a fixed name); it is
+# still carried into the `-u` list below, and macOS ignores DYLD_* for the
+# SIP-protected /usr/bin binaries this block invokes.
+# Not locals: these arrive EXPORTED from the caller's environment, so assigning
+# empty keeps them exported and inert for every child -- hence SC2034 per line.
+# shellcheck disable=SC2034
+LD_PRELOAD=
+# shellcheck disable=SC2034
+LD_AUDIT=
+# shellcheck disable=SC2034
+LD_LIBRARY_PATH=
+# Same treatment for the Python loader variables, and for the same reason the LD_*
+# trio needs the ASSIGNMENT form rather than the `-u` list below: the re-exec is
+# conditional on that list being non-empty, so an environment carrying only
+# PYTHONPATH would skip it entirely and hand every `python3 -c` here an attacker
+# import path. That is not a theoretical descendant -- the backstop VERDICT
+# VALIDATOR is one of those calls, so a forged `sitecustomize.py` runs before the
+# code that decides whether a review passed. Measured: a hostile PYTHONPATH
+# executed sitecustomize.py ahead of the `-c` body, and a hostile PYTHONUSERBASE
+# got its usercustomize.py found, read and executed. Blanking is inert to Python
+# for all three (measured), exactly as an empty LD_PRELOAD is inert to the loader.
+# PYTHONSTARTUP is deliberately NOT here: measured, it applies only to interactive
+# sessions and never to `-c`, so adding it would be hardening with no vector.
+# Blanking PYTHONUSERBASE is NOT sufficient on its own: with it empty, site.py
+# falls back to deriving the user site directory from $HOME, which this block does
+# not strip -- so a hostile HOME still reaches usercustomize.py by a second route
+# (measured: it executed). PYTHONNOUSERSITE closes that, because it disables user
+# site-packages outright rather than relocating them, so no $HOME value can point
+# at anything. It is the one entry here that must be EXPORTED and NON-EMPTY: the
+# other three arrive exported already and are being emptied, while this one is
+# usually absent and is a flag Python tests for presence, not value. It is
+# deliberately absent from the `-u` strip list below -- this is the one Python
+# variable that must SURVIVE into every descendant. Measured: ENABLE_USER_SITE
+# becomes False, and ordinary stdlib use (json, sys -- all these call sites import)
+# is unaffected.
+# shellcheck disable=SC2034
+PYTHONPATH=
+# shellcheck disable=SC2034
+PYTHONHOME=
+# shellcheck disable=SC2034
+PYTHONUSERBASE=
+export PYTHONNOUSERSITE=1
+# Enumerate NUL-delimited (`env -0`), never newline-delimited. `env` output is NOT one
+# line per variable: a value holding an embedded newline followed by text shaped like
+# `BASH_FUNC_x%%=...` renders as its own line, and the name parsed out of that PHANTOM
+# names no real variable -- so `env -u` strips nothing, the carrier survives the exec,
+# the child re-detects the same phantom, and the block re-execs forever. Measured: an
+# unbounded exec loop, armed by one ordinary variable, by the very poisoned environment
+# this block exists to strip. A NUL can appear in neither an environment name nor a
+# value, so NUL-delimited entries are exact and that phantom cannot be constructed.
+# The trailing sentinel is the exit-status channel `env -0` otherwise loses through the
+# process substitution: `&&` emits it only when env succeeded, and it can only arrive
+# LAST. A final entry that is not the sentinel therefore covers BOTH a failed
+# enumeration AND a substitution that never opened (no /dev/fd, unwritable TMPDIR).
+# Neither may be read as "nothing to strip" -- that skips the clean re-exec and hands
+# every descendant the inherited entries -- so both refuse. The count bound stays as a
+# backstop against a pathological environment; NUL parsing is already O(n).
+_bd803_envclean=()
+_bd803_last=
+_bd803_count=0
+# shellcheck disable=SC2312  # `env -0`'s status is deliberately not read here: the
+# sentinel below IS the status channel, and splitting the substitution would
+# reintroduce a capture that cannot carry NUL bytes.
+while IFS= read -r -d '' _bd803_e; do
+  _bd803_last=$_bd803_e
+  _bd803_count=$((_bd803_count + 1))
+  if [[ ${_bd803_count} -gt 4096 ]]; then
+    printf '%s\n' "$0: environment listing too large — refusing to run unprivileged descendants (#803)" >&2
+    exit 1
+  fi
+  # Dynamic-loader variables are stripped alongside the forged functions. Be exact
+  # about what this does and does not buy: on Linux the loader honours LD_PRELOAD /
+  # LD_AUDIT before bash executes a single instruction, so `-p` cannot protect THIS
+  # process — that residual is unreachable from here, and a parent able to set them
+  # is the parent, which could as easily have exec'd a different binary outright
+  # (the same boundary the shadowable-`exec` note draws). What the strip does buy is
+  # that the re-exec'd shell and EVERY descendant start loader-clean, which is the
+  # same treatment resolve-cli.sh already gives each of its `env -i` children.
+  case "$_bd803_e" in
+    BASH_FUNC_*|LD_PRELOAD=*|LD_AUDIT=*|LD_LIBRARY_PATH=*|DYLD_*|PYTHONPATH=*|PYTHONHOME=*|PYTHONUSERBASE=*)
+      _bd803_envclean+=(-u "${_bd803_e%%=*}") ;;
+  esac
+# `env -0` is GNU; BSD/older macOS `env` rejects it and exits non-zero having
+# written nothing, which would refuse to start every hardened entry point on a
+# platform this repo explicitly supports (bash 3.2 is the macOS default). perl is
+# the fallback because it is already the portable stand-in `_portable_timeout`
+# relies on, and %ENV is read straight from environ, so a BASH_FUNC_x%% key —
+# not a valid shell identifier — is still visible to it. If BOTH are unavailable
+# the sentinel never arrives and the entry point refuses, which is the correct
+# direction: unknowable environment, no unprivileged descendants.
+#
+# The perl arm is itself environment-steerable, and it is reached with the hostile
+# environment still in place: PERL5OPT/PERL5LIB load attacker code BEFORE the
+# script runs, and a module that merely exits 0 produces an EMPTY enumeration that
+# the outer `&&` still stamps with the sentinel — "nothing to strip", every
+# BASH_FUNC_* inherited (measured: 0 bytes, rc 0). Closed twice over: `-T` makes
+# perl ignore PERL5LIB/PERLLIB/PERL5OPT outright, the assignment prefixes blank
+# them for belt and braces, and the count check after the loop refuses an
+# enumeration that returned nothing at all — no real environment is empty, so a
+# silent zero is a failure however it was produced.
+done < <( { /usr/bin/env -0 2>/dev/null \
+            || PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -T -e 'print map { "$_=$ENV{$_}\0" } keys %ENV'; } \
+          && /usr/bin/printf 'BD803-ENV-OK\0' )
+# -lt 2, not -lt 1: the SENTINEL is itself one of the entries the loop counted, so
+# an enumeration that returned nothing at all still arrives here with a count of 1.
+# Any real environment carries at least PATH alongside it.
+if [[ "$_bd803_last" != "BD803-ENV-OK" || "$_bd803_count" -lt 2 ]]; then
+  printf '%s\n' "$0: cannot enumerate the environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+if [[ ${#_bd803_envclean[@]} -gt 0 ]]; then
+  # A FAILED exec must not fall through. Non-interactive bash normally exits when
+  # exec cannot run the command, but that behaviour is switchable (`execfail`), and
+  # relying on an implicit exit for a security boundary means relying on a shell
+  # option to stay off. The realistic failure is E2BIG: every stripped name adds a
+  # `-u NAME` argument to an environment that is already large, and past ARG_MAX
+  # the exec fails — at which point falling through would run the whole script with
+  # exactly the BASH_FUNC_* entries this block exists to remove.
+  exec /usr/bin/env "${_bd803_envclean[@]}" "${BASH:-/bin/bash}" -p "$0" "$@"
+  printf '%s\n' "$0: cannot re-exec with a rebuilt environment — refusing to run unprivileged descendants (#803)" >&2
+  exit 1
+fi
+unset _bd803_envclean _bd803_e _bd803_last _bd803_count
+# BD803-CLEAN-ENV-END
 # Main litmus review loop script
 # Reads state, runs review, parses results, updates state, handles iteration logic
 
 set -euo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process, not just the
+# annotated ones. A replacement object can substitute the commit or tree that
+# `git diff` resolves, so a crafted refs/replace entry could make the reviewer read
+# fabricated history while the real content is what gets committed. Annotating call
+# sites one at a time left merge-base resolution, name-only/numstat classification and
+# the short-circuit path scan still honouring replacements — the env var covers them
+# all, and the explicit --no-replace-objects on the canonical hash stays as
+# documentation of the invariant.
+export GIT_NO_REPLACE_OBJECTS=1
+# #576: put the system directories FIRST so security-critical tools resolve to the real
+# binaries. Privileged mode stops exported FUNCTIONS from being imported, but it leaves
+# PATH alone — and PATH is repo-injectable the same way env is (#325 / ADR 0016). A
+# planted `git` earlier in PATH could emit benign reviewer-facing output while
+# delegating the canonical hash to the real git, minting a marker the fixed-PATH gate
+# then accepts for content nobody reviewed.
+#
+# Prepending rather than replacing is deliberate: the review CLI (codex/agy/droid) and
+# the SAST tools legitimately live elsewhere, and pinning PATH outright would break
+# their resolution — including the PATH stubs the test fixtures rely on.
+#
+# SCOPE, stated plainly. This makes the tools whose output the MARKER depends on resolve
+# to real binaries: git, and the hash utility, which is resolved to an absolute path in
+# a trusted directory anyway (below). It does NOT pin the review CLI itself, which is
+# resolved from PATH and operator config by design (BUSDRIVER_REVIEW_CLI,
+# scripts/lib/resolve-cli.sh) — a planted `codex` could still return a forged PASS. That
+# is the same trust question as any other tool this repo shells out to, it predates #576
+# and is unchanged by it, and pinning the reviewer belongs with the resolver, not here.
+# Tracked as #789.
+# What #576 guarantees is narrower and worth stating exactly: a marker cannot be bound
+# to a diff the reviewer was not shown.
+PATH="/usr/bin:/bin:$PATH"
+export PATH
+
+# #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
+# integrity checks are built on. Exported functions travel through the environment —
+# the same repo-injectable channel #325 / ADR 0016 closed for env vars — and in bash a
+# function beats both a builtin and a PATH binary. Measured: with `sha256sum` and
+# `command` exported as functions, `command -v sha256sum` returned the forged function's
+# output; after this unset it returned the real /sbin/sha256sum. A forged hash utility
+# emits one constant digest for every diff and defeats marker binding outright; a forged
+# `od` makes the exclusion pin challenge predictable. `command` is listed first because
+# it is itself shadowable, which is why prefixing calls with it is not sufficient alone.
+#
+# BE PRECISE ABOUT WHAT THIS DOES NOT COVER. `unset` is a special builtin, but bash
+# outside POSIX mode still resolves a function of that name first — measured: with
+# `unset`, `set` and `builtin` all exported as functions, this line silently does
+# nothing, and `set -o posix` / `builtin unset` are defeated the same way. So this is a
+# first line of defence against the ordinary case, NOT a boundary.
+#
+# The boundary is the launcher. The gates run under hooks/gate-scripts/lib/
+# contained-launch.sh, which re-execs through `/usr/bin/env -i` and documents this exact
+# class (`BASH_FUNC_exec%%=() { … }` overriding the `exec` builtin) — an absolute path
+# cannot be a function name, so that hop is unshadowable and strips every BASH_FUNC_*
+# before the gate starts. A caller who can additionally forge `unset` in THIS script's
+# environment is the process that launched it and could replace the script outright,
+# which no in-script check can answer.
+unset -f command git sha256sum shasum od tr cut wc cp mktemp readlink stat awk grep sed 2>/dev/null || true
+
+
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
@@ -164,7 +411,56 @@ if [ "$_LOCK_RC" != "0" ]; then
   echo "    lib/review-lock.sh for why a human does it.)" >&2
   exit 1
 fi
-trap 'review_lock_release' EXIT
+# Neutralise any INHERITED value before the trap can act on it. The trap unlinks
+# this path on every exit path, including ones taken long before the capture block
+# sets it, so an exported _INDEX_SNAPSHOT would turn the cleanup into a delete of
+# an attacker-chosen writable file. Env is repo-injectable (#325 / ADR 0016).
+_INDEX_SNAPSHOT=""
+# The diff-capture temps join the trap for the same reason: several guarded exits sit
+# between their creation and their explicit removal.
+_diff_tmp=""
+_diff_rc_file=""
+# Same blanking, same reason, for the exclusion snapshots the trap also unlinks: they
+# are created mid-run, and `source "$EXCL_LOGIC_SOURCE"` or the sentinel append can
+# exit under `set -e` before the in-flow cleanup, leaking private temp files.
+EXCL_POLICY_PINNED_TMP=""
+EXCL_LOGIC_PINNED_TMP=""
+# #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
+# resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
+# script already owns one -- replacing it would silently drop the cleanup below --
+# so the owner of the trap has to call it, or the ~250KB staged copy is left in
+# TMPDIR on every run and accumulates without bound.
+trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+
+# #790: every marker publication stamps a fresh generation token beside the marker.
+# The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
+# and refuses to publish if it has moved since — which is what stops it clobbering a
+# marker another run published while its agent was still thinking. Comparing marker
+# CONTENT cannot do that job: a republication of byte-identical content is invisible
+# to a digest (ABA).
+#
+# Stamp FIRST, write the marker second. A crash between the two leaves a moved token
+# in front of an old marker, which the delayed writer reads as "somebody published"
+# and refuses — the fail-CLOSED direction. Marker-first inverts that into a clobber.
+#
+# NOT an authorization artifact: forging it only toggles a liveness refusal, exactly
+# like the baseline it is compared against. Every caller below holds the review lock
+# for the lifetime of its run, and the builtin writer takes that same lock, so the
+# stamp and the marker write are serialized against every other publisher.
+#
+# The unlink before the redirect is not tidiness: `>` FOLLOWS a symlink sitting at the
+# path and truncates its target, and the state dir is repo-controlled, so a committed
+# link could aim this write at any file the operator can write. Unlinking first means
+# we always create our own regular file — the same reasoning applies to the baseline
+# write at exit 3 and to the builtin writer's own stamp.
+publish_marker_gen() {
+  local _gen_nonce
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  _gen_nonce=$(mktemp -u "genXXXXXXXX" 2>/dev/null || printf 'g%s%s' "$RANDOM" "$RANDOM")
+  rm -f "$STATE_DIR/litmus-marker-gen.local"
+  printf '%s-%s-%s\n' "$$" "$(date +%s)" "${_gen_nonce##*/}" > "$STATE_DIR/litmus-marker-gen.local"
+}
+
 # Children that take the lock themselves — init-review-loop.sh, invoked directly below
 # and again from the loop — must see this lock as theirs, not deadlock against it.
 review_lock_export_owner
@@ -220,13 +516,51 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 #     or fail the hashed bytes.
 # Must stay byte-identical to pre-pr-gate.sh's CURRENT_HASH computation (same formula).
 compute_pr_diff_hash() {
-  local base="$1" mb diff
+  # $2 (optional) pins the branch tip: #576 — resolving HEAD afresh here while the
+  # caller reviewed a specific commit lets the marker describe a different snapshot.
+  local base="$1" tip="${2:-HEAD}" mb _d _rc
   [[ -z "$base" ]] && return 1
-  mb=$(git merge-base "$base" HEAD 2>/dev/null) || return 1
+  # Resolve the tip to a SHA once. Both git invocations below MUST name the same two
+  # commit objects, or the emptiness probe and the hashed bytes could describe
+  # different snapshots.
+  tip=$(git rev-parse --verify "$tip" 2>/dev/null) || return 1
+  mb=$(git merge-base "$base" "$tip" 2>/dev/null) || return 1
   [[ -z "$mb" ]] && return 1
-  diff=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...HEAD" 2>/dev/null) || return 1
-  [[ -z "$diff" ]] && return 1
-  printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
+  # --full-index: a binary change is distinguished ONLY by its `index` line, which is a
+  # 7-char abbreviation by default — two distinct blobs sharing a chosen prefix would
+  # reuse the same reviewed-diff binding. MUST stay byte-identical to the pre-PR gate's
+  # own hash (hooks/gate-scripts/pre-pr-gate.sh), which is the PR-mode analogue of the
+  # commit-mode four-site coupling: change one without the other and every PR marker
+  # stops matching.
+  # Select by availability, never `a || b` in one pipe: if sha256sum consumes part (or
+  # all) of stdin and then fails, shasum hashes only the unread remainder — after full
+  # consumption that is the constant empty-stream digest, which would collapse every PR
+  # authorization hash onto one value. Commit mode and the gate both select this way.
+  # Absolute path in a trusted system dir — see the marker-hash resolver below for why
+  # `command -v` plus a prepended PATH is not enough (macOS keeps sha256sum in /sbin).
+  local _hash_cmd _d
+  _hash_cmd=()
+  for _d in /usr/bin /bin /sbin /usr/sbin; do
+    if [ -x "$_d/sha256sum" ]; then _hash_cmd=("$_d/sha256sum"); break; fi
+    if [ -x "$_d/shasum" ]; then _hash_cmd=("$_d/shasum" -a 256); break; fi
+  done
+  [ ${#_hash_cmd[@]} -eq 0 ] && return 1
+  # Never materialise the canonical diff in a shell variable. The reviewer's view is
+  # size-capped; this stream is not, so an excluded multi-megabyte text file — or binary
+  # content forced to text by a committed .gitattributes rule — would sit entirely in
+  # this process's memory. Ask git the emptiness question with --quiet, then stream the
+  # bytes straight into the hash utility. `git diff --quiet` exits 0 for "no
+  # differences", 1 for "differences found", >1 for a real failure; only 1 may proceed,
+  # because collapsing 1 and >1 would read a git error as a non-empty diff.
+  # MUST stay byte-identical to the pre-PR gate, which now streams the same way — a
+  # command substitution strips trailing newlines and a stream does not, so switching
+  # one side alone would silently stop every PR marker from matching.
+  _rc=0
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --quiet --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null || _rc=$?
+  [[ "$_rc" -ne 1 ]] && return 1
+  # `pipefail` is set, so a git failure part-way through the stream fails the whole
+  # pipeline rather than emitting a digest of a truncated diff.
+  git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --full-index --ignore-submodules=none "${mb}...${tip}" 2>/dev/null | "${_hash_cmd[@]}" | cut -d' ' -f1
 }
 
 # resolve_pr_base_branch: the origin-qualified base branch for PR mode, matching
@@ -836,13 +1170,13 @@ if [[ "${1:-}" == "--auto-pr-review" ]]; then
   export LITMUS_PR_FAST=1
   echo "🔍 Auto-triggering PR litmus review..."
   echo ""
-  bash "$SCRIPT_DIR/init-review-loop.sh" --force || {
+  /bin/bash -p "$SCRIPT_DIR/init-review-loop.sh" --force || {
     echo "❌ Failed to initialize PR review" >&2
     write_terminal_status setup_error
     exit 1
   }
   # Re-exec as normal review (picks up PR mode from state file + LITMUS_PR_FAST=1)
-  exec bash "$SCRIPT_DIR/run-review-loop.sh"
+  exec /bin/bash -p "$SCRIPT_DIR/run-review-loop.sh"
 fi
 
 # Source validation library
@@ -953,6 +1287,7 @@ else
     echo "   Commits will pass without code review." >&2
     echo "" >&2
     mkdir -p "$STATE_DIR"
+    publish_marker_gen
     echo "SKIPPED-NONE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
     printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
@@ -972,6 +1307,7 @@ else
       echo "   Resolution keeps already-reviewed code — auto-passing review"
       echo ""
       mkdir -p "$STATE_DIR"
+      publish_marker_gen
       echo "PASS-MERGE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
       clear_iteration_history
       rm -f "$STATE_FILE" 2>/dev/null
@@ -1045,9 +1381,240 @@ fi
 echo "📝 Loading review prompt..."
 PROMPT=$(sed -n '/^---$/,/^---$/!p' "$STATE_FILE" | sed '1d')
 
+# #576: the pinned comparison base for commit mode (set in the capture block below).
+# Declared here so PR mode and every downstream `--cached` read can name it safely;
+# empty means "unpinned", which is correct for PR mode (it diffs base...HEAD).
+# #576: resolve the comparison base ONCE, here, BEFORE anything reads it.
+#
+# Order is load-bearing. The exclusion policy and logic are materialised from a commit,
+# and the marker hash is taken against a commit; if those are resolved independently,
+# HEAD moving in between lets exclusions from commit A filter a review whose marker
+# binds commit B — a broad policy from A hides staged paths from the review, and the
+# marker is still accepted against B. One resolution, passed to every consumer.
+#
+# Unborn HEAD (no commits yet) has no base to pin: the array stays empty, which is also
+# the correct state for PR mode, where the diff is base...HEAD rather than --cached.
+_HEAD_BASE=()
+_HEAD_SHA=""
+# PR-mode endpoints. Declared (and BLANKED) here for two reasons: these are plain shell
+# variables, so an exported value would otherwise be inherited and could choose the
+# review base before this script computes it; and the pin has to be READ after it is
+# WRITTEN — an earlier revision froze _PR_BASE_REF near the mode guard, hundreds of
+# lines before _PR_BASE_SHA was resolved, so it silently kept the mutable branch name
+# and the pin never took effect.
+_PR_BASE_SHA=""
+_PR_BASE_REF=""
+_PR_TIP=""
+if _HEAD_SHA=$(git rev-parse --verify HEAD 2>/dev/null); then
+  _HEAD_BASE=("$_HEAD_SHA")
+else
+  _HEAD_SHA=""
+fi
+
 # Source auto-generated file exclusion (hardcoded defaults + .claude/review-exclude)
-# shellcheck source=lib/exclude-generated.sh
-source "$SCRIPT_DIR/lib/exclude-generated.sh"
+#
+# #576 item 3: VERIFY BEFORE USE. exclude-generated.sh decides what the reviewer is
+# never shown, so it is an integrity input, not a utility — and the check has to
+# happen HERE, before the source, not later at the excluded-only marker write. Checking
+# afterwards is checking the wrong instant: tampered logic would already have shaped
+# REVIEW_EXCLUDE_ARGS and hidden content from the reviewer, and restoring the file
+# before the later check would let it pass. Same check-vs-use ordering
+# dispatcher-commit-block.sh uses, from the shared guard so there is one copy.
+#
+# On failure we do NOT refuse the review — we review with NO exclusions. That is the
+# safer failure and the one without a lockout: refusing would make any busdriver
+# self-review that touches exclude-generated.sh unreviewable (the file is in-worktree
+# only during self-review; everywhere else it is trusted plugin code and the guard
+# returns immediately). "Cannot trust the exclusion list" ⇒ "exclude nothing" hides
+# no content by construction, and it also makes the excluded-only auto-pass branch
+# below unreachable, since STAGED_DIFF can no longer be emptied by exclusions.
+# #576: take ONE atomic snapshot of the index BEFORE anything reads it — the exclusion
+# integrity checks included.
+#
+# Why a snapshot and not repeated reads. The marker must name what the reviewer saw.
+# Separate `git diff --cached` calls cannot guarantee that: an index that moves between
+# them hands the reviewer diff A while the marker records diff B, which is the
+# unreviewed-diff authorization this whole change exists to close. Bracketing with a
+# before/after hash is NOT sufficient either — an A->B->A change leaves both hashes
+# equal to A while the diff came from B.
+#
+# Why BEFORE the exclusion checks. Verifying the policy and logic against the live index
+# and only then snapshotting leaves a window in which a concurrent `git add` places a
+# modified .claude/review-exclude into the snapshot AFTER its integrity check passed —
+# and since that path is itself eligible for exclusion, the marker could authorize an
+# unreviewed policy that becomes trusted once committed. One snapshot, taken first,
+# means the bytes that were checked are the bytes that get reviewed and hashed.
+#
+# Copying the index file removes the race rather than narrowing it: git writes the index
+# atomically (write to index.lock, then rename), so `cp` observes exactly one complete
+# version, and every read below is pinned to it via GIT_INDEX_FILE.
+_INDEX_SNAPSHOT=$(mktemp -t busdriver-index-XXXXXX) || {
+  echo "❌ Could not create an index snapshot — refusing to review" >&2
+  write_terminal_status setup_error
+  exit 1
+}
+if ! cp "$(git rev-parse --git-path index)" "$_INDEX_SNAPSHOT" 2>/dev/null; then
+  echo "❌ Could not snapshot the git index — refusing to review" >&2
+  write_terminal_status setup_error
+  exit 1
+fi
+# Exported here, so the exclusion guards' `git status` and every later `git diff
+# --cached` read the SAME index. The EXIT trap unlinks it.
+export GIT_INDEX_FILE="$_INDEX_SNAPSHOT"
+
+# shellcheck source=../../../scripts/lib/exclusion-integrity.sh
+if ! source "$SCRIPT_DIR/../../../scripts/lib/exclusion-integrity.sh" 2>/dev/null; then
+  echo "⚠️  Could not load the exclusion-integrity guard — reviewing with NO exclusions" >&2
+  REVIEW_EXCLUDE_ARGS=()
+else
+  _excl_worktree=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  # WHICH commit the exclusion inputs must match is mode-dependent, and getting it
+  # wrong is a self-review bypass.
+  #
+  # Commit mode: the pinned HEAD. The patterns are already-committed history, and the
+  # staged diff is what is under review.
+  #
+  # PR mode: the MERGE BASE, never the branch's own HEAD. The branch is the artifact
+  # under review, so validating its policy against its own tip only proves the PR is
+  # self-consistent — a PR that commits `*` into .claude/review-exclude would be
+  # "clean" and would then hide the rest of its own diff from the reviewer. The
+  # question is whether these patterns were reviewed BEFORE this branch, which is the
+  # merge base. An unresolvable base is not a licence to trust the branch's copy:
+  # leave it empty and let the guard refuse, which degrades to reviewing everything.
+  if [ "$REVIEW_MODE" = "pr" ]; then
+    # Against the PINNED commit, not the mutable HEAD ref: resolving the base from HEAD
+    # while the reviewed artifact is _HEAD_SHA lets a concurrent HEAD move source the
+    # exclusion inputs from a different history than the one under review — the same
+    # check-versus-use split this block exists to close.
+    # Pin the BASE ref too. Pinning only the tip leaves PR_BASE_BRANCH a mutable ref that
+    # the exclusion anchor, the reviewer diff and the marker hash each resolve
+    # independently: an A->B->A base transition lets the reviewer inspect B's diff while
+    # the marker hashes A, and the gate at A then accepts that mismatched review.
+    _PR_BASE_SHA=$(git rev-parse --verify "$(resolve_pr_base_branch)" 2>/dev/null || echo "")
+    if [ -n "$_PR_BASE_SHA" ]; then
+      _excl_base=$(git merge-base "$_PR_BASE_SHA" "${_HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+    else
+      _excl_base=""
+    fi
+  else
+    _excl_base="${_HEAD_SHA:-HEAD}"
+  fi
+  # BOTH inputs, both before use. The policy (which patterns) and the logic (which
+  # parses them) each decide what the reviewer never sees, so verifying only one leaves
+  # the other as an unguarded lever.
+  if [ -z "$_excl_base" ]; then
+    echo "⚠️  Could not resolve a reviewed base for the exclusion inputs — reviewing with NO exclusions" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  elif ! verify_exclusion_policy "$_excl_worktree" "$STATE_DIR" "$_excl_base"; then
+    echo "⚠️  Exclusion policy failed its integrity check — reviewing with NO exclusions" >&2
+    echo "    $EXCL_LOGIC_ERROR" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  elif ! verify_exclusion_logic "$_excl_worktree" "$SCRIPT_DIR" "$_excl_base"; then
+    echo "⚠️  Exclusion logic failed its integrity check — reviewing with NO exclusions" >&2
+    echo "    $EXCL_LOGIC_ERROR" >&2
+    REVIEW_EXCLUDE_ARGS=()
+  else
+    # Source the path the guard VALIDATED, never the un-collapsed original (PR #280).
+    # For an in-worktree logic file that path is a temp file holding HEAD's committed
+    # bytes, so nothing can swap it between verification and use.
+    # Point the parser at the COMMITTED policy bytes the guard just materialised, so
+    # the patterns actually applied are the ones that were verified. Assigned here (not
+    # exported) immediately before the source, so any ambient value is overwritten.
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE="${EXCL_POLICY_SOURCE:-}"
+    # PROVE the parser honoured the pin; do not assume it. The logic is materialised
+    # from the anchor commit, and in PR mode that is the MERGE BASE — a version that
+    # predates this override and therefore reads the branch's LIVE policy instead. A PR
+    # could then commit a wildcard exclusion, hide its own diff, and reach the
+    # excluded-only auto-pass even though the safe base policy was pinned correctly.
+    #
+    # Append a sentinel pattern to the pinned copy and look for it in the built args: it
+    # can only appear if the parser actually read the pinned file. Absent ⇒ this logic
+    # does not support pinning ⇒ its patterns came from an unverified source ⇒ use none.
+    # The sentinel itself is inert (it excludes a path name nothing can have).
+    # UNPREDICTABLE, not merely unique. This challenge is checked against output from a
+    # parser that may be reading the attacker-controlled live policy, so a guessable
+    # value is forgeable: $$ is observable and $RANDOM is 15 bits, so a PR could list
+    # candidate probe patterns alongside a wildcard exclusion and have one of them
+    # match, "proving" a pin that never happened and keeping its malicious exclusions.
+    # 128 bits from /dev/urandom makes that infeasible; no randomness means no proof,
+    # which is a refusal.
+    _excl_probe_rand=$(LC_ALL=C command od -An -N16 -tx1 /dev/urandom 2>/dev/null | command tr -d ' \n' || echo "")
+    _excl_probe="__busdriver_pin_probe_${_excl_probe_rand}"
+    if [ ${#_excl_probe_rand} -lt 32 ]; then
+      # DO NOT SOURCE. Clearing the pin and carrying on was a fail-open: logic predating
+      # the override would reload the attacker-controlled LIVE policy, and the emptied
+      # EXCL_POLICY_SOURCE simultaneously disabled the sentinel check that would have
+      # caught it. Without a challenge there is no way to prove the pin held, so the
+      # only safe move is to not run that parser at all.
+      echo "⚠️  No usable randomness for the exclusion pin probe — reviewing with NO exclusions" >&2
+      REVIEW_EXCLUDE_ARGS=()
+      _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    elif [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ]; then
+      # LEADING newline: a policy whose last line has no trailing newline would
+      # otherwise have the sentinel concatenated onto that final pattern, so neither
+      # caller sees a standalone :(exclude)<probe> and both conclude the pin was
+      # ignored — the producer would disable every exclusion and the dispatcher would
+      # reject a perfectly valid PASS-EXCLUDED marker. The extra blank line is inert;
+      # the parser skips empty lines.
+      # Guarded for the same reason as the source below: an unguarded redirection that
+      # fails under `set -e` exits before the no-exclusions fallback and before any
+      # terminal status is written, stranding automation on a stale PENDING.
+      if ! printf '\n%s\n' "$_excl_probe" >> "$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"; then
+        echo "⚠️  Could not write the exclusion pin probe — reviewing with NO exclusions" >&2
+        REVIEW_EXCLUDE_ARGS=()
+        _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+        _excl_probe_rand=""
+      fi
+    fi
+    if [ ${#_excl_probe_rand} -ge 32 ]; then
+      # Guard the source. As a bare command under `set -e` a failure here exits the loop
+      # immediately — before REVIEW_EXCLUDE_ARGS is cleared and before any terminal
+      # status is written, so the documented "review with no exclusions" fallback never
+      # runs and automation is left reading a stale PENDING state.
+      # shellcheck source=lib/exclude-generated.sh
+      if ! source "$EXCL_LOGIC_SOURCE"; then
+        echo "⚠️  Could not load the verified exclusion parser — reviewing with NO exclusions" >&2
+        REVIEW_EXCLUDE_ARGS=()
+      fi
+    fi
+    _BUSDRIVER_PINNED_REVIEW_EXCLUDE=""
+    # EXACT match, and the same comparison the strip below uses. A substring test
+    # accepted an element merely CONTAINING the probe — an older parser reading the live
+    # policy could return a suffix-bearing argument that satisfied the check, survived a
+    # strip that removes only exact matches, and left the attacker-controlled live
+    # exclusions in force.
+    _excl_probe_seen=no
+    for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+      [ "$_excl_arg" = ":(exclude)$_excl_probe" ] && _excl_probe_seen=yes && break
+    done
+    if [ ${#_excl_probe_rand} -lt 32 ]; then
+      : # already handled above: nothing was sourced, exclusions are empty
+    elif [ -n "${EXCL_POLICY_SOURCE:-}" ] && [ "$_excl_probe_seen" != yes ]; then
+      echo "⚠️  The exclusion parser at the review anchor does not support a pinned policy" >&2
+      echo "    (it would read the live, unverified one) — reviewing with NO exclusions" >&2
+      REVIEW_EXCLUDE_ARGS=()
+    else
+      # STRIP the sentinel. Leaving it in place turns it into a live
+      # `:(exclude)__busdriver_pin_probe_<pid>_<random>` pathspec, and the name is
+      # derivable — a file staged under it would be dropped from the reviewer's diff
+      # while the full-snapshot marker still authorised it. It has done its job the
+      # moment we observed it.
+      _excl_kept=()
+      for _excl_arg in ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}; do
+        [ "$_excl_arg" = ":(exclude)$_excl_probe" ] && continue
+        _excl_kept+=("$_excl_arg")
+      done
+      REVIEW_EXCLUDE_ARGS=(${_excl_kept[@]+"${_excl_kept[@]}"})
+    fi
+  fi
+  # Unconditional: verify_exclusion_policy can succeed (leaving a pinned temp) and
+  # verify_exclusion_logic then fail, and the source itself can fail — both paths
+  # previously leaked the policy snapshot. Cleaning here covers every branch above.
+  [ -n "${EXCL_LOGIC_PINNED_TMP:-}" ] && rm -f "$EXCL_LOGIC_PINNED_TMP"
+  [ -n "${EXCL_POLICY_PINNED_TMP:-}" ] && rm -f "$EXCL_POLICY_PINNED_TMP"
+  EXCL_LOGIC_PINNED_TMP=""
+  EXCL_POLICY_PINNED_TMP=""
+fi
 
 # Source SAST, smart context, docs context, and markdown checker
 # shellcheck source=lib/sast-runner.sh
@@ -1062,53 +1629,401 @@ source "$SCRIPT_DIR/lib/markdown-checker.sh"
 # Capture diff for scope control (excluding auto-generated files)
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
-  # Pin HEAD before the captures below and re-check it after (#811). Every capture
-  # here resolves the symbolic HEAD, so a commit landing mid-capture would leave
-  # the cross-run history stamped with a commit whose diff was never the one
-  # reviewed. Recording nothing is the fail-safe: the next pass just starts cold.
-  PR_REVIEWED_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-  _PR_BASE_TIP_BEFORE=$(git rev-parse "$PR_BASE_BRANCH" 2>/dev/null || true)
-  # The merge-base pins the OTHER end of `base...HEAD`. Recorded with the head so
-  # a later pass can tell whether a stored verdict describes the same scope, or
-  # whether the base moved under it (retarget, force-push, partial merge). Both
-  # operands are the pinned object ids, not the symbolic names, so this value
-  # cannot drift even if either ref moves while it is being computed.
-  PR_REVIEWED_MERGE_BASE=$(git merge-base "$_PR_BASE_TIP_BEFORE" "$PR_REVIEWED_HEAD_SHA" 2>/dev/null || true)
-  ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
+  # #576: the PINNED tip, not the mutable HEAD ref — otherwise exclusions anchored on
+  # the merge base can mix with material from a different commit, and an A->B->A
+  # transition lets a review of one snapshot authorise another.
+  # No mutable fallback, for the same reason as the base: if _HEAD_SHA never resolved,
+  # every later capture and compute_pr_diff_hash would independently re-resolve HEAD, and
+  # an A->B->A transition could show the reviewer B while binding the marker to A.
+  if [ -z "${_HEAD_SHA:-}" ]; then
+    echo "❌ Could not resolve HEAD to a commit — refusing to review against a moving tip." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _PR_TIP="$_HEAD_SHA"
+  # Now that the exclusion block has resolved _PR_BASE_SHA, freeze the base ref here —
+  # at the point of first use, and after the origin/ normalisation.
+  #
+  # There is NO fallback to the branch name. Falling back to a mutable ref is the same
+  # bug in a quieter costume: the file list, the reviewer diff and the marker hash each
+  # resolve it separately, so a ref that appears or moves between those calls reopens
+  # the review-to-marker gap on exactly the path where something already went wrong.
+  # An unpinnable base is a refusal.
+  if [ -z "$_PR_BASE_SHA" ]; then
+    _PR_BASE_SHA=$(git rev-parse --verify "$PR_BASE_BRANCH" 2>/dev/null || echo "")
+  fi
+  if [ -z "$_PR_BASE_SHA" ]; then
+    echo "❌ Could not resolve $PR_BASE_BRANCH to a commit — refusing to review against a moving base." >&2
+    echo "   Fetch the base branch (git fetch origin) and re-run." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  _PR_BASE_REF="$_PR_BASE_SHA"
+  # Checked explicitly, exactly as the commit-mode sibling is. A bare assignment fails
+  # the script under `set -e` BEFORE write_terminal_status runs, and this script has no
+  # ERR trap — so a git/config/object failure here strands the review in a stale PENDING
+  # rather than reporting a setup error.
+  if ! ALL_STAGED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}"); then
+    echo "❌ Could not list the files changed between the base and the branch tip — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # #811: the cross-run history is stamped with the SAME pinned pair the review
+  # itself uses — derived from the ids above, never re-resolved. Re-resolving is
+  # what the pinning exists to prevent, and #576 already refuses to proceed when
+  # either endpoint cannot be pinned, so there is nothing left for a post-hoc
+  # drift check to catch.
+  PR_REVIEWED_HEAD_SHA="$_PR_TIP"
+  PR_REVIEWED_MERGE_BASE=$(git merge-base "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
   # reviewer actually reads.
-  STAGED_DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # --text for the same reason as commit mode: --no-textconv does NOT defeat a committed
+  # `.gitattributes` `-diff` rule, so a PR adding `*.sh -diff` reduces its own changed
+  # source to an opaque "Binary files differ" line while the marker stays valid.
+  _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
+  case "$_staged_diff_max" in
+    ''|*[!0-9]*) _staged_diff_max=10485760 ;;
+    ??????????????????*) _staged_diff_max=10485760 ;;
+  esac
+  # CLAMP. The variable is ENV — repo-injectable via a committed settings.json `env`
+  # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
+  # disable this guard outright. The override may LOWER the cap; it may never raise it
+  # past what the guard exists to bound.
+  # Force BASE 10 before any arithmetic. A zero-padded value like `09` is all digits, so
+  # it passes the checks above, but `$(( 09 + 2 ))` is an invalid octal literal — and a
+  # bash arithmetic error is NOT catchable by the ERR trap, so it kills the script before
+  # write_terminal_status runs and strands the review in a stale PENDING. The variable is
+  # repo-injectable (#325 / ADR 0016), so that is a reliable denial, not a fluke.
+  _staged_diff_max=$((10#$_staged_diff_max))
+  if [ "$_staged_diff_max" -gt 67108864 ]; then
+    _staged_diff_max=67108864
+  fi
+  # ONE rendering, captured to a bounded temp file — then compared against itself.
+  #
+  # The previous shape rendered the diff TWICE: once streamed into `wc -c` for the size
+  # cap, once into the variable. Comparing those two by LENGTH cannot prove they are the
+  # same bytes — mutable diff config or .gitattributes between the two renderings can
+  # produce same-length, different content, so the reviewer could read one thing while
+  # the marker authorised another. Rendering once removes the comparison instead of
+  # trying to strengthen it.
+  #
+  # `head -c` bounds the allocation by construction at one byte past the cap, which is
+  # also how "too large" is detected. The file-vs-variable byte comparison then catches
+  # what command substitution silently does to the content: it strips NUL bytes (which
+  # --text can put in the stream) and one trailing newline. Anything beyond that single
+  # newline means the reviewer would not be seeing what the marker binds.
+  #
+  # git's own status is recorded out-of-band: `|| true` would mask a real failure
+  # alongside the expected SIGPIPE when head closes the pipe. SIGPIPE (141) is accepted
+  # ONLY when the bound was actually hit.
+  _diff_tmp=$(mktemp -t busdriver-branch-diff-XXXXXX) || {
+    echo "❌ Could not create a temp file for the branch-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  _diff_rc_file=$(mktemp -t busdriver-diffrc-XXXXXX) || {
+    rm -f "$_diff_tmp"
+    echo "❌ Could not create a temp file for the branch-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # `if` form, not `{ cmd; echo $?; }`: under `set -e` a nonzero git status —
+  # including the expected SIGPIPE 141 when head reaches the bound — kills the
+  # producer group BEFORE the status is recorded, aborting the script past the
+  # exit-2/setup-error handling and leaking both temp files. An `if` condition
+  # suspends `set -e`, so the status is always captured.
+  # Every step guarded: under `set -euo pipefail` an unwritable temp, a failed `head`,
+  # or a failed read would abort the script without write_terminal_status. The temps are
+  # also on the EXIT trap, so no exit path here can leak them.
+  if ! { if git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; then echo 0 > "$_diff_rc_file"; else echo $? > "$_diff_rc_file"; fi; } | head -c "$(( _staged_diff_max + 2 ))" > "$_diff_tmp"; then
+    echo "❌ Could not capture the diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! _diff_rc=$(cat "$_diff_rc_file"); then
+    echo "❌ Could not read the diff capture status — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_rc_file"; _diff_rc_file=""
+  if ! _staged_diff_bytes=$(wc -c < "$_diff_tmp" | tr -d ' '); then
+    echo "❌ Could not size the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! STAGED_DIFF=$(cat "$_diff_tmp"); then
+    echo "❌ Could not read the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_tmp"; _diff_tmp=""
+  _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
+  # Reject a NEGATIVE delta as well: mutable diff config can make the second rendering
+  # LARGER than the measured one, and a `> 1` test reads that growth as "fine" — after
+  # the oversized output has already been loaded into the shell, which is exactly what
+  # the streaming measurement exists to prevent. Only 0 or the single trailing newline
+  # `$( )` strips is acceptable.
+  # Hitting the bound means the second rendering exceeded the cap — TOO_LARGE, and the
+  # allocation stopped there rather than growing without limit.
+  # Only 0, or SIGPIPE at the bound, is acceptable.
+  if [ "${_diff_rc:-1}" -ne 0 ] && { [ "${_diff_rc:-1}" -ne 141 ] || [ "${_captured_bytes:-0}" -le "$_staged_diff_max" ]; }; then
+    echo "❌ The diff capture failed (git exit ${_diff_rc}) — refusing to review incomplete material." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
+    echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    write_terminal_status too_large
+    exit 2
+  fi
+  _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))
+  if [ "$_capture_delta" -gt 1 ] || [ "$_capture_delta" -lt 0 ]; then
+    echo "❌ The branch diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
+    echo "   NUL bytes cannot be represented in the review prompt, so the reviewer would not" >&2
+    echo "   see what the marker authorises. Exclude the binary, or split the PR." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.
   # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
-  PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE_BRANCH" 2>/dev/null || true)
-  # The other half of the #811 pin above. The captures resolve the SYMBOLIC HEAD
-  # and base, so if either endpoint moved while they ran, none of them describe
-  # the pinned pair — drop the stamp rather than file a verdict against a diff
-  # that was never reviewed. Documented residual: an endpoint that moves away and
-  # back within the capture window (ABA) still reads as unchanged; closing that
-  # needs the captures themselves to name the pinned ids, which would change the
-  # gate-binding diff hash and is out of scope here.
-  FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
-  # LAST, after every capture above. Checked earlier it would not cover the
-  # captures that follow it — FILTERED_FILES, and the docs context derived from
-  # it, could describe a different diff while the verdict still carried the older
-  # pinned pair.
-  _PR_HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null || true)
-  _PR_BASE_TIP_AFTER=$(git rev-parse "$PR_BASE_BRANCH" 2>/dev/null || true)
-  if [ "$PR_REVIEWED_HEAD_SHA" != "$_PR_HEAD_AFTER" ] \
-     || [ "$_PR_BASE_TIP_BEFORE" != "$_PR_BASE_TIP_AFTER" ]; then
-    PR_REVIEWED_HEAD_SHA=""
-    PR_REVIEWED_MERGE_BASE=""
+  PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
+  if ! FILTERED_FILES=$(git diff --name-only "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
+    echo "❌ Could not list the reviewable files for this branch — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
   fi
 else
   echo "📋 Capturing staged changes..."
-  ALL_STAGED_FILES=$(git diff --cached --name-only)
-  STAGED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
-  FILTERED_FILES=$(git diff --cached --name-only -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # The index snapshot was taken and exported before the exclusion checks above.
+  # Pin the comparison BASE as well. `git diff --cached` is index-vs-HEAD, and each
+  # invocation re-resolves HEAD, so a snapshot of only the index still lets an A->B->A
+  # HEAD transition make the hash and the reviewed material describe different changes.
+  # Naming the commit explicitly makes every read below compare the same two endpoints.
+  # It stays byte-identical to the gate's implicit form while HEAD is unchanged — and if
+  # HEAD did move before the commit, the gate's recomputation simply differs and blocks,
+  # which is the correct fail-closed outcome. Unborn HEAD (no commits yet) has no base
+  # to pin, so the operand is omitted there.
+  # Pick the hash utility ONCE, by availability. `(sha256sum || shasum)` in a single
+  # pipe is a fail-OPEN: if sha256sum consumes part of stdin and then dies, shasum
+  # hashes only the unread REMAINDER and the pipeline still reports success with a
+  # valid-looking digest for a truncated stream. pre-commit-gate.sh selects by
+  # availability for exactly this reason (CodeRabbit, PR #577); the minter must match.
+  # `command` is not decoration. An EXPORTED SHELL FUNCTION named sha256sum/shasum/od/tr
+  # is inherited through the environment — the same repo-injectable channel #325/ADR 0016
+  # closed for env vars — and would be found by `command -v` and then run in preference to
+  # the real binary. A forged hash utility emits one constant digest for every diff and
+  # defeats marker binding outright; a forged `od` makes the exclusion pin challenge
+  # predictable. The `command` builtin bypasses functions and aliases and runs the PATH
+  # executable. (PATH itself is out of scope here: the gates already launch under a fixed
+  # PATH, and a PATH that can forge `git` defeats every check in this file regardless.)
+  # #576: resolve the hash utility to an ABSOLUTE path inside a trusted directory.
+  # `command -v` walks PATH, and prepending /usr/bin:/bin is not sufficient on its own —
+  # macOS ships sha256sum in /sbin, not /usr/bin, so the lookup falls straight through to
+  # the repo-injectable tail of PATH and a planted sha256sum wins. Search the trusted
+  # system directories explicitly instead, and refuse if none of them has one: a hash we
+  # cannot trust is worse than no hash, because the whole marker binding rests on it.
+  _REVIEW_HASH_CMD=()
+  for _d in /usr/bin /bin /sbin /usr/sbin; do
+    if [ -x "$_d/sha256sum" ]; then _REVIEW_HASH_CMD=("$_d/sha256sum"); break; fi
+    if [ -x "$_d/shasum" ]; then _REVIEW_HASH_CMD=("$_d/shasum" -a 256); break; fi
+  done
+  if [ ${#_REVIEW_HASH_CMD[@]} -eq 0 ]; then
+    rm -f "$_INDEX_SNAPSHOT"
+    echo "❌ No SHA-256 utility in a trusted system directory — cannot bind a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+
+  # THE CANONICAL MARKER-HASH FORM — byte-identical to pre-commit-gate.sh (which
+  # documents why each flag is load-bearing) and to the three sites in
+  # dispatcher-commit-block.sh. Asserted by tests/test-litmus-marker-binding.sh.
+  if ! REVIEWED_DIFF_HASH=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${_REVIEW_HASH_CMD[@]}" | cut -d' ' -f1); then
+    rm -f "$_INDEX_SNAPSHOT"
+    echo "❌ Could not hash the staged diff — refusing to mint a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! ALL_STAGED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"}); then
+    echo "❌ Could not list staged files from the index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Pinned exactly like the marker hash. Pinning only the marker would be worse than
+  # useless: a diff.external/textconv driver emitting empty or constant output would
+  # hide staged content from the REVIEWER while the marker still bound the real index,
+  # so the gate would certify content nobody read.
+  # `--text` is NOT cosmetic here. `--no-textconv` does not neutralize a `.gitattributes`
+  # `-diff` (binary) rule, and a committed `*.sh -diff` renders every staged shell script
+  # as "Binary files a/x and b/x differ" — the reviewer receives NO source at all, while
+  # the marker (bound via --full-index blob SHAs) stays perfectly valid and the gate
+  # accepts it. Same blinding class as the textconv collapse, different lever. `--text`
+  # forces the textual rendering back. Measured: with `*.sh -diff` the diff shows only
+  # the Binary line; with --text the full hunk returns.
+  _staged_diff_max="${LITMUS_MAX_DIFF_BYTES:-10485760}"
+  # Digit-only is not enough: a value beyond the shell's integer range makes the
+  # `-gt` test an "integer expression expected" ERROR, and because that test is an `if`
+  # condition the failure is swallowed and the cap is skipped entirely — the whole diff
+  # then lands in STAGED_DIFF. Bound the length so the comparison can never overflow.
+  case "$_staged_diff_max" in
+    ''|*[!0-9]*) _staged_diff_max=10485760 ;;
+    ??????????????????*) _staged_diff_max=10485760 ;;
+  esac
+  # CLAMP. The variable is ENV — repo-injectable via a committed settings.json `env`
+  # block (#325 / ADR 0016) — so an 18-digit value would pass the digit check above and
+  # disable this guard outright. The override may LOWER the cap; it may never raise it
+  # past what the guard exists to bound.
+  # Force BASE 10 before any arithmetic. A zero-padded value like `09` is all digits, so
+  # it passes the checks above, but `$(( 09 + 2 ))` is an invalid octal literal — and a
+  # bash arithmetic error is NOT catchable by the ERR trap, so it kills the script before
+  # write_terminal_status runs and strands the review in a stale PENDING. The variable is
+  # repo-injectable (#325 / ADR 0016), so that is a reliable denial, not a fluke.
+  _staged_diff_max=$((10#$_staged_diff_max))
+  if [ "$_staged_diff_max" -gt 67108864 ]; then
+    _staged_diff_max=67108864
+  fi
+  # ONE rendering, captured to a bounded temp file — then compared against itself.
+  #
+  # The previous shape rendered the diff TWICE: once streamed into `wc -c` for the size
+  # cap, once into the variable. Comparing those two by LENGTH cannot prove they are the
+  # same bytes — mutable diff config or .gitattributes between the two renderings can
+  # produce same-length, different content, so the reviewer could read one thing while
+  # the marker authorised another. Rendering once removes the comparison instead of
+  # trying to strengthen it.
+  #
+  # `head -c` bounds the allocation by construction at one byte past the cap, which is
+  # also how "too large" is detected. The file-vs-variable byte comparison then catches
+  # what command substitution silently does to the content: it strips NUL bytes (which
+  # --text can put in the stream) and one trailing newline. Anything beyond that single
+  # newline means the reviewer would not be seeing what the marker binds.
+  #
+  # git's own status is recorded out-of-band: `|| true` would mask a real failure
+  # alongside the expected SIGPIPE when head closes the pipe. SIGPIPE (141) is accepted
+  # ONLY when the bound was actually hit.
+  _diff_tmp=$(mktemp -t busdriver-staged-diff-XXXXXX) || {
+    echo "❌ Could not create a temp file for the staged-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  _diff_rc_file=$(mktemp -t busdriver-diffrc-XXXXXX) || {
+    rm -f "$_diff_tmp"
+    echo "❌ Could not create a temp file for the staged-diff capture — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  }
+  # `if` form, not `{ cmd; echo $?; }`: under `set -e` a nonzero git status —
+  # including the expected SIGPIPE 141 when head reaches the bound — kills the
+  # producer group BEFORE the status is recorded, aborting the script past the
+  # exit-2/setup-error handling and leaking both temp files. An `if` condition
+  # suspends `set -e`, so the status is always captured.
+  # Every step guarded: under `set -euo pipefail` an unwritable temp, a failed `head`,
+  # or a failed read would abort the script without write_terminal_status. The temps are
+  # also on the EXIT trap, so no exit path here can leak them.
+  if ! { if GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; then echo 0 > "$_diff_rc_file"; else echo $? > "$_diff_rc_file"; fi; } | head -c "$(( _staged_diff_max + 2 ))" > "$_diff_tmp"; then
+    echo "❌ Could not capture the diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! _diff_rc=$(cat "$_diff_rc_file"); then
+    echo "❌ Could not read the diff capture status — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_rc_file"; _diff_rc_file=""
+  if ! _staged_diff_bytes=$(wc -c < "$_diff_tmp" | tr -d ' '); then
+    echo "❌ Could not size the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! STAGED_DIFF=$(cat "$_diff_tmp"); then
+    echo "❌ Could not read the captured diff — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  rm -f "$_diff_tmp"; _diff_tmp=""
+  _captured_bytes=$(printf '%s' "$STAGED_DIFF" | wc -c | tr -d ' ')
+  # Reject a NEGATIVE delta as well: mutable diff config can make the second rendering
+  # LARGER than the measured one, and a `> 1` test reads that growth as "fine" — after
+  # the oversized output has already been loaded into the shell, which is exactly what
+  # the streaming measurement exists to prevent. Only 0 or the single trailing newline
+  # `$( )` strips is acceptable.
+  # Hitting the bound means the second rendering exceeded the cap — TOO_LARGE, and the
+  # allocation stopped there rather than growing without limit.
+  # Only 0, or SIGPIPE at the bound, is acceptable.
+  if [ "${_diff_rc:-1}" -ne 0 ] && { [ "${_diff_rc:-1}" -ne 141 ] || [ "${_captured_bytes:-0}" -le "$_staged_diff_max" ]; }; then
+    echo "❌ The diff capture failed (git exit ${_diff_rc}) — refusing to review incomplete material." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if [ "${_captured_bytes:-0}" -gt "$_staged_diff_max" ]; then
+    echo "❌ The diff grew past ${_staged_diff_max} bytes on capture; refusing to review a truncated view." >&2
+    echo "   Split the change, or exclude the large binary via $STATE_DIR/review-exclude." >&2
+    write_terminal_status too_large
+    exit 2
+  fi
+  _capture_delta=$(( ${_staged_diff_bytes:-0} - ${_captured_bytes:-0} ))
+  if [ "$_capture_delta" -gt 1 ] || [ "$_capture_delta" -lt 0 ]; then
+    echo "❌ The staged diff lost bytes on capture (${_staged_diff_bytes} rendered, ${_captured_bytes} captured)." >&2
+    echo "   NUL bytes in binary content cannot be represented in the review prompt, so the" >&2
+    echo "   reviewer would not see what the marker authorises. Exclude the binary via" >&2
+    echo "   $STATE_DIR/review-exclude, or split the commit." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  if ! FILTERED_FILES=$(GIT_INDEX_FILE="$_INDEX_SNAPSHOT" git diff --cached --name-only ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}); then
+    echo "❌ Could not list reviewable files from the index snapshot — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Already exported above, before the exclusion checks. Everything downstream — the
+  # size calculation, SAST/markdown file lists, DIFF_FOR_FILTER, and above all the
+  # short-circuit path classification — therefore reads the same snapshot; from the LIVE
+  # index an A->B->A change would let the short-circuit classify B as passive prose
+  # while the marker names A. (Worktree-reading scanners still see live files; an index
+  # snapshot cannot fix that, and the marker binds the index, which the gate re-derives.)
+  if [ -z "$REVIEWED_DIFF_HASH" ]; then
+    echo "❌ Empty staged-diff hash — refusing to mint a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 fi
+
+# #576: every commit-mode marker write goes through this. Fail CLOSED — a marker
+# with no reviewed-diff binding is the bearer token #545 set out to abolish, so an
+# uncaptured or malformed hash must refuse the marker, never fall back to a fresh
+# `git diff --cached` (that fallback IS the bug).
+require_reviewed_diff_hash() {
+  # This run is about to mint a marker, which SUPERSEDES any builtin handoff still armed
+  # from an earlier run. Retiring it here is what stops that run's delayed writer from
+  # overwriting this marker with its older hash: the writer refuses when the pointer no
+  # longer names its own review, and a missing pointer is exactly that. Arming-side
+  # exclusivity alone could not cover this — run A exits 3 and releases the review lock,
+  # so run B reaches an ordinary PASS without ever touching A's pointer.
+  # VALIDATE FIRST, destroy second. Retiring the handoff before checking our own hash
+  # meant a run that then failed validation had already destroyed another review's valid
+  # handoff — while being unable to mint any replacement marker itself.
+  if [[ ! "${REVIEWED_DIFF_HASH:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "❌ no reviewed staged-diff hash was captured — refusing to write a review marker" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # Only now that this run can actually mint a marker does it SUPERSEDE any builtin
+  # handoff still armed from an earlier run — that is what stops the earlier run's
+  # delayed writer from overwriting this marker with its older hash (its writer refuses
+  # when the pointer no longer names its own review, and a missing pointer is exactly
+  # that). Deliberately NOT sweeping *.claim.* — a claim means a writer has already won
+  # the rename and owns the turn; deleting it would re-open the race the claim closes.
+  # RESIDUAL (#790): a writer that already holds a claim can still publish its older
+  # marker after this run publishes a newer one. Hash binding keeps that fail-closed —
+  # the gate blocks a marker that no longer matches the index — so the cost is a
+  # spurious block and a re-run, not an unreviewed commit. Ordering the two writers
+  # needs a handoff lock spanning the agent phase; out of scope for #576.
+  rm -f "$STATE_DIR/builtin-review-prompt-path.local" 2>/dev/null || true
+  rm -f "$STATE_DIR"/builtin-review-*.hash 2>/dev/null || true
+}
 
 # Detect what was excluded
 EXCLUDED_FILES=""
@@ -1242,15 +2157,21 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      # The exclusion LOGIC was verified BEFORE it was sourced (see the guard above
+      # the exclude-generated.sh source). Re-checking here would be checking the wrong
+      # instant anyway: by now REVIEW_EXCLUDE_ARGS has already shaped STAGED_DIFF. If
+      # that verification had failed there would be no exclusions at all, so this
+      # excluded-only branch would be unreachable.
       mkdir -p "$STATE_DIR"
       _excluded_epoch=$(date +%s)
-      _excluded_hash=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-      if [ -z "$_excluded_hash" ]; then
-        echo "❌ excluded-only commit: could not hash the staged diff — refusing marker" >&2
-        write_terminal_status setup_error
-        exit 1
-      fi
-      printf 'PASS-EXCLUDED-%s-%s\n' "$_excluded_hash" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
+      # #576: the reviewed snapshot, not a fresh diff taken after the policy and
+      # logic checks above ran.
+      require_reviewed_diff_hash
+      # #790: stamp the generation immediately before the marker, never after — a crash
+      # between the two must leave a moved token in front of an old marker (the delayed
+      # writer then refuses), not the reverse.
+      publish_marker_gen
+      printf 'PASS-EXCLUDED-%s-%s\n' "$REVIEWED_DIFF_HASH" "$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
     fi
     # Clean up state file and iteration history
     clear_iteration_history
@@ -1276,7 +2197,7 @@ while IFS=$'\t' read -r added removed _file; do
   [ "$removed" = "-" ] && removed=0
   ADDITION_LINES=$((ADDITION_LINES + added))
   DELETION_LINES=$((DELETION_LINES + removed))
-done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; else git diff --cached --numstat -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null; fi)
+done < <(if [ "$REVIEW_MODE" = "pr" ]; then git diff --numstat "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; else git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null; fi)
 WEIGHTED_LINES=$(( ADDITION_LINES + DELETION_LINES / 4 ))
 echo "   Staged files: $STAGED_FILE_COUNT"
 echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELETION_LINES, weighted: $WEIGHTED_LINES)"
@@ -1367,7 +2288,7 @@ else
     while IFS=$'\t' read -r added _removed _file; do
       [ "$added" = "-" ] && added=0
       [ "$added" -gt 0 ] 2>/dev/null && FILES_WITH_ADDITIONS=$((FILES_WITH_ADDITIONS + 1))
-    done < <(git diff --cached --numstat -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null)
+    done < <(git diff --cached --numstat ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null)
     if [ "$FILES_WITH_ADDITIONS" -gt "$MAX_STAGED_FILES" ]; then
       TOO_LARGE=true
       TOO_LARGE_REASON="files with additions ($FILES_WITH_ADDITIONS) > $MAX_STAGED_FILES (total: $STAGED_FILE_COUNT)"
@@ -1392,8 +2313,8 @@ else
     # the load-bearing part; the split advice is not.
     write_terminal_status too_large
     # Run suggest-split helper to show grouping advice (only useful for multi-file diffs)
-    if [ "$STAGED_FILE_COUNT" -gt 1 ]; then
-      bash "$SCRIPT_DIR/suggest-split.sh" || true
+    if [[ "$STAGED_FILE_COUNT" -gt 1 ]]; then
+      /bin/bash -p "$SCRIPT_DIR/suggest-split.sh" || true
       echo ""
     fi
     echo "EXIT_CODE=2 (TOO_LARGE: split into smaller commits before reviewing)"
@@ -1411,9 +2332,33 @@ SAST_FINDINGS_RAW=$(run_sast_scan "$FILTERED_FILES")
 # Uses git diff --unified=0 to get exact hunk ranges.
 DIFF_FOR_FILTER=""
 if [ "$REVIEW_MODE" = "pr" ]; then
-  DIFF_FOR_FILTER=$(git diff --unified=0 "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  # #576: the SAME pinned endpoints as the reviewer diff and the marker hash. This
+  # decides which findings count as in-diff, so filtering against a moved ref can drop
+  # real findings from a review that is bound to a different snapshot.
+  # NOT `|| true`. An empty DIFF_FOR_FILTER reads as "no finding falls inside the diff",
+  # so swallowing a failure here silently discards confirmed SAST findings and lets the
+  # review PASS on incomplete evidence — a fail-OPEN wearing a default's clothes.
+  if ! DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 "${_PR_BASE_REF}...${_PR_TIP}" -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null); then
+    echo "❌ Could not compute the diff used to scope findings — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 else
-  DIFF_FOR_FILTER=$(git diff --cached --unified=0 -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+  # #576: same pin — this drives which findings are kept as in-diff.
+  # Same pin and the same --text reasoning as STAGED_DIFF; this drives which findings
+  # are kept as in-diff, so a blinded rendering here silently drops real findings.
+  # Same reasoning as the PR-mode assignment above: a swallowed failure would empty the
+  # scope and drop confirmed findings.
+  #
+  # `--cached` here is NOT the live index: GIT_INDEX_FILE was exported at line ~1247,
+  # before the exclusion checks and long before this point, so every `--cached` read in
+  # this process resolves to the snapshot the reviewer and the marker were derived from.
+  # An index mutation after the capture therefore cannot change what gets filtered.
+  if ! DIFF_FOR_FILTER=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --text --ignore-submodules=none --unified=0 ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"} 2>/dev/null); then
+    echo "❌ Could not compute the diff used to scope findings — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 fi
 SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
 import sys, json, re
@@ -1527,7 +2472,20 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
   #     destination and launder the active source onto the fast path (plain
   #     `--name-only` reports only the destination — verified against real
   #     history).
-  SC_PATHS=$(git diff --cached --name-only --no-renames 2>/dev/null || true)
+  # #576: pinned base — the short-circuit decides whether ANY reviewer runs, so it
+  # must classify the same two endpoints the marker names.
+  # PINNED, and NOT `|| true`. This list decides whether any reviewer runs at all, so it
+  # has to see exactly what the marker will bind. `diff.ignoreSubmodules=all` omits a
+  # staged gitlink here while REVIEWED_DIFF_HASH deliberately includes it
+  # (--ignore-submodules=none) — so a gitlink change alongside a passive doc change would
+  # be classified as prose-only, take the no-review short-circuit, and be authorized by a
+  # marker covering content nobody saw. A failed diff emitting partial stdout produces the
+  # same incomplete scope, which is why the failure is a refusal rather than an empty list.
+  if ! SC_PATHS=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --ignore-submodules=none --name-only --no-renames ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null); then
+    echo "❌ Could not classify staged paths for the short-circuit — refusing to review" >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
 
   if [[ -n "$SC_PATHS" ]]; then
     set +e
@@ -1578,8 +2536,12 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
     log_review_metrics "PASS" "0" "$ITERATION" "$REVIEW_MODE" "short-circuit" '{"status":"PASS","issues":[],"short_circuit":true}'
 
     # Write commit marker (same format as normal PASS)
+    # #576: the reviewed snapshot — the short-circuit classified THOSE paths.
     mkdir -p "$STATE_DIR"
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
+    require_reviewed_diff_hash
+    # #790: stamp first, write second.
+    publish_marker_gen
+    printf '%s\n' "$REVIEWED_DIFF_HASH" > "$STATE_DIR/litmus-passed.local"
 
     # Audit trail — distinct event, separate from skip-bypass
     printf '{"ts":"%s","event":"short-circuit-pass","gate":"pre-commit","weighted_lines":%d}\n' \
@@ -1623,7 +2585,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   ITER_HISTORY=$(load_pr_history "$PR_REVIEWED_MERGE_BASE" "$PR_REVIEWED_HEAD_SHA")
   # ALWAYS append the per-run history as well, not only when the store came back
   # empty. The store is allowed to miss a verdict — no writable password-database
-  # home, a refused store, a pin blanked by a moved ref, or simply losing the
+  # home, a refused store, an unresolvable merge-base, or simply losing the
   # 5-second lock race — and append_pr_history is a silent no-op in every one of
   # those. Falling back only on an EMPTY store covers the first cases but not the
   # last: older records keep the store non-empty while the newest verdict, the one
@@ -1740,7 +2702,102 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   chmod 600 "$BUILTIN_PROMPT_FILE"
   printf '%s' "$FINAL_PROMPT" > "$BUILTIN_PROMPT_FILE"
   mkdir -p "$STATE_DIR"
-  echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local"
+  # Arm the handoff EXCLUSIVELY. `set -o noclobber` makes the redirection O_EXCL, so
+  # it fails rather than overwrites if the path already exists — and O_EXCL refuses to
+  # follow a symlink, which also closes the /tmp sidecar hijack (a predictable path
+  # next to a visible mktemp name, pre-created as a symlink by another local user, so
+  # this process writes through it). `umask 077` makes the files private from the
+  # instant they exist; a chmod AFTER the redirect leaves a world-readable window, and
+  # a chmod BEFORE it does nothing at all because the file is not there yet.
+  #
+  # Refusing on an existing pointer is the fix for the overlap the per-run keying alone
+  # could not close: run A exits 3, its reviewer starts, run B overwrites the pointer,
+  # and reviewer A's writer then consumes run B's hash — certifying diff B though
+  # reviewer A saw diff A. An un-consumed handoff now blocks the second arming instead
+  # of silently replacing the first. Stale handoff after an abandoned builtin review:
+  # delete the two files the message names.
+  # PR mode does NOT arm this handoff. The handoff exists to mint the COMMIT marker
+  # (litmus-passed.local), and a PR-mode hash describes base...HEAD, not the staged
+  # index — the commit gate could never validate it, so writing one would produce a
+  # marker that is either unusable or, worse, mistaken for a staged-diff binding.
+  # PR mode already treats a builtin (non-Codex) lead as fail-closed, so the correct
+  # outcome here is no handoff at all: the marker writer then refuses, which is the
+  # documented behaviour. This also replaces the earlier fix for naming the commit-mode
+  # variable unconditionally, which aborted PR mode on an unbound variable under `set -u`.
+  if [ "$REVIEW_MODE" = "pr" ]; then
+    echo "❌ PR mode: no external reviewer succeeded, and a builtin lead is not accepted." >&2
+    echo "   PR mode is fail-closed on a non-Codex lead, so there is no marker to write." >&2
+    # NOT exit 3: that code's contract tells the caller to dispatch the builtin reviewer
+    # and then the marker writer — which would either fail confusingly or mint a
+    # commit-mode marker from a base...HEAD hash the commit gate can never validate.
+    # Report an honest terminal state instead, and leave no active state behind for
+    # init-review-loop.sh to trip over.
+    clear_iteration_history
+    # The prompt temp is already written and holds the COMPLETE PR diff; refusing
+    # without unlinking it leaks that content on every such failure.
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null
+    rm -f "$STATE_FILE" 2>/dev/null
+    write_terminal_status infra_failure
+    exit 1
+  fi
+  _handoff_hash="${REVIEWED_DIFF_HASH:-}"
+  if [ -z "$_handoff_hash" ]; then
+    echo "❌ No reviewed-diff hash captured for the builtin handoff — refusing to arm it." >&2
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # SIDECAR FIRST, POINTER LAST. The pointer is what a marker writer looks for and
+  # claims; publishing it before its hash sidecar exists lets a concurrent writer claim
+  # a pointer whose sidecar is still missing, refuse for want of a hash, and remove the
+  # claim — after which this run creates an orphaned sidecar and reports a handoff that
+  # no longer has a pointer. Fail-closed, but a reliably lost handoff. Writing the
+  # sidecar first makes the pointer's appearance the single moment the whole handoff
+  # becomes visible.
+  #
+  # Chain the two writes EXPLICITLY. `if ! ( ... )` puts the subshell in a condition
+  # context, which suspends `set -e` inside it — so without these `||`s a failed sidecar
+  # write would fall through, the pointer write would succeed, and the subshell would
+  # report success while no hash existed: reviewer A paired with no hash at all, or with
+  # a stale one. The symmetric case matters too — if the pointer write loses the
+  # noclobber race (another review already owns it) we must not leave this run's sidecar
+  # behind, so unlink it before failing.
+  if ! ( umask 077; set -o noclobber
+         printf '%s\n' "$_handoff_hash" > "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" || exit 1
+         echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local" || {
+             rm -f "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash"; exit 1; }
+         # Confirm the sidecar SURVIVED the pointer write. Ordering alone is not enough:
+         # require_reviewed_diff_hash() retires older builtin-review-*.hash files, and a
+         # concurrent run doing that between these two writes would publish this pointer
+         # with no sidecar behind it. Re-checking closes the pair. What remains — a
+         # retirement landing after this check — costs a lost handoff, never a bad
+         # marker: the writer refuses outright on a missing sidecar and has no re-hash
+         # fallback.
+         [ -s "$STATE_DIR/builtin-review-${BUILTIN_PROMPT_FILE##*/}.hash" ] || {
+             rm -f "$STATE_DIR/builtin-review-prompt-path.local"; exit 1; } ) 2>/dev/null; then
+    echo "❌ A builtin review handoff is already armed and unconsumed — refusing to overwrite it." >&2
+    echo "   Another builtin review is in flight, or a previous one was abandoned." >&2
+    echo "   Do NOT delete it by hand while a review may still be running: that reviewer" >&2
+    echo "   would then mint its marker against THIS run's diff. Confirm no builtin review" >&2
+    echo "   is in flight first, then remove $STATE_DIR/builtin-review-prompt-path.local" >&2
+    echo "   and its $STATE_DIR/builtin-review-*.hash sidecar." >&2
+    rm -f "$BUILTIN_PROMPT_FILE" 2>/dev/null || true
+    write_terminal_status setup_error
+    exit 1
+  fi
+  # #790: snapshot the marker GENERATION as it stands now, so the delayed writer can
+  # tell a marker THIS run left behind from one another run publishes while our agent
+  # is thinking. The review lock is released at exit 3 by design (that is what lets the
+  # agent run), so nothing else orders those two writes. A missing token is a real
+  # value, not an error: it means no publisher has stamped one yet, and a later
+  # publication necessarily creates it.
+  if [ -f "$STATE_DIR/litmus-marker-gen.local" ]; then
+    _BUILTIN_MARKER_BASELINE=$(cat "$STATE_DIR/litmus-marker-gen.local")
+  else
+    _BUILTIN_MARKER_BASELINE="ABSENT"
+  fi
+  rm -f "$STATE_DIR/builtin-review-marker-baseline.local"
+  printf '%s\n' "$_BUILTIN_MARKER_BASELINE" > "$STATE_DIR/builtin-review-marker-baseline.local"
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
   echo "   The litmus skill will dispatch the code-reviewer agent." >&2
@@ -1753,10 +2810,10 @@ elif [ "$REVIEW_EXIT" -eq 124 ]; then
   echo "   The review took too long. This usually means the diff is too complex." >&2
   echo "   Try splitting into smaller commits." >&2
   echo "" >&2
-  bash "$SCRIPT_DIR/suggest-split.sh" >&2
+  /bin/bash -p "$SCRIPT_DIR/suggest-split.sh" >&2
   write_terminal_status infra_failure
   exit 124
-elif [ "$REVIEW_EXIT" -ne 0 ]; then
+elif [[ "$REVIEW_EXIT" -ne 0 ]]; then
   echo "❌ Error: $RESOLVED_CLI review failed (exit code $REVIEW_EXIT)" >&2
   echo "" >&2
   echo "   Output:" >&2
@@ -1948,8 +3005,13 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
       fi
     fi
   else
-    # Commit mode: write commit marker for pre-commit gate
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
+    # Commit mode: write commit marker for pre-commit gate.
+    # #576: the hash captured BEFORE the review, not a fresh one taken now —
+    # "now" can be many minutes after the reviewer saw the diff.
+    require_reviewed_diff_hash
+    # #790: stamp first, write second.
+    publish_marker_gen
+    printf '%s\n' "$REVIEWED_DIFF_HASH" > "$STATE_DIR/litmus-passed.local"
   fi
 
   # Clean up temporary files
@@ -1964,7 +3026,7 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   echo "Next steps:"
   echo "   1. Run tests: npm test (or appropriate test command)"
   echo "   2. Commit: git commit -m 'Your message'"
-  echo "   3. (Optional) Save changelog: bash scripts/save_changelog.sh"
+  echo "   3. (Optional) Save changelog: /bin/bash -p scripts/save_changelog.sh"
   echo ""
   exit 0
 else
@@ -2001,7 +3063,7 @@ else
   echo "Next steps:"
   echo "   1. Fix the issues listed above"
   echo "   2. Stage changes: git add <files>"
-  echo "   3. Run review again: bash scripts/run-review-loop.sh"
+  echo "   3. Run review again: /bin/bash -p scripts/run-review-loop.sh"
   echo "   4. Loop continues automatically until PASS"
   echo ""
   rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null

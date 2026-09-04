@@ -57,6 +57,29 @@ check() {   # <name> <expected: allow|block> <actual-output>
     else no "$name [check #$CHECK_N]" "expected=$expected got=$got"; fi
 }
 
+# PREFLIGHT. The forge cases hand the gate a marker-write as TEXT, and a malformed one can
+# be quoted so that THIS shell runs it instead (one was). The trap below FAILS the run if a
+# file is sitting at the marker path at exit -- which only means something if none was there
+# to begin with, so the suite refuses to start with one. It costs nothing real: a skip file
+# present here means a gate is CURRENTLY bypassed in this checkout, which is not a state to
+# run a gate suite in. `-L` as well as `-e`, so a DANGLING symlink at that path --
+# operator-controlled state that `-e` reports as absent -- does not slip past. And nothing
+# here deletes: the file is the operator, and this check only declines to proceed past it.
+#
+# ORDER IS LOAD-BEARING, twice, and observing it is what proved both. Placed after the trap
+# was installed, this check's own `exit 1` fired the trap, which back then DRAINED the
+# operator file -- destroying exactly the state the refusal protects. Placed after `$WORK`
+# was created, every refusal leaked the fixture directory, because the trap that removes it
+# is not installed yet. So it runs before both.
+if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || -L "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
+    printf "  FAIL  refusing to run: a skip file already exists at\n        %s\n" \
+           "$REPO_ROOT/.claude/skip-litmus.local" >&2
+    printf "        This suite hands the gate marker-writes as TEXT and FAILS if one\n" >&2
+    printf "        appears, so it will not start while a file is already there -- and it\n" >&2
+    printf "        never deletes it. Remove or spend it yourself, then re-run.\n" >&2
+    exit 1
+fi
+
 # ── A throwaway repo with ONE armed (pending) design-review marker ───────────
 # Everything below needs a pending review, or the gate fast-allows and proves
 # nothing. Built once and reused; each test resets the skip/lease state.
@@ -65,7 +88,50 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "  FAIL  could not create a temp fixture dir — refusing to run" >&2
     exit 1
 fi
-trap 'rm -rf "$WORK"' EXIT
+# Recorded BEFORE anything runs, so the cleanup below can leave an operator's PRE-EXISTING
+# skip file alone. It is a snapshot, not proof of ownership -- a concurrent session could
+# touch the file mid-run -- so nothing here claims the suite created what it finds.
+
+# ON EXIT, not merely at the end of the forge section. Every forge case hands the gate a
+# marker-write as TEXT; a malformed one can be quoted so that THIS shell runs it instead
+# (one was), and an interrupt or an early exit before that section finishes would leave a
+# live gate bypass behind in the checkout with nothing said about it. The check REPORTS and
+# never deletes -- see the note inside `_suite_cleanup` for why every ownership test failed.
+#
+# WHAT THIS IS AND IS NOT. It samples the path at two moments -- refuse to start, report at
+# exit -- so it is DETECTION, not containment. A marker created and then consumed BETWEEN
+# those samples (by the gate under test, by a concurrent session, or inside a single case)
+# is not seen, and neither is one a surviving child writes after the trap has run. Closing
+# that would take a filesystem watch, which is far out of proportion to a suite whose cases
+# hand the gate marker-writes as text and evaluate nothing in the repo root by design. The
+# residual is stated rather than papered over: passing this suite is not evidence that no
+# bypass marker ever existed during the run.
+_suite_cleanup() {
+    local rc=$?
+    # REPORT, NEVER DELETE. Earlier cuts drained the marker here, which meant deciding
+    # whether the file was the suite to remove -- and every ownership test failed: bare
+    # existence, then inode plus mtime, then a start-time absence check that a concurrent
+    # writer can defeat at any point AFTER it runs. The identity of a path is not something
+    # a shell script establishes, and a test that deletes operator state it cannot prove it
+    # owns is a worse failure than the one it guards against. So the check is loud instead
+    # of destructive: it names the path, forces a non-zero exit, and leaves the file for a
+    # human. The suite REFUSES TO START when one is already there (above), so this firing
+    # means one appeared during the run.
+    if [[ -e "$REPO_ROOT/.claude/skip-litmus.local" || -L "$REPO_ROOT/.claude/skip-litmus.local" ]]; then
+        printf "\n  !! A bypass marker is present at exit:\n     %s\n" \
+               "$REPO_ROOT/.claude/skip-litmus.local" >&2
+        printf "     The suite refuses to start with one, so it appeared during this run --\n" >&2
+        printf "     most likely a test whose payload THIS shell executed. It has NOT been\n" >&2
+        printf "     removed: inspect it, then drain it with the audited helper\n" >&2
+        printf "       bash scripts/design-clear.sh --skip <name>\n" >&2
+        rc=1
+    fi
+    rm -rf "$WORK"
+    trap - EXIT
+    exit "$rc"
+}
+trap _suite_cleanup EXIT
+
 git -C "$WORK" init -q 2>/dev/null
 git -C "$WORK" config user.email t@t.t
 git -C "$WORK" config user.name t
@@ -1942,14 +2008,31 @@ GROUPS = [lambda p: p, lambda p: "(" + p + ")", lambda p: "{ " + p + "; }"]
 # Receiver spellings. Everything from `csh` on was missed by some earlier cut of the
 # candidate test -- literal names, grouping, a separator inside the group, an attached
 # option value, a glob, an expansion.
+# RESOLVED receiver spellings: each names a shell the reader can see, so grouping and
+# spelling must not change the verdict for them -- that is the invariant this matrix
+# exists to hold, and it is unchanged.
 RECEIVERS = ["bash", "sh", "sh -s", "bash --norc", "env sh", "(bash)", "csh", "fish",
              "{ :; bash; }", "( :; bash )", "env -S'bash -s'",
-             "env --split-string='bash -s'", "/bin/[b]ash", "$SHELL",
-             chr(96) + "printf bash" + chr(96), "$(printf bash)",
+             "env --split-string='bash -s'",
              "\nbash", "# note\nbash", "if true; then bash; fi",
              "for x in 1; do bash; done", "while read l; do bash; done",
              "case x in x) :; bash;; esac", "if true; then if true; then bash; fi; fi",
              "env -iS'bash -s'", "env -uXS'bash -s'", "yash", "posh"]
+# UNRESOLVED receiver spellings, moved out of the list above by #553. These name nothing
+# a reader can see: the shell substitutes the command word at run time, so `| $SHELL` is
+# `| rm -rf src` for any value of SHELL. They used to sit in RECEIVERS, which asserted
+# they behave like `| bash` behind an INERT producer -- and that assertion was the load
+# bearing an exemption in the classifier, which then had to be kept safe. It could not
+# be: `P='rm -rf src'; printf hello | ${P}`, `| ${P} -rf src`, `| ${P} ${O} ${T}`,
+# `| {rm,-rf,src}` and `| r*` all delete while the producer stays inert, and each was
+# found only after the previous one was patched. The invariant above is sound for
+# spellings that RESOLVE and unsound for these, so they are asserted the other way:
+# unreadable is a write, whatever the producer says.
+# `/bin/[b]ash` sits here too (#553), not with the resolved spellings: a pattern
+# yields as many words as it matches, so `ba*` is `bash baz` where both exist, and
+# a globbed shell name is an unresolved command word like any other.
+UNRESOLVED_RECEIVERS = ["$SHELL", chr(96) + "printf bash" + chr(96), "$(printf bash)",
+                        "/bin/[b]ash"]
 # ...and grouping applied to the WHOLE pipeline rather than to either end. Grouping only
 # the producer is what let `(producer | bash)` through: its pipe sat inside a group.
 WHOLE = [lambda c: c, lambda c: "(" + c + ")", lambda c: "{ " + c + "; }"]
@@ -1969,7 +2052,17 @@ for g in GROUPS:
             cmd = w(g("printf 'hello'") + " | " + r)
             if cmdword.is_file_mod(cmd):
                 bad.append("OVERBLOCK " + cmd)
-print((len(PRODUCERS) + 1) * len(GROUPS) * len(RECEIVERS) * len(WHOLE))
+# ...and the unresolved spellings block on BOTH producers (#553): the command word is
+# what cannot be read, so the producer is not what decides them.
+for p_ in PRODUCERS + ["printf 'hello'"]:
+    for g in GROUPS:
+        for r in UNRESOLVED_RECEIVERS:
+            for w in WHOLE:
+                cmd = w(g(p_) + " | " + r)
+                if not cmdword.is_file_mod(cmd):
+                    bad.append("UNDERBLOCK " + cmd)
+print((len(PRODUCERS) + 1) * len(GROUPS)
+      * (len(RECEIVERS) + len(UNRESOLVED_RECEIVERS)) * len(WHOLE))
 for b in bad[:6]:
     print("MISMATCH " + b)
 PY
@@ -3594,6 +3687,254 @@ check "...including when that operand itself ends in .py" block \
     "$(bash_decision "python3 -m cProfile -o out.py hooks/gate-scripts/lib/lease_slot.py")"
 check "the helper as the profiled script itself is still blocked" block \
     "$(bash_decision "python3 -m pdb hooks/gate-scripts/lib/lease_slot.py")"
+
+# ── #563: one new transport, and a splitter defect that hid a known one ─────
+# Both verified EXECUTING against real bash before being fixed, and both classified as a
+# read: `is_file_mod` returned False while the removal happened. Only the SECOND is a new
+# transport; the first is a splitter defect that discarded the producer of a pipe this scan
+# had recognised since #557 -- the distinction ADR 0032's corrected revisit trigger draws.
+echo "── #563: backtick spans and process-substitution producers ──"
+
+# 1. OPERATORS INSIDE A BACKTICK SUBSTITUTION are not outer pipeline separators. The
+# substitution is one WORD of the receiving stage, and the subshell it runs inherits the
+# pipeline stdin -- so `| echo `true && bash`` is a two-stage pipeline whose second stage
+# runs the piped payload. The splitter did not track backtick spans, so that `&&` read as
+# an outer separator, the pipeline ended one stage before the shell, and the producer was
+# discarded. Tracked as STATE now, exactly like the two quote states beside it.
+check "an && inside a backtick receiver does not end the pipeline" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `true && bash`')"
+check "...nor does a ; inside one" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `:; bash`')"
+check "...nor a ||" block \
+    "$(bash_decision 'printf "rm -rf src" | echo `false || bash`')"
+# Making the span opaque to the SPLITTER removes no block, because the body is still
+# classified as code by the substitution walk that runs before it.
+check "a write inside a backtick body is still a write" block \
+    "$(bash_decision 'echo `:; rm -rf src`')"
+# ...and a separator OUTSIDE the span still separates, which is the whole point of tracking
+# the span rather than suppressing operators wherever a backtick appears.
+check "a separator after a closed backtick span still splits" block \
+    "$(bash_decision 'echo `date` ; rm -rf src')"
+# PRECISION: a backtick receiver that names no shell is not fed anything to scan.
+check "a backtick receiver naming no shell stays allowed" allow \
+    "$(bash_decision 'printf "rm -rf src" | echo `true && cat`')"
+# An unterminated span is a half-parse, so the splitter says so and the caller falls back
+# to the wider raw scan -- the same answer an unterminated quote already gets.
+check "an unterminated backtick falls back to the raw scan" block \
+    "$(bash_decision 'echo `:; rm -rf src')"
+# ...and a backtick INSIDE double quotes opens a span too. The first cut ordered this
+# branch AFTER the double-quote one, so it was unreachable from a quoted context: the
+# body's own second `"` read as the outer string's CLOSE, the `&&` behind it split the
+# stage, and the producer was discarded exactly as before. Verified executing.
+check "a backtick span opened inside double quotes is still one word" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`echo "x && cat"; bash`"')"
+# Closing that span returns to the STRING, not to bare text -- or a separator inside the
+# rest of the quoted text would start splitting.
+check "closing a quoted backtick span returns to the string" allow \
+    "$(bash_decision 'echo "`date` ; rm -rf src"')"
+
+# 2. PROCESS SUBSTITUTION carries a program to a shell exactly as a pipe does, and
+# `_piped_shell_producers` recognises only `|` and `|&` as feeding a stage -- so the
+# visible payload was never scanned. Both directions run, and they run opposite ways:
+# `<(BODY)` makes BODY the producer, `>(BODY)` makes the outer command the producer.
+check "a process substitution feeding a shell over stdin is scanned" block \
+    "$(bash_decision "bash < <(printf 'rm -rf src')")"
+check "...and its redirect-only payload too" block \
+    "$(bash_decision "bash < <(printf 'echo x > src/impl.py')")"
+# The substitution as a script OPERAND rather than through a redirect runs it just the
+# same, so the scan does not ask for a redirect character.
+check "a process substitution as the script operand is scanned" block \
+    "$(bash_decision "bash <(printf 'rm -rf src')")"
+# The OTHER direction: here the shell is inside the substitution and the outer command is
+# what writes into it, so the producer is the whole command.
+check "a shell inside an output process substitution is fed too" block \
+    "$(bash_decision "printf 'rm -rf src' > >(bash)")"
+# An unbalanced `<(` is unreadable, and unreadable fails CLOSED.
+check "an unterminated process substitution falls back to the raw scan" block \
+    "$(bash_decision "bash < <(printf 'rm -rf src'")"
+# A `case` PATTERN terminator is a bare `)` with no opener, so the quote-aware paren match
+# truncates at `x)` and scans only the harmless prefix while bash hands the payload behind
+# it to the shell. Verified executing. Which `)` bash treats as the close is
+# context-sensitive, so this is not modelled -- unbalanced parens fail CLOSED, the same exit
+# `)#` and the `$(case ...)` sibling already take.
+check "...and a rebalancing paren elsewhere cannot re-open it" block \
+    "$(bash_decision "bash < <(case x in x) printf 'rm -rf src';; esac) ; : \\(")"
+check "a case pattern inside a substitution does not truncate the scan" block \
+    "$(bash_decision "bash < <(case x in x) printf 'rm -rf src';; esac)")"
+check "...while a balanced inert paren in a body stays allowed" allow \
+    "$(bash_decision 'bash < <(echo ")")')"
+# ...and a `>` after a WORD character is a comparison, not a redirect: `$((x>(bash)))` is
+# arithmetic. A leading fd is still a real redirect, which is why the test is
+# letters-and-underscore rather than alphanumeric.
+# Asserted against the CLASSIFIER: the gate has its own whole-command checks that block a
+# double-quoted `rm -rf` regardless, so only the classifier can show what this rule did.
+# EMPTY-EXPANSION CONCATENATION. Bash joins an empty expansion to a process substitution,
+# so both of these feed the payload to the shell -- verified executing. A word-boundary
+# guard in front of the operator was written to spare the arithmetic over-block below, and
+# it read the `"` and the `$` as ordinary word characters and skipped the substitution
+# entirely. It was DELETED: a guard that exists only for precision and costs a fail-open is
+# not a trade this module makes.
+check "an empty quoted prefix does not hide an output substitution" block \
+    "$(bash_decision "printf 'rm -rf src' > \"\">(bash)")"
+check "...nor an empty variable one" block \
+    "$(bash_decision "E=; printf 'rm -rf src' > \$E>(bash)")"
+# QUOTING RESTARTS inside a `$(...)` body, so ONE global double-quote state cannot skip
+# quoted regions: two valid quoted substitutions on either side made the detector skip the
+# real substitution between them and still report success. Quote tracking was DELETED --
+# the detector over-detects instead, which costs a whole-command scan on a command that
+# also names a shell, and never a miss. Asserted against the CLASSIFIER: escaped spaces
+# keep the gate raw fallback from seeing a contiguous payload, which is the point.
+# BOTH SIDES, and that is the whole point: with only the left one the broken quote state
+# ends UNBALANCED, the old code reported `ok=False`, and its fail-closed fallback blocked --
+# so a one-sided case passes against the very implementation it is meant to catch. The
+# matching pair leaves the state balanced and `ok=True`, which is the fail-OPEN.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+q, sq = chr(34), chr(39)
+pad = ": %s$(printf %s%s%s)%s" % (q, sq, q, sq, q)
+print(cmdword.is_file_mod(
+    pad + "; printf rm\\ -rf\\ src > >(bash); " + pad))')" == "True" ]]; then
+    ok "matched quoted substitutions cannot hide a process substitution between them"
+else
+    no "matched quoted substitutions cannot hide a process substitution" "classifier allowed it"
+fi
+# ...and the budget must track the dimension the WORK grows in. Words alone ignore shell
+# punctuation, and punctuation is what carries the cost: ~16,000 `env;` stages charged five
+# tokens and measured 8.86s against the hook 5s timeout, which writes no decision and reads
+# as ALLOW. Wall-clock asserted, because "correct but too slow" is indistinguishable from
+# wrong at this boundary.
+PSUB_T0=$(python3 -c 'import time; print(time.time())')
+PSUB_OUT="$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+cmd = ("env;" * 16000 + " printf \047rm -rf src\047 > >(cat)")[:64997]
+print(cmdword.is_file_mod(cmd))')"
+PSUB_DT=$(python3 -c "import sys,time; print(round(time.time()-float(sys.argv[1]), 2))" "$PSUB_T0")
+if [[ "$PSUB_OUT" == "True" ]] && (( $(python3 -c "import sys; print(1 if float(sys.argv[1]) < $HOOK_TIMING_BUDGET else 0)" "$PSUB_DT") )); then
+    ok "a punctuation-heavy substitution command stays inside the hook budget (${PSUB_DT}s)"
+else
+    no "punctuation-heavy substitution command" "verdict=$PSUB_OUT elapsed=${PSUB_DT}s budget=${HOOK_TIMING_BUDGET}s"
+fi
+unset PSUB_T0 PSUB_OUT PSUB_DT
+
+# ── generated: transport x wrapper, in BOTH directions ──────────────────────
+# Hand-picked examples are what let five successive rounds each close one spelling and open
+# another. This crosses the axes the rule actually touches -- six transports (stdin redirect,
+# script operand, a pipe fed by one, both output directions, and the empty-quote
+# concatenation) against seven wrappers (bare, separators either side, brace and paren
+# groups, a `if`, and a pair of quoted `$(...)` pads whose quoting defeated every lexed view
+# of the command). Every ACTIVE composition must block; every inert twin must stay allowed,
+# which is the arm that catches a rule widened until it blocks everything.
+PSUB_GRID="$(python3 "$REPO_ROOT/tests/fixtures/psub-grid.py" 2>&1)"
+case "$PSUB_GRID" in
+    "PSUB ok "*) ok "generated: process-substitution transport x wrapper grid (${PSUB_GRID#PSUB ok })" ;;
+    *) no "generated: process-substitution grid" "$PSUB_GRID" ;;
+esac
+unset PSUB_GRID
+# ...and an inert one inside a string is over-detected, which is that deletion's price. It
+# only costs anything when the command ALSO names a shell, so an ordinary grep is untouched.
+check "an inert substitution in a grep pattern stays allowed" allow \
+    "$(bash_decision 'grep -n "<(x)" notes.txt')"
+
+# RESIDUAL over-block (accepted), which is the price of that deletion: inside arithmetic a
+# `>` is a COMPARISON, not a redirect, but telling the two apart is the guard that just
+# failed. Asserted against the CLASSIFIER because the gate blocks the double-quoted
+# `rm -rf` regardless, so only the classifier can show what this rule did.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+print(cmdword.is_file_mod("grep -n \"rm -rf src\" notes.txt $((x>(bash)))"))')" == "True" ]]; then
+    ok "RESIDUAL over-block (accepted): arithmetic comparison reads as a substitution"
+else
+    no "RESIDUAL over-block: arithmetic comparison" "classifier verdict changed"
+fi
+check "RESIDUAL over-block (accepted): a numbered fd output substitution is scanned anyway" block \
+    "$(bash_decision "printf 'rm -rf src' 2> >(bash)")"
+
+# PRECISION: the scan runs only when the command names something that could run a program
+# read from stdin. An ordinary diff of two substitutions pays nothing.
+check "an ordinary diff of two substitutions stays allowed" allow \
+    "$(bash_decision "diff <(git show a:f) <(git show b:f)")"
+check "...including one feeding a pipeline" allow \
+    "$(bash_decision "diff <(sort a) <(sort b) | less")"
+check "a substitution body that writes nothing stays allowed" allow \
+    "$(bash_decision "bash <(cat scripts/build.sh)")"
+# DELIBERATE OVER-BLOCK, pinned so that changing it is a decision rather than a drift: the
+# candidate test is asked of every stage, not of the stage the substitution is attached to,
+# because the splitter breaks on `(` and tears a substitution off its own stage. So a shell
+# named anywhere in the command puts every `<(...)` body under the raw scan.
+check "RESIDUAL over-block (accepted): a shell elsewhere in the command widens the scan" block \
+    "$(bash_decision "sh -c ':' <(printf 'rm -rf src')")"
+# The SECOND documented over-block, pinned for the same reason: an output substitution takes
+# the WHOLE command as its producer, so a write verb sitting in that command as plain DATA
+# is raw-scanned. `bash -c 'wc -l'` cannot read a program from stdin, but proving that means
+# the option-arity table this module refuses everywhere -- so grep's quoted pattern blocks.
+check "RESIDUAL over-block (accepted): an output substitution scans the whole command" block \
+    "$(bash_decision "grep -n 'rm -rf src' notes.txt > >(bash -c 'wc -l')")"
+# ...and it is the SHELL in the body that triggers it. Asserted against the CLASSIFIER
+# rather than the gate: the gate has its own whole-command redirect check, which blocks any
+# `>` spelling regardless, so the gate cannot show what this rule did or did not do.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+print(cmdword.is_file_mod("grep -n \047rm -rf src\047 notes.txt > >(cat -n)"))')" == "False" ]]; then
+    ok "a non-shell substitution body does not widen the scan"
+else
+    no "a non-shell substitution body does not widen the scan" "classifier returned True"
+fi
+# An OUTPUT body is a COMPOUND command, and asking it as ONE stage reads only its first
+# command word for the COMMAND-POSITION-only names. `.` and `source` are the whole of that
+# class, so a harmless `true` in front of one hid it -- verified executing. The any-word
+# shell test was never fooled (`>(true; bash)` blocked throughout); both are pinned so the
+# asymmetry stays visible.
+check "a command-position receiver behind a separator in an output body is found" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; . /dev/stdin)")"
+check "...in the source spelling too" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; source /dev/stdin)")"
+check "...and inside a compound in that body" block \
+    "$(bash_decision "printf 'rm -rf src' > >(if true; then . /dev/stdin; fi)")"
+check "...while the any-word shell test never needed the split" block \
+    "$(bash_decision "printf 'rm -rf src' > >(true; bash)")"
+# An input substitution bound to a NON-ZERO descriptor and named back as the script operand.
+# The candidate test is arity-free by design (ADR 0032), so the explicit `/dev/fd/3` operand
+# does not un-name the shell: the stage still says `bash`, and the body is still scanned.
+# Verified executing, and pinned because a reader of `_may_read_program_from_stdin` may
+# reasonably expect an operand to exempt the stage -- it does not, deliberately.
+check "a substitution bound to a numbered fd and named as the operand is scanned" block \
+    "$(bash_decision "bash /dev/fd/3 3< <(printf 'rm -rf src')")"
+# INDIRECTION withdraws the stage contract on this transport too, and the first cut of
+# #563 missed it: the whole-command widening was keyed on a literal `|`, which a process
+# substitution does not have -- so a NAME could hide either end of it. Both verified
+# executing while the classifier answered False, and their pipe twin below already blocked
+# through the same rule.
+check "a FUNCTION producer behind a process substitution blocks" block \
+    "$(bash_decision "f(){ printf 'rm -rf src'; }; bash < <(f)")"
+check "...and a FUNCTION receiver inside an output substitution" block \
+    "$(bash_decision "f(){ bash; }; printf 'rm -rf src' > >(f)")"
+check "...as the pipe twin always did" block \
+    "$(bash_decision "f(){ printf 'rm -rf src'; }; f | bash")"
+# The candidate walk has its OWN allowance. Charged against the shared one, it halved the
+# documented 4,000-token limit for every command holding a `<(` -- and this benign grep,
+# well inside that limit, flipped from allow to block for a walk that emitted no producer.
+BIG_ARGS=""
+for ((_i = 0; _i < 2000; _i++)); do BIG_ARGS="$BIG_ARGS file${_i}.txt"; done
+check "a long benign command with a substitution keeps its full token budget" allow \
+    "$(bash_decision "grep -f <(echo pat)$BIG_ARGS")"
+unset BIG_ARGS
+# ...and the two candidate walks must not charge the SAME text twice. The splitter tears a
+# substitution body out as its own segment, so an output body is normally already in the
+# segment list the input walk covers -- charging it again reintroduced the double-accounting
+# inside the very budget that was split off to remove it. Both directions, both under the
+# limit, and benign.
+# Asserted against the CLASSIFIER, for the same reason as the sibling above: the gate's own
+# whole-command redirect check blocks every `>` spelling regardless, so only the classifier
+# can show whether the budget was double-charged.
+if [[ "$(python3 -c 'import sys; sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+big = " ".join("a%d" % i for i in range(1900))
+print(cmdword.is_file_mod(
+    "grep -n \047rm -rf src\047 notes.txt <(echo pat) > >(sed -n 1p " + big + ")"))')" == "False" ]]; then
+    ok "a command carrying BOTH substitution directions is charged once"
+else
+    no "a command carrying BOTH substitution directions is charged once" "classifier returned True"
+fi
 
 echo "── property checks over the splitter and the producer scan ──"
 # Everything above is a FIXED case, generated or hand-written, so it only ever probes the

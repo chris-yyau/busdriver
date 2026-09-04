@@ -1,4 +1,34 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+
+# #576: exported shell functions must never be IMPORTED, because once they are, nothing
+# in-script can undo it — in bash a function shadows a builtin, and `unset`, `set`,
+# `builtin` and `exec` are all shadowable. Measured: with `sha256sum` and `unset`
+# exported, a plain `bash script` ran the FORGED digest and `unset -f` silently did
+# nothing. A forged hash utility emits one constant digest for every diff and defeats
+# marker binding; a forged `od` makes the exclusion pin challenge predictable.
+#
+# So the fix is layered OUTSIDE-IN, and only the outer layers are authoritative:
+#   1. The re-exec below, using "$BASH" so the interpreter is preserved. Privileged
+#      mode makes bash ignore
+#      SHELLOPTS/BASHOPTS, skip BASH_ENV and ENV, and REFUSE to import functions from
+#      the environment (same technique as hooks/gate-scripts/lib/contained-launch.sh,
+#      #713). The kernel applies a shebang — nothing in the environment can shadow it.
+#   2. Callers that run this as `bash <script>` bypass the shebang, so they pass -p
+#      explicitly; skills/litmus/SKILL.md does. The GATES need neither: hooks.json execs
+#      contained-launch.sh (itself `#!/bin/bash -p`), which re-execs through `env -i`,
+#      so no BASH_FUNC_* survives to reach them.
+#   3. The re-exec below is a LAST-RESORT fallback for a caller that did neither. It
+#      calls `exec`, which is itself shadowable, so it closes the ordinary case and not
+#      a hostile parent — a parent that can forge `exec` in this script's environment is
+#      the process that launched it and could replace the script outright.
+if [[ "$-" != *p* ]]; then
+    # "$BASH", not /bin/bash. bash sets BASH to its own path at startup (overwriting any
+    # inherited value), so this re-execs the SAME interpreter with -p added. Hardcoding
+    # /bin/bash silently DOWNGRADED the shell — on macOS that is bash 3.2, where an empty
+    # `"${arr[@]}"` under `set -u` is an unbound-variable error, and the review aborted
+    # on exactly the path that clears REVIEW_EXCLUDE_ARGS. Measured, in the #252 fixture.
+    exec "${BASH:-/bin/bash}" -p "$0" "$@"
+fi
 # PreToolUse hook: gate git commit on review requirements
 #
 # Two mandatory gates before any git commit:
@@ -11,6 +41,41 @@
 #       a committed settings.json could inject it, so gate env is now sanitized.)
 
 set -euo pipefail
+# #576: neutralise `refs/replace` for EVERY git call in this process, not just the
+# annotated ones. A replacement object can substitute the commit or tree that
+# `git diff` resolves, so a crafted refs/replace entry could make the reviewer read
+# fabricated history while the real content is what gets committed. Annotating call
+# sites one at a time left merge-base resolution, name-only/numstat classification and
+# the short-circuit path scan still honouring replacements — the env var covers them
+# all, and the explicit --no-replace-objects on the canonical hash stays as
+# documentation of the invariant.
+export GIT_NO_REPLACE_OBJECTS=1
+# #576: drop INHERITED SHELL FUNCTIONS that could shadow the primitives this file's
+# integrity checks are built on. Exported functions travel through the environment —
+# the same repo-injectable channel #325 / ADR 0016 closed for env vars — and in bash a
+# function beats both a builtin and a PATH binary. Measured: with `sha256sum` and
+# `command` exported as functions, `command -v sha256sum` returned the forged function's
+# output; after this unset it returned the real /sbin/sha256sum. A forged hash utility
+# emits one constant digest for every diff and defeats marker binding outright; a forged
+# `od` makes the exclusion pin challenge predictable. `command` is listed first because
+# it is itself shadowable, which is why prefixing calls with it is not sufficient alone.
+#
+# BE PRECISE ABOUT WHAT THIS DOES NOT COVER. `unset` is a special builtin, but bash
+# outside POSIX mode still resolves a function of that name first — measured: with
+# `unset`, `set` and `builtin` all exported as functions, this line silently does
+# nothing, and `set -o posix` / `builtin unset` are defeated the same way. So this is a
+# first line of defence against the ordinary case, NOT a boundary.
+#
+# The boundary is the launcher. The gates run under hooks/gate-scripts/lib/
+# contained-launch.sh, which re-execs through `/usr/bin/env -i` and documents this exact
+# class (`BASH_FUNC_exec%%=() { … }` overriding the `exec` builtin) — an absolute path
+# cannot be a function name, so that hop is unshadowable and strips every BASH_FUNC_*
+# before the gate starts. A caller who can additionally forge `unset` in THIS script's
+# environment is the process that launched it and could replace the script outright,
+# which no in-script check can answer.
+unset -f command git sha256sum shasum od tr cut wc cp mktemp readlink stat awk grep sed 2>/dev/null || true
+
+
 # ── Harness-portable root/state resolution ─────────────────────────────
 # BUSDRIVER_PLUGIN_ROOT: plugin-root override; falls back to CLAUDE_PLUGIN_ROOT.
 # Falls back to relative path from this script's location.
@@ -586,12 +651,40 @@ if [ -f "$MARKER" ]; then
     # live on 2026-08-01, where a marker hours old would have authorized a diff
     # whose own review had returned structured FAIL.
     #
-    # Deliberately the BARE `git diff --cached`, byte-identical to every writer
-    # (run-review-loop.sh, litmus/scripts/write-review-marker.sh) AND to
-    # dispatcher-commit-block.sh, whose own comment already pins this coupling:
-    # "Match the marker writer's hash form exactly: bare `git diff --cached`".
-    # Four sites must agree; any one of them adding a flag makes the marker stop
-    # matching and blocks every commit.
+    # THE CANONICAL MARKER-HASH FORM (#576). Byte-identical to the producer
+    # (run-review-loop.sh's REVIEWED_DIFF_HASH capture) AND to the three sites in
+    # dispatcher-commit-block.sh, whose own comment pins the same coupling.
+    # Three files must agree; any one of them changing a flag makes every marker
+    # stop matching and blocks every commit. `tests/test-litmus-marker-binding.sh`
+    # (flag-parity case) asserts the agreement mechanically — a comment saying
+    # "keep these identical" demonstrably did not hold, which is how #576 happened.
+    #
+    # Each flag earns its place; none is cosmetic:
+    #   --no-ext-diff   GIT_EXTERNAL_DIFF / diff.external are reachable from
+    #                   repo-controlled config, and a driver emitting CONSTANT
+    #                   output collapses every distinct diff onto one hash —
+    #                   dissolving the #545 binding this comparison exists for.
+    #   --no-textconv   same collapse, via per-path textconv drivers named by a
+    #                   committed .gitattributes.
+    #   --full-index    40-hex blob SHAs on every `index` line, INCLUDING binary
+    #                   paths (measured, git 2.55.0) — a binary change renders as
+    #                   "Binary files a/x and b/x differ" and is distinguished
+    #                   ONLY by that index line, which is a 7-char abbreviation
+    #                   without this flag. `--binary` would also work but base85-
+    #                   encodes the whole blob into the hashed stream on every
+    #                   commit and every gate check; --full-index is the exact
+    #                   binding at none of that cost.
+    #   --ignore-submodules=none
+    #                   `diff.ignoreSubmodules=all` is repo-controlled config, and with
+    #                   it set git OMITS staged gitlink changes from the diff entirely.
+    #                   A marker reviewed with submodule pointer A would stay valid after
+    #                   swapping it for B — the change is simply not in the hashed
+    #                   stream. Same omission blinds the reviewer-facing diffs, so they
+    #                   carry it too.
+    #   -c color.ui=never -c core.quotePath=false
+    #                   determinism, mirroring compute_pr_diff_hash (the PR-mode
+    #                   equivalent, run-review-loop.sh:227) so both modes render
+    #                   colour and non-ASCII paths alike.
     #
     # SCOPE — be precise about what "bound to the diff" means here. This runs in
     # PreToolUse, BEFORE the command executes, so it binds the marker to the
@@ -719,14 +812,23 @@ if [ -f "$MARKER" ]; then
     # it has PROVEN the marker wrong (mismatched hash, expired epoch,
     # unrecognized shape); this arm has proven nothing. Blocking without
     # deleting is the fail-closed outcome either way.
-    if command -v sha256sum >/dev/null 2>&1; then
-        HASH_CMD=(sha256sum)
-    elif command -v shasum >/dev/null 2>&1; then
-        HASH_CMD=(shasum -a 256)
-    else
-        HASH_CMD=()
-    fi
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" diff --cached 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    # `command` is not decoration. An EXPORTED SHELL FUNCTION named sha256sum/shasum/od/tr
+    # is inherited through the environment — the same repo-injectable channel #325/ADR 0016
+    # closed for env vars — and would be found by `command -v` and then run in preference to
+    # the real binary. A forged hash utility emits one constant digest for every diff and
+    # defeats marker binding outright; a forged `od` makes the exclusion pin challenge
+    # predictable. The `command` builtin bypasses functions and aliases and runs the PATH
+    # executable. (PATH itself is out of scope here: the gates already launch under a fixed
+    # PATH, and a PATH that can forge `git` defeats every check in this file regardless.)
+    # Absolute path inside a trusted system directory. `command -v` walks PATH, and on
+    # macOS sha256sum lives in /sbin — a planted one earlier in PATH would otherwise win
+    # and could return a single constant digest for every diff.
+    HASH_CMD=()
+    for _hash_dir in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$_hash_dir/sha256sum" ]; then HASH_CMD=("$_hash_dir/sha256sum"); break; fi
+        if [ -x "$_hash_dir/shasum" ]; then HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
+    done
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

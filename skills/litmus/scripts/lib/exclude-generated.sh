@@ -33,6 +33,15 @@ build_exclude_args() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
   local review_exclude_file="$repo_root/$STATE_DIR/review-exclude"
+  # #576: when the caller has already verified the policy and materialised HEAD's
+  # committed bytes, read THOSE. Re-reading the live path here would reopen the
+  # check-then-use window the caller just closed. This is a plain shell variable the
+  # caller assigns immediately before sourcing (never an exported env var — a committed
+  # settings.json can set env, #325/ADR 0016, and that would be a way to point the
+  # exclusion parser at attacker-chosen patterns).
+  if [ -n "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE:-}" ] && [ -f "${_BUSDRIVER_PINNED_REVIEW_EXCLUDE}" ]; then
+    review_exclude_file="$_BUSDRIVER_PINNED_REVIEW_EXCLUDE"
+  fi
 
   if [ -f "$review_exclude_file" ]; then
     while IFS= read -r line || [ -n "$line" ]; do

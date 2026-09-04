@@ -537,8 +537,9 @@ except OSError:
 # diff was captured: a commit landing in between would let verdicts for a LATER
 # scope be injected into the prompt for the older diff, breaking the one property
 # the framing promises the reviewer — that this pass covers a superset of every
-# verdict shown. An empty or malformed pin (the caller's own moved-ref check
-# blanks it) emits nothing, exactly like the append side.
+# verdict shown. An empty or malformed pin — the caller pins both ends and
+# refuses outright when either cannot be resolved, so in practice only an
+# unresolvable merge-base reaches here — emits nothing, like the append side.
 #
 # Emits nothing when no entry survives the filters.
 load_pr_history() {

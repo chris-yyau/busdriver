@@ -28,7 +28,13 @@ NE="$TMP/ne"; printf x > "$NE"; EM="$TMP/em"; : > "$EM"; MI="$TMP/mi"
 
 # ── Part A: should_escalate_to_droid ────────────────────────────────
 echo "── should_escalate_to_droid ────────────────────────────────"
+# #803 moved the predicate onto is_trusted_review_cli_available: availability is
+# now decided by TRUSTED resolution, so a stub of is_cli_available alone no longer
+# intercepts and every "droid absent" case silently became "droid present". Stub
+# both, so this suite keeps testing the escalation POLICY (trusted resolution has
+# its own coverage in tests/test-trusted-review-cli.sh) and cannot drift again.
 is_cli_available() { [[ "$1" == "droid" ]]; }   # droid present
+is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
 # The escalating vehicle is CODEX, not grok: grok is now excluded by name (see
 # below), so using it here would assert the opposite of the rule.
 should_escalate_to_droid codex 124 "$NE" && ok "timeout(124) → escalate"      || bad "timeout(124) → escalate"
@@ -57,6 +63,7 @@ should_escalate_to_droid grok 0   "$MI" && bad "grok exit0+missing → NO cross-
 # is the state in which `_grok_refused` is still 0, so before the name-based
 # exclusion the very next step was `droid exec` with the same prompt.
 is_cli_available() { [[ "$1" == "droid" ]]; }   # droid present again
+is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
 RT="$TMP/runtime-sandbox-failure"
 printf 'Refusing to start with its protections missing\n' > "$RT"
 should_escalate_to_droid grok 1 "$RT" \
@@ -64,6 +71,7 @@ should_escalate_to_droid grok 1 "$RT" \
   || ok  "runtime sandbox failure after a PASSING preflight → NO droid fallback"
 
 is_cli_available() { return 1; }                 # droid absent
+is_trusted_review_cli_available() { return 1; }
 should_escalate_to_droid codex 124 "$NE" && bad "droid absent → NO"            || ok "droid absent → NO"
 
 # ── Part B: dispatch.sh per-voice fallback (PATH-stubbed) ───────────
@@ -201,6 +209,7 @@ else
       log_warning() { :; }; log_info() { :; }
       get_review_file() { echo "$TMP/$1"; }
       is_cli_available() { [[ "$1" == "droid" ]]; }
+      is_trusted_review_cli_available() { [[ "$1" == "droid" ]]; }
       # agy slot resolves to grok and "failed" (status neither PASS nor FAIL);
       # codex slot resolves to codex and also "failed" — this is the scenario
       # the fix targets.

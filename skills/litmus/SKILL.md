@@ -94,23 +94,23 @@ These thoughts mean you're about to violate the requirement:
    ```
 3. **If hooks don't exist:** See "Manual Workflow" below
 
-### Manual Workflow (5 Steps)
+### Manual Workflow (4 Steps)
 
 Use this only if pre-commit hooks aren't available:
 
-**1. Set script path:**
-```bash
-LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-```
-
-**2. Initialize:** `bash $LITMUS_SCRIPTS/init-review-loop.sh`
+**1. Initialize:** `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"`
    (Defaults to 10 max iterations)
 
-**3. Run Review (BLOCKING - wait for result):**
+   Use the plugin-root path INLINE and QUOTED. A shell variable set in one Bash
+   call does not survive into the next, so a separate "set the path first" step
+   silently expands to `/skills/...` and fails with exit 127; the quotes keep a
+   plugin root containing whitespace from splitting.
+
+**2. Run Review (BLOCKING - wait for result):**
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. A pass that needs longer is the unsolved case
@@ -118,9 +118,9 @@ Bash(
 )
 ```
 
-**4. Auto-Continue Loop (fully silent):**
-- **PASS (exit 0)** → Proceed to step 5 (tests & commit)
-- **FAIL (exit 1)** → **Silently** fix all issues, stage, re-run step 3
+**3. Auto-Continue Loop (fully silent):**
+- **PASS (exit 0)** → Proceed to step 4 (tests & commit)
+- **FAIL (exit 1)** → **Silently** fix all issues, stage, re-run step 2
   - Do NOT show user each iteration
   - Do NOT ask for permission between iterations
   - Do NOT use background tasks or polling
@@ -130,7 +130,7 @@ Bash(
 - **Max iterations (10)** → see "Auto-Escalation on Logical Failure" — dispatch `/codex:rescue` once before surfacing to user
 - **Only talk to user when:** PASS, setup_error, codex quota error, infra_failure (codex→droid→builtin chain exhausted OR JSON/schema/timeout fault), or post-rescue still failing
 
-**5. Run Tests & Commit:** Only after review passes, tests pass
+**4. Run Tests & Commit:** Only after review passes, tests pass
 ```bash
 npm test                    # Run test suite
 git commit -m "Message"
@@ -182,8 +182,8 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 3. Group files into logical commits (same module/feature together, using the suggestions as a starting point)
 4. For each group:
    a. `git add <files in group>`
-   b. `bash $LITMUS_SCRIPTS/init-review-loop.sh`
-   c. `bash $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   b. `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"`
+   c. `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed
@@ -257,11 +257,11 @@ Never treat a killed-at-the-cap call as a verdict, and never read `$?` for the r
 # 0. Initialize first — same reason as pattern B: run-review-loop.sh takes review_mode
 #    from the state file OVER $LITMUS_MODE, so a leftover pr-mode state file makes this
 #    "commit review" review the BRANCH diff instead of your staged changes (#363).
-Bash(command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10')
+Bash(command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10')
 
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
+    command='/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
                     # do not extend it, they are silently clamped and the call is
                     # killed at 10 min. If the pass needs longer, use pattern B —
@@ -297,7 +297,7 @@ Until #368 settles, the **invariant** is what binds, not a recipe:
    review" silently reviews `git diff --cached` and the PR gate is bypassed. That is this
    very issue (#363).
    ```bash
-   LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10
+   LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10
    grep review_mode .claude/litmus-state.md    # MUST show: review_mode: "pr"
    ```
    If init REFUSES, read its message before acting — it distinguishes three cases, and
@@ -342,7 +342,7 @@ Bash(command="...", timeout=1260000)  # clamped to 600000, killed at 10 min,
 **If a run IS killed at the cap** it leaves an active state file behind. `init-review-loop.sh` will then refuse (it cannot tell a killed loop from a live one) and — this is the trap — `run-review-loop.sh` reads `review_mode` from that file and it OVERRIDES `$LITMUS_MODE`, so re-running silently reviews the *previous* mode's diff. Discard the stale state, carrying the mode you want:
 
 ```bash
-LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
+LITMUS_MODE=pr /bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
 ```
 
 **Note:** If project has pre-commit hooks, just use `git commit` normally.
@@ -409,8 +409,8 @@ git commit -m "Your message"  # Hooks will enforce review
 
 # If using manual approach:
 LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash $LITMUS_SCRIPTS/init-review-loop.sh 10
-bash $LITMUS_SCRIPTS/run-review-loop.sh
+/bin/bash -p "$LITMUS_SCRIPTS/init-review-loop.sh" 10
+/bin/bash -p "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -435,8 +435,8 @@ git push                # Push after review passes
 ```bash
 git add -A                                                          # Stage changes
 LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-bash $CODEX/init-review-loop.sh 10                                  # Initialize
-bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
+/bin/bash -p "$LITMUS/init-review-loop.sh" 10                                # Initialize
+/bin/bash -p "$LITMUS/run-review-loop.sh"                                    # Review (auto-loops)
 # Fix if FAIL, run again until PASS
 npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
@@ -462,7 +462,7 @@ These govern both commit and PR review modes:
 - `LITMUS_PR_BACKSTOP_MAX_AGE=3600` — freshness window (seconds) for the backstop verdict artifact; older artifacts are rejected (fail-closed).
 - `LITMUS_PR_BACKSTOP_MAX_DIFF` — max diff size (bytes) fed to the backstop prompt; an oversize diff fails closed (split the PR) rather than silently truncating to a PASS.
 - `LITMUS_PR_BACKSTOP_TIMEOUT=600` — wall-clock cap (seconds) for the `--run-backstop` captured `claude -p` dispatch (applied when `timeout`/`gtimeout` is available); a timeout is fail-closed (no artifact, gate stays blocked).
-- `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` — opt out of the runtime droid escalation. By default (unset or `0`), when codex exhausts retries on transient errors (rate-limit, network, 5xx) — or hits a single full-duration timeout — the review escalates to `droid exec` (default read-only mode — Create/Edit blocked). On **transient-error** exhaustion a failed or unavailable droid then falls back to the builtin Claude agent; a **timeout** that droid does not rescue instead preserves the timeout signal (exit 124) so the caller can split the diff — it does **not** fall to builtin. The legacy name `LITMUS_CODEX_DROID_FALLBACK=0` is also honored. Escalations are logged to `.claude/bypass-log.jsonl` as `codex-droid-fallback` events. **Note:** this flag only governs the runtime fallback inside `_execute_codex`; install-time routes in `.claude/busdriver.json` control which CLIs are tried for a role, but do not by themselves suppress this runtime escalation once codex is running. Use `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` (or `BUSDRIVER_REVIEW_CLI=codex`) when codex-only runtime behavior is required. (PR mode and blueprint-review both disable this fallback — see `LITMUS_CODEX_RETRIES`.)
+- `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` — opt out of the runtime droid escalation. By default (unset or `0`), when codex exhausts retries on transient errors (rate-limit, network, 5xx) — or hits a single full-duration timeout — the review escalates to `droid exec` (default read-only mode — Create/Edit blocked). On **transient-error** exhaustion a failed or unavailable droid then falls back to the builtin Claude agent. After a Codex **timeout**, droid's outcome decides the signal (#804): spent-budget droid exit 124 preserves timeout (exit 124) so the caller can split the diff; empty stdout inside budget (`no-output`, including exit-0 stderr-only diagnostics — classification keys on stdout alone) clears the inherited timeout and falls through to builtin as rc 3; a successful droid review (exit 0 with stdout) is used as usual. The legacy name `LITMUS_CODEX_DROID_FALLBACK=0` is also honored. Escalations are logged to `.claude/bypass-log.jsonl` as `codex-droid-fallback` events (`droid_outcome` / `droid_ok`). **Note:** this flag only governs the runtime fallback inside `_execute_codex`; install-time routes in `.claude/busdriver.json` control which CLIs are tried for a role, but do not by themselves suppress this runtime escalation once codex is running. Use `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` (or `BUSDRIVER_REVIEW_CLI=codex`) when codex-only runtime behavior is required. (PR mode and blueprint-review both disable this fallback — see `LITMUS_CODEX_RETRIES`.)
 - `LITMUS_CODEX_RETRIES=3` — maximum retry attempts before escalating to droid. Default: `3` (backoff 30, 60, 120 seconds ≈ 3.5 min, which clears OpenAI's per-minute window). **All of these ladders are upper bounds:** the whole sequence — attempts plus sleeps — is capped at the duration its caller passes, so more retries buy more *chances*, not more wall-clock (see the timeout section above). That cap is `LITMUS_TIMEOUT` on the litmus path (`run-review-loop.sh` passes it explicitly); blueprint-review calls `execute_review` without a duration and so rides its **1200s default** instead. **The most important review paths raise this to 5:** blueprint-review and litmus PR mode both export `LITMUS_CODEX_RETRIES=5` (backoff 30, 60, 120, 240, 480 — nominally ≈ 15.5 min, in practice truncated to the caller's duration: `LITMUS_TIMEOUT` for litmus PR mode, `execute_review`'s 1200s default for blueprint-review; rate-limited attempts fail fast so the budget still goes almost entirely to sleeping and outwaits the per-5min window) because those reviews are the gate of record and have no/limited droid net. Raise for longer patience; lower for faster bail (e.g., `export LITMUS_CODEX_RETRIES=2`). Retries fire on genuine network / rate-limit / 5xx transients (the original EAGAIN failure mode is now bypassed via `--prompt-file` — see Review Protocol above); a timeout is never retried (it escalates straight to droid).
 - `LITMUS_CODEX_RETRY_DELAY=30` — base retry delay in seconds; each retry doubles it (exponential backoff). Default: `30`. At the default 3 retries the sequence is 30, 60, 120 seconds; on the 5-retry paths (blueprint / PR mode) it extends to 30, 60, 120, 240, 480. From retry 2 onward (t≥90s) the sequence clears OpenAI's per-minute window; by retry 4 (t≥450s, 5-retry paths) it clears the per-5min window. Lower for faster feedback in low-latency environments (e.g., `export LITMUS_CODEX_RETRY_DELAY=5`).
 - `LITMUS_CODEX_EFFORT` — reasoning effort for the codex review (`minimal|low|medium|high|xhigh`). **Unset by default**, meaning the codex CLI's own configured effort applies; this skill deliberately does not restate what that default is, because a hardcoded claim about it drifts silently (#331 — check `~/.codex/config.toml` if you need to know). Set it to pin a tier for a run (e.g., `export LITMUS_CODEX_EFFORT=xhigh`); it then applies to **every** attempt, retries included. **PR mode pins `xhigh` itself** (`run-review-loop.sh`) — the lead is the gate of record and should not inherit config drift; the pre-commit path is left on the CLI default. That pin is **forced, not defaulted**: a parent-shell export does not win, because an ambient value is repo-injectable via a committed `settings.json` `env` block (#325 / ADR 0016), which would let a reviewed fork set `minimal` and weaken the reviewer that gates it. Change the tier by editing the line; the variable remains a normal override everywhere else (commit mode, ad-hoc runs). Replaces the retired `LITMUS_CODEX_HIGH_FROM` effort ladder, which downgraded reasoning on later retries — retries fire on rate-limits/5xx/timeouts, which less reasoning does not fix, so the ladder only weakened the attempt that finally succeeded.
@@ -471,15 +471,17 @@ These govern both commit and PR review modes:
 
 When `run-review-loop.sh` exits with code 3, external review paths were exhausted for this run — e.g., no CLI is available, codex failed (transient or non-transient), and any applicable droid escalation was disabled, unavailable, or also failed. Handle as follows:
 
-1. Read the prompt path from `.claude/builtin-review-prompt-path.local`
+1. Read the prompt path from `<state-dir>/builtin-review-prompt-path.local`, where `<state-dir>` is the same normalized `BUSDRIVER_STATE_DIR` that `run-review-loop.sh` and `write-review-marker.sh` resolve (default `.claude`; an unset or rejected value falls back to `.claude`). Under a customized state dir the default `.claude` path holds no handoff — or a stale one — and the path Step 5 then passes is refused by the writer. `run-review-loop.sh` also echoes the saved prompt path on stderr as it arms the handoff.
 2. Read the review prompt from that path
 3. Dispatch the `code-reviewer` agent via the Agent tool with the prompt as context. **The agent prompt MUST include:**
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"high|medium|low\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
 4. Parse the agent's JSON output for blocking issues: severity must be a string in the exact lowercase enum `high|medium|low`. Every other value (including `LOW` and `LoW`) fails closed and blocks. An issue blocks unless severity is exactly `low`. If parsing fails or the output is not a JSON array of issues, treat as FAIL.
-5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
-6. If blocking issues: report FAIL with issues, fix and re-run
-7. Clean up: remove the temp prompt file and the handoff path file
+5. If no blocking issues: write the marker via `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" "<the prompt path from step 1>"` — the `-p` is the **authoritative** hop and must not be dropped to a plain `bash` (#576). The script re-execs itself under `-p`, but that is only a fallback for other callers: by the time it runs, bash has already processed `BASH_ENV` and imported exported functions, either of which can run repo-controlled startup code or shadow the very `exec` that was meant to fix it. This script mints the commit marker, so it is an authorization component (NOT via Write tool — the pre-implementation gate blocks Write to marker files). The path argument is **required** for two reasons, not one. It says which handoff this review belongs to, so a delayed write cannot claim a handoff a later review armed (#790); and the marker is bound to the diff hash captured when *your* review was armed (#576), which is looked up by that prompt file's basename — so without the argument there is no reviewed hash to mint from and the writer refuses rather than re-hashing whatever is staged now. The writer also exits non-zero without writing if another litmus run published a marker while this review was in flight — that marker stands; do not retry the review, re-run `/litmus` only if the commit is actually blocked. A third non-zero case is lock contention (another review in flight). The writer WAITS for that lock — up to `BUSDRIVER_REVIEW_LOCK_WAIT` seconds, default 90 — and publishes if the other run ended without publishing a marker (#794); only if the wait runs out does it exit non-zero, and then nothing is consumed and the handoff stays armed, so re-run the writer with the same prompt path once that run finishes rather than re-reviewing. Raising the env var past ~110s means raising the Bash call's own timeout to match, or the tool kills the writer mid-wait.
+6. If blocking issues: report FAIL with issues, fix and re-run — and **disarm this arming** as in Step 7, because nothing else will: the writer is never invoked on this path, so the handoff would otherwise stay armed indefinitely.
+7. Clean up: always remove the temp prompt file. Then the handoff path file and its `builtin-review-marker-baseline.local` snapshot, which are **one pair — never delete one without the other**:
+   - **The review FAILED (Step 6), or you are abandoning it without calling the writer** — retire the pair with `/bin/bash -p "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh" --discard "<the prompt path from step 1>"` — the `-p` for the same reason as Step 5, and it matters at least as much here: this invocation decides whether a FAILED review stays able to mint a marker, so startup code reached through a plain `bash` could drop the `--discard` and take the ordinary write path instead. Do **not** delete the two files yourself: your own read-then-delete is not atomic against a concurrent exit 3 re-arming them, so it can destroy a newer review's state; `--discard` takes the review lock and refuses if the handoff no longer names your path. `--discard` waits for a contended lock exactly like the write path does (#794). **If the wait runs out it still retires the reviewed-diff hash, so the arming can no longer mint a marker** — but the pair itself survives and nothing else retires it, so re-run the same `--discard` once that run finishes or it blocks the next review from arming its own. Re-run `/litmus` to arm a fresh one.
+   - **You called the writer (Step 5)** — leave the pair alone whatever it exited: `write-review-marker.sh` owns their lifecycle from that point. It consumes them itself on a write and on a superseded-marker refusal, and deliberately preserves them in the two cases where deleting would break a later run — when the contention wait runs out the handoff stays armed so the write can be retried, and when a newer review has re-armed the handoff it consumes nothing because the pair belongs to that run's agent.
 
 ## Enhanced Review Features
 

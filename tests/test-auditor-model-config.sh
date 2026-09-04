@@ -265,7 +265,8 @@ cwd_alloc_after_guard() {   # <file> <guard-regex> <label>
   # [[:space:]] not \s — \s is a GNU extension, not POSIX ERE, so a BSD/macOS
   # grep can silently fail to match the indented assignment and turn this into a
   # false FAIL (or, worse, a false pass elsewhere).
-  al="$(grep -nE '^[[:space:]]*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"' "$f" | head -1 | cut -d: -f1)"
+  if [[ "$f" == *resolve-cli.sh ]]; then _cwd_re='^[[:space:]]*_ER_OC_CWD="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"'; else _cwd_re='^[[:space:]]*_oc_cwd="\$\{_BD_OC_SANDBOX_HOME\}/\.cwd"'; fi
+  al="$(grep -nE "$_cwd_re" "$f" | head -1 | cut -d: -f1)"
   if [[ -z "$gl" || -z "$al" ]]; then fail "$label: could not locate guard ($gl) or _oc_cwd allocation ($al)"
   elif (( al > gl )); then ok "$label: sandbox allocated at $al, after the guard at $gl (nothing to clean up)"
   else fail "$label: _oc_cwd allocated at $al BEFORE the guard at $gl — the no-cleanup bail now leaks a temp dir"
@@ -279,8 +280,8 @@ cwd_alloc_after_guard "$DISPATCH" 'if \[\[ -z "\$\{MODEL:-\}" && -z "\$_BD_AUDIT
 # collapsing this into 1 reports the Mechanism Witness as FAILED for a config key
 # the operator simply never set — the ABSENT-vs-FAILED distinction from ADR 0027.
 LOOP="$ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
-if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/return 4/{print;exit}' "$LIB" | grep -q 'return 4'; then
-  ok "resolve-cli.sh no-model guard returns 4 (SKIPPED), not a generic failure"
+if awk '/if \[\[ -z "\$_BD_AUDITOR_MODEL" \]\]; then/{f=1} f&&/_bd_exit_as 4/{print;exit}' "$LIB" | grep -q '_bd_exit_as 4'; then
+  ok "resolve-cli.sh no-model guard returns 4 via _bd_exit_as (SKIPPED), not a generic failure"
 else
   fail "resolve-cli.sh no-model guard does not return 4 — blueprint-review will call it FAILED"
 fi
@@ -388,11 +389,36 @@ for f in "$LIB" "$DISPATCH"; do
   # PATH too: the reader shells out to jq/python3, so an ambient PATH could
   # supply a planted binary. Both are stated at the call site rather than
   # inherited from the arm's pin, so neither depends on line order.
-  bad="$(grep -nE 'resolve_auditor_model' "$f" \
-         | grep -vE '^[0-9]+:[[:space:]]*#' \
+  # Join backslash-continuations FIRST. dispatch.sh writes the PATH pin and the
+  # HOME-prefixed call on two continued lines, and excluding those two shapes
+  # INDEPENDENTLY (the previous form) meant the call line satisfied the guard on its
+  # own — so deleting or weakening the PATH pin still passed the assertion it exists
+  # to enforce. Validated as ONE command, both pins must be present together.
+  #
+  # The pattern is the EXACT pinned PATH, anchored at a word boundary and joined to
+  # the call by whitespace only — no `.*`, no wildcarded path contents. An
+  # unanchored `PATH=` fragment accepted `NOTPATH="..."`, and a wildcarded body
+  # accepted a prepended repo-writable dir such as `PATH="$PWD/bin:/opt/homebrew/..."`,
+  # either of which false-passes the very regression this guard exists to catch.
+  joined="$(/usr/bin/awk '{ line=$0; while (line ~ /\\$/) { sub(/\\$/,"",line); if ((getline nxt)<=0) break; line=line nxt } print line }' "$f")"
+  # Remove each properly-pinned call OCCURRENCE (note the trailing /g), then flag
+  # whatever still names the function. Excluding whole LINES instead let one
+  # safe-looking occurrence shield an unsafe one beside it — e.g.
+  #   resolve_auditor_model ; PATH="...pinned..." HOME="$_oc_home" resolve_auditor_model
+  # was dropped entirely by `grep -v`, though its FIRST call carries no pin at all.
+  # No `grep -n` here. The ordinals would number the AWK-JOINED text, not the file, so
+  # any call sitting after a backslash-continuation (dispatch.sh's PATH/HOME pin is one)
+  # would be reported at a line the reader cannot find — worst exactly when the location
+  # is what they need. The offending TEXT is the actionable part. The comment filter is
+  # anchored on a bare leading `#` to match: with `-n` gone there is no `N:` prefix left
+  # for it to key on, and leaving that filter untouched would let commented mentions
+  # through and false-fail the guard on a clean tree.
+  bad="$(printf '%s\n' "$joined" \
+         | /usr/bin/sed -E 's%(^|[[:space:]])PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"[[:space:]]+HOME="\$(_ER_OC_HOME|_oc_home)"[[:space:]]+resolve_auditor_model%\1<PINNED-CALL>%g' \
+         | grep -E 'resolve_auditor_model' \
+         | grep -vE '^[[:space:]]*#' \
          | grep -v 'resolve_auditor_model()' \
-         | grep -v 'type resolve_auditor_model' \
-         | grep -vE 'PATH="[^"]*/opt/homebrew/bin[^"]*/usr/local/bin[^"]*" \\?$|HOME="\$_oc_home" resolve_auditor_model' || true)"
+         | grep -v 'type resolve_auditor_model' || true)"
   if [[ -n "$bad" ]]; then
     fail "$(basename "$f") calls resolve_auditor_model without pinned PATH+HOME: $bad"
   else

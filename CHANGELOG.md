@@ -1,3 +1,94 @@
+## [2.1.11](https://github.com/chris-yyau/busdriver/compare/v2.1.10...v2.1.11) (2026-09-04)
+
+
+### Bug Fixes
+
+* **hooks:** resolve alias candidates against a literal git -C ([#812](https://github.com/chris-yyau/busdriver/issues/812)) ([#820](https://github.com/chris-yyau/busdriver/issues/820)) ([e661023](https://github.com/chris-yyau/busdriver/commit/e66102322d14cc45f4a8bc782c56dcfdf6b9d75d))
+
+## [2.1.10](https://github.com/chris-yyau/busdriver/compare/v2.1.9...v2.1.10) (2026-09-04)
+
+
+### Bug Fixes
+
+* **review:** close the shadowable-environment class in the trusted review chain ([#803](https://github.com/chris-yyau/busdriver/issues/803)) ([#810](https://github.com/chris-yyau/busdriver/issues/810)) ([bdb9b77](https://github.com/chris-yyau/busdriver/commit/bdb9b7769d93ce081159cf7a344377d213341c62)), closes [811/#813](https://github.com/chris-yyau/busdriver/issues/813) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#817](https://github.com/chris-yyau/busdriver/issues/817) [#548](https://github.com/chris-yyau/busdriver/issues/548)
+
+## [2.1.9](https://github.com/chris-yyau/busdriver/compare/v2.1.8...v2.1.9) (2026-08-31)
+
+
+### Bug Fixes
+
+* **litmus:** classify empty droid escalation as no-output ([#804](https://github.com/chris-yyau/busdriver/issues/804)) ([#806](https://github.com/chris-yyau/busdriver/issues/806)) ([e6dce80](https://github.com/chris-yyau/busdriver/commit/e6dce80e9124115c8e122efc6fb0beca639aea29))
+
+## [2.1.8](https://github.com/chris-yyau/busdriver/compare/v2.1.7...v2.1.8) (2026-08-31)
+
+
+### Bug Fixes
+
+* **gate:** fail closed on an unresolved command word in both gate layers ([#553](https://github.com/chris-yyau/busdriver/issues/553)) ([#805](https://github.com/chris-yyau/busdriver/issues/805)) ([3381499](https://github.com/chris-yyau/busdriver/commit/33814991cd6bac023d7544e2465c0cce601397c2))
+
+## [2.1.7](https://github.com/chris-yyau/busdriver/compare/v2.1.6...v2.1.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* **integrity:** refuse unvalidated __pycache__ bytecode ([#797](https://github.com/chris-yyau/busdriver/issues/797)) ([#799](https://github.com/chris-yyau/busdriver/issues/799)) ([33690be](https://github.com/chris-yyau/busdriver/commit/33690be362311a73a1d4f9d71060e291186566a2))
+
+## [2.1.6](https://github.com/chris-yyau/busdriver/compare/v2.1.5...v2.1.6) (2026-08-30)
+
+
+### Bug Fixes
+
+* **hooks:** gate fast-forwards of protected refs to unreviewed content ([#779](https://github.com/chris-yyau/busdriver/issues/779)) ([#801](https://github.com/chris-yyau/busdriver/issues/801)) ([26545b0](https://github.com/chris-yyau/busdriver/commit/26545b03c43e3ac1f03958864e90fba2024c4387)), closes [#777](https://github.com/chris-yyau/busdriver/issues/777)
+
+## [2.1.5](https://github.com/chris-yyau/busdriver/compare/v2.1.4...v2.1.5) (2026-08-30)
+
+
+### Bug Fixes
+
+* **gates:** close the backtick and process-substitution producer-scan gaps ([#563](https://github.com/chris-yyau/busdriver/issues/563)) ([#798](https://github.com/chris-yyau/busdriver/issues/798)) ([8e37c50](https://github.com/chris-yyau/busdriver/commit/8e37c5072359117405eafee17d52b26c34753fb5)), closes [#562](https://github.com/chris-yyau/busdriver/issues/562) [#742](https://github.com/chris-yyau/busdriver/issues/742)
+
+## [2.1.4](https://github.com/chris-yyau/busdriver/compare/v2.1.3...v2.1.4) (2026-08-30)
+
+
+### Bug Fixes
+
+* **litmus:** hash the reviewed bytes and pin all four marker sites ([#576](https://github.com/chris-yyau/busdriver/issues/576)) ([#795](https://github.com/chris-yyau/busdriver/issues/795)) ([a48ae82](https://github.com/chris-yyau/busdriver/commit/a48ae82865db40dee1832dd4c47ba7c3ab85cdc8)), closes [280/#281](https://github.com/chris-yyau/busdriver/issues/281) [#545](https://github.com/chris-yyau/busdriver/issues/545) [#252](https://github.com/chris-yyau/busdriver/issues/252) [#713](https://github.com/chris-yyau/busdriver/issues/713) [#252](https://github.com/chris-yyau/busdriver/issues/252) [#790](https://github.com/chris-yyau/busdriver/issues/790) [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.1.3](https://github.com/chris-yyau/busdriver/compare/v2.1.2...v2.1.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **litmus:** wait for review lock before refusing marker write ([#794](https://github.com/chris-yyau/busdriver/issues/794)) ([#796](https://github.com/chris-yyau/busdriver/issues/796)) ([e2b8b1d](https://github.com/chris-yyau/busdriver/commit/e2b8b1dcc439e1968f1241e7722cfb562d39a25b))
+
+## [2.1.2](https://github.com/chris-yyau/busdriver/compare/v2.1.1...v2.1.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **litmus:** close [#790](https://github.com/chris-yyau/busdriver/issues/790) — order the delayed builtin marker write against other publishers ([#792](https://github.com/chris-yyau/busdriver/issues/792)) ([b8396f7](https://github.com/chris-yyau/busdriver/commit/b8396f7b17275c8701e27ac1fec509edd4876fc3)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#794](https://github.com/chris-yyau/busdriver/issues/794) [#794](https://github.com/chris-yyau/busdriver/issues/794)
+
+## [2.1.1](https://github.com/chris-yyau/busdriver/compare/v2.1.0...v2.1.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **grok:** close [#785](https://github.com/chris-yyau/busdriver/issues/785) — refuse at preflight when the runtime socket is a symlink ([#791](https://github.com/chris-yyau/busdriver/issues/791)) ([d02da5c](https://github.com/chris-yyau/busdriver/commit/d02da5ccf8b3502eb7960d0c63d85ce2d2b8079b))
+
+# [2.1.0](https://github.com/chris-yyau/busdriver/compare/v2.0.2...v2.1.0) (2026-08-29)
+
+
+### Features
+
+* **integrity:** pin gate-script launchers by content, not by command ([#742](https://github.com/chris-yyau/busdriver/issues/742)) ([#786](https://github.com/chris-yyau/busdriver/issues/786)) ([b623d54](https://github.com/chris-yyau/busdriver/commit/b623d5483d9513bf77a65d7ca837c7b27182c525)), closes [#737](https://github.com/chris-yyau/busdriver/issues/737) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [2.0.2](https://github.com/chris-yyau/busdriver/compare/v2.0.1...v2.0.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **hooks:** close [#777](https://github.com/chris-yyau/busdriver/issues/777) — document disableAllHooks as a platform limit, pin the tree clean ([#787](https://github.com/chris-yyau/busdriver/issues/787)) ([287e9e9](https://github.com/chris-yyau/busdriver/commit/287e9e9a1f0c9a1a7c5e52d41a5e7e9435afac9c)), closes [#784](https://github.com/chris-yyau/busdriver/issues/784)
+
 ## [2.0.1](https://github.com/chris-yyau/busdriver/compare/v2.0.0...v2.0.1) (2026-08-28)
 
 

@@ -47,7 +47,832 @@ else
   _bd_lib_dir=""
 fi
 
+# #803: minimal trusted-source latch helpers — latch runs immediately after these
+# three definitions, before any other large function bodies are sourced.
+
+_bd803_canonical_file_path() {
+  _BCFP_ARG=${1-}
+  _BCFP_OUT=
+  # shellcheck disable=SC2016
+  _BCFP_SCRIPT='
+p=${1-}
+[ -n "$p" ] || exit 1
+case $p in *'"'"'
+'"'"'*) exit 1 ;; esac
+n=0
+while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+  t=$(/usr/bin/readlink "$p"; /usr/bin/printf BD803_EOF) || exit 1
+  t=${t%BD803_EOF}
+  case $t in *'"'"'
+'"'"'*) exit 1 ;; esac
+  case $t in
+    /*) p=$t ;;
+    *) p=$(/usr/bin/dirname -- "$p")/$t ;;
+  esac
+  n=$((n + 1))
+done
+[ -L "$p" ] && exit 1
+[ -f "$p" ] || exit 1
+case $p in *'"'"'
+'"'"'*) exit 1 ;; esac
+d=$(CDPATH=; cd -- "$(/usr/bin/dirname -- "$p")" && pwd -P) || exit 1
+[ -n "$d" ] || exit 1
+case $d in *'"'"'
+'"'"'*) exit 1 ;; esac
+b=$(/usr/bin/basename -- "$p") || exit 1
+case $b in *'"'"'
+'"'"'*) exit 1 ;; esac
+printf "%s/%s\n" "$d" "$b"
+'
+  _BCFP_OUT="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_BCFP_SCRIPT}" bash "${_BCFP_ARG}")" || _BCFP_OUT=
+  case "${_BCFP_OUT}" in
+    /*) ;;
+    *) _BCFP_OUT= ;;
+  esac
+  case "${_BCFP_OUT}" in
+    *$'\n'*) _BCFP_OUT= ;;
+  esac
+  [[ -n "${_BCFP_OUT}" ]] && /usr/bin/printf '%s\n' "${_BCFP_OUT}"
+}
+
+_bd803_file_sha256() {
+  _BFS_PATH=${1-}
+  # shellcheck disable=SC2016
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH=/usr/bin:/bin PERL5OPT= PERL5LIB= PERLLIB= /bin/bash --noprofile --norc -c 'p=$1; /usr/bin/shasum -a 256 "$p" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done' bash "$_BFS_PATH"
+}
+
+_bd803_cleanup_review_lib_exec() {
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+  fi
+  _BD803_REVIEW_LIB_EXEC=
+}
+
+_bd803_latch_review_lib_pin() {
+  _BRLP_PATH=${1-}
+  case "$_BRLP_PATH" in
+    /dev/fd/*) return 1 ;;
+  esac
+  [[ -n "$_BRLP_PATH" && -f "$_BRLP_PATH" ]] || return 1
+  if [[ "${_BD803_REVIEW_LIB_PIN:-}" != "$_BRLP_PATH" ]]; then
+    if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+      /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    fi
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+    # A DIFFERENT pin is a different library, so its first-adopted digest is retired
+    # with the rest of the cache. Same pin, different bytes is the case the latch
+    # below exists to refuse.
+    _BD803_REVIEW_LIB_SHA0=
+  fi
+  _BD803_REVIEW_LIB_PIN="$_BRLP_PATH"
+}
+
+_bd803_ensure_staged_lib() {
+  # TRUST BOUNDARY of this staging step, and of the two sibling lanes that share its
+  # shape — state it once, because the shape invites a stronger reading.
+  #
+  # WHAT IS BOUND. The pin is opened ONCE and copied through that descriptor, the copy
+  # is hashed, and every review child executes the copy — so the bytes hashed are the
+  # bytes executed, and the first digest adopted for a pin is latched and never revised
+  # (below). No later rename or replace of the pin can reach a child. An in-place write
+  # racing the copy is NOT excluded — a descriptor stays attached to a mutable inode,
+  # so a concurrent writer can still tear the bytes cp is reading. What that cannot do
+  # is desynchronize hash from execution: whatever landed in the copy is what gets
+  # hashed and what gets run.
+  #
+  # WHAT IS NOT BOUND, and cannot be at this layer. Bash sourced this file by PATHNAME
+  # before any of the above ran, and there is no way to hash what the interpreter has
+  # already parsed — so the PARENT's own copy of the library is authenticated by
+  # nothing, and a writer who replaces the file between that source and this staging
+  # gets the replacement hashed against itself for the children. The codex companion is
+  # the same shape with no remedy at all: node reopens its pathname, and it is an ESM
+  # entry point resolving imports relative to its real directory, so it cannot be
+  # staged the way this file is (attempted; it breaks the module graph).
+  #
+  # WHO THAT ATTACKER IS. All three windows require WRITE ACCESS to the busdriver
+  # installation or the operator's plugin cache — outside the reviewed checkout, which
+  # is the whole trust anchor this file rests on. Anyone holding it can replace the
+  # library, the companion, the gate scripts or the operator's shell rc outright, so
+  # nothing here would still be standing to defend. #803's threat model is a poisoned
+  # ENVIRONMENT and a hostile reviewed CHECKOUT, and both are closed. Residual,
+  # owner-adjudicated, deliberately not papered over.
+  #
+  # #803: prove OUR state variables are writable before trusting anything in them.
+  # A sourcing shell can arrive with them already set READONLY: BASH_ENV is honoured
+  # for `bash script.sh`, so an env-injected prelude declares them before this file
+  # is ever read, and NEITHER a plain assignment NOR `builtin unset` can clear a
+  # readonly (both measured). The source-load reset is therefore not sufficient on
+  # its own — without this guard the fast path below accepts any attacker-planted
+  # file whose digest matches the attacker's own _SHA, and the clean children
+  # execute it (measured end-to-end: the planted script ran).
+  # The probe cannot be forged BY A READONLY: a readonly variable cannot accept our
+  # fresh unpredictable value, so a mismatch means the variable is not ours. Values
+  # are restored on success so the staging cache survives; on failure we refuse.
+  #
+  # SCOPE — do not read this as more than it is. It is NOT a defence against an
+  # ambient DEBUG trap. `set -T` plus a DEBUG trap runs attacker code before every
+  # simple command, so it can set these three to $_BESL_RW just before the
+  # comparison and back to a planted path and matching digest just after (measured:
+  # the planted script executed). No parent-shell check survives that, because the
+  # attacker is executing in the parent between any two of our statements.
+  # The authoritative boundary is the entry point, not this function: bash in
+  # privileged mode ignores BASH_ENV, which is the only environment-reachable way to
+  # install that trap or those readonlys, and it refuses BASH_FUNC_* imports too.
+  # Every executable entry point that sources this library starts privileged --
+  # `#!/usr/bin/env -S bash -p` or the `[[ "$-" != *p* ]]` re-exec -- and
+  # tests/test-trusted-review-cli.sh asserts that for each of them. Verified: the
+  # same DEBUG-trap and readonly preludes that win without -p both fail with it.
+  # This probe is the residual guard for a caller that cannot re-exec.
+  _BESL_RW="bd803-rw-$$-${RANDOM}${RANDOM}"
+  _BESL_KEEP_PIN="${_BD803_REVIEW_LIB_PIN:-}"
+  _BESL_KEEP_STAGED="${_BD803_REVIEW_LIB_STAGED:-}"
+  _BESL_KEEP_SHA="${_BD803_REVIEW_LIB_SHA:-}"
+  _BESL_KEEP_SHA0="${_BD803_REVIEW_LIB_SHA0:-}"
+  _BD803_REVIEW_LIB_PIN="$_BESL_RW"
+  _BD803_REVIEW_LIB_STAGED="$_BESL_RW"
+  _BD803_REVIEW_LIB_SHA="$_BESL_RW"
+  _BD803_REVIEW_LIB_SHA0="$_BESL_RW"
+  if [[ "$_BD803_REVIEW_LIB_PIN" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_STAGED" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_SHA" != "$_BESL_RW" \
+     || "$_BD803_REVIEW_LIB_SHA0" != "$_BESL_RW" ]]; then
+    return 1
+  fi
+  _BD803_REVIEW_LIB_PIN="$_BESL_KEEP_PIN"
+  _BD803_REVIEW_LIB_STAGED="$_BESL_KEEP_STAGED"
+  _BD803_REVIEW_LIB_SHA="$_BESL_KEEP_SHA"
+  _BD803_REVIEW_LIB_SHA0="$_BESL_KEEP_SHA0"
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
+    _BESL_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
+    [[ "$_BESL_NOW" == "$_BD803_REVIEW_LIB_SHA" ]] && return 0
+    /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+  fi
+  [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]] || return 1
+  case "$_BD803_REVIEW_LIB_PIN" in
+    /dev/fd/*) return 1 ;;
+  esac
+  _BESL_OUT=$(
+    # shellcheck disable=SC2016
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c '
+pin=$1
+case $pin in /dev/fd/*) exit 1 ;; esac
+case $pin in *'"'"'
+'"'"'*) exit 1 ;; esac
+n=0
+while [ -L "$pin" ] && [ "$n" -lt 32 ]; do
+  t=$(/usr/bin/readlink "$pin"; /usr/bin/printf BD803_EOF) || exit 1
+  t=${t%BD803_EOF}
+  case $t in *'"'"'
+'"'"'*) exit 1 ;; esac
+  case $t in
+    /*) pin=$t ;;
+    *) pin=$(/usr/bin/dirname -- "$pin")/$t ;;
+  esac
+  n=$((n + 1))
+done
+[ -L "$pin" ] && exit 1
+case $pin in *'"'"'
+'"'"'*) exit 1 ;; esac
+d=$(CDPATH=; cd -- "$(/usr/bin/dirname -- "$pin")" && pwd -P) || exit 1
+[ -n "$d" ] || exit 1
+case $d in *'"'"'
+'"'"'*) exit 1 ;; esac
+b=$(/usr/bin/basename -- "$pin") || exit 1
+case $b in *'"'"'
+'"'"'*) exit 1 ;; esac
+pin="$d/$b"
+staged=$(/usr/bin/mktemp -t bd803-lib.XXXXXX) || exit 1
+# #803: group redirection, not `exec`. `builtin exec 3< f` redirects the
+# `builtin` COMMAND, so fd 3 is closed again before the next line (measured,
+# bash 3.2 / macOS) — the staging cp then failed and every review dispatch
+# refused. A group redirect holds the descriptor for the whole block and uses
+# no shadowable builtin word at all.
+#
+# TRUST BOUNDARY of this staging step — state it, because the shape invites a
+# stronger reading than it earns:
+#   BOUND: every LATER read of the review lib. The copy is taken from the held
+#     fd 3, not from a second open of "$pin", and the regular-file check below
+#     tests the OPENED descriptor rather than the pathname — so nothing between
+#     here and the last retry minutes from now can re-point what was staged.
+#   NOT BOUND: this first open itself, and be precise about what that means. The
+#     parent goes on executing the inode bash already holds open, so a swap of
+#     "$pin" AFTER sourcing does not change the parent — it makes the STAGED copy
+#     diverge from the sourced bytes, and the env -i children would then run the
+#     swapped code with a digest that matches itself. That divergence is real.
+#     It is not closable from inside this file: bash exposes no descriptor for
+#     the `source` that read it, so there is nothing to stage FROM but the
+#     pathname. Closing it means the launcher stages the artifact first and
+#     sources THAT — a change to every caller that sources this library, not to
+#     this function. What does not change is the capability required: write
+#     access to the pinned lib path. An attacker holding it a moment earlier
+#     subverts the parent directly, which is strictly worse. So this is a blast
+#     radius the staging does not shrink, not a new door it opens.
+#     Owner-adjudicated 2026-09-02 as out of scope for #803, whose threat model
+#     is the shadowable-builtin/poisoned-environment class, not same-uid write.
+# `&&`, not `|| exit 1`: an exit inside the group leaves the mktemp file behind,
+# because the outer cleanup handler never runs. Falling through to it removes it.
+{ [ -f /dev/fd/3 ] && /bin/cp /dev/fd/3 "$staged"; } 3< "$pin" || { /bin/rm -f "$staged"; exit 1; }
+/bin/chmod 500 "$staged" || { /bin/rm -f "$staged"; exit 1; }
+sha=$(/usr/bin/shasum -a 256 "$staged" 2>/dev/null | while IFS= read -r line; do printf "%s" "${line%% *}"; break; done)
+[ -n "$sha" ] || { /bin/rm -f "$staged"; exit 1; }
+printf "%s\n%s\n%s\n" "$pin" "$staged" "$sha"
+' bash "$_BD803_REVIEW_LIB_PIN"
+  ) || return 1
+  _BD803_REVIEW_LIB_PIN=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '1p')
+  _BD803_REVIEW_LIB_STAGED=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '2p')
+  _BD803_REVIEW_LIB_SHA=$(/usr/bin/printf '%s\n' "$_BESL_OUT" | /usr/bin/sed -n '3p')
+  case "$_BD803_REVIEW_LIB_PIN" in *$'\n'*) return 1 ;; esac
+  case "$_BD803_REVIEW_LIB_STAGED" in *$'\n'*) return 1 ;; esac
+  case "$_BD803_REVIEW_LIB_SHA" in *$'\n'*) return 1 ;; esac
+  # A missing or altered staged copy is a cache MISS, and the branch above clears the
+  # cache and re-stages from the pin. Adopting whatever digest the pin now carries
+  # would make _bd803_verify_review_lib_bytes verify the replacement against itself:
+  # a writer who can replace the pin AND drop the staged copy would get the new bytes
+  # executed by every later review child, with the byte check reporting success.
+  # The first digest adopted for THIS pin is therefore latched and never revised --
+  # same pin, different bytes refuses. A genuinely different pin retires the latch in
+  # _bd803_latch_review_lib_pin, which is the only legitimate way to change libraries.
+  if [[ -n "${_BD803_REVIEW_LIB_SHA0:-}" && "$_BD803_REVIEW_LIB_SHA" != "$_BD803_REVIEW_LIB_SHA0" ]]; then
+    # Remove BEFORE clearing the variable: the copy was already written by the child
+    # above, and dropping the only reference to it leaks an executable file into
+    # TMPDIR on every refused attempt.
+    [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" ]] && /bin/rm -f "$_BD803_REVIEW_LIB_STAGED"
+    _BD803_REVIEW_LIB_STAGED=
+    _BD803_REVIEW_LIB_EXEC=
+    _BD803_REVIEW_LIB_SHA=
+    return 1
+  fi
+  _BD803_REVIEW_LIB_SHA0="$_BD803_REVIEW_LIB_SHA"
+  _BD803_REVIEW_LIB_EXEC="$_BD803_REVIEW_LIB_STAGED"
+  [[ -n "$_BD803_REVIEW_LIB_PIN" && -n "$_BD803_REVIEW_LIB_STAGED" && -f "$_BD803_REVIEW_LIB_STAGED" && -n "$_BD803_REVIEW_LIB_SHA" ]] || return 1
+  # Trap only in the top-level shell. Command-substitution subshells inherit traps and
+  # fire EXIT cleanup when they return, which deletes the staged copy before the caller
+  # can use the path ($(_bd803_review_lib_exec) in _execute_codex).
+  #
+  # And only when the SOURCING script has no EXIT handler of its own. `trap ... EXIT`
+  # replaces, it does not chain, so installing one here would silently drop a
+  # caller's cleanup of its own temp files, locks or credential-bearing dirs. When
+  # the caller owns EXIT we skip and leave the staged copy to TMPDIR reaping —
+  # this trap is temp-file hygiene, never a trust boundary, so losing it costs a
+  # file and never a decision. (That is also why `builtin trap` being shadowable
+  # is not a fail-open here: a shadow means no trap, which leaks, not admits.)
+  if [[ -z "${_bd803_review_lib_exec_trap_set:-}" && "${BASH_SUBSHELL:-0}" -eq 0 ]] \
+     && [[ -z "$(builtin trap -p EXIT 2>/dev/null)" ]]; then
+    _bd803_review_lib_exec_trap_set=1
+    builtin trap '_bd803_cleanup_review_lib_exec' EXIT
+  fi
+}
+
+# #803: latch canonical resolve-cli.sh once at trusted source load.
+#
+# Plain assignments, NOT `builtin unset`. `builtin` is itself shadowable — an
+# imported `BASH_FUNC_builtin%%='() { :; }'` makes `builtin unset` a silent no-op
+# (measured), so an attacker-supplied _BD803_REVIEW_LIB_STAGED / _SHA would survive
+# this reset; _bd803_ensure_staged_lib then finds a staged file whose digest
+# matches, never binds it to _BD803_REVIEW_LIB_PIN, and the clean children execute
+# those bytes. Assignment is grammar rather than a command word, so no exported
+# function can intercept it. Every reader here tests emptiness (-n/-z), so an empty
+# value is equivalent to an unset one — and the same idiom is already used by
+# _bd803_cleanup_review_lib_exec above.
+#
+# ACCEPTED RESIDUAL (raised in PR review, refused deliberately): re-sourcing this
+# library in one shell drops the path to a previously staged copy WITHOUT deleting
+# it, so each redundant source leaks ~250KB into TMPDIR until the OS reaps it. The
+# obvious repair -- call _bd803_cleanup_review_lib_exec before clearing -- is worse
+# than the leak: that function `/bin/rm -f`s whatever _BD803_REVIEW_LIB_STAGED
+# holds, and the whole reason this reset exists is that the value may be
+# ATTACKER-SUPPLIED from the environment. Honouring it would hand an injected
+# variable an arbitrary-file-delete primitive to buy back a temp file. The other
+# suggested repair -- preserve initialized staging state across a re-source -- is
+# the same fail-open by a different route: it trusts exactly the state this reset
+# is here to distrust. A bounded temp-file leak is the cheaper side of that trade.
+_BD803_REVIEW_LIB_PIN=
+_BD803_REVIEW_LIB_STAGED=
+_BD803_REVIEW_LIB_EXEC=
+_BD803_REVIEW_LIB_SHA=
+_BD803_REVIEW_LIB_SHA0=
+_bd803_pin_latched=
+_bd803_review_lib_exec_trap_set=
+_bd803_pin_src="${BASH_SOURCE[0]-}"
+case "$_bd803_pin_src" in
+  /dev/fd/*) ;;
+  *)
+    _bd803_pin_latched=1
+    case "$_bd803_pin_src" in
+      /*) ;;
+      *) _bd803_pin_src="${PWD%/}/${_bd803_pin_src}" ;;
+    esac
+    case "$_bd803_pin_src" in *$'\n'*) _bd803_pin_src= ;; esac
+    if [[ -n "$_bd803_pin_src" && -f "$_bd803_pin_src" ]]; then
+      _BD803_REVIEW_LIB_PIN="$_bd803_pin_src"
+    fi
+    ;;
+esac
+if [[ "${BASH_SUBSHELL:-0}" -eq 0 && -n "${_BD803_REVIEW_LIB_PIN:-}" ]]; then
+  # `|| :` is load-bearing. Every entry point sources this library under
+  # `set -euo pipefail`, and a failing command as the last statement of an `if`
+  # body is NOT exempt from `set -e` — so a benign staging failure here (no
+  # mktemp, no shasum, unwritable TMPDIR, E2BIG) killed the sourcing script at
+  # source time with no diagnostic at all: run-shell-tests.sh, dispatch.sh and
+  # both review loops would die before printing a word. This is a warm-the-cache
+  # latch, never a gate; every consumer re-checks staging and fails closed on its
+  # own, so a miss here must degrade to "not staged yet", not to a silent abort.
+  _bd803_ensure_staged_lib || :
+fi
+
+
+
+_bd803_review_lib_exec() {
+  # Lazy staging must run in the caller shell — not inside $() — or the subshell EXIT
+  # trap deletes the staged bytes before the returned path is usable.
+  if [[ "${BASH_SUBSHELL:-0}" -eq 0 ]]; then
+    _bd803_ensure_staged_lib || return 1
+  fi
+  if [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -r "${_BD803_REVIEW_LIB_STAGED}" ]]; then
+    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_STAGED"
+  elif [[ -n "${_BD803_REVIEW_LIB_PIN:-}" && -f "$_BD803_REVIEW_LIB_PIN" ]]; then
+    /usr/bin/printf '%s' "$_BD803_REVIEW_LIB_PIN"
+  fi
+}
+
+_bd803_verify_review_lib_bytes() {
+  _bd803_ensure_staged_lib || return 1
+  [[ -n "${_BD803_REVIEW_LIB_STAGED:-}" && -f "${_BD803_REVIEW_LIB_STAGED}" && -n "${_BD803_REVIEW_LIB_SHA:-}" ]] || return 1
+  _BRLV_NOW="$(_bd803_file_sha256 "$_BD803_REVIEW_LIB_STAGED")" || return 1
+  [[ "$_BRLV_NOW" == "$_BD803_REVIEW_LIB_SHA" ]]
+}
+
+_bd803_bash_staged_lib() {
+  _BSL_ARGS=("$@")
+  # Consume the one-shot ambient-PATH flag BEFORE the staging call can bail out.
+  # Reading it afterwards leaked it across a failed attempt: the NEXT call — one
+  # that is supposed to run its clean child on the fixed PATH=/usr/bin:/bin, e.g.
+  # --print-trusted-companion or --print-trusted-home — inherited the flag and
+  # silently used the caller's ambient PATH instead. Assignment, not `builtin
+  # unset`, for the usual shadow reason.
+  _BSL_AMBIENT="${_BD803_STAGED_AMBIENT_PATH:-}"
+  _BD803_STAGED_AMBIENT_PATH=
+  _bd803_ensure_staged_lib || return 1
+  _BSL_PATH=/usr/bin:/bin
+  if [[ "$_BSL_AMBIENT" == 1 ]]; then
+    _BSL_PATH="${PATH-}"
+  fi
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+    /usr/bin/env -i PATH="${_BSL_PATH}" PWD="${PWD-}" BD803_STAGED_PATH="${_BD803_REVIEW_LIB_STAGED}" BD803_EXPECTED_SHA="${_BD803_REVIEW_LIB_SHA}" \
+      /bin/bash --noprofile --norc -c "
+staged=\${BD803_STAGED_PATH-}
+expected=\${BD803_EXPECTED_SHA-}
+[[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
+# #803: read the lib ONCE, then hash and execute those exact bytes. Hashing one
+# descriptor and executing another (however the two are opened) always leaves a
+# window in which the digest passes while different bytes run. Here the bytes live
+# in \${src} from the single read onward: the digest is taken over \${src} and the
+# process substitution feeds back \${src}, so what was verified is what executes.
+# There is no second open and nothing on disk is consulted after the read.
+# INVARIANT: \$(cat) strips trailing newlines and printf '%s\\n' restores exactly
+# one, so this digest equals shasum(file) only while resolve-cli.sh ends in exactly
+# one newline and holds no NUL. A violation fails closed — every dispatch refuses.
+# The BUILTIN printf, not /usr/bin/printf: the library is ~248 KB and Linux caps a
+# single exec argument at MAX_ARG_STRLEN (128 KB), so handing \${src} to an external
+# printf is E2BIG on the CI runners even though macOS, which caps only the total,
+# allows it. A builtin never execs, so no per-argument limit applies. Safe here
+# because this whole child runs under env -i, where no BASH_FUNC_* shadow survives.
+src=\$(/bin/cat -- \"\${staged}\") || exit 1
+sha=\$(builtin printf '%s\n' \"\${src}\" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -d' ' -f1)
+[[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
+/bin/bash --noprofile --norc <(builtin printf '%s\n' \"\${src}\") \"\$@\"
+exit \$?
+" bash "${_BSL_ARGS[@]}"
+}
+_bd803_bash_staged_lib_ambient() {
+  _BD803_STAGED_AMBIENT_PATH=1
+  _bd803_bash_staged_lib "$@"
+}
+
+# Review-mode _portable_timeout: fd-backed bash when _pt_lib is the staged copy.
+_bd803_bash_pt_lib() {
+  _BPL_ARGS=("$@")
+  if [[ "${_pt_lib}" == "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    _bd803_bash_staged_lib "${_BPL_ARGS[@]}"
+  else
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib}" "${_BPL_ARGS[@]}"
+  fi
+}
+
+_bd803_bash_pt_lib_ambient_path() {
+  _BPL_ARGS=("$@")
+  if [[ "${_pt_lib}" == "${_BD803_REVIEW_LIB_STAGED:-}" ]]; then
+    _BD803_STAGED_AMBIENT_PATH=1
+    _bd803_bash_staged_lib "${_BPL_ARGS[@]}"
+  else
+    LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+      /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib}" "${_BPL_ARGS[@]}"
+  fi
+}
+
 # ── Low-level utilities (used by all three systems) ──────────────
+
+# #789/#803: trusted review CLI resolve (env -i children; no shadowable parent builtins).
+_trusted_cli_phys_dir() {
+  _TCPD_ARG=${1-}
+  # shellcheck disable=SC2016
+  _TCPD_SCRIPT='
+p=${1-}
+[ -n "$p" ] || exit 1
+cd -P -- "$p" 2>/dev/null || exit 1
+out=$(pwd -P) || exit 1
+[ -n "$out" ] || exit 1
+case $out in
+  /*) ;;
+  *) exit 1 ;;
+esac
+# Colon refusal, same as the phys_dir copies: a physical directory whose name
+# contains ":" becomes TWO entries when components are joined into a PATH, and
+# the injected half can point back into the reviewed checkout. PATH has no
+# quoting to escape with, so refuse. This copy is an embedded SCRIPT, not a
+# function, so it exits rather than returns. (No apostrophes -- single-quoted.)
+case $out in
+  *:*) exit 1 ;;
+esac
+printf "%s\n" "$out"
+'
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_TCPD_SCRIPT}" bash "${_TCPD_ARG}"
+}
+
+# True when $1 is INSIDE the reviewed checkout (env -i; fail-closed).
+_trusted_cli_dir_in_checkout() {
+  _TCDIC_ARG=${1-}
+  # shellcheck disable=SC2016
+  _TCDIC_SCRIPT='
+p=${1-}
+[ -n "$p" ] || exit 0
+n=0
+while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+  t=$(/usr/bin/readlink "$p") || exit 0
+  case $t in
+    /*) p=$t ;;
+    *) p=$(/usr/bin/dirname -- "$p")/$t ;;
+  esac
+  n=$((n + 1))
+done
+[ -L "$p" ] && exit 0
+if [ -d "$p" ]; then d=$p; else d=$(/usr/bin/dirname -- "$p"); fi
+d=$(cd -P -- "$d" 2>/dev/null && pwd -P) || exit 0
+[ -n "$d" ] || exit 0
+root=$(pwd -P) || exit 0
+while [ -n "$root" ] && [ "$root" != / ]; do
+  [ -e "$root/.git" ] && break
+  case $root in
+    */*) root=${root%/*} ;;
+    *) root=/ ;;
+  esac
+done
+[ -n "$root" ] && [ "$root" != / ] && [ -e "$root/.git" ] || exit 0
+walk=$d
+while [ -n "$walk" ] && [ "$walk" != / ]; do
+  [ "$walk" -ef "$root" ] && exit 0
+  case $walk in
+    */*) walk=${walk%/*} ;;
+    *) walk=/ ;;
+  esac
+done
+exit 1
+'
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="/usr/bin:/bin" /bin/bash --noprofile --norc -c "${_TCDIC_SCRIPT}" bash "${_TCDIC_ARG}"
+}
+
+
+_resolve_trusted_cli_bin() {
+  # Parent: keywords/assignments/abs paths only; PATH walk in env -i child.
+  _RTCB_NAME=${1-}
+  _RTCB_OUT=
+  # Fixed script literal via assignment (not a heredoc inside $(...)).
+  # shellcheck disable=SC2016
+  _RTCB_SCRIPT='
+cli_name=$1
+[ -n "$cli_name" ] || exit 1
+phys_dir() {
+  target=$1
+  [ -n "$target" ] || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "cd -P -- \"\$1\" || exit 1; pwd -P" bash "$target") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  # A physical directory whose name contains a colon cannot be represented in a
+  # PATH at all: the components below are joined with ":", so one such directory
+  # silently becomes TWO entries, and the injected half can point back into the
+  # reviewed checkout and win a companion bare-command lookup. There is no
+  # escaping to fall back on -- PATH has no quoting -- so refuse it. A symlink
+  # can physicalize into exactly this shape, which is why the check is here, on
+  # the resolved physical path, rather than on the input.
+  case $out in
+    *:*) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+checkout_root() {
+  cwd=$(phys_dir .) || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "
+root=\$1
+walk=\$root
+while [ -n \"\$walk\" ] && [ \"\$walk\" != / ]; do
+  if [ -e \"\$walk/.git\" ]; then
+    printf \"%s\\n\" \"\$walk\"
+    exit 0
+  fi
+  case \$walk in
+    */*) walk=\${walk%/*} ;;
+    *) walk=/ ;;
+  esac
+done
+exit 1
+" bash "$cwd") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  # Same colon refusal as phys_dir: this walk builds its own path rather than
+  # returning the one phys_dir produced, so it needs the guard independently.
+  # (No apostrophes in this comment -- it lives inside a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+dir_in_checkout() {
+  dir=$1
+  root=$(checkout_root) || return 0
+  [ "$dir" -ef "$root" ] && return 0
+  walk=$dir
+  while [ -n "$walk" ] && [ "$walk" != / ]; do
+    [ "$walk" -ef "$root" ] && return 0
+    walk=${walk%/*}
+  done
+  return 1
+}
+physical_path() {
+  p=$1
+  n=0
+  while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+    t=$(/usr/bin/readlink "$p") || return 1
+    case $t in
+      /*) p=$t ;;
+      *) p=$(/usr/bin/dirname -- "$p")/$t ;;
+    esac
+    n=$((n + 1))
+  done
+  [ -L "$p" ] && return 1
+  [ -f "$p" ] && [ -x "$p" ] || return 1
+  realdir=$(phys_dir "$(/usr/bin/dirname -- "$p")") || return 1
+  base=$(/usr/bin/basename -- "$p")
+  printf "%s\n" "${realdir}/${base}"
+}
+bin=
+pathrest=${PATH}:
+while [ -n "$pathrest" ]; do
+  d=${pathrest%%:*}
+  pathrest=${pathrest#*:}
+  [ -n "$d" ] || d=.
+  [ -f "$d/$cli_name" ] && [ -x "$d/$cli_name" ] || continue
+  case $d/$cli_name in
+    /*) bin=$d/$cli_name ;;
+    *)
+      launchdir=$(phys_dir "$d") || continue
+      bin=${launchdir}/${cli_name}
+      ;;
+  esac
+  break
+done
+case $bin in
+  /*) ;;
+  *) exit 1 ;;
+esac
+[ -n "$bin" ] || exit 1
+launchdir=$(phys_dir "$(/usr/bin/dirname -- "$bin")") || exit 1
+[ -n "$launchdir" ] || exit 1
+target=$(physical_path "$bin") || exit 1
+realdir=$(phys_dir "$(/usr/bin/dirname -- "$target")") || exit 1
+dir_in_checkout "$realdir" && exit 1
+dir_in_checkout "$launchdir" && exit 1
+printf "%s\n" "$target"
+exit 0
+'
+  # shellcheck disable=SC2269
+  _RTCB_OUT="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc -c "${_RTCB_SCRIPT}" bash "${_RTCB_NAME}")" || _RTCB_OUT="${_RTCB_OUT}"
+  [[ -n "${_RTCB_OUT}" && "${_RTCB_OUT}" == /* ]] && /usr/bin/printf '%s\n' "${_RTCB_OUT}"
+}
+
+# Usage: _review_dispatch_path <physical-bin> <cli-name> [require-node]
+_review_dispatch_path() {
+  # Loader blanks belong in env -i children / --review scrub only (#789 litmus).
+  _RDP_BIN=${1-}
+  _RDP_NAME=${2-}
+  _RDP_MODE=${3-}
+  _RDP_OUT=
+  # shellcheck disable=SC2016
+  _RDP_SCRIPT='
+bin=$1
+cli_name=$2
+mode=$3
+[ -n "$bin" ] && [ -n "$cli_name" ] || exit 1
+case $bin in
+  /*) ;;
+  *) exit 1 ;;
+esac
+phys_dir() {
+  target=$1
+  [ -n "$target" ] || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "cd -P -- \"\$1\" || exit 1; pwd -P" bash "$target") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  # Colon refusal, same as the other phys_dir copies: a physical directory whose
+  # name contains ":" becomes TWO entries when components are joined into a PATH,
+  # and the injected half can point back into the reviewed checkout. PATH has no
+  # quoting to escape with, so refuse. (No apostrophes -- some copies live inside
+  # a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+checkout_root() {
+  cwd=$(phys_dir .) || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "
+root=\$1
+walk=\$root
+while [ -n \"\$walk\" ] && [ \"\$walk\" != / ]; do
+  if [ -e \"\$walk/.git\" ]; then
+    printf \"%s\\n\" \"\$walk\"
+    exit 0
+  fi
+  case \$walk in
+    */*) walk=\${walk%/*} ;;
+    *) walk=/ ;;
+  esac
+done
+exit 1
+" bash "$cwd") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+dir_in_checkout() {
+  dir=$1
+  root=$(checkout_root) || return 0
+  [ "$dir" -ef "$root" ] && return 0
+  walk=$dir
+  while [ -n "$walk" ] && [ "$walk" != / ]; do
+    [ "$walk" -ef "$root" ] && return 0
+    walk=${walk%/*}
+  done
+  return 1
+}
+physical_path() {
+  p=$1
+  n=0
+  while [ -L "$p" ] && [ "$n" -lt 32 ]; do
+    t=$(/usr/bin/readlink "$p") || return 1
+    case $t in
+      /*) p=$t ;;
+      *) p=$(/usr/bin/dirname -- "$p")/$t ;;
+    esac
+    n=$((n + 1))
+  done
+  [ -L "$p" ] && return 1
+  [ -f "$p" ] && [ -x "$p" ] || return 1
+  realdir=$(phys_dir "$(/usr/bin/dirname -- "$p")") || return 1
+  base=$(/usr/bin/basename -- "$p")
+  printf "%s\n" "${realdir}/${base}"
+}
+resolve_trusted() {
+  name=$1
+  [ -n "$name" ] || return 1
+  found=
+  pathrest=${PATH}:
+  while [ -n "$pathrest" ]; do
+    d=${pathrest%%:*}
+    pathrest=${pathrest#*:}
+    [ -n "$d" ] || d=.
+    [ -f "$d/$name" ] && [ -x "$d/$name" ] || continue
+    case $d/$name in
+      /*) found=$d/$name ;;
+      *)
+        ld=$(phys_dir "$d") || continue
+        found=${ld}/${name}
+        ;;
+    esac
+    break
+  done
+  case $found in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$found" ] || return 1
+  ld=$(phys_dir "$(/usr/bin/dirname -- "$found")") || return 1
+  [ -n "$ld" ] || return 1
+  target=$(physical_path "$found") || return 1
+  rd=$(phys_dir "$(/usr/bin/dirname -- "$target")") || return 1
+  dir_in_checkout "$rd" && return 1
+  dir_in_checkout "$ld" && return 1
+  printf "%s\n" "$target"
+}
+launchdir_for() {
+  want=$1
+  name=$2
+  pathrest=${PATH}:
+  while [ -n "$pathrest" ]; do
+    d=${pathrest%%:*}
+    pathrest=${pathrest#*:}
+    [ -n "$d" ] || d=.
+    e=$d/$name
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    [ -f "$e" ] && [ -x "$e" ] || continue
+    ld=$(phys_dir "$d") || continue
+    dir_in_checkout "$ld" && continue
+    cand=$(physical_path "$e") || continue
+    if [ "$cand" = "$want" ]; then
+      printf "%s\n" "$ld"
+      return 0
+    fi
+  done
+  return 1
+}
+bindir=$(phys_dir "$(/usr/bin/dirname -- "$bin")") || exit 1
+[ -n "$bindir" ] || exit 1
+dir_in_checkout "$bindir" && exit 1
+launchdir=
+launchdir=$(launchdir_for "$bin" "$cli_name") || launchdir=
+needs_node=0
+if [ "$mode" = require-node ]; then
+  needs_node=1
+else
+  if [ -f "$bin" ]; then shebang=$(/usr/bin/head -n 1 -- "$bin" 2>/dev/null) || shebang=; else shebang=; fi
+  case $shebang in
+    "#!/usr/bin/env node"|"#!/usr/bin/env node "*|\
+    "#! /usr/bin/env node"|"#! /usr/bin/env node "*|\
+    "#!/usr/bin/env -S node"|"#!/usr/bin/env -S node "*|\
+    "#! /usr/bin/env -S node"|"#! /usr/bin/env -S node "*)
+      needs_node=1
+      ;;
+  esac
+fi
+nodedir=
+if [ "$needs_node" -eq 1 ]; then
+  nodebin=$(resolve_trusted node) || exit 1
+  [ -n "$nodebin" ] || exit 1
+  nodedir=$(phys_dir "$(/usr/bin/dirname -- "$nodebin")") || exit 1
+  [ -n "$nodedir" ] || exit 1
+  dir_in_checkout "$nodedir" && exit 1
+  if [ -n "$launchdir" ] && [ "$launchdir" != "$bindir" ]; then
+    printf "%s\n" "${nodedir}:${launchdir}:${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  else
+    printf "%s\n" "${nodedir}:${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  fi
+else
+  nodebin=$(resolve_trusted node) || nodebin=
+  if [ -n "$nodebin" ]; then
+    nodedir=$(phys_dir "$(/usr/bin/dirname -- "$nodebin")") || nodedir=
+    if [ -n "$nodedir" ]; then
+      dir_in_checkout "$nodedir" && nodedir=
+    fi
+  fi
+  if [ -n "$launchdir" ] && [ "$launchdir" != "$bindir" ]; then
+    if [ -n "$nodedir" ]; then
+      printf "%s\n" "${launchdir}:${bindir}:${nodedir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    else
+      printf "%s\n" "${launchdir}:${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    fi
+  else
+    if [ -n "$nodedir" ]; then
+      printf "%s\n" "${bindir}:${nodedir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    else
+      printf "%s\n" "${bindir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    fi
+  fi
+fi
+exit 0
+'
+  # shellcheck disable=SC2269
+  _RDP_OUT="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc -c "${_RDP_SCRIPT}" bash "${_RDP_BIN}" "${_RDP_NAME}" "${_RDP_MODE}")" || _RDP_OUT="${_RDP_OUT}"
+  [[ -n "${_RDP_OUT}" && ( "${_RDP_OUT}" == /*:* || "${_RDP_OUT}" == /* ) ]] && /usr/bin/printf '%s\n' "${_RDP_OUT}"
+}
 
 is_cli_available() {
   local cli_name="$1"
@@ -55,7 +880,39 @@ is_cli_available() {
     _grok_available
     return
   fi
-  command -v "$cli_name" &>/dev/null
+  # Ordinary PATH availability (#789); PASS-minting uses is_trusted_review_cli_available.
+  command -v "$cli_name" >/dev/null 2>&1
+}
+
+# Trusted outside-checkout review CLI availability (#789).
+is_trusted_review_cli_available() {
+  # #803: no shadowable local — use immutable $1.
+  case "${1-}" in
+    # #803: opencode belongs here too -- the auditor routing below calls this for it,
+    # and without trusted resolution a checkout-planted `opencode` is reported
+    # available and selected, instead of the advisory voice being treated as absent.
+    codex|agy|droid|node)
+      _resolve_trusted_cli_bin "$1" >/dev/null
+      ;;
+    opencode)
+      # Availability must use the SAME fixed trusted PATH as dispatch
+      # (execute_review / --execute-opencode), not the caller's ambient PATH.
+      # An arbitrary outside-checkout PATH entry would otherwise select a route
+      # that dispatch later rejects, while a trusted-home install looks absent
+      # when that directory is not exported in PATH.
+      _ITRCA_OC_HOME=
+      _ITRCA_OC_HOME="$(_trusted_operator_home)" || _ITRCA_OC_HOME=
+      if [[ -z "$_ITRCA_OC_HOME" || "$_ITRCA_OC_HOME" != /* || ! -d "$_ITRCA_OC_HOME" ]]; then
+        /usr/bin/false
+      else
+        PATH="${_ITRCA_OC_HOME}/.opencode/bin:${_ITRCA_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+          _resolve_trusted_cli_bin opencode >/dev/null
+      fi
+      ;;
+    *)
+      is_cli_available "$1"
+      ;;
+  esac
 }
 
 # grok availability IS preflight readiness — one question, one answer.
@@ -83,7 +940,47 @@ is_cli_available() {
 # (including a shell with no BASH_SOURCE, which resolves the child to /dev/null)
 # refuses, so grok reads as unavailable and the route continues to droid.
 _grok_available() {
-  grok_sandbox_preflight ""
+  grok_sandbox_preflight "" && return 0
+  # #785: a refusal here is otherwise SILENT. The route simply walks on to
+  # droid and the slot is recorded `resolve-droid-fallback`, which names the
+  # fallback but never the cause — and `grok_preflight_hint` prints only at
+  # DISPATCH time, which a route-time fallback never reaches.
+  #
+  # Only `runtime-socket` is surfaced, and that is a scoping decision, not an
+  # oversight. The other reasons all mean "grok is not set up on this host",
+  # where falling through to droid IS the documented behaviour and a warning on
+  # every council/blueprint run would be noise. `runtime-socket` is the one
+  # where grok is fully installed and configured and still cannot run, for a
+  # host reason the operator can fix in one step — the case that had #785's
+  # owner re-running FULL coverage against a machine, not a review.
+  #
+  # Emitted on EVERY runtime-socket refusal, with no dedup state of any kind.
+  #
+  # It was once-per-process, and that guard is gone rather than fixed. The
+  # variable form did not work at all: every production caller reads the
+  # resolver through a command substitution (`REVIEWER_3_CLI=$(resolve_role_cli
+  # ...)`, `actual=$(resolve_role_cli ...)`), so a flag assigned in that subshell
+  # is discarded on exit while the hint — stderr, which `$(...)` does not
+  # capture — still reaches the operator every time (Codex, PR #791). The
+  # file-marker form that replaced it worked, and cost a HIGH-severity symlink
+  # attack to do it: a predictable path under `${TMPDIR:-/tmp}` created by shell
+  # redirection, which follows symlinks, lets another local user on a shared
+  # /tmp pre-create it as a link and have this truncate any file the victim can
+  # write. It also raced (test-then-create is not atomic across concurrent
+  # substitutions), and every variant that closes those two fails SILENT on an
+  # unwritable TMPDIR — suppressing the warning outright, which is #785's
+  # original defect restored by the fix for it (litmus, PR #791).
+  #
+  # So: no marker, no state, nothing to attack and nothing to go stale. The
+  # cost is 2-5 duplicate paragraphs per run, on a host that has grok fully
+  # configured AND a symlinked docker.sock — the one operator who needs to read
+  # them. Being told repeatedly is strictly better than the silence this whole
+  # issue is about. Do not reintroduce a dedup guard here: an advisory line is
+  # not worth process state, and both shapes have now been tried.
+  if [[ "${_GROK_PREFLIGHT_WHY:-}" == runtime-socket ]]; then
+    grok_preflight_hint >&2
+  fi
+  return 1
 }
 
 get_cli_version() {
@@ -453,12 +1350,28 @@ resolve_auditor_model() {
 # probes apply; dispatch.sh carries an identical fallback copy.)
 # Usage: _bd_valid_username <name> → 0 valid / 1 invalid
 _bd_valid_username() {
-  [[ -n "${1:-}" ]] || return 1
-  case "$1" in
-    *[!A-Za-z0-9._-]*) return 1 ;;
+  # #789 round 4: reserved words + absolute-path status, no shadowable `return`.
+  if [[ -z "${1:-}" ]]; then
+    /usr/bin/false
+  elif [[ "$1" == *[!A-Za-z0-9._-]* ]]; then
+    /usr/bin/false
+  elif [[ "$1" =~ ^[-+]?[0-9]*$ ]]; then
+    /usr/bin/false
+  else
+    /usr/bin/true
+  fi
+}
+
+# Exit N without shadowable return (#803).
+_bd_exit_as() {
+  # #803: empty/non-numeric must fail closed — bash [[ "" -eq 0 ]] is true.
+  _BEA_RC=${1-1}
+  case "$_BEA_RC" in
+    ''|*[!0-9]*) /usr/bin/false ;;
+    0) /usr/bin/true ;;
+    1) /usr/bin/false ;;
+    *) /usr/bin/env -i /bin/bash -p -c 'exit '"$_BEA_RC" ;;
   esac
-  [[ "$1" =~ ^[-+]?[0-9]*$ ]] && return 1
-  return 0
 }
 
 # Trusted git resolution: /usr/bin/git on a CLT-less macOS is a developer-
@@ -959,43 +1872,734 @@ resolve_writing_prose_raw() {
 # macOS does not ship GNU timeout. Try timeout, then gtimeout,
 # then fall back to a Perl alarm wrapper.
 
-_portable_timeout() {
-  local duration="$1"
-  shift
 
-  if command -v timeout &>/dev/null; then
-    timeout "$duration" "$@"
-  elif command -v gtimeout &>/dev/null; then
-    gtimeout "$duration" "$@"
+# Password-DB operator home — never $HOME.
+_trusted_operator_home() {
+  # #789: no shadowable local/return; password-DB home; absolute-path status.
+  _TOH_USER=
+  _TOH_HOME=
+  _TOH_PHYS=
+  _TOH_USER="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/id -un 2>/dev/null)"
+  if ! _bd_valid_username "$_TOH_USER"; then
+    /usr/bin/false
   else
-    # Perl alarm fallback (available on all macOS)
-    perl -e '
+    if [[ -x /usr/bin/dscl ]]; then
+      _TOH_HOME="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/dscl . -read "/Users/${_TOH_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')"
+    fi
+    if [[ -z "$_TOH_HOME" && -x /usr/bin/dscacheutil ]]; then
+      _TOH_HOME="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/dscacheutil -q user -a name "$_TOH_USER" 2>/dev/null | /usr/bin/sed -n 's/^dir: //p')"
+    fi
+    if [[ -z "$_TOH_HOME" && -x /usr/bin/getent ]]; then
+      _TOH_HOME="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/getent passwd "${_TOH_USER}" 2>/dev/null | /usr/bin/cut -d: -f6)"
+    fi
+    if [[ -z "$_TOH_HOME" || "$_TOH_HOME" != /* || ! -d "$_TOH_HOME" ]]; then
+      /usr/bin/false
+    else
+      # Physicalize before checkout check (home symlink into tree).
+      _TOH_PHYS="$(_trusted_cli_phys_dir "$_TOH_HOME")"
+      if [[ -z "$_TOH_PHYS" ]] || _trusted_cli_dir_in_checkout "$_TOH_PHYS"; then
+        /usr/bin/false
+      else
+        /usr/bin/printf '%s\n' "$_TOH_PHYS"
+      fi
+    fi
+  fi
+}
+
+# Sanitize ambient review PATH (absolute outside-checkout comps only).
+_sanitize_ambient_review_path() {
+  # Function-clean child; never shadowable local/return (#789).
+  _SARP_RAW=${1-}
+  _SARP_OUT=
+  # shellcheck disable=SC2016
+  _SARP_SCRIPT='
+raw=$1
+[ -n "$raw" ] || exit 1
+phys_dir() {
+  target=$1
+  [ -n "$target" ] || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "cd -P -- \"\$1\" || exit 1; pwd -P" bash "$target") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  # Colon refusal, same as the other phys_dir copies: a physical directory whose
+  # name contains ":" becomes TWO entries when components are joined into a PATH,
+  # and the injected half can point back into the reviewed checkout. PATH has no
+  # quoting to escape with, so refuse. (No apostrophes -- some copies live inside
+  # a single-quoted script.)
+  case $out in
+    *:*) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+checkout_root() {
+  cwd=$(phys_dir .) || return 1
+  out=$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c "
+root=\$1
+walk=\$root
+while [ -n \"\$walk\" ] && [ \"\$walk\" != / ]; do
+  if [ -e \"\$walk/.git\" ]; then
+    printf \"%s\\n\" \"\$walk\"
+    exit 0
+  fi
+  case \$walk in
+    */*) walk=\${walk%/*} ;;
+    *) walk=/ ;;
+  esac
+done
+exit 1
+" bash "$cwd") || return 1
+  case $out in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$out" ] || return 1
+  printf "%s\n" "$out"
+}
+dir_in_checkout() {
+  dir=$1
+  root=$(checkout_root) || return 0
+  [ "$dir" -ef "$root" ] && return 0
+  walk=$dir
+  while [ -n "$walk" ] && [ "$walk" != / ]; do
+    [ "$walk" -ef "$root" ] && return 0
+    walk=${walk%/*}
+  done
+  return 1
+}
+pathrest=${raw}:
+out=
+while [ -n "$pathrest" ]; do
+  d=${pathrest%%:*}
+  pathrest=${pathrest#*:}
+  [ -n "$d" ] || continue
+  case $d in
+    /*) ;;
+    *) exit 1 ;;
+  esac
+  # A component that does not exist contributes nothing to command resolution, so
+  # SKIP it -- rejecting the whole PATH here is not stricter, it is a fail-open by
+  # fallback. _review_dispatch_path always appends /opt/homebrew/bin, which is absent
+  # on every Linux and Intel-mac host, so the reject branch fired unconditionally
+  # there: the caller fell back to the node-dir-only PATH, dropping the codex bindir
+  # that the comment two frames up says the companion needs. The containment filter
+  # in _portable_timeout already skips non-existent components for exactly this
+  # reason. Every component that DOES exist is still physicalized and still refused
+  # if it resolves inside the reviewed checkout, and an all-empty result still exits 1.
+  [ -d "$d" ] || continue
+  phys=$(phys_dir "$d") || exit 1
+  dir_in_checkout "$phys" && exit 1
+  if [ -n "$out" ]; then
+    out=${out}:${phys}
+  else
+    out=$phys
+  fi
+done
+[ -n "$out" ] || exit 1
+printf "%s\n" "$out"
+exit 0
+'
+  # Loader blanks are an assignment PREFIX so they apply before env is loaded.
+  # shellcheck disable=SC2269
+  _SARP_OUT="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc -c "${_SARP_SCRIPT}" bash "${_SARP_RAW}")" || _SARP_OUT="${_SARP_OUT}"
+  [[ -n "${_SARP_OUT}" && "${_SARP_OUT}" == /* ]] && /usr/bin/printf '%s\n' "${_SARP_OUT}"
+}
+
+_portable_timeout() {
+  # #789: no shadowable builtins; _pt_ prefix; single exit via $_pt_err.
+  _pt_argv=("$@")
+  _review=0
+  _pt_pin_scrub=0
+  _cli_name=
+  _pt_bin=
+  _op_home=
+  _disp=
+  _nd=
+  _to_bin=
+  _to_trust=
+  _pathrest=
+  _d=
+  _pt_duration=
+  _pt_err=
+  _pt_lib_src=
+  _pt_lib_dir=
+  _pt_lib=
+  _pt_launch=
+  _pt_fresh=
+  _pt_node_fresh=
+
+  # Explicit review mode BEFORE _pt_duration: `_portable_timeout --review <cli> <secs> <cmd>...`
+  if [[ "${_pt_argv[0]-}" == "--review" ]]; then
+    _review=1
+    _cli_name="${_pt_argv[1]-}"
+    _pt_argv=("${_pt_argv[@]:2}")
+    case "$_cli_name" in
+      codex|agy|droid|node|opencode) ;;
+      *) _pt_err="busdriver: _portable_timeout --review requires codex|agy|droid|node|opencode (got: ${_cli_name:-empty})" ;;
+    esac
+    # #803: canonical lib pin (BD803_REVIEW_LIB) or BASH_SOURCE fallback.
+    _pt_lib=
+    if [[ -n "${BD803_REVIEW_LIB-}" ]]; then
+      case "${BD803_REVIEW_LIB}" in
+        /*) ;;
+        *) _pt_err="busdriver: BD803_REVIEW_LIB must be an absolute path — refusing." ;;
+      esac
+      if [[ -z "$_pt_err" ]]; then
+        case "${BD803_REVIEW_LIB}" in *$'\n'*) _pt_err="busdriver: BD803_REVIEW_LIB contains newline — refusing." ;; esac
+      fi
+      if [[ -z "$_pt_err" ]]; then
+        _pt_lib_exec_ref="${_BD803_REVIEW_LIB_STAGED:-}"
+        case "${_pt_lib_exec_ref}" in *$'\n'*) _pt_lib_exec_ref= ;; esac
+        if [[ -n "$_pt_lib_exec_ref" && "${BD803_REVIEW_LIB}" == "$_pt_lib_exec_ref" && -f "${BD803_REVIEW_LIB}" ]]; then
+          if ! _bd803_verify_review_lib_bytes; then
+            _pt_err="busdriver: review lib bytes changed since trusted load — refusing."
+            _pt_lib=
+          else
+            _pt_lib="${BD803_REVIEW_LIB}"
+            _pt_lib_dir="${_BD803_REVIEW_LIB_PIN%/*}"
+          fi
+        else
+        _pt_lib_pin="$(_bd803_canonical_file_path "${BD803_REVIEW_LIB}")" || _pt_lib_pin=
+        case "${_pt_lib_pin}" in *$'\n'*) _pt_lib_pin= ;; esac
+        _pt_lib_self="${_BD803_REVIEW_LIB_PIN:-}"
+        case "${_pt_lib_self}" in *$'\n'*) _pt_lib_self= ;; esac
+        if [[ -z "$_pt_lib_pin" ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB pin missing or invalid — refusing."
+          _pt_lib=
+        elif [[ "$(/usr/bin/basename -- "$_pt_lib_pin")" != resolve-cli.sh ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB must resolve to resolve-cli.sh — refusing."
+          _pt_lib=
+        elif [[ -z "$_pt_lib_self" || "$_pt_lib_pin" != "$_pt_lib_self" ]]; then
+          _pt_err="busdriver: BD803_REVIEW_LIB pin does not match disk-fresh resolve-cli.sh — refusing."
+          _pt_lib=
+        else
+          _pt_lib="$_pt_lib_pin"
+          _pt_lib_dir="${_pt_lib%/*}"
+        fi
+        fi
+      fi
+
+    else
+      _pt_lib="${_BD803_REVIEW_LIB_PIN:-}"
+      case "$_pt_lib" in *$'\n'*) _pt_lib= ;; esac
+      if [[ -n "${_pt_lib:-}" ]]; then
+        _pt_lib_dir="${_pt_lib%/*}"
+      else
+        _pt_err="busdriver: cannot canonicalize resolve-cli.sh for review dispatch — refusing."
+      fi
+    fi
+  fi
+  if [[ "$_review" -eq 1 && -z "$_pt_err" && -n "${_pt_lib:-}" ]]; then
+    if ! _bd803_verify_review_lib_bytes; then
+      _pt_err="busdriver: review lib bytes changed since trusted load — refusing."
+      _pt_lib=
+    else
+      _pt_lib_exec="$(_bd803_review_lib_exec)"
+      if [[ -n "$_pt_lib_exec" && -f "$_pt_lib_exec" ]]; then
+        _pt_lib="$_pt_lib_exec"
+      fi
+    fi
+  fi
+
+
+  if [[ -z "$_pt_err" ]]; then
+    _pt_duration="${_pt_argv[0]-}"
+    _pt_argv=("${_pt_argv[@]:1}")
+    case "$_pt_duration" in
+      ''|*[!0-9]*)
+        _pt_err="busdriver: timed-dispatch duration must be a positive integer — refusing."
+        ;;
+      *)
+        _pt_duration="${_pt_duration#"${_pt_duration%%[!0]*}"}"
+        [[ -z "$_pt_duration" ]] && _pt_duration=0
+        if [[ "${#_pt_duration}" -ge 8 ]]; then
+          _pt_err="busdriver: timed-dispatch duration must be a positive integer — refusing."
+        else
+          _pt_duration=$((10#$_pt_duration))
+          if [[ "$_pt_duration" -lt 1 ]]; then
+            _pt_err="busdriver: timed-dispatch duration must be a positive integer — refusing."
+          fi
+        fi
+        ;;
+    esac
+    if [[ -z "$_pt_err" ]]; then
+    case "${_pt_argv[0]-}" in
+      codex|agy|droid)
+        # Pin bare CLIs for --review or in-checkout PWD; _pt_pin_scrub without env -i.
+        _cli_name="${_pt_argv[0]}"
+        _pt_need_pin=0
+        if [[ "$_review" -eq 1 ]]; then
+          _pt_need_pin=1
+        else
+          if [[ -z "${_pt_lib_dir:-}" ]]; then
+            _pt_lib_src="${BASH_SOURCE[0]-}"
+            case "$_pt_lib_src" in
+              /*) ;;
+              *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
+            esac
+            _pt_lib_dir=
+            # shellcheck disable=SC2016
+            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+          fi
+          # Positive .git only (outside-checkout treats no-.git as in-checkout).
+          if [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]] \
+            && /usr/bin/env -i PATH=/usr/bin:/bin PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --under-git-checkout "${PWD-}"; then
+            _pt_need_pin=1
+          fi
+        fi
+        if [[ "$_pt_need_pin" -eq 1 ]]; then
+          _pt_trusted=
+          if [[ -z "${_pt_lib_dir:-}" ]]; then
+            _pt_lib_src="${BASH_SOURCE[0]-}"
+            case "$_pt_lib_src" in
+              /*) ;;
+              *) _pt_lib_src="${PWD%/}/${_pt_lib_src}" ;;
+            esac
+            _pt_lib_dir=
+            # shellcheck disable=SC2016
+            _pt_lib_dir="$(/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c 'CDPATH=; cd -- "$1" || exit 1; pwd -P' bash "${_pt_lib_src%/*}")" || _pt_lib_dir=
+          fi
+          if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+            _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
+          elif [[ -n "${_pt_lib_dir:-}" && -f "${_pt_lib_dir}/resolve-cli.sh" ]]; then
+            _pt_trusted="$(LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' /usr/bin/env -i PATH="${PATH-}" PWD="${PWD-}" /bin/bash --noprofile --norc "${_pt_lib_dir}/resolve-cli.sh" --print-trusted-cli "${_cli_name}")" || _pt_trusted=
+          else
+            _pt_trusted="$(_resolve_trusted_cli_bin "$_cli_name")" || _pt_trusted=
+          fi
+          _pt_bin="$_pt_trusted"
+          if [[ -z "$_pt_bin" ]]; then
+            _pt_err="busdriver: ${_cli_name} is missing or resolves inside the reviewed checkout — refusing timed dispatch."
+          else
+            _pt_argv=("$_pt_bin" "${_pt_argv[@]:1}")
+            # Ordinary pin: light scrub only (no env -i / no _review flip).
+            if [[ "$_review" -eq 0 ]]; then
+              _pt_pin_scrub=1
+            fi
+          fi
+        fi
+        # else: no pin — leave argv alone (ambient PATH OK outside checkout)
+        ;;
+      /*)
+        # --review abs argv0 must equal disk-fresh trusted CLI (#803).
+        if [[ "$_review" -eq 1 ]]; then
+          case "$_cli_name" in
+            codex|agy|droid|node|opencode)
+              _pt_trusted=
+              if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+                _pt_trusted="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_trusted=
+              fi
+              _pt_same=0
+              if [[ -n "$_pt_trusted" ]]; then
+                if [[ "${_pt_argv[0]}" == "$_pt_trusted" || "${_pt_argv[0]}" -ef "$_pt_trusted" ]]; then
+                  _pt_same=1
+                fi
+              fi
+              if [[ "$_pt_same" -ne 1 ]]; then
+                _pt_err="busdriver: --review ${_cli_name} argv0 must be the trusted absolute binary (got: ${_pt_argv[0]})"
+              else
+                _pt_bin="$_pt_trusted"
+                _pt_argv=("$_pt_bin" "${_pt_argv[@]:1}")
+              fi
+              ;;
+            *)
+              _pt_err="busdriver: --review requires codex|agy|droid|node|opencode before an absolute argv0 (got: ${_cli_name:-empty})"
+              ;;
+          esac
+        fi
+        ;;
+      *)
+        # --review relative argv0 resolves vs checkout CWD — refuse.
+        if [[ "$_review" -eq 1 ]]; then
+          _pt_err="busdriver: --review argv0 must be a trusted CLI name or an absolute path (got: ${_pt_argv[0]:-empty})"
+        fi
+        ;;
+    esac
+    fi
+  fi
+
+  # Trusted-dir timeout lookup (phys before trust; review: disk-fresh).
+  if [[ "$_review" -eq 1 && -z "${_pt_lib:-}" && -z "$_pt_err" ]]; then
+    _pt_err="busdriver: cannot canonicalize resolve-cli.sh for review dispatch — refusing."
+  fi
+  _to_trust="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  _pathrest="${_to_trust}:"
+  while [[ -n "$_pathrest" && -z "$_to_bin" ]]; do
+    _d="${_pathrest%%:*}"
+    _pathrest="${_pathrest#*:}"
+    if [[ -n "$_d" && -x "$_d/timeout" && ! -d "$_d/timeout" ]]; then
+      if [[ "$_review" -eq 1 ]]; then
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]] \
+          && ! _bd803_bash_pt_lib --outside-checkout "$_d/timeout"; then
+          _to_bin="$_d/timeout"
+        fi
+      elif ! _trusted_cli_dir_in_checkout "$_d/timeout"; then
+        _to_bin="$_d/timeout"
+      fi
+    fi
+  done
+  _pathrest="${_to_trust}:"
+  while [[ -n "$_pathrest" && -z "$_to_bin" ]]; do
+    _d="${_pathrest%%:*}"
+    _pathrest="${_pathrest#*:}"
+    if [[ -n "$_d" && -x "$_d/gtimeout" && ! -d "$_d/gtimeout" ]]; then
+      if [[ "$_review" -eq 1 ]]; then
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]] \
+          && ! _bd803_bash_pt_lib --outside-checkout "$_d/gtimeout"; then
+          _to_bin="$_d/gtimeout"
+        fi
+      elif ! _trusted_cli_dir_in_checkout "$_d/gtimeout"; then
+        _to_bin="$_d/gtimeout"
+      fi
+    fi
+  done
+
+  if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
+    _op_home="$(_trusted_operator_home)"
+    if [[ -z "$_op_home" || "$_op_home" != /* ]]; then
+      _pt_err="busdriver: cannot derive a trusted absolute operator home — refusing timed dispatch."
+    fi
+  fi
+
+  if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
+    if [[ -n "$_pt_bin" && -n "$_cli_name" && "$_cli_name" != "node" ]]; then
+      _disp="$(_review_dispatch_path "$_pt_bin" "$_cli_name")"
+    elif [[ "$_cli_name" == "node" && -n "$_pt_bin" ]]; then
+      _disp="$(_sanitize_ambient_review_path "${PATH-}")"
+      if [[ -z "$_disp" ]]; then
+        _nd="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_pt_bin")")"
+        if [[ -n "$_nd" ]]; then
+          _disp="${_nd}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        fi
+      fi
+    fi
+    if [[ -n "$_pt_bin" && -z "$_disp" ]]; then
+      _pt_err="busdriver: cannot build a trusted review dispatch PATH — refusing timed dispatch."
+    fi
+  fi
+
+  # #803: disk-fresh HOME/PATH + rebuild existing outside-checkout PATH comps.
+  if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
+    if [[ -z "${_pt_lib:-}" || ! -f "${_pt_lib}" ]]; then
+      _pt_err="busdriver: cannot locate resolve-cli.sh for containment check — refusing timed dispatch."
+    else
+      _op_home_fresh="$(_bd803_bash_pt_lib --print-trusted-home)" || _op_home_fresh=
+      if [[ -z "$_op_home_fresh" || "$_op_home_fresh" != /* || "$_op_home" != "$_op_home_fresh" ]]; then
+        _pt_err="busdriver: cannot derive a trusted absolute operator home — refusing timed dispatch."
+      else
+        _op_home="$_op_home_fresh"
+        if _bd803_bash_pt_lib --outside-checkout "$_op_home"; then
+          _pt_err="busdriver: operator home resolves inside the reviewed checkout — refusing timed dispatch."
+        fi
+      fi
+      if [[ -z "$_pt_err" ]]; then
+        _disp_fresh=
+        if [[ -n "$_pt_bin" && -n "$_cli_name" && "$_cli_name" != "node" ]]; then
+          _disp_fresh="$(_bd803_bash_pt_lib_ambient_path --print-review-dispatch-path "$_pt_bin" "$_cli_name")" || _disp_fresh=
+          if [[ -z "$_disp_fresh" || "$_disp" != "$_disp_fresh" ]]; then
+            _pt_err="busdriver: cannot build a trusted review dispatch PATH — refusing timed dispatch."
+          else
+            _disp="$_disp_fresh"
+          fi
+        else
+          # --review node: keep caller/sanitized ambient _disp; do not replace with
+          # node-dir-only (companion needs codex on PATH). Containment filter below.
+          if [[ -z "${_disp:-}" ]]; then
+            _pt_err="busdriver: cannot build a trusted review dispatch PATH — refusing timed dispatch."
+          fi
+        fi
+      fi
+      if [[ -z "$_pt_err" ]]; then
+        _disp_ok=
+        _pathrest="${_disp}:"
+        while [[ -n "$_pathrest" && -z "$_pt_err" ]]; do
+          _d="${_pathrest%%:*}"
+          _pathrest="${_pathrest#*:}"
+          if [[ -z "$_d" || "$_d" != /* ]]; then
+            _pt_err="busdriver: review PATH component must be a non-empty absolute directory (got: ${_d:-empty}) — refusing timed dispatch."
+          elif [[ -d "$_d" ]]; then
+            if _bd803_bash_pt_lib --outside-checkout "$_d"; then
+              _pt_err="busdriver: review PATH component resolves inside the reviewed checkout — refusing timed dispatch."
+            elif [[ -n "$_disp_ok" ]]; then
+              _disp_ok="${_disp_ok}:$_d"
+            else
+              _disp_ok="$_d"
+            fi
+          fi
+        done
+        if [[ -z "$_pt_err" ]]; then
+          if [[ -n "$_disp_ok" ]]; then
+            _disp="$_disp_ok"
+          else
+            _disp_ok=
+            for _d in /usr/bin /bin; do
+              if [[ -d "$_d" ]] && ! _bd803_bash_pt_lib --outside-checkout "$_d"; then
+                if [[ -n "$_disp_ok" ]]; then
+                  _disp_ok="${_disp_ok}:$_d"
+                else
+                  _disp_ok="$_d"
+                fi
+              fi
+            done
+            if [[ -n "$_disp_ok" ]]; then
+              _disp="$_disp_ok"
+            else
+              _pt_err="busdriver: cannot build a trusted review dispatch PATH — refusing timed dispatch."
+            fi
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  # #803: pre-launch disk-fresh argv0 (== declared CLI); node pins companion argv1.
+  if [[ "$_review" -eq 1 && -z "$_pt_err" ]]; then
+    _pt_fresh=
+    if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" && -n "${_cli_name:-}" ]]; then
+      _pt_fresh="$(_bd803_bash_pt_lib_ambient_path --print-trusted-cli "${_cli_name}")" || _pt_fresh=
+    fi
+    _pt_same=0
+    if [[ -n "${_pt_argv[0]-}" && -n "$_pt_fresh" ]]; then
+      if [[ "${_pt_argv[0]}" == "$_pt_fresh" || "${_pt_argv[0]}" -ef "$_pt_fresh" ]]; then
+        _pt_same=1
+      fi
+    fi
+    if [[ "$_pt_same" -ne 1 ]]; then
+      _pt_err="busdriver: --review ${_cli_name:-} argv0 no longer matches trusted CLI — refusing timed dispatch."
+    elif [[ "$_cli_name" == "node" ]]; then
+      # Companion only when argv[1] present (bare node PATH-scrub has none).
+      if [[ -n "${_pt_argv[1]-}" ]]; then
+        _pt_cc=
+        if [[ -n "${_pt_lib:-}" && -f "${_pt_lib}" ]]; then
+          _pt_cc="$(_bd803_bash_pt_lib --print-trusted-companion)" || _pt_cc=
+        fi
+        if [[ -z "$_pt_cc" || "$_pt_cc" == "none" || "${_pt_argv[1]}" != "$_pt_cc" ]]; then
+          _pt_err="busdriver: --review node companion argv must match trusted companion — refusing timed dispatch."
+        else
+          _pt_bin="${_pt_argv[0]}"
+        fi
+      else
+        _pt_bin="${_pt_argv[0]}"
+      fi
+    else
+      _pt_bin="${_pt_argv[0]}"
+    fi
+  fi
+
+  # #803: --review opencode needs staged sandbox HOME + OPENCODE_CONFIG (clean child).
+  if [[ "$_review" -eq 1 && -z "$_pt_err" && "${_cli_name:-}" == "opencode" ]]; then
+    if [[ -z "${_BD_OC_SANDBOX_HOME:-}" || "$_BD_OC_SANDBOX_HOME" != /* \
+      || -z "${OPENCODE_CONFIG:-}" || "$OPENCODE_CONFIG" != /* ]]; then
+      _pt_err="busdriver: --review opencode requires staged sandbox HOME + OPENCODE_CONFIG — refusing."
+    fi
+  fi
+
+  # SINGLE exit: absolute printf/false (unshadowable).
+  if [[ -n "$_pt_err" ]]; then
+    /usr/bin/printf '%s\n' "$_pt_err" >&2
+    /usr/bin/false
+  elif [[ "$_review" -eq 1 ]]; then
+    # Review env -i allowlist; GIT_NO_REPLACE_OBJECTS=1; loader blanks prefix.
+    # #803: opencode uses staged sandbox HOME + OPENCODE/XDG from clean child.
+    _pt_rev_home="$_op_home"
+    if [[ "${_cli_name:-}" == "opencode" && -n "${_BD_OC_SANDBOX_HOME:-}" ]]; then
+      _pt_rev_home="$_BD_OC_SANDBOX_HOME"
+    fi
+    if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
+      if [[ "${_cli_name:-}" == "opencode" ]]; then
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
+          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
+          XDG_DATA_HOME="${XDG_DATA_HOME}" \
+          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
+    else
+      # shellcheck disable=SC2016 # perl -e body is single-quoted on purpose
+      if [[ "${_cli_name:-}" == "opencode" ]]; then
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          OPENCODE_CONFIG="${OPENCODE_CONFIG}" \
+          XDG_CONFIG_HOME="${XDG_CONFIG_HOME}" \
+          XDG_DATA_HOME="${XDG_DATA_HOME}" \
+          XDG_CACHE_HOME="${XDG_CACHE_HOME}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          /usr/bin/perl -e '
       use POSIX ":sys_wait_h";
       our $pid = fork();
       if (!defined $pid) { die "fork failed: $!"; }
-      if ($pid == 0) { alarm 0; exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
-      $SIG{ALRM} = sub { kill "TERM", $pid if $pid; exit 124 };
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
       alarm $ARGV[0];
       waitpid($pid, 0);
       alarm 0;
       if ($? & 127) { exit(128 + ($? & 127)); }
       exit($? >> 8);
-    ' "$duration" "$@"
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        /usr/bin/env -i \
+          HOME="$_pt_rev_home" \
+          PATH="${_disp:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}" \
+          GIT_NO_REPLACE_OBJECTS=1 \
+          TERM="${TERM:-dumb}" \
+          LANG="${LANG:-C}" \
+          /usr/bin/perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
+    fi
+  else
+    # Non-review: keep ambient PATH. Pin scrub blanks loader/shell inject vars
+    # only — never replace PATH with the reduced review dispatch PATH (#803).
+    _pt_launch_path="${PATH-}"
+    if [[ -n "$_to_bin" && "$_to_bin" == /* ]]; then
+      if [[ "${_pt_pin_scrub:-0}" -eq 1 ]]; then
+        NODE_OPTIONS='' BASH_ENV='' ENV='' \
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        PATH="$_pt_launch_path" \
+        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        "$_to_bin" -k 5 "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
+    else
+      if [[ "${_pt_pin_scrub:-0}" -eq 1 ]]; then
+        NODE_OPTIONS='' BASH_ENV='' ENV='' \
+        LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
+        DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' \
+        DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' \
+        DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+        PATH="$_pt_launch_path" \
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      else
+        PERL5OPT='' PERL5LIB='' PERLLIB='' /usr/bin/perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        # TERM → grace → KILL+reap process group (-$pid; $pid fallback).
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          # Always KILL the process group: a reaped direct child can leave TERM-ignoring descendants.
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$_pt_duration" ${_pt_argv[@]+"${_pt_argv[@]}"}
+      fi
+    fi
   fi
 }
 
-# ── Runtime droid fallback predicate ────────────────────────────
-# Should a FAILED primary CLI fall back to droid at runtime? Shared by the
-# council (dispatch.sh — per-voice, no cap) and blueprint-review
-# (run-design-review-loop.sh — capped at one voice). This is the RUNTIME
-# fallback (a voice ran but failed), distinct from the resolve-time
-# availability fallback (a binary is missing) handled by the route arrays below.
-# Args: primary_cli exit_code output_file
-# Returns 0 (escalate) iff: primary != droid AND droid installed AND
-#   (exit_code != 0 [includes 124 timeout] OR output_file empty/missing).
 should_escalate_to_droid() {
-  local primary_cli="$1" exit_code="$2" output_file="$3"
-  [[ "$primary_cli" == "droid" ]] && return 1
+  # #803: no shadowable `local`/`return`.
+  _SETD_PRIMARY=${1-}
+  _SETD_EXIT=${2-0}
+  _SETD_FILE=${3-}
+  if [[ "$_SETD_PRIMARY" == "droid" || "$_SETD_PRIMARY" == "grok" ]]; then
+    /usr/bin/false
+  elif ! is_trusted_review_cli_available droid; then
+    /usr/bin/false
+  elif [[ "$_SETD_EXIT" -ne 0 ]]; then
+    /usr/bin/true
+  elif [[ ! -s "$_SETD_FILE" ]]; then
+    /usr/bin/true
+  else
+    /usr/bin/false
+  fi
   # grok NEVER escalates, by name and unconditionally — the same rule pi and
   # opencode already get at dispatch.sh's call site, but enforced HERE, inside
   # the predicate, so it cannot be dropped by editing that one call site.
@@ -1024,11 +2628,34 @@ should_escalate_to_droid() {
   # blunt rule is that an ordinary transient grok failure no longer gets a droid
   # stand-in — the voice is simply reported failed, which is the correct
   # direction for a cross-provider boundary and is already how pi behaves.
-  [[ "$primary_cli" == "grok" ]] && return 1
-  is_cli_available droid || return 1
-  [[ "$exit_code" -ne 0 ]] && return 0
-  [[ ! -s "$output_file" ]] && return 0
-  return 1
+  # grok NEVER escalates — enforced in the predicate above.
+}
+
+# Classify a droid escalation attempt after Codex failed.
+# Args: droid_exit_code droid_stdout
+# Prints one of: ok | timeout | no-output | failed
+#
+# Distinguishes a silent refusal (empty stdout well inside the budget) from a
+# spent-budget kill (exit 124). Callers that set timed_out from Codex must clear
+# it on no-output so BUILTIN_FALLBACK (rc 3) is not misreported as timeout 124
+# (#804). Spent-budget 124 stays timeout.
+_classify_droid_escalation_outcome() {
+  local droid_exit="$1"
+  local droid_out="$2"
+  if [[ "$droid_exit" -eq 0 && -n "$droid_out" ]]; then
+    echo "ok"
+    return 0
+  fi
+  if [[ "$droid_exit" -eq 124 ]]; then
+    echo "timeout"
+    return 0
+  fi
+  if [[ -z "$droid_out" ]]; then
+    echo "no-output"
+    return 0
+  fi
+  echo "failed"
+  return 0
 }
 
 # ── Per-role CLI resolution with config + fallback chain ─────
@@ -1108,13 +2735,13 @@ _resolve_from_route_array() {
       # generic CLI would run it WITHOUT that harness, so it must always be named
       # explicitly, never picked by the cascade.
       for auto_cli in codex agy droid; do
-        is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
+        is_trusted_review_cli_available "$auto_cli" && /usr/bin/printf '%s\n' "$auto_cli" && return 0
       done
       saw_other_entry=1  # auto fell through — entry wasn't a removed CLI
     elif [[ "$cli" == "none" || "$cli" == "builtin" ]]; then
-      echo "$cli" && return 0
-    elif is_cli_available "$cli"; then
-      echo "$cli" && return 0
+      /usr/bin/printf '%s\n' "$cli" && return 0
+    elif is_trusted_review_cli_available "$cli"; then
+      /usr/bin/printf '%s\n' "$cli" && return 0
     else
       saw_other_entry=1  # named CLI that just isn't installed (e.g., codex missing)
     fi
@@ -1159,11 +2786,11 @@ resolve_role_cli() {
     council.auditor|blueprint-review.auditor)
       _bd_result=$(_resolve_role_cli_impl "$role_key")
       case "$_bd_result" in
-        opencode|none|builtin) echo "$_bd_result"; return ;;
+        opencode|none|builtin) /usr/bin/printf '%s\n' "$_bd_result"; return ;;
         *)
           echo "busdriver: ignoring non-opencode route/override '$_bd_result' for auditor role '$role_key' (untrusted-checkout containment) — using opencode-or-none" >&2
-          is_cli_available opencode && echo "opencode" && return
-          echo "none"
+          is_trusted_review_cli_available opencode && /usr/bin/printf '%s\n' "opencode" && return
+          /usr/bin/printf '%s\n' "none"
           return ;;
       esac
       ;;
@@ -1212,9 +2839,9 @@ _resolve_role_cli_impl() {
       return
     fi
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
-      echo "$env_cli" && return
+      /usr/bin/printf '%s\n' "$env_cli" && return
     fi
-    is_cli_available "$env_cli" && echo "$env_cli" && return
+    is_trusted_review_cli_available "$env_cli" && /usr/bin/printf '%s\n' "$env_cli" && return
     echo "missing:$env_cli" && return
   fi
 
@@ -1273,9 +2900,9 @@ _resolve_role_cli_impl() {
         echo "busdriver: defaults.primary=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key' — trying defaults.fallback" >&2
         cfg_last_rejected="opencode"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
-        echo "$default_primary" && return
-      elif is_cli_available "$default_primary"; then
-        echo "$default_primary" && return
+        /usr/bin/printf '%s\n' "$default_primary" && return
+      elif is_trusted_review_cli_available "$default_primary"; then
+        /usr/bin/printf '%s\n' "$default_primary" && return
       else
         cfg_saw_other=1  # named CLI not installed — valid intent, just unavailable
       fi
@@ -1293,9 +2920,9 @@ _resolve_role_cli_impl() {
       # the rationale: grok's safety model is documented but unenforceable
       # from code, so it must be explicitly named to opt in.
       for cli in codex agy droid; do
-        is_cli_available "$cli" && echo "$cli" && return 0
+        is_trusted_review_cli_available "$cli" && /usr/bin/printf '%s\n' "$cli" && return 0
       done
-      echo "builtin" && return 0
+      /usr/bin/printf '%s\n' "builtin" && return 0
     fi
     if [[ -n "$default_fallback" ]]; then
       if [[ "$default_fallback" == "gemini" ]]; then
@@ -1313,9 +2940,9 @@ _resolve_role_cli_impl() {
         echo "busdriver: defaults.fallback=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key'" >&2
         cfg_last_rejected="opencode"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
-        echo "$default_fallback" && return
-      elif is_cli_available "$default_fallback"; then
-        echo "$default_fallback" && return
+        /usr/bin/printf '%s\n' "$default_fallback" && return
+      elif is_trusted_review_cli_available "$default_fallback"; then
+        /usr/bin/printf '%s\n' "$default_fallback" && return
       else
         cfg_saw_other=1
       fi
@@ -1331,8 +2958,8 @@ _resolve_role_cli_impl() {
 
   # Step 4b: Legacy per-role defaults (backward compat when no config exists)
   case "$role_key" in
-    blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
-    blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
+    blueprint-review.reviewer_1) is_trusted_review_cli_available agy && /usr/bin/printf '%s\n' "agy" && return ;;
+    blueprint-review.reviewer_2) is_trusted_review_cli_available codex && /usr/bin/printf '%s\n' "codex" && return ;;
     # reviewer_3 (grok) added 2026-05-26: adds xAI lineage to blueprint-review,
     # mirroring the council Researcher promotion. Walks grok → droid → none
     # to match council.researcher and the existing reviewer_1/_2 droid-fallback
@@ -1341,9 +2968,9 @@ _resolve_role_cli_impl() {
     # landing on droid when agy and grok are both missing) is handled by the
     # loop's REVIEWER_3_DUPLICATE check, which skips reviewer_3 when it
     # collides with a higher slot.
-    blueprint-review.reviewer_3) is_cli_available grok  && echo "grok"  && return
-                                 is_cli_available droid && echo "droid" && return
-                                 echo "none" && return ;;
+    blueprint-review.reviewer_3) is_trusted_review_cli_available grok  && /usr/bin/printf '%s\n' "grok"  && return
+                                 is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
+                                 /usr/bin/printf '%s\n' "none" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
     # Trade-off: when agy/codex are unavailable, these roles fall back to
     # droid. Droid runs at DROID_AUTO_LEVEL=low when invoked from council's
@@ -1352,12 +2979,12 @@ _resolve_role_cli_impl() {
     # this by adopting the droid-fallback default. Override by configuring
     # `"council.pragmatist": ["agy", "none"]` in .claude/busdriver.json to
     # keep the lens pure and let the voice drop when agy is missing.
-    council.pragmatist)         is_cli_available agy   && echo "agy"   && return
-                                is_cli_available droid && echo "droid" && return
-                                echo "none" && return ;;
-    council.critic)             is_cli_available codex && echo "codex" && return
-                                is_cli_available droid && echo "droid" && return
-                                echo "none" && return ;;
+    council.pragmatist)         is_trusted_review_cli_available agy   && /usr/bin/printf '%s\n' "agy"   && return
+                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
+                                /usr/bin/printf '%s\n' "none" && return ;;
+    council.critic)             is_trusted_review_cli_available codex && /usr/bin/printf '%s\n' "codex" && return
+                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
+                                /usr/bin/printf '%s\n' "none" && return ;;
     # Grok was promoted to primary on 2026-05-26: xAI lineage adds the only
     # consistent non-Anthropic/non-OpenAI/non-Gemini voice to council Researcher,
     # and demonstrated Researcher-role competencies (file reads, cited external
@@ -1366,9 +2993,9 @@ _resolve_role_cli_impl() {
     # pre-2026-05-26. This reverses PR #134's "Researcher stays single-CLI"
     # decision — that PR pruned unused backends (opencode/amp/claude/aider) and
     # Grok hadn't shipped yet.
-    council.researcher)         is_cli_available grok  && echo "grok"  && return
-                                is_cli_available droid && echo "droid" && return
-                                echo "none" && return ;;
+    council.researcher)         is_trusted_review_cli_available grok  && /usr/bin/printf '%s\n' "grok"  && return
+                                is_trusted_review_cli_available droid && /usr/bin/printf '%s\n' "droid" && return
+                                /usr/bin/printf '%s\n' "none" && return ;;
     # Auditor roles (added 2026-07-20, "opencode" voice) are only routed
     # explicitly in THIS repository's .claude/busdriver.json. Without this
     # case, a repo with no busdriver.json config falls through Step 4b to
@@ -1378,8 +3005,8 @@ _resolve_role_cli_impl() {
     # (unlike the fixed voices above): a droid Mechanism Witness is explicitly
     # documented as false corroboration for this lens (see skills/council/SKILL.md).
     council.auditor|blueprint-review.auditor)
-                                is_cli_available opencode && echo "opencode" && return
-                                echo "none" && return ;;
+                                is_trusted_review_cli_available opencode && /usr/bin/printf '%s\n' "opencode" && return
+                                /usr/bin/printf '%s\n' "none" && return ;;
   esac
 
   # Step 5: Auto-detect — grok intentionally excluded. Not because its
@@ -1392,11 +3019,11 @@ _resolve_role_cli_impl() {
   # Auto-picking grok would extend its exposure surface to contexts whose
   # threat model wasn't reviewed.
   for cli in codex agy droid; do
-    is_cli_available "$cli" && echo "$cli" && return
+    is_trusted_review_cli_available "$cli" && /usr/bin/printf '%s\n' "$cli" && return
   done
 
   # Step 6: Ultimate fallback
-  echo "builtin"
+  /usr/bin/printf '%s\n' "builtin"
 }
 
 # ── Review CLI resolution: resolve to ONE cli based on env var ──
@@ -1491,37 +3118,69 @@ describe_role_resolution() {
 
 _CODEX_COMPANION=""
 _resolve_codex_companion() {
-  [[ -n "$_CODEX_COMPANION" ]] && return
-  # Check common plugin cache locations
-  local base="${HOME}/.claude/plugins/cache/openai-codex/codex"
-  if [[ -d "$base" ]]; then
-    # Find the latest installed version
-    local latest
-    # sort -t. -k1,1n -k2,2n -k3,3n is portable semver sort (no GNU sort -V needed)
-    # shellcheck disable=SC2012 # ls is safe here: version dirs are numeric semver only
-    latest=$(ls -1 "$base" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
-    if [[ -n "$latest" && -f "$base/$latest/scripts/codex-companion.mjs" ]]; then
-      _CODEX_COMPANION="$base/$latest/scripts/codex-companion.mjs"
-      return
+  # #789: no shadowable local/return/break; always re-resolve _CODEX_COMPANION.
+  _CODEX_COMPANION=""
+  _RCC_USER=
+    _RCC_HOME=
+    _RCC_BASE=
+    _RCC_LATEST=
+    _RCC_CAND=
+    _RCC_P=
+    _RCC_T=
+    _RCC_N=0
+    _RCC_DIR=
+    _RCC_BASE_PHYS=
+    _RCC_OUT=none
+    # Resolve under password-DB home — never $HOME (repo-injectable).
+    _RCC_USER="$(/usr/bin/id -un 2>/dev/null)"
+    if _bd_valid_username "$_RCC_USER"; then
+      _RCC_HOME="$(_trusted_operator_home)"
+      if [[ -n "$_RCC_HOME" ]]; then
+        _RCC_BASE="${_RCC_HOME}/.claude/plugins/cache/openai-codex/codex"
+        if [[ -d "$_RCC_BASE" ]]; then
+          # Absolute ls/sort/tail only; portable semver sort (no GNU -V).
+          _RCC_LATEST=$(/bin/ls -1 "$_RCC_BASE" 2>/dev/null | /usr/bin/sort -t. -k1,1n -k2,2n -k3,3n | /usr/bin/tail -1)
+          # Version dirname must be a single path segment (no traversal).
+          case "$_RCC_LATEST" in
+            ""|*/*|*".."*) _RCC_LATEST="" ;;
+          esac
+          if [[ -n "$_RCC_LATEST" && -f "$_RCC_BASE/$_RCC_LATEST/scripts/codex-companion.mjs" ]]; then
+            _RCC_CAND="$_RCC_BASE/$_RCC_LATEST/scripts/codex-companion.mjs"
+          fi
+          if [[ -n "$_RCC_CAND" ]]; then
+            # Follow companion FILE symlinks (dirname-only would bless in-tree link).
+            _RCC_P="$_RCC_CAND"
+            while [[ -L "$_RCC_P" && "$_RCC_N" -lt 32 ]]; do
+              _RCC_T="$(/usr/bin/readlink "$_RCC_P" 2>/dev/null)"
+              if [[ -z "$_RCC_T" ]]; then
+                _RCC_P=""
+              elif [[ "$_RCC_T" == /* ]]; then
+                _RCC_P="$_RCC_T"
+              else
+                _RCC_P="$(/usr/bin/dirname -- "$_RCC_P")/$_RCC_T"
+              fi
+              _RCC_N=$((_RCC_N + 1))
+            done
+            # Still symlinked = hop budget exhausted = unresolvable: refuse.
+            if [[ -n "$_RCC_P" && ! -L "$_RCC_P" && -f "$_RCC_P" ]]; then
+              _RCC_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_RCC_P")")"
+              _RCC_BASE_PHYS="$(_trusted_cli_phys_dir "$_RCC_BASE")"
+              # Must stay under the password-DB plugin cache, not merely outside checkout.
+              if [[ -n "$_RCC_DIR" && -n "$_RCC_BASE_PHYS" ]] \
+                && ! _trusted_cli_dir_in_checkout "$_RCC_DIR" \
+                && [[ "${_RCC_DIR%/}/" == "${_RCC_BASE_PHYS%/}/"* ]]; then
+                _RCC_OUT="${_RCC_DIR}/$(/usr/bin/basename -- "$_RCC_P")"
+              fi
+            fi
+          fi
+        fi
+      fi
     fi
-  fi
-  _CODEX_COMPANION="none"
+  _CODEX_COMPANION="$_RCC_OUT"
 }
 
-# ── Shared transient-error predicate ────────────────────────────
-# Reads candidate CLI output from stdin; returns 0 (true) if it looks like a
-# transient failure worth retrying: connection resets, rate-limits, 5xx,
-# EAGAIN I/O races. Single source of truth for _execute_codex's retry loop,
-# the agy/grok retry wrapper below, and dispatch.sh's dispatch_one (council).
-# Match only the `EAGAIN` token (not the phrase "resource temporarily
-# unavailable") to avoid false-positives on fork/thread exhaustion that shares
-# the same strerror text. The 5xx match is context-qualified (an HTTP/status
-# word within a few non-digit chars, or a 5xx reason phrase) so incidental
-# 3-digit runs — "line 503", "port 5000", "1500 tokens" — are NOT misread as
-# transient server errors and needlessly retried + droid-escalated.
-# Keep this regex in sync with the fallback copy in dispatch.sh.
 _is_transient_cli_error() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|too many requests|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
+  /usr/bin/grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|too many requests|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
 }
 
 # Strict transient signal — only unambiguous network/protocol/5xx error TOKENS
@@ -1538,7 +3197,7 @@ _is_transient_cli_error() {
 # *clean-exit* output is a bare error notice; the broad predicate stays for
 # non-zero-exit output, which is genuine error text rather than a possible review.
 _is_hard_transient_signal() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|(429|5[0-9][0-9])[^0-9a-z]{0,4}(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)|(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)[^0-9a-z]{0,4}(429|5[0-9][0-9])'
+  /usr/bin/grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|(429|5[0-9][0-9])[^0-9a-z]{0,4}(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)|(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)[^0-9a-z]{0,4}(429|5[0-9][0-9])'
 }
 
 # Max size (chars) of a "bare error notice" — output from a CLI that exits 0
@@ -1569,23 +3228,22 @@ CLI_BARE_ERROR_MAX_CHARS="${CLI_BARE_ERROR_MAX_CHARS:-512}"
 # "fetch failed"), so this guard cannot reclassify a true notice as a review — it
 # only rescues prose that the bare-notice heuristic would misfire on.
 _reads_as_review_prose() {
-  grep -qiE '\b(lacks?|looks (correct|good|fine|right|ok)|need(s|ed)? (a|an|to|more|tests?)|should (add|be|use|have|handle|return|check|verify|guard|consider)|consider|recommend|suggest|missing (a|an|tests?|guards?|checks?|coverage|handling)|edge case|refactor|rename|nit|LGTM|no issues|test coverage|docstring|assertion)\b'
+  /usr/bin/grep -qiE '\b(lacks?|looks (correct|good|fine|right|ok)|need(s|ed)? (a|an|to|more|tests?)|should (add|be|use|have|handle|return|check|verify|guard|consider)|consider|recommend|suggest|missing (a|an|tests?|guards?|checks?|coverage|handling)|edge case|refactor|rename|nit|LGTM|no issues|test coverage|docstring|assertion)\b'
 }
 
 _is_bare_transient_notice() {
-  local out="$1"
-  [[ "${#out}" -le "$CLI_BARE_ERROR_MAX_CHARS" ]] || return 1
-  # Review schema present → it's a verdict, not a notice. Never bare.
-  if printf '%s' "$out" | grep -qiE '"status"[[:space:]]*:' \
-     && printf '%s' "$out" | grep -qiE '"issues"[[:space:]]*:'; then
-    return 1
+  # #803: no shadowable local/return/printf/grep — assignment + absolute utilities only.
+  _IBTN_OUT=${1-}
+  if [[ "${#_IBTN_OUT}" -gt "${CLI_BARE_ERROR_MAX_CHARS:-512}" ]]; then
+    /usr/bin/false
+  elif /usr/bin/printf '%s' "$_IBTN_OUT" | /usr/bin/grep -qiE '"status"[[:space:]]*:' \
+     && /usr/bin/printf '%s' "$_IBTN_OUT" | /usr/bin/grep -qiE '"issues"[[:space:]]*:'; then
+    /usr/bin/false
+  elif /usr/bin/printf '%s' "$_IBTN_OUT" | _reads_as_review_prose; then
+    /usr/bin/false
+  else
+    /usr/bin/printf '%s' "$_IBTN_OUT" | _is_hard_transient_signal
   fi
-  # Reads like a review discussing an error term → a verdict, not a notice. Closes
-  # the gap the schema exemption leaves open for *freeform* (non-schema) prose.
-  if printf '%s' "$out" | _reads_as_review_prose; then
-    return 1
-  fi
-  printf '%s' "$out" | _is_hard_transient_signal
 }
 
 # #541: opencode prints "> busdriver-review · <model>" plus blank lines
@@ -1630,23 +3288,29 @@ _is_bare_transient_notice() {
 # would match ANY failure status and re-open the fail-open hole (verified
 # empirically on bash 5.x).
 _oc_output_is_banner_only() {
-  local stripped rest rc
-  stripped=$(sed "s/$(printf '\033')\[[0-9;]*m//g" 2>/dev/null) || return 1
-  # awk runs into a VARIABLE first, its status checked separately: if awk and
-  # grep BOTH fail, pipefail surfaces grep's (rightmost) status — a clean
-  # "no match" (1) — masking the awk error as banner-only (litmus round-6
-  # finding). The `|| return 1` makes any awk failure mean "not banner-only".
-  rest=$(printf '%s' "$stripped" | awk '
+  # #803: no shadowable local/return/printf/sed/awk/grep — absolute utilities only.
+  _OCOBO_STRIPPED=
+  _OCOBO_REST=
+  _OCOBO_RC=1
+  if _OCOBO_STRIPPED=$(/usr/bin/sed "s/$(/usr/bin/printf '\033')\[[0-9;]*m//g" 2>/dev/null); then
+    if _OCOBO_REST=$(/usr/bin/printf '%s' "$_OCOBO_STRIPPED" | /usr/bin/awk '
     /^[[:space:]]*$/ { print; next }
     !seen && /^>[[:space:]]*busdriver-review[[:space:]]*·[[:space:]]*[^[:space:]]*[[:space:]]*$/ { seen=1; print ""; next }
     { seen=1; print }
-  ') || return 1
-  printf '%s' "$rest" | grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
-  rc=$?
-  if [[ "$rc" -eq 1 ]]; then
-    return 0
+  '); then
+      /usr/bin/printf '%s' "$_OCOBO_REST" | /usr/bin/grep -c -v -e '^[[:space:]]*$' >/dev/null 2>&1
+      _OCOBO_RC=$?
+      if [[ "$_OCOBO_RC" -eq 1 ]]; then
+        /usr/bin/true
+      else
+        /usr/bin/false
+      fi
+    else
+      /usr/bin/false
+    fi
+  else
+    /usr/bin/false
   fi
-  return 1
 }
 
 # ── Shared duration validator (retry engines) ────────────────────
@@ -1663,25 +3327,30 @@ _oc_output_is_banner_only() {
 # Prints the normalized duration on stdout and returns 0, or prints nothing
 # and returns 1 with an error on stderr.
 _validate_positive_duration() {
-  local label="$1" duration="$2"
-  case "$duration" in
+  _VPD_LABEL=${1-}
+  _VPD_DURATION=${2-}
+  case "$_VPD_DURATION" in
     ''|*[!0-9]*)
-      echo "busdriver: ${label} duration must be a non-negative integer (got: $duration)" >&2
-      return 1
+      /usr/bin/printf "%s\n" "busdriver: ${_VPD_LABEL} duration must be a non-negative integer (got: $_VPD_DURATION)" >&2
+      /usr/bin/false
+      ;;
+    *)
+  _VPD_DURATION="${_VPD_DURATION#"${_VPD_DURATION%%[!0]*}"}"
+  [[ -z "$_VPD_DURATION" ]] && _VPD_DURATION=0
+  if [[ "${#_VPD_DURATION}" -ge 8 ]]; then
+    /usr/bin/printf "%s\n" "busdriver: ${_VPD_LABEL} duration is implausibly large (got: $_VPD_DURATION)" >&2
+    /usr/bin/false
+  else
+  _VPD_DURATION=$((10#$_VPD_DURATION))
+  if [[ "$_VPD_DURATION" -lt 1 ]]; then
+    /usr/bin/printf "%s\n" "busdriver: ${_VPD_LABEL} duration must be >= 1 second" >&2
+    /usr/bin/false
+  else
+  /usr/bin/printf '%s' "$_VPD_DURATION"
+  fi
+  fi
       ;;
   esac
-  duration="${duration#"${duration%%[!0]*}"}"
-  [[ -z "$duration" ]] && duration=0
-  if [[ "${#duration}" -ge 8 ]]; then
-    echo "busdriver: ${label} duration is implausibly large (got: $duration)" >&2
-    return 1
-  fi
-  duration=$((10#$duration))
-  if [[ "$duration" -lt 1 ]]; then
-    echo "busdriver: ${label} duration must be >= 1 second" >&2
-    return 1
-  fi
-  printf '%s' "$duration"
 }
 
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
@@ -1708,57 +3377,77 @@ _run_review_with_retries() {
   # Unknown/empty values fall back to `pipe` — the mode that always delivers the
   # prompt, so a malformed caller degrades to "reviewer sees the prompt", never to
   # "reviewer sees nothing".
-  local label="$1" prompt="$2" duration="$3" stdin_mode="${4:-pipe}"; shift 4
-  case "$stdin_mode" in pipe|none) ;; *) stdin_mode=pipe ;; esac
-  local max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
-  local retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
-  case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
-  case "$retry_delay" in ''|*[!0-9]*) retry_delay=5 ;; esac
-  duration=$(_validate_positive_duration "${label} review" "$duration") || return 1
+  # #803: no shadowable local/shift/builtin; cmd argv at $5 via "${@:5}".
+  _RRWR_LABEL=${1-}
+  _RRWR_PROMPT=$2
+  _RRWR_DURATION=$3
+  _RRWR_STDIN_MODE=${4:-pipe}
+  _RRWR_REVIEW=0
+  case "$_RRWR_STDIN_MODE" in
+    pipe) ;;
+    none) ;;
+    pipe-review) _RRWR_STDIN_MODE=pipe; _RRWR_REVIEW=1 ;;
+    none-review) _RRWR_STDIN_MODE=none; _RRWR_REVIEW=1 ;;
+    *) _RRWR_STDIN_MODE=pipe ;;
+  esac
+  _RRWR_MAX_RETRIES="${BUSDRIVER_CLI_RETRIES:-3}"
+  _RRWR_RETRY_DELAY="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
+  case "$_RRWR_MAX_RETRIES" in ''|*[!0-9]*) _RRWR_MAX_RETRIES=3 ;; esac
+  case "$_RRWR_RETRY_DELAY" in ''|*[!0-9]*) _RRWR_RETRY_DELAY=5 ;; esac
+  if ! _RRWR_DURATION=$(_validate_positive_duration "${_RRWR_LABEL} review" "$_RRWR_DURATION"); then
+    _bd_exit_as 1
+  else
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration" (the caller's total budget): each attempt's timeout is the
   # REMAINING budget (equals "$duration" on the first attempt), and each backoff
   # is capped to the remaining budget so the sleep itself can't overrun. Retries
   # therefore never multiply the wall-clock to (retries+1)× the timeout; once the
   # budget is spent we stop and let the caller's droid fallback take over.
-  local attempt=0 exit_code=0 output="" start now remaining cap
-  start=$(date +%s)
-  while [[ "$attempt" -le "$max_retries" ]]; do
-    exit_code=0
-    if [[ "$attempt" -eq 0 ]]; then
+  _RRWR_ATTEMPT=0; _RRWR_EXIT_CODE=0; _RRWR_OUTPUT=""; _RRWR_START=0; _RRWR_NOW=0; _RRWR_REMAINING=0; _RRWR_CAP=0
+  # #803: no break/continue; loop via _RRWR_DONE / _RRWR_RUN only.
+  _RRWR_DONE=0
+  _RRWR_START=$(/bin/date +%s)
+  while [[ "$_RRWR_ATTEMPT" -le "$_RRWR_MAX_RETRIES" && "$_RRWR_DONE" -eq 0 ]]; do
+    _RRWR_EXIT_CODE=0
+    _RRWR_RUN=0
+    if [[ "$_RRWR_ATTEMPT" -eq 0 ]]; then
       # The FIRST attempt always runs with the full budget — set it directly (not
       # via now-start) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated below.
-      remaining="$duration"
+      _RRWR_REMAINING="$_RRWR_DURATION"
+      _RRWR_RUN=1
     else
-      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
       # remaining budget can't fund a 1s attempt, escalate now instead of
       # sleeping the rest of the budget away for a retry that can't run.
-      if [[ "$remaining" -le 1 ]]; then
-        echo "⟳ ${label}: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+      if [[ "$_RRWR_REMAINING" -le 1 ]]; then
+        /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — escalating instead of retrying" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
-        break
-      fi
-      # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
-      cap=$(( remaining - 1 ))
-      [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
-      if [[ "$retry_delay" -gt 0 ]]; then
-        echo "⟳ ${label} retry ${attempt}/${max_retries} (waiting ${retry_delay}s)..." >&2
-        sleep "$retry_delay"
-      fi
-      retry_delay=$((retry_delay * 2))
-      now=$(date +%s); remaining=$(( duration - (now - start) ))
-      if [[ "$remaining" -le 0 ]]; then
-        echo "⟳ ${label}: retry budget (${duration}s) spent — escalating instead of retrying" >&2
-        # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
-        # non-zero (1), never 124, so callers don't trip their timeout/split path.
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
-        break
+        [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && _RRWR_EXIT_CODE=1
+        _RRWR_DONE=1
+      else
+        # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
+        _RRWR_CAP=$(( _RRWR_REMAINING - 1 ))
+        [[ "$_RRWR_RETRY_DELAY" -gt "$_RRWR_CAP" ]] && _RRWR_RETRY_DELAY="$_RRWR_CAP"
+        if [[ "$_RRWR_RETRY_DELAY" -gt 0 ]]; then
+          /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL} retry ${_RRWR_ATTEMPT}/${_RRWR_MAX_RETRIES} (waiting ${_RRWR_RETRY_DELAY}s)..." >&2
+          /bin/sleep "$_RRWR_RETRY_DELAY"
+        fi
+        _RRWR_RETRY_DELAY=$((_RRWR_RETRY_DELAY * 2))
+        _RRWR_NOW=$(/bin/date +%s); _RRWR_REMAINING=$(( _RRWR_DURATION - (_RRWR_NOW - _RRWR_START) ))
+        if [[ "$_RRWR_REMAINING" -le 0 ]]; then
+          /usr/bin/printf '%s\n' "⟳ ${_RRWR_LABEL}: retry budget (${_RRWR_DURATION}s) spent — escalating instead of retrying" >&2
+          # Budget exhaust = CLI failure (exit 1), never 124.
+          [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && _RRWR_EXIT_CODE=1
+          _RRWR_DONE=1
+        else
+          _RRWR_RUN=1
+        fi
       fi
     fi
+    if [[ "$_RRWR_DONE" -eq 0 && "$_RRWR_RUN" -eq 1 ]]; then
     # STDIN MODE. Most CLIs read the prompt from fd 0, so the default pipes it in.
     # A CLI that takes the prompt via ARGV (agy >=1.1, `--print "$prompt"`) never
     # drains fd 0 — and under `pipefail` the upstream `printf` then dies of SIGPIPE
@@ -1769,10 +3458,28 @@ _run_review_with_retries() {
     # 0, so this is invisible in light testing and fires on real 40-100 KB review
     # prompts. Verified: 1 KB → rc=0, 200 KB → rc=141 with valid output.
     # Reads the validated $4 argument — never the environment (see the signature).
-    if [[ "$stdin_mode" == "none" ]]; then
-      output=$(_portable_timeout "$remaining" "$@" </dev/null 2>&1) || exit_code=$?
+    if [[ "$_RRWR_STDIN_MODE" == "none" ]]; then
+      if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
+        case "$_RRWR_LABEL" in
+          codex|agy|droid|opencode)
+            _RRWR_OUTPUT=$(_portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
+          *)
+            _RRWR_OUTPUT=$(_portable_timeout "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$? ;;
+        esac
+      else
+        _RRWR_OUTPUT=$(_portable_timeout "$_RRWR_REMAINING" "${@:5}" </dev/null 2>&1) || _RRWR_EXIT_CODE=$?
+      fi
     else
-      output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+      if [[ "$_RRWR_REVIEW" -eq 1 ]]; then
+        case "$_RRWR_LABEL" in
+          codex|agy|droid|opencode)
+            _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout --review "$_RRWR_LABEL" "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
+          *)
+            _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$? ;;
+        esac
+      else
+        _RRWR_OUTPUT=$(/usr/bin/printf '%s' "$_RRWR_PROMPT" | _portable_timeout "$_RRWR_REMAINING" "${@:5}" 2>&1) || _RRWR_EXIT_CODE=$?
+      fi
     fi
     # #541: opencode prints "> busdriver-review · <model>" (+ blank lines)
     # UNCONDITIONALLY — healthy runs included — so a banner-only capture is an
@@ -1783,28 +3490,29 @@ _run_review_with_retries() {
     # untouched. Keyed on the opencode label — agy/grok/droid print no such
     # banner. Sibling: the file-based normalization in dispatch.sh's opencode
     # arm (fallback copy of the predicate lives there too).
-    if [[ "$label" == "opencode" ]] && printf '%s' "$output" | _oc_output_is_banner_only; then
-      output=""
+    if [[ "$_RRWR_LABEL" == "opencode" ]] && /usr/bin/printf '%s' "$_RRWR_OUTPUT" | _oc_output_is_banner_only; then
+      _RRWR_OUTPUT=""
     fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
-    [[ "$exit_code" -eq 124 ]] && break
+    if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
+      _RRWR_DONE=1
     # A clean exit with non-empty output is success — UNLESS it is a bare
     # transient notice the CLI emitted while still exiting 0 (a rate-limit/5xx
     # message in place of a review). Those fall through to the retry/droid path
     # below; a real review payload — even one discussing rate limits / 5xx — is
     # accepted here because it carries a JSON object and/or is substantial.
-    if [[ "$exit_code" -eq 0 && -n "$output" ]] && ! _is_bare_transient_notice "$output"; then
-      break
-    fi
+    elif [[ "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]] && ! _is_bare_transient_notice "$_RRWR_OUTPUT"; then
+      _RRWR_DONE=1
     # Retry if the attempt produced NO output (a CLI that died before writing a
     # review — empty is never a valid review, whatever the exit code) OR the
     # failure text looks transient. Otherwise bail (non-transient hard failure
     # that did produce output → the caller's droid fallback owns the rescue).
-    if [[ -z "$output" ]] || printf '%s' "$output" | _is_transient_cli_error; then
-      attempt=$((attempt + 1))
-      continue
+    elif [[ -z "$_RRWR_OUTPUT" ]] || /usr/bin/printf '%s' "$_RRWR_OUTPUT" | _is_transient_cli_error; then
+      _RRWR_ATTEMPT=$((_RRWR_ATTEMPT + 1))
+    else
+      _RRWR_DONE=1
     fi
-    break
+    fi
   done
   # Exhausted retries while still empty OR while still emitting a bare transient
   # notice on a clean exit → report a FAILURE, not a silent success: neither an
@@ -1812,16 +3520,17 @@ _run_review_with_retries() {
   # fallback/error handling off this exit status (e.g. execute_review → blueprint
   # droid rescue / litmus error path). Without this, an always-empty or
   # always-rate-limited reviewer would return exit 0 and be treated as a clean run.
-  if [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; then
-    exit_code=1
+  if [[ "$_RRWR_EXIT_CODE" -eq 0 ]] && { [[ -z "$_RRWR_OUTPUT" ]] || _is_bare_transient_notice "$_RRWR_OUTPUT"; }; then
+    _RRWR_EXIT_CODE=1
   fi
-  printf '%s' "$output"
-  return "$exit_code"
+  /usr/bin/printf '%s' "$_RRWR_OUTPUT"
+  _bd_exit_as "$_RRWR_EXIT_CODE"
+  fi
 }
 
 _execute_codex() {
-  local prompt="$1"
-  local duration="${2:-1200}"
+  # #803: no shadowable local; prompt stays in $1.
+  _ECX_DURATION="${2:-1200}"
   # Defaults sized for codex rate-limit windows. At the default 3 retries the
   # backoff sequence is 30, 60, 120 seconds — ~3.5 min of waiting before
   # exhausting and escalating to droid. From retry 2 onward (t≥90s) the
@@ -1839,11 +3548,11 @@ _execute_codex() {
   # rate-limited attempts FAIL FAST, so nearly the whole budget goes to sleeping
   # and 540s still outwaits the per-minute and per-5min windows. What it does cut
   # short is the pathological case — slow attempts that each burn most of the
-  # timeout — which is precisely the case that used to blow the 600s harness cap.
+  # timeout — which is precisely the case that used to blow the 600s harness _ECX_CAP.
   # If a path genuinely needs to outwait an hourly quota, raise ITS duration
   # (LITMUS_TIMEOUT); raising retries alone can no longer buy wall-clock.
-  local max_retries="${LITMUS_CODEX_RETRIES:-3}"
-  local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-30}"
+  _ECX_MAX_RETRIES="${LITMUS_CODEX_RETRIES:-3}"
+  _ECX_RETRY_DELAY="${LITMUS_CODEX_RETRY_DELAY:-30}"
   # Reasoning effort. Unset (the default) = whatever the codex CLI's own config
   # says — deliberately NOT restated here, because a hardcoded claim about the
   # default drifts silently (#331). Set LITMUS_CODEX_EFFORT to pin a tier for a
@@ -1851,15 +3560,17 @@ _execute_codex() {
   # ladder: retries here fire on rate-limits/5xx/timeouts, which lowering
   # reasoning does not fix — it only makes the attempt that finally succeeds the
   # weakest one, on the gate-of-record review path.
-  local codex_effort="${LITMUS_CODEX_EFFORT:-}"
+  _ECX_CODEX_EFFORT="${LITMUS_CODEX_EFFORT:-}"
 
   # Validate env vars are non-negative integers
-  local _v
-  for _v in "$max_retries" "$retry_delay"; do
+  # #803: single-exit latch
+  _v=
+  _ECX_RC=0
+  for _v in "$_ECX_MAX_RETRIES" "$_ECX_RETRY_DELAY"; do
     case "$_v" in
       ''|*[!0-9]*)
-        echo "busdriver: LITMUS_CODEX_RETRIES and LITMUS_CODEX_RETRY_DELAY must be non-negative integers" >&2
-        return 1
+        /usr/bin/printf '%s\n' "busdriver: LITMUS_CODEX_RETRIES and LITMUS_CODEX_RETRY_DELAY must be non-negative integers" >&2
+        _ECX_RC=1
         ;;
     esac
   done
@@ -1867,17 +3578,92 @@ _execute_codex() {
   # LITMUS_TIMEOUT is repo-injectable via a fork's settings.json `env` (#325),
   # so validate BEFORE any arithmetic touches it. See _validate_positive_duration
   # for the full rationale (shared with _run_review_with_retries).
-  duration=$(_validate_positive_duration "codex review" "$duration") || return 1
+  if [[ "$_ECX_RC" -eq 0 ]]; then
+    if ! _ECX_DURATION=$(_validate_positive_duration "codex review" "$_ECX_DURATION"); then
+      _ECX_RC=1
+    fi
+  fi
 
-  case "$codex_effort" in
+  case "$_ECX_CODEX_EFFORT" in
     ''|minimal|low|medium|high|xhigh) ;;
     *)
-      echo "busdriver: LITMUS_CODEX_EFFORT must be one of: minimal|low|medium|high|xhigh (got: $codex_effort)" >&2
-      return 1
+      /usr/bin/printf '%s\n' "busdriver: LITMUS_CODEX_EFFORT must be one of: minimal|low|medium|high|xhigh (got: $_ECX_CODEX_EFFORT)" >&2
+      _ECX_RC=1
       ;;
   esac
 
-  _resolve_codex_companion
+  if [[ "$_ECX_RC" -ne 0 ]]; then
+    _bd_exit_as "$_ECX_RC"
+  else
+
+  # #803: disk-fresh dual companion probe; ignore preexisting _CODEX_COMPANION.
+  #
+  # The refusal must DENY the next block its input, not merely print. `_bd_exit_as`
+  # sets $? and nothing else (a bare `return` is shadowable), so this `if ... fi`
+  # falls through to the code below it. The downstream `_bd803_verify_review_lib_bytes`
+  # happens to catch every reachable case today, so this is not exploitable here as
+  # written — but an inert refusal is one relaxed downstream check away from becoming
+  # a dispatch, and the sibling opencode arm had exactly that shape and WAS
+  # exploitable. Route the staging status into _bd803_cc_lib so the existing guard
+  # below refuses on its own terms.
+  _bd803_stage_rc=0
+  _bd803_ensure_staged_lib || _bd803_stage_rc=1
+  if [[ "$_bd803_stage_rc" -ne 0 ]]; then
+    /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
+    _bd_exit_as 1
+    _bd803_cc_lib=
+  else
+    _bd803_cc_lib="${_BD803_REVIEW_LIB_STAGED:-}"
+  fi
+  case "$_bd803_cc_lib" in *$'\n'*) _bd803_cc_lib= ;; esac
+  if [[ -z "$_bd803_cc_lib" || ! -f "$_bd803_cc_lib" ]]; then
+    /usr/bin/printf '%s\n' "busdriver: review lib pin unavailable — refusing codex dispatch." >&2
+    _bd_exit_as 1
+  elif ! _bd803_verify_review_lib_bytes; then
+    /usr/bin/printf "%s\n" "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
+    _bd_exit_as 1
+  else
+  # #803: exec copy once — retries reuse this path (do not re-resolve BASH_SOURCE).
+  #
+  # TRUST BOUNDARY of the dual companion re-check — state it, because the shape
+  # invites a stronger reading. What the two disk-fresh resolutions bind is the
+  # PATHNAME's provenance: a poisoned parent `_CODEX_COMPANION` is never trusted,
+  # the answer is recomputed in a clean child, and it must still land under the
+  # password-DB operator home's plugin cache, physicalized and outside every git
+  # checkout (see `_resolve_codex_companion`). What they do NOT bind is the BYTES:
+  # node reopens that pathname later, so a writer who can swap the file in that
+  # cache between the check and the open executes unverified JavaScript. That
+  # writer is out of #803's threat model by construction — #803 is a poisoned
+  # ENVIRONMENT and a hostile reviewed CHECKOUT, and anyone holding write access
+  # to the operator's own plugin cache has already defeated every trusted-home
+  # anchor in this file, the codex binary included. Byte-binding is not available
+  # here either: the companion is an ESM entry point that resolves its imports
+  # relative to its real directory, so staging a copy (the technique used for the
+  # review lib) breaks the module graph. Residual, accepted, deliberately not
+  # papered over.
+  _bd803_cc_a=
+  _bd803_cc_b=
+  if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then
+    _bd803_cc_a="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_a=
+    _bd803_cc_b="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_b=
+  fi
+  if [[ -z "${_bd803_cc_a:-}" || "$_bd803_cc_a" == "none" || "$_bd803_cc_a" != /* \
+      || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
+    _bd803_cc_a=
+    _bd803_cc_b=
+  fi
+  # #789: pin reviewer binary once (no bare-name PATH re-walk).
+  _bd_codex_bin=""
+  if [[ -n "${_BD_CODEX_PINNED_BIN:-}" ]]; then
+    _bd_codex_bin="$_BD_CODEX_PINNED_BIN"
+  else
+    _bd_codex_bin="$(_resolve_trusted_cli_bin codex)"
+  fi
+  if [[ -z "$_bd_codex_bin" ]]; then
+               /usr/bin/printf '%s\n' "busdriver: codex is missing or resolves inside the reviewed checkout — refusing review dispatch." >&2
+    # #803: no shadowable `return` after refusal — BASH_FUNC_return%% would reset status to 0.
+    _bd_exit_as 1
+  else
 
   # Pre-buffer the prompt to a file so the companion path can read via
   # --prompt-file instead of fd 0. The companion's stdin reader
@@ -1889,110 +3675,159 @@ _execute_codex() {
   # is unaffected. The direct codex CLI fallback further down still uses
   # stdin; that path only fires when the companion plugin is uninstalled,
   # and codex exec lacks an equivalent file-input flag at present.
-  local _prompt_file=""
-  if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
-    _prompt_file=$(mktemp -t codex-prompt 2>/dev/null) || _prompt_file=$(mktemp 2>/dev/null) || _prompt_file=""
-    if [[ -z "$_prompt_file" || ! -f "$_prompt_file" ]]; then
-      echo "busdriver: failed to create temp file for codex prompt" >&2
-      return 1
-    fi
-    if ! printf '%s' "$prompt" > "$_prompt_file"; then
-      rm -f "$_prompt_file"
-      echo "busdriver: failed to write codex prompt to temp file" >&2
-      return 1
+  _ECX_PROMPT_FILE=""
+  if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
+    _ECX_PROMPT_FILE=$(/usr/bin/mktemp -t codex-prompt 2>/dev/null) || _ECX_PROMPT_FILE=$(/usr/bin/mktemp 2>/dev/null) || _ECX_PROMPT_FILE=""
+    if [[ -z "$_ECX_PROMPT_FILE" || ! -f "$_ECX_PROMPT_FILE" ]]; then
+      /usr/bin/printf '%s\n' "busdriver: failed to create temp file for codex prompt" >&2
+      _ECX_RC=1
+    elif ! /usr/bin/printf '%s' "$1" > "$_ECX_PROMPT_FILE"; then
+      /bin/rm -f "$_ECX_PROMPT_FILE"
+      /usr/bin/printf '%s\n' "busdriver: failed to write codex prompt to temp file" >&2
+      _ECX_RC=1
     fi
   fi
 
-  local attempt=0
-  local exit_code=0
-  local output=""
-  local last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
-  local timed_out=0           # a single full-duration timeout is droid-eligible (not retried)
+  if [[ "$_ECX_RC" -ne 0 ]]; then
+    _bd_exit_as "$_ECX_RC"
+  else
+
+  _ECX_ATTEMPT=0
+  _ECX_EXIT_CODE=0
+  _ECX_OUTPUT=""
+  _ECX_LAST_WAS_TRANSIENT=0  # narrows droid fallback to rate-limit/network exhaustion
+  _ECX_TIMED_OUT=0           # a single full-duration timeout is droid-eligible (not retried)
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
   # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
-  # and each backoff is capped to the remaining budget so the sleep itself cannot
+  # and each backoff is capped to the _ECX_REMAINING budget so the sleep itself cannot
   # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
   # path's 5 retries that is up to 6x the timeout of wall-clock against a 600s
-  # harness cap, and pinned xhigh lengthens each attempt further.
+  # harness _ECX_CAP, and pinned xhigh lengthens each attempt further.
   # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
   # own "$duration" (it is the safety net, and a droid handed 0s is no net at
   # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead
   # disables droid entirely, so that path is bounded at exactly "$duration".
-  local start now remaining cap
-  start=$(date +%s)
+  _ECX_START=; _ECX_NOW=; _ECX_REMAINING=; _ECX_CAP=
+  _ECX_START=$(/bin/date +%s)
 
-  while [[ "$attempt" -le "$max_retries" ]]; do
+  _ECX_DONE=0
+  while [[ "$_ECX_ATTEMPT" -le "$_ECX_MAX_RETRIES" && "$_ECX_DONE" -eq 0 ]]; do
+    if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]] && ! _bd803_verify_review_lib_bytes; then
+      /usr/bin/printf '%s\n' "busdriver: review lib bytes changed since trusted load — refusing codex dispatch." >&2
+      _ECX_EXIT_CODE=1
+      _ECX_DONE=1
+      continue
+    fi
     # Budget gate + backoff FIRST, before the per-attempt state resets below — the
     # bail-outs here must still see the PREVIOUS attempt's exit_code and
-    # last_was_transient so a budget-exhausted sequence stays droid-eligible.
-    if [[ "$attempt" -eq 0 ]]; then
+    # _ECX_LAST_WAS_TRANSIENT so a budget-exhausted sequence stays droid-eligible.
+    if [[ "$_ECX_ATTEMPT" -eq 0 ]]; then
       # The FIRST attempt always runs with the full budget — set it directly (not
-      # via now-start) so a sub-second clock tick can never zero it out and skip
+      # via _ECX_NOW-_ECX_START) so a sub-second clock tick can never zero it out and skip
       # the only invocation. Only RETRIES are budget-gated.
-      remaining="$duration"
+      _ECX_REMAINING="$_ECX_DURATION"
     else
-      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      _ECX_NOW=$(/bin/date +%s); _ECX_REMAINING=$(( _ECX_DURATION - (_ECX_NOW - _ECX_START) ))
       # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
-      # remaining budget can't fund a 1s attempt, escalate now instead of
+      # _ECX_REMAINING budget can't fund a 1s attempt, escalate _ECX_NOW instead of
       # sleeping the rest of the budget away for a retry that can't run.
-      if [[ "$remaining" -le 1 ]]; then
-        echo "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+      if [[ "$_ECX_REMAINING" -le 1 ]]; then
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
         # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
         # non-zero (1), never 124, so callers don't trip their timeout/split path.
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
-        break
-      fi
+        [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
       # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
-      cap=$(( remaining - 1 ))
-      [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
-      if [[ "$retry_delay" -gt 0 ]]; then
-        echo "⟳ Codex retry $attempt/$max_retries (waiting ${retry_delay}s)..." >&2
-        sleep "$retry_delay"
+      _ECX_CAP=$(( _ECX_REMAINING - 1 ))
+      [[ "$_ECX_RETRY_DELAY" -gt "$_ECX_CAP" ]] && _ECX_RETRY_DELAY="$_ECX_CAP"
+      if [[ "$_ECX_RETRY_DELAY" -gt 0 ]]; then
+        /usr/bin/printf '%s\n' "⟳ Codex retry $_ECX_ATTEMPT/$_ECX_MAX_RETRIES (waiting ${_ECX_RETRY_DELAY}s)..." >&2
+        /bin/sleep "$_ECX_RETRY_DELAY"
       fi
       # Exponential backoff: double delay each retry
-      retry_delay=$((retry_delay * 2))
-      now=$(date +%s); remaining=$(( duration - (now - start) ))
-      if [[ "$remaining" -le 0 ]]; then
-        echo "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
-        [[ "$exit_code" -eq 0 ]] && exit_code=1
-        break
+      _ECX_RETRY_DELAY=$((_ECX_RETRY_DELAY * 2))
+      _ECX_NOW=$(/bin/date +%s); _ECX_REMAINING=$(( _ECX_DURATION - (_ECX_NOW - _ECX_START) ))
+      if [[ "$_ECX_REMAINING" -le 0 ]]; then
+        /usr/bin/printf '%s\n' "⟳ Codex: retry budget (${_ECX_DURATION}s) spent — escalating instead of retrying" >&2
+        [[ "$_ECX_EXIT_CODE" -eq 0 ]] && _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      fi
       fi
     fi
 
-    exit_code=0
+    if [[ "$_ECX_DONE" -eq 0 ]]; then
+    _ECX_EXIT_CODE=0
     # Reflect only THIS attempt's classification — never carry a prior attempt's
     # transience into the post-loop droid decision. A timeout escalates via its
-    # own `timed_out` flag, so resetting here does not weaken timeout handling.
-    last_was_transient=0
-    local effort_args=()
-    if [[ -n "$codex_effort" ]]; then
-      effort_args=(--effort "$codex_effort")
+    # own `_ECX_TIMED_OUT` flag, so resetting here does not weaken timeout handling.
+    _ECX_LAST_WAS_TRANSIENT=0
+    _ECX_EFFORT_ARGS=()
+    if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
+      _ECX_EFFORT_ARGS=(--effort "$_ECX_CODEX_EFFORT")
     fi
 
-    if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
+    if [[ -n "${_bd803_cc_a:-}" ]] && _resolve_trusted_cli_bin node >/dev/null; then
       # Use official plugin's app-server protocol via --prompt-file — see the
       # pre-loop comment for the EAGAIN background. Omit --json to get raw
       # review output (--json wraps in an envelope that breaks downstream
       # extract_review_json.py parsing).
-      # ${effort_args[@]+...} guards against "unbound variable" when array is
+      # ${_ECX_EFFORT_ARGS[@]+...} guards against "unbound variable" when array is
       # empty under set -u (macOS bash 3.2).
-      output=$(_portable_timeout "$remaining" node "$_CODEX_COMPANION" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
+      _bd_node_bin=""
+      _bd_node_bin="$(_resolve_trusted_cli_bin node)" || _bd_node_bin=""
+      if [[ -z "$_bd_node_bin" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: node is missing or resolves inside the reviewed checkout — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      # #803: dual disk-fresh companion pins; never parent _CODEX_COMPANION.
+      # Binds the pathname's provenance, not the bytes node later opens — see the
+      # TRUST BOUNDARY note at the first dual re-check above for the residual.
+      _bd803_cc_a=
+      _bd803_cc_b=
+      if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" ]]; then
+        _bd803_cc_a="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_a=
+        _bd803_cc_b="$(_bd803_bash_staged_lib --print-trusted-companion)" || _bd803_cc_b=
+      fi
+      if [[ -z "${_bd803_cc_a:-}" || "$_bd803_cc_a" == "none" || "$_bd803_cc_a" != /* \
+          || -z "${_bd803_cc_b:-}" || "$_bd803_cc_a" != "$_bd803_cc_b" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: codex companion unresolved after dual re-check — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      _bd803_cc_disp=
+      if [[ -n "${_bd803_cc_lib:-}" && -f "$_bd803_cc_lib" && -n "${_bd_codex_bin:-}" ]]; then
+        _bd803_cc_disp="$(_bd803_bash_staged_lib_ambient --print-review-dispatch-path "$_bd_codex_bin" codex)" || _bd803_cc_disp=
+      fi
+      if [[ -z "${_bd803_cc_disp:-}" ]]; then
+        /usr/bin/printf "%s\n" "busdriver: cannot build disk-fresh companion dispatch PATH — refusing companion dispatch." >&2
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        _ECX_EXIT_CODE=1
+        _ECX_DONE=1
+      else
+      _ECX_OUTPUT=$(BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$_bd803_cc_disp" _portable_timeout --review node "$_ECX_REMAINING" "$_bd_node_bin" "$_bd803_cc_a" task --prompt-file "$_ECX_PROMPT_FILE" ${_ECX_EFFORT_ARGS[@]+"${_ECX_EFFORT_ARGS[@]}"} 2>&1) || _ECX_EXIT_CODE=$?
+      fi
+      fi
+      fi
     else
       # Fallback: direct CLI invocation
-      local config_args=()
-      if [[ -n "$codex_effort" ]]; then
-        config_args=(-c "model_reasoning_effort=\"$codex_effort\"")
+      _ECX_CONFIG_ARGS=()
+      if [[ -n "$_ECX_CODEX_EFFORT" ]]; then
+        _ECX_CONFIG_ARGS=(-c "model_reasoning_effort=\"$_ECX_CODEX_EFFORT\"")
       fi
-      output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
+      _ECX_OUTPUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_codex_bin" codex)" _portable_timeout --review codex "$_ECX_REMAINING" "$_bd_codex_bin" exec -s read-only ${_ECX_CONFIG_ARGS[@]+"${_ECX_CONFIG_ARGS[@]}"} - 2>&1) || _ECX_EXIT_CODE=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
     # or only a bare transient notice (a network/5xx envelope the companion
     # emitted while still exiting 0) is NOT a review; fall through to the
     # retry/droid path, mirroring _run_review_with_retries and dispatch_one.
-    if [[ "$exit_code" -eq 0 && -n "$output" ]] && ! _is_bare_transient_notice "$output"; then
-      break
+    if [[ "$_ECX_EXIT_CODE" -eq 0 && -n "$_ECX_OUTPUT" ]] && ! _is_bare_transient_notice "$_ECX_OUTPUT"; then
+      _ECX_DONE=1
     fi
 
     # Timeout (124) — retrying burns the whole window again, so don't; but a
@@ -2001,29 +3836,29 @@ _execute_codex() {
     # Classify a 124 by the window the attempt was actually GRANTED, not by its
     # attempt index. An attempt that ran with the FULL "$duration" timed out
     # honestly — Codex couldn't finish in the configured window — so preserve
-    # the timeout signal (droid-eligible via timed_out; if droid can't rescue
+    # the timeout signal (droid-eligible via _ECX_TIMED_OUT; if droid can't rescue
     # it, the caller sees exit 124 and correctly reads "split the diff"). An
-    # attempt granted only a TRUNCATED "$remaining" (the budget is shared across
+    # attempt granted only a TRUNCATED "$_ECX_REMAINING" (the budget is shared across
     # every attempt plus every backoff sleep) hit the shared budget, not a real
     # Codex limit: treat it as budget exhaustion — droid-eligible via
-    # last_was_transient (same as the explicit budget-exhaustion breaks above),
-    # but NOT timed_out, so a droid-less path falls through to BUILTIN_FALLBACK
+    # _ECX_LAST_WAS_TRANSIENT (same as the explicit budget-exhaustion breaks above),
+    # but NOT _ECX_TIMED_OUT, so a droid-less path falls through to BUILTIN_FALLBACK
     # (return 3) rather than a misleading "genuine timeout" exit 124.
     #
-    # Keying on `remaining == duration` rather than `attempt == 0` matters at
+    # Keying on `_ECX_REMAINING == duration` rather than `attempt == 0` matters at
     # the edges: with LITMUS_CODEX_RETRY_DELAY=0 and a first attempt that fails
     # fast, date's 1s resolution can leave a RETRY holding the full window — and
     # that retry's 124 is a genuine timeout, which an attempt-index test would
     # have downgraded and silently discarded.
-    if [[ "$exit_code" -eq 124 ]]; then
-      if [[ "$remaining" -eq "$duration" ]]; then
-        timed_out=1
+    if [[ "$_ECX_EXIT_CODE" -eq 124 ]]; then
+      if [[ "$_ECX_REMAINING" -eq "$_ECX_DURATION" ]]; then
+        _ECX_TIMED_OUT=1
       else
-        echo "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${duration}s) — treating as budget exhaustion, not a genuine timeout" >&2
-        last_was_transient=1
-        exit_code=1
+        /usr/bin/printf '%s\n' "⟳ Codex: retry timed out on truncated _ECX_REMAINING budget (${_ECX_REMAINING}s of ${_ECX_DURATION}s) — treating as budget exhaustion, not a genuine timeout" >&2
+        _ECX_LAST_WAS_TRANSIENT=1
+        _ECX_EXIT_CODE=1
       fi
-      break
+      _ECX_DONE=1
     fi
 
     # Only retry on transient Codex service errors (network, API, rate-limit)
@@ -2032,7 +3867,7 @@ _execute_codex() {
     #
     # EAGAIN history: the primary historical trigger was the codex-companion
     # reading stdin via fs.readFileSync(0) under Claude Code's Bash tool,
-    # where fd 0 has O_NONBLOCK set. That path is now bypassed by writing the
+    # where fd 0 has O_NONBLOCK set. That path is _ECX_NOW bypassed by writing the
     # prompt to a temp file and passing --prompt-file (see pre-loop block).
     # EAGAIN remains in the retry regex as defense-in-depth in case a future
     # codex version or codepath regresses. We match only the `EAGAIN` token
@@ -2041,14 +3876,18 @@ _execute_codex() {
     # same strerror text.
     # Retry on transient service errors, OR on a clean exit that produced no real
     # review (empty, or a bare transient notice) — a flake, not a verdict.
-    if { [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; } \
-       || printf '%s' "$output" | _is_transient_cli_error; then
-      last_was_transient=1
-      attempt=$((attempt + 1))
+    # #803: skip if _ECX_DONE=1 (classifier must not reset escalation latch).
+    if [[ "$_ECX_DONE" -eq 0 ]]; then
+    if { [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; } \
+       || /usr/bin/printf '%s' "$_ECX_OUTPUT" | _is_transient_cli_error; then
+      _ECX_LAST_WAS_TRANSIENT=1
+      _ECX_ATTEMPT=$((_ECX_ATTEMPT + 1))
     else
-      last_was_transient=0
-      echo "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2
-      break
+      _ECX_LAST_WAS_TRANSIENT=0
+      _ECX_DONE=1
+      /usr/bin/printf "%s\n" "⚠️  Codex failed with non-transient error (exit $_ECX_EXIT_CODE) — not retrying" >&2
+    fi
+    fi
     fi
   done
 
@@ -2056,22 +3895,22 @@ _execute_codex() {
   # notice, through exhaustion) is not success — promote it to a transient
   # failure so the droid/builtin fallback below engages instead of returning a
   # blank PASS. Mirrors _run_review_with_retries' exhaustion guard.
-  if [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; then
-    exit_code=1
-    last_was_transient=1
+  if [[ "$_ECX_EXIT_CODE" -eq 0 ]] && { [[ -z "$_ECX_OUTPUT" ]] || _is_bare_transient_notice "$_ECX_OUTPUT"; }; then
+    _ECX_EXIT_CODE=1
+    _ECX_LAST_WAS_TRANSIENT=1
   fi
 
   # All retries exhausted, non-transient error, or a timeout — try droid (if
   # eligible), else fall back to builtin (or preserve the timeout signal).
-  if [[ "$exit_code" -ne 0 ]]; then
-    local attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
+  if [[ "$_ECX_EXIT_CODE" -ne 0 ]]; then
+    _ECX_ATTEMPTS_RUN=$(( _ECX_ATTEMPT > _ECX_MAX_RETRIES ? _ECX_MAX_RETRIES + 1 : _ECX_ATTEMPT + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
     # messages survive and the underlying cause is unrecoverable.
-    if [[ -n "$output" ]]; then
-      printf '%s\n%s\n%s\n' \
-        "----- codex output (exit $exit_code) -----" \
-        "$output" \
+    if [[ -n "$_ECX_OUTPUT" ]]; then
+      /usr/bin/printf '%s\n%s\n%s\n' \
+        "----- codex output (exit $_ECX_EXIT_CODE) -----" \
+        "$_ECX_OUTPUT" \
         "----- end codex output -----" >&2
     fi
 
@@ -2089,67 +3928,116 @@ _execute_codex() {
     #   3. BUSDRIVER_REVIEW_CLI=codex — explicit codex pin. Treat as "user wants
     #      only codex, fall through to builtin if codex fails" — matches the
     #      semantics implied by pinning a single backend.
-    local _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
+    _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
     # Widen to accept common truthy shell boolean conventions (1/true/yes/on).
     if [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]]; then _droid_disabled=1; fi
     [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
     [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
-    if { [[ "$last_was_transient" -eq 1 ]] || [[ "$timed_out" -eq 1 ]]; } && \
-       [[ "$_droid_disabled" != "1" ]] && \
-       is_cli_available droid; then
-      local _fail_reason="transient errors"
-      [[ "$timed_out" -eq 1 ]] && _fail_reason="timeout"
-      echo "⚠️  Codex failed after ${attempts_run} attempt(s) (${_fail_reason}) — escalating to droid" >&2
-      local droid_out='' droid_exit=0
+    _bd_droid_bin=""
+    if { [[ "$_ECX_LAST_WAS_TRANSIENT" -eq 1 ]] || [[ "$_ECX_TIMED_OUT" -eq 1 ]]; } && \
+       [[ "$_droid_disabled" != "1" ]]; then
+      # #803: resolve trusted abs droid first (never shadowable is_cli_available).
+      _bd_droid_bin="$(_resolve_trusted_cli_bin droid)" || _bd_droid_bin=""
+    fi
+    if [[ -n "$_bd_droid_bin" ]]; then
+      _ECX_FAIL_REASON="transient errors"
+      [[ "$_ECX_TIMED_OUT" -eq 1 ]] && _ECX_FAIL_REASON="timeout"
+      /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) (${_ECX_FAIL_REASON}) — escalating to droid" >&2
+      _ECX_DROID_OUT='' _ECX_DROID_ERR='' _ECX_DROID_EXIT=0
       # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
       # execute_review's posture and the codex `-s read-only` posture this is
       # escalating from. See execute_review droid case for PR #97 historical context.
-      droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
+      # Capture stdout and stderr separately: classification keys on stdout only
+      # so an exit-0 diagnostic on stderr is not treated as a successful review
+      # (CodeRabbit on #806 / #804).
+      _droid_errf=""
+      _droid_errf=$(/usr/bin/mktemp -t droid-err 2>/dev/null) || _droid_errf=$(/usr/bin/mktemp 2>/dev/null) || _droid_errf=""
+      if [[ -n "$_droid_errf" ]]; then
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>"$_droid_errf") || _ECX_DROID_EXIT=$?
+        _ECX_DROID_ERR=$(/bin/cat "$_droid_errf" 2>/dev/null || /usr/bin/true)
+        /bin/rm -f "$_droid_errf"
+      else
+        # Tempfile unavailable — do NOT merge stderr into stdout (that recreates
+        # the exit-0+stderr-only false-success). Discard stderr for classification
+        # and note the loss so the failure log still explains the gap.
+        _ECX_DROID_OUT=$(/usr/bin/printf '%s' "$1" | BD803_REVIEW_LIB="${_bd803_cc_lib}" PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ECX_DURATION" "$_bd_droid_bin" exec 2>/dev/null) || _ECX_DROID_EXIT=$?
+        _ECX_DROID_ERR="(stderr discarded: mktemp unavailable)"
+      fi
 
-      # Require both clean exit AND non-empty output — droid killed by signal
-      # can exit 0 with empty stdout, which would surface as a successful but
-      # blank review verdict downstream.
-      local _droid_ok=0
-      [[ "$droid_exit" -eq 0 ]] && [[ -n "$droid_out" ]] && _droid_ok=1
+      # Classify before the post-escalation _ECX_TIMED_OUT check: empty stdout inside
+      # budget is a refusal/no-output, not a timeout (#804). Spent-budget 124
+      # stays timeout so the caller can still react (split the diff).
+      # #803: no shadowable return — refusals exit via _bd_exit_as in if/elif/else.
+      _droid_outcome=$(_classify_droid_escalation_outcome "$_ECX_DROID_EXIT" "$_ECX_DROID_OUT")
+      _bd803_droid_ok=0
+      [[ "$_droid_outcome" == "ok" ]] && _bd803_droid_ok=1
+      if [[ "$_droid_outcome" == "no-output" ]]; then
+        _ECX_TIMED_OUT=0
+      elif [[ "$_droid_outcome" == "timeout" ]]; then
+        # Spent-budget droid 124 is a real timeout even when Codex only failed
+        # transiently — preserve exit 124 for callers that split the diff.
+        _ECX_TIMED_OUT=1
+      fi
 
       # Telemetry: log every escalation regardless of outcome, with droid_ok
       # reflecting the actual success/failure determination. Resolve .claude
       # against the git root, not cwd — hooks fire from whatever subdir the
       # user ran `git commit` in, so a cwd-relative check would silently drop
       # events for any non-root invocation.
-      local _git_root=""
-      _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+      _git_root=""
+      # NOT /usr/bin/git: on a CLT-less macOS that is a developer-tools SHIM that
+      # fails when run (and can pop the Xcode install dialog), which would silently
+      # drop this telemetry event. _bd_resolve_git probes candidates by execution.
+      _git_root=""
+      if _bd_resolve_git; then
+        _git_root=$("$_bd_git" rev-parse --show-toplevel 2>/dev/null || /usr/bin/true)
+      fi
       if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
-        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"codex_attempts":%d}\n' \
-          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$attempts_run" \
-          >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || true
+        /usr/bin/printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"droid_outcome":"%s","codex_attempts":%d}\n' \
+          "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ECX_EXIT_CODE" "$_ECX_DROID_EXIT" "$_bd803_droid_ok" "$_droid_outcome" "$_ECX_ATTEMPTS_RUN" \
+          >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || /usr/bin/true
       fi
-
-      if [[ "$_droid_ok" -eq 1 ]]; then
-        [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
-        printf '%s' "$droid_out"
-        return 0
+      if [[ "$_bd803_droid_ok" -eq 1 ]]; then
+        # Capture emit payload before any further builtins so stdout cannot be forged.
+        _bd803_droid_emit="$_ECX_DROID_OUT"
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        /usr/bin/printf '%s' "$_bd803_droid_emit"
+        _bd_exit_as 0
+      elif [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        /usr/bin/printf '%s' "$_ECX_OUTPUT"
+        _bd_exit_as 124
+      else
+        /usr/bin/printf '%s\n' "⚠️  Droid escalation failed (${_droid_outcome}: exit $_ECX_DROID_EXIT, output_bytes=${#_ECX_DROID_OUT}, stderr_bytes=${#_ECX_DROID_ERR}) — falling back to built-in review" >&2
+        if [[ -n "$_ECX_DROID_ERR" ]]; then
+          /usr/bin/printf '%s\n%s\n%s\n' "----- droid stderr -----" "$_ECX_DROID_ERR" "----- end droid stderr -----" >&2
+        fi
+        [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+        /usr/bin/printf '%s\n' "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
+        /usr/bin/printf '%s\n' "BUILTIN_FALLBACK"
+        _bd_exit_as 3
       fi
-      echo "⚠️  Droid escalation failed (exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
+    else
+      [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+      # #803: _bd_exit_as only sets its own status; if/else keeps 124 from falling to 3.
+      if [[ "$_ECX_TIMED_OUT" -eq 1 ]]; then
+        /usr/bin/printf '%s' "$_ECX_OUTPUT"
+        _bd_exit_as 124
+      else
+        /usr/bin/printf "%s\n" "⚠️  Codex failed after ${_ECX_ATTEMPTS_RUN} attempt(s) — falling back to built-in review" >&2
+        /usr/bin/printf "%s\n" "BUILTIN_FALLBACK"
+        _bd_exit_as 3
+      fi
     fi
-
-    [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
-    # Timeout with no droid rescue (droid disabled/unavailable, e.g. litmus PR
-    # mode or blueprint's one-voice cap) — preserve the timeout signal (exit
-    # 124) so the caller can react (litmus: split into smaller commits). Do NOT
-    # emit BUILTIN_FALLBACK for a timeout.
-    if [[ "$timed_out" -eq 1 ]]; then
-      printf '%s' "$output"
-      return 124
-    fi
-    echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
-    echo "BUILTIN_FALLBACK"
-    return 3
+  else
+    [[ -n "$_ECX_PROMPT_FILE" ]] && /bin/rm -f "$_ECX_PROMPT_FILE"
+    /usr/bin/printf '%s' "$_ECX_OUTPUT"
+    _bd_exit_as "$_ECX_EXIT_CODE"
   fi
-
-  [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
-  printf '%s' "$output"
-  return "$exit_code"
+  fi
+  fi
+  fi
+  fi
 }
 
 # ── SECURITY TRADE-OFF: agy prompt travels in argv (accepted residual) ────────
@@ -2230,11 +4118,21 @@ _AGY_ARGV_PROMPT=""
 # `_agy_model_flag_supported` below exists to refuse.
 _AGY_PROBE_CONCLUSIVE=""
 _agy_wants_argv_prompt() {
-    case "$_AGY_ARGV_PROMPT" in
-        1) return 0 ;;
-        0) return 1 ;;
-    esac
-    local v maj min
+    # #803: resolve probe first; reuse cache only when it matches the same binary.
+    _AWAP_PROBE=${1-}
+    if [[ -z "$_AWAP_PROBE" ]]; then
+      _AWAP_PROBE="$(command -v agy 2>/dev/null)" || _AWAP_PROBE=""
+    fi
+    if [[ -n "$_AGY_ARGV_PROMPT" && "${_AGY_PROBED_BIN:-}" == "$_AWAP_PROBE" ]]; then
+      case "$_AGY_ARGV_PROMPT" in
+        1) /usr/bin/true ;;
+        0) /usr/bin/false ;;
+        *) /usr/bin/false ;;
+      esac
+    else
+    _AWAP_V=
+    _AWAP_MAJ=
+    _AWAP_MIN=
     # BOUNDED at 2s: a stalled `agy --version` must not hang the caller before its
     # own bounded invocation begins — that would defeat the outer timeout contract.
     # This probe runs OUTSIDE the caller's review budget (#423), so its cap is added
@@ -2245,14 +4143,42 @@ _agy_wants_argv_prompt() {
     # that only fire when the CLI is genuinely broken, not merely momentarily slow.
     # (Even then it degrades safely: the mis-route yields no valid review and the
     # caller's droid fallback rescues it — same safe direction as a real timeout.)
-    v=$(_portable_timeout 2 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [[ -z "$v" ]]; then _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; return 0; fi
-    _AGY_PROBE_CONCLUSIVE=1
-    maj="${v%%.*}"; min="${v#*.}"
-    if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
-        _AGY_ARGV_PROMPT=1; return 0
+    # $1 = already trust-resolved review bin; else ordinary `command -v` (#789).
+    # Never --review for version probes (env -i emptied 1.0.x output; t27).
+    if [[ -z "$_AWAP_PROBE" ]]; then
+      _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; _AGY_PROBED_BIN=""; /usr/bin/true
+    else
+      # #803 review path ($1 set): refuse checkout-planted absolute bins; require a
+      # non-empty trusted dispatch PATH. Still non--review timeout: --review env -i
+      # emptied version on 1.0.x (#789/t27). Empty/failed probe → inconclusive (argv).
+      if [[ -n "${1-}" && "$_AWAP_PROBE" == /* ]]; then
+        _AWAP_DISP=""
+        if _trusted_cli_dir_in_checkout "$_AWAP_PROBE"; then
+          _AWAP_V=""
+        else
+          _AWAP_DISP=$(_review_dispatch_path "$_AWAP_PROBE" agy) || _AWAP_DISP=""
+          if [[ -z "$_AWAP_DISP" ]]; then
+            _AWAP_V=""
+          else
+            _AWAP_V="$(NODE_OPTIONS='' LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' PATH="$_AWAP_DISP" _portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+          fi
+        fi
+      else
+        _AWAP_V="$(_portable_timeout 2 "$_AWAP_PROBE" --version 2>/dev/null | /usr/bin/grep -oE '[0-9]+\.[0-9]+' | /usr/bin/head -1)"
+      fi
+      if [[ -z "$_AWAP_V" ]]; then
+        _AGY_PROBE_CONCLUSIVE=0; _AGY_ARGV_PROMPT=1; _AGY_PROBED_BIN="$_AWAP_PROBE"; /usr/bin/true
+      else
+        _AGY_PROBE_CONCLUSIVE=1
+        _AWAP_MAJ="${_AWAP_V%%.*}"; _AWAP_MIN="${_AWAP_V#*.}"
+        if [[ "$_AWAP_MAJ" -gt 1 ]] || [[ "$_AWAP_MAJ" -eq 1 && "$_AWAP_MIN" -ge 1 ]]; then
+          _AGY_ARGV_PROMPT=1; _AGY_PROBED_BIN="$_AWAP_PROBE"; /usr/bin/true
+        else
+          _AGY_ARGV_PROMPT=0; _AGY_PROBED_BIN="$_AWAP_PROBE"; /usr/bin/false
+        fi
+      fi
     fi
-    _AGY_ARGV_PROMPT=0; return 1
+    fi
 }
 
 # True only when the probe PARSED a version and that version supports `--model`
@@ -2288,9 +4214,10 @@ _agy_model_flag_supported() {
 # and degrades to "Output was not valid JSON" — the silent failure this whole
 # change exists to remove.
 _agy_prompt_oversize() {
-    local size="${1:-0}" limit
-    limit=$(_agy_argv_limit)
-    [[ "$size" -gt "$limit" ]]
+    # #803: no shadowable `local` — BASH_FUNC_local%% can overwrite caller pins.
+    _APO_SIZE="${1:-0}"
+    _APO_LIMIT=$(_agy_argv_limit)
+    [[ "$_APO_SIZE" -gt "$_APO_LIMIT" ]]
 }
 
 # -- grok sandbox preflight -------------------------------------------------
@@ -2438,9 +4365,10 @@ grok_sandbox_preflight() {
 }
 
 # The hint is chosen by the child's reason code, because "install the example
-# profile" is wrong advice for four of the five ways this refuses.
+# profile" is wrong advice for five of the six ways this refuses.
 grok_preflight_hint() {
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == identity ]] && printf '%s\n' "Error: grok dispatch refused — could not establish the operator identity or home directory from the password database (dscl/getent). Nothing to fix in the repo; use --cli codex/agy for this dispatch." && return 0
+  [[ "${_GROK_PREFLIGHT_WHY:-profile}" == runtime-socket ]] && printf '%s\n' "Error: grok dispatch refused — /var/run/docker.sock is a SYMLINK, and grok's built-in 'strict' base (which this profile extends) refuses to start when it cannot resolve that runtime-socket deny path (#785). Nothing in the sandbox profile can fix it. Remove the symlink, or turn off Docker Desktop's default-socket option that creates it, and retry. Use --cli codex/agy for this dispatch in the meantime." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == configdir ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok is missing, or is a symlink. A symlinked config directory can be pointed into the reviewed tree, which would hand the branch both the sandbox profile and the grok binary. Replace it with a real directory." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == containment ]] && printf '%s\n' "Error: grok dispatch refused — ~/.grok or ~/.local/bin sits INSIDE the checkout being reviewed, so the branch controls the profile and the binary. Run the review from a checkout that does not contain your home config." && return 0
   [[ "${_GROK_PREFLIGHT_WHY:-profile}" == binary ]] && printf '%s\n' "Error: grok dispatch refused — no grok executable on the pinned PATH (~/.grok/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin), or the first one found resolves into the reviewed tree. Install grok in one of those, or remove the shadowing entry." && return 0
@@ -2448,9 +4376,41 @@ grok_preflight_hint() {
 }
 
 execute_review() {
-  local cli="$1"
-  local prompt="$2"
-  local duration="${3:-1200}"
+  _ER_CLI="$1"
+  # #803: PASS-minting dispatch uses positional $2 only.
+  _ER_DURATION="${3:-1200}"
+
+  _bd_review_pinned_bin=""
+  _BD_CODEX_PINNED_BIN=""
+  _ER_RC=0
+  # #803: route resolution may pass an absolute pinned binary; match arms on basename.
+  # Absolute pins into checkout refuse via single terminal exit — no fallthrough into main case.
+  case "$_ER_CLI" in
+    /*)
+      if _trusted_cli_dir_in_checkout "$_ER_CLI"; then
+        /usr/bin/printf '%s\n' "busdriver: review CLI path resolves inside the reviewed checkout — refusing." >&2
+        _ER_RC=1
+      else
+        # #803: absolute pin must equal the trusted resolver hit for its enum name.
+        _ER_PIN_BASE=$(/usr/bin/basename -- "$_ER_CLI")
+        case "$_ER_PIN_BASE" in
+          codex.js) _ER_PIN_BASE=codex ;;
+        esac
+        _ER_TRUSTED=$(_resolve_trusted_cli_bin "$_ER_PIN_BASE") || _ER_TRUSTED=""
+        if [[ -z "$_ER_TRUSTED" || "$_ER_CLI" != "$_ER_TRUSTED" ]]; then
+          /usr/bin/printf '%s\n' "busdriver: review CLI absolute path is not the trusted resolver hit for '$_ER_PIN_BASE' — refusing." >&2
+          _ER_RC=1
+        else
+          _bd_review_pinned_bin="$_ER_CLI"
+          _ER_CLI="$_ER_PIN_BASE"
+        fi
+      fi
+      ;;
+  esac
+
+  if [[ "$_ER_RC" != 0 ]]; then
+    _bd_exit_as "$_ER_RC"
+  else
 
   # IMPORTANT: Caller MUST wrap this call to handle non-zero exits under set -e:
   #   execute_review ... || exit_code=$?
@@ -2459,8 +4419,12 @@ execute_review() {
   # `none` is NOT handled here — caller intercepts before calling execute_review.
   # Codex uses the app-server protocol via _execute_codex() when the official
   # plugin is installed, falling back to direct CLI. Other CLIs use stdin piping.
-  case "$cli" in
-    codex)   _execute_codex "$prompt" "$duration" ;;
+  case "$_ER_CLI" in
+    codex)
+      if [[ -n "$_bd_review_pinned_bin" ]]; then
+        _BD_CODEX_PINNED_BIN="$_bd_review_pinned_bin"
+      fi
+      _execute_codex "$2" "$_ER_DURATION" ;;
     # agy takes the prompt as `--print`'s ARGV VALUE. The former
     # (see _agy_argv_limit / _agy_prompt_oversize above for the size ceiling)
     # `--print /dev/stdin` idiom read fd 0 on agy v1.0.0, but 1.1.x treats the
@@ -2515,27 +4479,40 @@ execute_review() {
     # workspace and can cite a DIFFERENT checkout with confident file:line
     # refs and no error. Same flag dispatch.sh's agy arm passes; execute_review
     # builds its own argv, so it must pass it itself.
-    agy)     local _agy_perm=()
+    agy)     _bd_agy_bin=""
+             if [[ -n "$_bd_review_pinned_bin" ]]; then
+               _bd_agy_bin="$_bd_review_pinned_bin"
+             else
+               _bd_agy_bin="$(_resolve_trusted_cli_bin agy)"
+             fi
+             if [[ -z "$_bd_agy_bin" ]]; then
+               /usr/bin/printf '%s\n' "busdriver: agy is missing or resolves inside the reviewed checkout — refusing review dispatch." >&2
+               _bd_exit_as 1
+             else
+               _agy_perm=()
              if [[ "${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-0}" == "1" ]]; then
                _agy_perm=(--dangerously-skip-permissions)
              fi
-             if _agy_wants_argv_prompt; then
-               _agy_psize=$(_agy_bytelen "$prompt")
-               if _agy_prompt_oversize "$_agy_psize"; then
-                 echo "agy: review prompt is ${_agy_psize}B, over the argv ceiling ($(_agy_argv_limit)B) — agy >=1.1 has no file-input flag. Split the diff or route this review to codex." >&2
-                 return 1
-               fi
+             if _agy_wants_argv_prompt "$_bd_agy_bin"; then
+               # argv transport only: oversize is an argv-ceiling problem (>=1.1).
+               # 1.0.x uses stdin and must not be rejected by this check (#803).
+               if _agy_prompt_oversize "$(_agy_bytelen "$2")"; then
+                 /usr/bin/printf '%s\n' "agy: review prompt is $(_agy_bytelen "$2")B, over the argv ceiling ($(_agy_argv_limit)B) — agy >=1.1 has no file-input flag. Split the diff or route this review to codex" >&2
+                 _bd_exit_as 1
+               else
                # argv transport: the child gets the prompt as an argument and never
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
-               _run_review_with_retries agy "$prompt" "$duration" none \
-                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
+               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" none-review \
+                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print "$2"
+               fi
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               _run_review_with_retries agy "$prompt" "$duration" pipe \
-                 agy --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
+               PATH="$(_review_dispatch_path "$_bd_agy_bin" agy)" _run_review_with_retries agy "$2" "$_ER_DURATION" pipe-review \
+                 "$_bd_agy_bin" --sandbox --add-dir "$PWD" ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${_ER_DURATION}s" --print /dev/stdin
+             fi
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this
@@ -2546,7 +4523,18 @@ execute_review() {
     # permission"). Empirically verified fixed on v0.131.0. If a future droid
     # release regresses this, restore `--auto low` (accepts file-write tier as
     # the cost of stdin-pipe working).
-    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1 ;;
+    droid)   _bd_droid_bin=""
+             if [[ -n "$_bd_review_pinned_bin" ]]; then
+               _bd_droid_bin="$_bd_review_pinned_bin"
+             else
+               _bd_droid_bin="$(_resolve_trusted_cli_bin droid)"
+             fi
+             if [[ -z "$_bd_droid_bin" ]]; then
+               /usr/bin/printf '%s\n' "busdriver: droid is missing or resolves inside the reviewed checkout — refusing review dispatch." >&2
+               _bd_exit_as 1
+             else
+               /usr/bin/printf '%s' "$2" | PATH="$(_review_dispatch_path "$_bd_droid_bin" droid)" _portable_timeout --review droid "$_ER_DURATION" "$_bd_droid_bin" exec 2>&1
+             fi ;;
     # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
     #
     # SAFETY MODEL (must match dispatch.sh's grok case — single source of truth
@@ -2604,7 +4592,7 @@ execute_review() {
              # from reading a parameter no caller ever supplies (SC2119/SC2120)
              # as a sign the argument was forgotten.
              if grok_sandbox_preflight ""; then
-             echo "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+             /usr/bin/printf '%s\n' "Note: grok blueprint-review dispatch — containment is --sandbox busdriver-review (custom kernel profile; refuses to start if unenforceable) + --deny Bash/Edit/MCPTool (dispatcher-side; the grok user-config is NOT part of the boundary). Residual: network egress is not blocked on macOS. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              # The loader blanks are an assignment PREFIX on the helper call,
              # not argv words: the helper execs "$@", where `LD_PRELOAD=` would
              # be taken as the command name. They must be in the environment
@@ -2612,7 +4600,7 @@ execute_review() {
              # them while loading env itself — too early for env's own `-i`.
              LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' \
              DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' \
-             _run_review_with_retries grok "$prompt" "$duration" pipe \
+             _run_review_with_retries grok "$2" "$_ER_DURATION" pipe \
                /usr/bin/env -i PATH="$_GROK_PINNED_PATH" \
                HOME="$_GROK_TRUSTED_HOME" GROK_HOME="$_GROK_TRUSTED_HOME/.grok" \
                GROK_CLAUDE_HOOKS_ENABLED=0 GROK_CURSOR_HOOKS_ENABLED=0 \
@@ -2703,13 +4691,12 @@ execute_review() {
              # mktemp/dirname/basename/command/env; a repo-injected PATH (a fork's
              # settings.json, #325 class) could otherwise trojan those. Pin a
              # system-only PATH for the duration of this arm — the operator's real
-             # opencode install dir is added explicitly via _oc_trust (HOME-based)
+             # opencode install dir is added explicitly via _ER_OC_TRUST (HOME-based)
              # at resolution, so a clean utility PATH costs nothing here.
              # (HOME itself: if a fork could rewrite HOME the whole session is
              # compromised — every tool trusts it — so that is the gate's env
              # sanitization boundary, #325/ADR 0016, not this arm's to re-solve.)
-             local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-             # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
+                          # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
              # would be repo-INJECTABLE: a reviewed fork's `.claude/settings.json`
              # `env` block enters the operator's session (the #325 / ADR 0016
              # class), so a hostile branch could point it at a tracked JSON that
@@ -2717,49 +4704,50 @@ execute_review() {
              # file, resolved from _bd_lib_dir (fail closed if that is empty).
              if [[ -z "$_bd_lib_dir" ]]; then
                echo "busdriver: cannot resolve the plugin lib dir — refusing to dispatch the opencode Auditor (cannot locate its read-only config)." >&2
-               return 1
-             fi
-             local _oc_cfg="${_bd_lib_dir}/opencode-review-config.json"
+               _bd_exit_as 1
+             else
+             _ER_OC_CFG="${_bd_lib_dir}/opencode-review-config.json"
              # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
              # it silently loads the user's default config, restoring write/bash.
-             # `-f "$_oc_cfg"` alone is the correct guard: an empty _bd_lib_dir
+             # `-f "$_ER_OC_CFG"` alone is the correct guard: an empty _bd_lib_dir
              # yields a non-existent path (`/opencode-review-config.json`) → not
              # a file → blocked. There is NO env override for this path (see the
              # "NO env override" comment above) — the only recovery is repairing
              # or reinstalling the plugin asset, NOT setting an env var.
-             if [[ ! -f "$_oc_cfg" ]]; then
-               echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_oc_cfg} exists." >&2
-               return 1
-             fi
+             if [[ ! -f "$_ER_OC_CFG" ]]; then
+               echo "busdriver: opencode review config not found at '${_ER_OC_CFG}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_ER_OC_CFG} exists." >&2
+               _bd_exit_as 1
+             else
              # CANONICALIZE to absolute. We dispatch with the child CWD set to the
              # neutral dir, so a relative path would resolve against THAT dir,
              # not here — the file would be missing and opencode would fail OPEN to
              # the user default. Resolve it absolute now, while CWD is still here.
-             _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")"
-             if [[ ! -f "$_oc_cfg" ]]; then
+             _ER_OC_CFG="$(cd "$(/usr/bin/dirname -- "$_ER_OC_CFG")" 2>/dev/null && pwd -P)/$(/usr/bin/basename -- "$_ER_OC_CFG")"
+             if [[ ! -f "$_ER_OC_CFG" ]]; then
                echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
-               return 1
-             fi
+               _bd_exit_as 1
+             else
              # Derive the trusted home from the PASSWORD DATABASE FIRST (not
              # $HOME: repo-injectable) — used for the auth/cache env paths.
              # `~user` tilde expansion reads getpwnam; `id` runs absolute.
-             local _oc_home _oc_user
-             _oc_user="$(/usr/bin/id -un 2>/dev/null)"
-             if ! _bd_valid_username "$_oc_user"; then
+             _ER_OC_HOME=
+             _ER_OC_USER=
+             _ER_OC_USER="$(/usr/bin/id -un 2>/dev/null)"
+             if ! _bd_valid_username "$_ER_OC_USER"; then
                # Fail CLOSED on an empty or non-plain username: the following
                # `~` expansion would fall back to the repo-injectable $HOME
                # (or a hostile name could execute as shell text).
                echo "busdriver: could not derive a valid operator user from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               return 1
-             fi
-             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+               _bd_exit_as 1
+             else
+             _ER_OC_HOME="$(eval echo "~${_ER_OC_USER}" 2>/dev/null)"
              # NO $HOME fallback — $HOME is the repo-injectable value this whole
              # block exists to distrust. If the password-DB lookup fails (a broken
              # system, not a normal state), fail CLOSED rather than trust $HOME.
-             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+             if [[ -z "$_ER_OC_HOME" || ! -d "$_ER_OC_HOME" ]]; then
                echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
-               return 1
-             fi
+               _bd_exit_as 1
+             else
              # Neutral cwd is created INSIDE the validated sandbox (post-
              # validation, in the run subshell): opencode's project discovery
              # walks UP and stops at the sandbox's own validated copy. Never
@@ -2780,16 +4768,19 @@ execute_review() {
              #       binary's own dir + system dirs.
              #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
              #       empty dir (see the dispatch below), before --dir applies.
-             local _oc_bin _oc_path _oc_trust _oc_cwd=""
-             _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-             _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
-             if [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
+             _ER_OC_BIN=
+             _ER_OC_PATH=
+             _ER_OC_TRUST=
+             _ER_OC_CWD=""
+             _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+             _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)"
+             if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
                echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
-               /bin/rmdir "${_oc_cwd:-}" 2>/dev/null || true
-               return 1
-             fi
-             _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
-             _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+               /bin/rmdir "${_ER_OC_CWD:-}" 2>/dev/null || true
+               _bd_exit_as 1
+             else
+             _ER_OC_PATH="$(CDPATH='' cd -- "$(/usr/bin/dirname -- "$_ER_OC_BIN")" && pwd -P)"
+             _ER_OC_PATH="${_ER_OC_PATH}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
              # PROMPT VIA STDIN (pipe mode), not argv. opencode reads its message
              # from fd 0 when no positional message is given (verified). A full
              # base...HEAD blueprint diff as one argv word can exceed ARG_MAX
@@ -2813,14 +4804,14 @@ execute_review() {
              # the config reader shells out to jq/python3, and leaving that on
              # line ORDER inside a long case arm is a reordering away from being
              # wrong. Stated here, the invariant is local and greppable.
-             # It is the TOOL path (_oc_trust's system half), not the arm's
+             # It is the TOOL path (_ER_OC_TRUST's system half), not the arm's
              # narrower utility pin: on a Mac whose jq/python3 come only from
              # Homebrew, a /usr/bin-only PATH finds NO parser, and the operator's
              # configured model reads as empty — which now skips the voice via the
              # guard below instead of dispatching somewhere they configured away
              # from. These dirs are root-owned system install paths, not
              # repo-writable.
-             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_oc_home" resolve_auditor_model
+             PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
              # No model → no auditor. There is no shipped default (see
              # resolve_auditor_model), so an unconfigured or unparseable
              # `.auditor.model` lands here. Skipping is correct for an ADVISORY
@@ -2835,97 +4826,339 @@ execute_review() {
              # this witness. Collapsing it into 1 makes blueprint-review report the
              # Mechanism Witness as FAILED for a config key the operator simply
              # never set. Reported by Codex on this change.
-             # No cleanup needed on this path: $_oc_cwd is still the empty `local`
+             # No cleanup needed on this path: $_ER_OC_CWD is still the empty `local`
              # init here — the sandbox is not staged until inside the subshell
              # further down — so there is no temp dir to reclaim. Bailing before
              # any allocation is the whole point of guarding this early.
              if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
                echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
-               return 4
+               _bd_exit_as 4
+             else
+             # #803: validation+dispatch MUST NOT run in an inherited subshell —
+             # BASH_FUNC_local%% can redefine _run_review_with_retries before PASS.
+             # Hand the prompt to a function-clean env -i / --noprofile --norc child
+             # (--execute-opencode-review) that validates, stages, and pipe-reviews
+             # via _portable_timeout --review opencode without returning here.
+             # ONE if/elif chain, deliberately. `_bd_exit_as` only SETS $? (it runs
+             # /usr/bin/false — a bare `return` is shadowable, which is why this file
+             # never uses one after a refusal), so a `then ... _bd_exit_as 1; fi`
+             # followed by more code does not refuse anything: execution falls
+             # straight through. It did here. The staging failure that matters is the
+             # readonly probe — attacker-pinned state the source-load reset could not
+             # clear — and it leaves _BD803_REVIEW_LIB_STAGED/_SHA holding an
+             # attacker-chosen CONSISTENT pair. The next test only asked whether the
+             # file exists and the digest is non-empty, then exported both to the
+             # clean child, which verifies them against EACH OTHER and executes those
+             # bytes. The printed refusal was followed by running exactly what it
+             # refused. Chaining with elif is what makes the refusal terminal.
+             if ! _bd803_ensure_staged_lib; then
+               echo "busdriver: cannot stage resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
+               _bd_exit_as 1
+             elif [[ -z "${_BD803_REVIEW_LIB_STAGED:-}" || ! -f "${_BD803_REVIEW_LIB_STAGED}" || -z "${_BD803_REVIEW_LIB_SHA:-}" ]]; then
+               echo "busdriver: cannot locate staged resolve-cli.sh for disk-fresh opencode dispatch — refusing." >&2
+               _bd_exit_as 1
+             elif ! _bd803_verify_review_lib_bytes; then
+               # Bind the BYTES to the trusted pin, not just to the digest travelling
+               # beside them — the sibling _execute_codex path has always done this.
+               echo "busdriver: review lib bytes changed since trusted load — refusing opencode dispatch." >&2
+               _bd_exit_as 1
+             else
+             _ER_OC_RC=0
+             /usr/bin/printf '%s' "$2" | \
+             LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+             /usr/bin/env -i \
+               PATH="/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin" \
+               BD803_OC_DURATION="$_ER_DURATION" \
+               BD803_OC_LIB_PIN="$_BD803_REVIEW_LIB_PIN" \
+               BD803_OC_LIB_SHA="$_BD803_REVIEW_LIB_SHA" \
+               BD803_STAGED_PATH="$_BD803_REVIEW_LIB_STAGED" \
+               BD803_EXPECTED_SHA="$_BD803_REVIEW_LIB_SHA" \
+               /bin/bash --noprofile --norc -c "
+staged=\${BD803_STAGED_PATH-}
+expected=\${BD803_EXPECTED_SHA-}
+[[ -n \"\${staged}\" && -f \"\${staged}\" && -n \"\${expected}\" ]] || exit 1
+# #803: read-once, hash-and-execute the same bytes — see _bd803_bash_staged_lib.
+# The prompt arrives on this shell's stdin and the lib reads it, so the verified
+# bytes are handed over by process substitution rather than on fd 0.
+src=\$(/bin/cat -- \"\${staged}\") || exit 1
+sha=\$(builtin printf '%s\n' \"\${src}\" | /usr/bin/shasum -a 256 2>/dev/null | /usr/bin/cut -d' ' -f1)
+[[ -n \"\${sha}\" && \"\${sha}\" == \"\${expected}\" ]] || exit 1
+/bin/bash --noprofile --norc <(builtin printf '%s\n' \"\${src}\") --execute-opencode-review
+exit \$?
+" \
+               || _ER_OC_RC=$?
+             _bd_exit_as "$_ER_OC_RC"
              fi
-             # FAIL CLOSED on the operator-owned ~/.opencode/opencode.json[c].
-             # opencode loads these in EVERY environment — including this
-             # sandbox — so they are a fourth config surface the three isolation
-             # boundaries do not cover. An `mcp` entry there would load inside
-             # the sandbox and read_mcp_resource survives the tool denylist
-             # (exactly why XDG_CONFIG_HOME is redirected). Shared guard:
-             # validate_opencode_home_config (single source of truth, also
-             # called by dispatch.sh's opencode arm). On success it also
-             # stages a validated copy at $_BD_OC_SANDBOX_HOME; the run below
-             # uses THAT as HOME so opencode reads exactly the validated bytes
-             # (the real ~/.opencode is never reopened — no validate-then-open
-             # race on a swapped-in mcp/npm payload). Validation runs INSIDE
-             # the trap-owned subshell so the staged sandbox is owned from
-             # creation (an early TERM cannot orphan credential-bearing dirs).
-             # shellcheck disable=SC2030,SC2031  # _oc_cwd is set inside the subshell; the post-subshell rm sees the empty local init (never an ambient value)
-             ( _BD_OC_SANDBOX_HOME=""   # owned by this lane from the first statement — a trap fired between fork and here sees nothing to touch
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"' EXIT   # best-effort cleanup even on grace-kill
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 143' TERM
-               trap '_bd_oc_lane_cleanup "$_oc_home" "${_oc_cwd:-}"; exit 130' INT
-               # Pinned SYSTEM-ONLY PATH: the validator stages credentials
-               # with bare mktemp/mkdir/ln/rm — _oc_path's first entry is the
-               # operator-WRITABLE opencode dir, which must not shadow those
-               # utilities; the system dirs carry them all.
-               if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_oc_home"; then
-                 exit 1
-               fi
-               # Neutral cwd INSIDE the validated sandbox (post-validation):
-               # opencode's project discovery walks UP from the cwd and stops
-               # at the sandbox's OWN validated copy — the real home's config
-               # surfaces are never reopened; the 0700 sandbox is private to
-               # the operator (no other-user planting; never ${TMPDIR} — repo-
-               # injectable).
-               _oc_cwd="${_BD_OC_SANDBOX_HOME}/.cwd"
-               /bin/mkdir -p "$_oc_cwd" 2>/dev/null || exit 1
-               # Git-init the EMPTY cwd: opencode's project-config discovery
-               # scans every ancestor through the worktree root (non-Git = /,
-               # reaching the real home); a git repo bounds the worktree AT
-               # the empty cwd. The workspace stays EMPTY — auth.json / SDK
-               # symlinks are OUTSIDE the worktree and external_directory is
-               # denied, so the read-enabled reviewer cannot reach them.
-               # Sterile init (GIT_DIR/GIT_WORK_TREE are repo-injectable) with
-               # the EXECUTION-PROBED git (the CLT shim at /usr/bin/git exists
-               # but fails without CLT).
-               _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_oc_cwd" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               [[ -d "$_oc_cwd/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
-               cd "$_oc_cwd" 2>/dev/null || exit 1
-               # XDG_DATA_HOME points at the SANDBOX data dir — populated
-               # with a validated auth.json copy ONLY (auth works, account
-               # state absent — nothing merges config after OPENCODE_CONFIG).
-               # XDG_CACHE_HOME shares the inert model/package cache.
-               # (Comments BEFORE the command — after a backslash
-               # continuation they would terminate the chain.)
-               _run_review_with_retries opencode "$prompt" "$duration" pipe \
-                 /usr/bin/env -i HOME="$_BD_OC_SANDBOX_HOME" PATH="$_oc_path" \
-                   OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
-                   XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share" \
-                   XDG_CACHE_HOME="$_oc_home/.cache" \
-                 "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                   -m "$_BD_AUDITOR_MODEL" )
-             local _oc_rc=$?
-              # shellcheck disable=SC2031  # post-subshell rm sees the empty local init, never the subshell's value
-            /bin/rm -rf "$_oc_cwd" 2>/dev/null || true
-             return "$_oc_rc" ;;
-    builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
+             fi
+             fi
+             fi
+             fi
+             fi
+             fi
+             fi ;;
+    builtin) echo "BUILTIN_FALLBACK"; _bd_exit_as 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning
              # was already emitted to stderr by resolve_role_cli; surface the
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
-             local _removed="${cli#unsupported:}"
-             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
-             return 1 ;;
+             _ER_UNSUPPORTED_CLI="${_ER_CLI#unsupported:}"
+             echo "busdriver: review CLI '$_ER_UNSUPPORTED_CLI' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
+             _bd_exit_as 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
              # unsupported:* above — let the caller see a recognizable failure
              # mode rather than a garbled wildcard match.
-             local _absent="${cli#missing:}"
-             echo "busdriver: review CLI '$_absent' is configured but not installed" >&2
-             return 1 ;;
-    *)       echo "Unsupported CLI: $cli" >&2; return 1 ;;
+             _ER_MISSING_CLI="${_ER_CLI#missing:}"
+             echo "busdriver: review CLI '$_ER_MISSING_CLI' is configured but not installed" >&2
+             _bd_exit_as 1 ;;
+    *)       echo "Unsupported CLI: $_ER_CLI" >&2; _bd_exit_as 1 ;;
   esac
+  fi
 }
+
+# #803: disk-fresh opencode validation+dispatch (no inherited BASH_FUNC_*).
+# Prompt on stdin; BD803_OC_DURATION from the parent env -i.
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--execute-opencode-review" ]]; then
+  _ER_DURATION="${BD803_OC_DURATION-}"
+  if ! _ER_OC_PROMPT="$(/bin/cat)" || [[ -z "$_ER_OC_PROMPT" ]]; then
+    echo "busdriver: cannot read opencode review prompt — refusing." >&2
+    exit 1
+  fi
+  _ER_OC_CWD=
+  _BD_OC_SANDBOX_HOME=
+  if [[ "${BD803_OC_LIB_PIN:-}" == /* ]]; then
+    _ER_OC_CFG_LIB="$BD803_OC_LIB_PIN"
+  else
+    _ER_OC_LIB_SRC="${BASH_SOURCE[0]-}"
+    case "$_ER_OC_LIB_SRC" in
+      /*) ;;
+      *) _ER_OC_LIB_SRC="${PWD%/}/${_ER_OC_LIB_SRC}" ;;
+    esac
+    case "$_ER_OC_LIB_SRC" in *$'
+'*) _ER_OC_LIB_SRC= ;; esac
+    _ER_OC_CFG_LIB="$(_bd803_canonical_file_path "$_ER_OC_LIB_SRC")" || _ER_OC_CFG_LIB=
+    case "$_ER_OC_CFG_LIB" in *$'
+'*) _ER_OC_CFG_LIB= ;; esac
+  fi
+  if [[ -z "$_ER_OC_CFG_LIB" || ! -f "$_ER_OC_CFG_LIB" ]]; then
+    echo "busdriver: cannot locate resolve-cli.sh for opencode review config — refusing." >&2
+    exit 1
+  fi
+  # A PIN is honoured ONLY together with its digest. Keying this on "SHA and PIN"
+  # let a PIN supplied WITHOUT a SHA fall to the else branch, which latches and then
+  # EXECUTES that arbitrary absolute path as the review lib and derives
+  # `${pin%/*}/opencode-review-config.json` beside it -- an attacker-chosen opencode
+  # config that can hand the auditor back write and bash tools. The internal caller
+  # always sets both, so argv control was needed too; a guard one unset variable away
+  # from arbitrary execution is not a guard. Missing digest now refuses.
+  if [[ -n "${BD803_OC_LIB_PIN:-}" ]]; then
+    if [[ -z "${BD803_OC_LIB_SHA:-}" ]]; then
+      echo "busdriver: BD803_OC_LIB_PIN supplied without BD803_OC_LIB_SHA — refusing." >&2
+      exit 1
+    fi
+    _ER_OC_PIN_CANON="$(_bd803_canonical_file_path "$BD803_OC_LIB_PIN")" || _ER_OC_PIN_CANON=
+    case "$_ER_OC_PIN_CANON" in *$'\n'*) _ER_OC_PIN_CANON= ;; esac
+    if [[ -z "$_ER_OC_PIN_CANON" || "$(/usr/bin/basename -- "$_ER_OC_PIN_CANON")" != resolve-cli.sh ]]; then
+      echo "busdriver: inherited BD803_OC_LIB_PIN is invalid — refusing." >&2
+      exit 1
+    fi
+    # The digest is CALLER-SUPPLIED, so pin+digest agreeing proves integrity, never
+    # provenance: both can name an attacker's own resolve-cli.sh. Add the constraint
+    # the rest of this file uses for trust — the pin must not resolve inside the
+    # reviewed checkout — which is what closes the practical shape (plant a
+    # resolve-cli.sh in the repo under review and name it). Residual, stated: a caller
+    # that can also choose argv is the process that launched this script and could run
+    # any script at all, so the pin grants it nothing it did not already have. That is
+    # the same boundary the shadowable-`exec` note above draws.
+    _ER_OC_PIN_DIR="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_ER_OC_PIN_CANON")")"
+    if [[ -z "$_ER_OC_PIN_DIR" ]] || _trusted_cli_dir_in_checkout "$_ER_OC_PIN_DIR"; then
+      echo "busdriver: BD803_OC_LIB_PIN resolves inside the reviewed checkout — refusing." >&2
+      exit 1
+    fi
+    # Adopt the CANONICAL path as the config anchor. Leaving the raw pin here made the
+    # containment check decorative: an in-checkout `resolve-cli.sh` SYMLINK pointing at
+    # the trusted external library canonicalizes past the check, while
+    # `${_ER_OC_CFG_LIB%/*}/opencode-review-config.json` still resolved beside the
+    # in-checkout symlink — a repository-controlled config that can hand the auditor
+    # back shell and write tools. The config must come from the same physical directory
+    # that passed containment, not from the name the caller used to reach it.
+    _ER_OC_CFG_LIB="$_ER_OC_PIN_CANON"
+    _bd803_latch_review_lib_pin "$_ER_OC_PIN_CANON" || { echo "busdriver: cannot latch inherited review lib pin — refusing." >&2; exit 1; }
+    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage inherited review lib — refusing." >&2; exit 1; }
+    if [[ "$_BD803_REVIEW_LIB_SHA" != "$BD803_OC_LIB_SHA" ]]; then
+      echo "busdriver: inherited review lib digest mismatch — refusing." >&2
+      exit 1
+    fi
+  else
+    _ER_OC_LIB="$_ER_OC_CFG_LIB"
+    _bd803_latch_review_lib_pin "$_ER_OC_LIB" || { echo "busdriver: cannot latch review lib pin — refusing." >&2; exit 1; }
+    _bd803_ensure_staged_lib || { echo "busdriver: cannot stage review lib — refusing." >&2; exit 1; }
+  fi
+  _ER_OC_CFG="${_ER_OC_CFG_LIB%/*}/opencode-review-config.json"
+  [[ -f "$_ER_OC_CFG" ]] || { echo "busdriver: opencode review config missing at $_ER_OC_CFG" >&2; exit 1; }
+  # Existence only. Canonicalization, containment and the byte copy all happen together
+  # further down, UNDER one held descriptor — validating here and copying there would
+  # leave exactly the window this config must not have.
+  _ER_OC_HOME="$(_trusted_operator_home)" || _ER_OC_HOME=
+  if [[ -z "$_ER_OC_HOME" || "$_ER_OC_HOME" != /* || ! -d "$_ER_OC_HOME" ]]; then
+    echo "busdriver: cannot resolve trusted operator home for opencode dispatch — refusing." >&2
+    exit 1
+  fi
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$_ER_OC_HOME" resolve_auditor_model
+  if [[ -z "$_BD_AUDITOR_MODEL" ]]; then
+    echo "busdriver: no usable .auditor.model in ~/.claude/busdriver.json — skipping the Mechanism Witness (advisory voice)." >&2
+    exit 4
+  fi
+  _ER_OC_TRUST="${_ER_OC_HOME}/.opencode/bin:${_ER_OC_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  _ER_OC_BIN="$(PATH="$_ER_OC_TRUST" _resolve_trusted_cli_bin opencode)" || _ER_OC_BIN=
+  if [[ -z "$_ER_OC_BIN" || "$_ER_OC_BIN" != /* || ! -x "$_ER_OC_BIN" ]]; then
+    echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2329,SC2317  # invoked through the three traps below, which
+  # older shellcheck does not follow: it reports the definition as never-invoked
+  # (SC2329) AND its body as unreachable (SC2317). CI runs one of those versions.
+  _bd803_oc_lane_exit() {
+    _bd_oc_lane_cleanup "$_ER_OC_HOME" "${_ER_OC_CWD:-}"
+    _bd803_cleanup_review_lib_exec
+  }
+  builtin trap '_bd803_oc_lane_exit' EXIT
+  builtin trap '_bd803_oc_lane_exit; exit 143' TERM
+  builtin trap '_bd803_oc_lane_exit; exit 130' INT
+  if ! PATH="/usr/bin:/bin:/usr/sbin:/sbin" validate_opencode_home_config "$_ER_OC_HOME"; then
+    exit 1
+  fi
+  _ER_OC_CWD="${_BD_OC_SANDBOX_HOME}/.cwd"
+  /bin/mkdir -p "$_ER_OC_CWD" 2>/dev/null || exit 1
+  _bd_resolve_git || { echo "busdriver: no working git found to bound the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ER_OC_CWD" init -q 2>/dev/null || { echo "busdriver: cannot git-init the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  [[ -d "$_ER_OC_CWD/.git" ]] || { echo "busdriver: git-init did not create .git in the neutral cwd — refusing to dispatch." >&2; exit 1; }
+  # Bind the config BYTES, not just its pathname. Containment proves where the file
+  # sits; it cannot stop a replacement or an in-place edit between that check and the
+  # moment opencode opens it, and this config is exactly what decides whether the
+  # auditor gets shell, write and MCP tools back. Unlike the codex companion — an ESM
+  # entry point whose imports resolve relative to its real directory — this is plain
+  # JSON with no includes, so it CAN simply be copied: read it once into the private
+  # neutral cwd and hand opencode that copy. The lane's EXIT trap removes the
+  # directory. The dotted name keeps it out of the way of anything opencode discovers
+  # by convention in cwd or XDG_CONFIG_HOME.
+  #
+  # This runs BEFORE the `cd` below, and the order is load-bearing.
+  # `_trusted_cli_dir_in_checkout` derives the reviewed root from the CURRENT working
+  # directory, so once we have moved into the freshly git-init'd neutral cwd the
+  # "reviewed checkout" it compares against is that empty repo — and a config symlink
+  # pointing into the REAL reviewed checkout sails through. The destination directory
+  # already exists by this point, so nothing is gained by waiting.
+  _ER_OC_CFG_COPY="${_ER_OC_CWD}/.bd803-opencode-review-config.json"
+  # Validate and copy the config UNDER ONE HELD DESCRIPTOR, and prove at the end that
+  # the descriptor still names what was validated.
+  #
+  # Copying from a descriptor alone is not enough, and the earlier revision that did
+  # only that was right to be flagged: `3< "$path"` is itself a fresh open, so a swap
+  # landing between an EARLIER containment check and that open is simply opened and
+  # copied — and re-comparing the fd to the same path afterwards cannot see it, because
+  # by then both name the attacker's file. Ordering is what closes it. fd 3 is opened
+  # first; canonicalization and containment then run while it is held; and the final
+  # `-ef` asserts the held inode is still the one the canonical path names. A swap
+  # before the open is validated as itself (so what is checked is what is copied); a
+  # swap after the open makes the fd and the path diverge and `-ef` refuses; a swap
+  # after the checks cannot reach the fd at all.
+  #
+  # A subshell, not a brace group: `exit 1` inside a group would end this script, and
+  # nothing needs to escape but the status — the copy is the output.
+  # `builtin exec 3< file` is deliberately NOT used: it redirects the `builtin` command
+  # rather than this shell, and the fd is closed again by the next line (bash 3.2,
+  # measured).
+  # shellcheck disable=SC2094  # nothing here WRITES $_ER_OC_CFG: the redirection and
+  # the canonicalizer both only read it, which is the whole point of holding the fd.
+  if ! (
+        [[ -f /dev/fd/3 ]] || exit 1
+        _oc_canon="$(_bd803_canonical_file_path "$_ER_OC_CFG")" || exit 1
+        case "$_oc_canon" in ""|*$'\n'*) exit 1 ;; esac
+        _oc_dir="$(_trusted_cli_phys_dir "$(/usr/bin/dirname -- "$_oc_canon")")" || exit 1
+        [[ -n "$_oc_dir" ]] || exit 1
+        if _trusted_cli_dir_in_checkout "$_oc_dir"; then exit 1; fi
+        [[ /dev/fd/3 -ef "$_oc_canon" ]] || exit 1
+        /bin/cp /dev/fd/3 "$_ER_OC_CFG_COPY" || exit 1
+      ) 3< "$_ER_OC_CFG"; then
+    echo "busdriver: opencode review config failed containment or changed under the open descriptor — refusing." >&2
+    exit 1
+  fi
+  /bin/chmod 600 "$_ER_OC_CFG_COPY" 2>/dev/null || true
+  cd "$_ER_OC_CWD" 2>/dev/null || exit 1
+  OPENCODE_CONFIG="$_ER_OC_CFG_COPY"
+  XDG_CONFIG_HOME="$_ER_OC_CWD"
+  XDG_DATA_HOME="$_BD_OC_SANDBOX_HOME/.local/share"
+  XDG_CACHE_HOME="${_ER_OC_HOME}/.cache"
+  export OPENCODE_CONFIG XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
+  export PATH="$_ER_OC_TRUST"
+  # pipe-review → _portable_timeout --review opencode (argv0 = absolute trusted bin).
+  BD803_REVIEW_LIB="$(_bd803_review_lib_exec)" _run_review_with_retries opencode "$_ER_OC_PROMPT" "$_ER_DURATION" pipe-review \
+    "$_ER_OC_BIN" run --dir "$_ER_OC_CWD" --agent busdriver-review \
+      -m "$_BD_AUDITOR_MODEL"
+  exit $?
+fi
+
+# #803: disk-fresh --print-trusted-cli <name>.
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-trusted-cli" ]]; then
+  _resolve_trusted_cli_bin "${2-}"
+  exit $?
+fi
+
+# #803: disk-fresh --print-trusted-companion.
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-trusted-companion" ]]; then
+  _resolve_codex_companion
+  if [[ -n "${_CODEX_COMPANION:-}" && "$_CODEX_COMPANION" != "none" ]]; then
+    /usr/bin/printf '%s\n' "$_CODEX_COMPANION"
+    exit 0
+  fi
+  exit 1
+fi
+
+# #803: disk-fresh operator home / review PATH / outside-checkout gates.
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-trusted-home" ]]; then
+  _pth="$(_trusted_operator_home)" || _pth=
+  if [[ -n "$_pth" && "$_pth" == /* ]]; then
+    /usr/bin/printf '%s\n' "$_pth"
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--print-review-dispatch-path" ]]; then
+  _prd="$(_review_dispatch_path "${2-}" "${3-}")" || _prd=
+  if [[ -n "$_prd" ]]; then
+    /usr/bin/printf '%s\n' "$_prd"
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--outside-checkout" ]]; then
+  if _trusted_cli_dir_in_checkout "${2-}"; then exit 0; else exit 1; fi
+fi
+
+# #803: --under-git-checkout (exit 0 only with .git root; no-.git => 1).
+if [[ "${BASH_SOURCE[0]-}" = "${0-}" && "${1:-}" = "--under-git-checkout" ]]; then
+  # shellcheck disable=SC2016
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc -c '
+p=${1-}
+[ -n "$p" ] || exit 1
+d=$p
+[ -d "$d" ] || d=$(/usr/bin/dirname -- "$d")
+d=$(cd -P -- "$d" 2>/dev/null && pwd -P) || exit 1
+[ -n "$d" ] || exit 1
+root=$d
+while [ -n "$root" ] && [ "$root" != / ]; do
+  [ -e "$root/.git" ] && exit 0
+  case $root in
+    */*) root=${root%/*} ;;
+    *) root=/ ;;
+  esac
+done
+exit 1
+' bash "${2-}"
+  exit $?
+fi
 
 # ── Machine-readable interface (--json) ─────────────────────────
 # Guard: only runs when executed directly, not when sourced

@@ -72,3 +72,11 @@ scripts/codex/.runs/
 /.agents/
 /WARP.md
 .impeccable/
+
+# Builtin-review gate sidecars. Each holds the diff hash a builtin review was
+# armed against, and the marker writer mints a commit marker from it — so it is
+# gate authorization material and must never enter the tree. They are also
+# transient: every review-loop init deletes them, so a tracked one would show up
+# as an unexplained deletion on the next run. Found staged during the #811 merge
+# review; three had already reached commits on that branch.
+.claude/builtin-review-*.hash

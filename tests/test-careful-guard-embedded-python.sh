@@ -47,7 +47,11 @@ for i, block in enumerate(blocks, 1):
     print(f"PASS block {i} compiles and is apostrophe-free")
 PY
 ) || { echo "FAIL extractor crashed"; echo; echo "passed=0 failed=1"; exit 1; }
-mapfile -t results <<<"$extract_out"
+# Bash 3.2 compatible (no `mapfile`): scripts/ci/run-shell-tests.sh pins the
+# ABSOLUTE /bin/bash (#803), which on macOS is 3.2 — `mapfile` there is a
+# "command not found" that fails this suite while Linux CI stays green.
+results=()
+while IFS= read -r _cgp_line; do results+=("$_cgp_line"); done <<<"$extract_out"
 
 for line in "${results[@]}"; do
   echo "$line"

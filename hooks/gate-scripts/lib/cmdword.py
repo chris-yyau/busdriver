@@ -347,8 +347,15 @@ _FUNC_NAME = r"[^\s;&|()<>{}]+"
 # cannot drift apart again. Group 1 keeps the
 # whole leading prefix, so the `\1` substitution in _normalize still preserves the segment
 # structure around the header it strips.
+# `PIDS=()` is an empty ARRAY ASSIGNMENT and never a function definition -- bash, sh, zsh,
+# dash and ksh all reject `a=b() { ...; }` -- so the header pattern must not read it as one.
+# It used to, which fired the indirection branch on ordinary shell and dropped the structured
+# scan wholesale (#813). STRICT assignment shape only, and written to fail on quotes so zsh's
+# quoted `'a='() { ...; }` -- the one spelling any shell accepts -- is still a header in the
+# raw text. KEEP IN STEP WITH the gate's _ASSIGN_NOT_FUNC.
+_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\s*\(\s*\))"
 _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
-                          + _FUNC_NAME + r"\s*\(\s*\)")
+                          + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)")
 
 # Constructs that let a NAME stand for something other than itself, IN THIS COMMAND.
 # `source` is deliberately absent: it costs 162 over-blocks against the 85 the rest of this

@@ -15,9 +15,11 @@
 #   A. a GENERIC pattern in structureless text is not evidence — no block
 #   B. a TARGETED pattern still blocks, and so does every generic glob the structured
 #      walk can still reach as a command operand
-# Sections C–E extend the same pair: crafted patterns must not buy a release (C), a quoted
+# Sections C–F extend the same pair: crafted patterns must not buy a release (C), a quoted
 # glob in a piped payload still blocks (D, #640), and a class whose member is a quoted
-# SPACE blocks while ordinary bracketed markdown does not (E, #708).
+# SPACE blocks while ordinary bracketed markdown does not (E, #708), and an empty ARRAY
+# assignment is not a function definition, so it no longer drops the structured scan and
+# aims all of the above at ordinary shell (F, #813).
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1288,6 +1290,116 @@ for _h_sep in ";" "&" "|"; do
     assert_block "eval '$_H_TIGHT""python3 $LIB/lease_sl$_H_CLS'" \
         "#708 timeout: the '$_h_sep'-separated decoy shape still BLOCKS"
 done
+
+
+echo "── F. an empty ARRAY assignment is not a function definition (#813) ──"
+# THE #813 MECHANISM, in two lines. A function definition anywhere in a command makes the
+# classifier drop its structured walk WHOLESALE and re-read every word -- comment prose
+# included -- through _abandoned_scan_probe, where a negated character class fnmatches a
+# guarded helper's filename while spelling none of it. The glob alone measures ALLOW (that
+# is section A); the definition alone measures ALLOW; TOGETHER they blocked, which is why
+# five operator probes of the glob in isolation all came back clean and the report recorded
+# the hypothesis as disproven. It was not: the missing half was the definition.
+_F_GLOB='case "$x" in '"''"'|*[!0-9]*) x=900 ;; esac'
+assert_ok  "$_F_GLOB" "#813: the negated-class normalizer ALONE -> allowed"
+assert_ok  'PIDS=()'  "#813: an empty array assignment ALONE -> allowed"
+assert_block "$_F_GLOB
+_kt() { kill \$1; }" "#813: a REAL function definition + that glob still BLOCKS (accepted over-block)"
+
+# ...and the regression the fix closes. `PIDS=()` is an empty ARRAY ASSIGNMENT: bash, sh,
+# zsh, dash and ksh all reject `a=b() { ...; }` with a syntax or identifier error, so a word
+# whose UNQUOTED text is an assignment prefix can never be a function name. Reading it as one
+# aimed the whole #573 machinery at ordinary shell -- the shipped council Step 4 dispatch
+# block was refused for "calling" a helper it spells nowhere, the third report of that class.
+assert_ok "$_F_GLOB
+PIDS=()" "#813: an empty array assignment + that glob -> allowed"
+assert_ok 'PIDS=()
+PIDS+=("$!")
+case "$v" in *[!0-9]*) v=0 ;; esac' "#813: the shipped array-then-append shape -> allowed"
+assert_ok 'A_1=( )
+*.py' "#813: spaced empty array literal is still an assignment"
+assert_ok 'arr+=()
+*.py' "#813: an append-form empty array literal is still an assignment"
+assert_ok 'a[0]=()
+*.py' "#813: a subscripted empty array literal is still an assignment"
+
+# ANTI-FORGE. Only a STRICT assignment shape is released, and only where the raw text
+# actually spells one. zsh -- and zsh alone, verified running against bash/sh/dash/ksh --
+# accepts a QUOTED assignment-shaped word as a function name, so `'a='() { ...; }` really
+# does define a function on a macOS default shell. The raw command is itself one of the
+# shell variants the detector searches, so the quoted spelling is still caught there even
+# though its dequoted copy now looks like an assignment. Anything that is not a valid
+# assignment -- a leading digit, an option flag, a path -- stays a name.
+assert_block "'a='() { :; }
+*.py"      "#813 anti-forge: zsh QUOTED assignment-shaped function name still BLOCKS"
+assert_block '"a="() { :; }
+*.py'      "#813 anti-forge: double-quoted assignment-shaped function name still BLOCKS"
+assert_block 'a\=() { :; }
+*.py'      "#813 anti-forge: escaped assignment-shaped function name still BLOCKS"
+assert_block '1x=()
+*.py'      "#813 anti-forge: leading digit is not an identifier -> still a name"
+assert_block '--opt=()
+*.py'      "#813 anti-forge: an option flag is not an assignment -> still a name"
+assert_block 'a/b=()
+*.py'      "#813 anti-forge: a path is not an assignment -> still a name"
+assert_block 'echo() { "$@"; }; echo sh -c x
+*.py'      "#813 anti-forge: the shadowing attack still BLOCKS"
+assert_block 'PIDS=(); eval "$Q"
+*.py'      "#813 anti-forge: an array literal does not launder eval in the same command"
+
+# THE ARTIFACT THE TICKET IS ABOUT. Not a paraphrase: the Step 4 dispatch fence is lifted
+# out of skills/council/SKILL.md and assembled exactly as an ultimate-council run assembles
+# it -- MECHANISM_WITNESS flipped to 1, the Step 4.5 UltraOracle snippet spliced in before
+# the closing wait, the force flag around it. If this stops classifying OK the shipped
+# workflow is unrunnable again, which is the whole of #813.
+_F_SKILL="$ROOT/skills/council/SKILL.md"
+_f_assembled() { python3 - "$_F_SKILL" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().split("\n")
+def fence(needle):
+    a = [i for i, l in enumerate(lines) if needle in l][0]
+    s = a
+    while not lines[s].startswith("```"): s -= 1
+    e = a
+    while not lines[e].startswith("```"): e += 1
+    return "\n".join(lines[s + 1:e])
+step4 = fence("MECHANISM_WITNESS=")
+oracle = fence('ultra-oracle-run.sh" council')
+WAIT = '(( ${#PIDS[@]} )) && wait "${PIDS[@]}"'
+assert WAIT in step4, "Step 4 fence no longer ends with the documented wait line"
+cmd = "ULTRA_ORACLE_COUNCIL_FORCE=1\n" + step4.replace("MECHANISM_WITNESS=0", "MECHANISM_WITNESS=1")
+sys.stdout.write(cmd.replace(WAIT, oracle + "\n" + WAIT) + "\nunset ULTRA_ORACLE_COUNCIL_FORCE\n")
+PY
+}
+_F_CMD="$(_f_assembled)"
+if [[ -n "$_F_CMD" ]]; then
+    assert_ok "$_F_CMD" "#813: the shipped ultimate-council Step 4 dispatch block -> allowed"
+    # HEADROOM, not just a pass. The walk carries a 4000-token budget and CHARGES COMMENT
+    # PROSE against it, so the block sat 12 tokens over the cliff and answered
+    # BLOCK_UNSCANNABLE the moment the glob stopped short-circuiting the scan. A bare pass
+    # would go green again one docstring before the next regression. The MEASURED margin after
+    # this fix is between 30 and 40 comment lines of the kind that used to sit in the fence;
+    # 20 is asserted so the guard fails on a genuine loss of margin rather than on rounding.
+    # Both halves of the fix are load-bearing for that number: the long rationale moved to
+    # prose OUTSIDE the fence, and the prompts moved to FILES, which is what stops the margin
+    # from shrinking with the length of the council question.
+    _F_PAD=""
+    for ((_f_i = 0; _f_i < 20; _f_i++)); do
+        _F_PAD+="# padding line $_f_i: rationale prose of the kind that used to live in the fence"$'\n'
+    done
+    assert_ok "$_F_PAD$_F_CMD" "#813: ...and with 20 comment lines of headroom on top"
+else
+    no "#813 assembled council block" "could not extract the Step 4 fence from SKILL.md"
+fi
+
+# The prompts must STAY out of the command string: inline heredocs put the council question
+# itself through the glob probe (a question mentioning *.py blocked) AND made the walk cost
+# scale with prompt length, which no amount of comment-trimming fixes.
+if grep -qE "^ *[A-Z_]*\"?\\\$DISPATCH\"? .*<<'" "$_F_SKILL"; then
+    no "#813: council prompts stay in files" "a heredoc prompt was reinlined into a dispatch line"
+else
+    ok "#813: council prompts stay in files, not inline heredocs"
+fi
 
 echo
 echo "════ marker-glob-specificity: $PASS passed, $FAIL failed ════"

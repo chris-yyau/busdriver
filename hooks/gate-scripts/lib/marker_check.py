@@ -2440,8 +2440,29 @@ _CMD_POS_WORDS = (r"\b(?:"
                   + r")\b")
 
 _FUNC_NAME = r"[^\s;&|()<>{}]+"
+# `PIDS=()` is an EMPTY ARRAY ASSIGNMENT, not a function definition, and every shell agrees:
+# bash, sh, zsh, dash and ksh all refuse `a=b() { ...; }` with a syntax/identifier error, so a
+# word whose UNQUOTED text is an assignment prefix can never be a function name. Without this
+# the header pattern read `PIDS=(` as `<name> ( )` and fired the indirection branch, which
+# drops the structured contract WHOLESALE and hands the whole command to
+# _abandoned_scan_probe -- where every word, comment prose included, is asked whether it is a
+# glob that could expand onto a guarded helper. That is the #573 machinery, and an empty array
+# literal is ordinary shell, so it aimed it at ordinary commands: the shipped council Step 4
+# dispatch block (`PIDS=()` plus a `case ... in ''|*[!0-9]*)` normalizer) was refused for
+# "calling lease_slot.py", a name it spells nowhere. Third operator report of that class (#813,
+# after the two in _glob_helper_targeted).
+# STRICT assignment shape, not "ends with `=`": a valid identifier, an optional array
+# subscript, an optional `+`, then `=` and EMPTY parens. Anything else -- `--opt=`, `a/b=` --
+# is still read as a name, because those are not assignments and zsh will take odd words as
+# function names. And zsh ALONE accepts a quoted one (`'a='() { ...; }` runs; bash and ksh
+# reject it), which is why the lookahead is written to fail on the quotes: the raw text is
+# itself one of the _shell_variants the caller searches, so the quoted spelling is still
+# detected there even though the DEQUOTED copy now looks like an assignment. Verified against
+# all five shells, and pinned in tests/test-marker-glob-specificity.sh section F.
+_ASSIGN_NOT_FUNC = r"(?![A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=\s*\(\s*\))"
 _INDIRECTION_RE = re.compile(
-    r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)" + _FUNC_NAME + r"\s*\(\s*\)"
+    r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
+    + _ASSIGN_NOT_FUNC + _FUNC_NAME + r"\s*\(\s*\)"
     r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
     # `hash -p PATH NAME` binds NAME to PATH for the rest of the shell -- the same
     # re-pointing `alias` does. NO PREFIX GRAMMAR: modelling what bash allows in front of a

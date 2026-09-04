@@ -3393,8 +3393,9 @@ def _literal_c_target(argv, raw_argv, sub_idx):
     return seen
 
 
-def _lead_cd_only(chunks):
-    """True when the command's ONLY `cd` is the FIRST segment of the main chunk.
+def _lead_cd_target(chunks):
+    """The ABSOLUTE literal target of the command's ONLY `cd` when that cd is the
+    FIRST segment of the main chunk, else '' (no exemption).
 
     That one shape — `cd /repo && git … && git merge …` — is the one the literal
     merge/pull scan already accounts for: it precedes every git word, so it is the
@@ -3404,11 +3405,22 @@ def _lead_cd_only(chunks):
     so the cd lands in neither target_dir NOR untrusted_cd (verified — both come
     back empty), and only the companion refusal catches it, which sits AFTER the
     consent exits. With a skip file armed it would have been waved through while
-    `zz` resolved in /other."""
+    `zz` resolved in /other.
+
+    The TARGET, not just a yes/no, because the exemption has to survive the
+    agreement test: under a leading `cd /repo`, an invocation with no `-C` runs in
+    /repo, so reading it as '' made `cd /repo && git merge HEAD && git -C /repo zz
+    feature` look like two disagreeing scopes and refused a command that resolves
+    statically to one directory. Absolute literals only (_abs_cd_target), for the
+    reasons that predicate documents — a relative operand is subject to CDPATH,
+    so it cannot be compared against a `-C` faithfully."""
     if sum(len(_all_cds(c)) for c in chunks) != 1:
-        return False
+        return ''
     first = next(iter(split_segments(chunks[0])), None)
-    return first is not None and _cd_target_loose(first[1]) is not None
+    if first is None:
+        return ''
+    target = _cd_target_loose(first[1])
+    return _abs_cd_target(target) if target is not None else ''
 
 
 def _static_alias_scope(chunks, cd_poisons=True):
@@ -3440,10 +3452,10 @@ def _static_alias_scope(chunks, cd_poisons=True):
     the caller does NOT handle, still refuses on both paths. It buys exactly the
     LEADING cd (_lead_cd_only) and nothing else: disabling the cd test wholesale
     let a mid-command `cd` move scope for a later alias word invisibly."""
-    cd_exempt = not cd_poisons and _lead_cd_only(chunks)
+    lead = _lead_cd_target(chunks) if not cd_poisons else ''
     scope = None
     for depth, chunk in enumerate(chunks):
-        if _all_cds(chunk) and not cd_exempt:
+        if _all_cds(chunk) and not lead:
             return None
         for _op, seg in split_segments(chunk):
             argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
@@ -3468,6 +3480,10 @@ def _static_alias_scope(chunks, cd_poisons=True):
             here = _literal_c_target(argv, raw_argv, sub_idx)
             if here is None or (here and depth):
                 return None
+            # Under an exempted leading `cd`, an invocation with no `-C` runs in
+            # that directory — not in the session cwd — so it must be compared as
+            # such or it reads as disagreeing with an equivalent absolute `-C`.
+            here = here or lead
             if scope is not None and scope != here:
                 return None
             scope = here

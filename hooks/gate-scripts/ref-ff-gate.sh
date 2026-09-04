@@ -623,6 +623,16 @@ if [ "$OUTSIDE_REPO" = "1" ]; then
     # --list-cmds and so lands in UNKNOWN_CANDIDATES. #812 never touched that
     # shape, and it has no escape hatch here — a skip file inside a non-repo
     # directory is not a thing the tooling describes.
+    #
+    # STANDING RESIDUAL, named deliberately and NOT introduced here: this exit was
+    # UNCONDITIONAL before #812, so a global `alias.zz = !git -C /protected merge
+    # feature` run as `git zz` from a non-repo cwd has always passed. Closing it
+    # means blocking every non-builtin git word in every directory outside a
+    # repository, with no escape hatch reachable there — a broad over-block of the
+    # exact kind #812 was filed about, and a change to behaviour this issue does
+    # not touch. It belongs in its own issue, with its own cost discussion. What
+    # #812 must not do is make it WORSE, and the branch below is what stops the
+    # new command-chosen anchor from reaching it.
     [ "$CMD_CHOSEN_ANCHOR" = "1" ] || exit 0
     # `--list-cmds` needs no repository, so the filter above is still authoritative
     # here: every word it recognised is a real git subcommand, which genuinely

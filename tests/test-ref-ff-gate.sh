@@ -1876,6 +1876,12 @@ run_gate "a leading cd still only scopes a literal merge, as its message says" \
 # resolved elsewhere.
 run_gate "...but a cd AFTER the merge still poisons the alias scope" \
     block "git merge HEAD && cd $NOCONV && git zz feature" "cannot be resolved"
+# The exempted cd is also the SCOPE of every invocation that carries no `-C`, so
+# an equivalent absolute `-C` agrees with it rather than reading as a second,
+# conflicting directory. Blocked here by the companion refusal — the accurate
+# reason — not by an unresolvable-operand message.
+run_gate "an equivalent -C agrees with the exempted leading cd" \
+    block "cd $REPO && git merge HEAD && git -C $REPO zz feature" "ALONGSIDE"
 # The anchor a command names can BE the session's own repo, and then consent and
 # effect do not diverge — the escape hatch must not depend on whether the
 # operator typed a redundant `-C`.

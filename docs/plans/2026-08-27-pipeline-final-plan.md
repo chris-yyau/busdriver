@@ -30,6 +30,31 @@ the baseline.
 | 10 | pi-replacement amendment: Codex retained for review + `/codex:rescue` + imagegen; Slice 6 keeps `pi-goal-handover`, drops `pi-rescue`. **Guarded 6-lite**: launcher runs `pi --model cursor/<id> -e <cursor-extension> --cursor-sandbox` in a git worktree, dispatcher commits from outside, and REFUSES unless worktree clean ∧ base branch operator-authored ∧ no fork PR / untrusted patch, refusal text naming the broker upgrade. Cursor's sandbox is SDK opt-in, not a kernel boundary. ADR records this as deliberately reopening the 13-round sequencing (cite ADR 0006 "trusted dispatcher" + ADR 0026 dispatcher residual). | needs Chris (security-class) | Test: fork-base worktree is refused. |
 | 11 | Issue triage. Close after a probe (not a one-liner) — #516 (`design-clear.sh --skip`), #539 (gate hint names `design-clear.sh`, `pre-implementation-gate.sh:758`), #540 (`--all-for-doc --yes`), #644 (release cost fixed; accumulation is ADR 0017/0021 settled), #661 (HyperFrames docs gone), #550 (`cmdword.py:188-191` deliberate won't-fix), #572 (position-blind strategies removed, `skills/blueprint-review/scripts/lib/extract_review_json.py:7`), #592 / #560 (adversarial probe required), #583, #556 (after item 1). Epics: classifier precision #639 #654 #724 #767 #771 #768 #769; dispatch/council reliability #547 #558 #603 #662. Low: #712, #586, #508, #568. | mine | One probe per closure, recorded in the closing comment. |
 | 12 | Oracle's missing piece: an adversarial end-to-end pipeline-integrity suite (hostile committed env, shell expansion, merge commands, diff drivers, launcher substitution, missing CI shards) — grows out of item 0's per-fix tests. | exploratory | — |
+| 13 | **Prompt-surface audit** (added 2026-09-05, `/claude-api prompt-audit` against Fable 5.1 driver / Opus 5 agents; full report + proposed diff in `docs/audits/2026-09-05-prompt-audit.md`). Take the hunks in order: (H1) 36 of 40 agents carry an upstream "Prompt Defense Baseline" line forbidding code output — 17 of them are Write/Edit code writers; (H4) three of the four gate-recovery copies say "resolve `<STATE_DIR>`, never hardcode `.claude`" while `hooks.json` launches gates under `env -i`, so the gate always resolves `.claude` — only `orchestrator/SKILL.md:49` is right; (H3) `litmus/SKILL.md:171` "don't narrate" is a documented Fable 5.1 under-narration trigger; (H5/M1) the litmus and blueprint-review `<EXTREMELY-IMPORTANT>` blocks and the twice-told #368 timeout story rewrite to current-state rules at normal volume; (M4) `tdd-workflow` and `test-driven-development` disagree on mocking; (M8) CLAUDE.md bullets 88/90 move their ADR archaeology into the ADRs; (M9) the five `commands/multi-*.md` require a `ccg-workflow` runtime absent on this host. Complements item 6 (same files; do the calm rewrite BEFORE extracting, so the extraction parity tests pin the calm text). | mine | Each hunk is one commit; `tests/` grep for the removed strings before each; re-run the audit after item 6. |
+
+## Status check — 2026-09-05
+
+Verified against GitHub (`gh issue/pr view`) and the tree; every settling check below was re-run, not recalled.
+
+| # | State | Evidence |
+|---|-------|----------|
+| 0 | **partial** | #713 closed 08-28 (PR 778, ADR 0049); #553 (PR 805), #576 (PR 795), #742 (PR 786), #563 (PR 798) closed; #777 `disableAllHooks` documented as platform limit (PR 787). **Open:** #622 and #570; `docs/plans/2026-08-27-commit-gate-effect-complete-622.md` not written. #622 has since spawned #780 #781 #782 #783 (ref-gate gaps) and the ref-ff gate landed for #779 (PRs 801, 820). New same-class issues: #789 (PATH-resolved reviewer forges PASS), #825 (quadratic regex → gate fails OPEN at 8k), #816, #815, #793. |
+| 1 | not started | `bash -c` → `grok`, `zsh -c` → `droid` (unchanged). None of the four candidate tests sets `HOME` or `BUSDRIVER_STATE_DIR`. #556 open. |
+| 2 | not started | No ledger artifact; the only mention is this plan. |
+| 3 | not started | `hooks.json` still registers `observe.sh` twice. |
+| 4 | not started | `~/.claude/scripts/sync-upstream.sh` present; no `THIRD_PARTY_NOTICES`; no 235-row inventory. |
+| 5 | not started | No duration output or shard matrix in `scripts/ci/run-shell-tests.sh` / `tests.yml`. #632 open; #821 (no zsh in CI) and #829 (commitlint timeout) are adjacent. |
+| 6 | not started | pr-grind 120 KB, blueprint-review 91 KB, council 57 KB, litmus 49 KB — unchanged. |
+| 7 | not started | Only `pre-read-size-advisory.js` registered, still says "route to pi"; `feat/read-route-gate` branch deleted. |
+| 8 | blocked on 2 | — |
+| 9 | not started | — |
+| 10 | needs Chris | — |
+| 11 | not started | All closure candidates still open; no probe comments. |
+| 12 | not started | `tests/test-gate-adversarial.sh` predates the plan (2026-04-09); no e2e suite. |
+| 13 | audit done, no hunks applied | `docs/audits/2026-09-05-prompt-audit.md`. |
+
+Open PRs competing for attention: #827 (PR backstop budget, #823), #800 (#776), #731 (#639).
+Recommended next: item 0's #622 design doc (the plan's own handover names it first), then item 1 — item 2's baseline cannot be taken until item 1 quiets both logs.
 
 ## ADR bookkeeping
 

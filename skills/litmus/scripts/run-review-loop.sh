@@ -1668,6 +1668,13 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     write_terminal_status setup_error
     exit 1
   fi
+  # #811: the cross-run history is stamped with the SAME pinned pair the review
+  # itself uses — derived from the ids above, never re-resolved. Re-resolving is
+  # what the pinning exists to prevent, and #576 already refuses to proceed when
+  # either endpoint cannot be pinned, so there is nothing left for a post-hoc
+  # drift check to catch.
+  PR_REVIEWED_HEAD_SHA="$_PR_TIP"
+  PR_REVIEWED_MERGE_BASE=$(git merge-base "$_PR_BASE_REF" "$_PR_TIP" 2>/dev/null || true)
   # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
   # diff.external/textconv config must not be able to corrupt the material the
   # reviewer actually reads.
@@ -2562,8 +2569,57 @@ DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF" || t
 # Load previous changelog for context continuity
 PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 
-# Load iteration history for convergence
-ITER_HISTORY=$(load_iteration_history)
+# Load iteration history for convergence.
+# PR mode reads the cross-run, SHA-anchored store instead of the per-run file
+# (#811): the per-run file is cleared on every loop init, so a re-triggered
+# `gh pr create` used to review a strictly larger diff with zero memory of the
+# passes before it. The store is a superset of the per-run file for this run —
+# it records every verdict, PASS and FAIL, and this run's own commits are
+# ancestors of HEAD — so reading both would only duplicate. The per-run file
+# still backs stall detection either way.
+if [ "$REVIEW_MODE" = "pr" ]; then
+  # The PINNED ids, not the branch name. Resolving refs inside the loader would
+  # compare stored records against what the refs mean now — minutes after the
+  # diff above was captured — so a commit landing in between could inject a
+  # verdict for a LATER scope into the prompt for this older diff.
+  ITER_HISTORY=$(load_pr_history "$PR_REVIEWED_MERGE_BASE" "$PR_REVIEWED_HEAD_SHA")
+  # ALWAYS append the per-run history as well, not only when the store came back
+  # empty. The store is allowed to miss a verdict — no writable password-database
+  # home, a refused store, an unresolvable merge-base, or simply losing the
+  # 5-second lock race — and append_pr_history is a silent no-op in every one of
+  # those. Falling back only on an EMPTY store covers the first cases but not the
+  # last: older records keep the store non-empty while the newest verdict, the one
+  # the reviewer most needs, is the one that went missing. It would then re-report
+  # findings it had just made, while stall detection — which reads the per-run
+  # file — compared against the very entries the reviewer never saw.
+  #
+  # The cost is that a verdict present in both is shown twice. That is noise in a
+  # bounded block; a silently missing verdict is a loop that cannot converge.
+  # Escaping is done PER FIELD inside load_iteration_history, not here. Filtering
+  # the rendered block cannot neutralize a newline embedded in a finding — the
+  # block is legitimately multi-line — and one newline is enough to forge a
+  # record boundary and a clean-pass claim inside <iteration_history>. Only the
+  # size bound belongs at this level.
+  #
+  # Truncation is BY BYTES and happens inside the filter, not through `head -c`.
+  # Slicing characters would let a multi-byte block reach several times the
+  # stated cap, and a closed pipe raises BrokenPipeError in the producer, which
+  # under `set -euo pipefail` would abort the whole review the moment history
+  # grew past the cap.
+  # The budget is passed IN rather than applied to the rendered text. Truncating
+  # the block here cannot be made correct: the untrusted-data framing is printed
+  # first, so slicing the head drops that framing, and slicing the tail drops the
+  # newest verdicts — the records this fallback exists to preserve. Inside the
+  # renderer the framing is unconditional and the budget is spent on records.
+  _PER_RUN_HISTORY=$(load_iteration_history 65536 || true)
+  if [ -n "$_PER_RUN_HISTORY" ]; then
+    ITER_HISTORY="${ITER_HISTORY:+$ITER_HISTORY
+
+}$_PER_RUN_HISTORY"
+  fi
+else
+  ITER_HISTORY=$(load_iteration_history)
+fi
 
 # All placeholder values are computed first, then spliced in a single pass by
 # render_prompt (below) — see lib/inject.sh for why one-at-a-time substitution
@@ -2866,6 +2922,14 @@ fi
 
 # Log metrics for persistent trend analysis
 log_review_metrics "$REVIEW_STATUS" "$ISSUE_COUNT" "$ITERATION" "$REVIEW_MODE" "$RESOLVED_CLI" "$JSON_OUTPUT"
+
+# Record the verdict against the commit it reviewed so the next PR-mode run can
+# start from it instead of cold (#811). Here rather than in the PASS/FAIL
+# branches below because both outcomes are worth carrying forward, and because
+# the PASS branch exits before it could record anything.
+if [ "$REVIEW_MODE" = "pr" ]; then
+  append_pr_history "$JSON_OUTPUT" "$PR_REVIEWED_HEAD_SHA" "$PR_REVIEWED_MERGE_BASE"
+fi
 
 # Check for completion promise
 if [ "$COMPLETION_PROMISE" != "null" ] && [ -n "$COMPLETION_PROMISE" ]; then

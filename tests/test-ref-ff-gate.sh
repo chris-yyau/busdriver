@@ -1892,6 +1892,13 @@ run_gate "...but the inferred scope never reaches a nested chunk" \
 # it a global on a read-safe subcommand poisoned the whole command whenever any
 # alias candidate appeared elsewhere — and bought nothing, since all three tests
 # are per-invocation.
+# The exemption is the BARE `-C` only. `-C<path>` is an unaccounted global like
+# any other attached spelling, so it never reaches the scope inference at all —
+# `_has_unaccounted_global` refuses it upstream and the command is unresolvable.
+# Pinned because that is load-bearing: were it read as a scope, a session repo's
+# consent could authorize a word resolving under another repo's config.
+run_gate "the attached -C<path> form is not the exemption" \
+    block "git -C$SCOPED_REPO zz feature" "cannot be resolved"
 run_gate "a global on a read-safe subcommand does not poison the command" \
     allow "git --no-pager diff && git add -A"
 run_gate "...nor does a -c on one" \

@@ -805,9 +805,6 @@ def clear_stale_abort_state(repo, state_dir):
                         marker_fd = None
                         if not consumed:
                             return False
-                    if _is_regular(dfd, "skip-litmus.bound.local"):
-                        if not _unlink_if_exists(dfd, "skip-litmus.bound.local"):
-                            return False
                     return _finish_published_cleanup(
                         dfd, ".", state_dir, unlink_marker=drop_invalid
                     )
@@ -829,9 +826,6 @@ def clear_stale_abort_state(repo, state_dir):
             drop_invalid = marker_fd is False
             if _is_marker_fd(marker_fd):
                 if not _finish_marker_consume(dfd, marker_fd):
-                    return False
-            if _is_regular(dfd, "skip-litmus.bound.local"):
-                if not _unlink_if_exists(dfd, "skip-litmus.bound.local"):
                     return False
             # No trailing "marker must now be absent" assertion: a FOREIGN marker
             # (a later /litmus minted different content) is legitimately still here

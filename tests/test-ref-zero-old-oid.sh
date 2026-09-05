@@ -36,7 +36,7 @@ supports_reftable() {
 }
 
 setup_repo() {  # <tag> <ref-format>
-    local tag="$1" fmt="$2"
+    local tag="$1" fmt="$2" setup_rc
     REPO="$TMPROOT/repo-$tag"
     rm -rf "$REPO"
     (
@@ -47,7 +47,7 @@ setup_repo() {  # <tag> <ref-format>
             # Default backend is files; avoid --ref-format=files (Git >= 2.45 only).
             git init -q -b main "$REPO"
         fi
-        cd "$REPO"
+        cd "$REPO" || exit 1
         git config user.email t@t; git config user.name t
         git config commit.gpgsign false; git config tag.gpgsign false
         # Isolate from ambient core.hooksPath (e.g. ~/.codex/git-hooks).
@@ -58,9 +58,18 @@ setup_repo() {  # <tag> <ref-format>
         git reset -q --hard HEAD~1
         git branch unreviewed "$UNREVIEWED"
         mkdir -p "$ISO_STATE"
-    ) >/dev/null 2>&1 || return 1
-    UNREVIEWED=$(git -C "$REPO" rev-parse unreviewed)
-    REVIEWED=$(git -C "$REPO" rev-parse main)
+    # The status is taken AFTERWARDS, not with `|| return 1` on the subshell:
+    # bash disables errexit for every command in an AND/OR list but the last, so
+    # as an operand of `||` the `set -e` above was INERT. A failed `git init`
+    # then fell through to the `cd`, and a failed `cd` left the REST of this
+    # body running in the real checkout -- `git reset --hard HEAD~1` included.
+    ) >/dev/null 2>&1
+    setup_rc=$?
+    if [ "$setup_rc" -ne 0 ]; then
+        return 1
+    fi
+    UNREVIEWED=$(git -C "$REPO" rev-parse unreviewed) || return 1
+    REVIEWED=$(git -C "$REPO" rev-parse main) || return 1
 }
 
 run_gate() {  # <name> <expected: allow|block> <command> [reason substring]
@@ -619,6 +628,40 @@ if [ "$DET" = ok ]; then
     printf "  PASS  detector shapes\n"; PASS=$((PASS + 1))
 else
     printf "  FAIL  detector shapes (%s)\n" "$DET"; FAIL=$((FAIL + 1))
+fi
+
+# ── Harness fail-closed ────────────────────────────────────────────────────
+# Last, because it deliberately clobbers $REPO. `set -e` inside a subshell that
+# is an operand of `||` is inert, so a failed `git init` used to fall through to
+# the `cd`, and a failed `cd` left the rest of setup running in the REAL
+# checkout, `git reset --hard HEAD~1` included. Live condition, measured today:
+# an ambient core.hooksPath whose reference-transaction hook aborts makes
+# `git init` exit 128 for every fresh repo on the machine.
+printf '\n=== #780 harness fails closed ===\n'
+HEAD_BEFORE=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf none)
+REAL_GIT=$(command -v git)
+SHIM="$TMPROOT/shim"
+mkdir -p "$SHIM"
+{
+    printf '#!/bin/sh\n'
+    printf 'for a; do [ "$a" = init ] && exit 128; done\n'
+    printf 'exec %s "$@"\n' "$REAL_GIT"
+} > "$SHIM/git"
+chmod +x "$SHIM/git"
+if PATH="$SHIM:$PATH" setup_repo failclosed files; then
+    printf "  FAIL  setup_repo reported success after git init failed\n"
+    FAIL=$((FAIL + 1))
+else
+    printf "  PASS  setup_repo fails closed when git init fails\n"
+    PASS=$((PASS + 1))
+fi
+HEAD_AFTER=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf none)
+if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
+    printf "  PASS  ...and the real checkout is untouched\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  real checkout HEAD moved: %s -> %s\n" "$HEAD_BEFORE" "$HEAD_AFTER"
+    FAIL=$((FAIL + 1))
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

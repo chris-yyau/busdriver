@@ -291,7 +291,7 @@ finally:
   # exists for -- NEW introduces no parent OLD did not already carry, so an
   # already-authorized topology is unchanged -- while covering both tip shapes.
   if [[ ! "$OLD" =~ ^0+$ && -n "$FP" ]]; then
-    parents_list() { python3 -I -S -c '
+    commit_shape() { python3 -I -S -c '
 import subprocess, sys
 git, oid = sys.argv[1:-1], sys.argv[-1]
 proc = subprocess.Popen(
@@ -311,6 +311,7 @@ try:
     body = proc.stdout.read(min(size, 65536))
     proc.stdout.read(1)
     ps = []
+    tree = ""
     saw_end = False
     lead = True
     pos = 0
@@ -324,7 +325,12 @@ try:
         if b"\r" in raw:
             raise SystemExit(4)
         line = raw.decode("utf-8", "replace")
-        if line.startswith("parent "):
+        if line.startswith("tree "):
+            _t = line[5:]
+            if len(_t) not in (40, 64) or _t.strip("0123456789abcdef"):
+                raise SystemExit(6)
+            tree = _t
+        elif line.startswith("parent "):
             _p = line[7:]
             # Git reads parents ONLY in the leading header block and stops at the
             # first other header, so a "parent" line after the committer is message
@@ -339,7 +345,13 @@ try:
             lead = False
     if not saw_end:
         raise SystemExit(5)
-    print(" ".join(ps))
+    # Tree FIRST, then parents -- every token is a validated hex OID, so a single
+    # space-joined line is unambiguous. This is the whole authorization-relevant
+    # shape of the commit: what it contains, and where it sits.
+    # (No apostrophes in here: this program is a single-quoted bash string.)
+    if not tree:
+        raise SystemExit(6)
+    print(" ".join([tree] + ps))
 finally:
     try:
         proc.kill()
@@ -347,10 +359,18 @@ finally:
         pass
 ' "${G[@]}" "$1"; }
     set +e
-    old_ps=$(parents_list "$OLD"); old_rc=$?
-    new_ps=$(parents_list "$NEW"); new_rc=$?
+    old_shape=$(commit_shape "$OLD"); old_rc=$?
+    new_shape=$(commit_shape "$NEW"); new_rc=$?
     set -e
-    [[ "$old_rc" -eq 0 && "$new_rc" -eq 0 && -n "$old_ps" && "$old_ps" == "$new_ps" ]] && exit 0
+    # TREE AND PARENTS BOTH. Comparing parents alone made this an authorization for
+    # any content: given a reviewed merge over (P1, S), `commit-tree <anything> -p P1
+    # -p S` has the same parent set, and update-ref fires no commit-chain hook, so the
+    # replacement was published with no claim and nobody reviewing its tree. Requiring
+    # the tree too narrows the exemption to what it was always described as -- a commit
+    # that differs only in its message or authorship, which introduces no content to
+    # review. A tree change now falls through to the ordinary claim/marker path, which
+    # is where an amend that actually changes something belongs.
+    [[ "$old_rc" -eq 0 && "$new_rc" -eq 0 && -n "$old_shape" && "$old_shape" == "$new_shape" ]] && exit 0
   fi
   # Root tip (zero parents) cannot smuggle a merge — allow create/amend without witnesses.
   if [[ "$parents" -eq 0 ]]; then

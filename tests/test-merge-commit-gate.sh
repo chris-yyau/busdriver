@@ -39,6 +39,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 unset BUSDRIVER_STATE_DIR
+# Every fixture below runs plain `git` against a temp repo, and `-C <dir>` does NOT
+# override the repository-selecting environment. An inherited GIT_INDEX_FILE makes
+# `git -C "$fixture" add` write ANOTHER repository's index; GIT_DIR and GIT_WORK_TREE
+# redirect the operation outright; the object-directory pair sends new objects
+# somewhere else and can leave the fixture referencing objects its own cleanup then
+# deletes. That is not hypothetical here -- an unisolated fixture in this branch's
+# history installed hooks machine-wide and took the pristine suite from 66/66 to
+# 26/66. A FUNCTION, not a bare `unset`, so the guard itself is testable below.
+_neutralize_git_env() {
+    unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+}
+_neutralize_git_env
 
 REPO_ROOT="$PWD"
 GATE_SCRIPT="hooks/gate-scripts/pre-merge-commit-gate.sh"
@@ -155,6 +168,47 @@ trap 'rm -rf "$TMP_BLOCK" "$TMP_ALLOW" "$TMP_PATH" "$TMP_NOCOMMIT" "$TMP_FF" "$T
 setup_repo "$TMP_BLOCK"
 install_hook "$TMP_BLOCK" "$HOOKS"
 mkdir -p "$TMP_BLOCK/.claude"
+
+echo "── fixture containment: repo-selecting git env cannot escape ─"
+# Forcing, not decorative: the hostile values are planted INSIDE this case and the
+# guard is re-applied on top of them, so deleting the unsets makes `git rev-parse`
+# answer with the planted directory (or fail) instead of the fixture. Asserting only
+# that the variables are empty would pass vacuously whenever the caller's env is clean
+# -- which is exactly the run where the bug is invisible.
+TMP_CONTAIN=$(mktemp -d)
+( cd "$TMP_CONTAIN" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && echo x > x && git add x && git commit -q -m contained ) >/dev/null 2>&1
+CONTAIN_GD=$(
+    export GIT_DIR="$TMP_CONTAIN/hostile-gitdir" \
+           GIT_INDEX_FILE="$TMP_CONTAIN/hostile-index" \
+           GIT_WORK_TREE="$TMP_CONTAIN/hostile-worktree" \
+           GIT_OBJECT_DIRECTORY="$TMP_CONTAIN/hostile-objects" \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES="$TMP_CONTAIN/hostile-alt" \
+           GIT_COMMON_DIR="$TMP_CONTAIN/hostile-common"
+    _neutralize_git_env
+    # `|| true` so a broken guard reports a readable FAIL instead of aborting the
+    # whole suite under `set -e` with no indication of which assertion broke.
+    cd "$TMP_CONTAIN/r" && { git rev-parse --absolute-git-dir 2>/dev/null || true; }
+)
+# Resolve the fixture path the same way git reports it: on macOS /var is a symlink
+# to /private/var, so the literal mktemp path never prefix-matches what git prints.
+CONTAIN_REAL=$(cd "$TMP_CONTAIN" && pwd -P)
+case "$CONTAIN_GD" in
+    "$CONTAIN_REAL"/r/.git) assert "a fixture resolves its own git dir despite a hostile inherited env" "contained" "contained" ;;
+    *) assert "a fixture resolves its own git dir despite a hostile inherited env" "contained" "${CONTAIN_GD:-<unresolvable>}" ;;
+esac
+# ...and the staged write really landed in the fixture index, not somewhere else.
+CONTAIN_STAGED=$(
+    export GIT_INDEX_FILE="$TMP_CONTAIN/hostile-index"
+    _neutralize_git_env
+    git -C "$TMP_CONTAIN/r" diff --cached --name-only 2>/dev/null | tr '\n' ' '
+)
+assert "a staged write goes to the fixture index, not an inherited one" "" "$CONTAIN_STAGED"
+assert "the fixture commit is visible to a plain fixture read" "contained" \
+    "$(git -C "$TMP_CONTAIN/r" log -1 --format=%s 2>/dev/null)"
+rm -rf "$TMP_CONTAIN"
 
 echo "── pre-merge-commit: conflict-free merge without marker ───"
 set +e
@@ -1301,6 +1355,21 @@ AM_BAD_RC=$( cd "$TMP_AMEND/r" \
      | bash "$AM_GATE" prepared >/dev/null 2>&1; echo $? )
 set -e
 assert "a replacement with a different parent set is refused" "1" "$AM_BAD_RC"
+
+# Negative: SAME parents, DIFFERENT tree. The exemption exists for a commit that
+# differs only in message or authorship; comparing parents alone made it an
+# authorization for arbitrary content, since `commit-tree <anything> -p P1 -p S`
+# reproduces a reviewed merge's parent set exactly and update-ref fires no
+# commit-chain hook. This is the assertion that distinguishes the two.
+set +e
+AM_TREE_RC=$( cd "$TMP_AMEND/r" \
+  && AM_EVIL=$(git rev-parse "$AM_S^{tree}") \
+  && AM_OLD_P1=$(git rev-parse "$AM_OLD^1") && AM_OLD_P2=$(git rev-parse "$AM_OLD^2") \
+  && AM_RETREE=$(git commit-tree "$AM_EVIL" -p "$AM_OLD_P1" -p "$AM_OLD_P2" -m "same parents, new tree") \
+  && printf '%s %s refs/heads/%s\n' "$AM_OLD" "$AM_RETREE" "$AM_MAIN" \
+     | bash "$AM_GATE" prepared >/dev/null 2>&1; echo $? )
+set -e
+assert "a replacement keeping the parents but changing the tree is refused" "1" "$AM_TREE_RC"
 rm -rf "$TMP_AMEND"
 
 # ── forged commit headers ───────────────────────────────────────────────

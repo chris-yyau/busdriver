@@ -1195,6 +1195,75 @@ else
 fi
 rm -rf "$TMP_SKIPORD"
 
+# ── write_claim binds the reviewed HEAD, not a later one ────────────────
+# The digest is taken against an implicit base, so it pins the diff but not the
+# commit it came from. Re-reading HEAD at claim time let an ordinary ref update
+# swap H1 for H2 and arm a head nobody reviewed.
+echo "── write_claim binds the reviewed HEAD ─"
+TMP_AUTHHEAD=$(mktemp -d)
+setup_repo "$TMP_AUTHHEAD"
+mkdir -p "$TMP_AUTHHEAD/.claude"
+AH_REVIEWED_HEAD=$(git -C "$TMP_AUTHHEAD" rev-parse HEAD)
+AH_TREE=$(git -C "$TMP_AUTHHEAD" rev-parse "HEAD^{tree}")
+AH_HASH=$(printf 'f%.0s' {1..64})
+# HEAD moves after the hash, exactly as a concurrent ordinary commit would.
+git -C "$TMP_AUTHHEAD" commit -q --allow-empty -m "concurrent ordinary commit"
+AH_MOVED=$(git -C "$TMP_AUTHHEAD" rev-parse HEAD)
+set +e
+AH_OUT=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from merge_pending import write_claim
+print("armed" if write_claim(sys.argv[2], ".claude", sys.argv[4], sys.argv[3], sys.argv[5], sys.argv[4]) else "refused")
+' "$REPO_ROOT/hooks/gate-scripts/lib" "$TMP_AUTHHEAD" "BUILTIN-$AH_HASH" "$AH_REVIEWED_HEAD" "$AH_TREE" 2>&1)
+set -e
+assert "a HEAD that moved after the review hash is refused" "refused" "$AH_OUT"
+if [[ "$AH_REVIEWED_HEAD" == "$AH_MOVED" ]]; then
+    assert "the fixture really moved HEAD" "moved" "unchanged"
+else
+    assert "the fixture really moved HEAD" "moved" "moved"
+fi
+rm -rf "$TMP_AUTHHEAD"
+
+# ── fast-forward past an already-published merge ────────────────────────
+# linear mode refuses at the first merge it meets, and the witnessed-FF rule
+# used to be reachable only when NEW itself had two parents. So the identical
+# history was allowed when the tip WAS the merge and refused once one ordinary
+# commit sat on top -- a verdict that depended on the shape of the tip rather
+# than on whether the move was a real fast-forward.
+echo "── FF past a published merge ─"
+TMP_FFMERGE=$(mktemp -d)
+(
+  cd "$TMP_FFMERGE" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && MAIN=$(git symbolic-ref --short HEAD) \
+    && echo a>a && git add . && git commit -q -m A && git rev-parse HEAD > ../A \
+    && git checkout -q -b side && echo s>s && git add . && git commit -q -m S \
+    && git checkout -q -b topic "$MAIN" && echo t>t && git add . && git commit -q -m T \
+    && git merge -q --no-ff side -m "published merge" \
+    && echo o>o && git add . && git commit -q -m ord && git rev-parse HEAD > ../C \
+    && echo "$MAIN" > ../MAIN
+) >/dev/null 2>&1
+FF_A=$(cat "$TMP_FFMERGE/A"); FF_C=$(cat "$TMP_FFMERGE/C"); FF_MAIN=$(cat "$TMP_FFMERGE/MAIN")
+FF_GATE="$REPO_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
+set +e
+( cd "$TMP_FFMERGE/r" && printf '%s %s refs/heads/%s\n' "$FF_A" "$FF_C" "$FF_MAIN" \
+    | bash "$FF_GATE" prepared ) >/dev/null 2>&1
+FF_RC=$?
+set -e
+assert "FF onto an ordinary commit above a published merge is allowed" "0" "$FF_RC"
+
+# Negatives: the unified rule must not become a hole.
+set +e
+( cd "$TMP_FFMERGE/r" && git checkout -q --detach >/dev/null 2>&1
+  git branch -D topic >/dev/null 2>&1; git branch -D side >/dev/null 2>&1
+  printf '%s %s refs/heads/%s\n' "$FF_A" "$FF_C" "$FF_MAIN" | bash "$FF_GATE" prepared ) >/dev/null 2>&1
+FF_UNWIT=$?
+set -e
+assert "the same NEW is refused when no branch witnesses it" "1" "$FF_UNWIT"
+rm -rf "$TMP_FFMERGE"
+
 echo ""
 printf "Results: %d/%d passed\n" "$PASS" "$TOTAL"
 [[ "$FAIL" -eq 0 ]]

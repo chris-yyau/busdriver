@@ -508,7 +508,7 @@ def _arm_merge(repo, claim_head, payload, *, prior_payload=None):
     finally:
         os.close(pfd)
 
-def write_claim(repo, state_dir, claim_head, marker_content, auth_tree=""):
+def write_claim(repo, state_dir, claim_head, marker_content, auth_tree="", auth_head=""):
     """Persist claim_head, marker, and the authorized staged tree (git write-tree).
 
     auth_tree is the tree the CALLER reviewed. Passing it makes the arm and the
@@ -523,6 +523,17 @@ def write_claim(repo, state_dir, claim_head, marker_content, auth_tree=""):
     """
 
     def _write():
+        # The reviewed HEAD, not a fresh read. The digest was taken against an
+        # implicit base, so it pins the DIFF but not which commit it was taken
+        # from; auth_tree pins only the tree. An ordinary ref update moving HEAD
+        # from H1 to H2 between the hash and this call would otherwise arm H2
+        # with a tree reviewed against H1 -- and once merge parents bind, a
+        # concurrent transaction can publish H2 including changes the reviewed
+        # diff never showed. Fail closed rather than arm a head nobody reviewed.
+        if auth_head:
+            live_head = _git(".", "rev-parse", "HEAD")
+            if live_head.returncode != 0 or live_head.stdout.strip() != auth_head:
+                return False
         staged_tree = _staged_tree(".")
         if not staged_tree:
             return False

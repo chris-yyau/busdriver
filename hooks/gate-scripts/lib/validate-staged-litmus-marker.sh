@@ -41,12 +41,12 @@ raise SystemExit(0 if ${mod_fn}('.', *sys.argv[1:]) else 1)
 }
 
 gate_merge_pending_invoke() {
-    local repo_dir="$1" state_dir="$2" subcmd="$3" gate_name="${4:-}" claim_head="${5:-}" marker_content="${6:-}" marker_extra="${7:-}"
+    local repo_dir="$1" state_dir="$2" subcmd="$3" gate_name="${4:-}" claim_head="${5:-}" marker_content="${6:-}" marker_extra="${7:-}" marker_extra2="${8:-}"
     local lib
     lib=$(_gate_merge_pending_lib) || return 1
     case "$subcmd" in
         write)
-            _gate_merge_python "$repo_dir" "$lib" write_claim "$state_dir" "$claim_head" "$marker_content" "$marker_extra"
+            _gate_merge_python "$repo_dir" "$lib" write_claim "$state_dir" "$claim_head" "$marker_content" "$marker_extra" "$marker_extra2"
             ;;
         pass_merge)
             _gate_merge_python "$repo_dir" "$lib" authorize_pass_merge "$state_dir" "$claim_head" "$marker_content"
@@ -89,10 +89,15 @@ sys.stdout.write(content)
 gate_merge_pending_write() {
     # $4 (auth_tree) is the tree the caller reviewed. Threaded down so write_claim
     # refuses a moved index instead of arming it and being corrected afterwards.
-    local repo_dir="$1" state_dir="$2" marker_content="$3" auth_tree="${4:-}"
-    local claim_head
-    claim_head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo unknown)
-    gate_merge_pending_invoke "$repo_dir" "$state_dir" write "" "$claim_head" "$marker_content" "$auth_tree"
+    # $5 (auth_head) is the HEAD the caller hashed against. When given it IS the
+    # claim head -- re-reading HEAD here is what let an ordinary ref update slip
+    # a different commit into the claim between the hash and the arm.
+    local repo_dir="$1" state_dir="$2" marker_content="$3" auth_tree="${4:-}" auth_head="${5:-}"
+    local claim_head="$auth_head"
+    if [[ -z "$claim_head" ]]; then
+        claim_head=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || echo unknown)
+    fi
+    gate_merge_pending_invoke "$repo_dir" "$state_dir" write "" "$claim_head" "$marker_content" "$auth_tree" "$auth_head"
 }
 
 gate_merge_pending_pass_merge() {
@@ -237,7 +242,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         return 1
     fi
 
-    local staged_hash="" hash_cmd=() hash_rc=0 hash_line="" auth_tree="" idx_snap=""
+    local staged_hash="" hash_cmd=() hash_rc=0 hash_line="" auth_tree="" auth_head="" idx_snap=""
     if command -v sha256sum >/dev/null 2>&1; then
         hash_cmd=(sha256sum)
     elif command -v shasum >/dev/null 2>&1; then
@@ -283,6 +288,14 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
     if [[ -z "$auth_tree" ]]; then
         rm -f "$idx_snap"
         GATE_VALIDATE_REASON="Could not capture staged tree OID before review hash. Run /litmus."
+        return 1
+    fi
+    # Captured with the tree, from the same moment, so the claim names the commit
+    # the digest was actually taken against instead of whatever HEAD is later.
+    auth_head=$(git -C "$repo_dir" --no-replace-objects rev-parse HEAD 2>/dev/null) || auth_head=""
+    if [[ -z "$auth_head" ]]; then
+        rm -f "$idx_snap"
+        GATE_VALIDATE_REASON="Could not capture HEAD before review hash. Run /litmus."
         return 1
     fi
     # THE CANONICAL FORM, spelled verbatim and on ONE line so
@@ -335,7 +348,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         excluded_age=$(( $(date +%s) - excluded_epoch ))
         if [[ -n "$staged_hash" && "$excluded_hash" == "$staged_hash" \
             && "$excluded_age" -ge 0 && "$excluded_age" -le 3600 ]]; then
-            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree"; then
+            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree" "$auth_head"; then
                 GATE_VALIDATE_REASON="Could not persist the one-use merge claim."
                 return 1
             fi
@@ -348,7 +361,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
     elif echo "$marker_content" | grep -qE '^BUILTIN-[a-f0-9]{64}$'; then
         local builtin_hash=${marker_content#BUILTIN-}
         if [[ -n "$staged_hash" && "$builtin_hash" == "$staged_hash" ]]; then
-            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree"; then
+            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree" "$auth_head"; then
                 GATE_VALIDATE_REASON="Could not persist the one-use merge claim."
                 return 1
             fi
@@ -360,7 +373,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
         return 1
     elif echo "$marker_content" | grep -qE '^[a-f0-9]{64}$'; then
         if [[ -n "$staged_hash" && "$marker_content" == "$staged_hash" ]]; then
-            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree"; then
+            if ! gate_merge_pending_write "$repo_dir" "$state_dir" "$marker_content" "$auth_tree" "$auth_head"; then
                 GATE_VALIDATE_REASON="Could not persist the one-use merge claim."
                 return 1
             fi

@@ -349,13 +349,19 @@ finally:
     refuse 'refusing unauthorized merge commit.'
   fi
   # Linear multi-commit FF: single-parent chain from NEW back to OLD (no merges).
+  # This is the cheap path — it needs no witness, because a chain with no merge
+  # in it publishes no merge. When it fails, fall THROUGH to the witnessed rule
+  # below rather than refusing: linear mode returns false the moment it meets a
+  # merge, so an ordinary commit on top of an ALREADY-PUBLISHED merge lands here,
+  # and that is a real fast-forward. Refusing it made the verdict depend on the
+  # shape of the tip -- the identical history was allowed when the tip happened
+  # to BE the merge and refused when one ordinary commit sat on top of it.
   if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 ]]; then
     set +e
     walk_to_old linear "$OLD" "$NEW"
     walk_rc=$?
     set -e
     [[ "$walk_rc" -eq 0 ]] && exit 0
-    refuse 'refusing unauthorized merge commit.'
   fi
   # New branch (zero OLD): exact tip republish only (no merge-base/grafts).
   if [[ "$OLD" =~ ^0+$ ]]; then
@@ -366,8 +372,11 @@ finally:
     [[ "$tw_rc" -eq 0 ]] && exit 0
     refuse 'refusing unauthorized merge commit.'
   fi
-  # Multi-parent NEW: must be another direct-head tip AND OLD ancestor of NEW (true FF).
-  if [[ "$parents" -ge 2 ]]; then
+  # Witnessed fast-forward: NEW must be another direct-head tip AND OLD must be
+  # an ancestor of NEW (a true FF). OLD is non-zero here — the zero-OLD rule
+  # above never falls through. Applies to BOTH tip shapes: a merge tip, and a
+  # single-parent tip whose history already carries a published merge.
+  if true; then
     set +e
     tip_witnessed "$NEW"
     tw_rc=$?

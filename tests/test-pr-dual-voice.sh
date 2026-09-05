@@ -809,21 +809,38 @@ ok "$(grep -c 'if (( _bs_remaining - _BS_TEARDOWN_RESERVE' "$RL")" "0" "the exce
 # Behavioural, standalone: drive the exact arithmetic and prove BOTH branches.
 # A reserve that always applied would break the 10s fixtures; one that never
 # applied would be the bug this pins. Neither shows up in a structural grep.
+#
+# The constants are READ OUT OF the script, never restated here. A probe carrying
+# its own copy keeps passing while the script reserves something else -- if
+# `_BS_KILL_AFTER` became 6, a hardcoded reserve of 13 would still green the
+# boundary case that the real gate had started refusing. That is precisely the
+# silent drift the named constant exists to prevent, so the probe must not
+# reintroduce it one file over. Extraction failure is fail-CLOSED: an empty
+# value is asserted on directly rather than being allowed to poison the
+# arithmetic into a plausible-looking number.
+_BS_GRACE_ACTUAL=$(sed -n 's/^[[:space:]]*_BS_REAP_GRACE_S=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$RL" | head -1)
+_BS_KILL_ACTUAL=$(sed -n 's/^[[:space:]]*_BS_KILL_AFTER=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$RL" | head -1)
+ok "${_BS_GRACE_ACTUAL:-MISSING}" "8" "probe: the reap grace is read from the script, and is what the reserve assumes"
+ok "${_BS_KILL_ACTUAL:-MISSING}" "5" "probe: the kill-after grace is read from the script, and is what the reserve assumes"
+_BS_RESERVE_ACTUAL=$(( _BS_KILL_ACTUAL + _BS_GRACE_ACTUAL ))
+
 _res_probe() {
-  local _BS_REAP_GRACE_S=8 _BS_KILL_AFTER=5 _BS_TEARDOWN_RESERVE _r
-  _BS_TEARDOWN_RESERVE=$(( _BS_KILL_AFTER + _BS_REAP_GRACE_S ))
+  local _r
   _r=$(( $1 - $2 ))
-  if (( $1 > _BS_TEARDOWN_RESERVE )); then _r=$(( _r - _BS_TEARDOWN_RESERVE )); fi
+  if (( $1 > _BS_RESERVE_ACTUAL )); then _r=$(( _r - _BS_RESERVE_ACTUAL )); fi
   echo "$_r"
 }
-ok "$(_res_probe 540 0)" "527" "reserve: the default budget gives the attempt TIMEOUT_S minus the teardown"
-ok "$(( $(_res_probe 540 0) + 13 ))" "540" "reserve: attempt plus worst-case teardown lands inside the budget"
-ok "$(_res_probe 10 0)" "10" "reserve: a budget smaller than the teardown is left alone, not refused"
-ok "$(_res_probe 14 0)" "1" "reserve: the boundary budget still yields a dispatchable attempt"
+ok "$(_res_probe 540 0)" "$(( 540 - _BS_RESERVE_ACTUAL ))" "reserve: the default budget gives the attempt TIMEOUT_S minus the teardown"
+ok "$(( $(_res_probe 540 0) + _BS_RESERVE_ACTUAL ))" "540" "reserve: attempt plus worst-case teardown lands inside the budget"
+ok "$(_res_probe "$_BS_RESERVE_ACTUAL" 0)" "$_BS_RESERVE_ACTUAL" "reserve: a budget equal to the teardown is left alone, not refused"
+ok "$(_res_probe $(( _BS_RESERVE_ACTUAL + 1 )) 0)" "1" "reserve: the boundary budget still yields a dispatchable attempt"
+# The fixtures below drive this script at 10s. That has to stay UNDER the reserve
+# or their timing silently changes -- so assert the relationship, not the number.
+ok "$([ "$_BS_RESERVE_ACTUAL" -gt 10 ] && echo below || echo reserved)" "below" "reserve: the 10s fixture budget stays under the reserve, so fixture timing is unchanged"
 # A late retry inside a LARGE budget must go negative, so the caller's own
 # `-lt 1` guard refuses it. Keyed on the remaining figure this returned 5 and
 # stamped the attempt unreserved -- the overshoot, reintroduced at the tail.
-ok "$(_res_probe 540 535)" "-8" "reserve: a late retry goes negative rather than spending the tail unreserved"
+ok "$(_res_probe 540 535)" "$(( 5 - _BS_RESERVE_ACTUAL ))" "reserve: a late retry goes negative rather than spending the tail unreserved"
 # The perl arm creates its group inside the fork()ed child, so its pgid is
 # invisible to the shell — it must carry the equivalent reap in its own body.
 ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"

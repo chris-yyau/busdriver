@@ -800,8 +800,12 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
             _first=$(printf '%s' "$_first" | tr -d "'\"\\\\")
             case "$_first" in
                 merge|pull) _hit="$_expansion"; break ;;
-                # #780 ZERO-old alias bodies (branch -f / checkout -B / update-ref)
-                branch|checkout|switch|update-ref|symbolic-ref) _hit="$_expansion"; break ;;
+                # #780 ZERO-old alias bodies (branch -f / checkout -B / update-ref).
+                # `worktree` belongs here too: `worktree add -B main <path> <oid>`
+                # moves refs/heads/main (measured), and _ZERO_OLD_FORCE_SUBS blocks
+                # that shape on the command line -- an alias must not be the way
+                # around a subcommand the direct invocation refuses.
+                branch|checkout|switch|update-ref|symbolic-ref|worktree) _hit="$_expansion"; break ;;
                 # Git applies leading GLOBAL options from an expansion before the
                 # subcommand — `-c color.ui=false merge --ff-only` runs a merge.
                 # Following `alias.-c` found nothing and allowed the command; and

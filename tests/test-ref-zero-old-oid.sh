@@ -51,7 +51,14 @@ supports_reftable() {
 # reference-transaction hook aborts makes `git init` exit 128 for every fresh
 # repo on this machine.
 init_fixture_repo() {  # <path> [ref-format] -- run INSIDE a subshell; chdirs
-    local path="$1" fmt="${2:-}"
+    local path="$1" fmt="${2:-}" _v
+    # Fixture creation must not inherit the CALLER's repository scope. git exports
+    # GIT_DIR/GIT_INDEX_FILE (among others) to every hook it runs, so this suite
+    # invoked from a hook would `git add` straight into the caller's index -- the
+    # chdir above does not override an absolute GIT_INDEX_FILE. Cleared by SHAPE,
+    # not by an enumerated list: the same reason the detector matches invocation
+    # shape rather than a vocabulary -- any list is one spelling short.
+    for _v in $(compgen -v GIT_ 2>/dev/null); do unset "$_v"; done
     if [ "$fmt" = reftable ]; then
         git init -q -b main --ref-format=reftable "$path"
     else
@@ -513,6 +520,16 @@ run_format_suite() {  # <format>
     # outright (a command-chosen `-C` anchor, #812) -- both BEFORE consent is
     # read. Pinned with the marker still armed, which is the only state in which
     # the question has teeth.
+    # NOT a bypass -- measured: with `worktree` absent from the alias pre-screen
+    # the gate still blocks, via the catch-all for an alias it cannot resolve.
+    # What was wrong is the REASON, which told the operator the name was
+    # unrecognised rather than that it reaches a ref write the gate refuses
+    # directly. That is what this pins; the block itself holds either way.
+    git -C "$REPO" config alias.wt "worktree add -B"
+    run_gate "an alias reaching worktree add -B is refused as that, not as a typo" \
+        block "git wt main $TMPROOT/wt-$fmt $UNREVIEWED" \
+        "is a git alias reaching 'worktree add -B'"
+
     OTHER_REPO="$TMPROOT/other-$fmt"
     rm -rf "$OTHER_REPO"
     # Same &&-chained helper, for the same reason: this subshell IS an operand
@@ -686,6 +703,26 @@ fi
 # stops working, so this is the assertion that would have caught the original
 # defect. The real checkout is the victim under test -- a failed `cd` would run
 # `git config`, `echo base > f` and `git commit` right here.
+# ...and fixture setup must not write through an inherited repository scope.
+# The decoy is the caller's index: an absolute GIT_INDEX_FILE survives the
+# helper's chdir, so without the unset the fixture's `git add` rewrites it.
+# The decoy has to be a REAL index: git fatals on a malformed one and never
+# writes, which would make this pin pass no matter what (measured -- the first
+# version of it did exactly that).
+DECOY="$TMPROOT/decoy-index"
+( init_fixture_repo "$TMPROOT/seed" ) >/dev/null 2>&1
+cp "$TMPROOT/seed/.git/index" "$DECOY" 2>/dev/null || printf 'no-seed' > "$DECOY"
+DECOY_BEFORE=$(shasum -a 256 < "$DECOY")
+( export GIT_INDEX_FILE="$DECOY"; init_fixture_repo "$TMPROOT/scoped" ) >/dev/null 2>&1
+DECOY_AFTER=$(shasum -a 256 < "$DECOY")
+if [ "$DECOY_BEFORE" = "$DECOY_AFTER" ]; then
+    printf "  PASS  fixture setup ignores an inherited GIT_INDEX_FILE\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  fixture setup wrote through inherited GIT_INDEX_FILE\n"
+    FAIL=$((FAIL + 1))
+fi
+
 EMAIL_BEFORE=$(git -C "$REPO_ROOT" config --local user.email 2>/dev/null || printf none)
 if ( PATH="$SHIM:$PATH"; init_fixture_repo "$TMPROOT/other-failclosed" ) >/dev/null 2>&1; then
     printf "  FAIL  init_fixture_repo reported success after git init failed\n"

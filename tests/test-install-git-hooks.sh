@@ -547,6 +547,23 @@ mkdir -p "$SUBW/safe/sub"
 git -C "$SUBW/safe" config commit.gpgsign false
 bash "$PR/scripts/install-git-hooks.sh" "$SUBW/safe/sub" >/dev/null 2>&1
 assert "a subdirectory target with a safe hooks dir still installs" "0" "$?"
+
+# 12. A RELATIVE core.hooksPath is resolved by git from the WORK TREE ROOT. The
+# installer joined it to the caller's target instead, so a subdirectory target
+# wrote six wrappers to a directory git never reads -- and still exited 0, so
+# the operator believes the gate is installed when nothing is enforcing.
+RELHP="$WORK/relhp"
+mkdir -p "$RELHP/outer" "$RELHP/githooks"
+git init -q "$RELHP/outer/repo"
+mkdir -p "$RELHP/outer/repo/sub" "$RELHP/outer/hooks"
+git -C "$RELHP/outer/repo" config commit.gpgsign false
+git -C "$RELHP/outer/repo" config core.hooksPath ../../githooks
+bash "$PR/scripts/install-git-hooks.sh" "$RELHP/outer/repo/sub" >/dev/null 2>&1
+assert "a relative core.hooksPath install succeeds" "0" "$?"
+assert "wrappers land where git resolves the relative hooksPath" "yes" \
+    "$([[ -f "$RELHP/githooks/reference-transaction" ]] && echo yes || echo no)"
+assert "nothing is written relative to the target subdirectory" "0" \
+    "$(find "$RELHP/outer/hooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"

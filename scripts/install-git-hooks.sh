@@ -55,6 +55,19 @@ if [[ "$REPO_ROOT" != /* ]]; then
     REPO_ROOT="$PWD/$REPO_ROOT"
 fi
 
+# The TRUE work-tree root. --is-inside-work-tree above accepts any SUBDIRECTORY,
+# and two things below must be judged against the root rather than the caller's
+# target: containment (a subdirectory shrinks the region treated as "inside the
+# work tree", so hooks aimed at tracked content elsewhere read as outside), and
+# a relative core.hooksPath, which git itself resolves from the root. Derived
+# separately rather than by normalising REPO_ROOT, because --show-toplevel also
+# resolves symlinks and REPO_ROOT's own spelling is what installed paths use.
+WT_ROOT=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || WT_ROOT=""
+if [[ -z "$WT_ROOT" ]]; then
+    printf 'install-git-hooks: cannot resolve the work tree root for %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
+
 if git -C "$REPO_ROOT" config --get core.hooksPath >/dev/null 2>&1; then
     HOOK_DIR=$(
         python3 -I -S -c '
@@ -80,12 +93,20 @@ sys.stdout.buffer.write(b)
         printf 'install-git-hooks: core.hooksPath is set but empty or invalid\n' >&2
         exit 1
     fi
+    # git resolves a relative core.hooksPath from the work tree root.
+    HOOK_BASE=$WT_ROOT
 else
     HOOK_DIR=$(git -C "$REPO_ROOT" rev-parse --git-path hooks)
+    # --git-path returns a path relative to the -C directory.
+    HOOK_BASE=$REPO_ROOT
 fi
-# Make absolute when relative (worktree / linked / core.hooksPath cases)
+# Make absolute when relative (worktree / linked / core.hooksPath cases). The
+# base differs by branch and getting it wrong installs nothing: git resolves a
+# relative core.hooksPath from the WORK TREE ROOT, so joining it to a
+# subdirectory target writes six wrappers to a directory git never reads while
+# the installer still reports success -- enforcement silently absent.
 if [[ "$HOOK_DIR" != /* ]]; then
-    HOOK_DIR="$REPO_ROOT/$HOOK_DIR"
+    HOOK_DIR="$HOOK_BASE/$HOOK_DIR"
 fi
 
 # Digest the gate-script closure. Embedded verbatim in every installed wrapper,
@@ -147,19 +168,6 @@ if got!=sys.argv[2]:
 GIT_DIR_ABS=$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null) || GIT_DIR_ABS=""
 if [[ -z "$GIT_DIR_ABS" ]]; then
     printf 'install-git-hooks: cannot resolve the git directory for %s\n' "$REPO_ROOT" >&2
-    exit 1
-fi
-# Containment must compare against the TRUE work-tree root, not the caller's
-# target. --is-inside-work-tree above accepts any SUBDIRECTORY, and handing that
-# subdirectory to the check shrinks the region it treats as "inside the work
-# tree": a core.hooksPath aimed at tracked content elsewhere in the same
-# worktree then reads as outside, and the wrappers land exactly where a merge
-# can replace them before the digest check runs. Derived separately rather than
-# by normalising REPO_ROOT, because --show-toplevel also resolves symlinks and
-# REPO_ROOT's own spelling is what every installed path is built from.
-WT_ROOT=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || WT_ROOT=""
-if [[ -z "$WT_ROOT" ]]; then
-    printf 'install-git-hooks: cannot resolve the work tree root for %s\n' "$REPO_ROOT" >&2
     exit 1
 fi
 python3 -I -S -c '

@@ -307,6 +307,49 @@ preflight_install() {
 
 preflight_install
 
+SNAP_ROOT="$HOOK_DIR/.busdriver-gates"
+
+# Snapshots are never deleted, so BOUND the pile instead of letting it grow
+# without limit. Past the ceiling this refuses and names the remedy. A refusal
+# is safe exactly where a sweep is not: nothing is deleted, and the wrappers
+# already installed keep working because they point at a snapshot this run
+# never touched (tests/test-install-git-hooks.sh proves a refused install
+# leaves working hooks intact). What it must NOT tell the operator to do is
+# clear the whole directory -- that takes the live snapshots too, and until an
+# install succeeds again every ref update in the repo aborts, including the
+# commit needed to fix whatever made the rerun fail. So the remedy names the
+# inert entries only, and prints no command to paste: a hooks path may legally
+# contain a space, a bracket or an apostrophe, and an unquoted `rm -rf` handed
+# to an operator is the same escaping bug this branch removes elsewhere.
+# The count is read before the snapshot is created, so two installers racing in
+# one hooks directory can both pass at 99 and land 101. That is deliberate: the
+# overshoot is bounded by the number of concurrent installers, the next install
+# refuses anyway, and nothing here grows without limit -- which is the property
+# being bought. A lock would buy exactness for a single-operator repo that does
+# not run concurrent installs, and this file already declined that trade once.
+# ponytail: fixed ceiling, ~180 MB of snapshots; make it a flag if anyone asks.
+SNAP_MAX=100
+if [[ -d "$SNAP_ROOT" ]]; then
+    snap_count=$(find "$SNAP_ROOT" -mindepth 1 -maxdepth 1 | wc -l)
+    if (( snap_count >= SNAP_MAX )); then
+        {
+            printf 'install-git-hooks: %q holds %d snapshots (ceiling %d).\n' \
+                "$SNAP_ROOT" "$snap_count" "$SNAP_MAX"
+            printf 'Superseded snapshots are never deleted. Remove the inert ones -- every\n'
+            printf 'entry in that directory that NO installed wrapper names on its exec\n'
+            printf 'line. Check all six wrappers, not one: an interrupted install can leave\n'
+            printf 'them split across two snapshots, and both are live. Do this only when\n'
+            printf 'NO hooks are running: one that started earlier read an older wrapper and\n'
+            printf 'is still about to exec the snapshot it names. Then rerun this installer.\n'
+            printf 'Do NOT remove the directory itself. That takes the LIVE snapshot with\n'
+            printf 'it, and until an install succeeds again every wrapper execs a missing\n'
+            printf 'file, which at the reference-transaction prepared phase aborts every ref\n'
+            printf 'update in the repo -- including the commits you would need to fix it.\n'
+        } >&2
+        exit 1
+    fi
+fi
+
 # Exec the bytes we verified. The digest above proves the live tree is intact
 # at check time, but the wrapper then re-opens the gate BY PATHNAME — a writer
 # racing that window executes bytes the digest never saw. So keep a private
@@ -316,47 +359,32 @@ preflight_install
 # install fails LOUD instead of silently running the old snapshot. Sourced
 # libs and any bytecode they generate resolve inside the snapshot too, which
 # is why the digest no longer has to purge __pycache__ from the live tree.
-# Built AFTER preflight: pruning superseded snapshots is destructive, and a
-# preflight that then refuses (a non-Busdriver hook, no --force) would leave
-# the already-installed wrappers pointing at a snapshot this run deleted.
-SNAP_ROOT="$HOOK_DIR/.busdriver-gates"
-SNAP="$SNAP_ROOT/$GATE_DIGEST"
-python3 -I -S - "$GATE_DIR" "$SNAP_ROOT" "$GATE_DIGEST" "$GATE_DIGEST_PY" <<'PY' || exit 1
+# Each install gets its OWN snapshot directory, and the wrapper it generates
+# hard-codes that exact path -- so a snapshot is only ever created, never
+# replaced. Replacing one is what forces a gap: POSIX rename cannot atomically
+# overwrite a non-empty directory, so every ordering (delete-then-rename,
+# rename-aside-then-rename) leaves a window in which the path the INSTALLED
+# wrappers already point at does not exist. Creating under a fresh name has no
+# such window: the old snapshot stays intact and in use until its wrapper is
+# overwritten, and nothing deletes it afterwards.
+
+
+SNAP_NAME=$(python3 -I -S - "$GATE_DIR" "$SNAP_ROOT" "$GATE_DIGEST" "$GATE_DIGEST_PY" <<'PY'
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 src, root, digest, digest_py = sys.argv[1:5]
-snap = os.path.join(root, digest)
 os.makedirs(root, exist_ok=True)
 
-def rm_any(path):
-    """Remove `path` without ever following it out of `root`."""
-    if os.path.islink(path):
-        os.unlink(path)
-    elif os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
-    elif os.path.exists(path):
-        os.unlink(path)
-
-
-def check_root(root):
-    # Refuse a symlinked snapshot root. Pruning recursively deletes every entry
-    # under it that is not the current digest, so following a link here turns a
-    # hook install into an rm -rf of whatever it points at. The same reasoning
-    # applies to each entry, which is why rm_any unlinks rather than descends.
-    if os.path.islink(root):
-        sys.stderr.write(
-            "install-git-hooks: %s is a symlink. The snapshot root is pruned\n"
-            "recursively, so following it would delete the target's contents.\n"
-            "Remove it and rerun.\n" % root)
-        raise SystemExit(1)
-
-
-check_root(root)
-if os.path.islink(snap):
-    os.unlink(snap)
+if os.path.islink(root):
+    sys.stderr.write(
+        "install-git-hooks: %s is a symlink.\n"
+        "The snapshot must live inside the hooks directory -- that containment\n"
+        "is what keeps a merge from reaching it. Remove it and rerun.\n" % root)
+    raise SystemExit(1)
 
 
 def digest_of(path):
@@ -373,24 +401,52 @@ def digest_of(path):
 # copy is also what makes a snapshot dir that ALREADY exists safe to reuse --
 # the path is named by a digest, but until this runs nothing has confirmed its
 # contents match that name.
-for attempt in range(3):
-    if os.path.isdir(snap) and digest_of(snap) == digest:
-        break
-    tmp = snap + ".tmp.%d" % os.getpid()
-    rm_any(tmp)
-    # Build under a temp name and rename, so a snapshot dir named by a digest
-    # is never half-populated: the wrapper's exec target either is not there
-    # or is complete.
-    shutil.copytree(src, tmp, ignore=shutil.ignore_patterns("__pycache__"))
-    rm_any(snap)
-    os.rename(tmp, snap)
-else:
-    sys.stderr.write(
-        "install-git-hooks: snapshot under %s does not match the digest it is\n"
-        "named by, after 3 attempts. The gate tree is being written while this\n"
-        "installer runs. Refusing to pin hooks to bytes nothing verified.\n" % root)
-    raise SystemExit(1)
+# ALWAYS rebuild. There used to be a "reuse it if it already hashes right"
+# branch here, and every form of it was the same defect: deciding to trust a
+# directory this process did not create means checking it and then using it,
+# and any pathname between those two steps can be swapped for a symlink to a
+# tree that hashes correctly. Removing the decision removes the race -- and
+# costs one copy of ~30 small files per install, which is not worth defending
+# against. What gets verified is the copy WE just made, under a name only this
+# process uses, before it is renamed into place.
+# mkdtemp reserves the name ATOMICALLY (O_EXCL), so it is unique against every
+# other installer and against this directory's own history. A pid is not --
+# pids are recycled, and a name colliding with the snapshot the INSTALLED
+# wrappers already point at would overwrite the tree they are about to exec.
+snap = tempfile.mkdtemp(prefix=digest + ".", dir=root)
+snap_name = os.path.basename(snap)
+# Copy INTO the reserved directory rather than removing it first: an rmdir
+# would hand the name back, and between that and copytree another writer could
+# claim it -- which is the whole property mkdtemp was used for.
+# Anything that goes wrong from here leaves a half-built tree behind, and
+# since superseded snapshots are never swept there is nothing to collect it
+# later -- a repeatable failure would add ~2 MB per attempt. Removing it is
+# safe in a way removing a SUPERSEDED snapshot never is: mkdtemp made this
+# directory, this process is the only thing that knows its name, and no
+# wrapper points at it until one is generated below.
+try:
+    shutil.copytree(src, snap, ignore=shutil.ignore_patterns("__pycache__"),
+                    dirs_exist_ok=True)
+    # Verify the copy WE just made: hashing the live tree and copying it are
+    # two reads of two different moments, and only this proves the bytes about
+    # to be pinned are the bytes that were hashed.
+    if digest_of(snap) != digest:
+        sys.stderr.write(
+            "install-git-hooks: the gate tree changed while it was being copied.\n"
+            "Refusing to pin hooks to bytes nothing verified. Rerun when the tree\n"
+            "is settled.\n")
+        raise SystemExit(1)
+except BaseException:
+    shutil.rmtree(snap, ignore_errors=True)
+    raise
+sys.stdout.write(snap_name)
 PY
+) || exit 1
+SNAP="$SNAP_ROOT/$SNAP_NAME"
+if [[ -z "$SNAP_NAME" || ! -d "$SNAP" ]]; then
+    printf 'install-git-hooks: snapshot was not created under %s\n' "$SNAP_ROOT" >&2
+    exit 1
+fi
 
 install_one reference-transaction \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
@@ -405,46 +461,18 @@ install_one pre-commit \
 install_one post-commit \
     "$PLUGIN_ROOT/hooks/gate-scripts/merge-post-commit-consume.sh"
 
-# Only now that every wrapper is in place, drop snapshots from earlier installs.
-# Pruning is the one destructive step here, so it goes AFTER the commit point:
-# doing it up front meant an install that failed or was interrupted partway
-# left the PREVIOUS wrappers pointing at a snapshot this run had already
-# deleted — fail-closed, but a brick that needs a reinstall to clear. Two
-# installers racing in one plugin root can still prune each other's snapshots;
-# they are named by digest, so the loser is fail-closed until rerun, and adding
-# locking for a case a single-operator repo does not have is not worth it.
-python3 -I -S - "$SNAP_ROOT" "$GATE_DIGEST" <<'PY' || exit 1
-import os
-import shutil
-import sys
-
-root, digest = sys.argv[1:3]
-
-def rm_any(path):
-    """Remove `path` without ever following it out of `root`."""
-    if os.path.islink(path):
-        os.unlink(path)
-    elif os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
-    elif os.path.exists(path):
-        os.unlink(path)
-
-
-def check_root(root):
-    # Refuse a symlinked snapshot root. Pruning recursively deletes every entry
-    # under it that is not the current digest, so following a link here turns a
-    # hook install into an rm -rf of whatever it points at. The same reasoning
-    # applies to each entry, which is why rm_any unlinks rather than descends.
-    if os.path.islink(root):
-        sys.stderr.write(
-            "install-git-hooks: %s is a symlink. The snapshot root is pruned\n"
-            "recursively, so following it would delete the target's contents.\n"
-            "Remove it and rerun.\n" % root)
-        raise SystemExit(1)
-
-
-check_root(root)
-for name in os.listdir(root):
-    if name != digest:
-        rm_any(os.path.join(root, name))
-PY
+# Superseded snapshots are left in place. Removing one is the only
+# destructive thing this installer could do, and it can never be proven
+# safe: a hook that already read its wrapper is about to exec the snapshot
+# that wrapper names, and no design short of refcounting every hook knows
+# whether one is in flight. Each is ~2 MB of inert shell that nothing points
+# at once its wrapper is overwritten, so any entry below OTHER than the one the
+# wrappers name can be deleted by hand when no hooks are running -- all six
+# wrappers, since an interrupted install can leave them split across two live
+# snapshots. Never the whole directory: that takes the live ones too, leaving
+# every wrapper
+# exec-ing a missing file -- and at the reference-transaction `prepared` phase
+# that aborts every ref update in the repo until an install succeeds again.
+# The pile cannot grow without limit: the ceiling above refuses first.
+printf 'install-git-hooks: gate snapshots live in %s (old ones are inert).\n' \
+    "$SNAP_ROOT"

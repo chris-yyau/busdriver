@@ -139,23 +139,97 @@ unauthorized merge tip is never published.
   carries the digest check, so a merge able to replace the WRAPPER skips the
   check entirely and pinning the gates behind it would be theatre — and it is
   what makes the snapshot's location trustworthy, since the snapshot sits in
-  that same directory. Three further details the review rounds forced, each with
-  a test: the snapshot is re-hashed AFTER the copy and rebuilt when it does not
-  match the digest it is named by — hashing the live tree and copying it are two
-  reads of two different moments, and a directory's name is not evidence about
-  its contents; the snapshot is built after preflight, because pruning
-  superseded snapshots is destructive and a preflight that then refuses would
-  leave the already-installed wrappers pointing at a snapshot the refused run
-  had deleted; and containment compares `(st_dev, st_ino)` rather than string
-  prefixes, because macOS volumes are case-insensitive by default while
-  `realpath()` preserves whatever spelling it was handed, so `<WT>/hooks` and
-  `<wt>/hooks` are one directory that no prefix test relates.
+  that same directory. Four further details the review rounds forced. The copy
+  is re-hashed after it is made and before it is published — hashing the live
+  tree and copying it are two reads of two different moments. There is no
+  "reuse it if it already hashes right" branch: deciding to trust a directory
+  the installer did not create means checking a pathname and then using it, and
+  every version of that was swappable for a symlink to a tree that hashes
+  correctly, so the decision was deleted rather than hardened. Each install
+  therefore CREATES its own snapshot directory, whose name `mkdtemp` reserves
+  atomically — and the copy goes INTO that reserved directory rather than
+  removing it first, since an `rmdir` would hand the name back and another
+  writer could claim it — and which the generated wrapper hard-codes; it never
+  replaces one.
+  POSIX `rename` cannot atomically overwrite a non-empty directory, so every
+  replacing order — delete-then-rename, rename-aside-then-rename — leaves a
+  window where the path the already installed wrappers point at does not exist.
+  Creating under a fresh name has no such window, and needs no publish step at
+  all: nothing can reach the tree until the wrapper naming it is written, so a
+  rejected or half-written copy is unreachable rather than dangerous. A `<pid>`
+  suffix was NOT enough — pids are recycled, and a collision would delete the
+  snapshot the installed wrappers point at. **Superseded snapshots are never removed.** They accumulate (~2 MB each, inside
+  `.git/`, one per install — the installer always rebuilds, so an install that
+  changes nothing still adds one), but NOT without limit: past a ceiling of 100
+  the installer REFUSES and names the remedy. The count is read before the
+  snapshot is created, so concurrent installers can overshoot by their own
+  number; that is accepted rather than locked, because the overshoot is bounded,
+  the next install refuses anyway, and boundedness — not exactness — is the
+  property being bought. A refusal is safe exactly where a
+  sweep is not — it deletes nothing, and the already-installed wrappers keep
+  working because they point at a snapshot the refused run never touched. What
+  it must not do is tell the operator to clear the whole directory: that takes
+  the LIVE snapshot too, and until an install succeeds again every wrapper execs
+  a missing file, which at the `prepared` phase aborts every ref update in the
+  repo — including the commit needed to fix whatever made the rerun fail. So the
+  refusal names the inert entries only, and prints no command to paste: a hooks
+  path may legally contain a space, a bracket or an apostrophe, and an unquoted
+  `rm -rf` handed to an operator is the same escaping class this branch removes
+  elsewhere. The installer also prints
+  where they live. Any entry there OTHER than the one the wrappers currently
+  name can be deleted by hand when no hooks are running — but not the directory
+  itself, which also holds the LIVE snapshot: removing that leaves every wrapper
+  exec-ing a missing file, and at the `prepared` phase a failing wrapper aborts
+  every ref update in the repo until the installer is rerun. This is a deliberate reversal — a prune pass WAS built,
+  reviewed across many rounds, and deleted. Recorded so it is not reproposed: a sweep is
+  the only destructive act the installer would have, and it cannot be made
+  correct, because a hook that already read its wrapper is about to exec the
+  snapshot that wrapper names and nothing short of refcounting every hook knows
+  whether one is in flight. Every rule tried failed on its own terms — an AGE
+  rule cannot express it (the previous install may have been hours ago and its
+  snapshot still in use a second ago); "keep the most recently superseded one"
+  breaks when an interrupted install has left the six wrappers SPLIT across two
+  snapshots; reading back each wrapper's declared snapshot name fixed that and
+  brought its own defects (an undeclared legacy wrapper had to suspend pruning
+  entirely, and the declaration list was expanded unquoted, so a declaration of
+  `*` globbed); and a one-week grace period is garbage collection with a wide
+  margin, never a proof. Successive reviews also asked for contradictory
+  orderings — delete-then-rename and rename-aside-then-rename leave the same
+  window, because POSIX `rename` cannot atomically replace a non-empty
+  directory. Deleting the operation removed that entire class, along with ~180
+  lines, the `O_NOFOLLOW` descriptor walk, the recursive `rm_at`, the mtime
+  stamping (`copytree` copies the SOURCE's timestamps, which only mattered to an
+  age rule) and the per-wrapper `# busdriver-snapshot:` declaration line. What
+  is left of the hazard is disk usage, which is visible, reversible, and the
+  operator's to manage — as `rules/common/designing-enforcement-gates.md` already
+  says, cleanup belongs in a non-gating pass, not wired to an install. If GC is
+  ever genuinely wanted it belongs in a separate operator-invoked `--gc`, run
+  when the operator knows no hooks are live; do not put it back here.
+  A half-built snapshot IS removed, on any failure — that deletion is safe in a
+  way the other never is: `mkdtemp` created the directory, only this process
+  knows its name, and no wrapper points at it until one is generated. The
+  snapshot root is still refused if it is a symlink, now purely so the executed
+  tree stays inside the hooks directory that containment proved a merge cannot
+  reach. And containment
+  compares `(st_dev, st_ino)` rather than string prefixes, because macOS volumes
+  are case-insensitive by default while `realpath()` preserves whatever spelling
+  it was handed, so `<WT>/hooks` and `<wt>/hooks` are one directory that no
+  prefix test relates.
   `tests/test-install-git-hooks.sh` proves it refuses an
   edit, an addition and a deletion, clears on restore, execs the snapshot rather
   than the live tree (a break planted in the snapshot alone is carried through),
-  does not copy planted bytecode into the snapshot on re-pin, rebuilds a
-  tampered snapshot, leaves working hooks intact when an install is refused, and
-  refuses a case-variant path into tracked content.
+  does not copy planted bytecode into the snapshot on re-pin, abandons a
+  tampered snapshot on reinstall, leaves working hooks intact when an install is
+  refused, refuses a symlinked snapshot root,
+  keeps a superseded snapshot that has been aged out, and refuses a case-variant path into tracked content. Two cases exist because
+  the branch they cover cannot be reached by an ordinary fixture: one drives a
+  real `prepared`-phase decision through an installer-produced wrapper and
+  plants a sentinel in the snapshot's `lib/`, which is what proves
+  `$_SCRIPT_DIR/lib` resolves inside the snapshot (the `committed`-phase cases
+  cannot show it — the gate exits on its first line there); the other runs the
+  shipped snapshot program itself against a digest that cannot match, which is
+  the state a lost copy race produces, rather than adding a test-only seam to a
+  security script.
 - The gate validates the staged-diff hash with the canonical minting expression
   (#576), pinned against the other three hash-bearing files by
   `tests/test-litmus-marker-binding.sh`. A validator that spells the hash

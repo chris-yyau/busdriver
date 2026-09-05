@@ -4608,14 +4608,29 @@ def _zero_old_git_argv(seg):
     if argv and _is_exe(argv[0], 'git'):
         return argv, raw_argv
     toks = toks_once(seg)
-    last_i = last_sub = None
+    # Take the EARLIEST git-* token, preferring one in a command position --
+    # never the last. `_git_dashed_subcommand` validates nothing beyond the
+    # `git-` prefix, so any OPERAND spelled that way used to win: in
+    # `xargs -I{} git-branch -f main git-status` the trailing branch name
+    # rewrote the invocation as `git status`, and a worktree destination
+    # `/tmp/git-status` masked `worktree add -B` the same way. A command word
+    # precedes its operands, so the first is the candidate; and if none sits in
+    # a readable command position, the first overall still beats the last,
+    # because guessing EARLIER can only name a more dangerous subcommand.
+    cmd_i = cmd_sub = None
     for i, tok in enumerate(toks):
         sub = _git_dashed_subcommand(tok)
-        if sub is not None:
-            last_i, last_sub = i, sub
-    if last_i is None:
+        if sub is not None and _zero_old_only_prefix(toks[:i]):
+            cmd_i, cmd_sub = i, sub
+            break
+    if cmd_i is None:
+        # No git-* token stands where a COMMAND could: every candidate is an
+        # operand. Synthesising an argv from one is what let a trailing branch
+        # name or a worktree destination fabricate a harmless `git status`, so
+        # answer "unreadable" instead and let the invocation-shape fallback
+        # decide -- that arm is strictly stricter, so the polarity is safe.
         return None, None
-    return ['git', last_sub] + list(toks[last_i + 1:]), toks
+    return ['git', cmd_sub] + list(toks[cmd_i + 1:]), toks
 _ZERO_OLD_SCOPE_ENV = frozenset({
     'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_INDEX_FILE',
     'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
@@ -4740,28 +4755,51 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
             out.append(item)
     return out
 _ZERO_OLD_PRINT_ONLY = frozenset(('echo', 'printf'))
-_ZERO_OLD_FORCE_WHOLE = ('-f', '-d', '-D', '-B', '-C', '--force', '--delete')
-_ZERO_OLD_MOVE_WHOLE = ('-m', '-M', '--move')
+_ZERO_OLD_LONG_FORCE = ('--force', '--delete')
+_ZERO_OLD_LONG_MOVE = ('--move', '--copy')
+# Letters git actually defines as SHORT options across the ref-writing
+# subcommands (branch / checkout / switch / worktree / update-ref). A cluster
+# is a run of these; anything outside the set means the token is a single-dash
+# LONG option belonging to some other program, which is how find's `-depth`,
+# `-delete`, `-name`, `-maxdepth` and `-print` stay out without a length cap.
+_ZERO_OLD_CLUSTER_ALPHA = frozenset('abBcCdDfilmMpqrtuvz23')
+_ZERO_OLD_FORCE_LETTERS = 'fdDBC'
+_ZERO_OLD_MOVE_LETTERS = 'mM'
 def _zero_old_force_tok(tok, strong=False):
     """True if this token spells a ref-writing flag.
 
     `-d` is here beside `-D`: the unforced delete removes the ref just as the
     forced one does, it merely refuses when the branch is unmerged -- and from a
-    branch that CONTAINS main, `git branch -d main` succeeds. Missing it left
-    `xargs -I{} git branch -d main` recognised as a subcommand with no write.
+    branch that CONTAINS main, `git branch -d main` succeeds.
 
-    Cluster matching is capped at four characters because a single-dash LONG
-    option is not a cluster: find's `-depth` and `-delete` both carry a d, and
-    `git branch` spells its real clusters `-dq` / `-fD`. Same reason `-m`/`-M`
-    match only as whole tokens (`-name` carries an m). `strong` drops the rename
-    flags, which is what keeps `"$PYTHON" -m pytest` out of the no-verb arm.
+    Long options are matched by the PREFIX relation, not by spelling. Git
+    accepts any unambiguous abbreviation, so `--forc`, `--for`, `--del` and
+    `--mov` all run and no finite list of spellings can be complete; asking
+    instead whether the token is a prefix OF `--force` / `--delete` is closed by
+    construction. `--format` is not one, so it does not match; `--` is excluded
+    explicitly, since every long option has it as a prefix and it is
+    end-of-options, not a flag.
+
+    Clusters are matched by ALPHABET rather than by length. The old
+    four-character cap existed to keep find's `-depth` and `-delete` out, and it
+    cost the real clusters: `-qm` was missed entirely and anything longer than
+    four letters escaped. Requiring every character to be a git short-option
+    letter separates them without a cap.
+
+    `strong` drops the rename/copy flags, which is what keeps
+    `"$PYTHON" -m pytest` out of the no-verb arm.
     """
-    if tok in _ZERO_OLD_FORCE_WHOLE or tok.startswith('--force'):
-        return True
-    if not strong and (tok in _ZERO_OLD_MOVE_WHOLE or tok.startswith('--move')):
-        return True
-    return (tok.startswith('-') and not tok.startswith('--') and len(tok) <= 5
-            and any(c in tok[1:] for c in 'fdDBC'))
+    if not isinstance(tok, str) or not tok.startswith('-') or tok in ('-', '--'):
+        return False
+    if tok.startswith('--'):
+        opts = _ZERO_OLD_LONG_FORCE if strong else _ZERO_OLD_LONG_FORCE + _ZERO_OLD_LONG_MOVE
+        return any(o.startswith(tok) for o in opts)
+    body = tok[1:]
+    if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
+        return False
+    letters = _ZERO_OLD_FORCE_LETTERS if strong else (
+        _ZERO_OLD_FORCE_LETTERS + _ZERO_OLD_MOVE_LETTERS)
+    return any(c in letters for c in body)
 def _zero_old_only_prefix(toks):
     """True if every token is a command PREFIX, never the command itself.
 

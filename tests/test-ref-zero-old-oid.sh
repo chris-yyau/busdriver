@@ -655,6 +655,39 @@ ops = git_zero_old_ref_op(
 assert ops == [('force', '')], ops             # wrong length for a sha1 repo
 ops = git_zero_old_ref_op('git branch -D main', hook_cwd=hook_cwd)
 assert ops == [('delete', 'main')], ops
+
+# --- #834: option spelling and clustering on the wrapper path ---
+# Git accepts any unambiguous abbreviation of a long option, so the spellings
+# below all RUN. A list of literal flags can never be complete; these pin the
+# prefix relation and the alphabet rule that replaced it.
+for _c in ('xargs -I{} git branch --forc main ' + OID_A,
+           'xargs -I{} git branch --for main ' + OID_A,
+           'xargs -I{} git branch --del main',
+           'xargs -I{} git branch -qm main other',
+           'xargs -I{} git branch -qtvf main ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...without swallowing single-dash LONG options of other programs, which is
+# what the discarded four-character cap was protecting and what the alphabet
+# rule now protects properly.
+for _c in ('find /tmp -name branch', 'find /tmp -depth -delete',
+           'find /tmp -maxdepth 2 -print', 'cp -f /tmp/a /tmp/b',
+           '/usr/bin/python3 -m pytest tests', 'git branch -- main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+
+# --- #834: a git-* OPERAND must not name the subcommand ---
+# The dashed fallback took the LAST git-* token anywhere in the segment, so a
+# branch name or a worktree destination spelled `git-status` rewrote the
+# invocation as a harmless one.
+assert git_zero_old_ref_op(
+    'xargs -I{} /usr/local/bin/git-branch -f main git-status',
+    hook_cwd=hook_cwd), 'git-* operand masked the force'
+assert git_zero_old_ref_op(
+    'xargs -I{} git worktree add -B main /tmp/git-status ' + OID_A,
+    hook_cwd=hook_cwd), 'worktree destination masked add -B'
+# ...while a genuine dashed invocation still reads as one.
+assert git_zero_old_ref_op('env git-branch -f main ' + OID_A, hook_cwd=hook_cwd)
+for _c in ('git status', 'git log --oneline -5', 'git worktree list'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 print('ok')
 PY
 ) || DET=fail

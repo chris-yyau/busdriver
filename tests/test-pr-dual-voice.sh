@@ -504,7 +504,10 @@ if [[ -n "$_PERLTO" ]]; then
   _CPIDF=$(mktemp -t perlcancel-XXXXXX)
   perl -e "$_PERLTO" -- 60 /bin/sh -c 'trap "" TERM; sleep 90 & echo $! > '"$_CPIDF"'; wait' >/dev/null 2>&1 &
   _PLPID=$!
-  for _i in $(seq 1 100); do [[ -s "$_CPIDF" ]] && break; sleep 0.1; done
+  # Bash arithmetic, not `seq`: same reason the production reaper avoids it -- a
+  # loop that silently runs zero iterations would race the pid-file read and let the
+  # cancellation assertions below pass or fail without testing anything.
+  for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_CPIDF" ]] && break; sleep 0.1; done
   _CPID=$(cat "$_CPIDF" 2>/dev/null)
   ok "$([[ -n "$_CPID" ]] && echo y || echo n)" "y" "perl arm: grandchild pid recorded"
   kill -TERM "$_PLPID" 2>/dev/null
@@ -662,7 +665,7 @@ STUB_ORPHAN=60 STUB_ORPHAN_PID_FILE="$_PIDF2" STUB_HANG=30 LITMUS_PR_BACKSTOP_TI
 _RLPID=$!
 # Wait for the stub to actually record its straggler — signalling before the
 # dispatch exists would prove nothing about the trap.
-for _i in $(seq 1 100); do [[ -s "$_PIDF2" ]] && break; sleep 0.1; done
+for (( _i = 0; _i < 100; _i++ )); do [[ -s "$_PIDF2" ]] && break; sleep 0.1; done
 _OPID2=$(cat "$_PIDF2" 2>/dev/null)
 ok "$([[ -n "$_OPID2" ]] && echo y || echo n)" "y" "signal case: stub recorded the straggler pid"
 kill -TERM "$_RLPID" 2>/dev/null
@@ -772,6 +775,10 @@ ok "$(grep -c '\[\[ "\$_mode" == leader \]\] && kill -KILL' "$RL")" "1" "pid-dir
 # perl-only test, and a grace loop that silently runs zero iterations degrades to
 # an immediate KILL -- the orphan-making behaviour the grace exists to prevent.
 ok "$(grep -c 'seq 1 40' "$RL")" "0" "the reap grace does not depend on an external seq"
+# ...and neither do the fixtures that exercise it. A settle loop running zero
+# iterations races the pid-file read, so the assertion it guards would report on
+# nothing. Counted in THIS file, which is the one that used to.
+ok "$(grep -c 'se[q] 1 100' "$REPO/tests/test-pr-dual-voice.sh")" "0" "the cancellation fixtures do not depend on an external seq"
 # The perl arm creates its group inside the fork()ed child, so its pgid is
 # invisible to the shell — it must carry the equivalent reap in its own body.
 ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"

@@ -1399,6 +1399,19 @@ PROMPT_EOF
       --append-system-prompt "$AGENT_SYS" \
       --output-format json < "$_bs_in" > "$_bs_out" 2>/dev/null &
     _bs_pid=$!
+    # RESIDUAL, named rather than implied: a fatal signal landing between the `&`
+    # above and this assignment finds the trap with an empty handle, and the wrapper
+    # it just launched is not reaped. It cannot be closed from a shell -- any cover
+    # needs the pid that does not exist yet, and POSIX gives a shell no way to block
+    # signals across the two statements (GNU `timeout` closes the identical window
+    # only because it can sigprocmask in C). Adding machinery that cannot close it
+    # would buy the appearance of a fix and nothing else.
+    #
+    # What bounds it: the thing left behind is the WRAPPER, which carries its own
+    # `$_bs_remaining` timer and exits on it, killing the CLI. So the escape is a
+    # tree that self-terminates within the attempt budget, not an unbounded one --
+    # and the capture is unlinked by the trap regardless, so the disk a straggler
+    # can hold is bounded by what it writes before its own timeout fires.
     wait "$_bs_pid"
     RC=$?
     # `wait` has RELEASED the pid. Narrow the trap's permission FIRST -- before the

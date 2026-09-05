@@ -149,6 +149,19 @@ if [[ -z "$GIT_DIR_ABS" ]]; then
     printf 'install-git-hooks: cannot resolve the git directory for %s\n' "$REPO_ROOT" >&2
     exit 1
 fi
+# Containment must compare against the TRUE work-tree root, not the caller's
+# target. --is-inside-work-tree above accepts any SUBDIRECTORY, and handing that
+# subdirectory to the check shrinks the region it treats as "inside the work
+# tree": a core.hooksPath aimed at tracked content elsewhere in the same
+# worktree then reads as outside, and the wrappers land exactly where a merge
+# can replace them before the digest check runs. Derived separately rather than
+# by normalising REPO_ROOT, because --show-toplevel also resolves symlinks and
+# REPO_ROOT's own spelling is what every installed path is built from.
+WT_ROOT=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || WT_ROOT=""
+if [[ -z "$WT_ROOT" ]]; then
+    printf 'install-git-hooks: cannot resolve the work tree root for %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
 python3 -I -S -c '
 import os,sys
 raw,wt,gd=sys.argv[1:4]
@@ -214,7 +227,7 @@ if escape:
     sys.stderr.write("  it to use the default hooks directory inside .git.\n")
     raise SystemExit(1)
 raise SystemExit(0)
-' "$HOOK_DIR" "$REPO_ROOT" "$GIT_DIR_ABS" || exit 1
+' "$HOOK_DIR" "$WT_ROOT" "$GIT_DIR_ABS" || exit 1
 
 GATE_DIR="$PLUGIN_ROOT/hooks/gate-scripts"
 GATE_DIGEST=$(python3 -I -S -c "$GATE_DIGEST_PY" "$GATE_DIR") || {

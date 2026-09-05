@@ -508,13 +508,28 @@ def _arm_merge(repo, claim_head, payload, *, prior_payload=None):
     finally:
         os.close(pfd)
 
-def write_claim(repo, state_dir, claim_head, marker_content):
-    """Persist claim_head, marker, and the authorized staged tree (git write-tree)."""
+def write_claim(repo, state_dir, claim_head, marker_content, auth_tree=""):
+    """Persist claim_head, marker, and the authorized staged tree (git write-tree).
+
+    auth_tree is the tree the CALLER reviewed. Passing it makes the arm and the
+    review one decision: this re-reads the live index, and if it has moved on to
+    an unreviewed tree the claim is refused rather than written and checked
+    afterwards. Publishing first left a window in which a valid arm named tree Y
+    while only X had been reviewed — a concurrent reference transaction could
+    spend it before the caller's confirmation rejected the mismatch, and clearing
+    the claim afterwards cannot unpublish the commit. Same consume/verify-before-
+    arm rule as authorize_pass_merge. Empty means the caller has no reviewed tree
+    to bind (the SKIPPED-NONE path), which is unchanged.
+    """
 
     def _write():
         staged_tree = _staged_tree(".")
         if not staged_tree:
             return False
+        if auth_tree and staged_tree != auth_tree:
+            return False
+        if auth_tree:
+            staged_tree = auth_tree
         merge_heads = _merge_heads(".")
         if merge_heads is None:
             return False
@@ -652,26 +667,29 @@ def authorize_operator_skip(repo, state_dir, gate_name, claim_head, marker_conte
             }
             if not append_at(dfd, json.dumps(started, separators=(",", ":"))):
                 return False
-            if not _write_claim_body(
-                dfd, state_dir, claim_head, marker_content, staged_tree, merge_heads
-            ):
-                return False
-            # Consume the held inode immediately so it cannot be renamed aside and
-            # restored for a second merge. Abort/retry requires a fresh aged skip.
+            # SPEND FIRST, ARM SECOND — the same rule, and the same reason, as
+            # authorize_pass_merge. Writing the claim first leaves a window in
+            # which a valid arm exists while the skip inode is still on disk: a
+            # concurrent reference transaction spends the arm, and if the consume
+            # then fails (renamed aside, or hard-linked) the skip survives to be
+            # restored and reused after aging — with the commit already published,
+            # which retiring the claim cannot undo. Consuming first cannot produce
+            # that pair. Its own failure mode, skip spent and no claim written, is
+            # the fail-CLOSED one: nothing is authorized and the operator re-runs.
             try:
                 consumed = finish_skip_consume(dfd, SKIP, skip_fd)
             except OSError:
                 # finish_skip_consume swallows its own OSErrors, but its finally
-                # closes the fd and that close can itself raise. Letting it escape
-                # here would skip _retire_claim and leave the claim it just wrote
-                # armed with no in-band recovery.
+                # closes the fd and that close can itself raise.
                 consumed = False
             # Cleared unconditionally: the fd is closed on every exit from
             # finish_skip_consume, so the finally below must not close it again.
             skip_fd = None
             if not consumed:
-                if not _retire_claim(dfd):
-                    return False
+                return False
+            if not _write_claim_body(
+                dfd, state_dir, claim_head, marker_content, staged_tree, merge_heads
+            ):
                 return False
             bound = dict(started)
             bound["ts"] = datetime.datetime.now(datetime.timezone.utc).strftime(
@@ -1142,15 +1160,15 @@ def consume_if_pending(repo, state_dir, gate_name):
                 spent = _read_spent_oid(".")
                 if spent and spent == head:
                     return _finish_published_cleanup(dfd, ".", state_dir)
-                if (
-                    len(parents) >= 2
-                    and _is_commit_oid(claim_head)
-                    and parents[0] == claim_head
-                ):
-                    if not _rollback_merge(
-                        ".", head, parents, claim_head, target_ref=_head_branch_ref(".")
-                    ):
-                        return False
+                # No protected .git arm, so nothing shows an authorization was ever
+                # in flight -- the same condition _absent_claim_should_rollback
+                # already refuses to rewind on, and for the same reason: this shape
+                # is shared by a fast-forward onto a merge commit. The claim file is
+                # ordinary repo content, so a hostile branch can commit
+                # .claude/merge-litmus-pending.local and a merge lands it; rolling
+                # back on the claim alone then rewinds a legitimate merge and drops
+                # it (reproduced: a four-line file naming parents[0] destroyed one).
+                # Retire the claim and touch no refs.
                 return _retire_claim(dfd)
             arm_head, arm_payload, arm_target = arm_rec[0], arm_rec[1], arm_rec[2]
             cur_branch = _head_branch_ref(".")

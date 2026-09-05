@@ -520,5 +520,34 @@ assert "the wrapper execs an absolute path" "yes" \
 "$REL_PARENT/consumer/.git/hooks/reference-transaction" committed </dev/null >/dev/null 2>&1
 assert "the hook installed via a relative path actually runs" "0" "$?"
 
+
+# 11. Containment must be judged against the TRUE work tree root. `rev-parse
+# --is-inside-work-tree` accepts any SUBDIRECTORY, so naming one as the target
+# used to shrink the region treated as "inside the work tree": a core.hooksPath
+# aimed at tracked content elsewhere in the same worktree then read as outside
+# and the wrappers landed where a merge can replace them before the digest
+# check runs -- the exact bypass the pin exists to close. Naming the root was
+# already refused; naming <root>/sub was not.
+SUBW="$WORK/subw"
+mkdir -p "$SUBW"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$SUBW/wt"
+mkdir -p "$SUBW/wt/sub" "$SUBW/wt/.githooks"
+git -C "$SUBW/wt" config commit.gpgsign false
+git -C "$SUBW/wt" config core.hooksPath "$SUBW/wt/.githooks"
+bash "$PR/scripts/install-git-hooks.sh" "$SUBW/wt/sub" >/dev/null 2>&1
+assert "a subdirectory target cannot smuggle hooks into the work tree" "1" "$?"
+assert "no wrapper landed in the tracked hooks dir" "0" \
+    "$(find "$SUBW/wt/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+# The refusal must not be blanket: a subdirectory target whose hooks dir is the
+# default (inside .git) is legitimate and must still install.
+git init -q "$SUBW/safe"
+mkdir -p "$SUBW/safe/sub"
+git -C "$SUBW/safe" config commit.gpgsign false
+bash "$PR/scripts/install-git-hooks.sh" "$SUBW/safe/sub" >/dev/null 2>&1
+assert "a subdirectory target with a safe hooks dir still installs" "0" "$?"
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"
 [[ "$FAIL" -eq 0 ]]

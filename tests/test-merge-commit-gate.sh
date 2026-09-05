@@ -1126,6 +1126,75 @@ else
     assert "refused PASS-MERGE leaves the marker in place" "kept" "destroyed"
 fi
 
+# ── write_claim refuses a moved index instead of arming it ──────────────
+# The hash-authorized paths used to publish the arm and only then confirm its
+# tree, so between those two steps a valid claim named a tree nobody reviewed.
+# Passing the reviewed tree in makes it one decision.
+echo "── write_claim binds the reviewed tree ─"
+TMP_AUTHTREE=$(mktemp -d)
+setup_repo "$TMP_AUTHTREE"
+mkdir -p "$TMP_AUTHTREE/.claude"
+AT_HEAD=$(git -C "$TMP_AUTHTREE" rev-parse HEAD)
+AT_HASH=$(printf 'd%.0s' {1..64})
+AT_REVIEWED=$(git -C "$TMP_AUTHTREE" rev-parse "HEAD^{tree}")   # the tree we "reviewed"
+echo "drift" > "$TMP_AUTHTREE/drift.txt"                       # index moves on
+git -C "$TMP_AUTHTREE" add drift.txt
+set +e
+AT_OUT=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from merge_pending import write_claim
+print("armed" if write_claim(sys.argv[2], ".claude", sys.argv[4], sys.argv[3], sys.argv[5]) else "refused")
+' "$REPO_ROOT/hooks/gate-scripts/lib" "$TMP_AUTHTREE" "BUILTIN-$AT_HASH" "$AT_HEAD" "$AT_REVIEWED" 2>&1)
+set -e
+assert "a live index that moved off the reviewed tree is refused" "refused" "$AT_OUT"
+if [[ -f "$TMP_AUTHTREE/.claude/merge-litmus-pending.local" ]]; then
+    assert "no claim is left armed after the refusal" "none" "armed"
+else
+    assert "no claim is left armed after the refusal" "none" "none"
+fi
+rm -rf "$TMP_AUTHTREE"
+
+# ── operator skip consumes before it arms ───────────────────────────────
+# authorize_pass_merge already spends first and arms second. The skip path did
+# the reverse, leaving a window where a valid arm existed while the skip inode
+# was still on disk: a concurrent transaction spends the arm, the consume then
+# fails, and the skip survives to be reused after aging. Forced here by making
+# the claim write fail: with consume-first the skip is gone and no claim exists.
+echo "── operator skip spends the inode before arming ─"
+TMP_SKIPORD=$(mktemp -d)
+setup_repo "$TMP_SKIPORD"
+mkdir -p "$TMP_SKIPORD/.claude"
+SO_HEAD=$(git -C "$TMP_SKIPORD" rev-parse HEAD)
+SO_HASH=$(printf 'e%.0s' {1..64})
+: > "$TMP_SKIPORD/.claude/skip-litmus.local"
+mkdir -p "$TMP_SKIPORD/.claude/merge-litmus-pending.local.tmp"   # makes the claim write fail
+# The age gate reads ctime and birthtime as well as mtime, and the parent dir's
+# ctime too, so no fixture can mint a consumable skip without really waiting it
+# out. Only the OPEN is stubbed; finish_skip_consume runs for real, which is the
+# half this case is about. Age policy has its own coverage in skip_age tests.
+set +e
+python3 -I -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import merge_pending as mp
+mp.open_skip_for_authorization = lambda dfd, name=mp.SKIP: os.open(
+    name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+mp.authorize_operator_skip(sys.argv[2], ".claude", "pre-commit", sys.argv[4], sys.argv[3])
+' "$REPO_ROOT/hooks/gate-scripts/lib" "$TMP_SKIPORD" "BUILTIN-$SO_HASH" "$SO_HEAD" >/dev/null 2>&1
+set -e
+if [[ -f "$TMP_SKIPORD/.claude/skip-litmus.local" ]]; then
+    assert "a failed arm still spent the skip inode" "spent" "survived"
+else
+    assert "a failed arm still spent the skip inode" "spent" "spent"
+fi
+if [[ -f "$TMP_SKIPORD/.claude/merge-litmus-pending.local" ]]; then
+    assert "a failed arm leaves no claim behind" "none" "armed"
+else
+    assert "a failed arm leaves no claim behind" "none" "none"
+fi
+rm -rf "$TMP_SKIPORD"
+
 echo ""
 printf "Results: %d/%d passed\n" "$PASS" "$TOTAL"
 [[ "$FAIL" -eq 0 ]]

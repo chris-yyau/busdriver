@@ -1,3 +1,10 @@
+## [2.1.14](https://github.com/chris-yyau/busdriver/compare/v2.1.13...v2.1.14) (2026-09-05)
+
+
+### Bug Fixes
+
+* **litmus:** bound the PR backstop retry sequence to one budget ([#823](https://github.com/chris-yyau/busdriver/issues/823)) ([#827](https://github.com/chris-yyau/busdriver/issues/827)) ([ddd2765](https://github.com/chris-yyau/busdriver/commit/ddd2765d0191c68520cbeb131c345b37733d4954)), closes [#368](https://github.com/chris-yyau/busdriver/issues/368) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [2.1.13](https://github.com/chris-yyau/busdriver/compare/v2.1.12...v2.1.13) (2026-09-04)
 
 

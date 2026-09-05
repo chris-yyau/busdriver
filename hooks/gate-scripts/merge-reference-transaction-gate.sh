@@ -351,7 +351,9 @@ try:
     # (No apostrophes in here: this program is a single-quoted bash string.)
     if not tree:
         raise SystemExit(6)
-    print(" ".join([tree] + ps))
+    # Always emit the separator, so a ROOT commit prints "<tree> " and the caller
+    # gets an EMPTY parents field rather than the tree back a second time.
+    print(tree + " " + " ".join(ps))
 finally:
     try:
         proc.kill()
@@ -362,15 +364,26 @@ finally:
     old_shape=$(commit_shape "$OLD"); old_rc=$?
     new_shape=$(commit_shape "$NEW"); new_rc=$?
     set -e
-    # TREE AND PARENTS BOTH. Comparing parents alone made this an authorization for
-    # any content: given a reviewed merge over (P1, S), `commit-tree <anything> -p P1
-    # -p S` has the same parent set, and update-ref fires no commit-chain hook, so the
-    # replacement was published with no claim and nobody reviewing its tree. Requiring
-    # the tree too narrows the exemption to what it was always described as -- a commit
-    # that differs only in its message or authorship, which introduces no content to
-    # review. A tree change now falls through to the ordinary claim/marker path, which
-    # is where an amend that actually changes something belongs.
-    [[ "$old_rc" -eq 0 && "$new_rc" -eq 0 && -n "$old_shape" && "$old_shape" == "$new_shape" ]] && exit 0
+    # Parents always; the TREE only when the replacement publishes a MERGE.
+    #
+    # Comparing parents alone made this an authorization for any content: given a
+    # reviewed merge over (P1, S), `commit-tree <anything> -p P1 -p S` has that exact
+    # parent set, and update-ref fires no commit-chain hook, so the replacement was
+    # published with no claim and nobody reviewing its tree.
+    #
+    # But requiring the tree UNCONDITIONALLY blocked ordinary `git commit --amend`
+    # with changed content, and blocked it with NO PATH TO SUCCESS: a single-parent
+    # tip is refused at the `parents -ge 2` floor below, which runs before any claim
+    # or marker is consulted, so re-running litmus cannot clear it. That is the same
+    # dead end this gate already had to remove once.
+    #
+    # This gate authorizes MERGE tips. A single-parent amend is the ordinary commit
+    # path's business and its gap is #783, not this rule's to close by bricking it.
+    old_tree=${old_shape%% *}; old_ps=${old_shape#* }
+    new_tree=${new_shape%% *}; new_ps=${new_shape#* }
+    if [[ "$old_rc" -eq 0 && "$new_rc" -eq 0 && -n "$old_ps" && "$old_ps" == "$new_ps" ]]; then
+        [[ "$parents" -lt 2 || "$old_tree" == "$new_tree" ]] && exit 0
+    fi
   fi
   # Root tip (zero parents) cannot smuggle a merge — allow create/amend without witnesses.
   if [[ "$parents" -eq 0 ]]; then

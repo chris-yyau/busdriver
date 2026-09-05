@@ -1370,6 +1370,34 @@ AM_TREE_RC=$( cd "$TMP_AMEND/r" \
      | bash "$AM_GATE" prepared >/dev/null 2>&1; echo $? )
 set -e
 assert "a replacement keeping the parents but changing the tree is refused" "1" "$AM_TREE_RC"
+
+# ...but ONLY for merge replacements. An ordinary single-parent `git commit --amend`
+# with changed content must still pass: the gate authorizes MERGE tips, and a
+# non-merge tip is refused at the `parents -ge 2` floor BEFORE any claim or marker is
+# consulted -- so blocking it here leaves no path to success at all, which re-creates
+# the dead end this gate already had to remove once.
+TMP_ORD=$(mktemp -d)
+(
+  cd "$TMP_ORD" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && MAIN=$(git symbolic-ref --short HEAD) && echo "$MAIN" > ../MAIN \
+    && echo a>a && git add . && git commit -q -m A \
+    && echo b>b && git add . && git commit -q -m B && git rev-parse HEAD > ../OLD \
+    && echo more >> b && git add b && git commit -q --amend -m "B fixed" \
+    && git rev-parse HEAD > ../NEW
+) >/dev/null 2>&1
+ORD_MAIN=$(cat "$TMP_ORD/MAIN"); ORD_OLD=$(cat "$TMP_ORD/OLD"); ORD_NEW=$(cat "$TMP_ORD/NEW")
+# Guard against a vacuous pass: the amend must really have changed the tree.
+assert "the ordinary amend actually changed the tree (else the case proves nothing)" "differ" \
+    "$( cd "$TMP_ORD/r" && [ "$(git rev-parse "$ORD_OLD^{tree}")" != "$(git rev-parse "$ORD_NEW^{tree}")" ] && echo differ || echo same )"
+set +e
+ORD_RC=$( cd "$TMP_ORD/r" \
+  && printf '%s %s refs/heads/%s\n' "$ORD_OLD" "$ORD_NEW" "$ORD_MAIN" \
+     | bash "$AM_GATE" prepared >/dev/null 2>&1; echo $? )
+set -e
+assert "an ordinary single-parent amend with changed content is allowed" "0" "$ORD_RC"
+rm -rf "$TMP_ORD"
 rm -rf "$TMP_AMEND"
 
 # ── forged commit headers ───────────────────────────────────────────────

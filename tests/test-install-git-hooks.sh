@@ -14,6 +14,21 @@
 # make this suite write outside its own temp dir.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+
+# Inherited repository-selecting git environment cannot be allowed to reach the
+# fixtures below. `git -C <dir>` does NOT override it: GIT_INDEX_FILE makes a
+# fixture's `git add` write ANOTHER repository's index, GIT_DIR and GIT_WORK_TREE
+# redirect the operation outright, and the object-directory pair can leave a fixture
+# referencing objects its own cleanup then deletes. A fixture core.hooksPath does not
+# override them either. Same guard as tests/test-merge-commit-gate.sh -- kept as a
+# local function in each suite so every suite stays runnable on its own, which is how
+# they are invoked. A FUNCTION, not a bare `unset`, so the containment case below can
+# plant hostile values and re-apply it.
+_neutralize_git_env() {
+    unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+}
+_neutralize_git_env
 REPO_SRC=$PWD
 
 WORK=$(mktemp -d) || exit 1
@@ -35,6 +50,39 @@ assert() {
         FAIL=$((FAIL + 1)); printf '  FAIL  %s\n        expected=%s\n        got=%s\n' "$what" "$want" "$got"
     fi
 }
+
+# Containment: prove the guard, do not assume the caller's environment was clean.
+# Asserting the six variables are empty passes vacuously on exactly the runs where
+# this defect is invisible, so plant hostile values and re-apply the guard on top.
+_TMP_CONTAIN=$(mktemp -d)
+(
+  cd "$_TMP_CONTAIN" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && echo x > x && git add x && git commit -q -m contained
+) >/dev/null 2>&1
+_CONTAIN_REAL=$(cd "$_TMP_CONTAIN" && pwd -P)
+_CONTAIN_GD=$(
+    export GIT_DIR="$_TMP_CONTAIN/hostile-gitdir" \
+           GIT_INDEX_FILE="$_TMP_CONTAIN/hostile-index" \
+           GIT_WORK_TREE="$_TMP_CONTAIN/hostile-worktree" \
+           GIT_OBJECT_DIRECTORY="$_TMP_CONTAIN/hostile-objects" \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES="$_TMP_CONTAIN/hostile-alt" \
+           GIT_COMMON_DIR="$_TMP_CONTAIN/hostile-common"
+    _neutralize_git_env
+    cd "$_TMP_CONTAIN/r" && { git rev-parse --absolute-git-dir 2>/dev/null || true; }
+)
+case "$_CONTAIN_GD" in
+    "$_CONTAIN_REAL"/r/.git) assert "a fixture resolves its own git dir despite a hostile inherited env" "contained" "contained" ;;
+    *) assert "a fixture resolves its own git dir despite a hostile inherited env" "contained" "${_CONTAIN_GD:-<unresolvable>}" ;;
+esac
+_CONTAIN_STAGED=$(
+    export GIT_INDEX_FILE="$_TMP_CONTAIN/hostile-index"
+    _neutralize_git_env
+    git -C "$_TMP_CONTAIN/r" diff --cached --name-only 2>/dev/null | tr '\n' ' '
+)
+assert "a staged write goes to the fixture index, not an inherited one" "" "$_CONTAIN_STAGED"
+rm -rf "$_TMP_CONTAIN"
 
 # Isolated PLUGIN_ROOT we are free to mutate.
 PR="$WORK/plugin"

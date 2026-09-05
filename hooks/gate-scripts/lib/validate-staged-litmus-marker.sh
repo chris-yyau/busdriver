@@ -264,8 +264,13 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
     # goes in the GIT DIR and not in TMPDIR — TMPDIR is inherited, never scrubbed
     # here, and GNU mktemp honours it, which would hand the racer the directory. A
     # racer who can write the git dir has already won every check in this file.
-    # The comparison BASE stays implicit deliberately: if HEAD moved, the digest
-    # simply differs and the gate blocks, which is fail-closed.
+    # The comparison BASE is PINNED to the same auth_head captured below (#835).
+    # It used to be left implicit on the argument that a moved HEAD merely changes
+    # the digest and blocks -- true only if ONE HEAD is read. `git diff --cached`
+    # re-resolves HEAD on every invocation, so the digest and the claim were two
+    # reads at two instants: an H1->H2->H1 sequence let the digest describe H2->tree
+    # while the claim named H1, and both the HEAD check and the tree check passed.
+    # Naming the commit makes the digest and the claim the same two endpoints.
     local gitdir=""
     gitdir=$(git -C "$repo_dir" --no-replace-objects rev-parse --absolute-git-dir 2>/dev/null) || gitdir=""
     if [[ -z "$gitdir" || ! -d "$gitdir" ]]; then
@@ -311,7 +316,7 @@ After the user creates the skip file, WAIT 30 SECONDS before retrying (the gate 
     hash_rc=0
     hash_line=$(
         set -o pipefail
-        GIT_INDEX_FILE="$idx_snap" git -C "$repo_dir" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${hash_cmd[@]}"
+        GIT_INDEX_FILE="$idx_snap" git -C "$repo_dir" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none "$auth_head" 2>/dev/null | "${hash_cmd[@]}"
     ) || hash_rc=$?
     rm -f "$idx_snap"
     if [[ "$hash_rc" -ne 0 ]]; then

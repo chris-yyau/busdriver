@@ -338,6 +338,25 @@ for f in "$GATE_SCRIPT" "$PRODUCER" "$DISPATCHER" "$MERGE_VALIDATOR"; do
 done
 [ "$parity_fail" -eq 0 ] && ok "all four hash-bearing files spell the canonical form identically"
 
+# ...and every one of those lines PINS ITS COMPARISON BASE (#835). `git diff --cached`
+# is index-vs-HEAD and re-resolves HEAD on EVERY invocation, so a site that reads it
+# twice in one authorization can straddle an A->B->A move: the digest describes B->tree
+# while the claim names A, and the HEAD check and the tree check both pass because each
+# is individually consistent. The producer pinned its base; the three consumers did not,
+# which is the whole of #835. Naming the commit is byte-identical to the implicit form
+# while HEAD is still, so this costs nothing and is checkable, unlike the race itself.
+basepin_fail=0
+for f in "$GATE_SCRIPT" "$PRODUCER" "$DISPATCHER" "$MERGE_VALIDATOR"; do
+    canon=$(grep -v '^[[:space:]]*#' "$f" | grep -c -- "$CANON_FLAGS" || true)
+    pinned=$(grep -v '^[[:space:]]*#' "$f" | grep -- "$CANON_FLAGS" \
+                | grep -cE -- '--ignore-submodules=none ("\$|\$\{)' || true)
+    if [ "$canon" -ne "$pinned" ]; then
+        bad "$f has $canon canonical hash line(s) but only $pinned pin the comparison base"
+        basepin_fail=1
+    fi
+done
+[ "$basepin_fail" -eq 0 ] && ok "every canonical hash line names its comparison base explicitly"
+
 # ...and the merge validator serves BOTH reads from one frozen index snapshot.
 # `git diff --cached` streams the live index and `write-tree` reads it again at a
 # different instant, so reading both live leaves an X->Y->X window in which a review

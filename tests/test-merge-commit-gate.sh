@@ -1303,6 +1303,103 @@ set -e
 assert "a replacement with a different parent set is refused" "1" "$AM_BAD_RC"
 rm -rf "$TMP_AMEND"
 
+# ── forged commit headers ───────────────────────────────────────────────
+# Git reads parents only in the LEADING header block and stops at the first other
+# header, so a "parent" line placed after the committer is message text to git and
+# a parent to a naive scan. Two consequences, both exercised here.
+echo "── forged commit headers ─"
+TMP_FORGE=$(mktemp -d)
+FG_GATE="$REPO_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
+(
+  cd "$TMP_FORGE" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && MAIN=$(git symbolic-ref --short HEAD) && echo "$MAIN" > ../MAIN \
+    && echo a>a && git add . && git commit -q -m A && git rev-parse HEAD > ../A \
+    && git checkout -q -b side && echo s>s && git add . && git commit -q -m S \
+    && git rev-parse HEAD > ../S \
+    && git checkout -q "$MAIN" && echo m>m && git add . && git commit -q -m M \
+    && git merge -q --no-ff side -m merged && git rev-parse HEAD > ../OLD \
+    && git rev-parse HEAD^1 > ../P1 && git rev-parse "HEAD^{tree}" > ../TREE
+) >/dev/null 2>&1
+FG_MAIN=$(cat "$TMP_FORGE/MAIN"); FG_OLD=$(cat "$TMP_FORGE/OLD")
+FG_P1=$(cat "$TMP_FORGE/P1"); FG_S=$(cat "$TMP_FORGE/S"); FG_TREE=$(cat "$TMP_FORGE/TREE")
+
+# 1. Command injection. The parser joins its fields with "|" and the gate re-splits
+# on it, so a parent value carrying a "|" shifts every field and lands attacker text
+# in $parents -- which four tests then evaluate as ARITHMETIC, and bash arithmetic
+# runs a command substitution inside an array subscript. The commit below is a valid
+# ROOT commit to git (no parent in the leading block), which is what makes it
+# storable and referenceable in the first place.
+# The subscript names G, an array the gate really has in scope: `set -u` aborts on an
+# UNSET name before the subscript is expanded, so an unset one would make this pass
+# without ever exercising the defect.
+FG_SENTINEL="$TMP_FORGE/EXECUTED"
+rm -f "$FG_SENTINEL"
+# Heredoc, not printf: the payload itself contains a command substitution, and a
+# format string carrying both that and %s is one quoting slip away from writing an
+# empty file -- which git rejects as an unterminated header, passing the case for
+# the wrong reason. "\$(" stays literal here; only the two named variables expand.
+cat > "$TMP_FORGE/inj" <<EOF
+tree $FG_TREE
+author A <a@b> 1 +0000
+committer A <a@b> 1 +0000
+parent x|G[\$(touch $FG_SENTINEL)0]
+
+x
+EOF
+set +e
+FG_INJ=$( cd "$TMP_FORGE/r" && git hash-object -t commit -w --stdin < ../inj 2>/dev/null )
+set -e
+# Guard against a vacuous pass: if the object was never stored, nothing was tested.
+assert "the forged commit object is storable (else the case proves nothing)" "40" "${#FG_INJ}"
+set +e
+FG_ERR=$( cd "$TMP_FORGE/r" \
+  && printf '%s %s refs/heads/%s\n' "$FG_OLD" "$FG_INJ" "$FG_MAIN" \
+     | bash "$FG_GATE" prepared 2>&1 >/dev/null )
+FG_INJ_RC=$?
+set -e
+assert "a forged parent header carrying a shell metacharacter is refused" "1" "$FG_INJ_RC"
+# THE forcing assertion. Pre-fix the gate also exits 1 -- by CRASHING on the poisoned
+# arithmetic ("unbound variable") after the payload has already run -- so the status
+# alone cannot tell a refusal from a bypass. These two can.
+if [[ -e "$FG_SENTINEL" ]]; then
+    assert "the forged header did not execute a command inside the gate" "absent" "EXECUTED"
+else
+    assert "the forged header did not execute a command inside the gate" "absent" "absent"
+fi
+case "$FG_ERR" in
+    *"unbound variable"*|*"syntax error"*)
+        assert "the refusal is a decision, not a crash on the poisoned value" "clean" "$FG_ERR" ;;
+    *) assert "the refusal is a decision, not a crash on the poisoned value" "clean" "clean" ;;
+esac
+
+# 2. Parent-set forgery. Even an exact-hex fake parent must not count: a trailing
+# "parent <S>" makes NEW's parsed parent set equal OLD's, and the amend rule exits 0
+# on set equality -- so a single-parent commit with an arbitrary tree would be
+# published as an "amend" of a reviewed merge.
+FG_OTHER=$( cd "$TMP_FORGE/r" && git rev-parse "$FG_S^{tree}" )
+cat > "$TMP_FORGE/setforge" <<EOF
+tree $FG_OTHER
+parent $FG_P1
+author A <a@b> 1 +0000
+committer A <a@b> 1 +0000
+parent $FG_S
+
+x
+EOF
+set +e
+FG_FORGED=$( cd "$TMP_FORGE/r" && git hash-object -t commit -w --stdin < ../setforge 2>/dev/null )
+set -e
+assert "the parent-set forgery is storable (else the case proves nothing)" "40" "${#FG_FORGED}"
+set +e
+FG_SET_RC=$( cd "$TMP_FORGE/r" \
+  && printf '%s %s refs/heads/%s\n' "$FG_OLD" "$FG_FORGED" "$FG_MAIN" \
+     | bash "$FG_GATE" prepared >/dev/null 2>&1; echo $? )
+set -e
+assert "a fake trailing parent cannot forge parent-set equality" "1" "$FG_SET_RC"
+rm -rf "$TMP_FORGE"
+
 echo ""
 printf "Results: %d/%d passed\n" "$PASS" "$TOTAL"
 [[ "$FAIL" -eq 0 ]]

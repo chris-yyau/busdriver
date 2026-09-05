@@ -828,7 +828,18 @@ if [ -f "$MARKER" ]; then
         if [ -x "$_hash_dir/sha256sum" ]; then HASH_CMD=("$_hash_dir/sha256sum"); break; fi
         if [ -x "$_hash_dir/shasum" ]; then HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
     done
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    # Pin the comparison BASE (#835), the same way run-review-loop.sh mints it.
+    # `git diff --cached` is index-vs-HEAD and RE-RESOLVES HEAD on every invocation,
+    # so two reads inside one authorization can straddle an A->B->A move and describe
+    # different changes while both look consistent. Naming the commit makes every read
+    # compare the same two endpoints; it is byte-identical to the implicit form while
+    # HEAD is unchanged, so no marker minted by the old spelling stops validating.
+    # Unborn HEAD (no commits yet) has no base to pin, so the operand is omitted.
+    _HEAD_BASE=()
+    if _HEAD_SHA=$(git -C "$REPO_DIR" --no-replace-objects rev-parse --verify HEAD 2>/dev/null); then
+        _HEAD_BASE=("$_HEAD_SHA")
+    fi
+    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

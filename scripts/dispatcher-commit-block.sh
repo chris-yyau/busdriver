@@ -459,7 +459,18 @@ trap 'rm -rf "$RUN_DIR"; rm -f "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNE
 # is load-bearing; run-review-loop.sh mints with the identical expression. The
 # litmus marker is validated later by re-running the same form, so all three files
 # must agree — tests/test-litmus-marker-binding.sh asserts that mechanically.
-PRE_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | hash_stdin) || \
+# Pin the comparison BASE ONCE for every hash below (#835). `git diff --cached`
+# re-resolves HEAD per invocation, so the PRE hash, the marker re-verify and the POST
+# hash were three reads at three instants: a HEAD move between them silently changes
+# what "the same staged diff" means while every individual comparison still looks
+# consistent. Nothing between here and the POST hash moves HEAD, so one capture is
+# the right scope. Byte-identical to the implicit form while HEAD is still; an unborn
+# HEAD has no base to pin, so the operand is omitted.
+_HEAD_BASE=()
+if _HEAD_SHA=$(git --no-replace-objects rev-parse --verify HEAD 2>/dev/null); then
+    _HEAD_BASE=("$_HEAD_SHA")
+fi
+PRE_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} | hash_stdin) || \
     emit_bail "env" "failed to hash pre-litmus staged diff"
 PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list pre-litmus staged paths"
@@ -1066,7 +1077,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # predicate is what says "nothing non-excluded is staged"; a constant/empty-output
     # external or textconv driver, or an ignored gitlink, could make real staged content
     # look absent and hand the excluded-only path an authorization it never earned.
-    NON_EXCLUDED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --ignore-submodules=none --no-color -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}) || \
+    NON_EXCLUDED_DIFF=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --ignore-submodules=none --no-color ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} -- :/ ${REVIEW_EXCLUDE_ARGS[@]+"${REVIEW_EXCLUDE_ARGS[@]}"}) || \
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
     if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
         emit_bail "judgment" "excluded-only marker ($MARKER_CONTENT) but staged diff contains non-excluded content; marker is stale or the staged diff was mutated post-PASS — review required"
@@ -1078,7 +1089,7 @@ else
     fi
 
     # #576 canonical form — must equal the minting expression in run-review-loop.sh.
-    EXPECTED_HASH=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | hash_stdin) || \
+    EXPECTED_HASH=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} | hash_stdin) || \
         emit_bail "env" "failed to hash post-litmus staged diff"
     if [[ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]]; then
         emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
@@ -1087,7 +1098,7 @@ fi
 
 # --- Step 6: Commit message composition + commit-type derivation ---
 # #576 canonical form — compared against PRE_LITMUS_DIFF_SHA, which uses it too.
-POST_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none | hash_stdin) || \
+POST_LITMUS_DIFF_SHA=$(git --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none ${_HEAD_BASE[@]+"${_HEAD_BASE[@]}"} | hash_stdin) || \
     emit_bail "env" "failed to hash post-litmus staged diff for commit message"
 POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list post-litmus staged paths"

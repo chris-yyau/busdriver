@@ -66,6 +66,7 @@ try:
     # invent a parent line from junk\\rparent <oid>. Require the blank line
     # that terminates headers within the read window (truncation => refuse).
     saw_end = False
+    lead = True
     pos = 0
     for raw in body.split(b"\n"):
         if raw == b"":
@@ -85,13 +86,25 @@ try:
             if nt is not None:
                 raise SystemExit(3)
             nt = line[5:]
+            if len(nt) not in (40, 64) or nt.strip("0123456789abcdef"):
+                raise SystemExit(6)
         elif line.startswith("parent "):
             p = line[7:]
+            # Git reads parents ONLY in the leading header block and stops at the
+            # first other header, so a "parent" line after the committer is message
+            # text to git and a parent to a naive scan — a commit git calls a ROOT
+            # can carry any parent set this gate would believe. And a value that is
+            # not an exact hex OID can contain the "|" the caller splits on, which
+            # shifts every field and lands attacker text in an arithmetic test.
+            if not lead or len(p) not in (40, 64) or p.strip("0123456789abcdef"):
+                raise SystemExit(6)
             n += 1
             if fp is None:
                 fp = p
             else:
                 got.append(p)
+        else:
+            lead = False
     if not saw_end:
         raise SystemExit(5)
     print("|".join([nt or "", fp or "", str(n), " ".join(got)]))
@@ -103,6 +116,12 @@ finally:
 ' "${G[@]}" "$NEW") || refuse 'refusing unauthorized merge commit.'
 IFS='|' read -r NT FP parents GOT <<<"$parsed"
 [[ -n "$NT" ]] || refuse 'refusing unauthorized merge commit.'
+# Belt to the parser's braces. Four tests below compare $parents ARITHMETICALLY, and
+# bash arithmetic evaluates an array subscript — `a[$(cmd)0]` RUNS cmd. The parser now
+# refuses any parent that is not an exact hex OID, so nothing can carry the "|" this
+# protocol splits on; this line makes the shell side independently sound, because the
+# distance between the two is where the next reader will look for a shortcut.
+[[ "$parents" =~ ^[0-9]+$ ]] || refuse 'refusing unauthorized merge commit.'
 if [[ ! -f "$GD/MERGE_HEAD" ]]; then
   # Stale arm/claim/spent after merge --abort: securely drop claim+marker (not
   # pathname-only rm) so a renamed-aside litmus-passed.local cannot be restored
@@ -187,6 +206,7 @@ def parents_of(oid):
         return None
     ps = []
     saw_end = False
+    lead = True
     pos = 0
     for line in body.split(b"\n"):
         if line == b"":
@@ -198,7 +218,18 @@ def parents_of(oid):
         if b"\r" in line:
             return None
         if line.startswith(b"parent "):
-            ps.append(line[7:].decode())
+            _p = line[7:].decode("utf-8", "replace")
+            # Git reads parents ONLY in the leading header block and stops at the
+            # first other header, so a "parent" line after the committer is message
+            # text to git and a parent to a naive scan — a commit git calls a ROOT
+            # can carry any parent set this gate would believe. And a value that is
+            # not an exact hex OID can contain the "|" the caller splits on, which
+            # shifts every field and lands attacker text in an arithmetic test.
+            if not lead or len(_p) not in (40, 64) or _p.strip("0123456789abcdef"):
+                return None
+            ps.append(_p)
+        elif not line.startswith(b"tree "):
+            lead = False
     if not saw_end:
         return None
     if mode == "linear" and len(ps) >= 2:
@@ -281,6 +312,7 @@ try:
     proc.stdout.read(1)
     ps = []
     saw_end = False
+    lead = True
     pos = 0
     for raw in body.split(b"\n"):
         if raw == b"":
@@ -293,7 +325,18 @@ try:
             raise SystemExit(4)
         line = raw.decode("utf-8", "replace")
         if line.startswith("parent "):
-            ps.append(line[7:])
+            _p = line[7:]
+            # Git reads parents ONLY in the leading header block and stops at the
+            # first other header, so a "parent" line after the committer is message
+            # text to git and a parent to a naive scan — a commit git calls a ROOT
+            # can carry any parent set this gate would believe. And a value that is
+            # not an exact hex OID can contain the "|" the caller splits on, which
+            # shifts every field and lands attacker text in an arithmetic test.
+            if not lead or len(_p) not in (40, 64) or _p.strip("0123456789abcdef"):
+                raise SystemExit(6)
+            ps.append(_p)
+        elif not line.startswith("tree "):
+            lead = False
     if not saw_end:
         raise SystemExit(5)
     print(" ".join(ps))
@@ -335,6 +378,7 @@ try:
     proc.stdout.read(1)
     n = 0
     saw_end = False
+    lead = True
     pos = 0
     for raw in body.split(b"\n"):
         if raw == b"":
@@ -347,7 +391,17 @@ try:
             raise SystemExit(4)
         line = raw.decode("utf-8", "replace")
         if line.startswith("parent "):
+            # Git reads parents ONLY in the leading header block and stops at the
+            # first other header, so a "parent" line after the committer is message
+            # text to git and a parent to a naive scan — a commit git calls a ROOT
+            # can carry any parent set this gate would believe. And a value that is
+            # not an exact hex OID can contain the "|" the caller splits on, which
+            # shifts every field and lands attacker text in an arithmetic test.
+            if not lead or len(line[7:]) not in (40, 64) or line[7:].strip("0123456789abcdef"):
+                raise SystemExit(6)
             n += 1
+        elif not line.startswith("tree "):
+            lead = False
     if not saw_end:
         raise SystemExit(5)
     print(n)

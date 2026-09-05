@@ -4740,6 +4740,48 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
             out.append(item)
     return out
 _ZERO_OLD_PRINT_ONLY = frozenset(('echo', 'printf'))
+_ZERO_OLD_FORCE_WHOLE = ('-f', '-d', '-D', '-B', '-C', '--force', '--delete')
+_ZERO_OLD_MOVE_WHOLE = ('-m', '-M', '--move')
+def _zero_old_force_tok(tok, strong=False):
+    """True if this token spells a ref-writing flag.
+
+    `-d` is here beside `-D`: the unforced delete removes the ref just as the
+    forced one does, it merely refuses when the branch is unmerged -- and from a
+    branch that CONTAINS main, `git branch -d main` succeeds. Missing it left
+    `xargs -I{} git branch -d main` recognised as a subcommand with no write.
+
+    Cluster matching is capped at four characters because a single-dash LONG
+    option is not a cluster: find's `-depth` and `-delete` both carry a d, and
+    `git branch` spells its real clusters `-dq` / `-fD`. Same reason `-m`/`-M`
+    match only as whole tokens (`-name` carries an m). `strong` drops the rename
+    flags, which is what keeps `"$PYTHON" -m pytest` out of the no-verb arm.
+    """
+    if tok in _ZERO_OLD_FORCE_WHOLE or tok.startswith('--force'):
+        return True
+    if not strong and (tok in _ZERO_OLD_MOVE_WHOLE or tok.startswith('--move')):
+        return True
+    return (tok.startswith('-') and not tok.startswith('--') and len(tok) <= 5
+            and any(c in tok[1:] for c in 'fdDBC'))
+def _zero_old_only_prefix(toks):
+    """True if every token is a command PREFIX, never the command itself.
+
+    Assignments, shell keywords, wrapper names, options, one operand for the
+    operand-taking wrappers, and an option's VALUE. Used ONLY to qualify the
+    print-only exemption, so its polarity is safe: an unmodelled wrapper here
+    costs a refusal (fail closed), never a bypass.
+    """
+    prev = ''
+    for t in toks:
+        base = t.rsplit('/', 1)[-1]
+        if not (base in _WRAPPERS or base in _OPERAND_WRAPPERS
+                or base in _SCOPED_WRAPPERS or base in _SHELL_KEYWORDS
+                or base == 'xargs' or t.startswith('-') or t == '{}'
+                or _ASSIGN_LEAD_RE.match(t)
+                or prev.startswith('-')
+                or prev.rsplit('/', 1)[-1] in _OPERAND_WRAPPERS):
+            return False
+        prev = t
+    return True
 def _zero_old_has_risky_companion(chunks):
     n_mut = 0
     for chunk in chunks:
@@ -4828,10 +4870,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # -name branch` as a force (single-dash long options are not
                 # clusters), and a real clustered rename spells `-M` or carries
                 # an `f` the cluster scan already catches.
-                _fi = any(t in ('-f','-D','-B','-C','-m','-M','--force','--delete','--move')
-                          or t.startswith('--force') or t.startswith('--move')
-                          or (t.startswith('-') and not t.startswith('--')
-                              and any(c in t[1:] for c in 'fDBC')) for t in toks)
+                _fi = any(_zero_old_force_tok(t) for t in toks)
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
                                  for t in toks[_cand_i + 1:])
@@ -4847,16 +4886,9 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # the fail-open it left for `arch -x86_64 "$G" -f main <oid>`.
                 _after = toks[_cand_i + 1:]
                 _refs_after = any(t.startswith('refs/') for t in _after)
-                _fi_after = any(
-                    t in ('-f','-D','-B','-C','-m','-M','--force','--delete','--move')
-                    or t.startswith('--force') or t.startswith('--move')
-                    or (t.startswith('-') and not t.startswith('--')
-                        and any(c in t[1:] for c in 'fDBC')) for t in _after)
-                _fi_strong_after = any(
-                    t in ('-f', '-D', '-B', '-C', '--force', '--delete')
-                    or t.startswith('--force')
-                    or (t.startswith('-') and not t.startswith('--')
-                        and any(c in t[1:] for c in 'fDBC')) for t in _after)
+                _fi_after = any(_zero_old_force_tok(t) for t in _after)
+                _fi_strong_after = any(_zero_old_force_tok(t, strong=True)
+                                       for t in _after)
                 # A print-only builtin BEFORE the verb consumes it: `echo "$X"
                 # branch -f main HEAD` prints, and so does the same behind a
                 # wrapper whose option VALUE is the substitution (`sudo -u
@@ -4866,9 +4898,14 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # ...and it must not itself be an option's VALUE: in
                 # `xargs -I echo git branch -f main <oid>` the `echo` is the
                 # replacement STRING and git is what runs.
+                # ...and it must stand where a COMMAND can: `find echo -exec
+                # "$G" update-ref refs/heads/main <oid> \;` names a FILE `echo`
+                # and git is what runs, so an exemption keyed on the word alone
+                # discarded a real ref write.
                 _print_i = next((i for i, t in enumerate(toks)
                                  if t.rsplit('/', 1)[-1] in _ZERO_OLD_PRINT_ONLY
-                                 and not (i and toks[i - 1].startswith('-'))), -1)
+                                 and not (i and toks[i - 1].startswith('-'))
+                                 and _zero_old_only_prefix(toks[:i])), -1)
                 if _print_i >= 0 and (_verb_i < 0 or _print_i < _verb_i):
                     continue
                 if (_force_sub
@@ -4917,7 +4954,18 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             # made `git branch --list`, `git checkout main` and a plain
             # `branch -c` refusals the moment a scope was inherited, which is a
             # read-only over-block and buys nothing the parser did not cover.
-            if raw and _zero_old_ambient_scope():
+            # A ref write this arm recognises WITHOUT a parsed `raw`: a
+            # subcommand it cannot read, or one modelled by FLAG rather than by
+            # word (`worktree add -B`). Computed BEFORE the ambient guard
+            # because that guard used to test `raw` alone, so a lone
+            # `git worktree add -B main <path> <oid>` under an inherited GIT_DIR
+            # appended its force without marking the scope -- and an armed
+            # skip marker in THIS repo then redeemed a reset landing in another.
+            _flag_write = (
+                not raw and sub not in _ZERO_OLD_SUBS
+                and ((sub and (_may_be_substitution(sub) or _word_may_split(sub, sub)))
+                     or _zero_old_force_sub(argv, sub, sub_idx)))
+            if (raw or _flag_write) and _zero_old_ambient_scope():
                 # An INHERITED GIT_DIR/GIT_WORK_TREE/config override points git
                 # at a repository the gate cannot see (the gate's own env is
                 # sanitized; the launcher passes the sentinel). Appending an
@@ -4931,9 +4979,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 ambient_scope = True
                 continue
             if not raw and sub not in _ZERO_OLD_SUBS:
-                if sub and (_may_be_substitution(sub) or _word_may_split(sub, sub)):
-                    raw_all.append(('force', ''))
-                elif _zero_old_force_sub(argv, sub, sub_idx):
+                if _flag_write:
                     raw_all.append(('force', ''))
                 elif not scope_fail_closed or sub in _REF_SAFE_SUBS:
                     # A redirected scope decides WHICH repo a ref write lands in.

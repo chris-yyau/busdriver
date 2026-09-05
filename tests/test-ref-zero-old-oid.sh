@@ -399,6 +399,24 @@ run_format_suite() {  # <format>
         allow "sudo -u \"\$USER\" echo branch -f main HEAD"
     run_gate "...nor the same through env" \
         allow "env -u \"\$NAME\" echo branch -f main HEAD"
+    # The UNFORCED delete removes the ref too — it only refuses an unmerged
+    # branch, and from a branch that CONTAINS main it succeeds. `-D` was
+    # covered; `-d` was not, so this was a recognised subcommand with no write.
+    run_gate "...and an unforced delete is still a delete" \
+        block "printf x | xargs -I{} git branch -d main" \
+        "no old-oid precondition"
+    run_gate "...including inside a real cluster" \
+        block "printf x | xargs -I{} git branch -dq main" \
+        "no old-oid precondition"
+    # ...but a single-dash LONG option is not a cluster, in either letter.
+    run_gate "...while find's -depth is not a delete flag" \
+        allow "find \$DIR -depth -name branch"
+    run_gate "...nor is find's own -delete" allow "find \$DIR -delete"
+    # A print-only NAME is only an exemption where a COMMAND can stand: here
+    # `echo` is a FILE and git is what find executes.
+    run_gate "...and a file named echo does not exempt what find runs" \
+        block "G=git; find echo -exec \"\${G}\" update-ref refs/heads/main $UNREVIEWED ;" \
+        "no old-oid precondition"
     # ...but a single-dash long option is not a cluster: -name is not -m.
     run_gate "...while a find naming a path variable is not" \
         allow "find \$DIR -name branch"
@@ -511,6 +529,22 @@ run_format_suite() {  # <format>
     # ...while an inherited scope must not make every `branch`/`checkout` WORD a
     # refusal. The parser has already looked and fails closed on its own for the
     # shapes that write a ref, so read-only forms stay read-only.
+    # ...and the same for a write the parser models by FLAG rather than by word.
+    # The scope marker used to be armed only when the parser produced a `raw`
+    # operation, so `worktree add -B` appended its force WITHOUT marking the
+    # scope — and this repo's armed marker then redeemed a reset landing in the
+    # repo GIT_DIR names.
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...nor a worktree add -B, which the parser models by flag" \
+        block "git worktree add -B main /tmp/wt-780z $UNREVIEWED" "cannot be resolved"
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...nor a subcommand it cannot read at all" \
+        block "git \$SUB -f main $UNREVIEWED" "cannot be resolved"
+    # ...while an inherited scope must not make a read-only worktree form a
+    # refusal either.
+    BUSDRIVER_GIT_SCOPE_PRESENT=1 \
+    run_gate "...but a worktree listing under one is still read-only" \
+        allow "git worktree list"
     BUSDRIVER_GIT_SCOPE_PRESENT=1 \
     run_gate "...and a read-only branch listing is still not a force" \
         allow "git branch --list"

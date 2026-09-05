@@ -488,5 +488,37 @@ SEP
 )
 assert "digest program has no doubled backslashes" "yes" "$sep_ok"
 
+
+# 10. A RELATIVE target path must still produce an absolute exec line. Git runs
+# hooks from the repo toplevel, so a relative path embedded in the wrapper
+# resolves under <repo>/<repo> and every hook fails to exec -- silently, since
+# the install itself reports success. Every other case here pins an absolute
+# core.hooksPath, which makes HOOK_DIR absolute before REPO_ROOT is ever joined
+# to it; that is exactly why this went uncovered, so this fixture uses the
+# default hooks dir -- and therefore neutralises the global git config instead,
+# or a global core.hooksPath sends this install into the operator's real hooks
+# directory and the case both passes vacuously and installs hooks machine-wide.
+REL_PARENT="$WORK/rel"
+mkdir -p "$REL_PARENT"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$REL_PARENT/consumer"
+git -C "$REL_PARENT/consumer" config commit.gpgsign false
+rel_rc=$(cd "$REL_PARENT" \
+    && bash "$PR/scripts/install-git-hooks.sh" consumer >/dev/null 2>&1; echo $?)
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+assert "installer accepts a relative target" "0" "$rel_rc"
+assert "the install stayed inside the consumer repo" "yes" \
+    "$([[ -f "$REL_PARENT/consumer/.git/hooks/reference-transaction" ]] && echo yes || echo no)"
+
+rel_exec=$(sed -n 's/^exec .* -p \([^ ]*\) .*$/\1/p' \
+    "$REL_PARENT/consumer/.git/hooks/reference-transaction" 2>/dev/null | head -1)
+assert "the wrapper execs an absolute path" "yes" \
+    "$([[ "$rel_exec" == /* ]] && echo yes || echo no)"
+
+# The behavioural half: under the bug this exits non-zero with
+# "No such file or directory" from the exec.
+"$REL_PARENT/consumer/.git/hooks/reference-transaction" committed </dev/null >/dev/null 2>&1
+assert "the hook installed via a relative path actually runs" "0" "$?"
+
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"
 [[ "$FAIL" -eq 0 ]]

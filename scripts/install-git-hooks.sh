@@ -43,6 +43,17 @@ if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'install-git-hooks: target is not a git repository: %s\n' "$REPO_ROOT" >&2
     exit 1
 fi
+# A caller-supplied relative path would stay relative all the way into the
+# wrapper's exec line, and git runs hooks from the repo toplevel -- so that path
+# resolves under <repo>/<repo> and every hook fails to exec. The install still
+# reports success, and at the reference-transaction prepared phase a wrapper
+# that cannot exec aborts every ref update in the repo, including the commits
+# needed to recover. Prefixing $PWD is enough: `git -C` resolved it against the
+# same directory. Deliberately NOT `rev-parse --show-toplevel`, which would also
+# resolve symlinks and so change the recorded path for absolute callers too.
+if [[ "$REPO_ROOT" != /* ]]; then
+    REPO_ROOT="$PWD/$REPO_ROOT"
+fi
 
 if git -C "$REPO_ROOT" config --get core.hooksPath >/dev/null 2>&1; then
     HOOK_DIR=$(

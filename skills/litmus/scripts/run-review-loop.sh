@@ -425,12 +425,122 @@ _diff_rc_file=""
 # exit under `set -e` before the in-flow cleanup, leaking private temp files.
 EXCL_POLICY_PINNED_TMP=""
 EXCL_LOGIC_PINNED_TMP=""
+# Same blanking, same reason, for the backstop capture file: it is created inside the
+# retry loop and several guarded exits (timeout, budget spent) sit between its
+# creation and its explicit removal. Same for the prompt file handed to stdin.
+_bs_out=""
+_bs_in=""
+# Paths whose unlink FAILED. They cannot be left in $_bs_out/$_bs_in: those are
+# reassigned by the next attempt's mktemp, which would drop the un-removed path
+# and leak a private prompt or captured response past the trap. Append instead.
+_bs_leaked=()
+# How long `_bs_reap_group` will wait between its TERM and its KILL, in seconds.
+# A NAMED constant because two distant places need the same number and drifted
+# once already: the grace loop below, and the teardown reserve subtracted from
+# each attempt's budget (#823 round 7). Declared at top level, beside `_bs_pid`
+# and for the same reason -- the EXIT trap calls the reap, and a `set -u` fault
+# in a trap loses the cleanup the trap exists to perform.
+_BS_REAP_GRACE_S=8
+# The backstop wrapper's pid, doubling as a process-GROUP handle. Declared HERE,
+# before the traps below are installed, so a signal arriving at ANY point -- including
+# before the first dispatch -- finds the variable defined rather than unbound.
+_bs_pid=""
+# What the EXIT trap is still ALLOWED to do with `_bs_pid`, which is not the same
+# question as whether the handle is set. Two distinct hazards meet here and a
+# single variable cannot express both:
+#   * while `wait` is outstanding the pid is genuinely ours -> `leader`, and the
+#     pid may be signalled directly (the only way to reach the perl arm).
+#   * once `wait` returns the pid is RELEASED -> `group`. Signalling it could hit
+#     whatever the kernel has since given that pid to. But the GROUP handle stays
+#     valid and must still be reaped, because a fatal signal can arrive DURING the
+#     post-wait reap, and dropping the handle there would leave the straggler group
+#     alive holding the capture.
+# So the handle survives the whole dispatch and only the PERMISSION narrows.
+_bs_mode=group
+
+# Reap the process group the backstop wrapper leads. ONE implementation, shared by
+# the post-dispatch reap and by the EXIT cleanup, so the two cannot drift.
+#
+# No-op unless there is genuinely something alive: an empty handle returns
+# immediately, and `kill -0` is probed before any signal is sent, so a healthy
+# dispatch signals nothing and adds no latency. TERM first, then a grace of
+# $_BS_REAP_GRACE_S seconds, then
+# KILL -- a descendant mid-flush of the CLI transcript gets to finish.
+#
+# Signals a GROUP as well as the leader pid -- which handle does the work differs
+# per arm, and the body says which. The group matters because the writer is
+# typically a grandchild, and on the normal path the direct child has already
+# been reaped by the time this runs.
+#
+# $2 says whether the LEADER PID is still ours to signal:
+#   group  (default) -- `wait` has already reaped the leader, so its pid is
+#                       RELEASED. Signal the GROUP ONLY. A pid-directed signal
+#                       here could name a stranger the kernel has since given
+#                       that pid to, which is a far wider window than the group
+#                       probe carries (that one additionally needs the new owner
+#                       to have become a group leader).
+#   leader           -- `wait` has NOT returned, so the pid is still held by our
+#                       own child and is safe to signal directly. This is the
+#                       cancellation path, and it is the ONLY way to reach the
+#                       perl arm: perl does not setpgrp itself -- only its
+#                       fork()ed CHILD does -- so perl stays in the SCRIPT's own
+#                       group and "-$_p" names nothing there. Perl carries a TERM
+#                       handler that reaps its child group before exiting, so the
+#                       single pid-directed signal collapses that tree too.
+_bs_reap_group() {
+  local _p="${1:-}" _mode="${2:-group}"
+  [[ -n "$_p" ]] || return 0
+  # Alive check. In `leader` mode it spans both handles, because the two arms leave
+  # different things behind: coreutils leaves a GROUP (the leader is inside it),
+  # perl leaves only the LEADER. In `group` mode it probes the GROUP ONLY -- the
+  # pid is released there, so probing it could both read a stranger as "alive" and
+  # hold the grace loop open for the full 8s on that stranger. Nothing alive ⇒ no
+  # signals sent, no latency added to a healthy dispatch.
+  _bs_alive() {
+    if [[ "$2" == leader ]]; then
+      kill -0 "$1" 2>/dev/null || kill -0 -- "-$1" 2>/dev/null
+    else
+      kill -0 -- "-$1" 2>/dev/null
+    fi
+  }
+  _bs_alive "$_p" "$_mode" || return 0
+  kill -TERM -- "-$_p" 2>/dev/null || true
+  [[ "$_mode" == leader ]] && kill -TERM "$_p" 2>/dev/null
+  # The grace must OUTLAST the perl arm's own escalation, not merely be "long
+  # enough to be polite". On that arm the TERM above is delivered to perl, whose
+  # handler then spends up to 50 x 0.1s waiting for its child group before it
+  # KILLs and reaps. A 2s grace here would KILL perl in the middle of that,
+  # leaving the very child group the handler was about to collapse -- turning the
+  # reap into the orphan it exists to prevent. 8s clears perl's 5s with margin.
+  # Nothing waits this long on a healthy run: the loop returns the moment both
+  # handles are dead, so the cost is paid only by something actively resisting
+  # TERM.
+  # Bash arithmetic, never `seq`: an external command here would make the grace
+  # depend on PATH, and a loop that silently runs ZERO iterations degrades to an
+  # immediate KILL -- precisely the orphan-making behaviour the grace prevents.
+  local _i
+  for (( _i = 0; _i < _BS_REAP_GRACE_S * 5; _i++ )); do
+    _bs_alive "$_p" "$_mode" || return 0
+    sleep 0.2
+  done
+  kill -KILL -- "-$_p" 2>/dev/null || true
+  [[ "$_mode" == leader ]] && kill -KILL "$_p" 2>/dev/null
+  return 0
+}
+
 # #803: compose the review-lib staging cleanup into THIS script's own EXIT handler.
 # resolve-cli.sh deliberately refuses to install its own EXIT trap when the sourcing
 # script already owns one -- replacing it would silently drop the cleanup below --
 # so the owner of the trap has to call it, or the ~250KB staged copy is left in
 # TMPDIR on every run and accumulates without bound.
-trap 'review_lock_release; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+trap '_bs_reap_group "${_bs_pid:-}" "${_bs_mode:-group}"; review_lock_release || true; rm -f "${_INDEX_SNAPSHOT:-}" "${EXCL_POLICY_PINNED_TMP:-}" "${EXCL_LOGIC_PINNED_TMP:-}" "${_diff_tmp:-}" "${_diff_rc_file:-}" "${_bs_out:-}" "${_bs_in:-}" ${_bs_leaked[@]+"${_bs_leaked[@]}"} 2>/dev/null || true; declare -F _bd803_cleanup_review_lib_exec >/dev/null && _bd803_cleanup_review_lib_exec || true' EXIT
+# No separate TERM/INT/HUP traps: bash runs the EXIT trap when it is killed by an
+# untrapped fatal signal, so the reap above already covers a cancelled run. Measured
+# on both /bin/bash 3.2.57 (the `/bin/bash -p` the dispatcher invokes) and bash
+# 5.3.15 -- the EXIT trap fired in both. Adding signal traps that only re-enter the
+# same handler would be redundancy, not defence; the test suite asserts the
+# behaviour rather than the trap list, so a bash that ever broke this would fail
+# loudly instead of silently losing the reap.
 
 # #790: every marker publication stamps a fresh generation token beside the marker.
 # The delayed builtin writer (write-review-marker.sh) snapshots that token at exit 3
@@ -1008,11 +1118,159 @@ This is an independent cross-model check of the Codex lead — be adversarial ab
 security. Output ONE JSON object per your output contract and NOTHING else.
 PROMPT_EOF
 )
-  # Optional timeout wrapper (set -u-safe empty-array expansion for bash 3.2).
-  TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-600}"
+  # Wall-clock budget for the WHOLE dispatch sequence -- every attempt PLUS every
+  # backoff sleep -- not per attempt (#823). It now feeds $(( )) arithmetic, and
+  # the value comes from repo-injectable env (#325 / ADR 0016), so validate it
+  # with the same idiom the retry tunables below use: digits-only, length-capped
+  # BEFORE any conversion, base-10 forced. A malformed or zero value falls back
+  # to the default rather than aborting under set -e.
+  #
+  # Default 540, not 600: the harness Bash tool CAPS a blocking call at 600s, so
+  # a 600s budget leaves no headroom for the startup/diff/context phases that run
+  # before the dispatch, and the call is killed at the boundary with no verdict.
+  # 540 is the same headroom LITMUS_TIMEOUT already takes (#368). Deliberately NOT
+  # clamped from above: an operator running the pass detached (nohup + poll) is
+  # not bound by the harness cap and may legitimately want a larger budget.
+  TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-540}"
+  case "$TIMEOUT_S" in ''|*[!0-9]*) TIMEOUT_S=540 ;; esac
+  if [[ "${#TIMEOUT_S}" -gt 9 ]]; then TIMEOUT_S=540; fi
+  TIMEOUT_S=$((10#$TIMEOUT_S))
+  if [[ "$TIMEOUT_S" -lt 1 ]]; then TIMEOUT_S=540; fi
+  # Resolve the wrapper BINARY once. The per-attempt _TO array is rebuilt INSIDE
+  # the loop with that attempt's remaining budget -- building it here with the
+  # full $TIMEOUT_S is what gave every attempt the whole window (set -u-safe
+  # empty-array expansion for bash 3.2).
+  #
+  # A wrapper is MANDATORY, not best-effort: with none, a hanging dispatch runs
+  # unbounded and the harness kills the whole call at its cap with no verdict --
+  # the exact failure #823 exists to prevent, just relocated. macOS ships neither
+  # `timeout` nor `gtimeout`, so falling straight to fail-closed there would
+  # disable the backstop on this repo's primary platform; perl is the repo's
+  # established portable stand-in (lib/smart-context.sh, scripts/lib/resolve-cli.sh
+  # `_portable_timeout`). Order: timeout -> gtimeout -> perl -> refuse.
+  # Resolved by ABSOLUTE path from a fixed list, never `command -v` off the
+  # inherited PATH. PATH is repo-injectable (#325 / ADR 0016) and line 224 only
+  # PREPENDS /usr/bin:/bin — it does not sanitize the rest. On macOS neither of
+  # those carries `timeout`, so a planted PATH entry named `timeout` would be
+  # selected AHEAD of the trusted /usr/bin/perl and could ignore the budget or
+  # print a forged envelope, which the strict writer would persist as a PASS.
+  #
+  # Scope this honestly: it removes a rung, it does not close the class. `claude`
+  # itself is still PATH-resolved by design (see the PATH comment above — a
+  # planted reviewer can forge a PASS regardless, tracked as #789), so a fully
+  # attacker-controlled PATH already wins by a shorter route. What this buys is
+  # that the security WRAPPER this fix introduces cannot itself become the
+  # easier target, and that the trusted perl stand-in is never preempted.
+  #
+  # The homebrew/local prefixes are operator-owned, not repo-writable, so they
+  # are trusted here; a host with coreutils somewhere else simply falls through
+  # to the perl arm, which is a complete stand-in, not a degradation.
+  _TO_BIN=""
+  _TO_MODE=""
+  for _cand in /usr/bin/timeout /bin/timeout \
+               /opt/homebrew/bin/timeout /usr/local/bin/timeout \
+               /opt/homebrew/bin/gtimeout /usr/local/bin/gtimeout; do
+    if [[ -x "$_cand" ]]; then _TO_BIN="$_cand"; _TO_MODE=coreutils; break; fi
+  done
+  if [[ -z "$_TO_BIN" ]]; then
+    for _cand in /usr/bin/perl /bin/perl; do
+      if [[ -x "$_cand" ]]; then _TO_BIN="$_cand"; _TO_MODE=perl; break; fi
+    done
+  fi
+  if [[ -z "$_TO_BIN" ]]; then
+    echo "❌ backstop: no timeout implementation at a trusted absolute path (/usr/bin, /bin, /opt/homebrew/bin, /usr/local/bin: timeout/gtimeout/perl) — refusing to dispatch an unbounded review (fail-closed; install coreutils)" >&2
+    exit 1
+  fi
+  # SIGTERM alone does not bound anything a child can ignore. GNU coreutils'
+  # own `timeout --help` says the default action is TERM and that "it may be
+  # necessary to use the KILL signal"; a TERM-ignoring `claude` (or one of its
+  # descendants) would otherwise outlive the budget and hit the harness cap with
+  # no verdict. `-k` adds a bounded grace, then KILL. The overshoot is at most
+  # this many seconds past the attempt's own stamped deadline; mid-sequence it
+  # self-corrects, because every subsequent remaining-budget figure is recomputed
+  # from the wall clock, not accumulated. Past $TIMEOUT_S it no longer overshoots
+  # at all: $_BS_TEARDOWN_RESERVE below takes this grace out of the stamp.
+  _BS_KILL_AFTER=5
+  # What the dispatch may still consume AFTER its stamped deadline passes, and
+  # therefore what has to come out of the stamp for $TIMEOUT_S to bound the whole
+  # sequence rather than just the attempt. Two components, both measured above:
+  # the wrapper's own post-deadline grace, and `_bs_reap_group`'s TERM->KILL wait.
+  # The perl arm reaches the same figure by a different route -- no `-k`, but its
+  # handler escalates over 50 x 0.1s before returning -- so one constant covers
+  # both arms.
+  _BS_TEARDOWN_RESERVE=$(( _BS_KILL_AFTER + _BS_REAP_GRACE_S ))
+  # The perl arm is ENVIRONMENT-STEERABLE and is reached with a repo-injectable
+  # environment still in place (#325 / ADR 0016): PERL5OPT / PERL5LIB / PERLLIB
+  # load attacker-controlled code BEFORE the wrapper body runs, and a module that
+  # simply prints a forged `claude -p` envelope and exits 0 is indistinguishable
+  # from a clean dispatch — the strict writer would then persist a false PASS.
+  # The #803 header block does NOT strip these (its own perl enumeration is
+  # protected by `-T` instead), so they arrive intact here.
+  #
+  # `-T` is not available to us the way it is there: taint mode marks @ARGV
+  # tainted, and this arm `exec`s @ARGV — perl refuses that outright ("Insecure
+  # dependency in exec"). So strip the three by name instead, which is the other
+  # half of the idiom that block already uses.
+  _BS_PERL_ENVSTRIP=(/usr/bin/env -u PERL5OPT -u PERL5LIB -u PERLLIB)
+  # perl fork+alarm stand-in, mirroring _portable_timeout: the child gets its own
+  # process group so the TERM/grace/KILL escalation reaches descendants too (a
+  # reaped direct child can leave TERM-ignoring grandchildren behind). Exits 124
+  # on timeout, like coreutils. NOTE the one honest divergence: after
+  # the grace expires this arm still reports 124, whereas coreutils `-k` reports
+  # 137 for the same event. Both are terminal below, so the gate behaves
+  # identically; only the diagnostic number differs by platform. Documented as
+  # such in SKILL.md rather than papered over. (A child KILLed by something else
+  # — OOM — still surfaces as 137 through the `$? & 127` path.)
+  # shellcheck disable=SC2016  # single-quoted perl body on purpose
+  _BS_PERL_TO='
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; setpgrp(0, 0); exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      our $reap = sub {
+        if ($pid) {
+          kill "TERM", -$pid; kill "TERM", $pid;
+          for (1 .. 50) { last if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.1); }
+          kill "KILL", -$pid; kill "KILL", $pid;
+          waitpid($pid, 0);
+        }
+      };
+      $SIG{ALRM} = sub { $reap->(); exit 124; };
+      # TERM/INT reach perl but NOT its child: the child put itself in a new
+      # process group, so a pid-directed signal to perl leaves that group behind.
+      # Without this the caller cancelling the review would orphan the whole
+      # claude tree until the alarm that is about to be cancelled would have
+      # fired. The caller signals perl BY PID because perl shares the same group as
+      # the caller -- so this handler is the only thing on the perl arm that reaches
+      # the child group at all. Status is the conventional 128+signo.
+      $SIG{TERM} = sub { $reap->(); exit 143; };
+      $SIG{INT}  = sub { $reap->(); exit 130; };
+      # HUP as well, and it is not redundant: a HUP is typically delivered to a
+      # whole process GROUP, and perl sits in the callers group while its child
+      # does not -- so the same signal that kills perl on the default disposition
+      # never reaches the child. The shell reaper would then find no live perl pid
+      # and no child pgid to aim at, and the tree would survive both.
+      $SIG{HUP}  = sub { $reap->(); exit 129; };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      my $st = $?;
+      # Same reap as the coreutils arm, but from in here: the new process group
+      # belongs to the fork()ed child, so its pgid is invisible to the calling
+      # shell. Runs on the NORMAL exit path -- the ALRM handler above already
+      # escalates on the timeout path. `kill 0` first so a clean run signals
+      # nothing. $? is snapshotted BEFORE the kills, so the status reported
+      # below is the one waitpid saw and never one these kills disturbed.
+      # (No apostrophes in here: the whole body is a single-quoted shell string.)
+      if (kill(0, -$pid)) {
+        kill "TERM", -$pid;
+        for (1 .. 10) { last unless kill(0, -$pid); select(undef, undef, undef, 0.2); }
+        kill "KILL", -$pid;
+      }
+      if ($st & 127) { exit(128 + ($st & 127)); }
+      exit($st >> 8);
+  '
   _TO=()
-  if command -v timeout >/dev/null 2>&1; then _TO=(timeout "$TIMEOUT_S")
-  elif command -v gtimeout >/dev/null 2>&1; then _TO=(gtimeout "$TIMEOUT_S"); fi
 
   # Accepted residual (ADR 0006, "Claude is the trusted dispatcher"): the backstop
   # reviews UNTRUSTED code, so the reviewed branch's own content — its diff, and any
@@ -1055,11 +1313,128 @@ PROMPT_EOF
   if [[ "$BACKSTOP_RETRIES" -gt 5 ]]; then BACKSTOP_RETRIES=5; fi
   if [[ "$BACKSTOP_RETRY_DELAY" -gt 120 ]]; then BACKSTOP_RETRY_DELAY=120; fi
 
+  # Hard ceiling on the captured envelope, in bytes. Not a tunable: it exists so
+  # the post-dispatch read is bounded even against a straggler writing as fast as
+  # it can, and a repo-injectable override would hand that bound straight back.
+  # 4 MiB is far above any real `claude -p --output-format json` envelope.
+  _BS_MAX_ENVELOPE=4194304
   PAYLOAD=""
   _bs_attempt=0
+  _bs_oversize=0
+  # The WHOLE sequence -- every attempt plus every backoff sleep -- is bounded to
+  # ~$TIMEOUT_S: each attempt's wrapper gets the REMAINING budget (the full budget
+  # on the first, set directly so a sub-second tick cannot zero out the only
+  # invocation), and each backoff is capped so the sleep itself cannot overrun.
+  # Before #823 the wrapper was built once with the full $TIMEOUT_S, so a
+  # 3-attempt sequence could reach 3x the timeout plus backoff -- past the 600s
+  # harness Bash cap at ANY setting, which is why no value fitted. Mirrors the
+  # budget arithmetic in _run_review_with_retries / _execute_codex
+  # (scripts/lib/resolve-cli.sh), which got this treatment and this loop did not.
+  _bs_start=$(date +%s)
+  _bs_remaining="$TIMEOUT_S"
   while : ; do
+    # Both temp files are created BEFORE the wrapper is built, deliberately. The
+    # wrapper is stamped with $_bs_remaining, so any unbudgeted work between the
+    # two is wall-clock the attempt gets on top of its share. Setup is only
+    # milliseconds, but ordering it correctly costs nothing and removes the
+    # question. Neither file's creation is inside the budget it precedes.
+    #
+    # Capture to a per-attempt FILE, never through a pipe. A command substitution
+    # blocks until EOF on the pipe -- i.e. until the LAST writer closes it -- but
+    # the wrapper's timer is cancelled when the LEADER exits. So a `claude` that
+    # exits while leaving a descendant holding the captured stdout leaves the
+    # outer shell waiting for that descendant with no clock on it at all: the
+    # dispatch outruns $TIMEOUT_S and the harness kills the call with no verdict.
+    # That is #823's failure with a different trigger, and neither wrapper arm can
+    # fix it (both stop supervising once the direct child is reaped). A regular
+    # file has no EOF to wait for, so the attempt ends exactly when the leader
+    # ends and the budget arithmetic below stays true. A FRESH file per attempt,
+    # not one reused across the loop: a straggler from attempt N still holds its
+    # fd, and must not be able to write into attempt N+1's capture.
+    _bs_out=$(mktemp -t busdriver-backstop-env-XXXXXX) || {
+      echo "❌ backstop: cannot create a capture file in ${TMPDIR:-/tmp} — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    # Feed stdin from a FILE too, not a pipe -- the mirror image of the capture
+    # above, and blocking for the same reason. `printf ... | claude` puts the
+    # writer OUTSIDE the timeout wrapper: if the prompt exceeds the pipe buffer
+    # (~64 KiB, which a real review prompt always does) and `claude` exits
+    # without draining it while a descendant keeps the read end open, `printf`
+    # blocks on a pipe nobody is reading and bash waits for it after the timed
+    # leader is gone. The attempt then outruns $TIMEOUT_S with no clock on it --
+    # #823's failure once more, entered from the other end. A regular file has no
+    # writer to block, so the pipeline disappears entirely.
+    _bs_in=$(mktemp -t busdriver-backstop-prompt-XXXXXX) || {
+      echo "❌ backstop: cannot create a prompt file in ${TMPDIR:-/tmp} — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    printf '%s' "$REVIEW_PROMPT" > "$_bs_in" || {
+      if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
+      _bs_in=""
+      echo "❌ backstop: cannot write the prompt file — refusing to dispatch (fail-closed)" >&2
+      exit 1
+    }
+    # Wrapper built HERE, after setup, and stamped with a FRESHLY recomputed
+    # remaining budget. Reusing the value computed back in the retry branch would
+    # hand the attempt its share PLUS however long setup took -- small, but it is
+    # exactly the "budget plus extra" shape #823 is about, so measure it rather
+    # than argue about the size. A static _TO would be worse still: every attempt
+    # on the full window, making the arithmetic cosmetic.
+    _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+    # Reserve the teardown out of the stamp, so the attempt's deadline plus the
+    # grace that follows it land INSIDE $TIMEOUT_S. Without this the budget bounds
+    # the attempt and nothing else: the wrapper's -k grace and the reap that
+    # follows it are both real wall clock the caller never accounted for, so a
+    # pass sized against the 600s harness cap could still be killed mid-teardown
+    # with no verdict written. Only the LAST attempt's teardown actually escapes
+    # -- every mid-sequence figure is recomputed from the wall clock and absorbs
+    # it -- but the stamp cannot know which attempt is last, so it reserves on
+    # all of them.
+    #
+    # The exception is keyed on the CONFIGURED budget, never on what is left of
+    # it. Those are different questions and only one of them is about the caller:
+    #   * $TIMEOUT_S below the reserve -- the caller asked for less time than a
+    #     teardown takes. Reserving would refuse every dispatch, so the bound
+    #     degrades instead and the gate stays usable at the small timeouts the
+    #     fixtures drive it at. A deliberate, uniform-across-attempts choice.
+    #   * $_bs_remaining below the reserve inside a LARGE budget -- a late retry
+    #     with seconds left. Nothing about the caller changed; the budget is
+    #     simply spent. Reading the exception off the remaining figure here would
+    #     hand those last seconds over unreserved and let the kill grace run past
+    #     $TIMEOUT_S after all, which is the whole defect this reserve exists to
+    #     close. So the subtraction still applies, goes negative, and the guard
+    #     below refuses the attempt -- fail-closed, which is the correct answer
+    #     to "there is no longer room to run and clean up".
+    # `if`, not `&&`: a false `(( ))` returns 1 under set -e.
+    if (( TIMEOUT_S > _BS_TEARDOWN_RESERVE )); then
+      _bs_remaining=$(( _bs_remaining - _BS_TEARDOWN_RESERVE ))
+    fi
+    if [[ "$_bs_remaining" -lt 1 ]]; then
+      echo "❌ backstop: budget (${TIMEOUT_S}s) spent before attempt $((_bs_attempt + 1)) could start — no verdict (fail-closed)" >&2
+      exit 1
+    fi
+    _TO=()
+    if [[ "$_TO_MODE" == "coreutils" ]]; then
+      _TO=("$_TO_BIN" -k "$_BS_KILL_AFTER" "$_bs_remaining")
+    else
+      _TO=("${_BS_PERL_ENVSTRIP[@]}" "$_TO_BIN" -e "$_BS_PERL_TO" -- "$_bs_remaining")
+    fi
     set +e
-    ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
+    # Dispatched in the BACKGROUND and immediately waited on, purely so the
+    # wrapper's pid survives as a process-GROUP handle. `timeout` puts itself and
+    # its child in a NEW process group whose pgid == its own pid (measured), and
+    # descendants inherit it -- so once the leader is reaped, `-$_bs_pid` names
+    # exactly the tree it left behind and nothing else. Foreground execution
+    # gives us no such handle. Blocking semantics are unchanged: `wait` returns
+    # the same status the foreground call did, including 124/137.
+    # Arm the permission BEFORE the dispatch, never after capturing the pid. A fatal
+    # signal landing between `_bs_pid=$!` and a later arming would run the trap in
+    # `group` mode against a perl-arm wrapper that is in no such group, reaching
+    # neither the wrapper nor its child tree. Armed first, the only intermediate
+    # state reachable is "permission armed, handle still empty", where the reap
+    # returns immediately and signals nothing.
+    _bs_mode=leader
+    "${_TO[@]+"${_TO[@]}"}" claude -p \
       --model opus \
       --tools "Read,Grep,Glob" \
       --allowedTools "Read,Grep,Glob" \
@@ -1067,19 +1442,149 @@ PROMPT_EOF
       --setting-sources user \
       --strict-mcp-config \
       --append-system-prompt "$AGENT_SYS" \
-      --output-format json 2>/dev/null)
+      --output-format json < "$_bs_in" > "$_bs_out" 2>/dev/null &
+    _bs_pid=$!
+    # RESIDUAL, named rather than implied: a fatal signal landing between the `&`
+    # above and this assignment finds the trap with an empty handle, and the wrapper
+    # it just launched is not reaped. It cannot be closed from a shell -- any cover
+    # needs the pid that does not exist yet, and POSIX gives a shell no way to block
+    # signals across the two statements (GNU `timeout` closes the identical window
+    # only because it can sigprocmask in C). Adding machinery that cannot close it
+    # would buy the appearance of a fix and nothing else.
+    #
+    # What bounds it: the thing left behind is the WRAPPER, which carries its own
+    # `$_bs_remaining` timer and exits on it, killing the CLI. So the escape is a
+    # tree that self-terminates within the attempt budget, not an unbounded one --
+    # and the capture is unlinked by the trap regardless, so the disk a straggler
+    # can hold is bounded by what it writes before its own timeout fires.
+    wait "$_bs_pid"
     RC=$?
+    # `wait` has RELEASED the pid. Narrow the trap's permission FIRST -- before the
+    # reap below, which can spend the full 8s grace -- so a fatal signal in that
+    # window reaps the GROUP (still ours) without ever signalling the released pid.
+    _bs_mode=group
+    # Reap what the leader left behind. This is what bounds the disk a straggler
+    # can consume: unlinking the capture below does NOT revoke the descriptor a
+    # descendant inherited, and POSIX gives a shell no way to revoke one it has
+    # already handed out -- but it CAN end the process holding it.
+    #
+    # Signals a GROUP, not a pid: the writer is typically a grandchild, and the
+    # direct child is already reaped by the time we get here.
+    #
+    # `kill -0` first, so a healthy dispatch with nothing left alive sends no
+    # signals and adds no latency; only a real straggler pays the grace. TERM
+    # before KILL so a descendant mid-flush of the CLI's own transcript gets to
+    # finish -- that collateral is what made the RLIMIT_FSIZE attempt below
+    # strictly negative, and it must not be reintroduced here in another shape.
+    #
+    # It cannot reach THIS script's own group: a group with pgid == the wrapper's
+    # pid can only be one the wrapper created, because the script's group leader
+    # and the wrapper are two distinct LIVE pids and no two live processes share
+    # a pid.
+    #
+    # Stated exactly rather than absolutely: `wait` reaps the wrapper, which
+    # RELEASES its pid, so between that line and the probe a recycled pid could
+    # in principle name a stranger's group. The window is microseconds and needs
+    # the kernel to both reallocate that exact pid and have its owner become a
+    # group leader inside it; every tool that reaps this way (GNU `timeout`
+    # itself included) carries the same residual, and closing it needs a handle
+    # POSIX gives no shell. Named here so the guard is not read as stronger than
+    # it is. On an arm that creates no such group the probe finds
+    # nothing and this is a no-op -- which is the case for the perl arm, where
+    # the fork()ed CHILD calls setpgrp, so the new pgid is the child's pid rather
+    # than perl's; that arm carries the equivalent reap inside $_BS_PERL_TO.
+    _bs_reap_group "$_bs_pid" "$_bs_mode"
+    _bs_pid=""
+    if ! rm -f "$_bs_in" 2>/dev/null; then _bs_leaked+=("$_bs_in"); fi
+    _bs_in=""
+    # Read a BOUNDED SNAPSHOT, never an open-ended `cat`. This read happens after
+    # the wrapper's timer is already gone, so a straggler that keeps APPENDING can
+    # move EOF faster than a reader reaches it: `cat` would not terminate, would
+    # outrun $TIMEOUT_S exactly as the pipe did, and would consume unbounded disk
+    # and memory on the way. Snapshot the size the leader left behind and read at
+    # most that many bytes, hard-capped -- a real envelope is a few KB, and past
+    # the cap it is not a verdict the strict writer would accept anyway. A
+    # truncated or empty read is not a valid envelope, so it fails closed through
+    # the existing parser path rather than needing a branch of its own.
+    # `stat`, not `wc -c`: the size must come from an O(1) inode query. `wc -c` is
+    # not guaranteed to be byte-bounded — where it is not fstat-optimized it READS
+    # the file, and a fast appender could keep it scanning, recreating the very
+    # post-timeout stall this change exists to prevent. Both spellings, GNU then
+    # BSD, the same dual form used elsewhere in this repo.
+    _bs_size=$(stat -c %s "$_bs_out" 2>/dev/null || stat -f %z "$_bs_out" 2>/dev/null || echo 0)
+    _bs_size=$(printf '%s' "$_bs_size" | tr -d '[:space:]')
+    case "$_bs_size" in ''|*[!0-9]*) _bs_size=0 ;; esac
+    # OVERSIZE and EMPTY are different conditions and must not share a branch.
+    # Oversize is terminal; EMPTY is transient — a `claude` killed by the timeout
+    # normally leaves nothing behind, and the loop header lists an empty response
+    # among the noise it deliberately retries. Collapsing them made an empty
+    # capture abort on attempt 1 with retries unused, and made the timeout's own
+    # diagnostic dead code in the very case it exists for.
+    if [[ "$_bs_size" -gt "$_BS_MAX_ENVELOPE" ]]; then
+      # REJECT an oversize capture; never TRUNCATE it. Truncating is not merely
+      # lossy, it is unsound: the first N bytes can be a COMPLETE, valid envelope
+      # followed by more bytes, so the parser would see a clean PASS while
+      # whatever else was written into the capture is silently discarded. A
+      # capture bigger than the ceiling is not a verdict — refuse it and let the
+      # existing empty-envelope path fail closed.
+      _bs_have_envelope=0
+      _bs_oversize=1
+    elif [[ "$_bs_size" -le 0 ]]; then
+      # Empty: fall through to the ordinary parser path (_PARSE_RC=90), which
+      # classifies it as a transient dispatch failure and retries it.
+      _bs_have_envelope=0
+      _bs_oversize=0
+    else
+      _bs_have_envelope=1
+      _bs_oversize=0
+    fi
     set -e
+    # Unlink immediately: nothing is left in TMPDIR and the guarded exits below
+    # cannot leak it. (The EXIT trap covers the window before this line.)
+    #
+    # RESIDUAL, stated plainly rather than implied: unlinking does NOT revoke an
+    # inherited descriptor, and POSIX gives a shell no way to revoke one it has
+    # already handed out. What bounds a straggler's writes is therefore the group
+    # reap ABOVE, which ends the process instead of revoking its fd -- by the
+    # time this line runs, the tree the wrapper created is gone.
+    #
+    # What survives that is narrow, and named rather than implied: (a) the
+    # sub-second window between the leader exiting and the reap completing, and
+    # (b) a descendant that removed ITSELF from the group with its own
+    # setsid/setpgid, which no group signal can reach. Neither can influence the
+    # VERDICT -- the envelope was snapshotted above, and an oversize capture is
+    # rejected outright -- so both are disk-consumption only, and (b) is the same
+    # trust question as a planted `claude` returning a forged PASS (#789).
+    #
+    # An RLIMIT_FSIZE (`ulimit -f`) was tried here and REMOVED, deliberately;
+    # do not reintroduce it. It cannot deliver what it appears to: the limit is
+    # PER FILE, not per process or per tree, so it never bounded total disk in
+    # the first place -- it bounded one file we already reject when oversize.
+    # Meanwhile it applies to EVERY file the CLI and its descendants write, so a
+    # legitimate session transcript or cache past the ceiling takes SIGXFSZ and
+    # fails the gate on a healthy run. Strictly negative: no real bound, and a
+    # new way for a good review to fail. The group reap above is what actually
+    # bounds the writer, and it does so without touching a single file the CLI
+    # writes legitimately.
 
     # Extract the agent's verdict text from the --output-format json envelope, then
     # reshape to EXACTLY {status, issues, model, reviewed_diff_hash} for the strict
     # writer (which rejects unknown top-level fields). model = the model we
     # dispatched (opus). Distinct exit codes drive per-mode diagnostics + retry.
+    #
+    # The capture is piped STRAIGHT from the file into the parser. It used to go
+    # through a shell variable, which cannot carry it faithfully: bash silently
+    # DROPS NUL bytes from a command substitution (it warns, to a stderr nobody
+    # reads), so a capture of "valid envelope + NUL padding" was normalized back
+    # into the valid prefix and parsed as a clean PASS — exactly the extra content
+    # the size check above exists to refuse. Bytes now reach python untouched, so
+    # anything past a complete envelope makes json.loads fail and the run fails
+    # closed. It also keeps a multi-MiB capture out of the shell's memory.
     _PARSE_RC=0
-    if [[ "$RC" -eq 0 && -n "$ENVELOPE" ]]; then
+    if [[ "$RC" -eq 0 && "$_bs_have_envelope" -eq 1 ]]; then
       set +e
       # shellcheck disable=SC2016  # python template is a literal; values via argv
-      PAYLOAD=$(printf '%s' "$ENVELOPE" | python3 -c '
+      PAYLOAD=$(head -c "$_bs_size" "$_bs_out" 2>/dev/null | python3 -c '
 import json, sys, re
 try:
     # strict=False so a control character INSIDE a JSON string value (e.g. the CLI
@@ -1120,6 +1625,13 @@ print(json.dumps(out))
     else
       _PARSE_RC=90  # dispatch failure (rc!=0 or empty output) — never reached parser
     fi
+    # Always clear the slot, but remember a FAILED unlink separately. Keeping the
+    # path in $_bs_out instead would lose it the moment the next attempt's mktemp
+    # reassigns the variable — the trap would then clean the new file and leak
+    # the old one. (An rm of our own file in our own TMPDIR effectively cannot
+    # fail; this is the cheap correct handling of the case where it does.)
+    if ! rm -f "$_bs_out" 2>/dev/null; then _bs_leaked+=("$_bs_out"); fi
+    _bs_out=""
 
     # A syntactically valid verdict object was captured → stop retrying. The writer
     # below is TERMINAL: only TRANSIENT dispatch/parse failures are retried here.
@@ -1135,11 +1647,60 @@ print(json.dumps(out))
       *)  _bs_reason="unexpected parser failure (rc=$_PARSE_RC)" ;;
     esac
 
+    # A real TIMEOUT (124) is NOT transient: re-running the same review on the
+    # same diff cannot succeed with LESS budget than the attempt that just ran
+    # out, and retrying it is what multiplied the sequence past the harness cap
+    # (#823). Fail closed on the first one and let the operator split the diff.
+    # Mirrors the "timeout -> don't retry" posture in _run_review_with_retries.
+    # 137 (128+SIGKILL) is the same event seen through the -k grace: the child
+    # ignored or outlived TERM and the wrapper force-killed it. Terminal for the
+    # same reason as 124 — and retrying a dispatch that had to be KILLed is how a
+    # sequence outruns its budget. Any other SIGKILL cause (OOM) also fails
+    # closed, which is the correct direction for a gate.
+    if [[ "$RC" -eq 124 || "$RC" -eq 137 ]]; then
+      _bs_how="timed out"
+      if [[ "$RC" -eq 137 ]]; then _bs_how="timed out and had to be force-killed (SIGTERM ignored)"; fi
+      echo "❌ backstop: dispatch ${_bs_how} after ${TIMEOUT_S}s — not retried (split the PR, or raise LITMUS_PR_BACKSTOP_TIMEOUT and run the pass detached)" >&2
+      exit 1
+    fi
+
+    # Checked AFTER the timeout, deliberately. A dispatch that wrote past the
+    # ceiling AND then timed out is a TIMEOUT: that is the actionable diagnosis
+    # (split the PR / raise the budget), and reporting "oversize envelope" there
+    # would send the operator after the wrong thing. Reaching here means the
+    # dispatch finished on its own and simply produced too much.
+    #
+    # It is TERMINAL for the same reason a timeout is: not a transient failure,
+    # so retrying cannot help -- and each retry is a fresh PAID dispatch that can
+    # leave another growing capture behind, multiplying the very disk-consumption
+    # condition the ceiling exists to limit.
+    if [[ "$_bs_oversize" -eq 1 ]]; then
+      echo "❌ backstop: captured envelope exceeded ${_BS_MAX_ENVELOPE} bytes — refusing it, not retrying (fail-closed)" >&2
+      exit 1
+    fi
+
     if [[ "$_bs_attempt" -lt "$BACKSTOP_RETRIES" ]]; then
       _bs_attempt=$((_bs_attempt + 1))
       _bs_delay=$((BACKSTOP_RETRY_DELAY * _bs_attempt))
+      # A retry needs budget for the backoff PLUS at least a 1s attempt. If what
+      # is left cannot fund that, stop now rather than sleeping the remainder
+      # away for an attempt that could not run.
+      _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+      if [[ "$_bs_remaining" -le 1 ]]; then
+        echo "❌ backstop: ${_bs_reason} — budget (${TIMEOUT_S}s) spent after ${_bs_attempt} attempt(s), no verdict (fail-closed)" >&2
+        exit 1
+      fi
+      # Cap the backoff to leave >= 1s for the attempt -- never sleep the whole
+      # remaining budget. (`if`, not `&&`: a false `[[ ]]` returns 1 under set -e.)
+      _bs_cap=$(( _bs_remaining - 1 ))
+      if [[ "$_bs_delay" -gt "$_bs_cap" ]]; then _bs_delay="$_bs_cap"; fi
       echo "⚠️  backstop: ${_bs_reason} — retry ${_bs_attempt}/${BACKSTOP_RETRIES} in ${_bs_delay}s (fail-closed if exhausted)" >&2
-      sleep "$_bs_delay"
+      if [[ "$_bs_delay" -gt 0 ]]; then sleep "$_bs_delay"; fi
+      _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+      if [[ "$_bs_remaining" -le 0 ]]; then
+        echo "❌ backstop: ${_bs_reason} — budget (${TIMEOUT_S}s) spent after ${_bs_attempt} attempt(s), no verdict (fail-closed)" >&2
+        exit 1
+      fi
       continue
     fi
     echo "❌ backstop: ${_bs_reason} — no verdict written after $((BACKSTOP_RETRIES + 1)) attempt(s) (fail-closed)" >&2

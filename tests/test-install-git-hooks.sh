@@ -566,5 +566,34 @@ assert "nothing is written relative to the target subdirectory" "0" \
     "$(find "$RELHP/outer/hooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
+
+# 13. ".." must be resolved by the filesystem, not collapsed lexically. Where a
+# ".." crosses a symlink the two answers differ, and the checker used to clear
+# the lexical one while the install wrote to the real one -- so containment
+# passed on a directory that was never the destination.
+DOTDOT="$WORK/dotdot"
+mkdir -p "$DOTDOT/outside/.githooks"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$DOTDOT/repo"
+mkdir -p "$DOTDOT/repo/sub" "$DOTDOT/repo/.githooks"
+git -C "$DOTDOT/repo" config commit.gpgsign false
+ln -s "$DOTDOT/repo/sub" "$DOTDOT/outside/link"
+git -C "$DOTDOT/repo" config core.hooksPath "$DOTDOT/outside/link/../.githooks"
+dd_err=$(bash "$PR/scripts/install-git-hooks.sh" "$DOTDOT/repo" 2>&1)
+assert "a .. that resolves back inside the work tree is refused" "1" "$?"
+assert "the refusal is the containment message, not a crash" "yes" \
+    "$([[ "$dd_err" == *"inside the work tree"* && "$dd_err" != *Traceback* ]] && echo yes || echo no)"
+assert "nothing was written into the work tree" "0" \
+    "$(find "$DOTDOT/repo/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+# The refusal must not be blanket: a ".." that genuinely stays outside is fine.
+mkdir -p "$DOTDOT/out2/b" "$DOTDOT/out2/hooks"
+git init -q "$DOTDOT/repo2"
+git -C "$DOTDOT/repo2" config commit.gpgsign false
+git -C "$DOTDOT/repo2" config core.hooksPath "$DOTDOT/out2/b/../hooks"
+bash "$PR/scripts/install-git-hooks.sh" "$DOTDOT/repo2" >/dev/null 2>&1
+assert "a .. path that stays outside the work tree still installs" "0" "$?"
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"
 [[ "$FAIL" -eq 0 ]]

@@ -250,9 +250,17 @@ finally:
     set -e
     [[ "$back_rc" -eq 0 ]] && exit 0
   fi
-  # Amend/replace tip: same first parent as OLD, still no merge introduction.
-  if [[ ! "$OLD" =~ ^0+$ && "$parents" -lt 2 && -n "$FP" ]]; then
-    old_fp=$(python3 -I -S -c '
+  # Amend/replace tip: IDENTICAL parent set to OLD, so no merge is introduced.
+  # Was "same first parent" AND single-parent-only, which left a message-only
+  # amend of a merge commit with no path to success at all: MERGE_HEAD is gone,
+  # so the live-merge rule does not apply; the amended commit is not in OLD's
+  # ancestry, so the backward walk misses it; OLD is not its ancestor, so it is
+  # no fast-forward; and no branch witnesses an OID the in-flight update is what
+  # would create. Comparing the whole parent set keeps the property the rule
+  # exists for -- NEW introduces no parent OLD did not already carry, so an
+  # already-authorized topology is unchanged -- while covering both tip shapes.
+  if [[ ! "$OLD" =~ ^0+$ && -n "$FP" ]]; then
+    parents_list() { python3 -I -S -c '
 import subprocess, sys
 git, oid = sys.argv[1:-1], sys.argv[-1]
 proc = subprocess.Popen(
@@ -271,7 +279,7 @@ try:
     size = int(parts[2])
     body = proc.stdout.read(min(size, 65536))
     proc.stdout.read(1)
-    fp = ""
+    ps = []
     saw_end = False
     pos = 0
     for raw in body.split(b"\n"):
@@ -284,18 +292,22 @@ try:
         if b"\r" in raw:
             raise SystemExit(4)
         line = raw.decode("utf-8", "replace")
-        if line.startswith("parent ") and not fp:
-            fp = line[7:]
+        if line.startswith("parent "):
+            ps.append(line[7:])
     if not saw_end:
         raise SystemExit(5)
-    print(fp)
+    print(" ".join(ps))
 finally:
     try:
         proc.kill()
     except Exception:
         pass
-' "${G[@]}" "$OLD") || old_fp=""
-    [[ -n "$old_fp" && "$FP" == "$old_fp" ]] && exit 0
+' "${G[@]}" "$1"; }
+    set +e
+    old_ps=$(parents_list "$OLD"); old_rc=$?
+    new_ps=$(parents_list "$NEW"); new_rc=$?
+    set -e
+    [[ "$old_rc" -eq 0 && "$new_rc" -eq 0 && -n "$old_ps" && "$old_ps" == "$new_ps" ]] && exit 0
   fi
   # Root tip (zero parents) cannot smuggle a merge — allow create/amend without witnesses.
   if [[ "$parents" -eq 0 ]]; then

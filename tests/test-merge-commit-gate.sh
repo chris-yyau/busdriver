@@ -1264,6 +1264,45 @@ set -e
 assert "the same NEW is refused when no branch witnesses it" "1" "$FF_UNWIT"
 rm -rf "$TMP_FFMERGE"
 
+# ── message-only amend of a merge commit ────────────────────────────────
+# MERGE_HEAD is gone, the amended commit is not in OLD's ancestry, OLD is not
+# its ancestor, and no branch witnesses an OID this very update would create --
+# so every other rule misses it and there was no path to success at all.
+echo "── amend of a merge commit ─"
+TMP_AMEND=$(mktemp -d)
+AM_GATE="$REPO_ROOT/hooks/gate-scripts/merge-reference-transaction-gate.sh"
+(
+  cd "$TMP_AMEND" && git init -q r && cd r \
+    && git config user.email t@t && git config user.name t \
+    && git config commit.gpgsign false \
+    && MAIN=$(git symbolic-ref --short HEAD) && echo "$MAIN" > ../MAIN \
+    && echo a>a && git add . && git commit -q -m A && git rev-parse HEAD > ../A \
+    && git checkout -q -b side && echo s>s && git add . && git commit -q -m S \
+    && git rev-parse HEAD > ../S \
+    && git checkout -q "$MAIN" && echo m>m && git add . && git commit -q -m M \
+    && git merge -q --no-ff side -m original && git rev-parse HEAD > ../OLD \
+    && git commit -q --amend -m reworded && git rev-parse HEAD > ../NEW
+) >/dev/null 2>&1
+AM_MAIN=$(cat "$TMP_AMEND/MAIN"); AM_OLD=$(cat "$TMP_AMEND/OLD"); AM_NEW=$(cat "$TMP_AMEND/NEW")
+set +e
+( cd "$TMP_AMEND/r" && printf '%s %s refs/heads/%s\n' "$AM_OLD" "$AM_NEW" "$AM_MAIN" \
+    | bash "$AM_GATE" prepared ) >/dev/null 2>&1
+AM_RC=$?
+set -e
+assert "a message-only amend of a merge commit is allowed" "0" "$AM_RC"
+
+# Negative: a replacement with a DIFFERENT parent set introduces a merge and must refuse.
+AM_A=$(cat "$TMP_AMEND/A"); AM_S=$(cat "$TMP_AMEND/S")
+set +e
+AM_BAD_RC=$( cd "$TMP_AMEND/r" \
+  && AM_TREE=$(git rev-parse "$AM_OLD^{tree}") \
+  && AM_FORGED=$(git commit-tree "$AM_TREE" -p "$AM_A" -p "$AM_S" -m forged) \
+  && printf '%s %s refs/heads/%s\n' "$AM_OLD" "$AM_FORGED" "$AM_MAIN" \
+     | bash "$AM_GATE" prepared >/dev/null 2>&1; echo $? )
+set -e
+assert "a replacement with a different parent set is refused" "1" "$AM_BAD_RC"
+rm -rf "$TMP_AMEND"
+
 echo ""
 printf "Results: %d/%d passed\n" "$PASS" "$TOTAL"
 [[ "$FAIL" -eq 0 ]]

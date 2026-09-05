@@ -96,9 +96,14 @@ sys.stdout.buffer.write(b)
     # git resolves a relative core.hooksPath from the work tree root.
     HOOK_BASE=$WT_ROOT
 else
-    HOOK_DIR=$(git -C "$REPO_ROOT" rev-parse --git-path hooks)
-    # --git-path returns a path relative to the -C directory.
-    HOOK_BASE=$REPO_ROOT
+    # Asked from the WORK TREE ROOT, not the caller's target: --git-path returns
+    # a path relative to its -C directory, so a subdirectory target answers
+    # "../.git/hooks". That ".." is no longer collapsed lexically (it must not
+    # be -- see the containment walk), and walking it visits the subdirectory
+    # itself, which is tracked content and so refused. Asking from the root
+    # yields ".git/hooks" with no ".." to resolve and the identical meaning.
+    HOOK_DIR=$(git -C "$WT_ROOT" rev-parse --git-path hooks)
+    HOOK_BASE=$WT_ROOT
 fi
 # Make absolute when relative (worktree / linked / core.hooksPath cases). The
 # base differs by branch and getting it wrong installs nothing: git resolves a
@@ -208,8 +213,16 @@ def bad(path):
 # walk tests each component where it actually LIVES, so a replaceable component
 # is caught at any depth, and resolving the parent keeps the comparison honest
 # on platforms where the work tree itself sits behind a link (macOS /var).
-hook=os.path.abspath(raw)
-parts=hook.split(os.sep)[1:]
+# NOT abspath: it collapses ".." LEXICALLY, and where a ".." crosses a symlink
+# the lexical answer is not the filesystem one. With /outside/link -> /repo/sub
+# and core.hooksPath=/outside/link/../.githooks, abspath yields
+# /outside/.githooks -- outside the work tree, so the walk cleared it -- while
+# the path git and the installer actually open resolves to /repo/.githooks,
+# inside it. The check passed on a directory that was never the destination.
+# Keeping ".." as a component lets the walk below resolve it against the real
+# parent it has already realpath()-ed, so what is checked is what is written.
+hook=raw if os.path.isabs(raw) else os.path.join(os.getcwd(),raw)
+parts=[p for p in hook.split(os.sep)[1:] if p not in ("",".")]
 cur=os.sep
 escape=False
 for i,part in enumerate(parts):

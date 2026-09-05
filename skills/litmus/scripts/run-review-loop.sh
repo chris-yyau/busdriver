@@ -434,6 +434,13 @@ _bs_in=""
 # reassigned by the next attempt's mktemp, which would drop the un-removed path
 # and leak a private prompt or captured response past the trap. Append instead.
 _bs_leaked=()
+# How long `_bs_reap_group` will wait between its TERM and its KILL, in seconds.
+# A NAMED constant because two distant places need the same number and drifted
+# once already: the grace loop below, and the teardown reserve subtracted from
+# each attempt's budget (#823 round 7). Declared at top level, beside `_bs_pid`
+# and for the same reason -- the EXIT trap calls the reap, and a `set -u` fault
+# in a trap loses the cleanup the trap exists to perform.
+_BS_REAP_GRACE_S=8
 # The backstop wrapper's pid, doubling as a process-GROUP handle. Declared HERE,
 # before the traps below are installed, so a signal arriving at ANY point -- including
 # before the first dispatch -- finds the variable defined rather than unbound.
@@ -456,7 +463,8 @@ _bs_mode=group
 #
 # No-op unless there is genuinely something alive: an empty handle returns
 # immediately, and `kill -0` is probed before any signal is sent, so a healthy
-# dispatch signals nothing and adds no latency. TERM first, then a 2s grace, then
+# dispatch signals nothing and adds no latency. TERM first, then a grace of
+# $_BS_REAP_GRACE_S seconds, then
 # KILL -- a descendant mid-flush of the CLI transcript gets to finish.
 #
 # Signals a GROUP as well as the leader pid -- which handle does the work differs
@@ -511,7 +519,7 @@ _bs_reap_group() {
   # depend on PATH, and a loop that silently runs ZERO iterations degrades to an
   # immediate KILL -- precisely the orphan-making behaviour the grace prevents.
   local _i
-  for (( _i = 0; _i < 40; _i++ )); do
+  for (( _i = 0; _i < _BS_REAP_GRACE_S * 5; _i++ )); do
     _bs_alive "$_p" "$_mode" || return 0
     sleep 0.2
   done
@@ -1178,10 +1186,19 @@ PROMPT_EOF
   # necessary to use the KILL signal"; a TERM-ignoring `claude` (or one of its
   # descendants) would otherwise outlive the budget and hit the harness cap with
   # no verdict. `-k` adds a bounded grace, then KILL. The overshoot is at most
-  # this many seconds past the budget on the LAST attempt (540 + 5 is still well
-  # under the 600s cap); mid-sequence it self-corrects, because every subsequent
-  # remaining-budget figure is recomputed from the wall clock, not accumulated.
+  # this many seconds past the attempt's own stamped deadline; mid-sequence it
+  # self-corrects, because every subsequent remaining-budget figure is recomputed
+  # from the wall clock, not accumulated. Past $TIMEOUT_S it no longer overshoots
+  # at all: $_BS_TEARDOWN_RESERVE below takes this grace out of the stamp.
   _BS_KILL_AFTER=5
+  # What the dispatch may still consume AFTER its stamped deadline passes, and
+  # therefore what has to come out of the stamp for $TIMEOUT_S to bound the whole
+  # sequence rather than just the attempt. Two components, both measured above:
+  # the wrapper's own post-deadline grace, and `_bs_reap_group`'s TERM->KILL wait.
+  # The perl arm reaches the same figure by a different route -- no `-k`, but its
+  # handler escalates over 50 x 0.1s before returning -- so one constant covers
+  # both arms.
+  _BS_TEARDOWN_RESERVE=$(( _BS_KILL_AFTER + _BS_REAP_GRACE_S ))
   # The perl arm is ENVIRONMENT-STEERABLE and is reached with a repo-injectable
   # environment still in place (#325 / ADR 0016): PERL5OPT / PERL5LIB / PERLLIB
   # load attacker-controlled code BEFORE the wrapper body runs, and a module that
@@ -1364,6 +1381,34 @@ PROMPT_EOF
     # than argue about the size. A static _TO would be worse still: every attempt
     # on the full window, making the arithmetic cosmetic.
     _bs_now=$(date +%s); _bs_remaining=$(( TIMEOUT_S - (_bs_now - _bs_start) ))
+    # Reserve the teardown out of the stamp, so the attempt's deadline plus the
+    # grace that follows it land INSIDE $TIMEOUT_S. Without this the budget bounds
+    # the attempt and nothing else: the wrapper's -k grace and the reap that
+    # follows it are both real wall clock the caller never accounted for, so a
+    # pass sized against the 600s harness cap could still be killed mid-teardown
+    # with no verdict written. Only the LAST attempt's teardown actually escapes
+    # -- every mid-sequence figure is recomputed from the wall clock and absorbs
+    # it -- but the stamp cannot know which attempt is last, so it reserves on
+    # all of them.
+    #
+    # The exception is keyed on the CONFIGURED budget, never on what is left of
+    # it. Those are different questions and only one of them is about the caller:
+    #   * $TIMEOUT_S below the reserve -- the caller asked for less time than a
+    #     teardown takes. Reserving would refuse every dispatch, so the bound
+    #     degrades instead and the gate stays usable at the small timeouts the
+    #     fixtures drive it at. A deliberate, uniform-across-attempts choice.
+    #   * $_bs_remaining below the reserve inside a LARGE budget -- a late retry
+    #     with seconds left. Nothing about the caller changed; the budget is
+    #     simply spent. Reading the exception off the remaining figure here would
+    #     hand those last seconds over unreserved and let the kill grace run past
+    #     $TIMEOUT_S after all, which is the whole defect this reserve exists to
+    #     close. So the subtraction still applies, goes negative, and the guard
+    #     below refuses the attempt -- fail-closed, which is the correct answer
+    #     to "there is no longer room to run and clean up".
+    # `if`, not `&&`: a false `(( ))` returns 1 under set -e.
+    if (( TIMEOUT_S > _BS_TEARDOWN_RESERVE )); then
+      _bs_remaining=$(( _bs_remaining - _BS_TEARDOWN_RESERVE ))
+    fi
     if [[ "$_bs_remaining" -lt 1 ]]; then
       echo "❌ backstop: budget (${TIMEOUT_S}s) spent before attempt $((_bs_attempt + 1)) could start — no verdict (fail-closed)" >&2
       exit 1

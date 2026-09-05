@@ -779,6 +779,51 @@ ok "$(grep -c 'seq 1 40' "$RL")" "0" "the reap grace does not depend on an exter
 # iterations races the pid-file read, so the assertion it guards would report on
 # nothing. Counted in THIS file, which is the one that used to.
 ok "$(grep -c 'se[q] 1 100' "$REPO/tests/test-pr-dual-voice.sh")" "0" "the cancellation fixtures do not depend on an external seq"
+# The grace is a NAMED constant, and both places that need the number read it.
+# Two distant sites used to carry it independently -- the loop bound and the
+# header comment -- and they drifted: the comment still said 2s after round 4
+# widened the loop to 8s. A literal in the loop is what allowed that.
+ok "$(grep -c '^_BS_REAP_GRACE_S=8$' "$RL")" "1" "the reap grace is a single named constant"
+ok "$(grep -c '_i < _BS_REAP_GRACE_S \* 5' "$RL")" "1" "the grace loop derives its bound from that constant"
+ok "$(grep -c '_i < 40' "$RL")" "0" "no literal iteration count survives in the grace loop"
+# $TIMEOUT_S must bound the whole sequence, not just the attempt. The wrapper's
+# post-deadline grace and the reap that follows it are real wall clock; unreserved,
+# a pass sized against the 600s harness cap can still be killed mid-teardown with
+# no verdict. The reserve is DERIVED from both components so it cannot drift from
+# either one.
+ok "$(grep -c '_BS_TEARDOWN_RESERVE=\$(( _BS_KILL_AFTER + _BS_REAP_GRACE_S ))' "$RL")" "1" "the teardown reserve is derived from both graces, not restated"
+ok "$(grep -c '_bs_remaining=\$(( _bs_remaining - _BS_TEARDOWN_RESERVE ))' "$RL")" "1" "the reserve comes out of the stamped attempt budget"
+# ...and only out of the STAMP. The retry guards gate whether to loop at all; the
+# stamp is the one site that decides how long the wrapper actually runs, so
+# subtracting anywhere else would double-charge the budget.
+ok "$(grep -c '_bs_remaining=\$(( TIMEOUT_S - (_bs_now - _bs_start) ))' "$RL")" "3" "the raw remaining figure is still what the retry guards read"
+# The reserve must not make a small budget undispatchable -- the fixtures below
+# drive this script at 10s, and refusing them outright would be a usability
+# regression dressed as rigour. Applied only while it leaves a usable attempt.
+ok "$(grep -c '(( TIMEOUT_S > _BS_TEARDOWN_RESERVE ))' "$RL")" "1" "the small-budget exception reads the configured budget"
+# ...and NOT the remaining one. Keyed on what is left, a late retry inside a large
+# budget would look like a small-budget caller and be handed its last seconds
+# unreserved -- the kill grace then runs past $TIMEOUT_S exactly as before.
+ok "$(grep -c 'if (( _bs_remaining - _BS_TEARDOWN_RESERVE' "$RL")" "0" "the exception is not keyed on the remaining budget"
+
+# Behavioural, standalone: drive the exact arithmetic and prove BOTH branches.
+# A reserve that always applied would break the 10s fixtures; one that never
+# applied would be the bug this pins. Neither shows up in a structural grep.
+_res_probe() {
+  local _BS_REAP_GRACE_S=8 _BS_KILL_AFTER=5 _BS_TEARDOWN_RESERVE _r
+  _BS_TEARDOWN_RESERVE=$(( _BS_KILL_AFTER + _BS_REAP_GRACE_S ))
+  _r=$(( $1 - $2 ))
+  if (( $1 > _BS_TEARDOWN_RESERVE )); then _r=$(( _r - _BS_TEARDOWN_RESERVE )); fi
+  echo "$_r"
+}
+ok "$(_res_probe 540 0)" "527" "reserve: the default budget gives the attempt TIMEOUT_S minus the teardown"
+ok "$(( $(_res_probe 540 0) + 13 ))" "540" "reserve: attempt plus worst-case teardown lands inside the budget"
+ok "$(_res_probe 10 0)" "10" "reserve: a budget smaller than the teardown is left alone, not refused"
+ok "$(_res_probe 14 0)" "1" "reserve: the boundary budget still yields a dispatchable attempt"
+# A late retry inside a LARGE budget must go negative, so the caller's own
+# `-lt 1` guard refuses it. Keyed on the remaining figure this returned 5 and
+# stamped the attempt unreserved -- the overshoot, reintroduced at the tail.
+ok "$(_res_probe 540 535)" "-8" "reserve: a late retry goes negative rather than spending the tail unreserved"
 # The perl arm creates its group inside the fork()ed child, so its pgid is
 # invisible to the shell — it must carry the equivalent reap in its own body.
 ok "$(grep -c 'kill "KILL", -\$pid' "$RL")" "2" "perl arm reaps its group on BOTH the timeout and normal paths"

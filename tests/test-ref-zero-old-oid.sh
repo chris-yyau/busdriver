@@ -14,7 +14,9 @@
 
 # shellcheck disable=SC2310
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# Fail closed here too: every REPO_ROOT-relative path below, and the victim
+# assertions at the end, assume this landed.
+cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
 GATE_SCRIPT="$REPO_ROOT/hooks/gate-scripts/ref-ff-gate.sh"
 
@@ -35,34 +37,52 @@ supports_reftable() {
     return 0
 }
 
+# Every step below is `&&`-chained, and NOTHING here relies on `set -e`.
+# Bash disables errexit for every command in an AND/OR list but the last, and
+# that suppression covers the whole body of a function invoked as an operand of
+# `||` or as an `if` condition -- INCLUDING subshells nested inside it.
+# Measured: a `false` inside `( set -e ... )` in such a function does not abort
+# and the subshell still reports rc=0. Both call sites of this helper are
+# invoked exactly that way, so `&&` is the only construct that actually
+# short-circuits here. Getting this wrong is not cosmetic: a failed `git init`
+# fell through to the `cd`, and a failed `cd` left the rest of setup running in
+# the REAL checkout -- `git reset --hard HEAD~1` and a `git commit` included.
+# Live condition, measured: an ambient core.hooksPath whose
+# reference-transaction hook aborts makes `git init` exit 128 for every fresh
+# repo on this machine.
+init_fixture_repo() {  # <path> [ref-format] -- run INSIDE a subshell; chdirs
+    local path="$1" fmt="${2:-}"
+    if [ "$fmt" = reftable ]; then
+        git init -q -b main --ref-format=reftable "$path"
+    else
+        # Default backend is files; avoid --ref-format=files (Git >= 2.45 only).
+        git init -q -b main "$path"
+    fi &&
+    cd "$path" &&
+    git config user.email t@t &&
+    git config user.name t &&
+    git config commit.gpgsign false &&
+    git config tag.gpgsign false &&
+    # Isolate from ambient core.hooksPath (e.g. ~/.codex/git-hooks).
+    git config core.hooksPath "$(pwd)/.git/hooks" &&
+    echo base > f &&
+    git add f &&
+    git commit -qm base
+}
+
 setup_repo() {  # <tag> <ref-format>
     local tag="$1" fmt="$2" setup_rc
     REPO="$TMPROOT/repo-$tag"
     rm -rf "$REPO"
     (
-        set -e
-        if [ "$fmt" = reftable ]; then
-            git init -q -b main --ref-format=reftable "$REPO"
-        else
-            # Default backend is files; avoid --ref-format=files (Git >= 2.45 only).
-            git init -q -b main "$REPO"
-        fi
-        cd "$REPO" || exit 1
-        git config user.email t@t; git config user.name t
-        git config commit.gpgsign false; git config tag.gpgsign false
-        # Isolate from ambient core.hooksPath (e.g. ~/.codex/git-hooks).
-        git config core.hooksPath "$(pwd)/.git/hooks"
-        echo base > f; git add f; git commit -qm base
-        echo next >> f; git add f; git commit -qm next
-        UNREVIEWED=$(git rev-parse HEAD)
-        git reset -q --hard HEAD~1
-        git branch unreviewed "$UNREVIEWED"
+        init_fixture_repo "$REPO" "$fmt" &&
+        echo next >> f &&
+        git add f &&
+        git commit -qm next &&
+        UNREVIEWED=$(git rev-parse HEAD) &&
+        git reset -q --hard HEAD~1 &&
+        git branch unreviewed "$UNREVIEWED" &&
         mkdir -p "$ISO_STATE"
-    # The status is taken AFTERWARDS, not with `|| return 1` on the subshell:
-    # bash disables errexit for every command in an AND/OR list but the last, so
-    # as an operand of `||` the `set -e` above was INERT. A failed `git init`
-    # then fell through to the `cd`, and a failed `cd` left the REST of this
-    # body running in the real checkout -- `git reset --hard HEAD~1` included.
     ) >/dev/null 2>&1
     setup_rc=$?
     if [ "$setup_rc" -ne 0 ]; then
@@ -495,15 +515,12 @@ run_format_suite() {  # <format>
     # the question has teeth.
     OTHER_REPO="$TMPROOT/other-$fmt"
     rm -rf "$OTHER_REPO"
-    (
-        set -e
-        git init -q -b main "$OTHER_REPO"
-        cd "$OTHER_REPO"
-        git config user.email t@t; git config user.name t
-        git config commit.gpgsign false
-        git config core.hooksPath "$(pwd)/.git/hooks"
-        echo base > f; git add f; git commit -qm base
-    ) >/dev/null 2>&1 || { printf "  FAIL  fixture setup (other repo)\n"; FAIL=$((FAIL + 1)); return; }
+    # Same &&-chained helper, for the same reason: this subshell IS an operand
+    # of `||`, so a `set -e` inside it is inert, and the `cd` that used to
+    # follow an unguarded `git init` had no guard of its own -- a failed init
+    # ran `git config`, `echo base > f` and `git commit` in the REAL checkout.
+    ( init_fixture_repo "$OTHER_REPO" ) >/dev/null 2>&1 ||
+        { printf "  FAIL  fixture setup (other repo)\n"; FAIL=$((FAIL + 1)); return; }
     touch -t 202001010000 "$REPO/$ISO_STATE/skip-litmus.local"
     run_gate "an armed skip does not reach a -C-scoped delete in another repo" \
         block "git -C $OTHER_REPO branch -D main" "DELETE the protected branch 'main'"
@@ -661,6 +678,32 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
     PASS=$((PASS + 1))
 else
     printf "  FAIL  real checkout HEAD moved: %s -> %s\n" "$HEAD_BEFORE" "$HEAD_AFTER"
+    FAIL=$((FAIL + 1))
+fi
+
+# ...and the shared helper itself, exercised the way both call sites use it:
+# inside a subshell, in a CONDITION context. That is precisely where `set -e`
+# stops working, so this is the assertion that would have caught the original
+# defect. The real checkout is the victim under test -- a failed `cd` would run
+# `git config`, `echo base > f` and `git commit` right here.
+EMAIL_BEFORE=$(git -C "$REPO_ROOT" config --local user.email 2>/dev/null || printf none)
+if ( PATH="$SHIM:$PATH"; init_fixture_repo "$TMPROOT/other-failclosed" ) >/dev/null 2>&1; then
+    printf "  FAIL  init_fixture_repo reported success after git init failed\n"
+    FAIL=$((FAIL + 1))
+else
+    printf "  PASS  init_fixture_repo fails closed in a condition context\n"
+    PASS=$((PASS + 1))
+fi
+EMAIL_AFTER=$(git -C "$REPO_ROOT" config --local user.email 2>/dev/null || printf none)
+HEAD_AFTER2=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf none)
+if [ "$EMAIL_BEFORE" = "$EMAIL_AFTER" ] && [ "$HEAD_BEFORE" = "$HEAD_AFTER2" ] &&
+   [ ! -e "$REPO_ROOT/f" ]; then
+    printf "  PASS  ...leaving the real checkout's config, HEAD and tree untouched\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  real checkout mutated: email %s -> %s, HEAD %s -> %s, f exists=%s\n" \
+        "$EMAIL_BEFORE" "$EMAIL_AFTER" "$HEAD_BEFORE" "$HEAD_AFTER2" \
+        "$([ -e "$REPO_ROOT/f" ] && printf yes || printf no)"
     FAIL=$((FAIL + 1))
 fi
 

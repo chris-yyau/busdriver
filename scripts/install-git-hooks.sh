@@ -232,6 +232,18 @@ for i,part in enumerate(parts):
     # pass the work tree root to reach .git/hooks, and a merge cannot replace
     # the root or .git itself. The DESTINATION is always checked, so
     # core.hooksPath pointing at the work tree root is still refused.
+    # A component that LIVES in the work tree is repo content a merge can
+    # replace, whatever it currently RESOLVES to. The symlink is the shape that
+    # slipped through: a tracked `link -> .git` resolves into the git dir, so
+    # inside(gd,cand) exempted it as an ancestor AND bad() called it safe --
+    # both reading where it points. A merge then replaces the link with a real
+    # directory of hostile wrappers, which git executes instead of the
+    # digest-pinned ones, before any gate can object. Where it points must not
+    # excuse where it lives. A link that lives INSIDE the git dir is not
+    # tracked content and stays allowed.
+    if os.path.islink(cand) and inside(cur,wt) and not inside(cur,gd):
+        escape=True
+        break
     if (last or not inside(gd,cand)) and bad(cand):
         escape=True
         break

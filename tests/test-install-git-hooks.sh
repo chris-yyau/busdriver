@@ -27,6 +27,14 @@ cd "$(dirname "$0")/.." || exit 1
 _neutralize_git_env() {
     unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
           GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    # ...and the COMMAND-LEVEL config injectors, which the six above do not cover.
+    # `GIT_CONFIG_COUNT` + `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (and the older
+    # `GIT_CONFIG_PARAMETERS`) inject settings into EVERY git invocation at a
+    # precedence above the repository file, so an inherited core.hooksPath sends a
+    # fixture install into an external hooks directory that the fixture never names
+    # -- measured, not assumed. Unsetting COUNT is what disables the indexed pairs:
+    # git reads KEY_n/VALUE_n only up to COUNT, so the pairs need no enumeration.
+    unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG
 }
 _neutralize_git_env
 REPO_SRC=$PWD
@@ -82,6 +90,19 @@ _CONTAIN_STAGED=$(
     git -C "$_TMP_CONTAIN/r" diff --cached --name-only 2>/dev/null | tr '\n' ' '
 )
 assert "a staged write goes to the fixture index, not an inherited one" "" "$_CONTAIN_STAGED"
+
+# ...and a command-level injector cannot override the fixture's OWN config. The
+# fixture sets a local core.hooksPath first: reading an unset key would fall
+# through to the machine's global config and prove nothing about the injector.
+git -C "$_TMP_CONTAIN/r" config core.hooksPath "$_TMP_CONTAIN/fixture-hooks"
+_CONTAIN_HOOKS=$(
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath \
+           GIT_CONFIG_VALUE_0="$_TMP_CONTAIN/EXTERNAL-hooks"
+    _neutralize_git_env
+    git -C "$_TMP_CONTAIN/r" config --get core.hooksPath 2>/dev/null || echo "<unreadable>"
+)
+assert "an inherited GIT_CONFIG_COUNT cannot redirect core.hooksPath" \
+    "$_TMP_CONTAIN/fixture-hooks" "$_CONTAIN_HOOKS"
 rm -rf "$_TMP_CONTAIN"
 
 # Isolated PLUGIN_ROOT we are free to mutate.
@@ -641,6 +662,44 @@ git -C "$DOTDOT/repo2" config commit.gpgsign false
 git -C "$DOTDOT/repo2" config core.hooksPath "$DOTDOT/out2/b/../hooks"
 bash "$PR/scripts/install-git-hooks.sh" "$DOTDOT/repo2" >/dev/null 2>&1
 assert "a .. path that stays outside the work tree still installs" "0" "$?"
+
+# 14. A TRACKED SYMLINK component must not be exempted by where it POINTS.
+# `link -> .git` resolves inside the git dir, so the ancestor exemption treated
+# it as an ancestor and bad() called it safe -- both reading the target. But the
+# link itself is tracked work-tree content: a merge replaces it with a real
+# directory of hostile wrappers, and git executes those instead of the
+# digest-pinned ones, before any gate can object.
+TSYM="$WORK/tsym"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$TSYM/repo"
+git -C "$TSYM/repo" config commit.gpgsign false
+git -C "$TSYM/repo" config user.email t@t
+git -C "$TSYM/repo" config user.name t
+: > "$TSYM/repo/a"
+git -C "$TSYM/repo" add a
+git -C "$TSYM/repo" commit -q -m A
+ln -s .git "$TSYM/repo/link"
+git -C "$TSYM/repo" add link
+git -C "$TSYM/repo" commit -q -m "tracked link"
+# Guard against a vacuous pass: the link must really be TRACKED, mode 120000.
+assert "the symlink component is tracked repo content (else the case proves nothing)" "120000" \
+    "$(git -C "$TSYM/repo" ls-files -s link | awk '{print $1}')"
+mkdir -p "$TSYM/repo/.git/hooks"
+git -C "$TSYM/repo" config core.hooksPath "$TSYM/repo/link/hooks"
+ts_err=$(bash "$PR/scripts/install-git-hooks.sh" "$TSYM/repo" 2>&1)
+assert "a hooksPath through a tracked symlink is refused" "1" "$?"
+assert "that refusal is the containment message, not a crash" "yes" \
+    "$([[ "$ts_err" == *"inside the work tree"* && "$ts_err" != *Traceback* ]] && echo yes || echo no)"
+assert "no wrapper was written through the symlink" "0" \
+    "$(find "$TSYM/repo/.git/hooks" -maxdepth 1 -type f ! -name '*.sample' | wc -l | tr -d ' ')"
+
+# The refusal must not be blanket: the ordinary .git/hooks path still installs.
+git init -q "$TSYM/plain"
+git -C "$TSYM/plain" config commit.gpgsign false
+bash "$PR/scripts/install-git-hooks.sh" "$TSYM/plain" >/dev/null 2>&1
+assert "the ordinary .git/hooks destination still installs" "0" "$?"
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"

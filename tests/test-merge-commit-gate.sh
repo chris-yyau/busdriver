@@ -50,6 +50,14 @@ unset BUSDRIVER_STATE_DIR
 _neutralize_git_env() {
     unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
           GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    # ...and the COMMAND-LEVEL config injectors, which the six above do not cover.
+    # `GIT_CONFIG_COUNT` + `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (and the older
+    # `GIT_CONFIG_PARAMETERS`) inject settings into EVERY git invocation at a
+    # precedence above the repository file, so an inherited core.hooksPath sends a
+    # fixture install into an external hooks directory that the fixture never names
+    # -- measured, not assumed. Unsetting COUNT is what disables the indexed pairs:
+    # git reads KEY_n/VALUE_n only up to COUNT, so the pairs need no enumeration.
+    unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG
 }
 _neutralize_git_env
 
@@ -206,6 +214,19 @@ CONTAIN_STAGED=$(
     git -C "$TMP_CONTAIN/r" diff --cached --name-only 2>/dev/null | tr '\n' ' '
 )
 assert "a staged write goes to the fixture index, not an inherited one" "" "$CONTAIN_STAGED"
+
+# ...and a command-level injector cannot override the fixture's OWN config. The
+# fixture sets a local core.hooksPath first: reading an unset key would fall
+# through to the machine's global config and prove nothing about the injector.
+git -C "$TMP_CONTAIN/r" config core.hooksPath "$TMP_CONTAIN/fixture-hooks"
+CONTAIN_HOOKS=$(
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath \
+           GIT_CONFIG_VALUE_0="$TMP_CONTAIN/EXTERNAL-hooks"
+    _neutralize_git_env
+    git -C "$TMP_CONTAIN/r" config --get core.hooksPath 2>/dev/null || echo "<unreadable>"
+)
+assert "an inherited GIT_CONFIG_COUNT cannot redirect core.hooksPath" \
+    "$TMP_CONTAIN/fixture-hooks" "$CONTAIN_HOOKS"
 assert "the fixture commit is visible to a plain fixture read" "contained" \
     "$(git -C "$TMP_CONTAIN/r" log -1 --format=%s 2>/dev/null)"
 rm -rf "$TMP_CONTAIN"

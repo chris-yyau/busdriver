@@ -750,14 +750,15 @@ if [ -f "$MARKER" ]; then
     # Reached only for marker shapes that are not one of the two unconditional
     # opt-outs above (DEGRADED, SKIPPED-NONE).
     #
-    # Check PASS-MERGE BEFORE requiring a hasher (Codex P2 finding, PR #577
-    # round 5). This marker's acceptance condition is `git diff --cached
-    # --quiet` alone — it never needs STAGED_HASH — so it must not be forced
-    # through the hash-utility pipeline below. Ordering it after hash
-    # selection meant a host with neither sha256sum nor shasum on the hook
-    # PATH blocked a valid PASS-MERGE marker (an empty merge resolution that
-    # run-review-loop.sh intentionally minted) even though no hash was ever
-    # needed to validate it.
+    # PASS-MERGE is RETIRED (#782) — this arm rejects it unconditionally.
+    # It is NOT a supported bypass: nothing mints the token any more, and an
+    # empty-diff merge is already blocked earlier, so a token reaching here is
+    # stale or forged either way. Do not reintroduce an acceptance branch.
+    #
+    # It stays ahead of the hash-utility selection below (Codex P2, PR #577
+    # round 5) because it needs no STAGED_HASH to decide. That ordering used
+    # to keep a host with neither sha256sum nor shasum from failing to
+    # validate the token; it now keeps such a host from failing to REJECT it.
     if [[ "$MARKER_CONTENT" =~ ^PASS-MERGE-[0-9]+$ ]]; then
         # PASS-MERGE retired (#782). Empty-diff merges are blocked above; a
         # leftover marker must never authorize anything else.

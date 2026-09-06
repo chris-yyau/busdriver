@@ -129,6 +129,58 @@ else
 fi
 rm -rf "$_reach_tmp"
 
+# ── The isolating case (cubic P2, PR #841) ────────────────────────────
+# The three cases above all block for reasons OTHER than the #782 empty-diff
+# block: case 1 has no marker (Gate 2 rejects that), cases 2-3 carry a
+# PASS-MERGE marker (the retirement arm rejects that). Stripping the #782
+# block leaves all three green — verified by mutation — so none of them pins
+# the behavior this issue is about.
+#
+# This case carries a marker that WOULD otherwise authorize the commit: the
+# bare sha256 of the (empty) staged diff, computed exactly as the gate
+# computes it. Without the #782 block the marker matches at the bare-hash arm
+# and the gate allows. So a block here can only come from the empty-diff
+# MERGE_HEAD logic — which is the property "NO marker can authorize an empty
+# staged merge".
+TOTAL=$((TOTAL + 1))
+_iso_tmp=$(mktemp -d)
+(
+    set -e
+    cd "$_iso_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "trunk" > file.txt
+    git add file.txt
+    git commit -qm "trunk" "$NV"
+    git checkout -q -b unreviewed
+    echo "secret" > evil.txt
+    git add evil.txt
+    git commit -qm "unreviewed evil" "$NV"
+    git checkout -q main
+    git merge -s ours --no-commit unreviewed >/dev/null 2>&1
+    git diff --cached --quiet HEAD
+)
+mkdir -p "$_iso_tmp/.claude"
+# Same pipeline as pre-commit-gate.sh's STAGED_HASH (empty diff => sha256 of
+# empty input). Derived, not hardcoded, so it tracks any change to that shape.
+if command -v sha256sum >/dev/null 2>&1; then _iso_hash_cmd=(sha256sum); else _iso_hash_cmd=(shasum -a 256); fi
+_iso_hash=$(git -C "$_iso_tmp" --no-replace-objects -c color.ui=never -c core.quotePath=false \
+    diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null \
+    | "${_iso_hash_cmd[@]}" | cut -d' ' -f1)
+printf '%s\n' "$_iso_hash" > "$_iso_tmp/.claude/litmus-passed.local"
+_iso_in=$(make_hook_input_cwd "git commit -m merge" "$_iso_tmp")
+_iso_out=$(printf '%s' "$_iso_in" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+if echo "$_iso_out" | grep -q '"block"' 2>/dev/null; then
+    printf "  PASS  empty-diff merge blocks even with a VALID diff-bound hash marker\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  a valid-hash marker authorized an empty-diff merge (got allow)\n    output: %s\n" "$_iso_out"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$_iso_tmp"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [[ "$FAIL" -gt 0 ]]; then

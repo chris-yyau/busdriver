@@ -522,8 +522,16 @@ fi
 # MERGE_HEAD after the gate clears. Block every empty-diff MERGE_HEAD commit
 # unconditionally — do not run ancestry queries here (they are unbounded and
 # the hook protocol treats timeout/no-output as allow).
+# The emptiness probe carries the same flags as the marker-hash command
+# above, for the same reason: repo-controlled config decides what "empty"
+# means otherwise. Measured — `diff.ignoreSubmodules=all` makes a staged
+# gitlink change read as no change (rc 0), so a real submodule-only merge
+# resolution would be refused here AND have its valid marker deleted;
+# ext-diff / textconv drivers collapse content the same way. Two commands
+# that disagree about "the staged diff" is exactly the #576 shape.
 if git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
-    if git -C "$REPO_DIR" diff --cached --quiet HEAD 2>/dev/null; then
+    if git -C "$REPO_DIR" diff --cached --quiet --no-ext-diff --no-textconv \
+        --ignore-submodules=none HEAD 2>/dev/null; then
         rm -f "$REPO_DIR/$STATE_DIR/litmus-passed.local" 2>/dev/null || true
         REASON="Empty-diff merge commit refused (#782): an empty staged tree does not mean the merge adds no history (e.g. git merge -s ours of unreviewed commits), and PreToolUse cannot vouch for final MERGE_HEAD parents. PASS-MERGE auto-pass is retired. Abort the merge, or land a non-empty reviewed resolution."
         gate_record_block_and_emit "$REASON"

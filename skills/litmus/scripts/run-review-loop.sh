@@ -1864,7 +1864,12 @@ else
   # not enough (#782): `git merge -s ours <unreviewed>` keeps our tree
   # while still adding the other side as a parent.
   if git rev-parse MERGE_HEAD >/dev/null 2>&1; then
-    if git diff --cached --quiet 2>/dev/null; then
+    # Same flag pinning as the pre-commit gate's probe: `diff.ignoreSubmodules=all`
+    # (repo-controlled) hides a staged gitlink change, and ext-diff / textconv
+    # drivers collapse content, either of which would misread a real resolution
+    # as an empty-diff merge and refuse it.
+    if git diff --cached --quiet --no-ext-diff --no-textconv \
+        --ignore-submodules=none 2>/dev/null; then
       # PASS-MERGE retired (#782). Empty tree never auto-passes: PreToolUse
       # cannot bind the final merge parents, so no marker can authorize it.
       # No reachability query here — `git merge <ancestor>` reports "Already

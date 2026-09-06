@@ -181,6 +181,86 @@ else
 fi
 rm -rf "$_iso_tmp"
 
+# ── Submodule-blind emptiness probe (Codex, PR #841) ──────────────────
+# `diff.ignoreSubmodules=all` is repo-controlled and makes a staged gitlink
+# change read as NO change (measured: rc 0). With the emptiness probe
+# unpinned, a real submodule-only merge resolution was misread as an
+# empty-diff merge — refused, and its valid marker deleted. Pin the same
+# flags the marker-hash command uses so both agree what "empty" means.
+#
+# A fixture failure is a FAIL, never a skip: a skip here would silently
+# retire the case, and the sanity assertions below are the only thing
+# proving it still tests what it claims.
+TOTAL=$((TOTAL + 1))
+_sm_tmp=$(mktemp -d)
+_sm_rc=0
+set +e
+(
+    set -e
+    cd "$_sm_tmp"
+    mkdir -p sub main
+    cd sub
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false; git config user.email "t@t"; git config user.name "T"
+    echo v1 > f; git add f; git commit -qm v1 "$NV"
+    cd ../main
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false; git config user.email "t@t"; git config user.name "T"
+    echo base > base.txt; git add base.txt; git commit -qm base "$NV"
+    git -c protocol.file.allow=always submodule add -q ../sub sub
+    git commit -qm "add sub" "$NV"
+    cd ../sub; echo v2 > f; git commit -qam v2 "$NV"
+    sub_oid=$(git rev-parse HEAD)
+    cd ../main/sub; git fetch -q origin 2>/dev/null || true
+    git checkout -q "$sub_oid"
+    cd ..
+    # A staged gitlink change plus a MERGE_HEAD: a real, non-empty resolution.
+    git add sub
+    mh_path=$(git rev-parse --git-path MERGE_HEAD)
+    head_oid=$(git rev-parse HEAD)
+    printf '%s\n' "$head_oid" > "$mh_path"
+    # Repo-controlled config that hides the gitlink from an unpinned probe.
+    git config diff.ignoreSubmodules all
+    # Sanity: the unpinned probe must read EMPTY (rc 0) and the pinned probe
+    # must read NON-EMPTY (rc exactly 1). Check rc explicitly — `!` would
+    # accept a git ERROR (rc > 1) as evidence of a non-empty diff and leave
+    # the case asserting nothing.
+    git diff --cached --quiet HEAD
+    pinned_rc=0
+    git diff --cached --quiet --no-ext-diff --no-textconv --ignore-submodules=none HEAD \
+        || pinned_rc=$?
+    [[ "$pinned_rc" -eq 1 ]]
+)
+_sm_rc=$?
+set -e
+if [[ "$_sm_rc" -ne 0 ]]; then
+    printf "  FAIL  submodule-blind probe (fixture setup)\n"
+    FAIL=$((FAIL + 1))
+else
+    _sm_in=$(make_hook_input_cwd "git commit -m merge" "$_sm_tmp/main")
+    _sm_out=$(printf '%s' "$_sm_in" | bash "$GATE_SCRIPT" 2>/dev/null)
+    _sm_gate_rc=$?
+    # Assert POSITIVELY. "The refusal string is absent" would also be true of a
+    # crashed hook that printed nothing, which is why the gate rc and the
+    # expected block reason are both checked: a submodule-only resolution is
+    # NOT empty, so the #782 arm must not fire and the commit must fall
+    # through to the ordinary review gate (no marker here, so it blocks there).
+    if [[ "$_sm_gate_rc" -ne 0 ]]; then
+        printf "  FAIL  gate exited %s on a submodule-only resolution\n    output: %s\n" "$_sm_gate_rc" "$_sm_out"
+        FAIL=$((FAIL + 1))
+    elif echo "$_sm_out" | grep -q 'Empty-diff merge commit refused' 2>/dev/null; then
+        printf "  FAIL  submodule-only resolution misread as an empty-diff merge\n    output: %s\n" "$_sm_out"
+        FAIL=$((FAIL + 1))
+    elif echo "$_sm_out" | grep -q 'Code review required before committing' 2>/dev/null; then
+        printf "  PASS  submodule-only resolution reaches the normal review gate\n"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  unexpected gate decision on a submodule-only resolution\n    output: %s\n" "$_sm_out"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -rf "$_sm_tmp"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [[ "$FAIL" -gt 0 ]]; then

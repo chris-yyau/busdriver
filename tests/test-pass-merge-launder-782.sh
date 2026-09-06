@@ -30,7 +30,15 @@ run_case() {
     local name="$1" expected="$2" with_marker="$3"
     TOTAL=$((TOTAL + 1))
     local tmp_dir; tmp_dir=$(mktemp -d)
+    # NOT `( ... ) || { ... }`: a subshell used as the left operand of `||` runs
+    # with errexit suppressed, so a failed commit/merge or a non-empty staged
+    # diff would slip through and the gate's block for some UNRELATED reason
+    # would score as a passing regression. Capture the status separately so
+    # `set -e` stays live inside the fixture.
+    local fixture_rc=0
+    set +e
     (
+        set -e
         cd "$tmp_dir"
         git init -q -b main 2>/dev/null || git init -q
         git config commit.gpgsign false
@@ -47,13 +55,22 @@ run_case() {
         git merge -s ours --no-commit unreviewed >/dev/null 2>&1
         git diff --cached --quiet HEAD
         mh_path=$(git rev-parse --git-path MERGE_HEAD)
-        ! git merge-base --is-ancestor "$(cat "$mh_path")" HEAD
-    ) || {
+        mh_oid=$(cat "$mh_path")
+        # Exactly 1 means "not an ancestor" — the state this fixture needs.
+        # 0 is an ancestor and >1 is a git error; both are fixture failures, so
+        # do not use `!`, which would accept the error as success.
+        anc_rc=0
+        git merge-base --is-ancestor "$mh_oid" HEAD || anc_rc=$?
+        [[ "$anc_rc" -eq 1 ]]
+    )
+    fixture_rc=$?
+    set -e
+    if [[ "$fixture_rc" -ne 0 ]]; then
         printf "  FAIL  %s (fixture setup)\n" "$name"
         FAIL=$((FAIL + 1))
         rm -rf "$tmp_dir"
         return 0
-    }
+    fi
 
     if [[ "$with_marker" = "1" ]]; then
         mkdir -p "$tmp_dir/.claude"

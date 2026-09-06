@@ -1748,10 +1748,6 @@ source "$SCRIPT_DIR/lib/validation.sh"
 # shellcheck source=lib/iteration-history.sh
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
-# #782: empty-diff merge auto-pass requires every MERGE_HEAD already reachable
-# shellcheck source=../../../hooks/gate-scripts/lib/merge-heads-reachable.sh disable=SC1091
-source "$SCRIPT_DIR/../../../hooks/gate-scripts/lib/merge-heads-reachable.sh"
-
 # Determine review mode from state file or env var
 REVIEW_MODE="${LITMUS_MODE:-commit}"
 
@@ -1869,13 +1865,12 @@ else
   # while still adding the other side as a parent.
   if git rev-parse MERGE_HEAD >/dev/null 2>&1; then
     if git diff --cached --quiet 2>/dev/null; then
-      # PASS-MERGE retired (#782). Empty tree never auto-passes — whether or
-      # not MERGE_HEAD is already reachable. PreToolUse cannot bind parents.
-      if merge_heads_already_reachable "."; then
-        echo "❌ Empty-diff merge refused (#782): PASS-MERGE auto-pass is retired because PreToolUse cannot vouch for final merge parents." >&2
-      else
-        echo "❌ Merge keeps our tree but introduces history not already reachable from HEAD (e.g. git merge -s ours of unreviewed commits)." >&2
-      fi
+      # PASS-MERGE retired (#782). Empty tree never auto-passes: PreToolUse
+      # cannot bind the final merge parents, so no marker can authorize it.
+      # No reachability query here — `git merge <ancestor>` reports "Already
+      # up to date" and writes no MERGE_HEAD, so "reachable + empty diff" is
+      # not a state git produces; the check could only ever return false.
+      echo "❌ Empty-diff merge refused (#782): PASS-MERGE auto-pass is retired — an empty tree can still add an unreviewed parent (e.g. git merge -s ours)." >&2
       echo "   Abort the merge or land the other side as a reviewed non-empty change." >&2
       write_terminal_status setup_error
       exit 1

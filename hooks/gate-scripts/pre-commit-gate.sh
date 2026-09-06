@@ -529,9 +529,15 @@ fi
 # resolution would be refused here AND have its valid marker deleted;
 # ext-diff / textconv drivers collapse content the same way. Two commands
 # that disagree about "the staged diff" is exactly the #576 shape.
+#
+# --no-replace-objects is belt-and-braces here, matching the canonical hash
+# below: the real control is the process-wide GIT_NO_REPLACE_OBJECTS=1 export
+# at the top of this file (#576), which already covers every git call. Carry
+# the flag anyway so the two commands read identically — #576 happened
+# because a comment asking for that agreement was not itself enforcement.
 if git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
-    if git -C "$REPO_DIR" diff --cached --quiet --no-ext-diff --no-textconv \
-        --ignore-submodules=none HEAD 2>/dev/null; then
+    if git -C "$REPO_DIR" --no-replace-objects diff --cached --quiet --no-ext-diff \
+        --no-textconv --ignore-submodules=none HEAD 2>/dev/null; then
         rm -f "$REPO_DIR/$STATE_DIR/litmus-passed.local" 2>/dev/null || true
         REASON="Empty-diff merge commit refused (#782): an empty staged tree does not mean the merge adds no history (e.g. git merge -s ours of unreviewed commits), and PreToolUse cannot vouch for final MERGE_HEAD parents. PASS-MERGE auto-pass is retired. Abort the merge, or land a non-empty reviewed resolution."
         gate_record_block_and_emit "$REASON"

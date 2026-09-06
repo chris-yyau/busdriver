@@ -261,6 +261,76 @@ else
 fi
 rm -rf "$_sm_tmp"
 
+# ── Replacement refs cannot launder (Codex, PR #841) ──────────────────
+# refs/replace/* is repo-controlled. A replacement mapping HEAD to a commit
+# with a DIFFERENT tree makes an actually-empty staged merge read as
+# non-empty (measured: rc 1), which would skip the #782 arm and let the
+# marker holding the TRUE empty-diff hash authorize the merge.
+#
+# The gate already exports GIT_NO_REPLACE_OBJECTS=1 process-wide (#576), so
+# this holds today; the probes carry --no-replace-objects as well. Pin the
+# END-TO-END property rather than either mechanism, so it stays pinned no
+# matter which one a future change touches.
+TOTAL=$((TOTAL + 1))
+_rp_tmp=$(mktemp -d)
+_rp_rc=0
+set +e
+(
+    set -e
+    cd "$_rp_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false; git config user.email "t@t"; git config user.name "T"
+    echo trunk > file.txt; git add file.txt; git commit -qm trunk "$NV"
+    echo other > file.txt; git add file.txt; git commit -qm decoy "$NV"
+    decoy=$(git rev-parse HEAD)
+    git reset -q --hard 'HEAD~1'
+    git checkout -q -b unreviewed
+    echo secret > evil.txt; git add evil.txt; git commit -qm evil "$NV"
+    git checkout -q main
+    git merge -s ours --no-commit unreviewed >/dev/null 2>&1
+    git diff --cached --quiet HEAD          # genuinely empty before the replace
+    head_now=$(git rev-parse HEAD)
+    git replace "$head_now" "$decoy" >/dev/null 2>&1
+    # Sanity: an UNGUARDED probe must now read non-empty (rc exactly 1), or
+    # this case is not exercising the laundering path it describes.
+    unguarded_rc=0
+    git diff --cached --quiet HEAD || unguarded_rc=$?
+    [[ "$unguarded_rc" -eq 1 ]]
+)
+_rp_rc=$?
+set -e
+if [[ "$_rp_rc" -ne 0 ]]; then
+    printf "  FAIL  replace-ref launder (fixture setup)\n"
+    FAIL=$((FAIL + 1))
+else
+    mkdir -p "$_rp_tmp/.claude"
+    if command -v sha256sum >/dev/null 2>&1; then _rp_hash_cmd=(sha256sum); else _rp_hash_cmd=(shasum -a 256); fi
+    _rp_hash=$(git -C "$_rp_tmp" --no-replace-objects -c color.ui=never -c core.quotePath=false \
+        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null \
+        | "${_rp_hash_cmd[@]}" | cut -d' ' -f1)
+    printf '%s\n' "$_rp_hash" > "$_rp_tmp/.claude/litmus-passed.local"
+    _rp_in=$(make_hook_input_cwd "git commit -m merge" "$_rp_tmp")
+    _rp_out=$(printf '%s' "$_rp_in" | bash "$GATE_SCRIPT" 2>/dev/null)
+    _rp_gate_rc=$?
+    if [[ "$_rp_gate_rc" -ne 0 ]]; then
+        printf "  FAIL  gate exited %s on the replace-ref fixture\n    output: %s\n" "$_rp_gate_rc" "$_rp_out"
+        FAIL=$((FAIL + 1))
+    elif echo "$_rp_out" | grep -q 'Empty-diff merge commit refused' 2>/dev/null; then
+        # The SPECIFIC refusal, not merely `"block"`: the gate's ERR trap also
+        # emits a precautionary block and exits 0, so a hook that crashed before
+        # ever reaching the empty-diff check would otherwise score as a PASS.
+        printf "  PASS  a planted refs/replace cannot launder an empty-diff merge\n"
+        PASS=$((PASS + 1))
+    elif echo "$_rp_out" | grep -q '"block"' 2>/dev/null; then
+        printf "  FAIL  blocked, but not by the empty-diff check (hook error?)\n    output: %s\n" "$_rp_out"
+        FAIL=$((FAIL + 1))
+    else
+        printf "  FAIL  refs/replace laundered an empty-diff merge (got allow)\n    output: %s\n" "$_rp_out"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -rf "$_rp_tmp"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [[ "$FAIL" -gt 0 ]]; then

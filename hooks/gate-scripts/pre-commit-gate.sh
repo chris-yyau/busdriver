@@ -273,7 +273,14 @@ REPO_DIR="$GATE_REPO_DIR"
 #
 # Safety: empty staged diff means the amend rewrites only metadata/message —
 # the tree matches HEAD, which already passed review. Empty-diff merges are
-# refused separately (#782); they are not covered by this amend auto-pass.
+# refused separately (#782); the MERGE_HEAD guard on the condition below is
+# what keeps that true. Without it this auto-pass runs FIRST and returns
+# allow, so `git commit --amend --no-edit || git commit -m merge` during an
+# empty-diff merge launders the unreviewed parent: the amend fails at
+# execution time because a merge is active, and the `||` fallback then
+# commits it unreviewed. An amend cannot conclude a merge anyway (git
+# refuses it while MERGE_HEAD exists), so excluding merge state costs the
+# auto-pass nothing it could legitimately have done.
 # `git diff --cached` against HEAD means the commit introduces no new
 # content vs. an already-reviewed HEAD, so no new review is needed.
 # Amends WITH staged changes still go through the normal review gates
@@ -287,7 +294,7 @@ REPO_DIR="$GATE_REPO_DIR"
 # This is the same soft-spot as `git commit -a` and chained
 # `git add && git commit` (see "ACCEPTED RISK" block below). Not a new
 # class of risk — the existing risk model accepts it.
-if [ "$IS_AMEND" = "1" ]; then
+if [ "$IS_AMEND" = "1" ] && ! git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
     if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
         # --amend with empty staged diff → commit-message-only rewrite
         # No new content to review; allow.
@@ -522,6 +529,14 @@ fi
 # MERGE_HEAD after the gate clears. Block every empty-diff MERGE_HEAD commit
 # unconditionally — do not run ancestry queries here (they are unbounded and
 # the hook protocol treats timeout/no-output as allow).
+#
+# Scope, so the residual is not mistaken for closed: this fires only for a
+# command the gate already classifies as `git commit`. A merge that creates
+# its own commit — `git merge -s ours <unreviewed>`, or `git merge --continue`
+# on a merge already in progress — never reaches here, because the fast
+# pre-filter matches on a `commit` token the command does not carry. That is
+# #622 (a conflict-free `git merge` commits without litmus ever firing), a
+# whole-command-surface gap that predates this block and is tracked there.
 # The emptiness probe carries the same flags as the marker-hash command
 # above, for the same reason: repo-controlled config decides what "empty"
 # means otherwise. Measured — `diff.ignoreSubmodules=all` makes a staged

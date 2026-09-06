@@ -144,6 +144,11 @@ rm -rf "$_reach_tmp"
 # staged merge".
 TOTAL=$((TOTAL + 1))
 _iso_tmp=$(mktemp -d)
+# NOT a bare `( ... )`: with top-level `set -e` a failing fixture would abort the
+# whole suite with no diagnostic and leak $_iso_tmp, losing the clean
+# "FAIL (fixture setup)" attribution run_case already gives. Capture the status.
+_iso_rc=0
+set +e
 (
     set -e
     cd "$_iso_tmp"
@@ -162,6 +167,13 @@ _iso_tmp=$(mktemp -d)
     git merge -s ours --no-commit unreviewed >/dev/null 2>&1
     git diff --cached --quiet HEAD
 )
+_iso_rc=$?
+set -e
+if [[ "$_iso_rc" -ne 0 ]]; then
+    printf "  FAIL  isolating valid-hash marker case (fixture setup)\n"
+    FAIL=$((FAIL + 1))
+    rm -rf "$_iso_tmp"
+else
 mkdir -p "$_iso_tmp/.claude"
 # Same pipeline as pre-commit-gate.sh's STAGED_HASH (empty diff => sha256 of
 # empty input). Derived, not hardcoded, so it tracks any change to that shape.
@@ -172,14 +184,20 @@ _iso_hash=$(git -C "$_iso_tmp" --no-replace-objects -c color.ui=never -c core.qu
 printf '%s\n' "$_iso_hash" > "$_iso_tmp/.claude/litmus-passed.local"
 _iso_in=$(make_hook_input_cwd "git commit -m merge" "$_iso_tmp")
 _iso_out=$(printf '%s' "$_iso_in" | bash "$GATE_SCRIPT" 2>/dev/null || true)
-if echo "$_iso_out" | grep -q '"block"' 2>/dev/null; then
+if echo "$_iso_out" | grep -q 'Empty-diff merge commit refused' 2>/dev/null; then
+    # The SPECIFIC refusal, not merely `"block"` — the ERR trap emits a
+    # precautionary block too, so a crashed hook would otherwise score a PASS.
     printf "  PASS  empty-diff merge blocks even with a VALID diff-bound hash marker\n"
     PASS=$((PASS + 1))
+elif echo "$_iso_out" | grep -q '"block"' 2>/dev/null; then
+    printf "  FAIL  blocked, but not by the empty-diff check (hook error?)\n    output: %s\n" "$_iso_out"
+    FAIL=$((FAIL + 1))
 else
     printf "  FAIL  a valid-hash marker authorized an empty-diff merge (got allow)\n    output: %s\n" "$_iso_out"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$_iso_tmp"
+fi
 
 # ── Submodule-blind emptiness probe (Codex, PR #841) ──────────────────
 # `diff.ignoreSubmodules=all` is repo-controlled and makes a staged gitlink
@@ -310,8 +328,12 @@ else
         | "${_rp_hash_cmd[@]}" | cut -d' ' -f1)
     printf '%s\n' "$_rp_hash" > "$_rp_tmp/.claude/litmus-passed.local"
     _rp_in=$(make_hook_input_cwd "git commit -m merge" "$_rp_tmp")
-    _rp_out=$(printf '%s' "$_rp_in" | bash "$GATE_SCRIPT" 2>/dev/null)
-    _rp_gate_rc=$?
+    # `_rp_out=$(...)` on its own aborts the whole suite under `set -e` when the
+    # gate exits non-zero -- taking the _rp_gate_rc branch below with it. Capture
+    # the status on the assignment itself so that branch stays reachable (a plain
+    # `|| true` would instead discard the very rc it exists to report).
+    _rp_gate_rc=0
+    _rp_out=$(printf '%s' "$_rp_in" | bash "$GATE_SCRIPT" 2>/dev/null) || _rp_gate_rc=$?
     if [[ "$_rp_gate_rc" -ne 0 ]]; then
         printf "  FAIL  gate exited %s on the replace-ref fixture\n    output: %s\n" "$_rp_gate_rc" "$_rp_out"
         FAIL=$((FAIL + 1))
@@ -330,6 +352,63 @@ else
     fi
 fi
 rm -rf "$_rp_tmp"
+
+# ── Amend auto-pass must not outrank the merge refusal (cubic P0, PR #841) ──
+# `git commit --amend --no-edit || git commit -m merge` during an empty-diff
+# merge used to launder the unreviewed parent: the amend auto-pass ran FIRST
+# and returned allow, then the amend failed at execution time (git refuses an
+# amend while MERGE_HEAD exists) and the `||` fallback committed the merge with
+# no gate in front of it. The auto-pass now excludes merge state, so this
+# command falls through to the empty-diff refusal.
+#
+# Asserted on the SPECIFIC refusal string: a bare `"block"` would also be
+# satisfied by the ERR trap, scoring a crashed hook as a PASS.
+TOTAL=$((TOTAL + 1))
+_am_tmp=$(mktemp -d)
+_am_rc=0
+set +e
+(
+    set -e
+    cd "$_am_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "trunk" > file.txt
+    git add file.txt
+    git commit -qm "trunk" "$NV"
+    git checkout -q -b unreviewed
+    echo "secret" > evil.txt
+    git add evil.txt
+    git commit -qm "unreviewed evil" "$NV"
+    git checkout -q main
+    git merge -s ours --no-commit unreviewed >/dev/null 2>&1
+    # The two preconditions the case depends on: a merge really is in progress
+    # and the staged diff really is empty. Without both, the case proves nothing.
+    git rev-parse --verify MERGE_HEAD >/dev/null 2>&1
+    git diff --cached --quiet HEAD
+)
+_am_rc=$?
+set -e
+if [[ "$_am_rc" -ne 0 ]]; then
+    printf "  FAIL  amend-during-merge case (fixture setup)\n"
+    FAIL=$((FAIL + 1))
+    rm -rf "$_am_tmp"
+else
+    _am_in=$(make_hook_input_cwd "git commit --amend --no-edit || git commit -m merge" "$_am_tmp")
+    _am_out=$(printf '%s' "$_am_in" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    if echo "$_am_out" | grep -q 'Empty-diff merge commit refused' 2>/dev/null; then
+        printf "  PASS  amend auto-pass does not outrank the empty-diff merge refusal\n"
+        PASS=$((PASS + 1))
+    elif echo "$_am_out" | grep -q '"block"' 2>/dev/null; then
+        printf "  FAIL  blocked, but not by the empty-diff check (hook error?)\n    output: %s\n" "$_am_out"
+        FAIL=$((FAIL + 1))
+    else
+        printf "  FAIL  amend auto-pass laundered an empty-diff merge (got allow)\n    output: %s\n" "$_am_out"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$_am_tmp"
+fi
 
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"

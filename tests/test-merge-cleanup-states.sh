@@ -42,6 +42,15 @@ _neutralize_git_env() {
     # -- measured, not assumed. Unsetting COUNT is what disables the indexed pairs:
     # git reads KEY_n/VALUE_n only up to COUNT, so the pairs need no enumeration.
     unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG
+    # ...and the FILE-level config, which none of the unsets above touch. A global
+    # or system `core.hooksPath` runs the OPERATOR's hooks inside every fixture,
+    # and it does so from the very first commit: a fixture installs its own
+    # hooksPath only after `git init` plus one or more setup commits, and
+    # `--no-verify` skips pre-commit/commit-msg but NOT prepare-commit-msg or
+    # reference-transaction. So a suite that exists to test these gates can be
+    # failed by the gates already installed on the machine running it. /dev/null
+    # is a readable, empty config file, so git finds nothing rather than erroring.
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 }
 _neutralize_git_env
 REPO_ROOT="$PWD"

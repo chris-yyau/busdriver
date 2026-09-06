@@ -1154,6 +1154,22 @@ fi
 # The repository hooks (pre-commit gate, post-commit) run as part of
 # `git commit`; the post-commit hook consumes the litmus marker after the
 # pre-commit gate accepts it.
+# Every hash above is pinned to ONE _HEAD_SHA (#835). That fixes WHICH two
+# endpoints the review covered, and it is why "nothing between here and the POST
+# hash moves HEAD" was written -- true of this script, but not of the machine.
+# A concurrent writer that advances HEAD to B while leaving the index at T leaves
+# every pinned comparison still self-consistent for A->T, and the commit below
+# then publishes B->T, reverting content no review ever saw. Re-read HEAD as late
+# as possible and bail instead. Unborn-vs-born counts as a move in both
+# directions, so the two states are compared as strings rather than branched on.
+# ponytail: a residual window remains between this read and git's own ref write;
+# an ordinary commit has no reference-transaction binding to close it, which is
+# why the message names the base it was authorized against.
+_HEAD_NOW=$(git --no-replace-objects rev-parse --verify HEAD 2>/dev/null) || _HEAD_NOW=""
+if [ "$_HEAD_NOW" != "${_HEAD_SHA:-}" ]; then
+    emit_bail "judgment" "HEAD moved from '${_HEAD_SHA:-<unborn>}' to '${_HEAD_NOW:-<unborn>}' during review; the litmus marker authorizes ${_HEAD_SHA:-<unborn>}->staged-tree and cannot authorize a commit onto a different base. Staged index preserved; re-run litmus"
+fi
+
 set +e
 printf '%s' "$COMMIT_MSG" | git commit -F - >/dev/null 2>&1
 GIT_COMMIT_EXIT=$?

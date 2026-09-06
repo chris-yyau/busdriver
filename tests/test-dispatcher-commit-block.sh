@@ -161,6 +161,15 @@ case "${LITMUS_MODE:-pass}" in
         mkdir -p .claude
         printf 'PASS-EXCLUDED-%s\n' "$(date +%s)" > .claude/litmus-passed.local
         ;;
+    pass_then_head_moves)
+        # A real PASS for A->T, then a CONCURRENT writer advances HEAD to B and
+        # leaves the index alone -- plumbing, so nothing consumes the staged tree.
+        # Every hash the dispatcher takes is pinned to A (#835) and so stays
+        # self-consistent; only a fresh read of HEAD can notice.
+        write_marker
+        _b=$(git commit-tree "$(git rev-parse 'HEAD^{tree}')" -p "$(git rev-parse HEAD)" -m concurrent)
+        git update-ref HEAD "$_b"
+        ;;
     *)
         printf 'unknown LITMUS_MODE=%s\n' "${LITMUS_MODE:-}" >&2
         exit 97
@@ -2048,6 +2057,39 @@ test_r_wait_round_stages_nothing() {
     }
     git -C "$sandbox" ls-files --error-unmatch untracked.txt >/dev/null 2>&1 && {
         echo "test_r: untracked file became tracked on a wait-round"
+        return 1
+    }
+    return 0
+}
+
+test_w_head_moved_during_review_blocks_commit() {
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    local head_after
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # The marker is minted for A->T and is genuinely valid; what is NOT reviewed is
+    # the base the commit would land on. Pinning the digest base (#835) made every
+    # comparison agree about WHICH two endpoints were reviewed and, on its own, blinded
+    # all three of them to HEAD having moved away from that base -- so committing here
+    # would publish B->T and revert whatever A->B changed, unreviewed.
+    litmus_mode=pass_then_head_moves
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.bail_category == "judgment"' || {
+        echo "test_w expected a judgment bail; output: $dispatcher_output"
+        return 1
+    }
+    # The commit must not have happened: HEAD is still the concurrent writer's B, and
+    # the reviewed content is still staged for the operator's next attempt.
+    head_after=$(git -C "$sandbox" log -1 --format=%s)
+    [ "$head_after" = "concurrent" ] || {
+        echo "test_w: dispatcher committed onto a moved HEAD (tip subject: $head_after)"
+        return 1
+    }
+    git -C "$sandbox" diff --cached --quiet && {
+        echo "test_w: staged index was not preserved across the bail"
         return 1
     }
     return 0

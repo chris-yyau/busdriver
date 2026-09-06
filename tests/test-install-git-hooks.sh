@@ -35,6 +35,15 @@ _neutralize_git_env() {
     # -- measured, not assumed. Unsetting COUNT is what disables the indexed pairs:
     # git reads KEY_n/VALUE_n only up to COUNT, so the pairs need no enumeration.
     unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG
+    # ...and the FILE-level config, which none of the unsets above touch. A global
+    # or system `core.hooksPath` runs the OPERATOR's hooks inside every fixture,
+    # and it does so from the very first commit: a fixture installs its own
+    # hooksPath only after `git init` plus one or more setup commits, and
+    # `--no-verify` skips pre-commit/commit-msg but NOT prepare-commit-msg or
+    # reference-transaction. So a suite that exists to test these gates can be
+    # failed by the gates already installed on the machine running it. /dev/null
+    # is a readable, empty config file, so git finds nothing rather than erroring.
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 }
 _neutralize_git_env
 REPO_SRC=$PWD
@@ -90,6 +99,34 @@ _CONTAIN_STAGED=$(
     git -C "$_TMP_CONTAIN/r" diff --cached --name-only 2>/dev/null | tr '\n' ' '
 )
 assert "a staged write goes to the fixture index, not an inherited one" "" "$_CONTAIN_STAGED"
+
+# ...and neither can a FILE-level global config, which is the shape the unsets
+# above all miss. It matters because a fixture is unprotected exactly when it is
+# being built: the repo above committed BEFORE any core.hooksPath of its own, and
+# --no-verify would not have helped -- it skips pre-commit and commit-msg, not
+# prepare-commit-msg or reference-transaction. So the gates already installed on
+# the machine can fail the suite that exists to test them. Forcing, not
+# decorative: the hostile global is planted and the guard re-applied on top of it,
+# and the hook it names is real, so deleting the GIT_CONFIG_GLOBAL/SYSTEM export
+# makes the sentinel appear. Runs BEFORE the local core.hooksPath below is set --
+# local config outranks global, which would make this pass vacuously.
+mkdir -p "$_TMP_CONTAIN/global-hooks"
+printf '#!/bin/sh\ntouch "%s/OPERATOR-HOOK-RAN"\n' "$_TMP_CONTAIN" \
+    > "$_TMP_CONTAIN/global-hooks/pre-commit"
+chmod +x "$_TMP_CONTAIN/global-hooks/pre-commit"
+printf '[core]\n\thooksPath = %s\n' "$_TMP_CONTAIN/global-hooks" > "$_TMP_CONTAIN/gitconfig"
+(
+    export GIT_CONFIG_GLOBAL="$_TMP_CONTAIN/gitconfig"
+    _neutralize_git_env
+    cd "$_TMP_CONTAIN/r" && echo y > y && git add y && git commit -q -m second
+) >/dev/null 2>&1
+# Guard against a vacuous pass: an absent sentinel proves nothing if no commit ran.
+assert "the containment fixture's second commit landed (else the case proves nothing)" \
+    "second" "$(git -C "$_TMP_CONTAIN/r" log -1 --format=%s 2>/dev/null || echo '<none>')"
+_CONTAIN_GLOBAL=absent
+[ -e "$_TMP_CONTAIN/OPERATOR-HOOK-RAN" ] && _CONTAIN_GLOBAL=ran
+assert "a global core.hooksPath cannot run operator hooks inside a fixture" \
+    "absent" "$_CONTAIN_GLOBAL"
 
 # ...and a command-level injector cannot override the fixture's OWN config. The
 # fixture sets a local core.hooksPath first: reading an unset key would fall

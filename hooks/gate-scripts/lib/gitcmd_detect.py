@@ -4282,7 +4282,7 @@ def _zero_old_ops_from_argv(argv):
                             continue
                 if a.startswith("-") and not a.startswith("--") and len(a) > 2:
                     body = a[1:]
-                    bc_idx = _zero_old_bc_index(body)
+                    bc_idx = _zero_old_bc_index(body, sub)
                     if bc_idx >= 0:
                         force_create = True
                         attached = body[bc_idx + 1:]
@@ -4564,8 +4564,11 @@ def _zero_old_force_sub(argv, sub, sub_idx):
         return False
     if any(_may_be_substitution(a) or _word_may_split(a, a) for a in rest_all):
         return True
+    # Ownership applies here too: `worktree add -bBugfix /tmp/wt HEAD` names a
+    # new branch, and reading the B out of `Bugfix` refused it.
     return any(a.startswith('-') and not a.startswith('--')
-               and any(c in a[1:] for c in letters)
+               and _zero_old_bc_index(a[1:], sub) >= 0
+               and a[1:][_zero_old_bc_index(a[1:], sub)] in letters
                for a in rest_all)
 # Sentinel for an update-ref oldvalue whose CAS-ness depends on the repository.
 _CAS = '\x00cas'
@@ -4771,7 +4774,21 @@ _ZERO_OLD_FORCE_LETTERS = 'fdDBC'
 # Short flags that CONSUME the rest of the token: `checkout -b`, `switch -c`,
 # `branch -u`, `--track`. A capital after one of these is a character inside
 # somebody else's operand, never a flag.
-_ZERO_OLD_VALUE_SHORT = frozenset('bcut')
+# Which short letter CONSUMES the rest of its token is the subcommand's
+# business, not the token's: `checkout -b` and `switch -c` each take a branch
+# name, `branch -u` takes an upstream, while `branch`'s own `-c` is boolean.
+# Every attempt to decide this from the token alone was wrong in one direction
+# or the other, so the verb is asked. An unknown verb owns nothing, which
+# leaves the reading fail-closed rather than permissive.
+_ZERO_OLD_VALUE_SHORT_BY_SUB = {
+    'checkout': 'b',
+    'switch': 'c',
+    # `-t` is NOT one: for `branch` it is boolean and the name follows as a
+    # separate operand, so owning the rest of the token dropped the force in
+    # `branch -qtvf main <oid>` -- a shape already pinned before this change.
+    'branch': 'u',
+    'worktree': 'b',
+}
 # Options of the ref-WRITING commands that take no value, so a HEAD after one
 # is still the ref operand. Naming them is what separates `update-ref
 # --create-reflog HEAD <rev>` from `curl -X HEAD`, whose HEAD is the option's
@@ -4780,22 +4797,37 @@ _ZERO_OLD_REF_BOOL_OPTS = frozenset(
     {'--create-reflog', '--no-deref', '--stdin', '-z', '--force', '-f'})
 
 
-def _zero_old_bc_index(body):
+def _zero_old_bc_index(body, sub=''):
     """Index of the `-B`/`-C` in a short cluster that is really a FLAG, else -1.
 
     Reading the whole token for a capital found the B inside `-bBugfix`, whose
     `b` already owns `Bugfix`, and turned an ordinary branch creation into a
     force on a branch called `ugfix`. Scanning left to right and stopping at the
-    first value-taking letter is the shared rule; both the argv parser and the
-    wrapper fallback ask it, so the two cannot drift apart again."""
+    first letter that owns the rest is the shared rule; the argv parser, the
+    wrapper fallback and the flag-modelled subcommands all ask it, so they
+    cannot drift apart again."""
+    owners = _ZERO_OLD_VALUE_SHORT_BY_SUB.get(sub, '')
     for i, ch in enumerate(body):
         if ch in 'BC':
             return i
-        if ch in _ZERO_OLD_VALUE_SHORT or ch not in _ZERO_OLD_CLUSTER_ALPHA:
+        if ch in owners or ch not in _ZERO_OLD_CLUSTER_ALPHA:
             return -1
     return -1
+
+
+def _zero_old_cluster_head(body, sub=''):
+    """The part of a cluster that is still FLAGS -- up to the owning letter.
+
+    `checkout -bBC` spends `BC` as the new branch's name, so scanning the whole
+    token for a force letter refused an ordinary creation even though
+    `_zero_old_bc_index` had already said the capitals were not flags."""
+    owners = _ZERO_OLD_VALUE_SHORT_BY_SUB.get(sub, '')
+    for i, ch in enumerate(body):
+        if ch in owners:
+            return body[:i]
+    return body
 _ZERO_OLD_MOVE_LETTERS = 'mM'
-def _zero_old_force_tok(tok, strong=False, attached=False):
+def _zero_old_force_tok(tok, strong=False, attached=False, sub=''):
     """True if this token spells a ref-writing flag.
 
     `-d` is here beside `-D`: the unforced delete removes the ref just as the
@@ -4842,9 +4874,10 @@ def _zero_old_force_tok(tok, strong=False, attached=False):
     # alphabet test, which the branch name fails. Everything BEFORE the letter
     # must still be a cluster letter; everything after it is the value.
     if attached:
-        _bc = _zero_old_bc_index(body)
+        _bc = _zero_old_bc_index(body, sub)
         if _bc >= 0 and body[_bc] in letters and body[_bc + 1:]:
             return True
+    body = _zero_old_cluster_head(body, sub)
     if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
         return False
     return any(c in letters for c in body)
@@ -5018,10 +5051,17 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # never ran and read `-C100` as a force. Behind a substituted
                 # executable the shape is genuinely ambiguous, so it is dropped
                 # rather than guessed.
-                # A dashed executable spells git into its own NAME, so the
-                # attached value is as readable there as after a literal `git`.
-                _attach_ok = _cand_git or _cand_dashed is not None
-                _fi = any(_zero_old_force_tok(t, attached=_attach_ok)
+                # A dashed executable spells git into its own NAME, and a
+                # verb standing IMMEDIATELY after the candidate vouches for it
+                # just as well -- `"$G" checkout -Bmain <rev>` is git whatever
+                # `$G` expands to. It must be immediate: reached through the
+                # global-option walk, `curl "$URL" -C100 --output branch` offers
+                # its own option value as the verb.
+                _attach_ok = (_cand_git or _cand_dashed is not None
+                              or (bool(toks[_cand_i + 1:])
+                                  and toks[_cand_i + 1] in _ZERO_OLD_SUBS))
+                _fi = any(_zero_old_force_tok(t, attached=_attach_ok,
+                                              sub=_sub_word)
                           for t in toks)
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)

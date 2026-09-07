@@ -760,6 +760,8 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'xargs -I{} git checkout -lBmain ' + OID_A,
            'xargs -I{} git switch -qCmain ' + OID_A,
            'xargs -I{} git-checkout -Bmain ' + OID_A,
+           'G=git; "$G" checkout -Bmain unreviewed',
+           'G=git; "$G" switch -Cmain unreviewed',
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
@@ -840,7 +842,14 @@ for _c in ('xargs -I{} git checkout -bBugfix HEAD',
            'xargs -I{} git branch -uCustom main',
            'git checkout -bBugfix HEAD',
            'git switch -cBugfix HEAD',
-           'git branch -uBugfix main'):
+           'git branch -uBugfix main',
+           # ...and the owning letter truncates the plain cluster test too,
+           # or `-bBC` reports a force on capitals that are the branch NAME.
+           'xargs -I{} git checkout -bBC HEAD',
+           'xargs -I{} git switch -cBC HEAD',
+           'xargs -I{} git branch -uB main',
+           # ...including the flag-modelled subcommands.
+           'git worktree add -bBugfix /tmp/wt HEAD'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 assert git_zero_old_ref_op(
     'xargs -I{} git branch -cf topic main', hook_cwd=hook_cwd)

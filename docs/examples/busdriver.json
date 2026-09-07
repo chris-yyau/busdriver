@@ -37,6 +37,7 @@
   "ultraOracle": {
     "cookiePath": "",
     "model": "gpt-5.5-pro",
+    "browserModelStrategy": "select",
     "chromeProfileDir": "",
     "remoteHost": "",
     "remoteToken": "",

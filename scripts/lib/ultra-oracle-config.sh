@@ -40,6 +40,18 @@ _ultra_oracle_sanitize_ceiling() {
 # project config has zero influence on ultra-oracle (no enable, no model, no timing).
 ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.5-pro'; }
 
+# ultra_oracle_browser_model_strategy -> oracle browser picker strategy.
+# USER config only. Keep oracle's existing `select` default unless the operator opts
+# into following ChatGPT's current model or bypassing the built-in slug table.
+ultra_oracle_browser_model_strategy() {
+  local v
+  v="$(ultra_oracle_config_get_user '.ultraOracle.browserModelStrategy' 'select')"
+  case "$v" in
+    select|current|ignore) printf '%s' "$v" ;;
+    *) echo "ultra-oracle: invalid browserModelStrategy '$v' (expected select, current, or ignore)" >&2; return 1 ;;
+  esac
+}
+
 # Validate as a positive integer; non-numeric/empty/zero -> warn + 900 default.
 # Clamp to ULTRA_ORACLE_CAP_CEILING (default 3600s = 1h) so a repo-controlled project
 # config cannot set an arbitrarily large cap and stall a reviewer (availability DoS).

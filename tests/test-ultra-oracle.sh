@@ -110,18 +110,38 @@ ck="$tmp/Cookies"; : > "$ck"   # a readable cookie DB stand-in
 # otherwise a failed/short-circuited call leaves the prior case's argv in place
 # and the flag assertions false-pass against stale content.
 
-# default config (no cookiePath, no hideWindow): no --browser-cookie-path; window VISIBLE
-# by default (B8 — --browser-hide-window is now opt-in because hiding it broke oracle's
-# ChatGPT browser engine and failed silently).
+# default config retains oracle's `select` model-picker strategy, has no cookiePath
+# or hideWindow, and leaves the window VISIBLE (B8 — hiding broke the browser engine).
 rm -f "$tmp/.claude/busdriver.json"
 : > "$tmp/argv.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL c0 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path leaked when unset"; FAIL=1; }
 grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL window hidden by default (B8: should be VISIBLE)"; FAIL=1; }
+grep -qx -- "--browser-model-strategy" "$tmp/argv.log" || { echo "FAIL browser strategy flag missing"; FAIL=1; }
+awk '/^--browser-model-strategy$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "select" || { echo "FAIL default browser strategy should be select"; FAIL=1; }
 # --force is ALWAYS passed (#333): bypasses oracle's prompt-keyed duplicate guard so a
 # stale phantom "running" session can't permanently block future same-prompt dispatches.
 grep -qx -- "--force" "$tmp/argv.log" || { echo "FAIL --force missing (#333 dup-guard)"; FAIL=1; }
+
+# Explicit current strategy is passed with the configured alias, letting oracle use
+# ChatGPT's active model even when the alias is absent from its browser slug table.
+printf '{ "ultraOracle": { "model": "gpt-6", "browserModelStrategy": "current" } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/current.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL current strategy status got '$st'"; FAIL=1; }
+awk '/^--browser-model-strategy$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "current" || { echo "FAIL current strategy not passed"; FAIL=1; }
+awk '/^-m$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "gpt-6" || { echo "FAIL configured model alias not passed"; FAIL=1; }
+
+# Invalid strategy fails before oracle invocation; an empty argv log proves it was
+# rejected by config-read rather than delegated to the CLI.
+printf '{ "ultraOracle": { "browserModelStrategy": "latest" } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/invalid-strategy.md" --mode blocking 2> "$tmp/invalid-strategy.err")"
+[ "$st" = "error" ] || { echo "FAIL invalid strategy should return error got '$st'"; FAIL=1; }
+[ ! -s "$tmp/argv.log" ] || { echo "FAIL invalid strategy invoked oracle"; FAIL=1; }
+grep -q "invalid browserModelStrategy" "$tmp/invalid-strategy.err" || { echo "FAIL invalid strategy diagnostic missing"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
 
 # #458 GAP 1 root cause — per-dispatch UNIQUE slug. oracle 0.16.0 truncates each slug word to 10
 # chars and keeps only the first 5 words, so the nonce is TWO <=10-char words PREPENDED (both survive).
@@ -609,6 +629,19 @@ rm -f "$tmp/.claude/busdriver.json"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/hint.md" --mode blocking 2> "$tmp/hint.err")"
 [ "$st" = "error" ] || { echo "FAIL hint blocking status got '$st'"; FAIL=1; }
 grep -qi "sign in to the" "$tmp/hint.err" || { echo "FAIL blocking hint not surfaced to stderr"; FAIL=1; }
+
+# Retired browser-model diagnostics name both relevant USER-config keys. Oracle
+# reports the resolved slug, so the hint must also identify the configured alias.
+cat > "$tmp/retired.err" <<'EOF'
+Browser model "gpt-5.2" is retired because ChatGPT no longer offers GPT-5.2 base, Instant, or
+Thinking. Choose a current GPT-5.5/GPT-5.6 browser model, use --browser-model-strategy current to
+keep ChatGPT's active model, or use --engine api to retain the GPT-5.2 API alias.
+EOF
+printf '{ "ultraOracle": { "model": "gpt-6" } }\n' > "$tmp/.claude/busdriver.json"
+retired_hint="$(_ultra_oracle_diagnose_hint "$tmp/retired.err")"
+printf '%s\n' "$retired_hint" | grep -q "ultraOracle.model=gpt-6" || { echo "FAIL retired hint missing configured model key/value"; FAIL=1; }
+printf '%s\n' "$retired_hint" | grep -q "ultraOracle.browserModelStrategy=current" || { echo "FAIL retired hint missing strategy key"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
 
 # The recovery hint is TRANSPORT-CONDITIONAL (ADR 0020 review): attach mode has one
 # operator-visible browser to sign into; remoteHost/cookiePath/profile do not, so naming

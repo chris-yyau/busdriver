@@ -610,10 +610,10 @@ _ultra_oracle_run_watched() {
 
 # _ultra_oracle_diagnose_hint <err-file> -> print ONE human-actionable line (no
 # trailing newline) naming the operator's next step for a KNOWN oracle failure
-# signature, else print nothing. Matches the ABE / login / Cloudflare cases from
-# issue #340 so a failed consult tells the operator WHAT to do instead of surfacing a
-# bare 'error' token. Read-only; matches only oracle's own captured STDOUT text, never
-# any secret (the token is never written to the .err file).
+# signature, else print nothing. Matches known browser transport/model failures so
+# a failed consult tells the operator WHAT to do instead of surfacing a bare 'error'
+# token. Read-only; matches only oracle's own captured STDOUT text, never any secret
+# (the token is never written to the .err file).
 _ultra_oracle_diagnose_hint() {
   local f="$1"
   [[ -r "$f" ]] || return 0
@@ -641,6 +641,10 @@ _ultra_oracle_diagnose_hint() {
     else
       printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
     fi
+  elif grep -qiE 'retired|no longer offers|choose a current' "$f" 2>/dev/null; then
+    local model
+    model="$(ultra_oracle_model)"
+    printf 'browser model retired (configured ultraOracle.model=%s; oracle diagnostics name the resolved model): set ultraOracle.browserModelStrategy=current to keep ChatGPT active model, or update ultraOracle.model to a supported browser slug' "$model"
   elif grep -qiE 'no file was attached this run' "$f" 2>/dev/null; then
     # Codex PR #497 review: `_ultra_oracle_run_watched` proved (from the actual oracle argv, not a
     # guess) that this run attached nothing — the prompt+context all fit inline. So the marker below
@@ -882,7 +886,7 @@ ultra_oracle_consult() {
   # Health check — fail CLOSED (typed), never silent.
   if ! is_cli_available oracle; then printf 'skipped:unavailable'; return 3; fi
 
-  local model profile cookie_path remote_host remote_token
+  local model strategy profile cookie_path remote_host remote_token
   # The token we inject via ORACLE_REMOTE_TOKEN — set ONLY on the remoteHost delegation
   # path (below). Empty elsewhere so a configured remoteToken can NEVER pair with an
   # ambient host (oracle-config browser.remoteHost / ORACLE_REMOTE_HOST) and transmit to a
@@ -899,8 +903,9 @@ ultra_oracle_consult() {
   # its own subshell. _uora_lk_* track how long acquisition waited so it can be deducted from the
   # consult budget (lock-wait + run must stay within cap, not sum to ~2*cap).
   local _uora_lock_key="" _uora_lockdir="" _uora_lk_start="" _uora_lk_waited=""
-  model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
-  cookie_path="$(ultra_oracle_cookie_path)"
+  model="$(ultra_oracle_model)"
+  strategy="$(ultra_oracle_browser_model_strategy)" || { printf 'error'; return 1; }
+  profile="$(ultra_oracle_chrome_profile)"; cookie_path="$(ultra_oracle_cookie_path)"
   remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
 
   # Per-dispatch UNIQUE slug (#458 GAP 1 root cause). Callers pass a STABLE slug
@@ -938,8 +943,8 @@ ultra_oracle_consult() {
   # in the store forever), so without --force a single stale phantom permanently blocks EVERY
   # future same-prompt dispatch — most visibly blueprint-review, whose prompt is fixed (design
   # goes via --context). --force makes us immune regardless of WHY a stale session lingers.
-  set -- --engine browser -m "$model" --timeout "$cap" --force \
-         --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
+  set -- --engine browser -m "$model" --browser-model-strategy "$strategy" \
+         --timeout "$cap" --force --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
   # Session source, in precedence order (all opt-in; empty by default so we do NOT
   # expose the operator's main browser session unless explicitly configured):
   #   0. attachRunning — attach to an ordinary, already-running Chrome (ADR 0020). The

@@ -824,6 +824,12 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # ...and that second reading starts from every literal git too, or
            # it does not compose with a wrapper option before the executable.
            'TOKEN={}; xargs -I "$TOKEN" -t git -C. checkout -Btrunk unreviewed',
+           # ...and on the DIRECT path, `-t` takes its operand only when the
+           # next token is not a flag -- which a substitution can be without
+           # looking like one, supplying the force at runtime.
+           'git checkout -t "${FLAG:--B}" main unreviewed',
+           'git switch -t "${FLAG:--C}" main unreviewed',
+           'git checkout --track "${FLAG:--B}" main unreviewed',
            # ...and a `-C` on a dashed writer is ITS force option, never git's
            # `-C <dir>` global -- including when the start-point operand after
            # it happens to spell a subcommand.
@@ -887,7 +893,12 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # ...and an assignment that merely CARRIES a git-shaped word vouches
            # for nothing: it names no executable in this command.
            'OTHER=git-switch curl "$URL" -C100',
-           'OTHER=git-checkout cmake "$SOURCE" -Boutput'):
+           'OTHER=git-checkout cmake "$SOURCE" -Boutput',
+           # ...while `--orphan` REQUIRES a branch name, so what follows it is
+           # a name however it is spelled, and `-t` still takes a real one.
+           'git checkout --orphan "$NAME"',
+           'git checkout -t origin/main',
+           'git switch -t origin/topic'):
 # RESIDUAL 2, measured: `G=git-switch; "$G" -Cproduction <oid>` is not read.
 # The subcommand is named only by an ASSIGNMENT in an EARLIER segment, and this
 # arm sees one segment at a time; a scan for any assignment in THIS segment is

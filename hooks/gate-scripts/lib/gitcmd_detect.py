@@ -4241,7 +4241,20 @@ def _zero_old_ops_from_argv(argv):
                         nxt = rest[i + 1]
                         if (a in ("--track", "-t", "--orphan")
                                 or len(_zero_old_long_hits(a, ("--orphan",))) == 1):
-                            if not nxt.startswith("-"):
+                            # These take an operand only when the next token is
+                            # not itself a flag -- and a SUBSTITUTION can be one
+                            # without looking like it: `checkout -t
+                            # "${FLAG:--B}" main <oid>` supplies the force at
+                            # runtime, and swallowing it as a tracking value
+                            # dropped the whole operation. Leaving it unconsumed
+                            # hands it to the unresolvable-operand check above,
+                            # which fails closed. Only where the operand is
+                            # OPTIONAL: `--orphan` requires a branch name, so
+                            # what follows it is a name however it is spelled.
+                            if not (nxt.startswith("-")
+                                    or (a in ("--track", "-t")
+                                        and (_may_be_substitution(nxt)
+                                             or _word_may_split(nxt, nxt)))):
                                 i += 2
                                 continue
                         else:

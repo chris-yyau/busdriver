@@ -830,6 +830,24 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'git checkout -t "${FLAG:--B}" main unreviewed',
            'git switch -t "${FLAG:--C}" main unreviewed',
            'git checkout --track "${FLAG:--B}" main unreviewed',
+           # ...and the same for an -m REASON: a substitution can word-split
+           # into more OPTIONS, and a later --deref makes the write follow the
+           # symref to whatever protected branch it names -- so the old value
+           # this command DOES state is checked against a different ref than
+           # the one it names. Both spellings are pinned at a FULLY specified
+           # CAS, because that is where the guard is load-bearing: without it
+           # these return no operation at all, while the zero-old spellings
+           # block either way and would pin nothing.
+           'git update-ref --no-deref -m $MSG refs/heads/alias '
+           + OID_A + ' ' + OID_B,
+           'git update-ref --no-deref -qm $MSG refs/heads/alias '
+           + OID_A + ' ' + OID_B,
+           # ...and the FALLBACK must know --deref is a ref-writer boolean, or
+           # the HEAD after it is not read as the ref.
+           'G=git; S=update-ref; "$G" "$S" --deref HEAD unreviewed',
+           # ...and a dashed worktree is asked for anywhere, not only in the
+           # candidate slot a wrapper operand takes first.
+           'printf x | xargs -I "$TOKEN" -t git-worktree add -Btrunk /tmp/wt unreviewed',
            # ...and a `-C` on a dashed writer is ITS force option, never git's
            # `-C <dir>` global -- including when the start-point operand after
            # it happens to spell a subcommand.
@@ -898,7 +916,11 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # a name however it is spelled, and `-t` still takes a real one.
            'git checkout --orphan "$NAME"',
            'git checkout -t origin/main',
-           'git switch -t origin/topic'):
+           'git switch -t origin/topic',
+           # ...while a LITERAL reason still takes its operand, and a fully
+           # specified CAS is still the way past this gate.
+           'git update-ref --no-deref -m reason refs/heads/alias '
+           + OID_A + ' ' + OID_A):
 # RESIDUAL 2, measured: `G=git-switch; "$G" -Cproduction <oid>` is not read.
 # The subcommand is named only by an ASSIGNMENT in an EARLIER segment, and this
 # arm sees one segment at a time; a scan for any assignment in THIS segment is

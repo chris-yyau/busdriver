@@ -4352,11 +4352,26 @@ def _zero_old_ops_from_argv(argv):
                 elif a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" not in a[1:] and "d" in a[1:]:
                     delete = True
                 if a in ("-m", "--message") and "=" not in a and i + 1 < len(rest):
+                    # A reason that is a SUBSTITUTION can word-split into
+                    # more OPTIONS: with MSG='reason --deref', `update-ref
+                    # --no-deref -m $MSG refs/heads/alias <oid>` was classified
+                    # as a no-deref write to an ordinary alias, while git sees
+                    # the later --deref and follows the symref to the protected
+                    # branch it names. Same shape as the -t/--track value.
+                    if (_may_be_substitution(rest[i + 1])
+                            or _word_may_split(rest[i + 1], rest[i + 1])):
+                        yield ("force", "")
+                        return
                     i += 2
                     continue
                 if a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" in a[1:]:
                     body = a[1:]; m_idx = body.index("m")
                     if "d" in body[:m_idx]: delete = True
+                    if not body[m_idx + 1:] and i + 1 < len(rest) and (
+                            _may_be_substitution(rest[i + 1])
+                            or _word_may_split(rest[i + 1], rest[i + 1])):
+                        yield ("force", "")
+                        return
                     i += 1 if body[m_idx + 1:] else (2 if i + 1 < len(rest) else 1)
                     continue
                 i += 1
@@ -4466,6 +4481,16 @@ def _zero_old_ops_from_argv(argv):
                         and "d" in a[1:] and "m" not in a[1:]):
                     delete = True
                 if a in ("-m", "--message") and "=" not in a and i + 1 < len(rest):
+                    # A reason that is a SUBSTITUTION can word-split into
+                    # more OPTIONS: with MSG='reason --deref', `update-ref
+                    # --no-deref -m $MSG refs/heads/alias <oid>` was classified
+                    # as a no-deref write to an ordinary alias, while git sees
+                    # the later --deref and follows the symref to the protected
+                    # branch it names. Same shape as the -t/--track value.
+                    if (_may_be_substitution(rest[i + 1])
+                            or _word_may_split(rest[i + 1], rest[i + 1])):
+                        yield ("force", "")
+                        return
                     i += 2
                     continue
                 if a.startswith("-") and not a.startswith("--") and len(a) > 2 and "m" in a[1:]:
@@ -4827,7 +4852,8 @@ _ZERO_OLD_VALUE_SHORT_BY_SUB = {
 # --create-reflog HEAD <rev>` from `curl -X HEAD`, whose HEAD is the option's
 # value; nothing in the shape of the two commands tells them apart.
 _ZERO_OLD_REF_BOOL_OPTS = frozenset(
-    {'--create-reflog', '--no-deref', '--stdin', '-z', '--force', '-f'})
+    {'--create-reflog', '--no-deref', '--deref', '--stdin', '-z',
+     '--force', '-f'})
 
 
 def _zero_old_ref_bool_opt(tok):
@@ -5198,12 +5224,25 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                                  if i > _cand_i and t in _ZERO_OLD_FORCE_SUBS), -1)
                 _force_sub = (_force_i >= 0
                               and _zero_old_force_sub(toks, toks[_force_i], _force_i))
-                if not _force_sub and _cand_dashed in _ZERO_OLD_FORCE_SUBS:
+                if not _force_sub:
                     # `git-worktree add -B main <path> <oid>`: same predicate,
-                    # asked with the subcommand read off the executable NAME.
-                    if _zero_old_force_sub(toks, _cand_dashed, _cand_i):
-                        _force_sub = True
-                        _force_i = _cand_i
+                    # asked with the subcommand read off the executable NAME --
+                    # at the candidate, and at any LATER dashed spelling too. A
+                    # wrapper operand takes the candidate slot first (`xargs -I
+                    # "$TOKEN" -t git-worktree add -Btrunk ...`), and the bare
+                    # `worktree` word scan above never sees a dashed name.
+                    for _wi in ([_cand_i]
+                                if _cand_dashed in _ZERO_OLD_FORCE_SUBS
+                                else []) + [
+                            k for k, t in enumerate(toks)
+                            if k > _cand_i and _git_dashed_subcommand(t)
+                            in _ZERO_OLD_FORCE_SUBS]:
+                        _wsub = (_cand_dashed if _wi == _cand_i
+                                 else _git_dashed_subcommand(toks[_wi]))
+                        if _zero_old_force_sub(toks, _wsub, _wi):
+                            _force_sub = True
+                            _force_i = _wi
+                            break
                 # `-m`/`-M` are in here because an unforced RENAME still deletes
                 # the source ref, exactly as the argv path treats it.
                 # `-m`/`-M` are here because an unforced RENAME still deletes the

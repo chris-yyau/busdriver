@@ -815,6 +815,12 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # ...and a git global may carry its value ATTACHED, owning no token
            # after it, so the vouching walk must step over the whole thing.
            'G=git; "$G" --git-dir=.git checkout -Btrunk unreviewed',
+           # ...and a SHORT global attaches with no separator at all. That
+           # spelling is force-shaped in its own right, so it is read as a
+           # global in a SECOND pass and the arm blocks when either reading
+           # sees a write -- the pins just below are what each reading alone
+           # gets wrong.
+           'G=git; "$G" -C. checkout -Btrunk unreviewed',
            # ...and a `-C` on a dashed writer is ITS force option, never git's
            # `-C <dir>` global -- including when the start-point operand after
            # it happens to spell a subcommand.
@@ -876,16 +882,16 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            'curl "$URL" --output git-checkout --url -Boutput',
            'curl "$URL" -o git-checkout --url -Boutput'):
 # RESIDUAL, deliberate and measured: the adjacency walk crosses the writer's
-# own SHORT clusters but not its LONG flags (`git-checkout --quiet -Btrunk`
-# behind a wrapper whose flag also stops the vouching walk), and a short git
-# global carrying an ATTACHED value is not read as one (`git -C. checkout
-# -Btrunk`). Each rule tried for either had to decide who owns the token in
-# between, which is per-command and open-ended: widening to long options read
-# `curl "$URL" -o git-checkout --url -Boutput` as a reset, and reading `-C<v>`
-# as a global then discounting it dropped real force-creates, since `-C` is
-# force-shaped in its own right. Both residuals are UNDER-blocks of the
-# fallback arm ONLY -- the same commands spelled without the wrapper are caught
-# by the argv path -- and both were traded against a measured over-block.
+# own SHORT clusters but not its LONG flags, so `git-checkout --quiet -Btrunk`
+# behind a wrapper whose flag also stops the vouching walk is not recognised.
+# Widening the walk to long options read `curl "$URL" -o git-checkout --url
+# -Boutput` -- an ordinary download -- as a reset, and every narrower rule tried
+# had to decide who owns the token in between, which is per-command and
+# open-ended; each spelling was defeated by the next. Unlike the two-reading
+# union used above, a union does not help here: both readings only ever ADD
+# blocks, so the over-block would come with it. This is an UNDER-block of the
+# fallback arm ONLY -- the same command spelled without the wrapper is caught by
+# the argv path -- and it is traded against a measured over-block.
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out

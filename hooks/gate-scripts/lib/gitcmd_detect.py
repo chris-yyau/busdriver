@@ -4887,7 +4887,7 @@ _ZERO_OLD_GIT_GLOBAL_BOOL = frozenset({
 })
 
 
-def _zero_old_vouching_verb(after, consumed=None):
+def _zero_old_vouching_verb(after, consumed=None, shorts=False):
     """The subcommand standing after git's own globals, or '' if something else
     intervenes. An unknown option stops the walk: it is not git's, so whatever
     follows is not git's verb either."""
@@ -4911,6 +4911,15 @@ def _zero_old_vouching_verb(after, consumed=None):
         # `git --git-dir=.git checkout -Btrunk` stopped the walk on an option
         # that is git's own and lost the attached force behind it.
         if '=' in t and t.split('=', 1)[0] in _GIT_VALUE_OPTS:
+            if consumed is not None:
+                consumed.add(i)
+            i += 1
+            continue
+        # A SHORT global attaches with no separator (`git -C. checkout`), but
+        # that spelling is force-shaped in its own right, so reading it as a
+        # global is offered as a SECOND reading rather than the only one.
+        if (shorts and len(t) > 2 and not t.startswith('--')
+                and t[:2] in _GIT_VALUE_OPTS):
             if consumed is not None:
                 consumed.add(i)
             i += 1
@@ -5238,9 +5247,26 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                     or _dashed_adj
                     or _zero_old_vouching_verb(toks[_cand_i + 1:])
                     in _ZERO_OLD_SUBS)
+                # An attached SHORT global is read as one only in a second
+                # pass, whose force test discounts the very token it spent.
+                # Taking the UNION of the two readings is what makes that safe:
+                # on its own the global reading dropped real force-creates
+                # (`G=git-switch; "$G" -C main branch` -- a start point that
+                # merely spells a subcommand), and without it `git -C. checkout
+                # -Btrunk` lost its attached force. Neither reading can be
+                # correct alone, and blocking when EITHER sees a write needs no
+                # choice between them.
+                _cglob = set()
+                _attach_glob = _zero_old_vouching_verb(
+                    toks[_cand_i + 1:], _cglob, shorts=True) in _ZERO_OLD_SUBS
+                _cglob = {_cand_i + 1 + k for k in _cglob}
                 _fi = any(_zero_old_force_tok(t, attached=_attach_ok,
                                               sub=_sub_word)
-                          for t in toks)
+                          for t in toks) or (
+                    _attach_glob
+                    and any(_zero_old_force_tok(t, attached=True,
+                                                sub=_sub_word)
+                            for i, t in enumerate(toks) if i not in _cglob))
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
                                  for t in toks[_cand_i + 1:])

@@ -4527,6 +4527,12 @@ _ZERO_OLD_SUBS = frozenset({'branch', 'checkout', 'switch', 'update-ref', 'symbo
 # is worse than no entry -- it reads as coverage. Refusing `git fast-import`
 # outright is a scope decision, not a parser one.
 _ZERO_OLD_FORCE_SUBS = {'worktree': ('add', 'B')}
+# Dashed executables the invocation-shape arm will candidate. ONLY subcommands
+# this gate models: `git-xyz` behind a wrapper stays out, exactly as it did when
+# the dashed-argv path was the only thing that read these, because widening it
+# would refuse unrelated `git-*` programs over a force-ish flag they never
+# handed to git.
+_ZERO_OLD_DASHED_CANDS = _ZERO_OLD_SUBS | frozenset(_ZERO_OLD_FORCE_SUBS)
 def _zero_old_force_sub(argv, sub, sub_idx):
     spec = _ZERO_OLD_FORCE_SUBS.get(sub)
     if spec is None:
@@ -4608,29 +4614,27 @@ def _zero_old_git_argv(seg):
     if argv and _is_exe(argv[0], 'git'):
         return argv, raw_argv
     toks = toks_once(seg)
-    # Take the EARLIEST git-* token, preferring one in a command position --
-    # never the last. `_git_dashed_subcommand` validates nothing beyond the
+    # ONLY the earliest git-* token is a candidate, and only if it stands where
+    # a command can. `_git_dashed_subcommand` validates nothing beyond the
     # `git-` prefix, so any OPERAND spelled that way used to win: in
     # `xargs -I{} git-branch -f main git-status` the trailing branch name
     # rewrote the invocation as `git status`, and a worktree destination
-    # `/tmp/git-status` masked `worktree add -B` the same way. A command word
-    # precedes its operands, so the first is the candidate; and if none sits in
-    # a readable command position, the first overall still beats the last,
-    # because guessing EARLIER can only name a more dangerous subcommand.
-    cmd_i = cmd_sub = None
-    for i, tok in enumerate(toks):
-        sub = _git_dashed_subcommand(tok)
-        if sub is not None and _zero_old_only_prefix(toks[:i]):
-            cmd_i, cmd_sub = i, sub
-            break
-    if cmd_i is None:
-        # No git-* token stands where a COMMAND could: every candidate is an
-        # operand. Synthesising an argv from one is what let a trailing branch
-        # name or a worktree destination fabricate a harmless `git status`, so
-        # answer "unreadable" instead and let the invocation-shape fallback
-        # decide -- that arm is strictly stricter, so the polarity is safe.
+    # `/tmp/git-status` masked `worktree add -B` the same way.
+    #
+    # Scanning PAST a rejected first candidate reopens exactly that hole, which
+    # is why this stops rather than continues: a command word precedes its
+    # operands, so once the earliest one is disqualified every later git-* token
+    # is an operand of some command -- and in `xargs -I{} git-branch -f main
+    # git-status` the disqualified `git-branch` IS the command while the trailing
+    # `git-status` is its branch name. Answer "unreadable" and let the
+    # invocation-shape fallback decide; that arm is strictly stricter, so the
+    # polarity is safe.
+    cmd_i = next((i for i, t in enumerate(toks)
+                  if _git_dashed_subcommand(t) is not None), -1)
+    if cmd_i < 0 or not _zero_old_command_position(toks, cmd_i):
         return None, None
-    return ['git', cmd_sub] + list(toks[cmd_i + 1:]), toks
+    return (['git', _git_dashed_subcommand(toks[cmd_i])]
+            + list(toks[cmd_i + 1:]), toks)
 _ZERO_OLD_SCOPE_ENV = frozenset({
     'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_INDEX_FILE',
     'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
@@ -4804,9 +4808,10 @@ def _zero_old_only_prefix(toks):
     """True if every token is a command PREFIX, never the command itself.
 
     Assignments, shell keywords, wrapper names, options, one operand for the
-    operand-taking wrappers, and an option's VALUE. Used ONLY to qualify the
-    print-only exemption, so its polarity is safe: an unmodelled wrapper here
-    costs a refusal (fail closed), never a bypass.
+    operand-taking wrappers, and an option's VALUE -- the value is SKIPPED OVER
+    here so a later token can still be the command (`xargs -n 1 git ...`).
+    Whether the very next token may itself be that value is a separate question
+    and belongs to `_zero_old_command_position`, the only caller.
     """
     prev = ''
     for t in toks:
@@ -4820,6 +4825,25 @@ def _zero_old_only_prefix(toks):
             return False
         prev = t
     return True
+def _zero_old_command_position(toks, i):
+    """True if toks[i] can stand where a COMMAND word can.
+
+    Two conditions, and BOTH have been a real miss. Everything before it must be
+    a command prefix, and the token must not itself be the VALUE of the option
+    in front of it: in `xargs -I echo git branch -f main <oid>` the `echo` is the
+    replacement STRING and git is what runs, and `xargs -I git-status git branch
+    -f main <oid>` is the same shape one step over -- reading that replacement
+    string as the command discarded the force and left the gate seeing no
+    operation at all.
+
+    Asked at both sites that pick a command out of a token list, because they
+    read the SAME shape and differ only in what they do with the answer. Saying
+    no is safe in both: the print-only arm loses an exemption (fail closed), and
+    the dashed-argv arm loses its argv, which hands the segment to the strictly
+    stricter invocation-shape fallback.
+    """
+    return (not (i and toks[i - 1].startswith('-'))
+            and _zero_old_only_prefix(toks[:i]))
 def _zero_old_has_risky_companion(chunks):
     n_mut = 0
     for chunk in chunks:
@@ -4884,15 +4908,44 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # The remaining exception is a print-only builtin, which names
                 # the words without running anything: `echo git branch` and
                 # `echo "$X" branch -f main HEAD`. Measured, all of them.
+                # A literal `git-branch` is a candidate too. It is not `_is_exe`
+                # git and it is not dynamic, so this arm used to find NO
+                # candidate at all and return no operation -- which is where the
+                # argv path now sends every dashed executable a wrapper hides.
                 _cand_i = next((i for i, t in enumerate(toks)
                                 if _is_exe(t, 'git') or _may_be_substitution(t)
-                                or _word_may_split(t, t)), -1)
+                                or _word_may_split(t, t)
+                                or _git_dashed_subcommand(t)
+                                in _ZERO_OLD_DASHED_CANDS), -1)
                 if _cand_i < 0:
                     continue
                 _cand_git = _is_exe(toks[_cand_i], 'git')
+                # A dashed executable spells its subcommand into its own NAME,
+                # so the verb is AT the candidate and there is no later token to
+                # find: `git-branch -f main <oid>` has no `branch` operand.
+                _cand_dashed = _git_dashed_subcommand(toks[_cand_i])
                 _sub_i = next((i for i, t in enumerate(toks)
                                if i > _cand_i and (t in _ZERO_OLD_SUBS
                                or _git_dashed_subcommand(t) in _ZERO_OLD_SUBS)), -1)
+                # The candidate's OWN name wins over any later operand. A
+                # dashed executable already names its subcommand, so a token
+                # further along cannot be one -- it is an operand that merely
+                # spells the word. Selecting it discarded the real verb:
+                # `xargs -I{} git-update-ref HEAD branch` writes HEAD with no
+                # old-value precondition, and the trailing `branch` (a revision
+                # name) made the ref-writer test ask about the wrong word.
+                if _cand_dashed in _ZERO_OLD_SUBS:
+                    _sub_i = _cand_i
+                # The WORD at _sub_i, with a dashed executable normalised to the
+                # subcommand it names. Read raw, `git-update-ref` fails the
+                # `update-ref` test below and a ref writer that needs no flag
+                # went unrecognised: `xargs -I{} git-update-ref HEAD <oid>`
+                # carries no force token and no refs/ operand, so nothing else
+                # would have caught it.
+                _sub_word = ''
+                if _sub_i >= 0:
+                    _sub_word = (_git_dashed_subcommand(toks[_sub_i])
+                                 or toks[_sub_i])
                 # `worktree` is modelled by FLAG, not by word -- `git worktree
                 # list` behind a wrapper writes nothing -- so ask the same
                 # predicate the argv path asks.
@@ -4900,6 +4953,12 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                                  if i > _cand_i and t in _ZERO_OLD_FORCE_SUBS), -1)
                 _force_sub = (_force_i >= 0
                               and _zero_old_force_sub(toks, toks[_force_i], _force_i))
+                if not _force_sub and _cand_dashed in _ZERO_OLD_FORCE_SUBS:
+                    # `git-worktree add -B main <path> <oid>`: same predicate,
+                    # asked with the subcommand read off the executable NAME.
+                    if _zero_old_force_sub(toks, _cand_dashed, _cand_i):
+                        _force_sub = True
+                        _force_i = _cand_i
                 # `-m`/`-M` are in here because an unforced RENAME still deletes
                 # the source ref, exactly as the argv path treats it.
                 # `-m`/`-M` are here because an unforced RENAME still deletes the
@@ -4942,14 +5001,13 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # discarded a real ref write.
                 _print_i = next((i for i, t in enumerate(toks)
                                  if t.rsplit('/', 1)[-1] in _ZERO_OLD_PRINT_ONLY
-                                 and not (i and toks[i - 1].startswith('-'))
-                                 and _zero_old_only_prefix(toks[:i])), -1)
+                                 and _zero_old_command_position(toks, i)), -1)
                 if _print_i >= 0 and (_verb_i < 0 or _print_i < _verb_i):
                     continue
                 if (_force_sub
                         or (_sub_i >= 0
                             and (_writes_ref
-                                 or toks[_sub_i] in ('update-ref', 'symbolic-ref')))
+                                 or _sub_word in ('update-ref', 'symbolic-ref')))
                         # A ref writer needs no FLAG, so an unreadable
                         # subcommand cannot be qualified on one: `S=update-ref;
                         # "$G" "$S" refs/heads/main <oid>` carries none and the

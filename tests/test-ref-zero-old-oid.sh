@@ -14,11 +14,30 @@
 
 # shellcheck disable=SC2310
 set -uo pipefail
+
+# Drop the caller's repository scope for THIS shell, before anything runs.
+# `init_fixture_repo` clears it too, but both of its callers run it inside a
+# subshell, so that unset never reached here -- and the parent shell runs
+# `git -C "$REPO" branch -D ...` and friends below. `-C` does not save them: an
+# inherited GIT_DIR names the repository outright and outranks it, so this
+# suite invoked from a git hook would have deleted branches in the CALLER's
+# repo. Cleared by SHAPE, for the same reason the detector matches invocation
+# shape rather than a vocabulary: any enumerated list is one spelling short.
+for _v in $(compgen -v GIT_ 2>/dev/null); do unset "$_v"; done
 # Fail closed here too: every REPO_ROOT-relative path below, and the victim
 # assertions at the end, assume this landed.
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
 GATE_SCRIPT="$REPO_ROOT/hooks/gate-scripts/ref-ff-gate.sh"
+
+# Re-entry for the parent-scope pin near the end of this file. Reports what a
+# parent-shell `git -C` resolves to AFTER the clear above, then exits before any
+# fixture is built. This runs the REAL top-level code rather than a copy of it,
+# which is the only way the pin can actually witness the clear.
+if [ "${BD780_SCOPE_SELFCHECK:-}" = 1 ]; then
+    git -C "${1:-.}" rev-parse --absolute-git-dir 2>/dev/null || printf 'unresolved\n'
+    exit 0
+fi
 
 PASS=0
 FAIL=0
@@ -684,6 +703,46 @@ assert git_zero_old_ref_op(
 assert git_zero_old_ref_op(
     'xargs -I{} git worktree add -B main /tmp/git-status ' + OID_A,
     hook_cwd=hook_cwd), 'worktree destination masked add -B'
+# --- #780: an option's VALUE is not a command position ---
+# `-I <string>` / `-n <num>` consume the NEXT token, so reading it as the
+# executable named the wrong subcommand AND discarded the force: every shape
+# here returned no operation at all, and the gate saw nothing to block.
+for _c in ('xargs -I git-status git branch -f main ' + OID_A,
+           'xargs -I git-status git-branch -f main ' + OID_A,
+           'xargs -n git-status git branch -f main ' + OID_A,
+           'xargs -I git-status git worktree add -B main /tmp/wt ' + OID_A,
+           'xargs -I git-status git-worktree add -B main /tmp/wt ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and disqualifying that candidate must not RESUME the scan. Every later
+# git-* token is an operand of the disqualified command, so continuing hands the
+# invocation back to the #834 masking shape -- here `git-branch` is the command
+# and the trailing `git-status` is merely its branch name.
+for _c in ('xargs -I{} git-branch -f main ' + OID_A,
+           'xargs -I{} git-worktree add -B main /tmp/wt ' + OID_A,
+           'xargs -I{} git-update-ref refs/heads/main ' + OID_A,
+           'xargs -I{} git-branch -f main git-status'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# A ref writer needs no force FLAG and no refs/ operand -- `update-ref HEAD <oid>`
+# is one -- so the subcommand has to be read off the dashed executable's NAME.
+# Matching its raw token against 'update-ref' silently failed and left these
+# with nothing else to catch them.
+# ...and a later operand that merely SPELLS a subcommand must not outrank the
+# executable's own name: in `git-update-ref HEAD branch` the trailing word is a
+# revision, and selecting it asked the ref-writer test about the wrong verb.
+for _c in ('xargs -I{} git-update-ref HEAD ' + OID_A,
+           'xargs -I git-status git-update-ref HEAD ' + OID_A,
+           'xargs -I{} git-update-ref HEAD branch',
+           'xargs -I{} git-symbolic-ref HEAD branch',
+           'xargs -I{} git-symbolic-ref HEAD refs/heads/main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# The print-only exemption asks the SAME predicate, so it must still refuse an
+# `echo` that is itself a replacement string -- git is what runs there.
+assert git_zero_old_ref_op(
+    'xargs -I echo git branch -f main ' + OID_A, hook_cwd=hook_cwd)
+# ...and a dashed executable whose subcommand this gate does not model stays a
+# non-candidate, exactly as it was before it could be candidated at all.
+assert git_zero_old_ref_op(
+    'xargs -I{} git-xyz -f main ' + OID_A, hook_cwd=hook_cwd) == []
 # ...while a genuine dashed invocation still reads as one.
 assert git_zero_old_ref_op('env git-branch -f main ' + OID_A, hook_cwd=hook_cwd)
 for _c in ('git status', 'git log --oneline -5', 'git worktree list'):
@@ -754,6 +813,39 @@ if [ "$DECOY_BEFORE" = "$DECOY_AFTER" ]; then
 else
     printf "  FAIL  fixture setup wrote through inherited GIT_INDEX_FILE\n"
     FAIL=$((FAIL + 1))
+fi
+
+# ...and the clear has to cover the PARENT shell, not only the helper. Both
+# callers run the helper in a subshell, so its unset never reached the
+# `git -C "$REPO" branch -D ...` calls that run in THIS shell, and `-C` is no
+# defence: an inherited GIT_DIR names the repository outright and outranks it.
+# Witnessed by re-executing this same script with a decoy scope exported --
+# a copy of the clear would only prove the copy works. The decoy is built with
+# a CHECKED init so a failed fixture cannot make the pin vacuous.
+# Both repos are built HERE rather than reusing `$REPO`, whose last assignment
+# belongs to a fail-closed pin above that deliberately leaves it missing.
+PARENT_DECOY="$TMPROOT/parent-decoy"
+PARENT_TARGET="$TMPROOT/parent-target"
+if ! ( init_fixture_repo "$PARENT_DECOY" ) >/dev/null 2>&1 \
+   || ! ( init_fixture_repo "$PARENT_TARGET" ) >/dev/null 2>&1; then
+    printf "  FAIL  could not build the parent-scope fixtures\n"
+    FAIL=$((FAIL + 1))
+else
+    # `--absolute-git-dir` reports a REAL path, and on macOS $TMPDIR is a
+    # symlink into /private, so the expected side is resolved the same way.
+    SCOPE_WANT="$(cd "$PARENT_TARGET" && pwd -P)/.git"
+    SCOPE_GOT=$(GIT_DIR="$PARENT_DECOY/.git" GIT_WORK_TREE="$PARENT_DECOY" \
+                GIT_INDEX_FILE="$PARENT_DECOY/.git/index" \
+                BD780_SCOPE_SELFCHECK=1 \
+                bash "$REPO_ROOT/tests/$(basename "$0")" "$PARENT_TARGET" 2>/dev/null)
+    if [ "$SCOPE_GOT" = "$SCOPE_WANT" ]; then
+        printf "  PASS  parent shell ignores an inherited git scope\n"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  parent shell resolved '%s', want '%s'\n" \
+            "$SCOPE_GOT" "$SCOPE_WANT"
+        FAIL=$((FAIL + 1))
+    fi
 fi
 
 EMAIL_BEFORE=$(git -C "$REPO_ROOT" config --local user.email 2>/dev/null || printf none)

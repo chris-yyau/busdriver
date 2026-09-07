@@ -762,6 +762,14 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'xargs -I{} git-checkout -Bmain ' + OID_A,
            'G=git; "$G" checkout -Bmain unreviewed',
            'G=git; "$G" switch -Cmain unreviewed',
+           # ...the candidate is whatever came FIRST, so a wrapper option value
+           # can stand in front of the real executable.
+           'TOKEN={}; xargs -I "$TOKEN" git checkout -Bmain unreviewed',
+           # ...and a dashed writer puts its ref first, with a revision value.
+           'G=git-update-ref; "$G" HEAD unreviewed',
+           'G=git-update-ref; "$G" --create-reflog HEAD ' + OID_A,
+           'G=git-update-ref; "$G" -- HEAD ' + OID_A,
+           'G=git-update-ref; "$G" -m reason HEAD ' + OID_A,
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c

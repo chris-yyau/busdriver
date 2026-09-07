@@ -4815,6 +4815,25 @@ def _zero_old_bc_index(body, sub=''):
     return -1
 
 
+def _zero_old_operand_lead(before):
+    """True if nothing before HEAD is a bare OPERAND -- only options and the
+    values they consume.
+
+    This is what separates a writer from a reader when the verb is unreadable:
+    `"$G" -m reason HEAD <oid>` spends `reason` as the value of `-m`, while
+    `"$G" diff HEAD main` opens with a bare word that IS the verb. Asking for
+    the first non-dash token instead made `reason` the operand and dropped the
+    write; asking for index 0 dropped every option before the ref. Neither
+    needs a vocabulary of which options take values -- an option in front of
+    the word is the tell."""
+    for j, t in enumerate(before):
+        if t.startswith('-'):
+            continue
+        if j == 0 or not before[j - 1].startswith('-'):
+            return False
+    return True
+
+
 def _zero_old_cluster_head(body, sub=''):
     """The part of a cluster that is still FLAGS -- up to the owning letter.
 
@@ -5057,7 +5076,14 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # `$G` expands to. It must be immediate: reached through the
                 # global-option walk, `curl "$URL" -C100 --output branch` offers
                 # its own option value as the verb.
-                _attach_ok = (_cand_git or _cand_dashed is not None
+                # ...and a literal `git <verb>` PAIR anywhere vouches too,
+                # because the candidate is whatever came first: in
+                # `xargs -I "$TOKEN" git checkout -Bmain <rev>` the replacement
+                # STRING is the candidate and the real executable follows it.
+                _pair = any(_is_exe(t, 'git') and j + 1 < len(toks)
+                            and toks[j + 1] in _ZERO_OLD_SUBS
+                            for j, t in enumerate(toks))
+                _attach_ok = (_cand_git or _cand_dashed is not None or _pair
                               or (bool(toks[_cand_i + 1:])
                                   and toks[_cand_i + 1] in _ZERO_OLD_SUBS))
                 _fi = any(_zero_old_force_tok(t, attached=_attach_ok,
@@ -5135,8 +5161,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # `rev-parse HEAD` and `show HEAD` name none -- and HEAD must
                 # not itself be an option's value, `--` being end-of-options
                 # rather than an option.
-                _has_head = any(t == 'HEAD' for t in _after)
-                _head_oid = _oid_after and _has_head
+
                 # A value must follow HEAD, and HEAD must not be some
                 # option's VALUE. The second half cannot be dropped: an
                 # unreadable subcommand is not proof the command is git, since
@@ -5145,15 +5170,23 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # git takes `--create-reflog` between the ref and its new
                 # value -- so the ref-writing booleans are NAMED, and `--` is
                 # end-of-options rather than an option.
-                _head_write = any(
-                    t == 'HEAD'
+                _head_idxs = [
+                    i for i, t in enumerate(_after)
+                    if t == 'HEAD'
                     and any(not x.startswith('-') for x in _after[i + 1:])
                     and (_oid_after
                          or not i
                          or not _after[i - 1].startswith('-')
                          or _after[i - 1] == '--'
-                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS)
-                    for i, t in enumerate(_after))
+                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS)]
+                _head_write = bool(_head_idxs)
+                # In the arm that has only an unreadable EXECUTABLE to go on,
+                # HEAD must LEAD the operands -- which is where a dashed writer
+                # puts its ref (`G=git-update-ref; "$G" HEAD <rev>`). A literal
+                # verb in front of it means the verb was readable all along and
+                # the command is a read: `"$G" diff HEAD main` says so outright.
+                _head_lead = any(_zero_old_operand_lead(_after[:i])
+                                 for i in _head_idxs)
                 # A print-only builtin BEFORE the verb consumes it: `echo "$X"
                 # branch -f main HEAD` prints, and so does the same behind a
                 # wrapper whose option VALUE is the substitution (`sudo -u
@@ -5196,7 +5229,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         # `"$PYTHON" -m pytest -x tests/`.
                         or (not _cand_git
                             and (_fi_strong_after or _refs_after
-                                 or _head_oid))):
+                                 or _head_lead))):
                     raw_all.append(('force', ''))
                     if _zero_old_ambient_scope():
                         ambient_scope = True

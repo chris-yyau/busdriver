@@ -790,6 +790,16 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'TOKEN={}; xargs -I "$TOKEN" -t git-checkout -Btrunk unreviewed',
            'sudo xargs -I "$TOKEN" -t git-checkout -Btrunk unreviewed',
            'TOKEN={}; xargs -I "$TOKEN" -t git-switch -Ctrunk unreviewed',
+           # ...and the writer's OWN plain flags may stand before the force one,
+           # so adjacency walks over a cluster of ITS letters -- but no further,
+           # which is what still stops at a receiving command's bare WORD.
+           'TOKEN={}; xargs -I "$TOKEN" -t git-checkout -q -Btrunk unreviewed',
+           # ...and a git global may carry its value ATTACHED, owning no token
+           # after it, so the vouching walk must step over the whole thing.
+           'G=git; "$G" --git-dir=.git checkout -Btrunk unreviewed',
+           # ...and git accepts any unambiguous ABBREVIATION of a long option,
+           # so the ref after one is still the ref.
+           'G=git; S=update-ref; "$G" "$S" --create-refl HEAD unreviewed',
            # ...and a delete flag spent before an attached reason survives, as
            # it already does on the direct update-ref path.
            'G=git; S=update-ref; "$G" "$S" -dmreason HEAD',

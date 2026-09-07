@@ -4817,6 +4817,44 @@ _ZERO_OLD_REF_BOOL_OPTS = frozenset(
     {'--create-reflog', '--no-deref', '--stdin', '-z', '--force', '-f'})
 
 
+def _zero_old_ref_bool_opt(tok):
+    """True for a ref-writer option that owns no VALUE, so a ref may follow it.
+
+    Long spellings are PREFIX-matched because git accepts any unambiguous
+    abbreviation: `update-ref --create-refl HEAD <oid>` is the same command as
+    the full spelling, and an exact-match set left the HEAD after it unread.
+    """
+    if tok in _ZERO_OLD_REF_BOOL_OPTS:
+        return True
+    return tok.startswith('--') and len(tok) > 2 and any(
+        o.startswith(tok) for o in _ZERO_OLD_REF_BOOL_OPTS if o.startswith('--'))
+
+
+def _zero_old_dashed_adjacent(toks, j):
+    """True if `toks[j]` is a dashed ref writer wearing its own force option.
+
+    The force option need not be the very next token -- the writer's own plain
+    flags may precede it (`git-checkout -q -Btrunk`) -- but everything between
+    must be a cluster of ITS letters and nothing else. That is what keeps a name
+    merely PASSED to something out: a replacement string, an EOF marker or a
+    password prompt is followed by the receiving command's own WORD, which is
+    not a dashed cluster at all, so the walk stops there rather than reading on
+    for a force flag that belongs to somebody else.
+    """
+    sub = _git_dashed_subcommand(toks[j])
+    if sub not in _ZERO_OLD_SUBS:
+        return False
+    only = _ZERO_OLD_FORCE_LETTERS_BY_SUB.get(sub, '')
+    for t in toks[j + 1:]:
+        if _zero_old_force_tok(t, attached=True, sub=sub, only=only):
+            return True
+        if not (t.startswith('-') and not t.startswith('--')
+                and t[1:]
+                and all(c in _ZERO_OLD_CLUSTER_ALPHA for c in t[1:])):
+            return False
+    return False
+
+
 def _zero_old_bc_index(body, sub=''):
     """Index of the `-B`/`-C` in a short cluster that is really a FLAG, else -1.
 
@@ -4860,6 +4898,12 @@ def _zero_old_vouching_verb(after):
             continue
         if t in _GIT_VALUE_OPTS:
             i += 2
+            continue
+        # ...and the value may be ATTACHED, which owns no further token:
+        # `git --git-dir=.git checkout -Btrunk` stopped the walk on an option
+        # that is git's own and lost the attached force behind it.
+        if '=' in t and t.split('=', 1)[0] in _GIT_VALUE_OPTS:
+            i += 1
             continue
         if t in _ZERO_OLD_GIT_GLOBAL_BOOL:
             i += 1
@@ -5175,14 +5219,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # to something is followed by that something's own command word,
                 # never by its own force flag.
                 _dashed_adj = any(
-                    _git_dashed_subcommand(t) in _ZERO_OLD_SUBS
-                    and toks[j + 1:]
-                    and _zero_old_force_tok(
-                        toks[j + 1], attached=True,
-                        sub=_git_dashed_subcommand(t),
-                        only=_ZERO_OLD_FORCE_LETTERS_BY_SUB.get(
-                            _git_dashed_subcommand(t), ''))
-                    for j, t in enumerate(toks))
+                    _zero_old_dashed_adjacent(toks, j)
+                    for j in range(len(toks)))
                 _attach_ok = (
                     _cand_git or _cand_dashed is not None or _pair
                     or _dashed_adj
@@ -5280,7 +5318,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                          or not i
                          or not _after[i - 1].startswith('-')
                          or _after[i - 1] == '--'
-                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS
+                         or _zero_old_ref_bool_opt(_after[i - 1])
                          # `-mreason` carries update-ref's reason ATTACHED and
                          # so consumes nothing further, leaving HEAD an
                          # operand. Length alone does not say that -- `-sX` is

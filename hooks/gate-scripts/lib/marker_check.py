@@ -2706,12 +2706,41 @@ def _strip_cmd_subst(s):
             # expansion around it.
             _nsub = 0
             _narith = 0
+            # 'S' for a `$(`, 'P' for a bare subshell paren opened inside one. A plain
+            # `_nsub` counted only `$(` but decremented on EVERY `)`, so the subshell
+            # closer in `${X:-$( (true); cat <<EOF ... EOF )}` zeroed it and the heredoc
+            # after it was no longer command text to this walker -- its body was then read
+            # as shell text, where an apostrophe in prose opened a quote that swallowed the
+            # closing `}`. The `$()` walker above pairs its parens for the same reason
+            # (#802).
+            _pstack = []
+            _qstack = []         # (depth, quote) suspended by a nested `$()`, as above
+            # Paren depth at which each NESTED `${...}` opened. A paren inside one is
+            # literal text -- `$(echo ${Y//a/(})` is a replacement, not a subshell -- and
+            # counting it left a `P` frame the substitution's own closer then popped, so
+            # the suspended quote was never restored and the command was refused. Only
+            # the span's OWN level is exempt: a `$()` opened inside it is real. This is
+            # the `_span` half of the same rule the `$()` walker states (#802).
+            _bspan = []
             _nhd = []            # introducers queued on THIS line, in order
             closed = False
             while i < n:
                 ch = s[i]
                 if q:
                     if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    if q == '"' and s.startswith('$(', i) \
+                            and not s.startswith('$((', i):
+                        # A nested `$()` inside "..." quotes for ITSELF, so a quote in
+                        # its body is not this one's closer: `"${X:-"$(printf '"')"}"`
+                        # runs under bash, but reading that `"` as the closer left the
+                        # following apostrophe unmatched and refused the command. Same
+                        # rule and same `_qstack` the `$()` walker states (#802).
+                        _qstack.append((len(_pstack), q))
+                        q = ''
+                        _pstack.append('S')
+                        _nsub += 1
                         i += 2
                         continue
                     if q == '"' and ch == '`':   # quotes for itself, here too (#802)
@@ -2747,12 +2776,26 @@ def _strip_cmd_subst(s):
                     i += 2
                     continue
                 if s.startswith('$(', i):
+                    _pstack.append('S')
                     _nsub += 1
                     i += 2
                     continue
-                if ch == ')' and _nsub:
-                    _nsub -= 1
+                if ch in '()' and _bspan and _bspan[-1] == len(_pstack):
                     i += 1
+                    continue
+                if ch == '(' and _nsub:
+                    # Counted only INSIDE a substitution: at the `${...}` body's own
+                    # level a paren is literal text (`${X//a/(}`), which is the same
+                    # exemption the `$()` walker makes for its `_span` level (#802).
+                    _pstack.append('P')
+                    i += 1
+                    continue
+                if ch == ')' and _pstack:
+                    if _pstack.pop() == 'S':
+                        _nsub -= 1
+                    i += 1
+                    if _qstack and len(_pstack) == _qstack[-1][0]:
+                        q = _qstack.pop()[1]
                     continue
                 # SEVERAL bodies can queue on one line -- `cat <<A <<B` reads A's then
                 # B's -- so the introducers are collected and the bodies skipped in
@@ -2765,10 +2808,10 @@ def _strip_cmd_subst(s):
                     # OUTER delimiter at the inner newline and its body then ate the
                     # closing `)}` -- the same rule, and the same shape, the `$()`
                     # walker above already states for its own queue (#802).
-                    _pend = [t for t, _d in _nhd if _d == _nsub]
+                    _pend = [t for t, _d in _nhd if _d == len(_pstack)]
                     if _pend:
                         i = _heredoc_body_end(s, i + 1, _pend)
-                        _nhd = [p for p in _nhd if p[1] != _nsub]
+                        _nhd = [p for p in _nhd if p[1] != len(_pstack)]
                         continue
                 if _nsub and not _narith:
                     if s.startswith('<<<', i):   # a herestring is a WORD, not a body
@@ -2776,7 +2819,7 @@ def _strip_cmd_subst(s):
                         continue
                     _hd = _heredoc_delim(s, i)
                     if _hd:
-                        _nhd.append((_hd[0], _nsub))
+                        _nhd.append((_hd[0], len(_pstack)))
                         i = _hd[1]
                         continue
                 if ch in ("'", '"'):
@@ -2787,10 +2830,13 @@ def _strip_cmd_subst(s):
                 # and `$${` is a PID beside one, so the run's parity decides (#802).
                 if s.startswith('${', i) and _dollar_run_is_even(s, i):
                     depth += 1
+                    _bspan.append(len(_pstack))
                     i += 2
                     continue
                 if ch == '}':
                     depth -= 1
+                    if _bspan:
+                        _bspan.pop()
                     i += 1
                     if depth == 0:
                         closed = True

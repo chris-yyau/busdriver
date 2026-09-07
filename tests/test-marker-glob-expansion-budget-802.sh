@@ -857,6 +857,80 @@ else
   no "#802 a stemless POSIX class blocks, exhausted probes or not" "got=${got:-<empty>}"
 fi
 
+# Two constructs the `${...}` walker read with rules its `$()` sibling already states.
+# A nested `$()` inside `"..."` quotes for ITSELF, so a quote in its body is not the
+# enclosing one's closer; reading it as the closer left the next apostrophe unmatched.
+# And a bare `(` inside a substitution is a SUBSHELL whose `)` is not the substitution's;
+# counting only `$(` let that closer zero the depth, so the `cat <<EOF` after it stopped
+# being command text, its body was read as shell text, and an apostrophe in prose opened a
+# quote that swallowed the closing `}`. Bash runs both. Each is pinned in BOTH directions
+# -- a walker that simply stopped tracking either construct would satisfy the allow half
+# by itself, so the block half is what keeps the fix honest (#802).
+_qnest='echo "${X:-"$(printf '"'"'"'"'"')"}" "["'
+if ! bash -n <<<"$_qnest" 2>/dev/null; then
+  no "#802 a nested \$() inside double quotes quotes for itself" "bash rejected it"
+else
+  got=$(verdict "$_qnest")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 a nested \$() inside double quotes quotes for itself"
+  else
+    no "#802 a nested \$() inside double quotes quotes for itself" "got=${got:-<empty>}"
+  fi
+fi
+
+got=$(verdict 'echo "${X:-"$('"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600)"}" "["')
+if is_real_block "$got"; then
+  ok "#802 a helper inside that nested \$() still blocks"
+else
+  no "#802 a helper inside that nested \$() still blocks" "got=${got:-<empty>}"
+fi
+
+_shd='echo "${X:-$( (true); cat <<EOF
+it'"'"'s data
+EOF
+)}" "["'
+if ! bash -n <<<"$_shd" 2>/dev/null; then
+  no "#802 a subshell closer is not the substitution's" "bash rejected it"
+else
+  got=$(verdict "$_shd")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 a subshell closer is not the substitution's"
+  else
+    no "#802 a subshell closer is not the substitution's" "got=${got:-<empty>}"
+  fi
+fi
+
+got=$(verdict 'echo "${X:-$( (true); '"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600 )}" "["')
+if is_real_block "$got"; then
+  ok "#802 a helper inside that subshell still blocks"
+else
+  no "#802 a helper inside that subshell still blocks" "got=${got:-<empty>}"
+fi
+
+# The other half of the same rule, and the cost of stating only the first: a paren inside
+# a NESTED `${...}` is literal text -- `$(echo ${Y//a/(})` is a replacement, not a
+# subshell -- so pairing it added a frame the substitution's own closer then popped, and
+# the quote suspended at that `$(` was never restored. Only the span's OWN level is
+# exempt, because a `$()` opened inside it is a real command (#802).
+_ptext='echo "${X:-"$(echo ${Y//a/(})"}" "["'
+if ! bash -n <<<"$_ptext" 2>/dev/null; then
+  no "#802 a paren inside a nested \${} is text, not a subshell" "bash rejected it"
+else
+  got=$(verdict "$_ptext")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 a paren inside a nested \${} is text, not a subshell"
+  else
+    no "#802 a paren inside a nested \${} is text, not a subshell" "got=${got:-<empty>}"
+  fi
+fi
+
+got=$(verdict 'echo "${X:-"$(echo ${Y//a/(}; '"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600)"}" "["')
+if is_real_block "$got"; then
+  ok "#802 a helper beside that literal paren still blocks"
+else
+  no "#802 a helper beside that literal paren still blocks" "got=${got:-<empty>}"
+fi
+
 # The substitution walker keeps its own arithmetic-depth stack. It used to reuse the outer
 # loop's name, rebinding that INT to a list, so the next `((` in the command ran `list += 1`
 # and the classifier died. A crash is not a verdict: it reaches the gate as

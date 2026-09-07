@@ -782,6 +782,14 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # the candidate, so the walk from the literal git is asked as well.
            'TOKEN={}; xargs -I "$TOKEN" -t git checkout -Bproduction unreviewed',
            'TOKEN={}; xargs -I "$TOKEN" -t git switch -Cproduction unreviewed',
+           # ...and `-p` is one of git's OWN globals, so the vouching walk must
+           # step over it rather than read it as a foreign option.
+           'G=git; "$G" -p checkout -Btrunk unreviewed',
+           # ...while a DASHED executable carries its verb in its name, so it
+           # vouches on its own when the walk from the candidate is stopped.
+           'TOKEN={}; xargs -I "$TOKEN" -t git-checkout -Btrunk unreviewed',
+           'sudo xargs -I "$TOKEN" -t git-checkout -Btrunk unreviewed',
+           'TOKEN={}; xargs -I "$TOKEN" -t git-switch -Ctrunk unreviewed',
            # ...and a delete flag spent before an attached reason survives, as
            # it already does on the direct update-ref path.
            'G=git; S=update-ref; "$G" "$S" -dmreason HEAD',
@@ -795,6 +803,31 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
 # ...and that arm stays UPPER-only, which is what still holds find's lowercase
 # long options out: they open on a force letter but take no ref name.
 for _c in ('find . -delete', 'find . -depth', 'find /tmp -name branch'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# ...and the dashed-executable vouching above must not read an option VALUE as
+# the executable: naming a download `git-checkout` turned curl's resume offset
+# into an attached branch reset.
+# ...and the dashed-executable ADJACENCY rule must see a force option in the
+# very next token, so a git-shaped name merely PASSED to something -- a download
+# target, an xargs EOF marker, a sudo password prompt -- is followed by that
+# something's own command word and stays out. Each of these was refused by a
+# positional spelling of the rule that tried to know which wrapper flags own
+# their next token; the ownership is per-wrapper (`-p` owns nothing for xargs
+# and is sudo's PROMPT), and an option's value can itself be dash-shaped.
+# What adjacency does NOT separate is a name followed by an option that is a
+# real force spelling for that very executable -- `--output git-branch -C100`
+# reads as `git-branch -C 100`, a force-COPY to a branch named 100. That is the
+# fail-CLOSED side of a genuine ambiguity and is deliberately left blocking.
+for _c in ('curl "$URL" -C100 --output git-checkout',
+           'xargs -I "$TOKEN" -E git-checkout cmake -Boutput .',
+           'sudo -u "$USER" -p git-checkout cmake -Boutput .',
+           'xargs -I "$TOKEN" -t sudo -p git-checkout cmake -Boutput .',
+           'xargs -I "$TOKEN" -E -Q sudo -p git-checkout cmake -Boutput .',
+           # ...and the letter must be a force option THAT subcommand has: `-C`
+           # is switch's force-create and branch's force-copy, and nothing at
+           # all to checkout, so curl's resume offset is not a branch reset.
+           'curl "$URL" --output git-checkout -C100',
+           'curl "$URL" --output git-switch -B100'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out

@@ -4780,6 +4780,20 @@ _ZERO_OLD_FORCE_LETTERS = 'fdDBC'
 # Every attempt to decide this from the token alone was wrong in one direction
 # or the other, so the verb is asked. An unknown verb owns nothing, which
 # leaves the reading fail-closed rather than permissive.
+# The force/move SHORT letters each ref-writing subcommand actually accepts.
+# Only the adjacency rule reads it, because only there is the subcommand known
+# EXACTLY -- it is spelled into the executable's own name. `-C` is switch's
+# force-create and branch's force-copy but is nothing at all to checkout, so
+# `curl "$URL" --output git-checkout -C100` was reading curl's resume offset as
+# a branch reset.
+_ZERO_OLD_FORCE_LETTERS_BY_SUB = {
+    'checkout': 'B',
+    'switch': 'C',
+    'branch': 'fdDmMcC',
+    'update-ref': 'd',
+    'symbolic-ref': 'd',
+    'worktree': 'B',
+}
 _ZERO_OLD_VALUE_SHORT_BY_SUB = {
     'checkout': 'b',
     'switch': 'c',
@@ -4825,7 +4839,7 @@ def _zero_old_bc_index(body, sub=''):
 # must not double as a walk past another tool's options: `curl "$URL" -C100
 # --output branch` would otherwise offer `branch` as a vouching verb.
 _ZERO_OLD_GIT_GLOBAL_BOOL = frozenset({
-    '--no-pager', '--paginate', '-P', '--bare', '--literal-pathspecs',
+    '--no-pager', '--paginate', '-p', '-P', '--bare', '--literal-pathspecs',
     '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
     '--no-replace-objects', '--no-optional-locks',
 })
@@ -4898,7 +4912,8 @@ def _zero_old_cluster_head(body, sub=''):
             return body[:i]
     return body
 _ZERO_OLD_MOVE_LETTERS = 'mM'
-def _zero_old_force_tok(tok, strong=False, attached=False, sub=''):
+def _zero_old_force_tok(tok, strong=False, attached=False, sub='',
+                        only=None):
     """True if this token spells a ref-writing flag.
 
     `-d` is here beside `-D`: the unforced delete removes the ref just as the
@@ -4933,6 +4948,10 @@ def _zero_old_force_tok(tok, strong=False, attached=False, sub=''):
     body = tok[1:]
     letters = _ZERO_OLD_FORCE_LETTERS if strong else (
         _ZERO_OLD_FORCE_LETTERS + _ZERO_OLD_MOVE_LETTERS)
+    if only is not None:
+        letters = ''.join(c for c in letters if c in only)
+        if not letters:
+            return False
     # A short option can carry its value attached (`checkout -Bmain`), which
     # the cluster test rejects: the branch name spends letters outside the
     # cluster alphabet. `attached` is OPT-IN because the shape is not git's
@@ -5140,8 +5159,33 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                     _is_exe(t, 'git')
                     and _zero_old_vouching_verb(toks[j + 1:]) in _ZERO_OLD_SUBS
                     for j, t in enumerate(toks))
+                # A DASHED executable carries its verb in its own NAME, so a
+                # force option ATTACHED to the very next token is a write with
+                # no reading of what stands in front: `xargs -I "$TOKEN" -t
+                # git-checkout -Btrunk unreviewed` escaped because the walks
+                # above both stop at the wrapper's `-t`.
+                #
+                # ADJACENCY is the whole rule, deliberately. Every positional
+                # spelling of it needed to know which wrapper flags own their
+                # next token, and that ownership is per-wrapper and open-ended
+                # -- `-p` owns nothing for xargs and is sudo's password PROMPT,
+                # `-E` is an EOF marker whose own value may be dash-shaped --
+                # so each round of review named another shape where an ordinary
+                # `cmake -Boutput .` was refused. A name that is merely PASSED
+                # to something is followed by that something's own command word,
+                # never by its own force flag.
+                _dashed_adj = any(
+                    _git_dashed_subcommand(t) in _ZERO_OLD_SUBS
+                    and toks[j + 1:]
+                    and _zero_old_force_tok(
+                        toks[j + 1], attached=True,
+                        sub=_git_dashed_subcommand(t),
+                        only=_ZERO_OLD_FORCE_LETTERS_BY_SUB.get(
+                            _git_dashed_subcommand(t), ''))
+                    for j, t in enumerate(toks))
                 _attach_ok = (
                     _cand_git or _cand_dashed is not None or _pair
+                    or _dashed_adj
                     or _zero_old_vouching_verb(toks[_cand_i + 1:])
                     in _ZERO_OLD_SUBS)
                 _fi = any(_zero_old_force_tok(t, attached=_attach_ok,

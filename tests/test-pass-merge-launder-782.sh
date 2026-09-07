@@ -410,6 +410,65 @@ else
     rm -rf "$_am_tmp"
 fi
 
+# ── A ref NAMED MERGE_HEAD is not a merge (cubic P2 / Codex P2, PR #841) ──
+# `git rev-parse MERGE_HEAD` is revision-name resolution: with an ordinary
+# branch named `MERGE_HEAD` and NO merge running it exits 0. Both merge-state
+# checks then misfire in the SAFE-LOOKING direction, which is why this needs a
+# test rather than a comment: an ordinary empty commit gets refused as a merge
+# (Codex reproduced exactly this with a valid marker), and the message-only
+# amend auto-pass is disabled outright — the #96 deadlock it exists to prevent.
+#
+# Asserted NEGATIVELY on the refusal string, so the case fails if the gate ever
+# starts treating a same-named ref as merge state again. The gate legitimately
+# blocks here for the ORDINARY reason (no valid review marker for this repo);
+# what must not appear is the #782 merge refusal.
+TOTAL=$((TOTAL + 1))
+_nm_tmp=$(mktemp -d)
+_nm_rc=0
+set +e
+(
+    set -e
+    cd "$_nm_tmp"
+    git init -q -b main 2>/dev/null || git init -q
+    git config commit.gpgsign false
+    git config user.email "test@test.com"
+    git config user.name "Test"
+    echo "trunk" > file.txt
+    git add file.txt
+    git commit -qm "trunk" "$NV"
+    # An ordinary branch that merely SHARES the pseudoref's name.
+    git branch MERGE_HEAD
+    # The preconditions: the NAME resolves, the pseudoref file does NOT exist.
+    git rev-parse MERGE_HEAD >/dev/null 2>&1
+    [ ! -f "$(git rev-parse --git-path MERGE_HEAD)" ]
+)
+_nm_rc=$?
+set -e
+if [[ "$_nm_rc" -ne 0 ]]; then
+    printf "  FAIL  MERGE_HEAD-named-ref case (fixture setup)\n"
+    FAIL=$((FAIL + 1))
+    rm -rf "$_nm_tmp"
+else
+    _nm_in=$(make_hook_input_cwd "git commit --allow-empty -m ordinary" "$_nm_tmp")
+    _nm_out=$(printf '%s' "$_nm_in" | bash "$GATE_SCRIPT" 2>/dev/null || true)
+    if echo "$_nm_out" | grep -q 'Empty-diff merge commit refused' 2>/dev/null; then
+        printf "  FAIL  a ref merely NAMED MERGE_HEAD was misread as an active merge\n    output: %s\n" "$_nm_out"
+        FAIL=$((FAIL + 1))
+    elif ! echo "$_nm_out" | grep -q 'Code review required before committing' 2>/dev/null; then
+        # Absence of the #782 string is not on its own evidence of anything: a
+        # hook that crashed, or was never reached, prints nothing and would sail
+        # through a purely negative assertion. Pin the ORDINARY refusal too, so
+        # the case only passes when the gate actually ran and took the normal
+        # unreviewed-changes path.
+        printf "  FAIL  gate did not reach the ordinary review path (crashed or silent)\n    output: %s\n" "$_nm_out"
+        FAIL=$((FAIL + 1))
+    else
+        printf "  PASS  a ref named MERGE_HEAD is not mistaken for merge state\n"
+        PASS=$((PASS + 1))
+    fi
+    rm -rf "$_nm_tmp"
+fi
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [[ "$FAIL" -gt 0 ]]; then

@@ -259,6 +259,23 @@ fi
 [ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
 REPO_DIR="$GATE_REPO_DIR"
 
+# ── Is a merge actually in progress? ──────────────────────────────────
+# NOT `git rev-parse MERGE_HEAD`: that is revision-name resolution, and it
+# happily resolves an ordinary branch or tag NAMED `MERGE_HEAD` when no merge
+# is running (reproduced: exit 0 on a repo with `git branch MERGE_HEAD`).
+# Both reviewers on PR #841 caught the same misread — Codex reproduced an
+# ordinary `git commit --allow-empty` being refused as a merge despite a valid
+# marker, and the amend auto-pass below being disabled outright. Test the
+# pseudoref FILE instead. `--git-path` is what makes this worktree-correct: it
+# resolves to `.git/worktrees/<name>/MERGE_HEAD` in a linked worktree, where a
+# hardcoded `.git/MERGE_HEAD` would look in the wrong place. The subshell `cd`
+# is load-bearing too — `--git-path` returns a path relative to the repo in a
+# plain checkout and an absolute one in a worktree, and cd'ing first makes both
+# resolve correctly.
+gate_merge_in_progress() {
+    ( cd "$1" 2>/dev/null && [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] )
+}
+
 # ── --amend with no staged changes auto-pass ──────────────────────────
 # A `git commit --amend` with no staged changes is a commit-message-only
 # rewrite — the resulting commit has the same tree as HEAD, which already
@@ -294,7 +311,7 @@ REPO_DIR="$GATE_REPO_DIR"
 # This is the same soft-spot as `git commit -a` and chained
 # `git add && git commit` (see "ACCEPTED RISK" block below). Not a new
 # class of risk — the existing risk model accepts it.
-if [ "$IS_AMEND" = "1" ] && ! git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
+if [ "$IS_AMEND" = "1" ] && ! gate_merge_in_progress "$REPO_DIR"; then
     if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
         # --amend with empty staged diff → commit-message-only rewrite
         # No new content to review; allow.
@@ -550,7 +567,7 @@ fi
 # at the top of this file (#576), which already covers every git call. Carry
 # the flag anyway so the two commands read identically — #576 happened
 # because a comment asking for that agreement was not itself enforcement.
-if git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
+if gate_merge_in_progress "$REPO_DIR"; then
     if git -C "$REPO_DIR" --no-replace-objects diff --cached --quiet --no-ext-diff \
         --no-textconv --ignore-submodules=none HEAD 2>/dev/null; then
         rm -f "$REPO_DIR/$STATE_DIR/litmus-passed.local" 2>/dev/null || true

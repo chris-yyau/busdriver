@@ -1863,7 +1863,11 @@ else
   # when conflicts are resolved by keeping our code. Empty tree alone is
   # not enough (#782): `git merge -s ours <unreviewed>` keeps our tree
   # while still adding the other side as a parent.
-  if git rev-parse MERGE_HEAD >/dev/null 2>&1; then
+  # The pseudoref FILE, not `git rev-parse MERGE_HEAD` — the latter resolves an
+  # ordinary branch/tag named `MERGE_HEAD` and would report a merge that is not
+  # running (PR #841, Codex: same misread as the gate's, reached here as a false
+  # setup_error). `--git-path` keeps it correct inside a linked worktree.
+  if [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
     # Same flag pinning as the pre-commit gate's probe: `diff.ignoreSubmodules=all`
     # (repo-controlled) hides a staged gitlink change, and ext-diff / textconv
     # drivers collapse content, either of which would misread a real resolution

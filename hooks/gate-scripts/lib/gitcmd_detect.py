@@ -4248,16 +4248,22 @@ def _zero_old_ops_from_argv(argv):
                             # runtime, and swallowing it as a tracking value
                             # dropped the whole operation. Leaving it unconsumed
                             # hands it to the unresolvable-operand check above,
-                            # which fails closed. Only where the operand is
-                            # OPTIONAL: `--orphan` requires a branch name, so
-                            # what follows it is a name however it is spelled.
+                            # which fails closed.
                             if not (nxt.startswith("-")
-                                    or (a in ("--track", "-t")
-                                        and (_may_be_substitution(nxt)
-                                             or _word_may_split(nxt, nxt)))):
+                                    or _may_be_substitution(nxt)
+                                    or _word_may_split(nxt, nxt)):
                                 i += 2
                                 continue
                         else:
+                            # A REQUIRED operand is no safer: `--conflict
+                            # $STYLE` with STYLE='merge -Bmain' supplies the
+                            # style AND a force-create. Requiring an operand
+                            # says how many words git wants, not how many words
+                            # the shell will hand it.
+                            if (_may_be_substitution(nxt)
+                                    or _word_may_split(nxt, nxt)):
+                                yield ("force", "")
+                                return
                             i += 2
                             continue
                     i += 1
@@ -4502,6 +4508,15 @@ def _zero_old_ops_from_argv(argv):
                         i += 1
                         continue
                     if i + 1 < len(rest):
+                        # Same reason-expansion hazard as update-ref's: with
+                        # MSG='reason refs/heads/main', `symbolic-ref -qm $MSG
+                        # refs/heads/unreviewed` grows a second operand and
+                        # becomes a WRITE replacing main, while this handler
+                        # skipped the reason and saw a one-operand read.
+                        if (_may_be_substitution(rest[i + 1])
+                                or _word_may_split(rest[i + 1], rest[i + 1])):
+                            yield ("force", "")
+                            return
                         i += 2
                         continue
                     i += 1

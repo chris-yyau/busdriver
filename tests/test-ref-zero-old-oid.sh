@@ -845,6 +845,16 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # ...and the FALLBACK must know --deref is a ref-writer boolean, or
            # the HEAD after it is not read as the ref.
            'G=git; S=update-ref; "$G" "$S" --deref HEAD unreviewed',
+           # ...and a REQUIRED operand is no safer than an optional one:
+           # requiring one says how many words git wants, not how many the
+           # shell will hand it. `--conflict $STYLE` with STYLE='merge -Bmain'
+           # supplies the style AND a force-create, and `--orphan "$NAME"` is
+           # the same shape.
+           'git checkout --conflict $STYLE unreviewed',
+           'git checkout --orphan "$NAME"',
+           # ...and symbolic-ref has its own clustered -m handler, where the
+           # reason expanding to a second operand turns a READ into a write.
+           'git symbolic-ref -qm $MSG refs/heads/unreviewed',
            # ...and a dashed worktree is asked for anywhere, not only in the
            # candidate slot a wrapper operand takes first.
            'printf x | xargs -I "$TOKEN" -t git-worktree add -Btrunk /tmp/wt unreviewed',
@@ -912,10 +922,11 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # for nothing: it names no executable in this command.
            'OTHER=git-switch curl "$URL" -C100',
            'OTHER=git-checkout cmake "$SOURCE" -Boutput',
-           # ...while `--orphan` REQUIRES a branch name, so what follows it is
-           # a name however it is spelled, and `-t` still takes a real one.
-           'git checkout --orphan "$NAME"',
+           # ...while `-t` still takes a real operand, and an attached or
+           # literal option value is read as itself.
            'git checkout -t origin/main',
+           'git checkout --conflict=diff3 main',
+           'git checkout --conflict merge main',
            'git switch -t origin/topic',
            # ...while a LITERAL reason still takes its operand, and a fully
            # specified CAS is still the way past this gate.

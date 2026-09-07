@@ -4759,7 +4759,7 @@ def _finalize_zero_old_ops(found, repo_dir, hook_cwd=""):
             out.append(item)
     return out
 _ZERO_OLD_PRINT_ONLY = frozenset(('echo', 'printf'))
-_ZERO_OLD_LONG_FORCE = ('--force', '--delete')
+_ZERO_OLD_LONG_FORCE = ('--force', '--delete', '--force-create')
 _ZERO_OLD_LONG_MOVE = ('--move', '--copy')
 # Letters git actually defines as SHORT options across the ref-writing
 # subcommands (branch / checkout / switch / worktree / update-ref). A cluster
@@ -4769,7 +4769,7 @@ _ZERO_OLD_LONG_MOVE = ('--move', '--copy')
 _ZERO_OLD_CLUSTER_ALPHA = frozenset('abBcCdDfilmMpqrtuvz23')
 _ZERO_OLD_FORCE_LETTERS = 'fdDBC'
 _ZERO_OLD_MOVE_LETTERS = 'mM'
-def _zero_old_force_tok(tok, strong=False):
+def _zero_old_force_tok(tok, strong=False, attached=False):
     """True if this token spells a ref-writing flag.
 
     `-d` is here beside `-D`: the unforced delete removes the ref just as the
@@ -4797,12 +4797,24 @@ def _zero_old_force_tok(tok, strong=False):
         return False
     if tok.startswith('--'):
         opts = _ZERO_OLD_LONG_FORCE if strong else _ZERO_OLD_LONG_FORCE + _ZERO_OLD_LONG_MOVE
-        return any(o.startswith(tok) for o in opts)
+        # `--force-create=main` carries its VALUE attached, and the prefix
+        # relation cannot see past it: `--force-create`.startswith of the whole
+        # token is False, so the flag read as unknown and the write vanished.
+        return any(o.startswith(tok.split('=', 1)[0]) for o in opts)
     body = tok[1:]
-    if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
-        return False
     letters = _ZERO_OLD_FORCE_LETTERS if strong else (
         _ZERO_OLD_FORCE_LETTERS + _ZERO_OLD_MOVE_LETTERS)
+    # A short option can carry its value attached (`checkout -Bmain`), which
+    # the cluster test rejects: the branch name spends letters outside the
+    # cluster alphabet. `attached` is OPT-IN because the shape is not git's
+    # alone -- `cmake -Bbuild` and `curl -C100` spell it identically, and no
+    # token test can separate them. Callers pass it only where the executable
+    # is KNOWN to be git and the subcommand was read; the arms that guess at an
+    # unreadable executable must not, or an ordinary build reads as a force.
+    if attached and len(body) > 1 and body[0] in 'BC' and body[0] in letters:
+        return True
+    if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
+        return False
     return any(c in letters for c in body)
 def _zero_old_only_prefix(toks):
     """True if every token is a command PREFIX, never the command itself.
@@ -4967,7 +4979,15 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # -name branch` as a force (single-dash long options are not
                 # clusters), and a real clustered rename spells `-M` or carries
                 # an `f` the cluster scan already catches.
-                _fi = any(_zero_old_force_tok(t) for t in toks)
+                # ...and `attached` is spent only when the candidate is
+                # LITERALLY git. A resolved subcommand is not enough: `_sub_i`
+                # matches any operand that merely spells one, so
+                # `curl "$URL" -C100 --output branch` named a subcommand it
+                # never ran and read `-C100` as a force. Behind a substituted
+                # executable the shape is genuinely ambiguous, so it is dropped
+                # rather than guessed.
+                _fi = any(_zero_old_force_tok(t, attached=_cand_git)
+                          for t in toks)
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
                                  for t in toks[_cand_i + 1:])
@@ -4986,6 +5006,25 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 _fi_after = any(_zero_old_force_tok(t) for t in _after)
                 _fi_strong_after = any(_zero_old_force_tok(t, strong=True)
                                        for t in _after)
+                # `S=update-ref; "$G" "$S" HEAD <oid>` carries no flag and no
+                # refs/ path, yet update-ref DEREFERENCES HEAD and overwrites
+                # the checked-out branch with no old-value precondition. The
+                # operand is the write, exactly as a refs/ operand is.
+                # ...but only where a HEAD can BE the operand. `curl "$URL" -X
+                # HEAD` spends its HEAD as the VALUE of an option, and reading
+                # that as a ref write refused an ordinary HTTP request.
+                # Qualified by the NEW VALUE, not by what precedes HEAD.
+                # Asking whether the previous token looked like an option meant
+                # guessing which options take an argument, and both guesses were
+                # wrong in opposite directions: `--` is end-of-options so
+                # `"$S" -- HEAD <oid>` walked past, while `--create-reflog` is
+                # boolean so its HEAD is still the ref operand. A write carries
+                # its new oid, and an HTTP `-X HEAD` never does.
+                _oid_after = any(
+                    len(t) in (40, 64)
+                    and all(c in '0123456789abcdefABCDEF' for c in t)
+                    for t in _after)
+                _head_after = _oid_after and any(t == 'HEAD' for t in _after)
                 # A print-only builtin BEFORE the verb consumes it: `echo "$X"
                 # branch -f main HEAD` prints, and so does the same behind a
                 # wrapper whose option VALUE is the substitution (`sudo -u
@@ -5016,7 +5055,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         # spells the subcommand into the NAME, so it has no
                         # unreadable operand at all -- there the candidate
                         # itself is the unreadable part.
-                        or (_dyn_after and (_fi_after or _refs_after))
+                        or (_dyn_after
+                            and (_fi_after or _refs_after or _head_after))
                         # The candidate's own NAME can carry the subcommand
                         # (`G=git-branch; "$G" -f main <oid>`), so a dynamic
                         # candidate is an unreadable subcommand even with no
@@ -5025,7 +5065,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         # match for renames and admitting it here would refuse
                         # `"$PYTHON" -m pytest -x tests/`.
                         or (not _cand_git
-                            and (_fi_strong_after or _refs_after))):
+                            and (_fi_strong_after or _refs_after
+                                 or _head_after))):
                     raw_all.append(('force', ''))
                     if _zero_old_ambient_scope():
                         ambient_scope = True

@@ -745,6 +745,54 @@ assert git_zero_old_ref_op(
     'xargs -I{} git-xyz -f main ' + OID_A, hook_cwd=hook_cwd) == []
 # ...while a genuine dashed invocation still reads as one.
 assert git_zero_old_ref_op('env git-branch -f main ' + OID_A, hook_cwd=hook_cwd)
+# A force flag may carry its VALUE attached. `-Bmain` was rejected because the
+# branch name spends letters outside the cluster alphabet, and
+# `--force-create=main` because the prefix relation cannot see past the `=`
+# (that spelling was missing from the fallback's long set outright). Neither
+# shape supplies another write qualifier, so each reset a protected branch with
+# the gate emitting no operation at all.
+for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
+           'xargs -I{} git switch -Cmain ' + OID_A,
+           'xargs -I{} git switch --force-create=main ' + OID_A,
+           'xargs -I{} git switch --force-create main ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and that arm stays UPPER-only, which is what still holds find's lowercase
+# long options out: they open on a force letter but take no ref name.
+for _c in ('find . -delete', 'find . -depth', 'find /tmp -name branch'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# A dynamic ref writer needs neither a force flag nor a refs/ operand:
+# `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out
+# protected branch with no old-value precondition, so the HEAD operand is the
+# write. Both dynamic arms were qualified on a flag or a refs/ path alone.
+for _c in ('G=git; S=update-ref; "$G" "$S" HEAD ' + OID_A,
+           'G=git-update-ref; "$G" HEAD ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...qualified by the NEW VALUE rather than by what precedes HEAD. Asking
+# whether the previous token looked like an option meant guessing which options
+# consume an argument, and both guesses were wrong in opposite directions:
+# `--` is end-of-options, and `--create-reflog` is boolean, so in each case HEAD
+# is still the ref operand.
+for _c in ('G=git; S=update-ref; "$G" "$S" -- HEAD ' + OID_A,
+           'G=git; S=update-ref; "$G" "$S" --create-reflog HEAD ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# An HTTP HEAD carries no new oid, which is what keeps it out.
+for _c in ('curl "$URL" -X HEAD',
+           'curl -X HEAD "$URL"',
+           'wget --method HEAD "$URL"'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The attached-value spelling is not git's alone -- `cmake -Bbuild` and
+# `curl -C100` are identical in shape -- so it is recognised ONLY behind a
+# subcommand this gate resolved, never while guessing at an unreadable
+# executable. These are the shapes that read as a force when it was not.
+# An operand that merely SPELLS a subcommand does not establish the executable
+# either -- `--output branch` names no git at all -- so the spelling is spent
+# only when the candidate is literally git.
+for _c in ('cmake "$SRC" -Bbuild/release',
+           'cmake "$SRC" -DCMAKE_BUILD_TYPE=Release',
+           'cmake "$SRC" -DNDEBUG',
+           'curl "$URL" -C100',
+           'curl "$URL" -C100 --output branch'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 for _c in ('git status', 'git log --oneline -5', 'git worktree list'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 print('ok')
@@ -801,18 +849,33 @@ fi
 # The decoy has to be a REAL index: git fatals on a malformed one and never
 # writes, which would make this pin pass no matter what (measured -- the first
 # version of it did exactly that).
+# ...so a failed seed must FAIL the pin, never substitute invalid contents:
+# the `no-seed` fallback this used to take produced exactly the vacuous pass the
+# paragraph above warns about, and both fixture builds were unchecked besides.
 DECOY="$TMPROOT/decoy-index"
-( init_fixture_repo "$TMPROOT/seed" ) >/dev/null 2>&1
-cp "$TMPROOT/seed/.git/index" "$DECOY" 2>/dev/null || printf 'no-seed' > "$DECOY"
-DECOY_BEFORE=$(shasum -a 256 < "$DECOY")
-( export GIT_INDEX_FILE="$DECOY"; init_fixture_repo "$TMPROOT/scoped" ) >/dev/null 2>&1
-DECOY_AFTER=$(shasum -a 256 < "$DECOY")
-if [ "$DECOY_BEFORE" = "$DECOY_AFTER" ]; then
-    printf "  PASS  fixture setup ignores an inherited GIT_INDEX_FILE\n"
-    PASS=$((PASS + 1))
-else
-    printf "  FAIL  fixture setup wrote through inherited GIT_INDEX_FILE\n"
+if ! ( init_fixture_repo "$TMPROOT/seed" ) >/dev/null 2>&1 \
+   || ! cp "$TMPROOT/seed/.git/index" "$DECOY" 2>/dev/null; then
+    printf "  FAIL  no real decoy index; the inherited-index pin would be vacuous\n"
     FAIL=$((FAIL + 1))
+else
+    # Baseline BEFORE the scoped build, and exactly ONE scoped build: measuring
+    # after a first run would let a broken clear write the decoy twice with the
+    # same contents and compare equal, which is the vacuity this pin is about.
+    DECOY_BEFORE=$(shasum -a 256 < "$DECOY")
+    if ! ( export GIT_INDEX_FILE="$DECOY"; init_fixture_repo "$TMPROOT/scoped" ) \
+         >/dev/null 2>&1; then
+        printf "  FAIL  scoped fixture init failed; the inherited-index pin is vacuous\n"
+        FAIL=$((FAIL + 1))
+    else
+        DECOY_AFTER=$(shasum -a 256 < "$DECOY")
+        if [ "$DECOY_BEFORE" = "$DECOY_AFTER" ]; then
+            printf "  PASS  fixture setup ignores an inherited GIT_INDEX_FILE\n"
+            PASS=$((PASS + 1))
+        else
+            printf "  FAIL  fixture setup wrote through inherited GIT_INDEX_FILE\n"
+            FAIL=$((FAIL + 1))
+        fi
+    fi
 fi
 
 # ...and the clear has to cover the PARENT shell, not only the helper. Both

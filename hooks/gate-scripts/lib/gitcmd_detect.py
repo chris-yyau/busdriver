@@ -5256,10 +5256,18 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # -Btrunk` lost its attached force. Neither reading can be
                 # correct alone, and blocking when EITHER sees a write needs no
                 # choice between them.
+                # Started from the candidate AND from every literal `git`,
+                # for the same reason `_pair` is: a wrapper option can stand
+                # between the candidate and the executable that really runs.
                 _cglob = set()
-                _attach_glob = _zero_old_vouching_verb(
-                    toks[_cand_i + 1:], _cglob, shorts=True) in _ZERO_OLD_SUBS
-                _cglob = {_cand_i + 1 + k for k in _cglob}
+                _attach_glob = False
+                for _b in [_cand_i] + [k for k, t in enumerate(toks)
+                                       if _is_exe(t, 'git')]:
+                    _seen = set()
+                    if _zero_old_vouching_verb(toks[_b + 1:], _seen,
+                                               shorts=True) in _ZERO_OLD_SUBS:
+                        _attach_glob = True
+                        _cglob |= {_b + 1 + k for k in _seen}
                 _fi = any(_zero_old_force_tok(t, attached=_attach_ok,
                                               sub=_sub_word)
                           for t in toks) or (

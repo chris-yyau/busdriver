@@ -821,6 +821,9 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # sees a write -- the pins just below are what each reading alone
            # gets wrong.
            'G=git; "$G" -C. checkout -Btrunk unreviewed',
+           # ...and that second reading starts from every literal git too, or
+           # it does not compose with a wrapper option before the executable.
+           'TOKEN={}; xargs -I "$TOKEN" -t git -C. checkout -Btrunk unreviewed',
            # ...and a `-C` on a dashed writer is ITS force option, never git's
            # `-C <dir>` global -- including when the start-point operand after
            # it happens to spell a subcommand.
@@ -880,8 +883,21 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # is the common spelling for one, so what follows is the OTHER
            # command's argument and not this writer's force flag.
            'curl "$URL" --output git-checkout --url -Boutput',
-           'curl "$URL" -o git-checkout --url -Boutput'):
-# RESIDUAL, deliberate and measured: the adjacency walk crosses the writer's
+           'curl "$URL" -o git-checkout --url -Boutput',
+           # ...and an assignment that merely CARRIES a git-shaped word vouches
+           # for nothing: it names no executable in this command.
+           'OTHER=git-switch curl "$URL" -C100',
+           'OTHER=git-checkout cmake "$SOURCE" -Boutput'):
+# RESIDUAL 2, measured: `G=git-switch; "$G" -Cproduction <oid>` is not read.
+# The subcommand is named only by an ASSIGNMENT in an EARLIER segment, and this
+# arm sees one segment at a time; a scan for any assignment in THIS segment is
+# not the same thing and blocked ordinary commands that merely carried one
+# (`OTHER=git-switch curl "$URL" -C100`). Resolving it needs the assignment's
+# variable NAME matched to the substitution, across segments, which is a
+# different machine from this arm. Note the `-C main` spelling IS caught: the
+# separate value leaves a bare force letter that the plain cluster test reads.
+#
+# RESIDUAL 1, deliberate and measured: the adjacency walk crosses the writer's
 # own SHORT clusters but not its LONG flags, so `git-checkout --quiet -Btrunk`
 # behind a wrapper whose flag also stops the vouching walk is not recognised.
 # Widening the walk to long options read `curl "$URL" -o git-checkout --url

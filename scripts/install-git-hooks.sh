@@ -168,17 +168,53 @@ if got!=sys.argv[2]:
 # aimed at tracked content (.githooks/, say) would let hostile branch content
 # replace the wrapper before pre-merge-commit or reference-transaction runs, so
 # the embedded digest check would never execute at all. Inside the git dir is
-# safe (git never lands tree content there); wholly outside the work tree is
-# safe. Inside the work tree but outside the git dir is the bypass.
-GIT_DIR_ABS=$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null) || GIT_DIR_ABS=""
+# safe (git never lands tree content there); outside EVERY work tree of the
+# repository is safe. Inside any of them but outside the git dir is the bypass.
+# The git COMMON dir, not this work tree's private one. From a linked work tree
+# `--absolute-git-dir` is .git/worktrees/<name>, which does not contain the
+# shared .git/hooks, so the ordinary destination would be refused as "inside a
+# work tree, outside the git dir". The common dir contains both, and git lands
+# no tree content anywhere beneath it, so widening the exemption to it is exact.
+GIT_DIR_ABS=$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null) || GIT_DIR_ABS=""
 if [[ -z "$GIT_DIR_ABS" ]]; then
     printf 'install-git-hooks: cannot resolve the git directory for %s\n' "$REPO_ROOT" >&2
     exit 1
 fi
+# --git-common-dir answers relatively from a main work tree; resolve against the
+# repo root rather than the CWD, which is not necessarily either.
+case "$GIT_DIR_ABS" in /*) ;; *) GIT_DIR_ABS="$REPO_ROOT/$GIT_DIR_ABS" ;; esac
+# EVERY work tree of this repository, not just the one being installed from.
+# Linked work trees A and B share one object store and one set of tracked paths,
+# so an absolute core.hooksPath aimed at A/.githooks is OUTSIDE B and clears a
+# single-work-tree check -- while the wrappers it installs still run in A, where
+# A's own merge replaces them before their digest check ever executes. That is
+# exactly the wrapper-replacement bypass this block exists to refuse, reached one
+# work tree over. Enumeration failing is unresolvable input, so it blocks.
+# NUL-delimited, because git emits work-tree paths VERBATIM: a path containing a
+# newline splits into fragments under the plain --porcelain form, its true root
+# never enters the list, and an external symlink aimed into that sibling then
+# carries a newline-free core.hooksPath straight past in_wt(). -z terminates each
+# attribute line with NUL instead, so the path survives whatever it contains.
+# Older git without -z writes nothing here and the enumeration is empty, which
+# blocks below -- unresolvable input is the failure case, not the happy path.
+WT_ROOTS=()
+while IFS= read -r -d "" _rec; do
+    [[ "$_rec" == worktree\ * ]] && WT_ROOTS+=("${_rec#worktree }")
+done < <(git -C "$REPO_ROOT" worktree list --porcelain -z 2>/dev/null)
+if [[ "${#WT_ROOTS[@]}" -eq 0 ]]; then
+    printf 'install-git-hooks: cannot enumerate the work trees of %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
+# Union, not replacement: `git worktree list` reports the REGISTERED roots, and a
+# GIT_WORK_TREE override relocates the active one without registering it there --
+# --show-toplevel then names a root the enumeration omits entirely. Adding it back
+# can only widen what counts as work-tree content, never narrow it.
+WT_ROOTS+=("$WT_ROOT")
 python3 -I -S -c '
 import os,sys
-raw,wt,gd=sys.argv[1:4]
-wt,gd=os.path.realpath(wt),os.path.realpath(gd)
+raw,gd=sys.argv[1],sys.argv[2]
+gd=os.path.realpath(gd)
+wts=[os.path.realpath(w) for w in sys.argv[3:]]
 def key(p):
     try:
         st=os.stat(p)
@@ -204,7 +240,20 @@ def inside(child,parent):
             return False
         c=nxt
 def bad(path):
-    return inside(path,wt) and not inside(path,gd)
+    # Inside a work tree is where a merge can replace content, so that is the
+    # hazard; being inside the git dir is the exemption, because git lands no
+    # tree content there. Which of the two ENCLOSES the other decides it, and
+    # both nestings occur. Ordinary and linked layouts put the git dir inside
+    # the work tree (/repo/.git under /repo), so /repo/.git/hooks is exempt.
+    # But a work tree may equally sit UNDER the common dir (/repo.git/main with
+    # common dir /repo.git), and there main/.githooks is tracked content that a
+    # merge rewrites -- while a bare `inside(path,gd)` would exempt it. So the
+    # exemption is only granted by a work tree that actually contains the git
+    # dir; for any other, containment alone condemns the path.
+    return any(
+        inside(path,w) and not (inside(path,gd) and inside(gd,w))
+        for w in wts
+    )
 # Walk the path one component at a time, each against a REALPATH-resolved
 # parent. Resolving the whole path in one go is not enough: an in-worktree
 # symlink (.githooks -> /somewhere/outside) resolves outside and would pass,
@@ -241,7 +290,7 @@ for i,part in enumerate(parts):
     # digest-pinned ones, before any gate can object. Where it points must not
     # excuse where it lives. A link that lives INSIDE the git dir is not
     # tracked content and stays allowed.
-    if os.path.islink(cand) and inside(cur,wt) and not inside(cur,gd):
+    if os.path.islink(cand) and bad(cur):
         escape=True
         break
     if (last or not inside(gd,cand)) and bad(cand):
@@ -260,7 +309,7 @@ if escape:
     sys.stderr.write("  it to use the default hooks directory inside .git.\n")
     raise SystemExit(1)
 raise SystemExit(0)
-' "$HOOK_DIR" "$WT_ROOT" "$GIT_DIR_ABS" || exit 1
+' "$HOOK_DIR" "$GIT_DIR_ABS" "${WT_ROOTS[@]}" || exit 1
 
 GATE_DIR="$PLUGIN_ROOT/hooks/gate-scripts"
 GATE_DIGEST=$(python3 -I -S -c "$GATE_DIGEST_PY" "$GATE_DIR") || {

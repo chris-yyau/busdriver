@@ -739,5 +739,113 @@ unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
 
+# 15. Containment must consider EVERY work tree, not just the one installed from.
+# Linked work trees share one object store, one config and one set of tracked
+# paths, so an absolute core.hooksPath aimed at A/.githooks is outside B and used
+# to clear a single-work-tree check -- while the wrappers it installs still run
+# in A, where A's own merge replaces them before their digest check executes.
+LWT="$WORK/lwt"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$LWT/A"
+git -C "$LWT/A" config commit.gpgsign false
+git -C "$LWT/A" config user.email t@t
+git -C "$LWT/A" config user.name t
+: > "$LWT/A/a"
+git -C "$LWT/A" add a
+git -C "$LWT/A" commit -q -m A
+git -C "$LWT/A" worktree add -q -b other "$LWT/B"
+mkdir -p "$LWT/A/.githooks"
+# One shared config: setting it from B aims it at A's tracked directory.
+git -C "$LWT/B" config core.hooksPath "$LWT/A/.githooks"
+lwt_err=$(bash "$PR/scripts/install-git-hooks.sh" "$LWT/B" 2>&1)
+assert "a hooksPath inside a SIBLING work tree is refused" "1" "$?"
+assert "the sibling refusal is the containment message, not a crash" "yes" \
+    "$([[ "$lwt_err" == *"inside the work tree"* && "$lwt_err" != *Traceback* ]] && echo yes || echo no)"
+assert "nothing was written into the sibling work tree" "0" \
+    "$(find "$LWT/A/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+# The refusal must not be blanket: installing from a LINKED work tree into the
+# shared hooks directory is the ordinary case and must still succeed. It only
+# does if the git-dir exemption is the COMMON dir -- a linked work tree's own
+# --absolute-git-dir is .git/worktrees/<name>, which does not contain it.
+git -C "$LWT/B" config --unset core.hooksPath
+bash "$PR/scripts/install-git-hooks.sh" "$LWT/B" >/dev/null 2>&1
+assert "installing from a linked work tree into the shared hooks dir succeeds" "0" "$?"
+assert "the shared hooks directory actually received the wrapper" "yes" \
+    "$([[ -f "$(git -C "$LWT/B" rev-parse --path-format=absolute --git-path hooks)/reference-transaction" ]] && echo yes || echo no)"
+# ...and a sibling whose PATH CONTAINS A NEWLINE must still be covered. git emits
+# work-tree paths verbatim, so the newline-delimited --porcelain form splits this
+# root into fragments and drops it from the list entirely; an external symlink
+# aimed into it then carries a newline-free core.hooksPath past containment.
+LWN="$WORK/lwn"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git init -q "$LWN/A"
+git -C "$LWN/A" config commit.gpgsign false
+git -C "$LWN/A" config user.email t@t
+git -C "$LWN/A" config user.name t
+: > "$LWN/A/a"
+git -C "$LWN/A" add a
+git -C "$LWN/A" commit -q -m A
+_nl=$'\n'
+_wtnl="$LWN/we${_nl}ird"
+if git -C "$LWN/A" worktree add -q -b nlbranch "$_wtnl" 2>/dev/null; then
+    mkdir -p "$_wtnl/.githooks"
+    # A newline-free route INTO that sibling, so the hooksPath value itself is
+    # unremarkable and only the enumeration decides the outcome.
+    ln -s "$_wtnl/.githooks" "$LWN/link"
+    git -C "$LWN/A" config core.hooksPath "$LWN/link"
+    bash "$PR/scripts/install-git-hooks.sh" "$LWN/A" >/dev/null 2>&1
+    assert "a sibling work tree whose path contains a newline is still covered" "1" "$?"
+    assert "no wrapper was written into the newline-path sibling" "0" \
+        "$(find "$_wtnl/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+else
+    printf '  SKIP  filesystem or git rejects a newline in a work-tree path\n'
+fi
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
+# 16. A work tree nested UNDER the common dir is still work-tree content. The
+# git-dir exemption exists because git lands no tree content there -- untrue when
+# a work tree sits inside it, where .githooks is exactly the replaceable content
+# the check refuses everywhere else.
+NEST="$WORK/nest"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+mkdir -p "$NEST"
+git init -q --bare "$NEST/repo.git"
+git -C "$NEST/repo.git" config commit.gpgsign false
+git -C "$NEST/repo.git" config user.email t@t
+git -C "$NEST/repo.git" config user.name t
+git -C "$NEST/repo.git" worktree add -q "$NEST/repo.git/main" 2>/dev/null \
+    || git -C "$NEST/repo.git" worktree add -q --detach "$NEST/repo.git/main" 2>/dev/null
+if [[ -d "$NEST/repo.git/main" ]]; then
+    mkdir -p "$NEST/repo.git/main/.githooks"
+    git -C "$NEST/repo.git/main" config core.hooksPath "$NEST/repo.git/main/.githooks"
+    bash "$PR/scripts/install-git-hooks.sh" "$NEST/repo.git/main" >/dev/null 2>&1
+    assert "a work tree nested under the common dir is not exempted by it" "1" "$?"
+    assert "nothing was written into the nested work tree" "0" \
+        "$(find "$NEST/repo.git/main/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+else
+    printf '  SKIP  could not create a work tree under the common dir\n'
+fi
+
+# 17. GIT_WORK_TREE relocates the ACTIVE work tree without registering it, so
+# `git worktree list` omits the very root --show-toplevel reports. Enumeration
+# alone would drop it and let a merge replace the wrappers installed there.
+GWT="$WORK/gwt"
+mkdir -p "$GWT/tree/.githooks"
+git init -q --bare "$GWT/repo.git"
+git -C "$GWT/repo.git" config commit.gpgsign false
+(
+    export GIT_DIR="$GWT/repo.git" GIT_WORK_TREE="$GWT/tree"
+    git config core.hooksPath "$GWT/tree/.githooks"
+    bash "$PR/scripts/install-git-hooks.sh" "$GWT/tree" >/dev/null 2>&1
+    exit $?
+)
+assert "a GIT_WORK_TREE-overridden root still counts as a work tree" "1" "$?"
+assert "nothing was written into the overridden work tree" "0" \
+    "$(find "$GWT/tree/.githooks" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
 printf '\nResults: %d/%d passed\n' "$PASS" "$((PASS + FAIL))"
 [[ "$FAIL" -eq 0 ]]

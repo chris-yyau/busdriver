@@ -775,6 +775,20 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'G=git-update-ref; "$G" -mreason HEAD unreviewed',
            # ...while the vouching verb is found past git's OWN globals only.
            'G=git; "$G" --no-pager checkout -Bmain unreviewed',
+           # ...and the two compose: the candidate is a wrapper's operand AND
+           # a git global stands between the executable and its verb.
+           'TOKEN={}; xargs -I "$TOKEN" git --no-pager checkout -Bmain unreviewed',
+           # ...and a second WRAPPER option between them stops the walk from
+           # the candidate, so the walk from the literal git is asked as well.
+           'TOKEN={}; xargs -I "$TOKEN" -t git checkout -Bproduction unreviewed',
+           'TOKEN={}; xargs -I "$TOKEN" -t git switch -Cproduction unreviewed',
+           # ...and a delete flag spent before an attached reason survives, as
+           # it already does on the direct update-ref path.
+           'G=git; S=update-ref; "$G" "$S" -dmreason HEAD',
+           # ...while `-mf` under an unreadable verb is a forced RENAME, whose
+           # remainder is still all flags, so the same letter must be read both
+           # ways from the token alone.
+           'G=git; S=branch; "$G" "$S" -mf main other',
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c

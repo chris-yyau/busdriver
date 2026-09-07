@@ -4788,6 +4788,12 @@ _ZERO_OLD_VALUE_SHORT_BY_SUB = {
     # `branch -qtvf main <oid>` -- a shape already pinned before this change.
     'branch': 'u',
     'worktree': 'b',
+    # update-ref's reason. It is also the default for an UNREADABLE verb: a
+    # `-dmreason` cluster spends its delete flag before the message, and
+    # letting the message's letters fail the alphabet test dropped the delete.
+    # The named subcommands keep their own sets, where `-m` is a move rather
+    # than a message.
+    'update-ref': 'm',
 }
 # Options of the ref-WRITING commands that take no value, so a HEAD after one
 # is still the ref operand. Naming them is what separates `update-ref
@@ -4832,6 +4838,12 @@ def _zero_old_vouching_verb(after):
     i = 0
     while i < len(after):
         t = after[i]
+        # The executable itself may sit here when the CANDIDATE was a wrapper's
+        # operand: in `xargs -I "$TOKEN" git --no-pager checkout ...` the
+        # replacement string is the candidate and `git` follows it.
+        if _is_exe(t, 'git'):
+            i += 1
+            continue
         if t in _GIT_VALUE_OPTS:
             i += 2
             continue
@@ -4869,7 +4881,18 @@ def _zero_old_cluster_head(body, sub=''):
     `checkout -bBC` spends `BC` as the new branch's name, so scanning the whole
     token for a force letter refused an ordinary creation even though
     `_zero_old_bc_index` had already said the capitals were not flags."""
-    owners = _ZERO_OLD_VALUE_SHORT_BY_SUB.get(sub, '')
+    owners = _ZERO_OLD_VALUE_SHORT_BY_SUB.get(sub)
+    if owners is None:
+        # An unreadable verb cannot say whether `-m` is a message or a move, so
+        # the TOKEN says it: a message spends characters no cluster could hold,
+        # while `-mf` is a forced rename whose remainder is still all flags.
+        # Owning it unconditionally dropped that force; owning it never dropped
+        # the delete in `-dmreason`.
+        for i, ch in enumerate(body):
+            if ch == 'm' and body[i + 1:] and any(
+                    c not in _ZERO_OLD_CLUSTER_ALPHA for c in body[i + 1:]):
+                return body[:i]
+        return body
     for i, ch in enumerate(body):
         if ch in owners:
             return body[:i]
@@ -5109,9 +5132,14 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # because the candidate is whatever came first: in
                 # `xargs -I "$TOKEN" git checkout -Bmain <rev>` the replacement
                 # STRING is the candidate and the real executable follows it.
-                _pair = any(_is_exe(t, 'git') and j + 1 < len(toks)
-                            and toks[j + 1] in _ZERO_OLD_SUBS
-                            for j, t in enumerate(toks))
+                # ...asked from the candidate AND from every literal `git`
+                # in the segment: a second wrapper option can sit between them
+                # (`xargs -I "$TOKEN" -t git checkout -B...`), which stops the
+                # walk from the candidate but not the one from git itself.
+                _pair = any(
+                    _is_exe(t, 'git')
+                    and _zero_old_vouching_verb(toks[j + 1:]) in _ZERO_OLD_SUBS
+                    for j, t in enumerate(toks))
                 _attach_ok = (
                     _cand_git or _cand_dashed is not None or _pair
                     or _zero_old_vouching_verb(toks[_cand_i + 1:])

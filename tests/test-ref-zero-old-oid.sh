@@ -770,6 +770,11 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'G=git-update-ref; "$G" --create-reflog HEAD ' + OID_A,
            'G=git-update-ref; "$G" -- HEAD ' + OID_A,
            'G=git-update-ref; "$G" -m reason HEAD ' + OID_A,
+           # ...and a short option carrying its value ATTACHED consumes nothing
+           # further, so HEAD after it is still the ref.
+           'G=git-update-ref; "$G" -mreason HEAD unreviewed',
+           # ...while the vouching verb is found past git's OWN globals only.
+           'G=git; "$G" --no-pager checkout -Bmain unreviewed',
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
@@ -819,7 +824,11 @@ for _c in ('curl "$URL" -X HEAD',
            'G=git; "$G" diff HEAD "$BRANCH"',
            'G=git; "$G" rev-parse HEAD "$BRANCH"',
            'curl "$URL" -H "$HEADER" -X HEAD -o /tmp/headers',
-           'curl "$URL" -H "$H2" -X HEAD -o out.txt'):
+           'curl "$URL" -H "$H2" -X HEAD -o out.txt',
+           # ...and a CLUSTER whose last letter takes the next token is not an
+           # attached value, however long the token is.
+           'curl "$URL" -sX HEAD -o /tmp/headers',
+           'curl "$URL" -fsSX HEAD -o out.txt'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # The attached-value spelling is not git's alone -- `cmake -Bbuild` and
 # `curl -C100` are identical in shape -- so it is recognised ONLY behind a

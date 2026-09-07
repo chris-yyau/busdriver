@@ -4815,6 +4815,35 @@ def _zero_old_bc_index(body, sub=''):
     return -1
 
 
+# git's OWN value-less global options. Enumerated because the walk past them
+# must not double as a walk past another tool's options: `curl "$URL" -C100
+# --output branch` would otherwise offer `branch` as a vouching verb.
+_ZERO_OLD_GIT_GLOBAL_BOOL = frozenset({
+    '--no-pager', '--paginate', '-P', '--bare', '--literal-pathspecs',
+    '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+    '--no-replace-objects', '--no-optional-locks',
+})
+
+
+def _zero_old_vouching_verb(after):
+    """The subcommand standing after git's own globals, or '' if something else
+    intervenes. An unknown option stops the walk: it is not git's, so whatever
+    follows is not git's verb either."""
+    i = 0
+    while i < len(after):
+        t = after[i]
+        if t in _GIT_VALUE_OPTS:
+            i += 2
+            continue
+        if t in _ZERO_OLD_GIT_GLOBAL_BOOL:
+            i += 1
+            continue
+        if t.startswith('-'):
+            return ''
+        return t
+    return ''
+
+
 def _zero_old_operand_lead(before):
     """True if nothing before HEAD is a bare OPERAND -- only options and the
     values they consume.
@@ -5083,9 +5112,10 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 _pair = any(_is_exe(t, 'git') and j + 1 < len(toks)
                             and toks[j + 1] in _ZERO_OLD_SUBS
                             for j, t in enumerate(toks))
-                _attach_ok = (_cand_git or _cand_dashed is not None or _pair
-                              or (bool(toks[_cand_i + 1:])
-                                  and toks[_cand_i + 1] in _ZERO_OLD_SUBS))
+                _attach_ok = (
+                    _cand_git or _cand_dashed is not None or _pair
+                    or _zero_old_vouching_verb(toks[_cand_i + 1:])
+                    in _ZERO_OLD_SUBS)
                 _fi = any(_zero_old_force_tok(t, attached=_attach_ok,
                                               sub=_sub_word)
                           for t in toks)
@@ -5178,7 +5208,16 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                          or not i
                          or not _after[i - 1].startswith('-')
                          or _after[i - 1] == '--'
-                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS)]
+                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS
+                         # `-mreason` carries update-ref's reason ATTACHED and
+                         # so consumes nothing further, leaving HEAD an
+                         # operand. Length alone does not say that -- `-sX` is
+                         # a cluster whose last letter takes the NEXT token,
+                         # and reading it as attached refused an ordinary
+                         # `curl -sX HEAD` -- so the letter is named.
+                         or (not _after[i - 1].startswith('--')
+                             and len(_after[i - 1]) > 2
+                             and _after[i - 1][1] == 'm'))]
                 _head_write = bool(_head_idxs)
                 # In the arm that has only an unreadable EXECUTABLE to go on,
                 # HEAD must LEAD the operands -- which is where a dashed writer

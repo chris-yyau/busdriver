@@ -4833,13 +4833,18 @@ def _zero_old_ref_bool_opt(tok):
 def _zero_old_dashed_adjacent(toks, j):
     """True if `toks[j]` is a dashed ref writer wearing its own force option.
 
-    The force option need not be the very next token -- the writer's own plain
-    flags may precede it (`git-checkout -q -Btrunk`) -- but everything between
-    must be a cluster of ITS letters and nothing else. That is what keeps a name
-    merely PASSED to something out: a replacement string, an EOF marker or a
-    password prompt is followed by the receiving command's own WORD, which is
-    not a dashed cluster at all, so the walk stops there rather than reading on
-    for a force flag that belongs to somebody else.
+    ADJACENCY is the whole rule. The writer's own SHORT flags may stand in
+    front of the force option (`git-checkout -q -Btrunk`), but every token
+    walked over must be a cluster drawn entirely from the cluster alphabet, and
+    that bound is doing real work: widening it to LONG options as well read a
+    NEIGHBOURING command's argument as this writer's force flag (`curl "$URL"
+    -o git-checkout --url -Boutput`), and `find "$DIR" -name git-checkout -o
+    -name -Boutput` is held out only because find's `-o` is not in the alphabet.
+    Deciding who owns the token in between is per-command and open-ended, so
+    each further widening was defeated by the next spelling of the same idea.
+    What this therefore does NOT catch is a LONG flag of the writer's own
+    standing first (`git-checkout --quiet -Btrunk` behind a wrapper); that
+    residual is recorded beside the tests rather than traded for an over-block.
     """
     sub = _git_dashed_subcommand(toks[j])
     if sub not in _ZERO_OLD_SUBS:
@@ -4848,8 +4853,7 @@ def _zero_old_dashed_adjacent(toks, j):
     for t in toks[j + 1:]:
         if _zero_old_force_tok(t, attached=True, sub=sub, only=only):
             return True
-        if not (t.startswith('-') and not t.startswith('--')
-                and t[1:]
+        if not (t.startswith('-') and not t.startswith('--') and t[1:]
                 and all(c in _ZERO_OLD_CLUSTER_ALPHA for c in t[1:])):
             return False
     return False
@@ -4883,7 +4887,7 @@ _ZERO_OLD_GIT_GLOBAL_BOOL = frozenset({
 })
 
 
-def _zero_old_vouching_verb(after):
+def _zero_old_vouching_verb(after, consumed=None):
     """The subcommand standing after git's own globals, or '' if something else
     intervenes. An unknown option stops the walk: it is not git's, so whatever
     follows is not git's verb either."""
@@ -4894,18 +4898,26 @@ def _zero_old_vouching_verb(after):
         # operand: in `xargs -I "$TOKEN" git --no-pager checkout ...` the
         # replacement string is the candidate and `git` follows it.
         if _is_exe(t, 'git'):
+            if consumed is not None:
+                consumed.add(i)
             i += 1
             continue
         if t in _GIT_VALUE_OPTS:
+            if consumed is not None:
+                consumed.update((i, i + 1))
             i += 2
             continue
         # ...and the value may be ATTACHED, which owns no further token:
         # `git --git-dir=.git checkout -Btrunk` stopped the walk on an option
         # that is git's own and lost the attached force behind it.
         if '=' in t and t.split('=', 1)[0] in _GIT_VALUE_OPTS:
+            if consumed is not None:
+                consumed.add(i)
             i += 1
             continue
         if t in _ZERO_OLD_GIT_GLOBAL_BOOL:
+            if consumed is not None:
+                consumed.add(i)
             i += 1
             continue
         if t.startswith('-'):

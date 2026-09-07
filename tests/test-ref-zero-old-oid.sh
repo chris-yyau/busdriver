@@ -793,10 +793,20 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            # ...and the writer's OWN plain flags may stand before the force one,
            # so adjacency walks over a cluster of ITS letters -- but no further,
            # which is what still stops at a receiving command's bare WORD.
+           # ...and the writer's own SHORT flags may stand before the force
+           # one, so adjacency walks a cluster of ITS letters -- but no further.
            'TOKEN={}; xargs -I "$TOKEN" -t git-checkout -q -Btrunk unreviewed',
+           # ...and an end-of-options delimiter does not hide it either.
+           'TOKEN={}; xargs -I "$TOKEN" -- git-checkout -Btrunk unreviewed',
            # ...and a git global may carry its value ATTACHED, owning no token
            # after it, so the vouching walk must step over the whole thing.
            'G=git; "$G" --git-dir=.git checkout -Btrunk unreviewed',
+           # ...and a `-C` on a dashed writer is ITS force option, never git's
+           # `-C <dir>` global -- including when the start-point operand after
+           # it happens to spell a subcommand.
+           'G=git-switch; "$G" -C main unreviewed',
+           'G=git-branch; "$G" -C source main',
+           'G=git-switch; "$G" -C main branch',
            # ...and git accepts any unambiguous ABBREVIATION of a long option,
            # so the ref after one is still the ref.
            'G=git; S=update-ref; "$G" "$S" --create-refl HEAD unreviewed',
@@ -837,7 +847,31 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # is switch's force-create and branch's force-copy, and nothing at
            # all to checkout, so curl's resume offset is not a branch reset.
            'curl "$URL" --output git-checkout -C100',
-           'curl "$URL" --output git-switch -B100'):
+           'curl "$URL" --output git-switch -B100',
+           # ...and the walk between writer and force stops at anything not
+           # shaped like that writer's OWN option, or it reads a neighbouring
+           # command's arguments: these are two find PATTERNS, not a reset.
+           'find "$DIR" -name git-checkout -o -name -Boutput',
+           # ...and a token spent as one of git's own GLOBALS is not counted a
+           # second time as a force flag: curl's resume offset vouched on the
+           # word after it and was then read back as a force-copy.
+           'curl "$URL" -C100 branch',
+           # ...and a LONG option before the writer owns it as a VALUE, which
+           # is the common spelling for one, so what follows is the OTHER
+           # command's argument and not this writer's force flag.
+           'curl "$URL" --output git-checkout --url -Boutput',
+           'curl "$URL" -o git-checkout --url -Boutput'):
+# RESIDUAL, deliberate and measured: the adjacency walk crosses the writer's
+# own SHORT clusters but not its LONG flags (`git-checkout --quiet -Btrunk`
+# behind a wrapper whose flag also stops the vouching walk), and a short git
+# global carrying an ATTACHED value is not read as one (`git -C. checkout
+# -Btrunk`). Each rule tried for either had to decide who owns the token in
+# between, which is per-command and open-ended: widening to long options read
+# `curl "$URL" -o git-checkout --url -Boutput` as a reset, and reading `-C<v>`
+# as a global then discounting it dropped real force-creates, since `-C` is
+# force-shaped in its own right. Both residuals are UNDER-blocks of the
+# fallback arm ONLY -- the same commands spelled without the wrapper are caught
+# by the argv path -- and both were traded against a measured over-block.
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out

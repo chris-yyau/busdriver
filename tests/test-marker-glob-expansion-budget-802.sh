@@ -799,6 +799,64 @@ else
   no "#802 a quoted glob outside a payload is literal, not a pattern" "got=${got:-<empty>}"
 fi
 
+# Three spellings that put a NEWLINE inside a bracket class, and one POSIX class. A review
+# round read the newline cases as a reserialization bypass: `_requote` cannot escape a
+# newline, so such a token falls back to `shlex.quote`, and the raw-aware `_glob_helper`
+# then sees quotes it reads as the AUTHOR's and returns None. The function-level mechanism
+# is real -- `_glob_helper(w, raw=<requoted>)` IS None where `raw=<bare>` names the helper.
+# What makes it unreachable is bash: executed against a stub in a temp tree, the two LIVE
+# spellings below both expand to the helper and both BLOCK here and at pre-branch HEAD,
+# including behind `sh -c` where the outer lexer sees only one quoted blob and so cannot
+# be what shadows them. The third does not expand at all -- a fully single-quoted word is
+# a literal filename, not a pattern -- so allowing it is the CORRECT reading and the only
+# place this branch differs from HEAD, which over-blocked it. Pinned in all three
+# directions so the mechanism cannot become reachable without changing these lines.
+_nl=$'\n'
+_dq='"'
+_nlcls="python3 -I $LIB/[l${_dq}${_nl}${_dq}]ease_slo?.py .claude 20 0 3600"
+if ! bash -n <<<"$_nlcls" 2>/dev/null; then
+  no "#802 a double-quoted newline in a live bracket class blocks" "bash rejected it"
+else
+  got=$(verdict "$_nlcls")
+  if is_real_block "$got"; then
+    ok "#802 a double-quoted newline in a live bracket class blocks"
+  else
+    no "#802 a double-quoted newline in a live bracket class blocks" "got=${got:-<empty>}"
+  fi
+fi
+
+_ansicls="python3 -I $LIB/[l\$'\\n']ease_slo?.py .claude 20 0 3600"
+if ! bash -n <<<"$_ansicls" 2>/dev/null; then
+  no "#802 an ANSI-C newline in a live bracket class blocks" "bash rejected it"
+else
+  got=$(verdict "$_ansicls")
+  if is_real_block "$got"; then
+    ok "#802 an ANSI-C newline in a live bracket class blocks"
+  else
+    no "#802 an ANSI-C newline in a live bracket class blocks" "got=${got:-<empty>}"
+  fi
+fi
+
+got=$(verdict "python3 -I '$LIB/[l${_nl}]ease_slo?.py' .claude 20 0 3600")
+if [[ "$got" == "OK|" ]]; then
+  ok "#802 a wholly single-quoted newline class is a filename, not a pattern"
+else
+  no "#802 a wholly single-quoted newline class is a filename, not a pattern" \
+    "got=${got:-<empty>}"
+fi
+
+# The same round read a STEMLESS POSIX class as clearing the helper once preceding decoys
+# exhaust the class-expansion probes: with no members returned and no literal helper
+# prefix, the reading was said to fall through. It does not -- `_bracket_prefix_hit` names
+# the helper with `_class_expand_exhausted` forced True exactly as it does with it False,
+# so the exhausted path keeps the block. bash expands this operand to the helper.
+got=$(verdict "python3 -I $LIB/[[:lower:]]ease_slo?.py .claude 20 0 3600")
+if is_real_block "$got"; then
+  ok "#802 a stemless POSIX class blocks, exhausted probes or not"
+else
+  no "#802 a stemless POSIX class blocks, exhausted probes or not" "got=${got:-<empty>}"
+fi
+
 # The substitution walker keeps its own arithmetic-depth stack. It used to reuse the outer
 # loop's name, rebinding that INT to a list, so the next `((` in the command ran `list += 1`
 # and the classifier died. A crash is not a verdict: it reaches the gate as

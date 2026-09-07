@@ -1,3 +1,10 @@
+## [2.1.15](https://github.com/chris-yyau/busdriver/compare/v2.1.14...v2.1.15) (2026-09-07)
+
+
+### Bug Fixes
+
+* **litmus:** refuse empty-diff merge PASS-MERGE launder ([#782](https://github.com/chris-yyau/busdriver/issues/782)) ([#841](https://github.com/chris-yyau/busdriver/issues/841)) ([de05c34](https://github.com/chris-yyau/busdriver/commit/de05c34325d38fa62eeb5d6ef6ea2dc2da969605)), closes [#576](https://github.com/chris-yyau/busdriver/issues/576) [#576](https://github.com/chris-yyau/busdriver/issues/576) [#576](https://github.com/chris-yyau/busdriver/issues/576) [#622](https://github.com/chris-yyau/busdriver/issues/622) [#96](https://github.com/chris-yyau/busdriver/issues/96)
+
 ## [2.1.14](https://github.com/chris-yyau/busdriver/compare/v2.1.13...v2.1.14) (2026-09-05)
 
 

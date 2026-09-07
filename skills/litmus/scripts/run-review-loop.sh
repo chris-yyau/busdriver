@@ -1860,19 +1860,29 @@ else
   # Commit mode: check for staged changes
   # Detect merge in progress — merge resolutions have all files staged
   # as part of the merge state, making git diff --cached appear empty
-  # when conflicts are resolved by keeping our code.
-  if git rev-parse MERGE_HEAD >/dev/null 2>&1; then
-    if git diff --cached --quiet 2>/dev/null; then
-      # Merge keeps our already-reviewed code unchanged — auto-pass
-      echo "ℹ️  Merge commit detected with no changes relative to HEAD"
-      echo "   Resolution keeps already-reviewed code — auto-passing review"
-      echo ""
-      mkdir -p "$STATE_DIR"
-      publish_marker_gen
-      echo "PASS-MERGE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
-      clear_iteration_history
-      rm -f "$STATE_FILE" 2>/dev/null
-      exit 0
+  # when conflicts are resolved by keeping our code. Empty tree alone is
+  # not enough (#782): `git merge -s ours <unreviewed>` keeps our tree
+  # while still adding the other side as a parent.
+  # The pseudoref FILE, not `git rev-parse MERGE_HEAD` — the latter resolves an
+  # ordinary branch/tag named `MERGE_HEAD` and would report a merge that is not
+  # running (PR #841, Codex: same misread as the gate's, reached here as a false
+  # setup_error). `--git-path` keeps it correct inside a linked worktree.
+  if [ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
+    # Same flag pinning as the pre-commit gate's probe: `diff.ignoreSubmodules=all`
+    # (repo-controlled) hides a staged gitlink change, and ext-diff / textconv
+    # drivers collapse content, either of which would misread a real resolution
+    # as an empty-diff merge and refuse it.
+    if git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv \
+        --ignore-submodules=none 2>/dev/null; then
+      # PASS-MERGE retired (#782). Empty tree never auto-passes: PreToolUse
+      # cannot bind the final merge parents, so no marker can authorize it.
+      # No reachability query here — `git merge <ancestor>` reports "Already
+      # up to date" and writes no MERGE_HEAD, so "reachable + empty diff" is
+      # not a state git produces; the check could only ever return false.
+      echo "❌ Empty-diff merge refused (#782): PASS-MERGE auto-pass is retired — an empty tree can still add an unreviewed parent (e.g. git merge -s ours)." >&2
+      echo "   Abort the merge or land the other side as a reviewed non-empty change." >&2
+      write_terminal_status setup_error
+      exit 1
     fi
     echo "ℹ️  Merge commit detected — reviewing merge resolution changes"
     # Fall through to review the changes introduced by the merge

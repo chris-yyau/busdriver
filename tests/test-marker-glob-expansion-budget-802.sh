@@ -931,6 +931,67 @@ else
   no "#802 a helper beside that literal paren still blocks" "got=${got:-<empty>}"
 fi
 
+# A PROPERTY-BASED sweep over the axis three review rounds kept finding faces of: a
+# nested `${...}` body is a VALUE, so at its own paren depth a paren is not a subshell,
+# `((` is not arithmetic, and `<<` is not a heredoc -- while `$(` and `$((` inside it are
+# real. Hand-written fixtures covered those constructs one at a time and missed every
+# COMBINATION, which is where all four defects lived. This composes span x suffix x
+# wrapper and asserts both directions on each survivor of `bash -n`: with no helper the
+# command bash runs must not be refused, and with the helper spliced into the same
+# substitution it must block. Written as a generator, not a list, so a new span or
+# suffix covers the whole cross-product (#802).
+_spans=(
+  '${Y//a/(}' '${Y//a/((}' '${Y//a/(((}' '${Y//a/)}' '${Y//a/))}'
+  '${Y:-<<EOF}' '${Y:-<<<x}' '${Y:-$((1+2))}' '${Y:-$(( (1) ))}' '${Y:-$(true)}'
+  '${Y//a/;}' '${Y//a/`}' '${Y//a/"}'
+)
+# `$'...'`, not `$(printf ...)`: command substitution strips trailing newlines, which
+# turned every heredoc here into one bash itself reports as delimited by end-of-file --
+# a shape this scanner declines by design, so the sweep would have been asserting the
+# wrong thing. Same reason `printf -v` builds the command below (#802).
+_suffixes=( '' $'; cat <<EOF\nit\'s data\nEOF\n'
+            '; (true)' "; printf '\"'"
+            $'; cat <<A <<B\na\nA\nb\nB\n' )
+_wraps=(
+  'echo "${X:-$(echo %s%s)}" "["'
+  'echo "${X:-"$(echo %s%s)"}" "["'
+  'echo "${X:-$( (echo %s%s) )}" "["'
+)
+_n=0; _fb=0; _mb=0
+for _w in "${_wraps[@]}"; do
+  for _s in "${_spans[@]}"; do
+    for _f in "${_suffixes[@]}"; do
+      printf -v _cmd "$_w" "$_s" "$_f"
+      bash -n <<<"$_cmd" 2>/dev/null || continue
+      _n=$((_n + 1))
+      got=$(verdict "$_cmd")
+      [[ "$got" == "OK|" ]] || { _fb=$((_fb + 1)); [[ $_fb -le 3 ]] && \
+        printf '    false block: %q -> %s\n' "$_cmd" "${got:-<empty>}"; }
+      _hf="${_f}; python3 -I $LIB/[l]ease_slo?.py .claude 20 0 3600"
+      printf -v _hcmd "$_w" "$_s" "$_hf"
+      bash -n <<<"$_hcmd" 2>/dev/null || continue
+      got=$(verdict "$_hcmd")
+      is_real_block "$got" || { _mb=$((_mb + 1)); [[ $_mb -le 3 ]] && \
+        printf '    missed block: %q -> %s\n' "$_hcmd" "${got:-<empty>}"; }
+    done
+  done
+done
+if [[ $_n -lt 100 ]]; then
+  no "#802 composed value-span sweep is non-vacuous" "only $_n compositions survived bash -n"
+else
+  ok "#802 composed value-span sweep is non-vacuous ($_n compositions)"
+fi
+if [[ $_fb -eq 0 ]]; then
+  ok "#802 no composed value-span shape is falsely refused ($_n checked)"
+else
+  no "#802 no composed value-span shape is falsely refused" "$_fb false blocks of $_n"
+fi
+if [[ $_mb -eq 0 ]]; then
+  ok "#802 every composed value-span shape still blocks the helper ($_n checked)"
+else
+  no "#802 every composed value-span shape still blocks the helper" "$_mb missed of $_n"
+fi
+
 # The substitution walker keeps its own arithmetic-depth stack. It used to reuse the outer
 # loop's name, rebinding that INT to a list, so the next `((` in the command ran `list += 1`
 # and the classifier died. A crash is not a verdict: it reaches the gate as

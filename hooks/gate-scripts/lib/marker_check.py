@@ -2767,6 +2767,26 @@ def _strip_cmd_subst(s):
                 # need to WALK the nested `$()` to get this right -- it needs to stop
                 # reading the one span that is not shell text, with the same two shared
                 # helpers every other walker uses for it.
+                # Inside a NESTED `${...}` at its own paren depth the body is a VALUE,
+                # not command text, so NONE of the three command-text readings apply: a
+                # paren is neither subshell nor grouping (`${Y//a/(}` is replacement
+                # text), `((` opens no arithmetic (`${Y//a/((}`), and `<<` introduces no
+                # heredoc (`${Y:-<<EOF}` is a default value). Stating it for the parens
+                # alone left the other two open and each cost a review round -- the
+                # fictitious heredoc consumed the rest of the command, and the fictitious
+                # arithmetic suppressed recognition of a REAL heredoc after it. `$(` and
+                # `$((` are NOT exempt: bash really does substitute and really does
+                # evaluate arithmetic in a default value, and only the span's OWN level
+                # is text. Same rule the `$()` walker states at its `_span` level (#802).
+                _val_text = bool(_bspan) and _bspan[-1] == len(_pstack)
+                # `not _narith`: a `$((...))` in a default value is REAL arithmetic, and
+                # its own `))` is a closer, not text. Without that the exemption ate the
+                # first `)` of `${Y:-$((1+2))}`, arithmetic never closed, and the real
+                # heredoc after it went unrecognised -- the same fictitious-arithmetic
+                # failure this rule exists to prevent, reintroduced by the rule itself.
+                if _val_text and not _narith and ch in '()':
+                    i += 1
+                    continue
                 if s.startswith('$((', i) or s.startswith('((', i):
                     _narith += 1
                     i += 3 if s.startswith('$((', i) else 2
@@ -2780,13 +2800,7 @@ def _strip_cmd_subst(s):
                     _nsub += 1
                     i += 2
                     continue
-                if ch in '()' and _bspan and _bspan[-1] == len(_pstack):
-                    i += 1
-                    continue
                 if ch == '(' and _nsub:
-                    # Counted only INSIDE a substitution: at the `${...}` body's own
-                    # level a paren is literal text (`${X//a/(}`), which is the same
-                    # exemption the `$()` walker makes for its `_span` level (#802).
                     _pstack.append('P')
                     i += 1
                     continue
@@ -2813,7 +2827,7 @@ def _strip_cmd_subst(s):
                         i = _heredoc_body_end(s, i + 1, _pend)
                         _nhd = [p for p in _nhd if p[1] != len(_pstack)]
                         continue
-                if _nsub and not _narith:
+                if _nsub and not _narith and not _val_text:
                     if s.startswith('<<<', i):   # a herestring is a WORD, not a body
                         i += 3
                         continue

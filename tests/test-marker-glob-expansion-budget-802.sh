@@ -933,6 +933,45 @@ else
   ok "#802 the continuation joiner scans each line once (64KB in ${got}s)"
 fi
 
+# The SAME rule one loop over: the flattening pass that puts a substitution's trailing
+# argument back in argument position asked "what is the last non-whitespace character so
+# far?" by joining and stripping its whole accumulated output, once per `$(` -- quadratic
+# in the number of substitutions. Measured on this loop before the fix: 8000 took 0.903s
+# and 16000 took 3.044s, four times the work for twice the input; after, 0.198s and
+# 0.336s. The token budget bounds what reaches it end-to-end (16000 short-circuits to
+# BLOCK_UNSCANNABLE either way), which is exactly why this is asserted on the function --
+# end-to-end the check would be vacuous, and a fix for a timeout fail-open does not get
+# to leave a quadratic behind trusting an unrelated budget to hide it (#802).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys, time
+
+sys.stdin = io.StringIO("{}")          # the module reads stdin at import
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()   # it PRINTS a verdict at import too
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+_lb, _rb = chr(91), chr(93)
+_helper = "hooks/gate-scripts/lib/" + _lb + "l" + _rb + "ease_" + "sl" + "o?.py"
+cmd = "$(true) " * 16000 + "python3 -I " + _helper + " .claude x 1 3600"
+t0 = time.perf_counter()
+mc._helper_invoked(cmd)
+print("%.3f" % (time.perf_counter() - t0))
+PYEOF
+)
+if [[ "$got" == ERROR ]]; then
+  no "#802 the flattening pass tracks command position incrementally" "harness error"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 1.5 else 1)" "${got:-9}" 2>/dev/null; then
+  no "#802 the flattening pass tracks command position incrementally" \
+    "16000 substitutions took ${got}s -- the accumulated output is being rejoined per opener"
+else
+  ok "#802 the flattening pass tracks command position incrementally (16000 in ${got}s)"
+fi
+
 # `$$` is the PID, so `$${foo` is a PID and a LITERAL brace. Testing `${` one character
 # in opened an expansion with no closer and refused the whole command; bash runs it.
 # The parity question already had an answer in this file -- the raw-word scan and the

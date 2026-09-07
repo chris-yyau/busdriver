@@ -5109,13 +5109,27 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             # Backticks share one delimiter, so they cannot be paired this way; a
             # command carrying one keeps the crude flattening above, unchanged.
             _o = []
+            # The last non-whitespace character of everything in `_o`, tracked as it
+            # is appended. The command-position test below only ever reads THAT one
+            # character, and re-deriving it with `"".join(_o).rstrip()` on every `$(`
+            # made this pass quadratic in the number of substitutions -- 4000 of them
+            # cost ~4x what 2000 did. A per-chunk entry (its own last non-whitespace
+            # character, or the previous entry when the chunk is all whitespace) is the
+            # same value in O(1), and pops with `_o` so the two stay in step (#802).
+            _lastv = []
             _pos = []
             _k = 0
+
+            def _push(_chunk):
+                _o.append(_chunk)
+                _t = _chunk.rstrip()
+                _lastv.append(_t[-1] if _t else (_lastv[-1] if _lastv else ""))
+
             while _k < len(_flat):
                 if _flat.startswith("$(", _k):
-                    _seen = "".join(_o).rstrip()
-                    _pos.append(not _seen or _seen[-1] in ";&|(" + chr(10))
-                    _o.append(" ; ")
+                    _seen = _lastv[-1] if _lastv else ""
+                    _pos.append(not _seen or _seen in ";&|(" + chr(10))
+                    _push(" ; ")
                     _k += 2
                     continue
                 if _flat[_k] == "(":
@@ -5125,7 +5139,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                     # `echo "$( (true) )" <helper>`. It pushes True, so a subshell
                     # closer still separates exactly as it did before (#802).
                     _pos.append(True)
-                    _o.append("(")
+                    _push("(")
                     _k += 1
                     continue
                 if _flat[_k] == ")":
@@ -5133,7 +5147,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                     # crude pass never modelled -- a `case` arm, say. Unchanged: it
                     # still separates, which is the fail-CLOSED reading.
                     if not _pos or _pos.pop():
-                        _o.append(" ; ")
+                        _push(" ; ")
                     else:
                         # A separator the BODY just emitted must not survive either:
                         # `echo "$( (true) )" <helper>` ends its body with a subshell
@@ -5142,10 +5156,11 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                         # substitution is an argument (#802).
                         while _o and _o[-1] in (" ; ", " "):
                             _o.pop()
-                        _o.append(" ")
+                            _lastv.pop()
+                        _push(" ")
                     _k += 1
                     continue
-                _o.append(_flat[_k])
+                _push(_flat[_k])
                 _k += 1
             _flat = "".join(_o)
         _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)

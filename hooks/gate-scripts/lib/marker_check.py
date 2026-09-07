@@ -670,6 +670,9 @@ _budgets_armed = [False]
 # A word-level debit that lands on exactly 0 must not abandon that paid family into
 # `_bracket_prefix_hit` (precise `[a]` miss → false BLOCK).
 _deep_family_active = [False]
+# Set when the word-level deep debit lands on exactly 0. Only that prepaid case may
+# keep resolving at deep==0; a mid-family per-probe drain to 0 must still stop (#802).
+_deep_prepaid_zero = [False]
 # Quote characters, replaced by a barrier that cannot take part in class syntax. See
 # _class_members for why the quotes are read BOTH as removed and as barriers.
 _QUOTE_BARRIER = re.compile("['" + chr(34) + "]")
@@ -707,7 +710,16 @@ _LEX_WHITESPACE = frozenset(" \t\r\n")
 # (`[x\\]\\ y\\ l]<tail>`), and leaving the escape out was an incompleteness on the
 # fail-open side even though that shape happens to block through another reading.
 _JOINS_WORDS_RE = re.compile("['" + chr(34) + chr(92) + chr(92) + "]")
-_CLASS_QUOTE_RE = re.compile(r"\[[^]]*['" + chr(34) + "]")
+# A quote or a BACKSLASH inside a class: both are concealment, and the concealment is
+# the point -- either one means the class BASH reads is not the class this projection
+# reads. The backslash was missed, and `[\^l]ease_[!Z]lot.p[^Z]` -- which bash expands
+# onto lease_slot.py -- was neither resolved (multi-class words are denied the deep
+# reading, by budget) nor refused (no quote to see). Fail-OPEN (#802).
+_CLASS_QUOTE_RE = re.compile(r"\[[^]]*['" + chr(34) + chr(92) * 2 + "]")
+# One literal character in brackets: `[t]` can only be `t`, so a word built entirely
+# from these names exactly one file (#802).
+_SINGLETON_CLASS_RE = re.compile(r"\[([^]!^-])\]")
+
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
 # brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
 # walk sees has already lost some of that syntax, so testing for the UNRESOLVED
@@ -803,8 +815,10 @@ def _class_members(body, negated, literal_hyphen=False):
             # A prior word's latch: abandon and make callers prefix-hit.
             _class_expand_exhausted[0] = True
             return set()
-        # deep == 0 is OK while the prepaid deep family is still running.
-        if _deep_budget[0] == 0 and not _deep_family_active[0]:
+        # deep == 0 is OK only for the prepaid exact-zero word debit while that
+        # family is still running. A mid-family drain to 0 must stop.
+        if (_deep_budget[0] == 0
+                and not (_deep_family_active[0] and _deep_prepaid_zero[0])):
             _deep_budget[0] = -1
             _class_expand_exhausted[0] = True
             return set()
@@ -817,16 +831,15 @@ def _class_members(body, negated, literal_hyphen=False):
         # The 5000-segment band still trips: 4 base readings × N far exceeds 2048.
         if _live_deep:
             _deep_budget[0] -= 1
+            # Landing on 0 is fine for this probe; the next probe's `== 0` guard
+            # latches. (`_live_deep` required deep > 0, so this subtract cannot go < 0.)
         if _live_help:
             _helper_budget[0] -= 1
-        if _deep_budget[0] < 0:
-            _deep_budget[0] = -1
-            _class_expand_exhausted[0] = True
-            return set()
-        if _helper_budget[0] <= _HELPER_CLASS_RESERVE and not _live_help and not _deep_family_active[0]:
+        if (_helper_budget[0] <= _HELPER_CLASS_RESERVE and not _live_help
+                and not (_deep_family_active[0] and _deep_prepaid_zero[0])):
             # Helper already at/under the reserve before this probe: stop resolve and
-            # latch so a residual deep>0 cannot keep paying unbounded work. Skip while
-            # a prepaid deep family is still evaluating.
+            # latch so a residual deep>0 cannot keep paying unbounded work. Skip only
+            # for the prepaid exact-zero family.
             _deep_budget[0] = -1
             _class_expand_exhausted[0] = True
             return set()
@@ -1171,6 +1184,7 @@ def _class_variants(s, deep=None):
             # Debit for the family below. Do not latch on an exact landing at 0 here —
             # that family is what the debit paid for (#802 / precise-miss regression).
             _deep_budget[0] -= len(s)
+            _deep_prepaid_zero[0] = (_deep_budget[0] == 0)
     out = []
     if deep:
         _deep_family_active[0] = True
@@ -1193,6 +1207,7 @@ def _class_variants(s, deep=None):
     finally:
         if deep:
             _deep_family_active[0] = False
+            _deep_prepaid_zero[0] = False
             # After the paid family, a residual <=0 must latch so later words cannot
             # resume unbounded resolve. Do NOT flip `_class_expand_exhausted` here: the
             # family completed, and `_glob_helper` would otherwise fall through to
@@ -2043,8 +2058,766 @@ def _module_helper(mod):
     return stem + ".py" if stem in _MUTATING_MODULES else None
 
 
-def _glob_helper(word, deep=None):
+
+# A `$()` body is walked by COUNTING parens, so any construct whose unquoted `)`
+# closes nothing breaks the count. Two do, and each was a measured fail-open -- the
+# walk closed the substitution early, stripped the wrong span, and read the surviving
+# helper glob as harmless text (#802 litmus HIGH):
+#
+#   case x in x) true;; esac   -- a pattern terminator
+#   true #)                    -- a comment runs to end of LINE, not end of word
+#
+# Recognising is not parsing: this says only "paren counting is no longer sound here",
+# and the caller fails CLOSED on that. Word-start is required so `echo a#b` does not
+# stall an ordinary command. A HEREDOC body is the same defect with the opposite cost,
+# so it is SKIPPED, not refused -- its bytes are data, and reading them live both
+# closed `$()` early on a body `)` and made #573's ordinary `gh pr create --body
+# "$(cat <<'EOF' ...)"` a false UNSCANNABLE.
+_SUBST_GLUE_BREAK = " \t\n;&|<>()=" + chr(34) + chr(39) + chr(96)
+
+
+def _glued(s, start, end):
+    """True where the span `s[start:end]` touches literal text on either side.
+
+    The guard the caller's `*` projection turns on -- see it for why a whole-word
+    expansion must NOT project (#553). Quotes are looked THROUGH, not read as literal
+    text: the shell concatenates adjacent quoted runs, so `[l]"$(printf e)"[a][s]...`
+    is ONE word whose neighbours are `]` and `[`. Reading the quote as the neighbour
+    left every quoted substitution un-glued and deleted -- the fail-open, one pair away.
+    """
+    b = start - 1
+    while b >= 0 and s[b] in '"\'':
+        b -= 1
+    a = end
+    while a < len(s) and s[a] in '"\'':
+        a += 1
+    before = s[b] if b >= 0 else ''
+    after = s[a] if a < len(s) else ''
+    return bool((before and before not in _SUBST_GLUE_BREAK)
+                or (after and after not in _SUBST_GLUE_BREAK))
+
+
+_REQUOTE_SAFE = frozenset(string.ascii_letters + string.digits + "_-./=:,+@%^*?[]")
+
+
+def _requote(tok):
+    """Re-serialize ONE already-split token so its word boundary survives a re-lex.
+
+    NOT `shlex.quote`: its quotes are OURS (keeping `-exec grep "foo; rm" ;` from
+    re-reading as two commands), but `_glob_helper`'s raw-word walk reads them as the
+    AUTHOR's and projects the meta they wrap to an inert placeholder -- turning `find .
+    -exec python3 .../lease_slo?.py ... ;` from a BLOCK at HEAD into an allow, on an
+    operand bash expands to the helper (#802). Escaping per character keeps the boundary
+    and leaves globs LIVE; a newline cannot be escaped, so such a token falls back.
+    """
+    if not tok:
+        return "''"
+    if "\n" in tok:
+        return shlex.quote(tok)
+    return "".join(c if c in _REQUOTE_SAFE else chr(92) + c for c in tok)
+
+
+def _join_continuations(s):
+    """Remove `\\<newline>` outside single quotes -- the shell joins the token first.
+
+    Without it a keyword split across the join (`ca\\<newline>se`) reads as an ordinary
+    word, so its pattern `)` is mistaken for the `$()` closer.
+    """
+    if chr(92) + '\n' not in s:
+        return s
+    out = []
+    i, n, q = 0, len(s), ''
+    pend = []                    # bodies whose delimiter was QUOTED: literal data
+    _ln = None                   # the current line, joined once (see the `<<` branch)
+    while i < n:
+        c = s[i]
+        if c == '\n':
+            _ln = None
+        if q == "'":
+            if c == "'":
+                q = ''
+            out.append(c)
+            i += 1
+            continue
+        # A QUOTED delimiter makes its body literal, so the `\<newline>` in there is two
+        # characters the shell keeps. Joining them forged the terminator out of
+        # `E\<newline>OF` and handed the rest of the body to the parser (#802). A double
+        # quote is not a barrier to either half of this: `"$(cat <<'E'` is a command.
+        if pend and c == '\n':
+            _e = _heredoc_body_end(s, i + 1, pend)
+            out.append(s[i:_e])
+            i = _e
+            pend = []
+            continue
+        if s.startswith('<<<', i):
+            # Consume all THREE, as the walker in `_strip_cmd_subst` does. Stepping over
+            # the first `<` alone left `<<'X'` starting one character later, read as a
+            # QUOTED delimiter whose terminator line never comes -- so the body swallowed
+            # the rest of the command and none of its continuations were joined (#802).
+            out.append('<<<')
+            i += 3
+            continue
+        if s.startswith('<<', i) and not s.startswith('<<<', i):
+            # Read the delimiter from the JOINED line, because the shell joins first:
+            # `<<E\<newline>OF` delimits on EOF. Reading it raw took `E` and the body
+            # then ran to the end of the command (#802).
+            # Scan that line ONCE and reuse it for every `<<` on it. Rebuilding it per
+            # operator is quadratic: 16K of them in a 64K command spent 21s in here,
+            # four times the whole hook budget -- and a hook killed on the budget emits
+            # nothing, which reads as ALLOW. That is #802's own bug, so the fix for it
+            # does not get to reintroduce it.
+            if _ln is None:
+                _buf, _raw, _at = [], [], {}
+                _k = i
+                while _k < n:
+                    if s[_k] == chr(92) and s[_k + 1:_k + 2] == '\n':
+                        _k += 2
+                        continue
+                    if s[_k] == '\n':
+                        break
+                    _at[_k] = len(_raw)
+                    _buf.append(s[_k])
+                    _raw.append(_k)
+                    _k += 1
+                _ln = ("".join(_buf), _raw, _at, _k)
+            _line, _raw, _at, _k = _ln
+            _p = _at[i]
+            _hd = _heredoc_delim(_line, _p)
+            if _hd:
+                _w0 = _p + 2 + (1 if _line[_p + 2:_p + 3] == '-' else 0)
+                while _w0 < len(_line) and _line[_w0] in ' \t':
+                    _w0 += 1
+                if _line[_w0:_hd[1]] != _hd[0][0]:   # quoting was removed to get it
+                    pend.append(_hd[0])
+                    out.append(_line[_p:_hd[1]])
+                    i = _raw[_hd[1]] if _hd[1] < len(_raw) else _k
+                    continue
+        if c == chr(92) and i + 1 < n:
+            if s[i + 1] == '\n':
+                i += 2
+                continue
+            out.append(c)
+            out.append(s[i + 1])
+            i += 2
+            continue
+        if not q and c in ("'", chr(34)):
+            q = c
+        elif q == chr(34) and c == chr(34):
+            q = ''
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _subst_ambiguous(s, i, ws):
+    """True where `s[i]` opens a construct whose unquoted `)` is not a `$()` closer.
+
+    `ws` is the scanner's own word-start state; one preceding character cannot stand in
+    for it, since a compound command ends a word too -- so the `#` in `$( (true)#)` opens
+    a comment, and the `)` it hides is not the closer.
+    """
+    if not ws:
+        return False
+    if s[i] == '#':
+        return True
+    if not (s.startswith('case', i) and i + 4 < len(s) and s[i + 4] in " \t\n"):
+        return False
+    return _cmd_position(s, i)
+
+
+# Words a `case` keyword may follow. A keyword leaves the command position OPEN,
+# so `then` is not the end of a command the way an ordinary word is.
+_CMD_OPENERS = ("!", "{", "if", "then", "elif", "else", "do", "while", "until", "time")
+
+
+def _cmd_position(s, i):
+    """True where a reserved word at `s[i]` would be read as one.
+
+    `case` is reserved only at the START of a command, so the one in `printf %s case`
+    is an argument -- refusing it turned an ordinary command into a block (#802). The
+    caller already knows `s[i]` begins a word; what decides it is what comes BEFORE.
+    An operator or a body opener leaves a command about to start, and so does a
+    keyword. Anything else is a word already running, and `case` after one is its
+    operand. Costs one token scan, and only where the literal `case` appears.
+    """
+    j = i
+    # The opener has to be a keyword ITSELF, which is the same question one word to the
+    # left: in `printf then case x` the `then` is a printf ARGUMENT, so the `case` after
+    # it is another argument and refusing it blocked an ordinary command (#802). Asked as
+    # a LOOP, not recursion -- 1100 argument words is an ordinary 5KB command line and
+    # recursing once per word raised RecursionError, which fails closed but still refuses
+    # a command bash runs. `j` moves strictly left each round, so this terminates; the
+    # runs are disjoint (a non-opener ends one), so the total stays linear in the command.
+    while True:
+        while j > 0 and s[j - 1] in " \t":
+            j -= 1
+        # ...and only an UNESCAPED one separates. `printf %s ` + chr(92) + `; case x`
+        # passes bash a literal `;` as an ARGUMENT, so the `case` after it is another
+        # argument; reading the escape as a separator made it a reserved word and
+        # refused a command bash runs (#802). Backslash parity, the same question
+        # `_dollar_run_is_even` asks about a `$` run.
+        _sep = j > 0 and s[j - 1] in ";&|(" + chr(10) + chr(96)
+        if _sep:
+            _b = j - 1
+            while _b and s[_b - 1] == chr(92):
+                _b -= 1
+            if (j - 1 - _b) % 2:
+                _sep = False
+        if j == 0 or _sep:
+            return True
+        k = j
+        while k > 0 and s[k - 1] not in " \t" + chr(10) + ";&|()<>":
+            k -= 1
+        if s[k:j] not in _CMD_OPENERS:
+            return False
+        j = k
+
+
+def _ansi_c_span(s, i):
+    """Index past the `$'...'` at `s[i]`, or None.
+
+    A backslash escapes the NEXT character inside one, so the `'` in `$'a\\'b'` is DATA.
+    Read as an ordinary single quote it closed early and shifted every quote after it,
+    turning an ordinary command into a refusal (#802).
+    """
+    if not s.startswith("$" + chr(39), i):
+        return None
+    j = i + 2
+    while j < len(s):
+        if s[j] == chr(92):
+            j += 2
+            continue
+        if s[j] == chr(39):
+            return j + 1
+        j += 1
+    return None
+
+
+def _backtick_span(s, i):
+    """Index past the `` `...` `` at `s[i]`, or None. Its body ends at its OWN
+    delimiter, so a `)` or `}` inside closes nothing outer (#802)."""
+    j = i + 1
+    while j < len(s):
+        if s[j] == chr(92):
+            j += 2
+            continue
+        if s[j] == chr(96):
+            return j + 1
+        j += 1
+    return None
+
+
+def _heredoc_delim(s, i):
+    """The heredoc delimiter at `s[i]` and the index past its introducer, or None.
+
+    Quotes and escapes in the word are syntax the shell removes before comparing
+    terminator lines, so `<<'EOF'`, `<<"EOF"` and `<<\\EOF` all delimit on `EOF`. Not
+    "drop every quote", though: a backslash makes the NEXT character literal, so
+    `<<E\\"OF` delimits on `E"OF` and a bare `EOF` line does not end it. Bash accepts
+    the operator attached to the word before it (`cat<<E`, `3<<E`), so no preceding
+    character is required. Two `<<`s are not heredocs and the caller consumes both:
+    `<<<` is a herestring, and inside `$(( ))` a `<<` is an arithmetic shift.
+    """
+    if not s.startswith('<<', i) or s.startswith('<<<', i):
+        return None
+    j = i + 2
+    strip = j < len(s) and s[j] == '-'
+    if strip:
+        j += 1
+    while j < len(s) and s[j] in ' \t':
+        j += 1
+    d = []
+    dq = ''
+    # `<<''` delimits on the EMPTY line: the quotes are removed to get the terminator,
+    # and removing them can leave NOTHING -- which is a delimiter, not the absence of
+    # one, and reading it as absence scanned the body as live shell text (#802).
+    w0 = j
+    while j < len(s):
+        c = s[j]
+        if dq:
+            if c == dq:
+                dq = ''
+            elif dq == chr(34) and c == chr(92) and j + 1 < len(s) \
+                    and s[j + 1] in (chr(34), chr(92), '$', chr(96)):
+                j += 1
+                d.append(s[j])
+            else:
+                d.append(c)
+            j += 1
+            continue
+        if c == '$' and s[j + 1:j + 2] == chr(34):
+            # `$"..."` is a locale TRANSLATION, so the `$` is a quoting prefix and the
+            # delimiter is the quoted text -- exactly as `$'...'` is handled just below.
+            # Keeping the `$` looked for `$EOF`, never closed the body, and the scan ate
+            # the enclosing substitution's `)` (#802).
+            j += 1
+            continue
+        if c == '$' and s[j + 1:j + 2] == chr(39):
+            _e = _ansi_c_span(s, j)
+            if _e is None:
+                return None
+            d.append(_decode_escapes(s[j + 2:_e - 1]))
+            j = _e
+            continue
+        if c in ("'", chr(34)):
+            dq = c
+            j += 1
+            continue
+        if c == chr(92) and j + 1 < len(s):
+            j += 1
+            d.append(s[j])
+            j += 1
+            continue
+        if c in ' \t\n;&|<>()':
+            break
+        d.append(c)
+        j += 1
+    return (("".join(d), strip), j) if (d or j > w0) else None
+
+
+def _heredoc_body_end(s, nl, delims):
+    """Index just past the bodies for `delims`, the first of which starts at `nl`.
+
+    A body does not start at the introducer -- the rest of THAT line is still command
+    text, and several bodies queue on one line -- so the skip happens at the newline,
+    in introducer order. Only `<<-` strips leading tabs from the terminator: under a
+    plain `<<` a tab-indented delimiter is body DATA, and ending the body there hands
+    a later body `)` back as shell text.
+    """
+    k = nl
+    for d, strip in delims:
+        while k < len(s):
+            e = s.find('\n', k)
+            line = s[k:len(s) if e == -1 else e]
+            k = len(s) if e == -1 else e + 1
+            if (line.lstrip('\t') if strip else line) == d:
+                break
+    return k
+
+
+def _strip_cmd_subst(s):
+    """Strip command substitutions, nesting-/quote-aware; None if one is unclosed,
+    which makes the caller fail CLOSED (#802)."""
+    s = _join_continuations(s)
+    out = []
+    i, n = 0, len(s)
+    oq = ''
+    heredocs = []
+    arith = 0
+    ws = True                    # at a shell WORD start -- see the `#` branch below
+    while i < n:
+        ch = s[i]
+        # Heredoc bodies are DATA: kept verbatim, never read as shell text.
+        if not oq and heredocs and ch == '\n':
+            _k = _heredoc_body_end(s, i + 1, heredocs)
+            out.append(s[i:_k])
+            i = _k
+            heredocs = []
+            ws = True
+            continue
+        # An unquoted `#` at a WORD START opens a comment the shell reads as nothing.
+        # Read as live text, the `$(` in `git status # [docs] example $(foo` was an
+        # unclosed substitution -- a refusal over a span the shell never looks at. The
+        # outer walker SKIPs it, keeping the bytes the command still carries.
+        if not oq and not arith and ws and ch == '#':
+            _nl = s.find('\n', i)
+            _nl = n if _nl < 0 else _nl
+            out.append(s[i:_nl])
+            i = _nl
+            ws = True
+            continue
+        # `((expr))` is arithmetic, so its `<<` is a shift, not a heredoc -- and
+        # mis-reading one is not the harmless direction: the body skip keeps its span
+        # VERBATIM, leaving a real `$()` below it unstripped and the helper it hides
+        # unseen. `$((` needs no case; the branch below consumes it.
+        if not oq and s.startswith('((', i):
+            arith += 1
+            out.append('((')
+            i += 2
+            ws = True
+            continue
+        if not oq and arith and s.startswith('))', i):
+            arith -= 1
+            out.append('))')
+            i += 2
+            ws = True
+            continue
+        if not oq and not arith:
+            if s.startswith('<<<', i):   # herestring: a WORD. Rejecting it is not
+                out.append('<<<')        # consuming it -- the leftover `<<` then read
+                i += 3                   # as a heredoc and ate a `$()` closer (#802).
+                ws = True
+                continue
+            _hd = _heredoc_delim(s, i)
+            if _hd:
+                heredocs.append(_hd[0])
+                out.append(s[i:_hd[1]])
+                i = _hd[1]
+                ws = True
+                continue
+        # OUTER quoting. Single quotes expand nothing, so a `$()`/`${}`/backtick
+        # there is literal text and stripping it deleted characters the command
+        # really carries -- a false BLOCK on a name that cannot be a helper (#802
+        # litmus MEDIUM). Quotes stay in `out`: callers hand these back as `raw=`,
+        # and quote semantics are _glob_helper's to apply, not ours to pre-empt.
+        if oq == "'":
+            if ch == "'":
+                oq = ''
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if ch == chr(92) and i + 1 < n:
+            # `\$` / `\`` is a literal introducer, not a substitution. In double
+            # quotes only $ ` " \ and newline are escapable; anything else keeps
+            # its backslash and is re-read normally.
+            ws = False
+            if not oq or s[i + 1] in ('$', chr(34), chr(92), chr(96), chr(10)):
+                out.append(ch)
+                out.append(s[i + 1])
+                i += 2
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if not oq:
+            _ac = _ansi_c_span(s, i)
+            if _ac:
+                out.append(s[i:_ac])
+                i = _ac
+                ws = False
+                continue
+        if not oq and ch in ("'", chr(34)):
+            oq = ch
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if oq and ch == oq:
+            oq = ''
+            out.append(ch)
+            i += 1
+            ws = False
+            continue
+        if s.startswith('$(', i) or s[i] == '`':
+            _sub_start = i
+            tick = s[i] == '`'
+            _ar0 = s.startswith('$((', i)   # entered as a plain `$(`, the body opened
+            i += 3 if _ar0 else (1 if tick else 2)      # with a bare `(` and left the
+            depth = 2 if _ar0 else (0 if tick else 1)   # arith stack EMPTY, so the `<<`
+            # in `"$((1 << 2\n))"` read as a heredoc and ate the closer (#802).
+            q = ''
+            closed = False
+            inner_heredocs = []
+            _span = []               # (closer, depth) of `${`/`$[`: not command text
+            ws = True                # at a shell WORD start -- see _subst_ambiguous
+            _qstack = []                    # (depth, quote) suspended by a nested `$()`
+            _inner_arith = [2] if _ar0 else []   # depths where `$((`/`((` opened: no heredoc, no `#`.
+            # NAMED APART from the outer counter deliberately: spelled `arith` too, it
+            # rebound that int to a list, so the next `((` ran `list += 1` and the
+            # classifier died with a TypeError. A crash is not a verdict (#802).
+            while i < n:
+                ch = s[i]
+                if not q and inner_heredocs and ch == '\n':
+                    # A newline ends the line of the command at THIS depth, and a nested
+                    # `$()` is its own command: both its newline and any heredoc queued
+                    # inside it are its own. One shared queue took the OUTER delimiter at
+                    # the inner newline, and the body then ate the closer (#802).
+                    _pend = [t for t, _hd_d in inner_heredocs if _hd_d == depth]
+                    if _pend:
+                        i = _heredoc_body_end(s, i + 1, _pend)
+                        inner_heredocs = [p for p in inner_heredocs if p[1] != depth]
+                        ws = True
+                        continue
+                # Only the span's OWN level is exempt, exactly as the bare-paren branch
+                # below reasons: `${X:-$(cat <<EOF ...)}` runs a real command, and its
+                # heredoc is a real heredoc. Suppressing it there scanned the body as
+                # shell text, where an apostrophe in prose opened a quote (#802).
+                if not q and not _inner_arith \
+                        and not (_span and depth == _span[-1][1]):
+                    if s.startswith('<<<', i):   # herestring, as above
+                        i += 3
+                        ws = True
+                        continue
+                    _hd = _heredoc_delim(s, i)
+                    if _hd:
+                        inner_heredocs.append((_hd[0], depth))
+                        i = _hd[1]
+                        ws = True
+                        continue
+                if q:
+                    ws = False
+                    if q == '"' and s.startswith('$(', i):
+                        # A nested `$()` inside "..." quotes for itself, and its
+                        # quotes are not this one's closer (#802).
+                        _qstack.append((depth, q))
+                        q = ''
+                        if s.startswith('$((', i):   # the THIRD door into a `$(`, and
+                            depth += 2               # it needs the same arith seeding
+                            _inner_arith.append(depth)   # as the other two (#802).
+                            i += 3
+                        else:
+                            depth += 1
+                            i += 2
+                        ws = True
+                        continue
+                    if q == '"' and ch == '`' and not tick:
+                        # A backtick body is OPAQUE: it ends at its own delimiter, and
+                        # neither its quotes nor its parens are this scan's. Suspending
+                        # the quote instead left its `)` counting against the enclosing
+                        # `$()`, which closed `$(echo "${X:-`echo )`}")` early (#802).
+                        _bt = _backtick_span(s, i)
+                        if _bt is None:
+                            return None
+                        i = _bt
+                        continue
+                    if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    if ch == q:
+                        q = ''
+                    i += 1
+                    continue
+                _ac = _ansi_c_span(s, i)
+                if _ac:
+                    i = _ac
+                    ws = False
+                    continue
+                if ch in ("'", '"'):
+                    q = ch
+                    ws = False
+                    i += 1
+                    continue
+                # Unquoted $()/`...`: consume backslash+next BEFORE delimiter checks
+                # so an escaped `)` is not a substitution closer (#802 litmus HIGH).
+                if ch == '\\':
+                    if i + 1 >= n:
+                        return None  # dangling backslash — no real closing delimiter
+                    ws = False
+                    i += 2
+                    continue
+                if not tick and ch == '`':
+                    _bt = _backtick_span(s, i)
+                    if _bt is None:
+                        return None
+                    i = _bt
+                    ws = False
+                    continue
+                # Paren counting only: a backtick body ends at its own delimiter.
+                if (s.startswith('${', i) or s.startswith('$[', i)) \
+                        and _dollar_run_is_even(s, i):
+                    # Neither is command text: the `<<` in `${X:-<<EOF}` is part of a
+                    # default VALUE and the one in legacy `$[1 << 2]` is a shift, so the
+                    # heredoc read there was fictitious and its body ate the closer.
+                    _span.append(('}' if s[i + 1] == '{' else ']', depth))
+                    i += 2
+                    ws = False
+                    continue
+                if _span and ch == _span[-1][0]:
+                    _span.pop()
+                    i += 1
+                    ws = False
+                    continue
+                if _span and depth == _span[-1][1] and ch in '()':
+                    # A bare paren in there is TEXT -- `${X//a/(}` is a replacement, not
+                    # a subshell -- so counting it left the substitution never closing.
+                    # A `$()` opened inside the span is real and raises the depth, so
+                    # only the span's OWN level is exempt (#802).
+                    i += 1
+                    ws = False
+                    continue
+                if not tick and not _inner_arith and not _span \
+                        and _subst_ambiguous(s, i, ws):
+                    return None
+                if s.startswith('$((', i):   # ABOVE the tick branch: inside a backtick
+                    depth += 2               # body this seeds the arith stack too, and
+                    _inner_arith.append(depth)   # without it the `<<` of
+                    i += 3                       # `\`echo $(( 1 << 2\n))\`` read as a
+                    ws = True                    # heredoc and ate the closer (#802).
+                    continue
+                if tick and depth == 0:   # a nested `$()` is paren-counted while open
+                    if ch == '`':
+                        i += 1
+                        closed = True
+                        break
+                    ws = ch in " \t\n;&|()"
+                    i += 1
+                    continue
+                if s.startswith('$(', i):
+                    depth += 1
+                    i += 2
+                    ws = True
+                    continue
+                if ws and s.startswith('((', i):
+                    depth += 2
+                    _inner_arith.append(depth)
+                    i += 2
+                    continue
+                if ch == '(':
+                    depth += 1
+                    i += 1
+                    ws = True
+                    continue
+                if ch == ')':
+                    depth -= 1
+                    i += 1
+                    if _qstack and depth == _qstack[-1][0]:
+                        q = _qstack.pop()[1]
+                    if _inner_arith and depth < _inner_arith[-1]:
+                        _inner_arith.pop()
+                    if depth == 0 and not tick:
+                        closed = True
+                        break
+                    ws = True
+                    continue
+                ws = ch in " \t\n;&|"
+                i += 1
+            if not closed:
+                return None
+            # Its output is UNKNOWN text, still glob-expanded when unquoted, so deleting
+            # the span asserted the one expansion the shell rarely gives -- the empty
+            # string -- and `[l]$(printf e)[a][s][e]...` really does name the helper.
+            # `*` is "some text, possibly none". Only where the span is GLUED to literal
+            # text: a whole-word substitution carries no pattern of its own, so `*` there
+            # matches every path in every repo (``echo python3` notes.txt` must stay
+            # allowed, #553); the unresolved-command-word case has its own guard.
+            # Double-quoted it projects `"*"`, closing the quotes so the star lands
+            # OUTSIDE them -- emitted between them it is a quoted star, literal text
+            # matching nothing, and the projection would have been inert.
+            if _glued(s, _sub_start, i):
+                out.append('"*"' if oq else '*')
+            ws = False
+            continue
+        # `$$` is the PID, so `$${foo` is a PID and a LITERAL brace -- testing `${` one
+        # character in opened an expansion that never closes, and the whole command was
+        # refused. Bash runs it. The same parity question the raw-word scan and the
+        # segment splitter already ask, asked with the same helper (#802 / #553).
+        if s.startswith('${', i) and _dollar_run_is_even(s, i):
+            _sub_start = i
+            i += 2
+            q = ''
+            depth = 1
+            # A `<<` is a heredoc introducer only in COMMAND text. Inside a `${...}`
+            # body it is ordinary characters -- `${X:-<<EOF}` is a literal default
+            # value -- and inside arithmetic it is a SHIFT. Track the nested `$()` a
+            # command actually lives in, and the arithmetic that is never one, and ask
+            # about a heredoc only in the first (#802). Same rule `_strip_cmd_subst`
+            # states for its own span: the heredoc belongs to the command, not the
+            # expansion around it.
+            _nsub = 0
+            _narith = 0
+            _nhd = []            # introducers queued on THIS line, in order
+            closed = False
+            while i < n:
+                ch = s[i]
+                if q:
+                    if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    if q == '"' and ch == '`':   # quotes for itself, here too (#802)
+                        _bt = _backtick_span(s, i)
+                        if _bt is None:
+                            return None
+                        i = _bt
+                        continue
+                    if ch == q:
+                        q = ''
+                    i += 1
+                    continue
+                if ch == '\\' and i + 1 < n:
+                    i += 2
+                    continue
+                _sp = _ansi_c_span(s, i) or (_backtick_span(s, i) if ch == '`' else None)
+                if _sp:
+                    i = _sp
+                    continue
+                # A HEREDOC BODY is data, here as everywhere else. `${X:-$(cat <<EOF
+                # ... EOF)}` runs a real command whose heredoc is a real heredoc, and
+                # reading that body as shell text let an apostrophe in prose open a
+                # quote that swallowed the closing brace (#802). The walker does not
+                # need to WALK the nested `$()` to get this right -- it needs to stop
+                # reading the one span that is not shell text, with the same two shared
+                # helpers every other walker uses for it.
+                if s.startswith('$((', i) or s.startswith('((', i):
+                    _narith += 1
+                    i += 3 if s.startswith('$((', i) else 2
+                    continue
+                if _narith and s.startswith('))', i):
+                    _narith -= 1
+                    i += 2
+                    continue
+                if s.startswith('$(', i):
+                    _nsub += 1
+                    i += 2
+                    continue
+                if ch == ')' and _nsub:
+                    _nsub -= 1
+                    i += 1
+                    continue
+                # SEVERAL bodies can queue on one line -- `cat <<A <<B` reads A's then
+                # B's -- so the introducers are collected and the bodies skipped in
+                # order at the newline, exactly as _strip_cmd_subst does it. Jumping
+                # at the first introducer left the second body being read as shell
+                # text, where an apostrophe in prose opened a quote (#802).
+                if _nhd and ch == chr(10):
+                    # A nested `$()` is its OWN command, so only the introducers queued
+                    # at THIS depth are pending at this newline. One flat queue took the
+                    # OUTER delimiter at the inner newline and its body then ate the
+                    # closing `)}` -- the same rule, and the same shape, the `$()`
+                    # walker above already states for its own queue (#802).
+                    _pend = [t for t, _d in _nhd if _d == _nsub]
+                    if _pend:
+                        i = _heredoc_body_end(s, i + 1, _pend)
+                        _nhd = [p for p in _nhd if p[1] != _nsub]
+                        continue
+                if _nsub and not _narith:
+                    if s.startswith('<<<', i):   # a herestring is a WORD, not a body
+                        i += 3
+                        continue
+                    _hd = _heredoc_delim(s, i)
+                    if _hd:
+                        _nhd.append((_hd[0], _nsub))
+                        i = _hd[1]
+                        continue
+                if ch in ("'", '"'):
+                    q = ch
+                    i += 1
+                    continue
+                # Nested parameter expansion only — a bare `{` is literal (#802),
+                # and `$${` is a PID beside one, so the run's parity decides (#802).
+                if s.startswith('${', i) and _dollar_run_is_even(s, i):
+                    depth += 1
+                    i += 2
+                    continue
+                if ch == '}':
+                    depth -= 1
+                    i += 1
+                    if depth == 0:
+                        closed = True
+                        break
+                    continue
+                i += 1
+            if not closed:
+                return None
+            # `${X:-e}` is the same unknown text as `$(printf e)` above, and was
+            # deleted the same way: `[l]${X:-e}[a][s][e]...` names the helper.
+            # Double-quoted, it projects `"*"` for the reason above.
+            if _glued(s, _sub_start, i):
+                out.append('"*"' if oq else '*')
+            ws = False
+            continue
+        ws = ch in " \t\n;&|()"
+        out.append(s[i])
+        i += 1
+    return ''.join(out)
+
+
+def _glob_helper(word, deep=None, structured=True, raw=None):
     """The helper FILE a GLOB operand can expand to, or None.
+
+    `structured` is True for command-operand walks and False for the
+    structureless abandoned-scan probe (#573). Exhaustion fail-closes only
+    on the structured path.
 
     The shell resolves `lease_slo?.py` against the filesystem, so the question is not
     whether the literal spelling names a helper -- it never does -- but whether the
@@ -2061,6 +2834,72 @@ def _glob_helper(word, deep=None):
     Found by generating class spellings and EXECUTING each one, after codex had raised the
     same disagreement twice from the probe side.
     """
+    # Honor shell quoting in `raw`: quoted/escaped metas are literals. Build an
+    # effective fnmatch pattern before dequoted matching (#802).
+    _match_word = word
+    _unquoted_proj = None
+    if raw is not None:
+        _eff = []
+        _proj = []
+        _q = ""
+        _i = 0
+        _live = False
+        # Bash double-quote backslash: only $ ` " \ newline are special.
+        _dq_special = set(["$", "`", chr(34), chr(92), chr(10)])
+        # A quoted or escaped character is LITERAL, so it must survive into the
+        # PROJECTION as well as `_eff`. Dropping it let a class variant delete a
+        # character the shell keeps -- `"x"[l]ease_slot.py` projected to `[l]ease…`,
+        # matching a helper the command never names (#802 litmus MEDIUM). A quoted
+        # glob meta projects to an inert placeholder, not an active class: helper
+        # names carry no metas, so a literal one makes the word unmatchable.
+        _INERT = chr(1)
+
+        def _lit(_c):
+            return _INERT if _c in "*?[]" else _c
+        while _i < len(raw):
+            _ch = raw[_i]
+            if _q:
+                if _ch == chr(92) and _q == chr(34) and _i + 1 < len(raw):
+                    _n = raw[_i + 1]
+                    if _n in _dq_special:
+                        if _n != chr(10):
+                            _eff.append(("[" + _n + "]") if _n in "*?[]" else _n)
+                            _proj.append(_lit(_n))
+                        _i += 2
+                        continue
+                    _eff.append(chr(92))
+                    _eff.append(("[" + _n + "]") if _n in "*?[]" else _n)
+                    _proj.append(chr(92))
+                    _proj.append(_lit(_n))
+                    _i += 2
+                    continue
+                if _ch == _q:
+                    _q = ""
+                    _i += 1
+                    continue
+                _eff.append(("[" + _ch + "]") if _ch in "*?[]" else _ch)
+                _proj.append(_lit(_ch))
+                _i += 1
+                continue
+            if _ch in (chr(39), chr(34)):
+                _q = _ch
+                _i += 1
+                continue
+            if _ch == chr(92) and _i + 1 < len(raw):
+                _n = raw[_i + 1]
+                _eff.append(("[" + _n + "]") if _n in "*?[]" else _n)
+                _proj.append(_lit(_n))
+                _i += 2
+                continue
+            if _ch in "*?[":
+                _live = True
+            _eff.append(_ch)
+            _proj.append(_ch)
+            _i += 1
+        if not _live:
+            return None
+        _match_word = "".join(_eff)
+        _unquoted_proj = "".join(_proj)
     seen = set()
     # Resolved BEFORE _class_variants can charge the deep budget, and reused below instead
     # of asked again afterward. Asking again re-tests the SAME word's length against the
@@ -2068,9 +2907,24 @@ def _glob_helper(word, deep=None):
     # deep search it paid for -- can price itself out of its own answer once the charge
     # lands, over-blocking a precise miss like `<stem>[a].py`. Cursor and Codex both raised
     # this from the same post-charge recheck in review.
-    was_affordable = deep if deep is not None else _deep_affordable(word)
-    variants = _class_variants(word, deep)
-    for cand in [_bn(word)] + [_bn(v) for v in variants]:
+    #
+    # Multi-class / in-body-quote words still get the BASE squeeze family (needed to
+    # resolve POSIX classes like `[[:lower:]]ease_slot.p[y]`), but never the deep
+    # combination space — those readings couple across classes and would burn the
+    # command-wide probe budget on a single word (#802 / #708).
+    # Use unquoted active classes for `_multi`, not synthetic fnmatch brackets (#802).
+    _multi_src = _unquoted_proj if _unquoted_proj is not None else _match_word
+    _multi = (_count_classes(_multi_src) >= 2
+              or _CLASS_QUOTE_RE.search(_multi_src))
+    was_affordable = deep if deep is not None else _deep_affordable(_match_word)
+    # Never feed synthetic fnmatch escapes to _class_variants; variantize the
+    # unquoted projection only (#802).
+    if _unquoted_proj is not None:
+        variants = ([] if "[" not in _unquoted_proj
+                    else _class_variants(_unquoted_proj, False if _multi else deep))
+    else:
+        variants = _class_variants(_match_word, False if _multi else deep)
+    for cand in [_bn(_match_word)] + [_bn(v) for v in variants]:
         if cand in seen:
             continue
         seen.add(cand)
@@ -2081,21 +2935,82 @@ def _glob_helper(word, deep=None):
         hit = next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
         if hit:
             return hit
+    # Exhaustion / multi-class: stemless unresolved structured operands fail closed
+    # only when they could encode a helper (enough classes, or wildcards). Short
+    # `[a][b]` stays allow; NUL / `$` / backtick leads count as stemless (#802 / #573).
+    _stemless_lead = "*?[$" + chr(0) + chr(96)
+    def _resolved_exactly(_bn):
+        """True where the pattern can name only ONE filename.
+
+        Every class a single literal character and no wildcard left: the shell expands
+        `[t][e][s][t]...` to exactly `test_parse_narrative.py`, so the match test above
+        was FINAL and counting classes after it refused a file that cannot be a helper
+        by any expansion (#802).
+        """
+        if any(c in _bn for c in "*?$" + chr(0) + chr(96)):
+            return False
+        _rest = _SINGLETON_CLASS_RE.sub("x", _bn)
+        return "[" not in _rest and "]" not in _rest
+    _helper_slots = min(len(h) for h in _MUTATING_HELPERS)
+    def _stemless_threat(w, raw=None):
+        bn = _bn(w)
+        if not bn or bn[:1] not in _stemless_lead:
+            return False
+        try:
+            pat = re.compile(fnmatch.translate(bn))
+            if any(pat.match(h) for h in _MUTATING_HELPERS):
+                return True
+        except (re.error, TypeError):
+            return True
+        if _resolved_exactly(bn):
+            return False
+        # In-class quotes are NOT string quotes -+ keep them for class counting.
+        # A fully-wrapped literal filename contributes zero active classes (#802).
+        _basis = raw if raw is not None else w
+        if (_basis[:1] in ("'", chr(34)) and len(_basis) >= 2
+                and _basis[-1] == _basis[0]
+                and _basis[1:].count(_basis[0]) == 0):
+            return False
+        # Only the BASENAME can name a helper: a class in a DIRECTORY component selects
+        # directories, so counting those met the length threshold on a path whose own
+        # basename matches nothing -- an ordinary file blocked as a helper (#802). A
+        # class holding the `/` itself leaves no literal one, so the whole word stands.
+        _basis = _basis.rsplit('/', 1)[-1]
+        _nclass = _count_classes(_basis, _helper_slots)
+        if _nclass >= _helper_slots:
+            return True
+        # An in-class quote means the class BASH reads is not the class this projection
+        # reads -- quote removal changes its members -- so with two of them unresolved
+        # the word can still spell a helper, and unresolved-but-able-to-name-a-helper
+        # is the fail-CLOSED case exactly as budget exhaustion is (#802).
+        #
+        # This asked additionally for a `*`, a `?`, or a class LEADING with `!`/`^`.
+        # Twice that was a list to lose: `["^"l]ease_[!Z]lot.p[[.y.]]` has no star, and
+        # `[""!Z]ease_slot['^'.]p[''^Z]` negates behind empty quotes where no lead-anchored
+        # pattern can see it. Both expand onto the helper under bash. The spelling of a
+        # wildcard is not a bounded set, so this no longer asks how one is spelled.
+        # It costs `["ab"]x["cd"].txt`, which now blocks: two unreadable classes, no
+        # helper, refused anyway. Fail-closed, and the deep reading resolves the
+        # ordinary shapes long before this clause is reached.
+        return bool(_CLASS_QUOTE_RE.search(_basis) and _nclass >= 2)
+    if _class_expand_exhausted[0]:
+        hit = _bracket_prefix_hit(_match_word)
+        if hit or not structured:
+            return hit
+        if _stemless_threat(_match_word, raw=raw):
+            return _MUTATING_HELPERS[0]
+        return None
+    if _multi:
+        hit = _bracket_prefix_hit(_match_word)
+        if hit or not structured:
+            return hit
+        if _stemless_threat(_match_word, raw=raw):
+            return _MUTATING_HELPERS[0]
+        return None
     # A search that hit a budget has not cleared this word -- see _bracket_prefix_hit.
-    #
-    # An EXPLICIT deep=False is not a budget: a caller passing it has settled the split
-    # itself, and treating that as exhaustion would answer every probe word through the
-    # fallback and start over-blocking the precise cases (`<stem>[a].py`) this change works to
-    # keep. An INTERNAL one is, which is the case codex found -- a structured operand padded
-    # past _CLASS_DEEP_MAX_LEN with quotes the shell removes drops to the base reading, and
-    # the base reading stops at the first quoted `]`. Verified at the function: the padded
-    # word returned None where the same word unpadded returned the helper.
     if (len(variants) >= _CLASS_VARIANT_CAP
             or word.count("]") > _CLOSE_CANDIDATES
-            or (deep is None and not was_affordable)
-            or _class_expand_exhausted[0]
-            or _count_classes(word) >= 2
-            or _CLASS_QUOTE_RE.search(word)):
+            or (deep is None and not was_affordable)):
         return _bracket_prefix_hit(word)
     return None
 
@@ -2471,7 +3386,7 @@ def _glob_helper_targeted(word, deep=None):
     # whose discarded directory is a literal naming the folder both helpers live in.
     if word and all(c == "*" for c in word):
         return None
-    return _glob_helper(word, deep)
+    return _glob_helper(word, deep, structured=False)
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
@@ -3867,7 +4782,7 @@ def _piped_shell_producers(pairs):
                         # extracted and lexed instead. KEEP IN STEP WITH cmdword, whose
                         # _executed_operands loop covers the same ground.
                         _btp, _bsp = _exec_payloads(_bt) if _bt is not None else ([], [])
-                        _bprogs = [" ".join(shlex.quote(_x) for _x in _p)
+                        _bprogs = [" ".join(_requote(_x) for _x in _p)
                                    for _p in _btp] + list(_bsp)
                         if _bt is None \
                            or any(_is_shell_name(_bn(w)) for w in _bw) \
@@ -3945,7 +4860,7 @@ def _piped_shell_producers(pairs):
                 # REQUOTED, not space-joined: a token payload carries real argv
                 # boundaries, so `-exec grep "foo; unshare" ;` must not re-read as two
                 # commands. KEEP IN STEP WITH cmdword, which requotes for the same reason.
-                _progs = [" ".join(shlex.quote(_x) for _x in p)
+                _progs = [" ".join(_requote(_x) for _x in p)
                           for p in _tokp] + list(_strp)
                 # A WRAPPER hides the real program among its operands, and peeling can land
                 # on the wrong word: `env -u X /bin/[b]ash` peels to `X`, the operand of
@@ -4087,8 +5002,12 @@ def _abandoned_scan_probe(text):
     # an adversary actually spends: quoting puts whitespace INSIDE a class, so reassembling
     # the word is what the terminator search is for, and exhausting it used to answer
     # "no helper" for a command the shell expands straight onto one.
-    if (not _deep or _class_expand_exhausted[0]
-            or text.count("]") > _CLOSE_CANDIDATES):
+    if not _deep or text.count("]") > _CLOSE_CANDIDATES:
+        return _bracket_prefix_hit(text)
+    # Structureless prose (#573): prefix-hit only. Hard fail-closed on exhaustion
+    # belongs to `_glob_helper` (structured operands), where a stemless glob after
+    # decoys would otherwise ALLOW.
+    if _class_expand_exhausted[0]:
         return _bracket_prefix_hit(text)
     return None
 
@@ -4116,6 +5035,20 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # stdin check below -- which needs the redirect that feeds the payload, and that
     # redirect lives OUTSIDE it -- has to read the outer text, not this fragment.
     _whole = cmd if _full is None else _full
+    _wf = []
+
+    def _whole_stripped():
+        """`_strip_cmd_subst(_whole)`, computed at most once per call.
+
+        It is pure, so the answer is shareable. Both fragment fallbacks sit inside
+        per-segment loops, and re-asking there made the scan QUADRATIC: a 64KB command
+        of 300 segments cost 600 whole-command strips (~39M chars) and 6.6s against a
+        registered 5s budget -- and a killed hook emits nothing, which the runner reads
+        as ALLOW. A gate that runs long is a gate that is not there (#802, ADR 0050).
+        """
+        if not _wf:
+            _wf.append(_strip_cmd_subst(_whole))
+        return _wf[0]
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
         _stage_recv.clear()
@@ -4123,6 +5056,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         _class_expand_exhausted[0] = False
         _budgets_armed[0] = True
         _deep_family_active[0] = False
+        _deep_prepaid_zero[0] = False
         _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)
@@ -4152,14 +5086,68 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # substitution markers into separators and re-scan, so the body is judged as the
     # command it is. Deliberately crude rather than a second parser: dropping quotes and
     # turning `$(`/backtick/`)` into `;` can only ADD segments, so it errs toward
-    # blocking. The one over-block it admits is a command that both substitutes AND names
-    # a helper in the same breath, e.g. echo "see $(ls) lease_slot.py".
+    # blocking. That crude reading DID over-block a command which both substitutes and
+    # names a helper in the same breath -- `echo "see $(ls) lease_slot.py"` -- because
+    # the closing `)` opened a segment and made the mention a command word. The closer
+    # is now paired with its opener, so it only separates when the substitution stood in
+    # command position; see the branch below (#802).
     if _depth <= 2 and ("$(" in cmd or chr(96) in cmd):
         # Quotes are removed, NOT replaced with a space: the shell CONCATENATES adjacent
         # quoted runs, so `lease_"slot.py"` is one word and spacing it out unmatched it.
         _flat = cmd.replace(chr(34), "").replace(chr(39), "")
-        _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
-                      .replace(")", " ; "))
+        if chr(96) in _flat:
+            _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
+                          .replace(")", " ; "))
+        else:
+            # A `)` that closes a substitution which was NOT in command position must
+            # not open a segment: what follows it is still an ARGUMENT of the command
+            # the substitution sits in. `echo "$(true)" <helper>` prints a filename, and
+            # reading the tail as a command refused it -- for the LITERAL spelling at
+            # HEAD, and for the glob spelling here. A `$(` that IS in command position
+            # keeps its separator, because there the next word really does become the
+            # command: `$(true) python3 <helper>` RUNS the helper (#802).
+            # Backticks share one delimiter, so they cannot be paired this way; a
+            # command carrying one keeps the crude flattening above, unchanged.
+            _o = []
+            _pos = []
+            _k = 0
+            while _k < len(_flat):
+                if _flat.startswith("$(", _k):
+                    _seen = "".join(_o).rstrip()
+                    _pos.append(not _seen or _seen[-1] in ";&|(" + chr(10))
+                    _o.append(" ; ")
+                    _k += 2
+                    continue
+                if _flat[_k] == "(":
+                    # A bare `(` is a SUBSHELL, and its `)` is not the substitution's.
+                    # Unpushed, that `)` popped the `$(`'s entry and the substitution's
+                    # own closer then found an empty stack and separated -- refusing
+                    # `echo "$( (true) )" <helper>`. It pushes True, so a subshell
+                    # closer still separates exactly as it did before (#802).
+                    _pos.append(True)
+                    _o.append("(")
+                    _k += 1
+                    continue
+                if _flat[_k] == ")":
+                    # No opener on the stack means the `)` belongs to something this
+                    # crude pass never modelled -- a `case` arm, say. Unchanged: it
+                    # still separates, which is the fail-CLOSED reading.
+                    if not _pos or _pos.pop():
+                        _o.append(" ; ")
+                    else:
+                        # A separator the BODY just emitted must not survive either:
+                        # `echo "$( (true) )" <helper>` ends its body with a subshell
+                        # closer, and that `;` put the trailing argument back in
+                        # command position. What follows an argument-position
+                        # substitution is an argument (#802).
+                        while _o and _o[-1] in (" ; ", " "):
+                            _o.pop()
+                        _o.append(" ")
+                    _k += 1
+                    continue
+                _o.append(_flat[_k])
+                _k += 1
+            _flat = "".join(_o)
         _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)
         if _hit:
             return _hit
@@ -4204,6 +5192,29 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         _hit = _abandoned_scan_probe(_dq) or _abandoned_scan_probe(cmd)
         if _hit:
             return _hit
+    # Mid-glob command subst: strip/probe on `_whole` BEFORE `_split_with_ops` (#802),
+    # keeping prefix+subst+suffix one operand. RE-ENTER on the flattened text rather
+    # than scanning its tokens: a bare token carries no execution position, so the token
+    # form read every one as a word that RUNS and `cat <lib>/[l]ease_slot.py $(true)` --
+    # a MENTION -- blocked as soon as any substitution appeared. The walk below already
+    # knows an operand of `cat` is data. ORIGINAL command only: a recursive scan
+    # INHERITS the parent's `_whole`, so firing there re-flattened the ENCLOSING command
+    # per nesting level until the depth cap refused it (`sh -c true; echo "$(true)" "["`
+    # went from OK to a block). `_whole` contains every payload, so the top-level pass
+    # covers them; `_full=_flat` ends it.
+    if _full is None and any(x in _whole for x in ('$(', '${', '`')) and "[" in _whole:
+        _flat = _whole_stripped()
+        if _flat is None:
+            return _HELPER_UNSCANNED
+        if _flat != _whole:
+            # SAME `_depth`: this is the same command read again with its substitutions
+            # flattened, not a shell nested inside it. Charging a level spent one of the
+            # three an `sh -c` chain is allowed, so an unrelated `${X}` next to three of
+            # them tipped the cap and refused the lot (#802). `_full` ends the recursion.
+            _hit = _helper_invoked(_flat, _depth, _full=_flat)
+            if _hit:
+                return _hit
+
     _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
     # ...and the flag the FIRST split raised is preserved across them: the extra calls
     # re-enter _split_with_ops, whose reset cleared a `)#` ambiguity the first pass had
@@ -4370,7 +5381,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
             # then reads only `python3` as the program, with the helper demoted to $0/$1
             # and never scanned. Requoting round-trips the token list exactly.
-            _hit = _helper_invoked(" ".join(shlex.quote(_t) for _t in _p),
+            _hit = _helper_invoked(" ".join(_requote(_t) for _t in _p),
                                    _depth + 1, _full=_whole)
             if _hit:
                 return _hit
@@ -4466,7 +5477,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 # a word a decoy here is that a wrapper MIGHT read it as an assignment,
                 # and every such word carries an `=`. Widening can only add readings, and
                 # a reading can only add a block.
-                _alt = " ".join(shlex.quote(_t) for _i, _t in enumerate(words)
+                _alt = " ".join(_requote(_t) for _i, _t in enumerate(words)
                                 if _i != pyi)
                 _hit = _helper_invoked(_alt, _depth + 1, _full=_whole)
                 if _hit:
@@ -4551,7 +5562,118 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             _hit = _names_helper(segtext)
             if _hit:
                 return _hit
+            # Segment-local strip only (the whole-command strip ran once above). A
+            # SEGMENT is a fragment by construction: the splitter cuts on operators the
+            # shell reads INSIDE a span too, so `echo `true && cat`` arrives as ` cat``
+            # -- unclosed, though the command closes it. Only an unscannable COMMAND is
+            # a refusal, so ask the whole one first; blocking on the piece regressed
+            # #719's `printf ... | echo `true && cat`` from allow to block (#802).
+            _flat = _strip_cmd_subst(segtext)
+            if _flat is None:
+                if _whole_stripped() is None:
+                    return _HELPER_UNSCANNED
+            elif _flat != segtext:
+                # ARGUMENT position is deliberately NOT distinguished here. The flatten
+                # drops the substitution and every glob token in what is left is probed,
+                # so `echo $(true) <helper-glob>` BLOCKS although bash only prints the
+                # name -- and the LITERAL spelling of that same command blocks at HEAD
+                # too, through `_names_helper(segtext)` above. Reading position back out
+                # of a flattened segment needs the word-splitting model this file does
+                # not have (the ADR 0006 residual this function's header declares), so
+                # the two spellings agreeing fail-CLOSED is the accepted cost -- the same
+                # cost `[\^c]mdwor[!Z].p[^Z]` already pays for the class probe (#802).
+                for _t in _flat.split():
+                    if any(c in _t for c in "*?["):
+                        _hit = _glob_helper(_t, raw=_t)
+                        if _hit:
+                            return _hit
+        # Unresolved command word / wrapper-decoy interpreter (`python-user`, `${P}`)
+        # can still execute a later glob operand — scan regardless of pyi (#802 / #553).
+        if _unresolved:
+            # Skip NAME=value only while still inside wrapper preamble (#802).
+            _past_exec = False
+            for _i, _t in enumerate(words):
+                if not _past_exec:
+                    if (_skippable(_t) or _bn(_t) in _WRAPPER_CMDS
+                            or _bn(_t) in _RESERVED_SH or _ASSIGN_RE.match(_t)):
+                        if _ASSIGN_RE.match(_t):
+                            # Genuine wrapper assignment operand — do not probe as script path.
+                            continue
+                    else:
+                        _past_exec = True
+                _rw = (_raw_scan[_i] if _raw_scan is not None and _i < len(_raw_scan)
+                       else None)
+                _probe = _rw if _rw is not None else _t
+                # Quoted wildcards (`'*slot.py'`) are literals — require unquoted meta.
+                _q = ""
+                _i2 = 0
+                _live = False
+                while _i2 < len(_probe):
+                    _ch = _probe[_i2]
+                    if _q:
+                        if _ch == chr(92) and _q == chr(34) and _i2 + 1 < len(_probe):
+                            _i2 += 2
+                            continue
+                        if _ch == _q:
+                            _q = ""
+                        _i2 += 1
+                        continue
+                    if _ch in (chr(39), chr(34)):
+                        _q = _ch
+                        _i2 += 1
+                        continue
+                    if _ch == chr(92) and _i2 + 1 < len(_probe):
+                        _i2 += 2
+                        continue
+                    if _ch in "*?[":
+                        _live = True
+                        break
+                    _i2 += 1
+                if not _live:
+                    continue
+                hit = _glob_helper(_t, raw=_rw)
+                if hit:
+                    return hit
         if pyi is None:
+            # Flatten of `$(true)<stemless-classes>` in command position — same
+            # assignment / quoting gates as the unresolved scan (#802).
+            if cw is not None and "=" in cw:
+                _lhs = cw.split("=", 1)[0]
+                if not any(c in _lhs for c in "*?[/" ):
+                    cw = None
+            if cw is not None:
+                _cwi = words.index(cw) if cw in words else None
+                _crw = (_raw_scan[_cwi] if (_raw_scan is not None and _cwi is not None
+                        and _cwi < len(_raw_scan)) else None)
+                _probe = _crw if _crw is not None else cw
+                _q = ""
+                _i2 = 0
+                _live = False
+                while _i2 < len(_probe):
+                    _ch = _probe[_i2]
+                    if _q:
+                        if _ch == chr(92) and _q == chr(34) and _i2 + 1 < len(_probe):
+                            _i2 += 2
+                            continue
+                        if _ch == _q:
+                            _q = ""
+                        _i2 += 1
+                        continue
+                    if _ch in (chr(39), chr(34)):
+                        _q = _ch
+                        _i2 += 1
+                        continue
+                    if _ch == chr(92) and _i2 + 1 < len(_probe):
+                        _i2 += 2
+                        continue
+                    if _ch in "*?[":
+                        _live = True
+                        break
+                    _i2 += 1
+                if _live:
+                    hit = _glob_helper(cw, raw=_crw)
+                    if hit:
+                        return hit
             continue
         # The EXECUTED script is the interpreter first non-flag argument. Anything later
         # is that script own argument, so `python3 safe.py lease_slot.py` runs safe.py,
@@ -4582,8 +5704,53 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 # whole list. Same rule as every other abandoned scan in this file: what it
                 # could not read, it must not report as absent.
                 _raw_w = _raw_scan[j] if _raw_scan is not None else w
-                hit = (_glob_helper(w)
-                       or (_raw_w != w and _glob_helper(_raw_w))
+                # Contiguous subst rejoin only. punctuation_chars may peel
+                # `$(true)[classes…]` into `$` + `(true)[classes…]`. Extend while
+                # the next token is immediately adjacent in segtext (no whitespace).
+                # A later mention of `$[…]` must not rejoin a whitespace-separated
+                # `$` script token (#802).
+                _joined = w
+                if w in _SUBST_CW_CHARS or (w[:1] in _SUBST_CW_CHARS if w else False):
+                    _pos = 0
+                    _spans = []
+                    for _tok in words:
+                        while _pos < len(segtext) and segtext[_pos] in " \t\n":
+                            _pos += 1
+                        if segtext.startswith(_tok, _pos):
+                            _spans.append((_pos, _pos + len(_tok)))
+                            _pos += len(_tok)
+                        else:
+                            _at = segtext.find(_tok, _pos)
+                            if _at < 0:
+                                _spans.append(None)
+                            else:
+                                _spans.append((_at, _at + len(_tok)))
+                                _pos = _at + len(_tok)
+                    if j < len(_spans) and _spans[j] is not None:
+                        _parts = [w]
+                        _end = _spans[j][1]
+                        _k = j + 1
+                        while _k < len(words) and _k < len(_spans) and _spans[_k] is not None:
+                            _s, _e = _spans[_k]
+                            if _s != _end:
+                                break
+                            _parts.append(words[_k])
+                            _end = _e
+                            _k += 1
+                        _joined = "".join(_parts)
+                # Strip mid-word subst so class runs around empty cmdsubst can be probed (#802).
+                _joined_raw = (_joined if _joined != w else _raw_w)
+                _stripped = _strip_cmd_subst(_joined)
+                _stripped_raw = _strip_cmd_subst(_joined_raw)
+                if _stripped is None or _stripped_raw is None:
+                    # A joined word run is a fragment too -- see the segment note above.
+                    if _whole_stripped() is None:
+                        return _HELPER_UNSCANNED
+                    _stripped, _stripped_raw = _joined, _joined_raw
+                hit = (_glob_helper(w, raw=_raw_w)
+                       or (_joined != w and _glob_helper(_joined, raw=_joined_raw))
+                       or (_stripped != _joined and _glob_helper(_stripped, raw=_stripped_raw))
+                       or (_raw_w != w and _glob_helper(_raw_w, raw=_raw_w))
                        or (raw_dropped and _bracket_prefix_hit(segtext))
                        or _names_helper(_whole))
                 if hit:

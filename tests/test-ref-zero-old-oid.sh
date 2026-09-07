@@ -751,8 +751,13 @@ assert git_zero_old_ref_op('env git-branch -f main ' + OID_A, hook_cwd=hook_cwd)
 # (that spelling was missing from the fallback's long set outright). Neither
 # shape supplies another write qualifier, so each reset a protected branch with
 # the gate emitting no operation at all.
+# ...and the value-taking letter need not LEAD the cluster: `-qBmain` spends
+# `-q` first, and requiring position 0 handed the whole token to the alphabet
+# test, which the branch name fails.
 for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'xargs -I{} git switch -Cmain ' + OID_A,
+           'xargs -I{} git checkout -qBmain ' + OID_A,
+           'xargs -I{} git switch -qCmain ' + OID_A,
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
@@ -772,13 +777,34 @@ for _c in ('G=git; S=update-ref; "$G" "$S" HEAD ' + OID_A,
 # consume an argument, and both guesses were wrong in opposite directions:
 # `--` is end-of-options, and `--create-reflog` is boolean, so in each case HEAD
 # is still the ref operand.
+# ...and the new value need not be an OID: a revision names an existing
+# unreviewed commit just as effectively, so neither signal alone is enough --
+# position misses the boolean `--create-reflog`, and the oid misses a rev.
 for _c in ('G=git; S=update-ref; "$G" "$S" -- HEAD ' + OID_A,
-           'G=git; S=update-ref; "$G" "$S" --create-reflog HEAD ' + OID_A):
+           'G=git; S=update-ref; "$G" "$S" --create-reflog HEAD ' + OID_A,
+           'G=git; S=update-ref; "$G" "$S" HEAD unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the unreadable verb is found past the GLOBAL options, with the same
+# walk the argv path uses, so a `--no-pager` or a `-c <value>` in front of it
+# does not read as the subcommand itself.
+for _c in ('S=update-ref; xargs -I{} git --no-pager "$S" HEAD ' + OID_A,
+           'S=update-ref; xargs -I{} git -c core.abbrev=8 "$S" HEAD ' + OID_A,
+           'S=update-ref; xargs -I{} git "$S" HEAD --create-reflog ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # An HTTP HEAD carries no new oid, which is what keeps it out.
+# ...and a WRITE names its new value AFTER HEAD, which is what keeps the
+# read-only shapes out: an HTTP HEAD carries no new value, and neither does
+# `rev-parse HEAD`, `show HEAD` or a `diff` whose HEAD is the last operand.
 for _c in ('curl "$URL" -X HEAD',
            'curl -X HEAD "$URL"',
-           'wget --method HEAD "$URL"'):
+           'wget --method HEAD "$URL"',
+           'G=git; "$G" rev-parse HEAD',
+           'G=git; "$G" show HEAD',
+           'diff "$FILE" HEAD',
+           'G=git; "$G" diff HEAD main',
+           'G=git; "$G" rev-parse HEAD main',
+           'G=git; "$G" diff HEAD "$BRANCH"',
+           'G=git; "$G" rev-parse HEAD "$BRANCH"'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # The attached-value spelling is not git's alone -- `cmake -Bbuild` and
 # `curl -C100` are identical in shape -- so it is recognised ONLY behind a
@@ -793,6 +819,20 @@ for _c in ('cmake "$SRC" -Bbuild/release',
            'curl "$URL" -C100',
            'curl "$URL" -C100 --output branch'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# ...and inside a cluster the FIRST value-taking letter owns the rest of the
+# token: `checkout -bBugfix` creates a branch, and reading the capital B out of
+# its value refused an ordinary creation.
+# ...and everything before the capital must take no value of its own.
+# `checkout -b`, `switch -c` and `branch -u` each consume a name, and reading a
+# capital out of the consumed value refused an ordinary command every time the
+# value-taking letters were enumerated by hand instead.
+for _c in ('xargs -I{} git checkout -bBugfix HEAD',
+           'xargs -I{} git switch -cBugfix HEAD',
+           'xargs -I{} git branch -uBugfix main',
+           'xargs -I{} git branch -uCustom main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+assert git_zero_old_ref_op(
+    'xargs -I{} git branch -cf topic main', hook_cwd=hook_cwd)
 for _c in ('git status', 'git log --oneline -5', 'git worktree list'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 print('ok')

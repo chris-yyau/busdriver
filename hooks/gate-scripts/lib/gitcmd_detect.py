@@ -4768,6 +4768,9 @@ _ZERO_OLD_LONG_MOVE = ('--move', '--copy')
 # `-delete`, `-name`, `-maxdepth` and `-print` stay out without a length cap.
 _ZERO_OLD_CLUSTER_ALPHA = frozenset('abBcCdDfilmMpqrtuvz23')
 _ZERO_OLD_FORCE_LETTERS = 'fdDBC'
+# Short flags that take no value, so a capital AFTER one is still a flag
+# rather than a character inside somebody else's operand.
+_ZERO_OLD_BOOLEAN_SHORT = frozenset('qvfdDmMra')
 _ZERO_OLD_MOVE_LETTERS = 'mM'
 def _zero_old_force_tok(tok, strong=False, attached=False):
     """True if this token spells a ref-writing flag.
@@ -4811,8 +4814,24 @@ def _zero_old_force_tok(tok, strong=False, attached=False):
     # token test can separate them. Callers pass it only where the executable
     # is KNOWN to be git and the subcommand was read; the arms that guess at an
     # unreadable executable must not, or an ordinary build reads as a force.
-    if attached and len(body) > 1 and body[0] in 'BC' and body[0] in letters:
-        return True
+    # The value-taking letter need not lead the cluster: `checkout -qBmain`
+    # spends `-q` first, and requiring position 0 left the whole token to the
+    # alphabet test, which the branch name fails. Everything BEFORE the letter
+    # must still be a cluster letter; everything after it is the value.
+    if attached:
+        # Everything BEFORE the capital must be a letter that takes no
+        # value of its own. Enumerating the value-TAKING letters instead needs
+        # a per-subcommand table and was wrong every time it was extended --
+        # `checkout -b`, `switch -c` and `branch -u` all consume a name, and
+        # each one read a capital out of the consumed value and refused an
+        # ordinary command. An allowlist of booleans needs no such table: an
+        # unknown letter stops the scan, and the plain cluster test below still
+        # sees any force spelled as a whole letter.
+        for _c in body[:-1]:
+            if _c in 'BC' and _c in letters:
+                return True
+            if _c not in _ZERO_OLD_BOOLEAN_SHORT:
+                break
     if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
         return False
     return any(c in letters for c in body)
@@ -5002,6 +5021,18 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # keeping a wrapper vocabulary in the blocking path, along with
                 # the fail-open it left for `arch -x86_64 "$G" -f main <oid>`.
                 _after = toks[_cand_i + 1:]
+                # The SUBCOMMAND being unreadable is a different fact from some
+                # operand being unreadable: `"$G" diff HEAD "$BRANCH"` has a
+                # literal verb right there to read, and letting a variable
+                # OPERAND stand in for an unknown verb refused it.
+                # Located with the SAME walk the argv path uses, so a global
+                # option and its separate value are skipped: the subcommand of
+                # `git --no-pager "$S" HEAD <oid>` is the substitution, not the
+                # flag, and reading position 0 handed this back its bypass.
+                _sub_tok = _git_subcommand(['git'] + list(_after))[0] or ''
+                _sub_dyn = bool(_sub_tok) and (
+                    _may_be_substitution(_sub_tok)
+                    or _word_may_split(_sub_tok, _sub_tok))
                 _refs_after = any(t.startswith('refs/') for t in _after)
                 _fi_after = any(_zero_old_force_tok(t) for t in _after)
                 _fi_strong_after = any(_zero_old_force_tok(t, strong=True)
@@ -5024,7 +5055,42 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                     len(t) in (40, 64)
                     and all(c in '0123456789abcdefABCDEF' for c in t)
                     for t in _after)
-                _head_after = _oid_after and any(t == 'HEAD' for t in _after)
+                # Two signals, either of which makes HEAD the ref operand: it
+                # stands where an operand can (its neighbour is not an option
+                # consuming it -- `--` is end-of-options, not an option), or the
+                # command carries a new oid. Neither alone is enough: the first
+                # misses `--create-reflog HEAD <oid>`, whose boolean flag looks
+                # like a consumer, and the second misses `HEAD unreviewed`,
+                # whose new value is a revision rather than an oid. An HTTP
+                # `-X HEAD` satisfies neither.
+                # HEAD as the ref operand, in the two arms that need it.
+                #
+                # `_head_oid` is the conservative one, for the arm that has
+                # only an unreadable EXECUTABLE to go on: nothing there says
+                # which command runs, so it asks for a new oid and lets a
+                # revision-valued write past rather than refuse `curl -X HEAD`
+                # or `diff "$FILE" HEAD`.
+                #
+                # `_head_write` is the arm where the SUBCOMMAND is the
+                # unreadable part, which is a much stronger position: a literal
+                # `diff` or `rev-parse` is right there to be read when it
+                # exists, so its absence means the verb really is unknown and
+                # position can be trusted. A write names a value AFTER HEAD --
+                # `rev-parse HEAD` and `show HEAD` name none -- and HEAD must
+                # not itself be an option's value, `--` being end-of-options
+                # rather than an option.
+                _has_head = any(t == 'HEAD' for t in _after)
+                _head_oid = _oid_after and _has_head
+                _head_write = any(
+                    t == 'HEAD'
+                    # A value follows HEAD SOMEWHERE, not necessarily next:
+                    # git takes `--create-reflog` between the ref and its new
+                    # value, and demanding the very next token walked past it.
+                    and any(not x.startswith('-') for x in _after[i + 1:])
+                    and (_oid_after
+                         or not (i and _after[i - 1].startswith('-')
+                                 and _after[i - 1] != '--'))
+                    for i, t in enumerate(_after))
                 # A print-only builtin BEFORE the verb consumes it: `echo "$X"
                 # branch -f main HEAD` prints, and so does the same behind a
                 # wrapper whose option VALUE is the substitution (`sudo -u
@@ -5056,7 +5122,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         # unreadable operand at all -- there the candidate
                         # itself is the unreadable part.
                         or (_dyn_after
-                            and (_fi_after or _refs_after or _head_after))
+                            and (_fi_after or _refs_after
+                                 or (_sub_dyn and _head_write)))
                         # The candidate's own NAME can carry the subcommand
                         # (`G=git-branch; "$G" -f main <oid>`), so a dynamic
                         # candidate is an unreadable subcommand even with no
@@ -5066,7 +5133,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                         # `"$PYTHON" -m pytest -x tests/`.
                         or (not _cand_git
                             and (_fi_strong_after or _refs_after
-                                 or _head_after))):
+                                 or _head_oid))):
                     raw_all.append(('force', ''))
                     if _zero_old_ambient_scope():
                         ambient_scope = True

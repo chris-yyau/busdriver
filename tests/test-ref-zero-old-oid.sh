@@ -757,7 +757,9 @@ assert git_zero_old_ref_op('env git-branch -f main ' + OID_A, hook_cwd=hook_cwd)
 for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'xargs -I{} git switch -Cmain ' + OID_A,
            'xargs -I{} git checkout -qBmain ' + OID_A,
+           'xargs -I{} git checkout -lBmain ' + OID_A,
            'xargs -I{} git switch -qCmain ' + OID_A,
+           'xargs -I{} git-checkout -Bmain ' + OID_A,
            'xargs -I{} git switch --force-create=main ' + OID_A,
            'xargs -I{} git switch --force-create main ' + OID_A):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
@@ -789,7 +791,8 @@ for _c in ('G=git; S=update-ref; "$G" "$S" -- HEAD ' + OID_A,
 # does not read as the subcommand itself.
 for _c in ('S=update-ref; xargs -I{} git --no-pager "$S" HEAD ' + OID_A,
            'S=update-ref; xargs -I{} git -c core.abbrev=8 "$S" HEAD ' + OID_A,
-           'S=update-ref; xargs -I{} git "$S" HEAD --create-reflog ' + OID_A):
+           'S=update-ref; xargs -I{} git "$S" HEAD --create-reflog ' + OID_A,
+           'G=git; S=update-ref; "$G" "$S" --create-reflog HEAD unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # An HTTP HEAD carries no new oid, which is what keeps it out.
 # ...and a WRITE names its new value AFTER HEAD, which is what keeps the
@@ -804,7 +807,9 @@ for _c in ('curl "$URL" -X HEAD',
            'G=git; "$G" diff HEAD main',
            'G=git; "$G" rev-parse HEAD main',
            'G=git; "$G" diff HEAD "$BRANCH"',
-           'G=git; "$G" rev-parse HEAD "$BRANCH"'):
+           'G=git; "$G" rev-parse HEAD "$BRANCH"',
+           'curl "$URL" -H "$HEADER" -X HEAD -o /tmp/headers',
+           'curl "$URL" -H "$H2" -X HEAD -o out.txt'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # The attached-value spelling is not git's alone -- `cmake -Bbuild` and
 # `curl -C100` are identical in shape -- so it is recognised ONLY behind a
@@ -826,10 +831,16 @@ for _c in ('cmake "$SRC" -Bbuild/release',
 # `checkout -b`, `switch -c` and `branch -u` each consume a name, and reading a
 # capital out of the consumed value refused an ordinary command every time the
 # value-taking letters were enumerated by hand instead.
+# Both parsers ask the SAME rule, so the plain argv forms are pinned beside
+# the wrapped ones: the direct path used to read the B inside `-bBugfix` and
+# refuse an ordinary creation as a force on a branch called `ugfix`.
 for _c in ('xargs -I{} git checkout -bBugfix HEAD',
            'xargs -I{} git switch -cBugfix HEAD',
            'xargs -I{} git branch -uBugfix main',
-           'xargs -I{} git branch -uCustom main'):
+           'xargs -I{} git branch -uCustom main',
+           'git checkout -bBugfix HEAD',
+           'git switch -cBugfix HEAD',
+           'git branch -uBugfix main'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 assert git_zero_old_ref_op(
     'xargs -I{} git branch -cf topic main', hook_cwd=hook_cwd)

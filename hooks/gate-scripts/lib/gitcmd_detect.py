@@ -4282,9 +4282,9 @@ def _zero_old_ops_from_argv(argv):
                             continue
                 if a.startswith("-") and not a.startswith("--") and len(a) > 2:
                     body = a[1:]
-                    if any(ch in body for ch in "BC"):
+                    bc_idx = _zero_old_bc_index(body)
+                    if bc_idx >= 0:
                         force_create = True
-                        bc_idx = next(j for j, ch in enumerate(body) if ch in "BC")
                         attached = body[bc_idx + 1:]
                         if attached:
                             force_branch = attached
@@ -4768,9 +4768,32 @@ _ZERO_OLD_LONG_MOVE = ('--move', '--copy')
 # `-delete`, `-name`, `-maxdepth` and `-print` stay out without a length cap.
 _ZERO_OLD_CLUSTER_ALPHA = frozenset('abBcCdDfilmMpqrtuvz23')
 _ZERO_OLD_FORCE_LETTERS = 'fdDBC'
-# Short flags that take no value, so a capital AFTER one is still a flag
-# rather than a character inside somebody else's operand.
-_ZERO_OLD_BOOLEAN_SHORT = frozenset('qvfdDmMra')
+# Short flags that CONSUME the rest of the token: `checkout -b`, `switch -c`,
+# `branch -u`, `--track`. A capital after one of these is a character inside
+# somebody else's operand, never a flag.
+_ZERO_OLD_VALUE_SHORT = frozenset('bcut')
+# Options of the ref-WRITING commands that take no value, so a HEAD after one
+# is still the ref operand. Naming them is what separates `update-ref
+# --create-reflog HEAD <rev>` from `curl -X HEAD`, whose HEAD is the option's
+# value; nothing in the shape of the two commands tells them apart.
+_ZERO_OLD_REF_BOOL_OPTS = frozenset(
+    {'--create-reflog', '--no-deref', '--stdin', '-z', '--force', '-f'})
+
+
+def _zero_old_bc_index(body):
+    """Index of the `-B`/`-C` in a short cluster that is really a FLAG, else -1.
+
+    Reading the whole token for a capital found the B inside `-bBugfix`, whose
+    `b` already owns `Bugfix`, and turned an ordinary branch creation into a
+    force on a branch called `ugfix`. Scanning left to right and stopping at the
+    first value-taking letter is the shared rule; both the argv parser and the
+    wrapper fallback ask it, so the two cannot drift apart again."""
+    for i, ch in enumerate(body):
+        if ch in 'BC':
+            return i
+        if ch in _ZERO_OLD_VALUE_SHORT or ch not in _ZERO_OLD_CLUSTER_ALPHA:
+            return -1
+    return -1
 _ZERO_OLD_MOVE_LETTERS = 'mM'
 def _zero_old_force_tok(tok, strong=False, attached=False):
     """True if this token spells a ref-writing flag.
@@ -4819,19 +4842,9 @@ def _zero_old_force_tok(tok, strong=False, attached=False):
     # alphabet test, which the branch name fails. Everything BEFORE the letter
     # must still be a cluster letter; everything after it is the value.
     if attached:
-        # Everything BEFORE the capital must be a letter that takes no
-        # value of its own. Enumerating the value-TAKING letters instead needs
-        # a per-subcommand table and was wrong every time it was extended --
-        # `checkout -b`, `switch -c` and `branch -u` all consume a name, and
-        # each one read a capital out of the consumed value and refused an
-        # ordinary command. An allowlist of booleans needs no such table: an
-        # unknown letter stops the scan, and the plain cluster test below still
-        # sees any force spelled as a whole letter.
-        for _c in body[:-1]:
-            if _c in 'BC' and _c in letters:
-                return True
-            if _c not in _ZERO_OLD_BOOLEAN_SHORT:
-                break
+        _bc = _zero_old_bc_index(body)
+        if _bc >= 0 and body[_bc] in letters and body[_bc + 1:]:
+            return True
     if not body or any(c not in _ZERO_OLD_CLUSTER_ALPHA for c in body):
         return False
     return any(c in letters for c in body)
@@ -5005,7 +5018,10 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # never ran and read `-C100` as a force. Behind a substituted
                 # executable the shape is genuinely ambiguous, so it is dropped
                 # rather than guessed.
-                _fi = any(_zero_old_force_tok(t, attached=_cand_git)
+                # A dashed executable spells git into its own NAME, so the
+                # attached value is as readable there as after a literal `git`.
+                _attach_ok = _cand_git or _cand_dashed is not None
+                _fi = any(_zero_old_force_tok(t, attached=_attach_ok)
                           for t in toks)
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
@@ -5081,15 +5097,22 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # rather than an option.
                 _has_head = any(t == 'HEAD' for t in _after)
                 _head_oid = _oid_after and _has_head
+                # A value must follow HEAD, and HEAD must not be some
+                # option's VALUE. The second half cannot be dropped: an
+                # unreadable subcommand is not proof the command is git, since
+                # `curl "$URL" -H "$HEADER" -X HEAD -o /tmp/headers` offers its
+                # own option value as the verb. Nor can it be pure position --
+                # git takes `--create-reflog` between the ref and its new
+                # value -- so the ref-writing booleans are NAMED, and `--` is
+                # end-of-options rather than an option.
                 _head_write = any(
                     t == 'HEAD'
-                    # A value follows HEAD SOMEWHERE, not necessarily next:
-                    # git takes `--create-reflog` between the ref and its new
-                    # value, and demanding the very next token walked past it.
                     and any(not x.startswith('-') for x in _after[i + 1:])
                     and (_oid_after
-                         or not (i and _after[i - 1].startswith('-')
-                                 and _after[i - 1] != '--'))
+                         or not i
+                         or not _after[i - 1].startswith('-')
+                         or _after[i - 1] == '--'
+                         or _after[i - 1] in _ZERO_OLD_REF_BOOL_OPTS)
                     for i, t in enumerate(_after))
                 # A print-only builtin BEFORE the verb consumes it: `echo "$X"
                 # branch -f main HEAD` prints, and so does the same behind a

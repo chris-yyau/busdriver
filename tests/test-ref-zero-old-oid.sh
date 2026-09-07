@@ -798,6 +798,20 @@ for _c in ('xargs -I{} git checkout -Bmain ' + OID_A,
            'TOKEN={}; xargs -I "$TOKEN" -t git-checkout -q -Btrunk unreviewed',
            # ...and an end-of-options delimiter does not hide it either.
            'TOKEN={}; xargs -I "$TOKEN" -- git-checkout -Btrunk unreviewed',
+           # ...and a REPLACEMENT STRING that spells a subcommand must not
+           # outrank the real verb of a literal git standing after it.
+           'printf x | xargs -I git-checkout git update-ref HEAD unreviewed',
+           # ...while `git` is a legal REF NAME, so an operand spelling it
+           # must not unseat the writer -- in either operand position.
+           'xargs -I{} git-update-ref main git',
+           'xargs -I{} git-update-ref git branch',
+           # ...and the ref-writer WORD is read wherever it stands after the
+           # candidate, so no reading of who owns which token can lose it:
+           # a boolean wrapper flag, a destination spelling `git`, and a
+           # replacement string spelling a subcommand all compose here.
+           'xargs -t git-update-ref main branch',
+           'xargs --verbose git-update-ref main branch',
+           'xargs -t git-update-ref git branch',
            # ...and a git global may carry its value ATTACHED, owning no token
            # after it, so the vouching walk must step over the whole thing.
            'G=git; "$G" --git-dir=.git checkout -Btrunk unreviewed',

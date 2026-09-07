@@ -5244,6 +5244,20 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # A subcommand the gate cannot read could be any of them.
                 _dyn_after = any(_may_be_substitution(t) or _word_may_split(t, t)
                                  for t in toks[_cand_i + 1:])
+                # A ref writer that needs no flag is recognised wherever its
+                # WORD stands after the candidate, not only when it wins the
+                # subcommand slot. Which of two candidate verbs wins is an
+                # ownership question over an ambiguous token stream -- `-t` owns
+                # nothing while `-I` owns the next token, `git` is a legal REF
+                # NAME in either operand position -- and every structural rule
+                # tried for it was defeated by a composition of the two. Asking
+                # instead whether the WORD is present needs no such decision and
+                # errs closed, which is the posture of this whole arm.
+                _ref_writer_word = any(
+                    t in ('update-ref', 'symbolic-ref')
+                    or _git_dashed_subcommand(t) in ('update-ref',
+                                                     'symbolic-ref')
+                    for t in toks[_cand_i + 1:])
                 _refs_operand = any(t.startswith('refs/') for t in toks)
                 _writes_ref = _fi or _refs_operand
                 # The disjuncts that fire with NO readable subcommand have only
@@ -5369,7 +5383,8 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 if (_force_sub
                         or (_sub_i >= 0
                             and (_writes_ref
-                                 or _sub_word in ('update-ref', 'symbolic-ref')))
+                                 or _sub_word in ('update-ref', 'symbolic-ref')
+                                 or _ref_writer_word))
                         # A ref writer needs no FLAG, so an unreadable
                         # subcommand cannot be qualified on one: `S=update-ref;
                         # "$G" "$S" refs/heads/main <oid>` carries none and the

@@ -4171,6 +4171,15 @@ def _zero_old_ops_from_argv(argv):
                             i += 1
                             continue
                     if "=" not in a and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+                        # The value can be a SUBSTITUTION, and one word-splits
+                        # into further OPTIONS: `--sort $SORT` with
+                        # SORT='refname -D' supplies the sort key AND a delete.
+                        # Requiring an operand says how many words git wants,
+                        # not how many the shell will hand it.
+                        if (_may_be_substitution(rest[i + 1])
+                                or _word_may_split(rest[i + 1], rest[i + 1])):
+                            yield ("force", "")
+                            return
                         i += 2
                         continue
                     i += 1
@@ -4586,6 +4595,54 @@ _ZERO_OLD_FORCE_SUBS = {'worktree': ('add', 'B')}
 # would refuse unrelated `git-*` programs over a force-ish flag they never
 # handed to git.
 _ZERO_OLD_DASHED_CANDS = _ZERO_OLD_SUBS | frozenset(_ZERO_OLD_FORCE_SUBS)
+# Long options of these subcommands that consume NO further token. Read in the
+# two places that know the subcommand EXACTLY -- it is spelled into the
+# executable's own name (`git-checkout`) or into the modelled verb (`worktree
+# add`) -- so this is a per-WRITER vocabulary, not the open-ended wrapper
+# vocabulary whose removal from the blocking path closed the `arch -x86_64 "$G"
+# -f main <oid>` fail-open. The two readers fail in OPPOSITE directions, which
+# is why only argumentless options may be listed: a missing entry under-blocks
+# the adjacency walk (it stops early), while an option that really TAKES a
+# value would make the `--` scan read a genuine end-of-options marker as that
+# option's value and walk straight past a force. Anything whose operand is
+# arguable (`--track`, `--unset-upstream`, `--color`) is deliberately absent.
+_ZERO_OLD_BOOL_LONG_BY_SUB = {
+    'checkout': ('--quiet', '--progress', '--no-progress', '--force',
+                 '--merge', '--detach', '--patch', '--overlay', '--no-overlay',
+                 '--guess', '--no-guess', '--no-track', '--overwrite-ignore',
+                 '--no-overwrite-ignore', '--ignore-other-worktrees',
+                 '--ignore-skip-worktree-bits', '--recurse-submodules',
+                 '--no-recurse-submodules'),
+    'switch': ('--quiet', '--progress', '--no-progress', '--force', '--merge',
+               '--detach', '--discard-changes', '--guess', '--no-guess',
+               '--no-track', '--recurse-submodules', '--no-recurse-submodules'),
+    'branch': ('--quiet', '--verbose', '--all', '--list', '--remotes',
+               '--show-current', '--force', '--delete', '--move', '--copy',
+               '--create-reflog', '--ignore-case', '--omit-empty'),
+    'update-ref': ('--no-deref', '--deref', '--create-reflog', '--stdin'),
+    'symbolic-ref': ('--quiet', '--short', '--delete', '--recurse',
+                     '--no-recurse'),
+    'worktree': ('--quiet', '--detach', '--force', '--checkout',
+                 '--no-checkout', '--lock', '--guess-remote',
+                 '--no-guess-remote', '--relative-paths',
+                 '--no-relative-paths'),
+}
+
+
+def _zero_old_bool_long(tok, sub):
+    """True if `tok` is an argumentless LONG option of `sub`.
+
+    Abbreviations count, because git runs them -- but only where they name ONE
+    entry. An abbreviation matching two is one git itself refuses, so reading
+    it as unknown costs nothing."""
+    if not tok.startswith('--') or len(tok) <= 2 or '=' in tok:
+        return False
+    opts = _ZERO_OLD_BOOL_LONG_BY_SUB.get(sub, ())
+    if tok in opts:
+        return True
+    return len([o for o in opts if o.startswith(tok)]) == 1
+
+
 def _zero_old_force_sub(argv, sub, sub_idx):
     spec = _ZERO_OLD_FORCE_SUBS.get(sub)
     if spec is None:
@@ -4599,10 +4656,17 @@ def _zero_old_force_sub(argv, sub, sub_idx):
     # --reason -- -B main` the `--` is the reason STRING and `-B` is still an
     # option. An option token in front of it is the tell -- no vocabulary of
     # which options take values, which would be one more open-ended list.
+    # ...and an option that takes NO value cannot be holding it either:
+    # `worktree add --detach -- "$WTPATH" main` creates a DETACHED worktree and
+    # resets no branch, but reading `--detach` as the consumer left the path
+    # substitution standing where a force flag could be, and refused it. Only
+    # argumentless options are named, so `--reason -- -B main` still reads the
+    # `--` as the reason STRING.
     rest_all = argv[sub_idx + 1:]
     if '--' in rest_all:
         _dd = rest_all.index('--')
-        if _dd == 0 or not rest_all[_dd - 1].startswith('-'):
+        if (_dd == 0 or not rest_all[_dd - 1].startswith('-')
+                or _zero_old_bool_long(rest_all[_dd - 1], sub)):
             rest_all = rest_all[:_dd]
     rest = [a for a in rest_all if not a.startswith('-')]
     verb_tok = rest[0] if rest else ''
@@ -4896,9 +4960,12 @@ def _zero_old_dashed_adjacent(toks, j):
     -name -Boutput` is held out only because find's `-o` is not in the alphabet.
     Deciding who owns the token in between is per-command and open-ended, so
     each further widening was defeated by the next spelling of the same idea.
-    What this therefore does NOT catch is a LONG flag of the writer's own
-    standing first (`git-checkout --quiet -Btrunk` behind a wrapper); that
-    residual is recorded beside the tests rather than traded for an over-block.
+    A LONG flag of the writer's OWN is walked over too (`git-checkout --quiet
+    -Btrunk` behind a wrapper), and that is not the widening this docstring
+    warns about: the earlier attempt crossed ANY long option, which is how a
+    neighbouring command's `--url` handed its `-Boutput` over. Here the
+    subcommand is known exactly -- it is spelled into the executable's name --
+    so the vocabulary is that writer's, and `--url` is not in it.
     """
     sub = _git_dashed_subcommand(toks[j])
     if sub not in _ZERO_OLD_SUBS:
@@ -4907,6 +4974,8 @@ def _zero_old_dashed_adjacent(toks, j):
     for t in toks[j + 1:]:
         if _zero_old_force_tok(t, attached=True, sub=sub, only=only):
             return True
+        if _zero_old_bool_long(t, sub):
+            continue
         if not (t.startswith('-') and not t.startswith('--') and t[1:]
                 and all(c in _ZERO_OLD_CLUSTER_ALPHA for c in t[1:])):
             return False
@@ -5148,6 +5217,36 @@ def _zero_old_has_risky_companion(chunks):
     return n_mut > 1
 def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
     chunks = _all_chunks(cmd)
+    # A dashed writer can be named only by an assignment in an EARLIER segment:
+    # `G=git-switch; "$G" -Ctrunk unreviewed` spells neither `git` nor `switch`
+    # where the wrapper arm can read them, and the attached force-create went
+    # unrecognised while the separate `-C trunk` spelling did not.
+    #
+    # Three bounds make this safe, and each was learned from a reading that had
+    # to be withdrawn. (1) Only a STANDALONE assignment segment is recorded, so
+    # an env PREFIX -- which assigns to a DIFFERENT command, and is one segment
+    # with that command in it (`OTHER=git-switch curl "$URL" -C100`) -- is
+    # never recorded; a scan for any assignment in the current segment was
+    # tried and refused exactly that. (2) Only a DASHED WRITER is recorded, not
+    # a plain `git`. (3) The resolution never REPLACES the command word, it
+    # only offers an additional reading, and every value a name ever takes is
+    # kept rather than the last one.
+    #
+    # (2) and (3) together are what keep this monotone, and both halves are
+    # load-bearing: replacing the word with the last value read
+    # `G=git-branch; "$G" -f main <oid>; G=git` as a plain `git -f`, which is
+    # no candidate at all, and DROPPED a refusal HEAD already made.
+    _assigns = {}
+    for _c in chunks:
+        for _o, _s in split_segments(_c):
+            _t = toks_once(_s)
+            if len(_t) != 1 or '=' not in _t[0]:
+                continue
+            _n, _v = _t[0].split('=', 1)
+            if (_n and _v and _n.replace('_', 'x').isalnum()
+                    and not _n[0].isdigit()
+                    and _git_dashed_subcommand(_v) in _ZERO_OLD_SUBS):
+                _assigns.setdefault(_n, []).append(_v)
     raw_all = []
     target_dir = ''
     untrusted = ''
@@ -5170,6 +5269,22 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             argv, raw_argv = _zero_old_git_argv(seg)
             if not argv or not _is_exe(argv[0], 'git'):
                 toks = toks_once(seg)
+                # Only the COMMAND WORD is resolved -- a name merely passed as
+                # an operand is not the executable, and reading it as one is
+                # the ownership guess this arm exists to avoid. The reading is
+                # ADDED beside the one the tokens already carry, never
+                # substituted for it, so no refusal can be lost.
+                _assign_force = False
+                if toks:
+                    _w = toks[0]
+                    if _w.startswith('${') and _w.endswith('}'):
+                        _w = '$' + _w[2:-1]
+                    if _w.startswith('$'):
+                        for _v in _assigns.get(_w[1:], ()):
+                            if _zero_old_dashed_adjacent(
+                                    [_v] + list(toks[1:]), 0):
+                                _assign_force = True
+                                break
                 # This arm exists for ONE shape: a git invocation the parser
                 # could not read as argv[0]. Two things reach it -- a LITERAL
                 # git that a wrapper hides (`xargs -I{} git branch -f main
@@ -5481,7 +5596,23 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                                  and _zero_old_command_position(toks, i)), -1)
                 if _print_i >= 0 and (_verb_i < 0 or _print_i < _verb_i):
                     continue
+                # The two paths disagreed on the SAME invocation: `git checkout
+                # "${FLAG:--B}" main unreviewed` is a force to the argv parser
+                # and was nothing behind `xargs -I{}`. Rather than restate the
+                # parser's unresolved-operand rules here -- a second copy that
+                # drifts, which is how the disagreement arose -- ask the parser
+                # itself about the tokens following the candidate. VOUCHING is
+                # what keeps it off other programs' arguments: it runs only
+                # behind a LITERAL `git`, so in `curl "$URL" --output
+                # git-checkout --url -Boutput` (whose candidate is the URL)
+                # nothing is replayed.
+                _replay = bool(
+                    _cand_git and _sub_i > _cand_i
+                    and list(_zero_old_ops_from_argv(
+                        ['git'] + list(toks[_cand_i + 1:]))))
                 if (_force_sub
+                        or _assign_force
+                        or _replay
                         or (_sub_i >= 0
                             and (_writes_ref
                                  or _sub_word in ('update-ref', 'symbolic-ref')

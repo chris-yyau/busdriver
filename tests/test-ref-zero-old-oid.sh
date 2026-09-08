@@ -931,28 +931,91 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # ...while a LITERAL reason still takes its operand, and a fully
            # specified CAS is still the way past this gate.
            'git update-ref --no-deref -m reason refs/heads/alias '
-           + OID_A + ' ' + OID_A):
-# RESIDUAL 2, measured: `G=git-switch; "$G" -Cproduction <oid>` is not read.
-# The subcommand is named only by an ASSIGNMENT in an EARLIER segment, and this
-# arm sees one segment at a time; a scan for any assignment in THIS segment is
-# not the same thing and blocked ordinary commands that merely carried one
-# (`OTHER=git-switch curl "$URL" -C100`). Resolving it needs the assignment's
-# variable NAME matched to the substitution, across segments, which is a
-# different machine from this arm. Note the `-C main` spelling IS caught: the
-# separate value leaves a bare force letter that the plain cluster test reads.
-#
-# RESIDUAL 1, deliberate and measured: the adjacency walk crosses the writer's
-# own SHORT clusters but not its LONG flags, so `git-checkout --quiet -Btrunk`
-# behind a wrapper whose flag also stops the vouching walk is not recognised.
-# Widening the walk to long options read `curl "$URL" -o git-checkout --url
-# -Boutput` -- an ordinary download -- as a reset, and every narrower rule tried
-# had to decide who owns the token in between, which is per-command and
-# open-ended; each spelling was defeated by the next. Unlike the two-reading
-# union used above, a union does not help here: both readings only ever ADD
-# blocks, so the over-block would come with it. This is an UNDER-block of the
-# fallback arm ONLY -- the same command spelled without the wrapper is caught by
-# the argv path -- and it is traded against a measured over-block.
+           + OID_A + ' ' + OID_A,
+           # A `--` after an option that takes NO value is the real
+           # end-of-options: `worktree add --detach -- <path> main` creates a
+           # DETACHED worktree and resets nothing, and reading `--detach` as
+           # the consumer of the `--` left the path standing where a force
+           # flag could be.
+           'git worktree add --detach -- "$WTPATH" main',
+           'git worktree add --detach -- /tmp/wt main',
+           # ...while a LITERAL sort key or upstream still takes its operand.
+           'git branch --sort refname main',
+           'git branch -u origin/main main',
+           # The two spellings that bound the walk over a writer's own LONG
+           # options. Only THAT writer's vocabulary is crossed, so a
+           # neighbouring command's option still stops it -- widening the walk
+           # to any long option read these ordinary downloads as resets.
+           'curl "$URL" --output git-checkout --url -Boutput',
+           'curl "$URL" -o git-checkout --url -Boutput',
+           # ...and an assignment resolved across segments is bounded the same
+           # way: only a STANDALONE assignment segment is recorded, so an env
+           # PREFIX -- which assigns to a DIFFERENT command -- is not.
+           'OTHER=git-switch curl "$URL" -C100',
+           # ...and only a value that NAMES git is resolved, so resolution can
+           # never take away a reading. This one keeps the dynamic-candidate
+           # block it already had rather than resolving into a segment with no
+           # candidate at all.
+           'xargs -I{} git checkout main',
+           'xargs -I{} git branch -a'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The wrapper arm and the argv parser must not disagree about the SAME
+# invocation. `git checkout "${FLAG:--B}" main unreviewed` was a force to the
+# parser and nothing at all behind `xargs -I{}`, because the arm restated the
+# parser's unresolved-operand rules instead of asking it. Pinned as an
+# EQUIVALENCE so the two cannot drift apart again.
+for _c in ('git checkout "${FLAG:--B}" main unreviewed',
+           'printf x | xargs -I{} git checkout "${FLAG:--B}" main unreviewed',
+           'git checkout -- "$FILE"',
+           'xargs -I{} git checkout -- "$FILE"'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# A branch option's separate VALUE can word-split into further OPTIONS, exactly
+# as `-m <reason>` and `--conflict <style>` already do: requiring an operand
+# says how many words git wants, not how many the shell will hand it. With
+# SORT='refname -D' the second word is a DELETE of the named branch.
+for _c in ('git branch --sort $SORT main',
+           'git branch --sort "$SORT" main',
+           'git branch -u $UP main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# The adjacency walk crosses a LONG flag of the WRITER'S OWN, abbreviations
+# included -- the subcommand is spelled into the executable's name, so the
+# vocabulary is that writer's and a neighbouring `--url` is not in it. The
+# wrapper flag (`-t`) also stops the vouching walk, so nothing else sees this.
+for _c in ('TOKEN={}; printf x | xargs -I "$TOKEN" -t git-checkout --quiet '
+           '-Btrunk unreviewed',
+           'TOKEN={}; printf x | xargs -I "$TOKEN" -t git-checkout --qui '
+           '-Btrunk unreviewed',
+           'TOKEN={}; printf x | xargs -I "$TOKEN" -t git-switch --quiet '
+           '-Ctrunk unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# A dashed writer named only by an assignment in an EARLIER segment. The
+# ATTACHED value was the gap -- the separate `-C trunk` spelling was already
+# caught, because it leaves a bare force letter the plain cluster test reads --
+# so both are pinned as an equivalence pair.
+# ...and the resolution is ADDED to the reading the tokens already carry, never
+# substituted for it. Substituting the LAST value read
+# `G=git-branch; "$G" -f main <oid>; G=git` as a plain `git -f` -- no candidate
+# at all -- and DROPPED a refusal that was already being made. So every value a
+# name ever takes is kept, and a plain `git` is not recorded as one: resolution
+# can add a reading, never remove one. Order cannot hide a value either, which
+# is why both orderings are pinned.
+for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
+           'G=git-switch; "$G" -C trunk unreviewed',
+           'G=git-switch; "${G}" -Ctrunk unreviewed',
+           'G="git-switch"; "$G" -Cproduction ' + OID_A,
+           'G=git-branch; "$G" -f main unreviewed',
+           'G=git-branch; "$G" -f main unreviewed; G=git',
+           'G=git; G=git-branch; "$G" -f main unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# RESIDUAL, measured and PRE-EXISTING at the base of this branch: `curl "$URL"
+# -d "$BODY"` is refused. The candidate is an unreadable token with a strong
+# force letter behind it, which is the exact shape of `G=git-branch; "$G" -f
+# main <oid>`; separating them means deciding whether the substitution is the
+# COMMAND or an argument to one, and that needs the wrapper vocabulary whose
+# removal from the blocking path closed the `arch -x86_64 "$G" -f main <oid>`
+# fail-open. It is an OVER-block, so it fails closed, and it is pinned here as
+# current behaviour rather than left to be rediscovered.
+assert git_zero_old_ref_op('curl "$URL" -d "$BODY"', hook_cwd=hook_cwd)
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out
 # protected branch with no old-value precondition, so the HEAD operand is the

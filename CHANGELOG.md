@@ -1,3 +1,10 @@
+## [2.1.16](https://github.com/chris-yyau/busdriver/compare/v2.1.15...v2.1.16) (2026-09-08)
+
+
+### Bug Fixes
+
+* **oracle:** add browser model strategy ([#845](https://github.com/chris-yyau/busdriver/issues/845)) ([902f956](https://github.com/chris-yyau/busdriver/commit/902f956fb240d7acdd46fcc31abeb181db76998c))
+
 ## [2.1.15](https://github.com/chris-yyau/busdriver/compare/v2.1.14...v2.1.15) (2026-09-07)
 
 

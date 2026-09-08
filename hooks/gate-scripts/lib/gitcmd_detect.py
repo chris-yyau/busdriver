@@ -4326,7 +4326,11 @@ def _zero_old_ops_from_argv(argv):
                         continue
                 i += 1
                 continue
-            if _may_be_substitution(a) or _word_may_split(a, a):
+            # After a genuine `--` every remaining word is a PATHSPEC and git
+            # parses no options there, so a substitution cannot smuggle in a
+            # `-B` however it splits. Before the delimiter the old reading
+            # stands unchanged -- this narrows ONLY the post-`--` operand.
+            if not end_opts and (_may_be_substitution(a) or _word_may_split(a, a)):
                 yield ("force", "")
                 return
             names.append(a)
@@ -5211,11 +5215,13 @@ def _zero_old_command_position(toks, i):
     string as the command discarded the force and left the gate seeing no
     operation at all.
 
-    Asked at both sites that pick a command out of a token list, because they
+    Asked at every site that picks a command out of a token list, because they
     read the SAME shape and differ only in what they do with the answer. Saying
-    no is safe in both: the print-only arm loses an exemption (fail closed), and
-    the dashed-argv arm loses its argv, which hands the segment to the strictly
-    stricter invocation-shape fallback.
+    no is safe in all of them: the print-only arm loses an exemption (fail
+    closed), the dashed-argv arm loses its argv, which hands the segment to the
+    strictly stricter invocation-shape fallback, and the candidate replay
+    declines an ADDITION, which leaves the reading it would have widened exactly
+    as it stands.
     """
     return (not (i and toks[i - 1].startswith('-'))
             and _zero_old_only_prefix(toks[:i]))
@@ -5260,13 +5266,25 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
     for _c in chunks:
         for _o, _s in split_segments(_c):
             _t = toks_once(_s)
-            if len(_t) != 1 or '=' not in _t[0]:
+            # A segment that is ENTIRELY assignments -- optionally behind a
+            # declaration builtin -- binds those names in the SHELL, so every
+            # one of them is readable by a later command. Demanding EXACTLY
+            # one token missed `G=git-switch X=1` and `export G=git-switch`
+            # alike: one unrelated neighbour disarmed the whole prepass. An
+            # env PREFIX (`OTHER=git-switch curl ...`) still carries a
+            # non-assignment word, so it stays excluded as before.
+            if _t and _t[0] in ('export', 'declare', 'typeset', 'local',
+                                'readonly'):
+                _t = _t[1:]
+            if not _t or not all(
+                    '=' in _w and not _w.startswith('=') for _w in _t):
                 continue
-            _n, _v = _t[0].split('=', 1)
-            if (_n and _v and _n.replace('_', 'x').isalnum()
-                    and not _n[0].isdigit()
-                    and _git_dashed_subcommand(_v) in _ZERO_OLD_SUBS):
-                _assigns.setdefault(_n, []).append(_v)
+            for _w in _t:
+                _n, _v = _w.split('=', 1)
+                if (_n and _v and _n.replace('_', 'x').isalnum()
+                        and not _n[0].isdigit()
+                        and _git_dashed_subcommand(_v) in _ZERO_OLD_SUBS):
+                    _assigns.setdefault(_n, []).append(_v)
     raw_all = []
     target_dir = ''
     untrusted = ''
@@ -5651,6 +5669,30 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                     and list(_zero_old_ops_from_argv(
                         ['git'] + list(toks[_gi + 1:])))
                     for _gi, _gt in enumerate(toks) if _is_exe(_gt, 'git'))
+                # ...and at the CANDIDATE as well, not only at literal `git`
+                # words. `G=git; "$G" checkout "${FLAG:--B}" main unreviewed`
+                # vouches for its candidate with a MODELLED subcommand, so the
+                # subcommand reads fine (_sub_dyn false) while the force
+                # arrives as a substitution no literal scan can see. Keying
+                # the replay on literal `git` alone read that as nothing at
+                # all. Additive: an existing True is never withdrawn -- but
+                # additive is exactly why it needs the COMMAND-POSITION guard.
+                # A candidate is a token that COULD name git, not one that
+                # does, so replaying behind every candidate manufactured a
+                # force out of `curl "$URL" --output checkout "$FILE"`: `$URL`
+                # is curl's argument and `checkout` the output FILENAME. The
+                # literal-`git` arm above needs no such guard -- `_is_exe`
+                # already vouches for those words -- and asking the same
+                # question here costs nothing when the answer is no, because
+                # declining an ADDITION leaves HEAD's reading standing. That is
+                # why an incomplete answer is safe in this direction and would
+                # not have been as a whole-block exemption: the shapes the
+                # helper says no to (`arch -x86_64 "$G" …`) are still refused
+                # by the disjuncts that already refused them.
+                if (not _replay and _cand_i >= 0 and _sub_i > _cand_i
+                        and _zero_old_command_position(toks, _cand_i)):
+                    _replay = bool(list(_zero_old_ops_from_argv(
+                        ['git'] + list(toks[_cand_i + 1:]))))
                 if (_force_sub
                         or _assign_force
                         or _replay

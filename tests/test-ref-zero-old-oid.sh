@@ -975,9 +975,34 @@ for _c in ('git checkout "${FLAG:--B}" main unreviewed',
            'printf x | xargs -I{} git checkout "${FLAG:--B}" main unreviewed',
            'printf x | xargs -I "$TOKEN" git checkout "${FLAG:--B}" main '
            'unreviewed',
-           'git checkout -- "$FILE"',
-           'xargs -I{} git checkout -- "$FILE"'):
+           # ...and the DYNAMIC-executable spelling of the same reset. The
+           # candidate is vouched for by a MODELLED subcommand, so `checkout`
+           # reads fine and the force arrives only as a substitution: keying
+           # the replay on literal `git` words alone saw nothing at all.
+           'G=git; "$G" checkout "${FLAG:--B}" main unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the control that keeps THAT replay off other programs. A candidate is
+# only a candidate: `$URL` here is curl's ARGUMENT, not a command word, and
+# `checkout` is the value of `--output` -- a filename. Replaying the words after
+# any candidate whatsoever read the filename as a subcommand and manufactured a
+# force out of an ordinary download. The replay is gated on the same
+# command-position question the parser already asks elsewhere, so a candidate
+# standing where no command can stand vouches for nothing.
+# Scoped to the shape that REGRESSED. The same line carrying a literal `-B` is
+# refused at HEAD too: that is the documented residual pinned BELOW -- a dashed
+# force letter standing after an unresolvable substitution -- and not this
+# defect, so it stays must-BLOCK and is not quietly relaxed under cover of an
+# F1 fix.
+assert git_zero_old_ref_op('curl "$URL" --output checkout "$FILE"',
+                           hook_cwd=hook_cwd) == []
+# ...but after a genuine `--` every remaining word is a PATHSPEC and git parses
+# no options there, so a substitution cannot introduce a `-B` however it
+# splits. Both spellings were pinned as must-BLOCK in round 18; that pin
+# asserted an INCORRECT refusal, so it is corrected here into an allow control
+# rather than left standing as if it were the intended behaviour.
+for _c in ('git checkout -- "$FILE"',
+           'xargs -I{} git checkout -- "$FILE"'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
 # A branch option's separate VALUE can word-split into further OPTIONS, exactly
 # as `-m <reason>` and `--conflict <style>` already do: requiring an operand
 # says how many words git wants, not how many the shell will hand it. With
@@ -1019,7 +1044,16 @@ for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
            # leading word was an ownership guess in disguise: one shell builtin
            # in front and the same reset was invisible.
            'G=git-switch; command "$G" -Ctrunk unreviewed',
-           'G=git-switch; env "$G" -Ctrunk unreviewed'):
+           'G=git-switch; env "$G" -Ctrunk unreviewed',
+           # ...and ONE unrelated neighbour in the same assignment-only
+           # segment must not disarm the reading. Demanding exactly one token
+           # meant an `X=1` beside it -- on either side -- or a declaration
+           # builtin in front left the writer unresolved and the reset
+           # invisible, so the protection was defeated by adding noise.
+           'G=git-switch X=1; "$G" -Ctrunk unreviewed',
+           'X=1 G=git-switch; "$G" -Ctrunk unreviewed',
+           'export G=git-switch; "$G" -Ctrunk unreviewed',
+           'readonly G=git-branch; "$G" -f main unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # RESIDUAL, measured: a dashed force letter (f d D B C) standing AFTER an
 # unresolvable substitution is refused whatever the leading word is. The

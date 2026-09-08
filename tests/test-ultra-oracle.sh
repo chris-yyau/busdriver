@@ -110,19 +110,32 @@ ck="$tmp/Cookies"; : > "$ck"   # a readable cookie DB stand-in
 # otherwise a failed/short-circuited call leaves the prior case's argv in place
 # and the flag assertions false-pass against stale content.
 
-# default config retains oracle's `select` model-picker strategy, has no cookiePath
-# or hideWindow, and leaves the window VISIBLE (B8 — hiding broke the browser engine).
+# Default config omits the model-picker flag, preserving oracle's `select` default
+# while remaining compatible with 0.15/0.16; it also leaves the window VISIBLE.
 rm -f "$tmp/.claude/busdriver.json"
 : > "$tmp/argv.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL c0 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path leaked when unset"; FAIL=1; }
 grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL window hidden by default (B8: should be VISIBLE)"; FAIL=1; }
-grep -qx -- "--browser-model-strategy" "$tmp/argv.log" || { echo "FAIL browser strategy flag missing"; FAIL=1; }
-awk '/^--browser-model-strategy$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "select" || { echo "FAIL default browser strategy should be select"; FAIL=1; }
+grep -qx -- "--browser-model-strategy" "$tmp/argv.log" && { echo "FAIL absent strategy should omit unsupported flag"; FAIL=1; }
 # --force is ALWAYS passed (#333): bypasses oracle's prompt-keyed duplicate guard so a
 # stale phantom "running" session can't permanently block future same-prompt dispatches.
 grep -qx -- "--force" "$tmp/argv.log" || { echo "FAIL --force missing (#333 dup-guard)"; FAIL=1; }
+
+# Explicit select is passed for current oracle versions.
+printf '{ "ultraOracle": { "browserModelStrategy": "select" } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/select.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL explicit select status got '$st'"; FAIL=1; }
+awk '/^--browser-model-strategy$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "select" || { echo "FAIL explicit select strategy not passed"; FAIL=1; }
+
+# Explicit ignore uses the same validated argv path.
+printf '{ "ultraOracle": { "browserModelStrategy": "ignore" } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/ignore.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL explicit ignore status got '$st'"; FAIL=1; }
+awk '/^--browser-model-strategy$/{getline; print; exit}' "$tmp/argv.log" | grep -qx -- "ignore" || { echo "FAIL explicit ignore strategy not passed"; FAIL=1; }
 
 # Explicit current strategy is passed with the configured alias, letting oracle use
 # ChatGPT's active model even when the alias is absent from its browser slug table.

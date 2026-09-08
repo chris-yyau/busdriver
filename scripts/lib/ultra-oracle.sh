@@ -943,8 +943,9 @@ ultra_oracle_consult() {
   # in the store forever), so without --force a single stale phantom permanently blocks EVERY
   # future same-prompt dispatch — most visibly blueprint-review, whose prompt is fixed (design
   # goes via --context). --force makes us immune regardless of WHY a stale session lingers.
-  set -- --engine browser -m "$model" --browser-model-strategy "$strategy" \
-         --timeout "$cap" --force --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
+  set -- --engine browser -m "$model" --timeout "$cap" --force \
+         --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
+  [[ -n "$strategy" ]] && set -- "$@" --browser-model-strategy "$strategy"
   # Session source, in precedence order (all opt-in; empty by default so we do NOT
   # expose the operator's main browser session unless explicitly configured):
   #   0. attachRunning — attach to an ordinary, already-running Chrome (ADR 0020). The

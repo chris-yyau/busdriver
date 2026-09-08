@@ -39,7 +39,7 @@ ultra_oracle_surface_enabled blueprintReview && { echo "FAIL project must NOT en
 [ "$(ultra_oracle_browser_model_strategy)" != "ignore" ] || { echo "FAIL project strategy leaked"; FAIL=1; }
 [ "$(ultra_oracle_timeout_cap)" != "99999" ] || { echo "FAIL project cap leaked"; FAIL=1; }
 
-# browserModelStrategy accepts oracle's three values, defaults to select, and
+# browserModelStrategy accepts oracle's three values, is empty when absent, and
 # rejects invalid config instead of passing it through or silently coercing it.
 for strategy in select current ignore; do
   printf '{ "ultraOracle": { "browserModelStrategy": "%s" } }\n' "$strategy" > "$tmp/.claude/busdriver.json"
@@ -82,13 +82,13 @@ JSON
 # malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"
 [ "$(ultra_oracle_model 2>/dev/null)" = "gpt-5.5-pro" ] || { echo "FAIL malformed -> default model"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy 2>/dev/null)" = "select" ] || { echo "FAIL malformed -> default strategy"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy 2>/dev/null)" = "" ] || { echo "FAIL malformed -> absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled brainstorming && { echo "FAIL malformed -> off"; FAIL=1; }
 
 # empty USER config -> defaults.
 echo '{}' > "$tmp/.claude/busdriver.json"
 [ "$(ultra_oracle_model)" = "gpt-5.5-pro" ] || { echo "FAIL default model"; FAIL=1; }
-[ "$(ultra_oracle_browser_model_strategy)" = "select" ] || { echo "FAIL default strategy"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy)" = "" ] || { echo "FAIL absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled blueprintReview && { echo "FAIL empty -> off"; FAIL=1; }
 
 # boolean normalization in USER config: true -> enabled; false -> disabled.

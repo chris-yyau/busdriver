@@ -40,14 +40,15 @@ _ultra_oracle_sanitize_ceiling() {
 # project config has zero influence on ultra-oracle (no enable, no model, no timing).
 ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.5-pro'; }
 
-# ultra_oracle_browser_model_strategy -> oracle browser picker strategy.
-# USER config only. Keep oracle's existing `select` default unless the operator opts
-# into following ChatGPT's current model or bypassing the built-in slug table.
+# ultra_oracle_browser_model_strategy -> explicitly configured oracle browser
+# picker strategy, or empty when absent. USER config only. Omitting the flag keeps
+# oracle's existing `select` default while preserving compatibility with 0.15/0.16,
+# which predate --browser-model-strategy.
 ultra_oracle_browser_model_strategy() {
   local v
-  v="$(ultra_oracle_config_get_user '.ultraOracle.browserModelStrategy' 'select')"
+  v="$(ultra_oracle_config_get_user '.ultraOracle.browserModelStrategy' '')"
   case "$v" in
-    select|current|ignore) printf '%s' "$v" ;;
+    ''|select|current|ignore) printf '%s' "$v" ;;
     *) echo "ultra-oracle: invalid browserModelStrategy '$v' (expected select, current, or ignore)" >&2; return 1 ;;
   esac
 }

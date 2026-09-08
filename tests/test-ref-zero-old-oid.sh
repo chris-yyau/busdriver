@@ -939,6 +939,9 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
            # flag could be.
            'git worktree add --detach -- "$WTPATH" main',
            'git worktree add --detach -- /tmp/wt main',
+           # ...and the SHORT spelling of the same option. `-d` IS `--detach`,
+           # so recognising one and not the other refused the short form alone.
+           'git worktree add -d -- "$WTPATH" main',
            # ...while a LITERAL sort key or upstream still takes its operand.
            'git branch --sort refname main',
            'git branch -u origin/main main',
@@ -964,8 +967,14 @@ for _c in ('curl "$URL" -C100 --output git-checkout',
 # parser and nothing at all behind `xargs -I{}`, because the arm restated the
 # parser's unresolved-operand rules instead of asking it. Pinned as an
 # EQUIVALENCE so the two cannot drift apart again.
+# ...asked at EVERY literal `git`, not only at the candidate: a wrapper operand
+# can stand in front of the executable that really runs, so keying the replay on
+# the candidate meant the `-I{}` spelling replayed and the `-I "$TOKEN"` one --
+# whose candidate is the replacement STRING -- did not.
 for _c in ('git checkout "${FLAG:--B}" main unreviewed',
            'printf x | xargs -I{} git checkout "${FLAG:--B}" main unreviewed',
+           'printf x | xargs -I "$TOKEN" git checkout "${FLAG:--B}" main '
+           'unreviewed',
            'git checkout -- "$FILE"',
            'xargs -I{} git checkout -- "$FILE"'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
@@ -1005,7 +1014,12 @@ for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
            'G="git-switch"; "$G" -Cproduction ' + OID_A,
            'G=git-branch; "$G" -f main unreviewed',
            'G=git-branch; "$G" -f main unreviewed; G=git',
-           'G=git; G=git-branch; "$G" -f main unreviewed'):
+           'G=git; G=git-branch; "$G" -f main unreviewed',
+           # ...and the name is read wherever it STANDS. Restricting it to the
+           # leading word was an ownership guess in disguise: one shell builtin
+           # in front and the same reset was invisible.
+           'G=git-switch; command "$G" -Ctrunk unreviewed',
+           'G=git-switch; env "$G" -Ctrunk unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # RESIDUAL, measured and PRE-EXISTING at the base of this branch: `curl "$URL"
 # -d "$BODY"` is refused. The candidate is an unreadable token with a strong
@@ -1016,6 +1030,12 @@ for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
 # fail-open. It is an OVER-block, so it fails closed, and it is pinned here as
 # current behaviour rather than left to be rediscovered.
 assert git_zero_old_ref_op('curl "$URL" -d "$BODY"', hook_cwd=hook_cwd)
+# ...and the price of reading an assignment-named writer at every position,
+# pinned as current behaviour for the same reason: an ADJACENT force option of
+# that writer's own is required, which keeps `G=git-switch; echo "$G"` out, but
+# a genuine `-C` belonging to some OTHER command is refused. Contrived, and the
+# fail-CLOSED direction -- the alternative is a live reset nothing sees.
+assert git_zero_old_ref_op('G=git-switch; ls "$G" -C', hook_cwd=hook_cwd)
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out
 # protected branch with no old-value precondition, so the HEAD operand is the

@@ -4629,6 +4629,26 @@ _ZERO_OLD_BOOL_LONG_BY_SUB = {
 }
 
 
+# The SHORT spellings of the same argumentless options. Needed only by the `--`
+# scan, and for the same reason: `worktree add -d -- <path> main` is the exact
+# command `--detach` spells, so recognising one and not the other refused the
+# short form alone. Value-taking letters (`-b`, `-B`) are absent by
+# construction -- a cluster counts only if EVERY letter is listed.
+_ZERO_OLD_BOOL_SHORT_BY_SUB = {
+    'checkout': 'fqp', 'switch': 'fqm', 'branch': 'qva',
+    'update-ref': 'dz', 'symbolic-ref': 'dq', 'worktree': 'dfq',
+}
+
+
+def _zero_old_bool_opt(tok, sub):
+    """True if `tok` is an argumentless option of `sub`, long or short."""
+    if _zero_old_bool_long(tok, sub):
+        return True
+    letters = _ZERO_OLD_BOOL_SHORT_BY_SUB.get(sub, '')
+    return (tok.startswith('-') and not tok.startswith('--') and len(tok) > 1
+            and letters != '' and all(c in letters for c in tok[1:]))
+
+
 def _zero_old_bool_long(tok, sub):
     """True if `tok` is an argumentless LONG option of `sub`.
 
@@ -4666,7 +4686,7 @@ def _zero_old_force_sub(argv, sub, sub_idx):
     if '--' in rest_all:
         _dd = rest_all.index('--')
         if (_dd == 0 or not rest_all[_dd - 1].startswith('-')
-                or _zero_old_bool_long(rest_all[_dd - 1], sub)):
+                or _zero_old_bool_opt(rest_all[_dd - 1], sub)):
             rest_all = rest_all[:_dd]
     rest = [a for a in rest_all if not a.startswith('-')]
     verb_tok = rest[0] if rest else ''
@@ -5269,22 +5289,34 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
             argv, raw_argv = _zero_old_git_argv(seg)
             if not argv or not _is_exe(argv[0], 'git'):
                 toks = toks_once(seg)
-                # Only the COMMAND WORD is resolved -- a name merely passed as
-                # an operand is not the executable, and reading it as one is
-                # the ownership guess this arm exists to avoid. The reading is
-                # ADDED beside the one the tokens already carry, never
-                # substituted for it, so no refusal can be lost.
+                # The reading is ADDED beside the one the tokens already
+                # carry, never substituted for it, so no refusal can be lost.
+                #
+                # Asked at EVERY position, not only at `toks[0]`. Restricting
+                # it to the leading word was an ownership guess in disguise and
+                # `command "$G" -Ctrunk` walked straight past it -- one shell
+                # builtin in front, and the same reset is invisible. Deciding
+                # WHICH word is the executable is the question this arm exists
+                # not to answer, so it asks none of it: an ADJACENT force
+                # option of that writer's own is required at every position
+                # alike, which is what keeps `G=git-switch; echo "$G"` out.
+                # The cost is a contrived over-block (`G=git-switch; ls "$G"
+                # -C`), taken deliberately -- it is the fail-CLOSED direction,
+                # and the alternative is a live reset that nothing sees.
                 _assign_force = False
-                if toks:
-                    _w = toks[0]
+                for _ai, _aw in enumerate(toks):
+                    _w = _aw
                     if _w.startswith('${') and _w.endswith('}'):
                         _w = '$' + _w[2:-1]
-                    if _w.startswith('$'):
-                        for _v in _assigns.get(_w[1:], ()):
-                            if _zero_old_dashed_adjacent(
-                                    [_v] + list(toks[1:]), 0):
-                                _assign_force = True
-                                break
+                    if not _w.startswith('$'):
+                        continue
+                    for _v in _assigns.get(_w[1:], ()):
+                        if _zero_old_dashed_adjacent(
+                                [_v] + list(toks[_ai + 1:]), 0):
+                            _assign_force = True
+                            break
+                    if _assign_force:
+                        break
                 # This arm exists for ONE shape: a git invocation the parser
                 # could not read as argv[0]. Two things reach it -- a LITERAL
                 # git that a wrapper hides (`xargs -I{} git branch -f main
@@ -5604,12 +5636,21 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # itself about the tokens following the candidate. VOUCHING is
                 # what keeps it off other programs' arguments: it runs only
                 # behind a LITERAL `git`, so in `curl "$URL" --output
-                # git-checkout --url -Boutput` (whose candidate is the URL)
-                # nothing is replayed.
-                _replay = bool(
-                    _cand_git and _sub_i > _cand_i
+                # git-checkout --url -Boutput` (which has no literal `git` at
+                # all) nothing is replayed.
+                #
+                # Asked at EVERY literal `git`, not only at the candidate --
+                # the same reason `_pair` is. A wrapper operand can stand in
+                # front of the executable that really runs, and keying this on
+                # the candidate meant `xargs -I "$TOKEN" git checkout
+                # "${FLAG:--B}" main` (whose candidate is the replacement
+                # STRING) replayed nothing while `xargs -I{} git checkout …`
+                # did.
+                _replay = any(
+                    _sub_i > _gi
                     and list(_zero_old_ops_from_argv(
-                        ['git'] + list(toks[_cand_i + 1:]))))
+                        ['git'] + list(toks[_gi + 1:])))
+                    for _gi, _gt in enumerate(toks) if _is_exe(_gt, 'git'))
                 if (_force_sub
                         or _assign_force
                         or _replay

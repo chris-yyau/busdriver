@@ -15,12 +15,12 @@ mkdir -p "$tmp/proj/.claude"; cd "$tmp/proj" || exit 1; git init -q .
 
 # USER config: the ONLY source ultra-oracle reads.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "model": "user-model", "timeoutCapSeconds": 1234,
+{ "ultraOracle": { "model": "user-model", "browserModelStrategy": "current", "timeoutCapSeconds": 1234,
   "brainstorming": { "enabled": true }, "council": { "enabled": false } } }
 JSON
 # PROJECT config (repo-controlled): everything here MUST be ignored.
 cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "ultraOracle": { "model": "evil-model", "timeoutCapSeconds": 99999,
+{ "ultraOracle": { "model": "evil-model", "browserModelStrategy": "ignore", "timeoutCapSeconds": 99999,
   "blueprintReview": { "enabled": true } } }
 JSON
 # shellcheck source=/dev/null
@@ -28,6 +28,7 @@ source "$DIR/scripts/lib/ultra-oracle-config.sh"
 
 # User values win; project config is fully ignored.
 [ "$(ultra_oracle_model)" = "user-model" ] || { echo "FAIL model user-only"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy)" = "current" ] || { echo "FAIL strategy user-only"; FAIL=1; }
 [ "$(ultra_oracle_timeout_cap)" = "1234" ] || { echo "FAIL cap user-only"; FAIL=1; }
 ultra_oracle_surface_enabled brainstorming || { echo "FAIL user brainstorming enabled"; FAIL=1; }
 ultra_oracle_surface_enabled council && { echo "FAIL user council should be off"; FAIL=1; }
@@ -35,7 +36,17 @@ ultra_oracle_surface_enabled council && { echo "FAIL user council should be off"
 # model, or change the timeout.
 ultra_oracle_surface_enabled blueprintReview && { echo "FAIL project must NOT enable surface"; FAIL=1; }
 [ "$(ultra_oracle_model)" != "evil-model" ] || { echo "FAIL project model leaked"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy)" != "ignore" ] || { echo "FAIL project strategy leaked"; FAIL=1; }
 [ "$(ultra_oracle_timeout_cap)" != "99999" ] || { echo "FAIL project cap leaked"; FAIL=1; }
+
+# browserModelStrategy accepts oracle's three values, is empty when absent, and
+# rejects invalid config instead of passing it through or silently coercing it.
+for strategy in select current ignore; do
+  printf '{ "ultraOracle": { "browserModelStrategy": "%s" } }\n' "$strategy" > "$tmp/.claude/busdriver.json"
+  [ "$(ultra_oracle_browser_model_strategy)" = "$strategy" ] || { echo "FAIL valid strategy $strategy"; FAIL=1; }
+done
+printf '{ "ultraOracle": { "browserModelStrategy": "latest" } }\n' > "$tmp/.claude/busdriver.json"
+ultra_oracle_browser_model_strategy >/dev/null 2>&1 && { echo "FAIL invalid strategy accepted"; FAIL=1; }
 
 # timeoutCap validation (USER config): non-numeric -> 900; oversized -> clamp 3600.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
@@ -71,11 +82,13 @@ JSON
 # malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"
 [ "$(ultra_oracle_model 2>/dev/null)" = "gpt-5.5-pro" ] || { echo "FAIL malformed -> default model"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy 2>/dev/null)" = "" ] || { echo "FAIL malformed -> absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled brainstorming && { echo "FAIL malformed -> off"; FAIL=1; }
 
 # empty USER config -> defaults.
 echo '{}' > "$tmp/.claude/busdriver.json"
 [ "$(ultra_oracle_model)" = "gpt-5.5-pro" ] || { echo "FAIL default model"; FAIL=1; }
+[ "$(ultra_oracle_browser_model_strategy)" = "" ] || { echo "FAIL absent strategy"; FAIL=1; }
 ultra_oracle_surface_enabled blueprintReview && { echo "FAIL empty -> off"; FAIL=1; }
 
 # boolean normalization in USER config: true -> enabled; false -> disabled.

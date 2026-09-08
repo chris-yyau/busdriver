@@ -1021,15 +1021,29 @@ for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
            'G=git-switch; command "$G" -Ctrunk unreviewed',
            'G=git-switch; env "$G" -Ctrunk unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
-# RESIDUAL, measured and PRE-EXISTING at the base of this branch: `curl "$URL"
-# -d "$BODY"` is refused. The candidate is an unreadable token with a strong
-# force letter behind it, which is the exact shape of `G=git-branch; "$G" -f
-# main <oid>`; separating them means deciding whether the substitution is the
-# COMMAND or an argument to one, and that needs the wrapper vocabulary whose
-# removal from the blocking path closed the `arch -x86_64 "$G" -f main <oid>`
-# fail-open. It is an OVER-block, so it fails closed, and it is pinned here as
-# current behaviour rather than left to be rediscovered.
-assert git_zero_old_ref_op('curl "$URL" -d "$BODY"', hook_cwd=hook_cwd)
+# RESIDUAL, measured: a dashed force letter (f d D B C) standing AFTER an
+# unresolvable substitution is refused whatever the leading word is. The
+# candidate is an unreadable token with a strong force letter behind it, which
+# is the exact shape of `G=git-branch; "$G" -f main <oid>`; separating them
+# means deciding whether the substitution is the COMMAND or an argument to one,
+# and that needs the wrapper vocabulary whose removal from the blocking path
+# closed the `arch -x86_64 "$G" -f main <oid>` fail-open. No SHAPE separates the
+# two classes -- adjacency, operand arity and operand literalness were each
+# measured and hold for BOTH, and _zero_old_command_position answers False for
+# `curl` and for the `arch` fail-open alike. The only signal left is the leading
+# WORD, and the fail-closed polarity (an exempt-list of commands that cannot
+# exec another program) is not writable: make, docker, tar (-I), rsync (-e),
+# sed, awk and find all exec. It is an OVER-block, so it fails closed, and the
+# CLASS is pinned here -- not one curl idiom -- rather than left to be
+# rediscovered.
+for _c in ('curl "$URL" -d "$BODY"',
+           'tar -C "$DIR" -f "$ARCHIVE"',
+           'docker run "$IMAGE" -d',
+           'make -C "$DIR" -f Makefile.ci'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the negative control that keeps the pin from being vacuous: a force
+# letter spent BEFORE the substitution is untouched.
+assert git_zero_old_ref_op('cp -f "$SRC" "$DST"', hook_cwd=hook_cwd) == []
 # ...and the price of reading an assignment-named writer at every position,
 # pinned as current behaviour for the same reason: an ADJACENT force option of
 # that writer's own is required, which keeps `G=git-switch; echo "$G"` out, but

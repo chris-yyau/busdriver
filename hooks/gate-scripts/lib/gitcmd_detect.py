@@ -1175,13 +1175,44 @@ def _raw_tokens(seg):
     """Original per-token spellings, aligned 1:1 with `_tokenize(seg)`, or None when
     they cannot be aligned.
 
-    shlex(posix=False) keeps the characters that made a token a literal, which is the
-    only reliable way to tell `"$(...)"` (bash runs it) from `'$(...)'` (a literal
-    directory of that name) after posix tokenization has erased the difference. A
-    differing token count means adjacent-quote concatenation or escaping restructured
-    the segment, so positions no longer correspond -- callers must fail CLOSED."""
+    The spellings are SOURCE SPANS of the very lexer `_tokenize` uses, so they are
+    aligned by construction rather than by agreement between two lexers. It used to
+    be the latter -- `shlex.split(posix=False)` beside `_tokenize`'s posix pass --
+    and the two disagree in a shape that is ordinary rather than exotic: non-posix
+    shlex enters quote state only where a quote OPENS a token, so a quote reached
+    mid-word is an ordinary character and the whitespace inside it SPLITS.
+    `--health-cmd='curl -f x'` came back as three raw tokens against one real word
+    (measured), and every attached-quoted value -- `--entrypoint='...'`, `-m'...'`,
+    `pre'a b'post` -- reported the same misalignment. Non-posix shlex also reads CR
+    as whitespace, which `_tokenize` deliberately does not (see there), so a
+    CR-bearing operand misaligned too. In each case the WHOLE segment lost its quote
+    provenance and every caller fell back to refusing to narrow.
+
+    That provenance is the only reliable way to tell `"$(...)"` (bash runs it) from
+    `'$(...)'` (a literal directory of that name) after posix tokenization has
+    erased the difference, so callers that fail CLOSED without it are right to. This
+    only stops them being starved of it by a spelling.
+
+    None still means unreadable and the contract is unchanged -- callers must fail
+    CLOSED. It is returned for a segment the lexer cannot read at all (unbalanced
+    quotes, where `_tokenize` falls back to a whitespace split this cannot mirror),
+    and the length re-check stays as a belt on the construction: it is what would
+    catch a future divergence rather than trusting that there can be none."""
     try:
-        raw = shlex.split(seg, posix=False)
+        lex = shlex.shlex(seg, posix=True)
+        lex.whitespace = ' \t\n'
+        lex.whitespace_split = True
+        lex.commenters = ''
+        raw = []
+        pos = 0
+        for _tok in lex:
+            end = lex.instream.tell()
+            # The span runs to the character that ENDED the token, so the
+            # separator is trimmed back off -- with `_tokenize`'s whitespace set
+            # and never the default one, or a CR inside an operand would be
+            # stripped out of the very spelling that exists to preserve it.
+            raw.append(seg[pos:end].strip(' \t\n'))
+            pos = end
     except ValueError:
         return None
     return raw if len(raw) == len(_tokenize(seg)) else None
@@ -2406,6 +2437,7 @@ def _shell_payloads(cmd):
     out = []
     for _op, seg in split_segments(cmd):
         out.extend(_env_split_string_payloads(seg))
+        out.extend(_docker_exec_string_payloads(seg)[0])
         # TWO readings of the launcher run, for the reason _consumer_words
         # spells out above: wrapper-option arity is genuinely ambiguous
         # statically. `env -i bash -c '<s>'` has a NO-ARG option, while
@@ -4593,6 +4625,457 @@ _ZERO_OLD_SUBS = frozenset({'branch', 'checkout', 'switch', 'update-ref', 'symbo
 # is worse than no entry -- it reads as coverage. Refusing `git fast-import`
 # outright is a scope decision, not a parser one.
 _ZERO_OLD_FORCE_SUBS = {'worktree': ('add', 'B')}
+# Ordinary arguments that were read as executables. The candidate scan picks the
+# first unreadable word with no test of whether a command could STAND there, so
+# `curl "$URL" -d "$BODY"` offered `$URL` and then read curl's own `-d` as a
+# branch delete. Shape cannot fix it: `tar -I "$G" -f archive.tar` and
+# `tar -C "$DIR" -f "$ARCHIVE"` are token-for-token identical bar the letter at
+# index 1, both select index 2 and both fire on `-f` at index 3 -- measured. So
+# the roles are named per OPTION, and only for the four commands that produced a
+# false refusal.
+#   (subcommand paths, options whose VALUE is data, count of DATA positionals)
+# Everything unnamed stays a candidate, which is the whole safety property: it
+# keeps `-I` (a program name), docker's command tail, make's `SHELL=` assignment
+# and every command absent from this table -- arch, chrt, taskset, env, xargs,
+# and any wrapper nobody thought of -- exactly as they are. There is NO
+# "any other subcommand" arm: an unrecognised docker subcommand is not exempt.
+# Positionals are granted only where a trace needed them, so tar and make get
+# none. A table command behind a wrapper (`sudo curl ...`) is not exempt either.
+# The one rule to keep when editing this: never name a slot as data whose value
+# the command EXECUTES. Omitting a data slot costs an over-block; naming an
+# executable slot as data is the only way to open a hole here.
+_ZERO_OLD_DATA_CMDS = {
+    'curl': ((), ('-d', '--data', '-o', '--output', '-H', '--header'), None, ()),
+    'tar': ((), ('-C', '--directory', '-f', '--file'), 0, ()),
+    'make': ((), ('-C', '--directory', '-f', '--file'), 0, ()),
+    'docker': ((('run',), ('exec',), ('create',)),
+               ('-v', '--volume', '-e', '--env'), 1, ('--entrypoint',)),
+}
+
+
+# Docker's own flag declarations, harvested at docker/cli v29.8.0 from
+# cli/command/container/{opts,run,create,exec}.go across EVERY registration
+# spelling -- `Bool`, `BoolP`, `BoolVar`, `BoolVarP` and the String/Int/Var
+# families. Reading only `BoolVar` missed `--disable-content-trust` and
+# `--help`, which are spelled `flags.Bool`, and pinning to v27.3.1 missed
+# `--use-api-socket` entirely; each omission was read as value-taking, so the
+# option swallowed the IMAGE and the git behind it took the image slot.
+# cli/command/utils.go registers no boolean for these commands (AddPlatformFlag
+# is a StringVar), so no arity hides in a helper.
+#
+# BOTH directions are listed because an option absent from both has UNKNOWN
+# arity, and unknown is not zero: assuming either way is what produced the
+# fail-opens above. The walk withholds every exemption from that point instead.
+# A flag added upstream after this pin therefore OVER-blocks until refreshed,
+# which is the direction a gate may fail in.
+_ZERO_OLD_DOCKER_BOOL = frozenset((
+    '--detach', '--disable-content-trust', '--help', '--init',
+    '--interactive', '--no-healthcheck', '--oom-kill-disable', '--privileged',
+    '--publish-all', '--quiet', '--read-only', '--rm', '--sig-proxy', '--tty',
+    '--use-api-socket'))
+_ZERO_OLD_DOCKER_BOOL_SHORT = frozenset('diPqt')
+_ZERO_OLD_DOCKER_VALUE = frozenset((
+    '--add-host', '--annotation', '--attach', '--blkio-weight',
+    '--blkio-weight-device', '--cap-add', '--cap-drop', '--cgroup-parent',
+    '--cgroupns', '--cidfile', '--cpu-count', '--cpu-percent', '--cpu-period',
+    '--cpu-quota', '--cpu-rt-period', '--cpu-rt-runtime', '--cpu-shares',
+    '--cpus', '--cpuset-cpus', '--cpuset-mems', '--detach-keys', '--device',
+    '--device-cgroup-rule', '--device-read-bps', '--device-read-iops',
+    '--device-write-bps', '--device-write-iops', '--dns', '--dns-opt',
+    '--dns-option', '--dns-search', '--domainname', '--entrypoint', '--env',
+    '--env-file', '--expose', '--gpus', '--group-add', '--health-cmd',
+    '--health-interval', '--health-retries', '--health-start-interval',
+    '--health-start-period', '--health-timeout', '--hostname',
+    '--io-maxbandwidth', '--io-maxiops', '--ip', '--ip6', '--ipc',
+    '--isolation', '--kernel-memory', '--label', '--label-file', '--link',
+    '--link-local-ip', '--log-driver', '--log-opt', '--mac-address',
+    '--memory', '--memory-reservation', '--memory-swap', '--memory-swappiness',
+    '--mount', '--name', '--net', '--net-alias', '--network',
+    '--network-alias', '--oom-score-adj', '--pid', '--pids-limit',
+    '--platform', '--publish', '--pull', '--restart', '--runtime',
+    '--security-opt', '--shm-size', '--stop-signal', '--stop-timeout',
+    '--storage-opt', '--sysctl', '--tmpfs', '--ulimit', '--umask', '--user',
+    '--userns', '--uts', '--volume', '--volume-driver', '--volumes-from',
+    '--workdir'))
+_ZERO_OLD_DOCKER_VALUE_SHORT = frozenset('acehlmpuvw')
+def _zero_old_opt_arity(tok):
+    """1 if this option consumes the FOLLOWING word, 0 if none, None if UNKNOWN.
+
+    An option that already carries its value takes no other: `--opt=value` is
+    complete, and so is a short whose value is ATTACHED. A cluster spends its
+    letters in order and the first value-taking one owns the remainder of the
+    token -- `-v/path` is a volume already given, `-it` is two booleans and
+    ends there, and only `-itv` with nothing left reaches for the next word.
+    Reading the LAST letter instead was wrong for every attached operand.
+
+    None is the answer for anything the declarations above do not carry, and it
+    is not a third guess: it says the image cannot be located from here, and
+    the caller withholds accordingly.
+    """
+    if not tok.startswith('-') or tok == '--' or '=' in tok:
+        return 0
+    if tok.startswith('--'):
+        if tok in _ZERO_OLD_DOCKER_BOOL:
+            return 0
+        return 1 if tok in _ZERO_OLD_DOCKER_VALUE else None
+    for _n, _ch in enumerate(tok[1:], 1):
+        if _ch in _ZERO_OLD_DOCKER_BOOL_SHORT:
+            continue
+        if _ch in _ZERO_OLD_DOCKER_VALUE_SHORT:
+            return 0 if tok[_n + 1:] else 1
+        return None
+    return 0
+# The one docker option whose VALUE is a whole COMMAND LINE rather than a word.
+# `--entrypoint git` names an executable and the token walk reads it where it
+# stands; `--health-cmd 'git branch -f main HEAD~1'` packs a shell command into
+# ONE argument, which docker stores as `["CMD-SHELL", <value>]` and runs through
+# `sh -c` inside the container. That is the shape `env -S` and `bash -c` pack,
+# so it is read the same way -- as a nested payload for the ordinary scan,
+# which already reads segments, `&&` and `;`.
+#
+# The pinned v29.8.0 declarations for run/create/exec were swept for every
+# value that is executable text, and there are exactly two: `--entrypoint`,
+# already modelled as a word, and this one. `--cpuset-cpus`/`--cpuset-mems` say
+# "allow execution" but are CPU affinity sets, and `--restart`, `--stop-signal`,
+# `--log-driver`, `--volume-driver`, `--isolation` and `--runtime` name
+# policies, signals and plugins. Adding a third here needs the same sweep.
+_ZERO_OLD_DOCKER_EXEC_STRING = '--health-cmd'
+
+
+def _docker_exec_string_payloads(seg):
+    """(payloads, unreadable) for `--health-cmd` -- command lines docker RUNS.
+
+    The payloads go to the ordinary nested-command scan. `unreadable` is the
+    fail-CLOSED half, and it is what makes this unlike the exemption table: an
+    option absent from THAT table is merely not exempt, which costs an
+    over-block, but a payload this helper fails to RECOGNISE is a payload
+    nobody scans at all. So every `--health-cmd` spelling in a segment naming
+    docker must be positively classified -- emitted as a literal, stepped over
+    as some other option's value, or past the image where it is the
+    container's own argv -- and anything else is reported unreadable for the
+    caller to refuse.
+
+    Unreadable therefore covers a value carrying a live expansion, an
+    unwalkable word crossed on the way (`-v $VOL` can supply a SECOND
+    `--health-cmd`, and docker takes the last), an option of unknown arity in
+    front of it, a subcommand spelling the table does not name (`docker
+    container run`), and raw spellings that do not align -- the value's
+    QUOTING is the whole question, so without the raw tokens nothing here can
+    be read. That last case is now rare rather than routine: `_raw_tokens` reads
+    spellings as spans of the tokenizer's own lexer, so the attached-quoted
+    `--health-cmd='a b'` aligns and its payload is SCANNED. It reached this
+    helper first and is why that was fixed at the root -- every attached-quoted
+    value in the file had been unreadable, so an inert health check spelled with
+    an `=` was refused for its spelling rather than its content. Each of those is an over-block on a health check, which is the
+    direction this table already declares it fails in.
+
+    The expansion test is not merely conservative: the value is expanded by the
+    container's own `sh`, so even a single-quoted `'$HOME'` -- literal to the
+    shell that typed it -- is live there.
+
+    The walk therefore runs whether or not a literal `--health-cmd` is present,
+    because the option that names an executable can arrive INSIDE an unreadable
+    word: with OPT=--entrypoint=git, `docker run "$OPT" image branch -f main`
+    runs git in the container, and with OPT=--health-cmd the payload is the
+    quoted word after it. Neither spells an executable-valued option anywhere in
+    the segment, so keying the refusal on one being SPELLED -- which is what
+    both walks over this region used to do -- reads `"$OPT"` as the image and
+    scans nothing. An unresolved word standing where the image goes, before
+    docker's `--`, is therefore reported unreadable outright. After `--` the
+    position is docker's own guarantee and the exemption stands; a substitution
+    there is still caught, as a nested payload, by the ordinary scan.
+    """
+    toks = toks_once(seg)
+    hits = [k for k, t in enumerate(toks)
+            if t == _ZERO_OLD_DOCKER_EXEC_STRING
+            or t.startswith(_ZERO_OLD_DOCKER_EXEC_STRING + '=')]
+    # Anchored on the first `docker` word rather than on token zero, exactly as
+    # the `env -S` extractor is: a wrapper in front (`sudo docker run ...`)
+    # otherwise hides the option region entirely, and a stray later `docker`
+    # argument only over-scans. An option that stands entirely BEFORE any
+    # docker word is some other program's -- `echo --health-cmd docker` prints
+    # prose -- and reading it as docker's would manufacture a payload out of
+    # another command's data.
+    d = next((k for k, t in enumerate(toks)
+              if t.rsplit('/', 1)[-1] == 'docker'), None)
+    if d is None or (hits and max(hits) < d):
+        return [], False
+    raws = _raw_tokens(seg)
+    if raws is None or len(raws) != len(toks):
+        # Without the raw spellings the region cannot be walked at all, so a
+        # segment that DOES carry a payload is refused exactly as before. With
+        # no payload in it there is nothing this helper was ever asked about,
+        # and reporting every unbalanced-quote docker line unreadable would be
+        # an over-block well outside the one this rule accepts.
+        return [], bool(hits)
+    start = None
+    for path in _ZERO_OLD_DATA_CMDS['docker'][0]:
+        if tuple(toks[d + 1:d + 1 + len(path)]) == path:
+            start = d + 1 + len(path)
+            break
+    if start is None or any(h < start for h in hits):
+        # A subcommand this table does not name has no option region to walk.
+        # That is only unreadable when a payload is actually in the segment --
+        # `docker ps` carries none, and refusing it would block every docker
+        # line whose subcommand is not run/exec/create.
+        return [], bool(hits)
+    out = []
+    k = start
+    while k < len(toks):
+        tok = toks[k]
+        head, eq, value = tok.partition('=')
+        if head == _ZERO_OLD_DOCKER_EXEC_STRING:
+            if eq:
+                # Asked of the VALUE's own spelling, which is where its quoting
+                # lives. Asking it of the whole token reads the unquoted
+                # `--health-cmd=` in front of the quotes and calls every `=`
+                # form unwalkable -- an inert health check refused for the way
+                # it was spelled.
+                raw_value = raws[k].partition('=')[2]
+            else:
+                if k + 1 >= len(toks):
+                    # docker rejects the flag and runs nothing, so there is no
+                    # payload and nothing was missed.
+                    break
+                value, raw_value = toks[k + 1], raws[k + 1]
+            if _word_may_split(value, raw_value) or _may_be_substitution(value):
+                return [], True
+            out.append(value)
+            k += 1 if eq else 2
+            continue
+        if _word_may_split(tok, raws[k]):
+            return [], True
+        if tok == '--' or not tok.startswith('-'):
+            if tok != '--' and _may_be_substitution(tok):
+                # An unreadable word standing where the image goes is not proof
+                # of an image, and every way it can be read costs a detection.
+                # It may be a FLAG -- `"$OPT"` expanding to `--rm` leaves every
+                # later `--health-cmd` docker's. It may consume the NEXT word,
+                # swallowing a literal operand or the `--` itself: measured
+                # with a shell stub, with OPT=--name `docker run "$OPT" --
+                # --health-cmd '<s>' image` leaves --health-cmd inside docker's
+                # own options, where docker RUNS it. And it may BE the
+                # executable-valued option -- `--entrypoint=git`, or a
+                # `--health-cmd` whose payload is the quoted word behind it --
+                # in which case the container's command line carries no `git`
+                # for the ordinary scan to candidate at all. That last reading
+                # is why keying this on an executable-valued option being
+                # SPELLED later in the segment was a fail-open: the option was
+                # never spelled. Nothing further along re-closes any of it, so
+                # the region is refused here rather than walked on. `--` is the
+                # way to say the image really is the image.
+                return [], True
+            # Nothing unreadable has been crossed, so this really is the end of
+            # docker's own options: `--` is its delimiter and a literal word is
+            # the image. Every word from here belongs to the container's
+            # command line, where a `--health-cmd` is an argument being passed
+            # along and not docker's flag.
+            break
+        arity = _zero_old_opt_arity(tok)
+        if arity is None:
+            return [], True
+        if arity and k + 1 < len(toks) and _word_may_split(toks[k + 1],
+                                                           raws[k + 1]):
+            return [], True
+        k += 1 + arity
+    return out, False
+
+
+def _zero_old_split_exec_opts(toks, raws=None):
+    """Rewrite `--opt=value` to two words for an EXECUTABLE-valued option.
+
+    Only inside that command's OWN option region. Past the first positional the
+    words belong to the container's command line, where `--entrypoint=git` is
+    an argument being passed along and not docker's flag -- splitting it there
+    would manufacture a candidate out of another program's data, which is the
+    mistake the table exists to avoid. A command with no executable-valued
+    option (every other entry, and every command absent from the table) is
+    returned untouched, so `curl -d --entrypoint=git` is never rewritten.
+    """
+    spec = _ZERO_OLD_DATA_CMDS.get(toks[0].rsplit('/', 1)[-1]) if toks else None
+    if not spec or not spec[3]:
+        return toks, raws
+    subs, val_opts, _n_pos, exec_opts = spec
+    start = 1
+    if subs:
+        for path in subs:
+            if tuple(toks[1:1 + len(path)]) == path:
+                start = 1 + len(path)
+                break
+        else:
+            return toks, raws
+    # The raw spellings ride along through the rewrite, because the walk that
+    # reads them indexes the tokens this returns. `_raw_tokens` is aligned or
+    # None (never partially right), and splitting one token into two splits its
+    # spelling at the same `=`, so `--entrypoint="$G"` keeps the quoting that
+    # says its value is a single word.
+    aligned = raws is not None and len(raws) == len(toks)
+    out = list(toks[:start])
+    out_raw = list(raws[:start]) if aligned else None
+    k = start
+    unknown_arity = False
+    while k < len(toks):
+        tok = toks[k]
+        if unknown_arity and tok != '--' and not tok.startswith('-'):
+            # An option of unknown arity stands in front of this word, so it
+            # may be that option's value rather than the image. Keep rewriting
+            # to the end rather than close the region on a guess: the cost is
+            # an `--entrypoint=` in a container's own argv read as docker's,
+            # which over-blocks, and that is the direction to fail in.
+            out.append(tok)
+            if aligned:
+                out_raw.append(raws[k])
+            k += 1
+            continue
+        if tok == '--' or not tok.startswith('-'):
+            # `--` ends the options and a bare word is the image. Everything
+            # from here is the container's argv, where an `--entrypoint=` is a
+            # word being passed along and not docker's flag -- rewriting it
+            # there would manufacture a candidate out of another program's
+            # data.
+            out.extend(toks[k:])
+            if aligned:
+                out_raw.extend(raws[k:])
+            return out, (out_raw if aligned else None)
+        head, _, value = tok.partition('=')
+        if value and head in exec_opts:
+            out.extend([head, value])
+            if aligned:
+                _rh, _, _rv = raws[k].partition('=')
+                out_raw.extend([_rh, _rv])
+        else:
+            out.append(tok)
+            if aligned:
+                out_raw.append(raws[k])
+            _arity = _zero_old_opt_arity(tok)
+            if _arity is None:
+                unknown_arity = True
+            elif _arity:
+                # Carried along verbatim, so an option's VALUE is never read
+                # as the image on the next turn.
+                k += 1
+                if k < len(toks):
+                    out.append(toks[k])
+                    if aligned:
+                        out_raw.append(raws[k])
+        k += 1
+    return out, (out_raw if aligned else None)
+def _zero_old_data_operand(toks, i, raws=None):
+    """True if toks[i] is a DATA operand of a command whose grammar is named.
+
+    Saying no is always safe -- it leaves the token a candidate, which is what
+    the scan did before this existed. Saying YES is the only direction that can
+    lose a detection, so every arm below is an exact match: the command word
+    itself at position 0, a named subcommand path, and either the option
+    immediately in front naming this word as its value or a positional inside
+    the count that command was granted.
+    """
+    if i <= 0 or not toks:
+        return False
+    spec = _ZERO_OLD_DATA_CMDS.get(toks[0].rsplit('/', 1)[-1])
+    if spec is None:
+        return False
+    subs, val_opts, n_pos, exec_opts = spec
+    start = 1
+    if subs:
+        for path in subs:
+            if tuple(toks[1:1 + len(path)]) == path:
+                start = 1 + len(path)
+                break
+        else:
+            return False
+    if i < start:
+        return False
+    # A command whose option arity is DECLARED needs no counting: walk its own
+    # option region and the image is wherever the options stop. Only that one
+    # word is this command's data -- an option's value is data unless the
+    # option names the EXECUTABLE (`--entrypoint git` runs git IN the
+    # container, while `-e git` and `-v /git:/git` are still data), and the
+    # argv past the image belongs to whatever runs there, so it is neither
+    # exempt nor docker's.
+    if exec_opts:
+        # Walking to the image counts ARGUMENTS, so every word crossed has to
+        # be exactly one. An unquoted expansion, a `"$@"`, an array or a
+        # substitution can be several -- `-v $VOL git branch -f main` with
+        # VOL='/repo:/repo -w /repo image' puts `git` in the CONTAINER's argv
+        # while the token walk read it as the image -- and without the raw
+        # spellings that question cannot be asked at all. Either way the region
+        # is not walkable and nothing in it is exempt: fail CLOSED, which
+        # leaves the words candidates exactly as they were before any of this.
+        if raws is None or len(raws) != len(toks):
+            return False
+        k = start
+        while k < len(toks):
+            tok = toks[k]
+            if _word_may_split(tok, raws[k]):
+                return False
+            if tok == '--':
+                # The delimiter names the image POSITION, not its word count:
+                # `docker run -- $ARGS branch -f main` with ARGS='image git'
+                # supplies the image AND the command that follows it, so the
+                # arity question is asked here too. Every other exit already
+                # asks it -- the image below is tested at the top of this
+                # loop, an option's value before it is stepped over -- and
+                # this arm returned an index without asking at all.
+                return (k + 1 < len(toks)
+                        and not _word_may_split(toks[k + 1], raws[k + 1])
+                        and i == k + 1)
+            if not tok.startswith('-'):
+                # ...and a word COUNT is not a word MEANING. One argument whose
+                # value is unknown can be a FLAG: with OPT=--rm, `docker run
+                # "$OPT" --entrypoint=git image branch -f main` puts the
+                # entrypoint back inside docker's own options, and git runs in
+                # the container while this walk had already called `$OPT` the
+                # image and stopped.
+                #
+                # That refusal used to be keyed on an executable-valued option
+                # appearing LATER in the segment, on the reasoning that only
+                # one of those could hide a detection and that a literal `git`
+                # in the container's argv is candidated either way. Both halves
+                # were wrong in the same place: the unknown word can BE the
+                # executable-valued option, in which case none is spelled
+                # anywhere and the argv behind it holds no `git` to candidate
+                # -- `docker run "$OPT" image branch -f main HEAD~1` with
+                # OPT=--entrypoint=git, measured. So no exemption is earned in
+                # front of the delimiter. `_docker_exec_string_payloads` refuses
+                # the whole region on the same word and for the same reason;
+                # this arm agrees with it rather than second-guessing it. After
+                # the delimiter the position is docker's own guarantee, which
+                # is why that arm above still exempts one.
+                if _may_be_substitution(tok):
+                    return False
+                return i == k
+            _arity = _zero_old_opt_arity(tok)
+            if _arity is None:
+                # Unknown arity, so where the image stands is unknown too --
+                # nothing here is exempt. Assuming zero would let the option
+                # swallow nothing and read its VALUE as the image; assuming one
+                # would swallow the image itself. Both were measured as
+                # fail-opens, which is why neither is guessed.
+                return False
+            if _arity:
+                if k + 1 < len(toks) and _word_may_split(toks[k + 1],
+                                                         raws[k + 1]):
+                    return False
+                if k + 1 == i:
+                    return tok not in exec_opts
+                k += 2
+                continue
+            k += 1
+        return False
+    if i - 1 >= start - 1 and toks[i - 1] in val_opts:
+        return True
+    if n_pos == 0:
+        return False
+    seen = 0
+    for k in range(start, len(toks)):
+        if (toks[k].startswith('-') or toks[k - 1] in val_opts
+                or toks[k - 1] in exec_opts):
+            continue
+        seen += 1
+        if k == i:
+            return n_pos is None or seen <= n_pos
+    return False
 # Dashed executables the invocation-shape arm will candidate. ONLY subcommands
 # this gate models: `git-xyz` behind a wrapper stays out, exactly as it did when
 # the dashed-argv path was the only thing that read these, because widening it
@@ -4992,6 +5475,21 @@ def _zero_old_dashed_adjacent(toks, j):
     so the vocabulary is that writer's, and `--url` is not in it.
     """
     sub = _git_dashed_subcommand(toks[j])
+    # A writer this gate models but does not parse in detail spells its force
+    # one word LATER -- `git-worktree add -Btrunk` -- so adjacency is measured
+    # from the VERB, not from the executable. Without this the assignment arm
+    # dropped the attached cluster entirely: `G=git-worktree; "$G" add -Btrunk`
+    # went out unseen while the separated `-B trunk` spelling of the same reset
+    # was caught by another disjunct. The verb and the letters both come from
+    # _ZERO_OLD_FORCE_SUBS, so `worktree remove -f` stays out of it.
+    if sub in _ZERO_OLD_FORCE_SUBS:
+        _verb, _letters = _ZERO_OLD_FORCE_SUBS[sub]
+        _rest = list(toks[j + 1:])
+        if _verb not in _rest:
+            return False
+        return any(
+            _zero_old_force_tok(t, attached=True, sub=sub, only=_letters)
+            for t in _rest[_rest.index(_verb) + 1:])
     if sub not in _ZERO_OLD_SUBS:
         return False
     only = _ZERO_OLD_FORCE_LETTERS_BY_SUB.get(sub, '')
@@ -5215,13 +5713,22 @@ def _zero_old_command_position(toks, i):
     string as the command discarded the force and left the gate seeing no
     operation at all.
 
-    Asked at every site that picks a command out of a token list, because they
-    read the SAME shape and differ only in what they do with the answer. Saying
-    no is safe in all of them: the print-only arm loses an exemption (fail
-    closed), the dashed-argv arm loses its argv, which hands the segment to the
-    strictly stricter invocation-shape fallback, and the candidate replay
-    declines an ADDITION, which leaves the reading it would have widened exactly
-    as it stands.
+    ANY dashed word counts as consuming the next one, which over-refuses: an
+    option can carry its value ATTACHED (`-I{}`, `-x86_64`, `--opt=val`) and
+    then consumes nothing. That is deliberate, and it is why this is asked only
+    at the sites where a no LOSES nothing -- the print-only arm gives up an
+    exemption (fail closed) and the dashed-argv arm gives up its argv, which
+    hands the segment to the strictly stricter invocation-shape fallback.
+
+    Narrowing it to the options that really take a following word was built and
+    REVERTED: the arity was read off the token's LENGTH, so the CLUSTER `-iu`
+    was taken for a value-taking `-u`, `env -iu echo "$G" branch -f main` read
+    as a print, and the exemption waved a live reset through. A cluster ends in
+    whatever letter it ends in; deciding which of them consumes a word needs
+    per-command option tables, and the fail-closed direction does not.
+
+    The candidate replay, where a no costs a DETECTION rather than an
+    exemption, asks `_zero_old_only_prefix` on its own instead.
     """
     return (not (i and toks[i - 1].startswith('-'))
             and _zero_old_only_prefix(toks[:i]))
@@ -5283,7 +5790,16 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 _n, _v = _w.split('=', 1)
                 if (_n and _v and _n.replace('_', 'x').isalnum()
                         and not _n[0].isdigit()
-                        and _git_dashed_subcommand(_v) in _ZERO_OLD_SUBS):
+                        # ...and the writers this gate models but does not
+                        # parse in detail, or the prepass covers a narrower set
+                        # than the rest of the arm: `G=git-worktree; "$G" add
+                        # -Btrunk <path>` resets refs/heads/trunk exactly as
+                        # `branch -f` does (measured, and _ZERO_OLD_FORCE_SUBS
+                        # exists to say so), yet binding only _ZERO_OLD_SUBS
+                        # left the name unresolved and the reset invisible.
+                        and (_git_dashed_subcommand(_v) in _ZERO_OLD_SUBS
+                             or _git_dashed_subcommand(_v)
+                             in _ZERO_OLD_FORCE_SUBS)):
                     _assigns.setdefault(_n, []).append(_v)
     raw_all = []
     target_dir = ''
@@ -5306,7 +5822,17 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 continue
             argv, raw_argv = _zero_old_git_argv(seg)
             if not argv or not _is_exe(argv[0], 'git'):
-                toks = toks_once(seg)
+                if _docker_exec_string_payloads(seg)[1]:
+                    # An executable value nobody can read. The literal
+                    # ones are scanned as chunks like any other packed
+                    # command line, so what is left here is a value the
+                    # scan cannot see -- and for a slot whose content
+                    # docker EXECUTES, "could not read" must not become
+                    # "allow", whatever the variable happens to be named.
+                    raw_all.append(('force', ''))
+                    continue
+                toks, _raws = _zero_old_split_exec_opts(toks_once(seg),
+                                                        _raw_tokens(seg))
                 # The reading is ADDED beside the one the tokens already
                 # carry, never substituted for it, so no refusal can be lost.
                 #
@@ -5363,11 +5889,18 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # git and it is not dynamic, so this arm used to find NO
                 # candidate at all and return no operation -- which is where the
                 # argv path now sends every dashed executable a wrapper hides.
+                # ...and a word a named command claims as DATA is not one. Only
+                # the four traced commands are named, and only in the slots
+                # their traces needed, so this skips `$URL` next to curl's `-d`
+                # while leaving the literal `git` in `docker run "$IMAGE" git
+                # branch -f main` to be candidated at the next index.
                 _cand_i = next((i for i, t in enumerate(toks)
-                                if _is_exe(t, 'git') or _may_be_substitution(t)
-                                or _word_may_split(t, t)
-                                or _git_dashed_subcommand(t)
-                                in _ZERO_OLD_DASHED_CANDS), -1)
+                                if (_is_exe(t, 'git') or _may_be_substitution(t)
+                                    or _word_may_split(t, t)
+                                    or _git_dashed_subcommand(t)
+                                    in _ZERO_OLD_DASHED_CANDS)
+                                and not _zero_old_data_operand(
+                                    toks, i, _raws)), -1)
                 if _cand_i < 0:
                     continue
                 _cand_git = _is_exe(toks[_cand_i], 'git')
@@ -5676,21 +6209,25 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # arrives as a substitution no literal scan can see. Keying
                 # the replay on literal `git` alone read that as nothing at
                 # all. Additive: an existing True is never withdrawn -- but
-                # additive is exactly why it needs the COMMAND-POSITION guard.
-                # A candidate is a token that COULD name git, not one that
-                # does, so replaying behind every candidate manufactured a
-                # force out of `curl "$URL" --output checkout "$FILE"`: `$URL`
-                # is curl's argument and `checkout` the output FILENAME. The
-                # literal-`git` arm above needs no such guard -- `_is_exe`
-                # already vouches for those words -- and asking the same
-                # question here costs nothing when the answer is no, because
-                # declining an ADDITION leaves HEAD's reading standing. That is
-                # why an incomplete answer is safe in this direction and would
-                # not have been as a whole-block exemption: the shapes the
-                # helper says no to (`arch -x86_64 "$G" …`) are still refused
-                # by the disjuncts that already refused them.
+                # additive is exactly why it needs a guard. A candidate is a
+                # token that COULD name git, not one that does, so replaying
+                # behind every candidate manufactured a force out of `mv "$A"
+                # branch "$B"` and `wget "$URL" -O checkout "$FILE"`, where the
+                # substitution is an ARGUMENT and `checkout` an output
+                # filename.
+                #
+                # Only the PREFIX half of command position is asked. Both of
+                # those fail it -- neither `mv` nor `wget` is a wrapper, so
+                # nothing after them stands where a command does -- while the
+                # option half over-refuses an ATTACHED value, and a no HERE
+                # costs a detection rather than an exemption: it read `xargs
+                # -I{} "$G" checkout "${FLAG:--B}" main` as nothing at all and
+                # a reset of main went out. The literal-`git` arm above needs
+                # no guard -- `_is_exe` already vouches for those words -- and
+                # the shapes this one says no to (`arch -x86_64 "$G" …`) are
+                # still refused by the disjuncts that already refused them.
                 if (not _replay and _cand_i >= 0 and _sub_i > _cand_i
-                        and _zero_old_command_position(toks, _cand_i)):
+                        and _zero_old_only_prefix(toks[:_cand_i])):
                     _replay = bool(list(_zero_old_ops_from_argv(
                         ['git'] + list(toks[_cand_i + 1:]))))
                 if (_force_sub

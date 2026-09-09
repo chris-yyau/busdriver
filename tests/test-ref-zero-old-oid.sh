@@ -1070,26 +1070,398 @@ for _c in ('G=git-switch; "$G" -Ctrunk unreviewed',
 # sed, awk and find all exec. It is an OVER-block, so it fails closed, and the
 # CLASS is pinned here -- not one curl idiom -- rather than left to be
 # rediscovered.
+# NOT an accepted permanent residual -- an OPEN over-block, pinned so it cannot
+# be lost, awaiting a disposition none of the measured routes supply. Removing
+# it by asking _zero_old_command_position at candidate selection was BUILT and
+# REVERTED here: `arch` is in no wrapper set, so the helper answers False for it
+# exactly as it does for `curl`, and the narrowing re-opened `arch -x86_64 "$G"
+# branch -f main` while breaking 23 other must-BLOCK controls (measured, this
+# round). Requiring a modelled subcommand after the candidate fails the same
+# way: `arch -x86_64 "$G" -f main <oid>` carries none either.
 for _c in ('curl "$URL" -d "$BODY"',
            'tar -C "$DIR" -f "$ARCHIVE"',
-           'docker run "$IMAGE" -d',
-           'make -C "$DIR" -f Makefile.ci'):
+           # `--` names the image position; without it an unresolved word
+           # there is refused the exemption outright (the r43 rule below).
+           'docker run -- "$IMAGE" -d',
+           'make -C "$DIR" -f Makefile.ci',
+           # ...and the shapes that were already allowed, kept so the block
+           # stays two-directional: a force letter spent BEFORE the
+           # substitution, and an output filename that merely spells a
+           # subcommand next to curl's own --fail.
+           'cp -f "$SRC" "$DST"',
+           'curl "$URL" --output checkout "$FILE"',
+           'curl "$URL" --output branch -f "$FILE"'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The narrowing is keyed on the OPTION, and these are why it has to be. Each
+# one is token-for-token the same shape as an allowed line above and must still
+# block: `tar -I "$G" -f archive.tar` differs from `tar -C "$DIR" -f
+# "$ARCHIVE"` only in the letter at index 1, both select index 2 and both fire
+# on `-f` at index 3, so no rule reading shape, adjacency or operand
+# literalness can tell them apart -- measured. `docker run "$IMAGE" git branch
+# -f main` survives for a different reason worth keeping straight: skipping the
+# image positional leaves the LITERAL git at index 3 to be candidated on its
+# own. A command absent from the table is untouched, which is what keeps arch,
+# chrt, taskset and every wrapper nobody enumerated blocking.
+for _c in ('tar -I "$G" -f archive.tar',
+           'docker run "$IMAGE" git branch -f main',
+           'arch -x86_64 "$G" -f main ' + OID_A,
+           'chrt -f 99 "$G" branch -f main unreviewed',
+           'taskset -c 0 "$G" branch -f main unreviewed',
+           'sudo curl "$URL" -d "$BODY"'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
-# ...and the negative control that keeps the pin from being vacuous: a force
-# letter spent BEFORE the substitution is untouched.
-assert git_zero_old_ref_op('cp -f "$SRC" "$DST"', hook_cwd=hook_cwd) == []
+# The narrowing above must not open the shapes it was carved around, so each is
+# pinned as must-BLOCK beside it. A REAL wrapper still puts its operand in
+# command position; an option whose value is ATTACHED (-x86_64, -I{}) consumes
+# no following word, so what comes next IS the command and not a replacement
+# string; and the worktree writer is reachable through an assignment like any
+# other -- `worktree add -B` moves refs/heads/<name> exactly as `branch -f`
+# does, measured, while the prepass modelled only _ZERO_OLD_SUBS.
+for _c in ('arch -x86_64 "$G" branch -f main unreviewed',
+           'env "$G" branch -f main unreviewed',
+           'G=git; printf x | xargs -I{} "$G" checkout "${FLAG:--B}" main '
+           'unreviewed',
+           'G=git-worktree; "$G" add -Btrunk /tmp/wt-780 unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # ...and the price of reading an assignment-named writer at every position,
 # pinned as current behaviour for the same reason: an ADJACENT force option of
 # that writer's own is required, which keeps `G=git-switch; echo "$G"` out, but
 # a genuine `-C` belonging to some OTHER command is refused. Contrived, and the
 # fail-CLOSED direction -- the alternative is a live reset nothing sees.
 assert git_zero_old_ref_op('G=git-switch; ls "$G" -C', hook_cwd=hook_cwd)
+# Where the image STANDS is answered from docker's own flag declarations, so
+# neither side of the grammar has to guess. Booleans are the closed minority
+# (9 of the 90 in cli/command/container/opts.go at v27.3.1); everything else
+# dashed takes the next word, so `-w /repo`, `--platform linux/amd64` and
+# `--user 1000` consume theirs and `"$IMAGE"` is still the image -- it keeps
+# its exemption, and a trailing `-d` is the container's argument rather than
+# `branch -d`. Guessing this cost blocks in BOTH directions before: assuming
+# unknown options consume nothing lost `--platform x --entrypoint=git`, and
+# assuming they all consume rewrote a container's own `--entrypoint=` as
+# docker's.
+for _c in ('docker run -w /repo image -d',
+           # `--` ends the options: the next word is the image whatever it
+           # looks like, so the entrypoint spelling past it is argv.
+           'docker run --rm -- image --entrypoint=git'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# ...but reading the arity right only says WHERE the image stands, never that
+# the word standing there is one. An unresolved word in that position is
+# refused the exemption outright, because it may be the executable-valued
+# option itself -- see the block below. Each row here is pinned in BOTH
+# directions: refused as it stands, exempt again the moment `--` names the
+# position, which is the whole cost of that rule and the way out of it.
+for _c in ('docker run -w /repo "$IMAGE" -d',
+           'docker run --platform linux/amd64 "$IMAGE" -d',
+           'docker run --user 1000 "$IMAGE" -d',
+           # A short cluster spends its letters in order, and the first one
+           # that takes a value owns the REST of the token when there is a
+           # rest: `-v/path` is already satisfied and eats no following word,
+           # while `-itv /vol` ends on a value-taking letter and does.
+           'docker run -it "$IMAGE" -d',
+           'docker run -v/path "$IMAGE" -d',
+           'docker run -w/repo "$IMAGE" -d',
+           'docker run -itv /vol "$IMAGE" -d',
+           # A boolean spelled with an explicit value consumes nothing more,
+           # and a repeated flag is just two of the same.
+           'docker run --rm=false "$IMAGE" -d',
+           'docker run -e A -e B "$IMAGE" -d'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+    _dd = _c.replace(' "$IMAGE"', ' -- "$IMAGE"')
+    assert git_zero_old_ref_op(_dd, hook_cwd=hook_cwd) == [], _dd
+# ...and the cluster that DOES consume its word leaves the entrypoint in
+# docker's own option region, where it still names the executable.
+assert git_zero_old_ref_op(
+    'docker run -itv /vol --entrypoint=git image branch -f main',
+    hook_cwd=hook_cwd)
+# Walking that region counts ARGUMENTS, and a token is not always one. With
+# VOL='/repo:/repo -w /repo image' an UNQUOTED expansion supplies four words,
+# so `-v $VOL git branch -f main` runs the container from `image` and hands
+# `git branch -f main` to it -- measured with a printf stub. The walk stepped
+# over `$VOL` as one value, read `git` as the image and exempted it. Where the
+# word count cannot be known the region is not walkable, so nothing past it is
+# granted an exemption; the same holds when the raw spellings are missing or
+# no longer line up with the tokens.
+for _c in ('docker run -v $VOL git branch -f main unreviewed',
+           'docker run -e $E git branch -f main unreviewed',
+           'docker run -v "$@" git branch -f main unreviewed',
+           'docker run -v "${vols[@]}" git branch -f main unreviewed',
+           'docker run -v $(cat vols) git branch -f main unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...but an ordinary QUOTED scalar is exactly one argument, so the image there
+# really is the word `git` -- a container image that happens to be named git,
+# with `branch -f main` as its own argv and no host ref in reach. Blocking it
+# would be a guess about the value, which is a different question from the
+# word COUNT this walk asks.
+for _c in ('docker run -v "$VOL" git branch -f main unreviewed',
+           'docker run -e "$E" git branch -f main unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# `--` names the image POSITION, not its word count. With ARGS='image git' --
+# or two positional parameters spelling the same -- the word after the
+# delimiter supplies both the image and the container's command, so `git
+# branch -f main` runs inside it. That arm returned the image's index without
+# ever asking the arity question the rest of the walk asks.
+for _c in ('docker run -- $ARGS branch -f main',
+           'docker run -- "$@" branch -f main',
+           'docker run -- "${args[@]}" branch -f main',
+           'docker run --rm -- $ARGS branch -f main',
+           'docker run -- $(cat args) branch -f main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...while a literal or ordinary quoted scalar after the delimiter is one
+# word, so the image is the image and the rest is its own argv.
+# A word count is not a word MEANING. `"$OPT"` is one argument, so the arity
+# rule passes it -- but with OPT=--rm it is a FLAG, the image is further along,
+# and the `--entrypoint=git` between them is docker's own option after all, so
+# git runs in the container. An unknown value before the delimiter is refused
+# the image slot in EVERY case. Keying that refusal on an executable-valued
+# option appearing later in the segment was the r42 rule and was measured as a
+# fail-open: the unknown word can BE that option, so none is spelled anywhere
+# and the argv behind it carries no literal git for the scan to candidate.
+for _c in ('docker run -v /repo:/repo -w /repo "$OPT" --entrypoint=git image '
+           'branch -f main unreviewed',
+           'docker run "$OPT" --entrypoint=git image branch -f main',
+           'docker run "$OPT" --entrypoint git image branch -f main',
+           'docker run "$OPT" image git branch -f main',
+           # A boolean the table does not carry is read as taking a word, so
+           # it swallows the IMAGE and the git behind it becomes the image in
+           # its place. Both of these are declared boolean upstream; both were
+           # missing because the harvest read only the `BoolVar` spelling and
+           # was pinned two majors back. The arity of an option is therefore
+           # answered from a COMPLETE declaration set, and an option absent
+           # from it has UNKNOWN arity -- never assumed either way.
+           'docker run -v /repo:/repo -w /repo --use-api-socket image git '
+           'branch -f main unreviewed',
+           'docker run --disable-content-trust image git branch -f main',
+           'docker run --use-api-socket image git branch -f main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# The four readings that unknown word carries, each of which reaches git and
+# none of which spells an executable-valued option anywhere in the segment.
+# `--entrypoint=git` supplies the executable and the words behind the real
+# image are its argv; the bare spelling takes the next word, literal or
+# dynamic; and `--health-cmd` makes the QUOTED word behind it a command line
+# docker runs through the container's own `sh`. The last one is why refusing
+# this in the exemption walk alone was not enough -- that payload is a single
+# token, so no per-word answer can turn it into a candidate. The region walk
+# refuses it instead.
+for _c in ('docker run -v /repo:/repo -w /repo "$OPT" image branch -f main '
+           + OID_A,
+           'docker run "$OPT" git image branch -f main',
+           'docker run "$OPT" "$G" image branch -f main',
+           'docker run "$OPT" \'git branch -f main\' image',
+           'docker exec "$OPT" container branch -f main ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the same unknown value is refused the exemption whatever stands behind
+# it, because what it may BE is decided in front of the image and not after it.
+# `docker run "$IMAGE" -d` is an ordinary detached run and this over-blocks it;
+# that cost is accepted, and `--` is the way to spell it so it allows again.
+for _c in ('docker run "$IMAGE" -d',
+           'docker run "$IMAGE" branch -f main',
+           'docker run --rm "$IMAGE" branch -f main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+    _dd = _c.replace(' "$IMAGE"', ' -- "$IMAGE"')
+    assert git_zero_old_ref_op(_dd, hook_cwd=hook_cwd) == [], _dd
+# ...but AFTER the delimiter the position is guaranteed by docker itself: the
+# next word is the image whatever it spells, so a validated single word there
+# keeps the exemption an unknown value cannot earn in front of it.
+for _c in ('docker run -- image branch -f main',
+           'docker run -- "$IMAGE" branch -f main',
+           'docker run --rm -- image --entrypoint=git',
+           'docker run -- image -d'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The same two properties as above, asked across the delimiter.
+for _tail in ('git branch -f main', 'branch -f main'):
+    _unq = 'docker run -- $VAL %s' % _tail
+    assert git_zero_old_ref_op(_unq, hook_cwd=hook_cwd), _unq
+    _quo = 'docker run -- "$VAL" %s' % _tail
+    _lit = 'docker run -- literal %s' % _tail
+    assert (bool(git_zero_old_ref_op(_quo, hook_cwd=hook_cwd))
+            == bool(git_zero_old_ref_op(_lit, hook_cwd=hook_cwd))), _quo
+# The two properties the examples above are instances of, generated rather
+# than spelled out: an unquoted expansion in the option region is never
+# walkable, and a quoted scalar always reads exactly as the literal it stands
+# in for. Small on purpose -- it covers the argument-count question the
+# individual rows kept missing, not the whole grammar.
+for _opt in ('-v', '-e', '-w', '--platform', '--entrypoint'):
+    for _tail in ('git branch -f main', 'branch -f main'):
+        _unq = 'docker run %s $VAL image %s' % (_opt, _tail)
+        assert git_zero_old_ref_op(_unq, hook_cwd=hook_cwd), _unq
+        # The equivalence holds for DATA-valued options only. An
+        # executable-valued one is asked a different question -- what the
+        # value IS, not how many words it is -- so `--entrypoint "$VAL"`
+        # rightly blocks where `--entrypoint literal` does not.
+        if _opt == '--entrypoint':
+            continue
+        _quo = 'docker run %s "$VAL" image %s' % (_opt, _tail)
+        _lit = 'docker run %s literal image %s' % (_opt, _tail)
+        assert (bool(git_zero_old_ref_op(_quo, hook_cwd=hook_cwd))
+                == bool(git_zero_old_ref_op(_lit, hook_cwd=hook_cwd))), _quo
 # A dynamic ref writer needs neither a force flag nor a refs/ operand:
 # `update-ref HEAD <oid>` DEREFERENCES HEAD and overwrites the checked-out
 # protected branch with no old-value precondition, so the HEAD operand is the
 # write. Both dynamic arms were qualified on a flag or a refs/ path alone.
 for _c in ('G=git; S=update-ref; "$G" "$S" HEAD ' + OID_A,
            'G=git-update-ref; "$G" HEAD ' + OID_A):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# Two regressions of the narrowings above, pinned in the direction that lost a
+# BLOCK. An option CLUSTER is not a value-taking option: `-iu` ends in a letter
+# that takes the next word, but the cluster carries `-i` first, so reading its
+# arity off the token LENGTH said `echo` was env's option value -- and the
+# print-only exemption keyed on that answer waved the whole reset through.
+# `-e` inside docker's COMMAND TAIL is likewise not docker's `--env`: the tail
+# belongs to whatever runs in the container, and exempting a word because a
+# LATER program's option preceded it hid the literal git behind it.
+for _c in ('G=git; env -iu echo "$G" branch -f main unreviewed',
+           'printf x | docker exec -i container xargs -I -e git branch -f '
+           'main unreviewed'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the guard that keeps the candidate replay off other programs' data is
+# the command PREFIX alone, so these stay allowed. Neither `mv` nor `wget`
+# stands where a wrapper does, so the word after it is an argument and not a
+# command -- which is the whole question, and the only one this replay may ask:
+# the option in front of the candidate is answered by the tail bound instead,
+# and `docker exec -e FOO=1 container ls` runs no git at all.
+for _c in ('mv "$A" branch "$B"',
+           'wget "$URL" -O checkout "$FILE"',
+           'docker exec -e FOO=1 container ls'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# An option can own its value as the EXECUTABLE, which the data model had no
+# role for: `--entrypoint` REPLACES what the image runs, so its value is the
+# command and every later word is that command's argv. Counted as a positional
+# it read as the IMAGE, and the git behind it was exempted as docker's own
+# data -- literal, path-qualified, dashed and dynamic alike. `--entrypoint`
+# also consumes its word, so it must not shift the image slot either.
+# Repeated flags block if ANY value names git: docker keeps the last, and the
+# gate cannot prove which one survives.
+for _c in ('docker run --entrypoint git image branch -f main',
+           'docker run --entrypoint=git image branch -f main',
+           'docker run --entrypoint /usr/bin/git image branch -f main',
+           'docker run --entrypoint git-branch image -f main',
+           'docker run --entrypoint "$G" -v /repo:/repo image branch -f main '
+           'unreviewed',
+           'docker run --entrypoint="$G" image branch -f main',
+           'docker run --entrypoint echo --entrypoint git image branch -f main',
+           'docker run --entrypoint git --entrypoint echo image branch -f main',
+           # ...and an option the table does not list, standing BEFORE it. Its
+           # value is not dashed, so reading the first bare word as the image
+           # ended the option region one word early and the `=` form past it
+           # was never rewritten -- `--platform linux/amd64` and `-w /repo`
+           # each hid a live reset that the bare form catches.
+           'docker run --platform linux/amd64 --entrypoint=git image branch '
+           '-f main',
+           'docker run -w /repo --entrypoint=git image branch -f main',
+           'docker run --platform "$X" --entrypoint=git image branch -f main',
+           'docker run -w /repo --entrypoint="$G" image branch -f main',
+           'docker run --user 1000 --entrypoint git image branch -f main'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and the same word is DATA wherever docker does not execute it. Only
+# `--entrypoint` names an executable: `--platform` takes a value and `--rm`
+# takes none, and the three are token-for-token alike, so the option NAME is
+# the whole signal. An env or volume value spelling `git` is still data, and
+# the `=` form is rewritten only inside docker's OWN option region -- past the
+# image every word belongs to the container's command, and no other command in
+# the table has an executable-valued option at all.
+for _c in ('docker run --entrypoint echo image branch -f main',
+           'docker run --entrypoint=echo image branch -f main',
+           'docker run --platform "$X" image branch -f main',
+           'docker run --platform=linux/amd64 image branch -f main',
+           # The image is spelled literally in these: an unresolved word in
+           # that position is refused the exemption on its own account now, so
+           # using one here would test that rule instead of this one. A dynamic
+           # option VALUE is still read, which is what the first row keeps.
+           'docker run --rm -v "$VOL" image -d',
+           'docker run -e git image -d',
+           'docker run --env git image -d',
+           'docker run -v /git:/git image -d',
+           'docker run image --entrypoint=git',
+           'docker run image echo --entrypoint=git',
+           'docker run --platform linux/amd64 image --entrypoint=git',
+           'docker run --rm image mycmd --entrypoint=git branch -f main',
+           'docker run -w /repo image sh --entrypoint=git branch -f main',
+           'docker run --rm image --entrypoint=git branch -f main',
+           'docker run --entrypoint= image -d',
+           'docker run --entrypoint',
+           'curl "$URL" -d --entrypoint=git',
+           'echo --entrypoint=git'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# ...and an option whose value is a whole COMMAND LINE is a third role again.
+# `--entrypoint git` names one executable WORD; `--health-cmd 'git branch -f
+# main HEAD~1' packs a shell command into ONE argument, which docker stores as
+# `["CMD-SHELL", <value>]` and runs through `sh -c` inside the container. So it
+# is read the way every other packed command line is -- as a payload for the
+# ordinary scan -- and naming it as docker's data exempted the reset outright.
+for _c in ("docker run --health-cmd 'git branch -f main HEAD~1' image",
+           'docker run -v /repo:/repo -w /repo --health-cmd "$CMD" -d image '
+           'sleep infinity',
+           "docker create --health-cmd 'git checkout -B main HEAD~1' image",
+           # A value carrying a live expansion cannot be read, and for a slot
+           # docker EXECUTES "could not read" may not become "allow". What the
+           # variable is NAMED says nothing -- `$MSG` and `$CMD` are one word
+           # to a static scan, and the container's own `sh` expands either.
+           'docker run --health-cmd "$MSG" -d "$IMAGE"',
+           'docker run --health-cmd="$CMD" image',
+           # The option region is anchored on the docker WORD rather than on
+           # token zero, or a wrapper in front hides the whole of it.
+           "sudo docker run --health-cmd 'git branch -f main' image",
+           # ...and every spelling the walk cannot CLASSIFY is refused rather
+           # than skipped, which is what stops the next unlisted one being a
+           # hole rather than an over-block: a subcommand the table does not
+           # name, an unquoted expansion that can supply a SECOND --health-cmd
+           # (docker takes the last), an option of unknown arity in front of
+           # it. The attached-quoted form is NOT one of them any more: its
+           # payload is read like any other and blocks on what it SAYS.
+           "docker container run --health-cmd 'curl -f localhost/' image",
+           "docker run -v $VOL --health-cmd 'curl -f localhost/' image",
+           "docker run --future-flag x --health-cmd 'curl -f localhost/' image",
+           "docker run --health-cmd='git branch -f main HEAD~1' image",
+           # ...escaping packs the same command line without quotes at all.
+           'docker run --health-cmd=git\\ branch\\ -f\\ main image',
+           # ...and a word the scan cannot READ does not end docker's option
+           # region. An unreadable word may be an OPTION, and a value-taking
+           # one swallows what follows -- a literal operand, or the `--`
+           # itself. Verified with a harmless shell stub: with OPT=--rm the
+           # argv docker receives still carries --health-cmd as ITS flag,
+           # and with OPT=--name the `--` becomes that option's value.
+           'docker run -v /repo:/repo -w /repo "$OPT" --health-cmd="git '
+           'checkout -B main HEAD~1" -d image sleep infinity',
+           'docker run -v /repo:/repo -w /repo "$OPT" --health-cmd '
+           "'git checkout -B main HEAD~1' -d image sleep infinity",
+           'docker run "$OPT" myvalue --health-cmd '
+           "'git branch -f main' image",
+           'docker run "$OPT" -- --health-cmd '
+           "'git branch -f main' image"):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...and a health check the scan can READ stays exactly where it was, because
+# it is scanned rather than assumed: `curl -f` writes no ref. Past the image
+# the option belongs to the container's own argv, before any docker word it is
+# another program's, and with no value at all docker rejects the flag and runs
+# nothing. A quoted scalar crossed on the way is one word, so it can hide no
+# second option and the walk carries on through it.
+for _c in ("docker run --health-cmd 'curl -f http://localhost/' image",
+           # ...and the `=` spelling reads exactly as the bare one. It did
+           # not: `shlex(posix=False)` split the whitespace INSIDE the
+           # attached quotes, the whole segment lost its provenance, and an
+           # inert check was refused for how it was written. `_raw_tokens`
+           # now spans the tokenizer's own lexer, so the two agree.
+           "docker run --health-cmd='curl -f http://localhost/' image",
+           'docker run --health-cmd="curl -f localhost/" image',
+           'docker run -v "$VOL" --health-cmd \'curl -f localhost/\' image',
+           'docker run --health-cmd=git image',
+           'docker run image --health-cmd=git',
+           "docker run image --health-cmd 'git branch -f main'",
+           "docker run --rm -- image --health-cmd 'git branch -f main'",
+           'docker run --health-cmd',
+           "echo --health-cmd 'git branch -f main'",
+           'curl "$URL" -d --health-cmd=\'git branch -f main\'',
+           # ...and a `--` reached with nothing unreadable behind it is
+           # docker's own guarantee and still ends the options, so a payload
+           # past it is the container's argv and an inert one still allows.
+           "docker run --rm -- image --health-cmd 'curl -f localhost/'",
+           'docker run -- "$IMAGE" --health-cmd=git'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# ...but an unreadable word in FRONT of the region is refused before any
+# payload is reached, so an inert check standing behind one over-blocks. Same
+# accepted cost as the image rows, same way out: name the position with `--`.
+for _c in ('docker run "$OPT" --health-cmd '
+           "'curl -f localhost/' image",
+           'docker run "$IMAGE" --health-cmd=git'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # ...qualified by the NEW VALUE rather than by what precedes HEAD. Asking
 # whether the previous token looked like an option meant guessing which options
@@ -1174,6 +1546,31 @@ assert git_zero_old_ref_op(
     'xargs -I{} git branch -cf topic main', hook_cwd=hook_cwd)
 for _c in ('git status', 'git log --oneline -5', 'git worktree list'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The property the whole raw-token stream rests on, asked directly rather than
+# through a consumer: a spelling must be the SOURCE of its own token. Two
+# independent lexers cannot promise that -- they disagreed on every mid-word
+# quote -- so it is asserted across the shapes that used to misalign.
+_align = __import__('gitcmd_detect')
+for _seg in ("docker run --health-cmd=" + chr(39) + "curl -f x" + chr(39) + " image",
+             'docker run --health-cmd="curl -f x" image',
+             "docker run --health-cmd=git\\ branch image",
+             "echo pre" + chr(39) + "a b" + chr(39) + "post",
+             "git commit -m " + chr(39) + "a b" + chr(39),
+             'git -C "$(pwd)" status',
+             "docker run -v $VOL image",
+             'docker run -v "$VOL" image',
+             "  echo   a   b  ",
+             "git -C /repo\rstatus"):
+    _t = _align._tokenize(_seg)
+    _r = _align._raw_tokens(_seg)
+    assert _r is not None and len(_r) == len(_t), _seg
+    for _rw, _tk in zip(_r, _t):
+        assert _align._tokenize(_rw) == [_tk], (_seg, _rw, _tk)
+# ...and a segment the lexer cannot read at all still reports None, because
+# `_tokenize` falls back to a split this cannot mirror. Unreadable stays
+# unreadable; only the spellings it CAN read stopped being thrown away.
+for _seg in ("echo a" + chr(39), 'echo "a'):
+    assert _align._raw_tokens(_seg) is None, _seg
 print('ok')
 PY
 ) || DET=fail

@@ -646,7 +646,7 @@ fi
 printf '\n=== #780 detector smoke ===\n'
 DET=$(PYTHONPATH="$REPO_ROOT/hooks/gate-scripts/lib" python3 -S - "$REPO" <<'PY'
 import sys
-from gitcmd_detect import git_zero_old_ref_op
+from gitcmd_detect import git_zero_old_ref_op, _zero_old_operand_owner
 hook_cwd = sys.argv[1]
 OID_A = '3cc2f0d6f1a399738b4873e4873e88b2e47356be'
 OID_B = '39f33bdc516ac395d10ff9b84f6da7145084245c'
@@ -1312,16 +1312,159 @@ for _c in ('G=git; env -iu echo "$G" branch -f main unreviewed',
            'printf x | docker exec -i container xargs -I -e git branch -f '
            'main unreviewed'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
-# ...and the guard that keeps the candidate replay off other programs' data is
-# the command PREFIX alone, so these stay allowed. Neither `mv` nor `wget`
-# stands where a wrapper does, so the word after it is an argument and not a
-# command -- which is the whole question, and the only one this replay may ask:
-# the option in front of the candidate is answered by the tail bound instead,
-# and `docker exec -e FOO=1 container ls` runs no git at all.
+# ...and the guard that keeps the candidate replay off other programs' data
+# asks for PROVEN ownership, so these stay allowed. `mv` and `wget` own the
+# word after them as data, which is the whole question and the only one this
+# replay may ask: the option in front of the candidate is answered by the tail
+# bound instead, and `docker exec -e FOO=1 container ls` runs no git at all.
+# These three need the exemption for real -- each replay reads as a force,
+# because the operand is unresolvable -- so dropping the guard would refuse
+# them and only inverting it keeps them.
 for _c in ('mv "$A" branch "$B"',
-           'wget "$URL" -O checkout "$FILE"',
-           'docker exec -e FOO=1 container ls'):
+           'docker exec -e FOO=1 container ls',
+           # ...and ownership does not end at a `--` or at a preceding operand.
+           # Both are still that command's data -- a delimiter ends OPTIONS, not
+           # the role. Reading either as a handoff refused two ordinary file
+           # operations that cannot run git at all.
+           'mv -- "$A" branch "$B"',
+           'cp source "$A" branch "$B"',
+           # ...and a wrapper's own OPTIONS are stepped over with it, at the
+           # arity env(1) and sudo(8) actually have. Reading every dash-token
+           # as the command word put `-i` where `cp` stands and refused three
+           # ordinary copies that HEAD allows.
+           'env -i cp source "$A" branch "$B"',
+           'env -u FOO cp source "$A" branch "$B"',
+           'sudo -u nobody cp source "$A" branch "$B"',
+           # A value-taking option takes its VALUE with it, so a value that
+           # merely LOOKS like an owner never answers for one: here `mv` is the
+           # variable `-u` unsets and `cp` is the command.
+           'env -u mv cp source "$A" branch "$B"',
+           # ...and ownership is not only the movers. A plain reader or a
+           # metadata tool consumes filenames just as finally, and leaving one
+           # unnamed refused it: these three were reported that way.
+           'rm "$A" branch "$B"',
+           'chmod 644 "$A" branch "$B"',
+           'ls "$A" branch "$B"',
+           # ...and the walk reads the OPERAND- and SCOPED-wrapper sets too,
+           # not just `_WRAPPERS`. `timeout` and `flock` each take one bare
+           # operand of their own -- a duration, a lockfile -- and leaving that
+           # operand standing where the command word belongs resolved these to
+           # not-an-owner and manufactured a force out of a file copy.
+           'ionice cp "$A" branch "$B"',
+           'ionice -c 3 cp "$A" branch "$B"',
+           'timeout 5 cp "$A" branch "$B"',
+           'timeout -s TERM 5 cp "$A" branch "$B"',
+           'flock /tmp/l mv "$A" branch "$B"',
+           'flock -x /tmp/l cp "$A" branch "$B"',
+           # ...and a search reads its operands as data like any other reader.
+           # The first one being a PATTERN rather than a path changes nothing.
+           'grep "$PATTERN" branch "$FILE"',
+           'egrep "$PATTERN" branch "$FILE"',
+           'cut -d: -f1 "$A" branch "$B"'):
     assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+# The rows above are enumerated spellings, and enumerated spellings are how the
+# ownership walk kept passing while one axis at a time was broken. This crosses
+# the three axes that actually interact -- the wrapper, its option form, and the
+# command the prefix ends in -- so no future edit to any one of them can ride on
+# whichever single spelling happened to be pinned. 60 ownership cells and 50
+# refusal cells over the same prefixes; the two halves must disagree on the
+# command word and on nothing else.
+_OWN_PREFIXES = ('', 'env ', 'env -i ', 'env -u FOO ', 'sudo -n ',
+                 'sudo -u nobody ', 'timeout 5 ', 'timeout -s TERM 5 ',
+                 'flock -x /tmp/l ', 'ionice -c 3 ')
+for _p in _OWN_PREFIXES:
+    # Commands that consume operands as DATA: owned, so no replay.
+    for _d in ('mv', 'cp', 'rm', 'ls', 'grep', 'cat'):
+        _c = '%s%s "$A" branch "$B"' % (_p, _d)
+        assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd) == [], _c
+    # Commands that can RUN one: never owned, so the substituted writer behind
+    # them is still replayed and still refused.
+    for _x in ('rsync -e', 'scp -S', 'docker exec -it c', 'sed -e', 'awk'):
+        _c = ('G=git; %s%s "$G" checkout "${FLAG:--B}" main unreviewed'
+              % (_p, _x))
+        assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
+# ...but the table is a whitelist of commands that never run an operand as a
+# program, never an attempt at every file utility. One that DOES run its
+# argument stays refused, and `xargs` is refused at HEAD too.
+assert git_zero_old_ref_op('xargs "$A" branch "$B"', hook_cwd=hook_cwd)
+# The arity table is the whole licence, and it is deliberately narrow. An
+# option it does not name leaves the command word unlocated, which is the case
+# to fail CLOSED on -- so an unknown flag, a long or attached spelling, an
+# option whose arity the token cannot settle (`sudo -h` is help alone and
+# `-h host` with an operand), an option that RE-SPLITS its own operand back
+# into the wrapper's arguments (`env -S`), and one that runs a SHELL rather
+# than the next word (`sudo -i` / `sudo -s`) all keep the unresolved-write
+# reading. Pinned on the predicate, since these prefixes carry no writer.
+for _p in (['env', '-q', 'cp', 'source'],
+           ['env', '--unset=FOO', 'cp', 'source'],
+           ['env', '-uFOO', 'cp', 'source'],
+           ['env', '-S', 'cp', 'source'],
+           ['sudo', '-h', 'cp', 'source'],
+           ['sudo', '-i', 'cp', 'source'],
+           ['sudo', '-s', 'cp', 'source'],
+           ['nice', '-n', '5', 'cp', 'source'],
+           # ...and the value of a value-taking option is never the owner.
+           ['env', '-u', 'mv'],
+           ['sudo', '-u', 'cp']):
+    assert not _zero_old_operand_owner(_p), _p
+# The guard used to ask the MIRROR question -- is this prefix a known wrapper
+# -- and read a no as proof that no replay was needed. An unlisted wrapper
+# answers no for the wrong reason, so with BOTH the writer and the force flag
+# substituted nothing was left to refuse on and a reset of main went out. The
+# sweep above already crosses these prefixes with a substituted EXECUTABLE; it
+# is the third axis, the substituted FLAG, that was never crossed with them.
+# Unknown prefix now keeps the unresolved-write reading rather than buying a
+# way past it, so the class closes without naming wrappers one at a time.
+for _c in ('G=git; arch -x86_64 "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; chronic "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; caffeinate -i "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; taskset -c 0 "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and a `--` behind an unlisted wrapper does not make it an owner:
+           # `arch` still RUNS the word after the delimiter. The delimiter axis
+           # cuts both ways and both directions are pinned.
+           'G=git; arch -x86_64 -- "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and stepping over a LISTED wrapper's options does not exempt
+           # what stands behind them: `env -i` is walked, the word after it is
+           # a substituted writer rather than an owner, so the replay still
+           # runs. Widening the walk must not widen the exemption.
+           'G=git; env -i "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; sudo -u nobody "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and ownership is answered by the OPERAND table alone. The data
+           # table was a second disjunct, which handed the exemption to every
+           # command it names -- `docker` among them, whose `exec`/`run` runs
+           # the very tail the exemption then declined to replay. The two
+           # tables answer different questions: "scan this command's option
+           # values" is a reason to look harder, never a licence to stop.
+           'G=git; env -i docker exec -it c "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; sudo -n docker exec -i c "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and a command that runs a program of the command line's
+           # choosing is not an owner however file-shaped its operands look:
+           # `rsync -e CMD` and `scp -S program` both execute.
+           'G=git; env -i rsync -e "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; env -i scp -S "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and the same property disqualifies commands that LOOK like
+           # plain readers. Each of these takes a program named on the command
+           # line -- `sort --compress-program=PROG`, `split --filter=COMMAND`,
+           # `rg --pre=COMMAND`, `install --strip-program=PROGRAM`,
+           # `wget --use-askpass=COMMAND` -- so none is an owner and the
+           # substituted writer behind them is still replayed. A positive test
+           # on the bare spelling would have said nothing about any of it,
+           # which is how `sort` and `rg` were admitted in the first place.
+           'G=git; env -i sort --compress-program "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; env -i split --filter "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; env -i rg --pre "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; env -i install --strip-program "$G" checkout "${FLAG:--B}" main unreviewed',
+           'G=git; env -i wget --use-askpass "$G" checkout "${FLAG:--B}" main unreviewed',
+           # ...and the cost of that rule is paid here, deliberately. This row
+           # was pinned ALLOW while `wget` was an owner; it is refused now, and
+           # the ordinary download shape is refused with it. Ownership is a
+           # property of the COMMAND, not of the spelling in front of us -- the
+           # option that makes wget an executor is one word away and the gate
+           # cannot know it is absent from a line it has not resolved. An
+           # over-block is the direction that fails safe; re-admitting the name
+           # to make this row green would sell the whole rule for one idiom.
+           'wget "$URL" -O checkout "$FILE"'):
+    assert git_zero_old_ref_op(_c, hook_cwd=hook_cwd), _c
 # An option can own its value as the EXECUTABLE, which the data model had no
 # role for: `--entrypoint` REPLACES what the image runs, so its value is the
 # command and every later word is that command's argv. Counted as a positional
@@ -1400,6 +1543,22 @@ for _c in ("docker run --health-cmd 'git branch -f main HEAD~1' image",
            # The option region is anchored on the docker WORD rather than on
            # token zero, or a wrapper in front hides the whole of it.
            "sudo docker run --health-cmd 'git branch -f main' image",
+           # The REWRITE was anchored on token zero even so, and only the
+           # payload walk did the scanning -- so a wrapper left the payload and
+           # unreadable arms working while the ATTACHED entrypoint spelling
+           # silently stopped splitting, and no standalone `git` ever reached
+           # candidate selection. Both wrappers, both attached forms.
+           "env docker run --entrypoint=git -v /repo:/repo image branch -f main x",
+           "sudo docker run --entrypoint=git -v /repo:/repo image branch -f main x",
+           "env TZ=UTC docker run --entrypoint=git -v /repo:/repo image branch -f main x",
+           # ...and the subcommand's own position was read as a fixed offset,
+           # which BOTH a global option and the namespace spelling move.
+           # `docker container run` IS `docker run` (docker/cli v29), so an
+           # unresolved option word under either one has to reach the same
+           # unreadable refusal as the short path.
+           "docker container run -v /repo:/repo \"$OPT\" 'git branch -f main' image",
+           "docker -H unix:///var/run/docker.sock run -v /repo:/repo \"$OPT\" 'git branch -f main' image",
+           "docker container run --entrypoint=git -v /repo:/repo image branch -f main x",
            # ...and every spelling the walk cannot CLASSIFY is refused rather
            # than skipped, which is what stops the next unlisted one being a
            # hole rather than an over-block: a subcommand the table does not
@@ -1407,7 +1566,40 @@ for _c in ("docker run --health-cmd 'git branch -f main HEAD~1' image",
            # (docker takes the last), an option of unknown arity in front of
            # it. The attached-quoted form is NOT one of them any more: its
            # payload is read like any other and blocks on what it SAYS.
-           "docker container run --health-cmd 'curl -f localhost/' image",
+           # `container run` is no longer an instance either -- it is NAMED
+           # now, so it classifies and its inert payload is allowed below;
+           # a subcommand nothing names still refuses.
+           "docker compose run --health-cmd 'curl -f localhost/' image",
+           # ...and a GLOBAL option whose value is dynamic does not end that
+           # option region either. Stepping over it as two tokens assumes the
+           # expansion stays one word; it can carry the host AND the whole
+           # `run -v … --entrypoint git` region behind it, so the offset would
+           # land past the real payload and read the inert literal in its
+           # place. The literal spelling above keeps its offset; only the
+           # unreadable one loses it.
+           "docker -H $HOST run --health-cmd 'curl -f localhost/' image",
+           'docker -H `hostname` run --health-cmd '
+           "'curl -f localhost/' image",
+           "docker --context $CTX run --health-cmd 'curl -f localhost/' image",
+           # ...and the ATTACHED spellings carry the same expansion inside the
+           # option token, where the value test cannot see it: the token is not
+           # the bare option name, so it reads as a one-word flag and is
+           # stepped over. All three reproduce the same miss.
+           "docker --host=$HOST run --health-cmd 'curl -f localhost/' image",
+           "docker -H$HOST run --health-cmd 'curl -f localhost/' image",
+           "docker --context=$CTX run --health-cmd 'curl -f localhost/' image",
+           # ...and an expansion does not need a `$` to be one. A BRACE list
+           # supplies the whole option region itself, and a glob splits the
+           # same way, so the offset walk asks `_unreadable_word` -- the
+           # file's own openers-only predicate -- rather than a narrower
+           # dollar-and-backtick notion of a single word.
+           'docker -H {unix:///var/run/docker.sock,create,--health-cmd,'
+           '"git branch -f main HEAD",image} run '
+           "--health-cmd 'curl -f localhost/' image",
+           "docker -H /var/run/*.sock run --health-cmd 'curl -f localhost/' image",
+           "docker -H /var/run/[dp]ocker.sock run "
+           "--health-cmd 'curl -f localhost/' image",
+           "docker --host={a,b} run --health-cmd 'curl -f localhost/' image",
            "docker run -v $VOL --health-cmd 'curl -f localhost/' image",
            "docker run --future-flag x --health-cmd 'curl -f localhost/' image",
            "docker run --health-cmd='git branch -f main HEAD~1' image",
@@ -1435,6 +1627,23 @@ for _c in ("docker run --health-cmd 'git branch -f main HEAD~1' image",
 # nothing. A quoted scalar crossed on the way is one word, so it can hide no
 # second option and the walk carries on through it.
 for _c in ("docker run --health-cmd 'curl -f http://localhost/' image",
+           # The namespace spelling is the SAME command, so it reads the same
+           # way: named, classified, and allowed on an inert payload. It used
+           # to be refused, but only because the table did not name it -- an
+           # over-block with no reason behind it once the offset resolves.
+           "docker container run --health-cmd 'curl -f localhost/' image",
+           # A global option with a LITERAL value stays one word, so the
+           # subcommand offset still resolves and the same inert payload reads
+           # the same way through it. This is the half the dynamic-value
+           # refusal below must NOT take with it.
+           "docker -H unix:///var/run/docker.sock run "
+           "--health-cmd 'curl -f localhost/' image",
+           "docker --host=unix:///var/run/docker.sock run "
+           "--health-cmd 'curl -f localhost/' image",
+           # ...and an ordinary literal path keeps its offset whatever
+           # punctuation it carries: none of `: / . -` opens an expansion.
+           "docker --tlscacert /etc/docker/ca.pem run "
+           "--health-cmd 'curl -f localhost/' image",
            # ...and the `=` spelling reads exactly as the bare one. It did
            # not: `shlex(posix=False)` split the whitespace INSIDE the
            # attached quotes, the whole segment lost its provenance, and an

@@ -4648,9 +4648,277 @@ _ZERO_OLD_DATA_CMDS = {
     'curl': ((), ('-d', '--data', '-o', '--output', '-H', '--header'), None, ()),
     'tar': ((), ('-C', '--directory', '-f', '--file'), 0, ()),
     'make': ((), ('-C', '--directory', '-f', '--file'), 0, ()),
-    'docker': ((('run',), ('exec',), ('create',)),
+    'docker': ((('run',), ('exec',), ('create',),
+                ('container', 'run'), ('container', 'exec'),
+                ('container', 'create')),
                ('-v', '--volume', '-e', '--env'), 1, ('--entrypoint',)),
 }
+
+
+# Commands whose next word is DATA, never a command line. Membership IS the
+# whole test: `_zero_old_operand_owner` resolves which command word the prefix
+# ends in and asks whether THAT name is here. It does not additionally bound
+# the candidate to an operand region -- an earlier version of this note claimed
+# it did, which was wrong in the direction that matters, because it read as a
+# second safeguard behind a name and there is none. The name is the safeguard,
+# so the list must earn it on its own.
+_ZERO_OLD_OPERAND_CMDS = frozenset((
+    # Movers and fetchers first, then the plain readers and metadata tools.
+    # The bar for membership is ONE property, checked per name: the command
+    # must never run an operand as a program. That is what makes the exemption
+    # sound, and it is why the obvious neighbours are absent -- `find` runs
+    # `-exec`, `xargs` runs its argument (already refused at HEAD), `tar` has
+    # `--to-command` and `-I`, and `awk`/`sed`/`perl` execute a script. Leaving
+    # a data command OUT costs an over-block, which is the safe direction and
+    # how `rm`, `chmod` and `ls` were reported; letting an executing one IN
+    # would buy a way past the replay, which is not.
+    #
+    # `rsync` and `scp` were here and are GONE for exactly that property:
+    # `rsync -e CMD` / `--rsync-path`, and `scp -S program`, each run a program
+    # of the command line's choosing. They were admitted for the shape of their
+    # trailing operands and judged by nothing else, which is the mistake this
+    # note exists to prevent -- `env -i rsync -e "$G" checkout "${FLAG:--B}"
+    # main` went from two forces to none on the strength of that membership.
+    'mv', 'cp', 'ln', 'curl', 'shred',
+    'touch', 'rm', 'rmdir', 'mkdir', 'chmod', 'chown', 'chgrp', 'truncate',
+    'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'du', 'diff', 'cmp',
+    'basename', 'dirname', 'readlink', 'realpath', 'gzip', 'gunzip',
+    'shasum', 'md5sum', 'sha256sum',
+    # Searching and text shaping. These arrived a round later than the readers
+    # above and for the same reason -- `grep "$PATTERN" branch "$FILE"` was
+    # refused because the name was absent, not because anything about it runs
+    # git. The first operand being a PATTERN rather than a path changes
+    # nothing: it is still data.
+    'grep', 'egrep', 'fgrep',
+    'uniq', 'cut', 'tr', 'nl', 'tac', 'rev', 'fold', 'column',
+    'paste', 'join', 'comm', 'tee', 'csplit', 'expand', 'unexpand',
+    'strings', 'od', 'xxd', 'base64', 'cksum', 'jq',
+    # WHAT IS ABSENT, AND WHY -- every one of these was proposed for this list
+    # and removed after reading the installed `--help`, because each takes a
+    # PROGRAM chosen on the command line. A positive test on the bare spelling
+    # (`sort "$A" branch "$B"`) proves nothing about the command; the option is
+    # what makes it an executor, and the option is one word away.
+    #   sort     --compress-program=PROG   (GNU coreutils)
+    #   split    --filter=COMMAND          (GNU coreutils)
+    #   install  --strip-program=PROGRAM   (GNU coreutils)
+    #   rg       --pre=COMMAND
+    #   wget     --use-askpass=COMMAND
+    #   zip      -TT / --unzip-command
+    #   sed      the `e` command; awk/perl/python/ruby/node run a script
+    #   watch, entr, parallel, find -exec, xargs, tar -I / --to-command
+    # `ag` and `ack` are absent for a weaker but sufficient reason: neither is
+    # installed here, so nothing was PROVEN about them, and unproven is not a
+    # licence. All of these keep the conservative over-block, which is the
+    # direction that fails safe. The list stays open by construction -- adding
+    # a name is a reviewed diff that must answer the same question against the
+    # command's own help text: can it run an operand, or a value, as a program?
+))
+
+# Wrapper OPTION arity, per wrapper, for the ownership walk below and nowhere
+# else. `_command_argv` deliberately carries no per-wrapper grammar (see its
+# note, and the arity discussion at the `_consumer_words` dual parse): there,
+# guessing wrong over-blocks, which is the safe direction. Here it is not.
+# Ownership GRANTS an exemption from the replay, so a wrong guess in either
+# direction is a real defect, and both were measured on this function: reading
+# every dash-token as the command word refused `env -i cp source "$A" …`, which
+# HEAD allows, while reading them all as no-arg would let `env -u mv …` answer
+# for `mv` when `mv` is only the NAME `-u` unsets and the real command stands
+# behind it. Knowing the arity resolves both instead of trading one for the
+# other -- so the exemption is granted only for options named here, verified
+# against the installed env(1) and sudo(8), and an option this table does not
+# name refuses it, which is exactly the pre-existing behaviour and fail-CLOSED.
+#
+# Two kinds are DELIBERATELY absent, and adding either is a defect, not a gap:
+#   * options that change how the REST OF THE LINE is parsed -- `env -S string`
+#     splits its own operand back into env arguments, and `sudo -i` / `sudo -s`
+#     run a SHELL, so what follows is shell input rather than a data command's
+#     operands;
+#   * options whose arity is not decidable from the token -- `sudo -h` is help
+#     ALONE and `-h host` with an operand, so no single reading is right.
+# Long (`--unset=NAME`) and attached (`-uNAME`) spellings are absent for the
+# same reason the unknown case is: they are not named here, so they refuse.
+_ZERO_OLD_WRAPPER_OPTS = {
+    # env(1): `env [-0iv] [-C altwd] [-P altpath] [-S string] [-u name]`
+    'env': (frozenset(('-0', '-i', '-v')),
+            frozenset(('-C', '-P', '-u'))),
+    # sudo(8), the run-a-command synopsis:
+    # `sudo [-ABbEHkNnPS] [-C num] [-D directory] [-g group] [-h host]
+    #       [-p prompt] [-R directory] [-T timeout] [-u user] [VAR=value]
+    #       [-i | -s] [command [arg ...]]`  -- minus `-h`, `-i` and `-s`.
+    'sudo': (frozenset(('-A', '-B', '-b', '-E', '-H', '-k', '-N', '-n',
+                        '-P', '-S')),
+             frozenset(('-C', '-D', '-g', '-p', '-R', '-T', '-u'))),
+    # timeout(1), from the installed GNU coreutils `--help`:
+    # `timeout [OPTION]... DURATION COMMAND [ARG]...`
+    'timeout': (frozenset(('-f', '--foreground', '-p', '--preserve-status',
+                           '-v', '--verbose')),
+                frozenset(('-s', '--signal', '-k', '--kill-after'))),
+    # flock(1) and ionice(1) are util-linux and are NOT installed on this
+    # machine, so their arity is taken from the documented interface rather
+    # than a local probe. That is why only the unambiguous short forms appear:
+    # anything else is an option this table does not name, which refuses the
+    # exemption exactly as an unknown `env`/`sudo` flag does, so a gap in these
+    # two rows costs an over-block and never a way past the replay.
+    'flock': (frozenset(('-s', '-x', '-e', '-n', '-u', '-o', '-F')),
+              frozenset(('-w', '--timeout', '-E'))),
+    'ionice': (frozenset(('-t',)), frozenset(('-c', '-n'))),
+}
+
+
+def _zero_old_operand_owner(toks):
+    """True iff `toks` ends in a command that OWNS the next word as data.
+
+    The replay guard used to ask the mirror-image question -- is this prefix a
+    known WRAPPER -- and read a no as proof that no replay was needed. That is
+    a fail-OPEN, because an unlisted wrapper answers no for the wrong reason:
+    `G=git; arch -x86_64 "$G" checkout "${FLAG:--B}" main` skipped the replay
+    and a reset of main went out (measured). An unrecognised prefix means the
+    role of the next word is UNKNOWN, and unknown is the case to fail closed
+    on. So the question is inverted -- the exemption is granted only where
+    ownership is PROVEN, and every unlisted prefix now keeps the
+    unresolved-write reading instead of buying a way past it.
+
+    The two shapes this guard exists for still prove ownership: `mv "$A" branch
+    "$B"` and `wget "$URL" -O checkout "$FILE"`. They genuinely need it -- their
+    replays (`git branch "$B"`, `git -O checkout "$FILE"`) each read as a force
+    because the operand is unresolvable, so dropping the guard rather than
+    inverting it would have refused both (measured).
+
+    Name membership alone is NOT the test, in two directions. A wrapper hands
+    its operands to whatever follows (`env mv …` is still mv's data, while
+    `arch -x86_64 mv …` RUNS mv), so wrappers and assignments are stepped over
+    rather than answered for. A wrapper's OPTIONS are stepped over with it, but
+    only at the arity `_ZERO_OLD_WRAPPER_OPTS` verifies -- an option that table
+    does not name leaves the command word unlocated, and unlocated is again the
+    case to fail closed on. Stepping over a value-taking option takes its VALUE
+    with it: in `env -u mv cp …` the owner is `cp`, never the `mv` that is only
+    the variable name being unset.
+    """
+    i = 0
+    while i < len(toks):
+        base = toks[i].rsplit('/', 1)[-1]
+        if _ASSIGN_LEAD_RE.match(toks[i]) or base in _SHELL_KEYWORDS:
+            i += 1
+            continue
+        if (base in _WRAPPERS or base in _OPERAND_WRAPPERS
+                or base in _SCOPED_WRAPPERS):
+            i += 1
+            noarg, valued = _ZERO_OLD_WRAPPER_OPTS.get(
+                base, (frozenset(), frozenset()))
+            while i < len(toks) and toks[i].startswith('-'):
+                if toks[i] in noarg:
+                    i += 1
+                elif toks[i] in valued:
+                    i += 2
+                else:
+                    return False
+            if base in _OPERAND_WRAPPERS:
+                # These two take exactly ONE bare operand of their own before
+                # the command word -- a duration for `timeout`, a lockfile for
+                # `flock`. Reading only `_WRAPPERS` left that operand standing
+                # where the command word belongs, so `timeout 5 cp "$A" branch
+                # "$B"` and `flock /tmp/l mv …` resolved to not-an-owner and the
+                # replay manufactured a force out of an ordinary file copy.
+                i += 1
+            continue
+        break
+    if i >= len(toks):
+        # Prefix only, no command word at all -- nothing owns anything, so the
+        # unresolved-write reading stands.
+        return False
+    # Ownership runs to the END of that command's argv. A `--` ends OPTIONS, not
+    # the data role -- everything behind it is still mv's files -- and a
+    # preceding operand is simply more data, not a handoff. Terminating on
+    # either read `mv -- "$A" branch "$B"` and `cp source "$A" branch "$B"` as
+    # unowned, so both fell through to the replay and were refused although
+    # neither can run git at all. The commands that DO hand their tail to a
+    # command line are the table's own -- `docker exec` runs what follows -- and
+    # that grammar is modelled there, by the subcommand paths, the option region
+    # and the executable-valued options. It does not belong in a positional
+    # count applied to every prefix alike.
+    #
+    # And the answer comes from `_ZERO_OLD_OPERAND_CMDS` ALONE. The data table
+    # used to be a second disjunct, which handed ownership to every command it
+    # names -- `docker` among them, whose `exec`/`run` runs the very tail the
+    # exemption then declined to replay: `env -i docker exec -it c "$G" checkout
+    # "${FLAG:--B}" main` returned two forces before that disjunct and none
+    # after. The two tables answer different questions and only one of them is
+    # about ownership. The data table says "this command's option VALUES may be
+    # a command line, so scan them"; that is a reason to look harder, never a
+    # licence to stop looking.
+    base = toks[i].rsplit('/', 1)[-1]
+    return base in _ZERO_OLD_OPERAND_CMDS
+
+
+# Docker's GLOBAL options -- the ones standing between `docker` and its
+# subcommand. Only the value-taking ones need naming: a bare flag consumes
+# nothing, so stepping over it is one token either way.
+_DOCKER_GLOBAL_VALUE_OPTS = frozenset((
+    '-H', '--host', '-c', '--context', '--config', '-l', '--log-level',
+    '--tlscacert', '--tlscert', '--tlskey',
+))
+
+
+def _zero_old_sub_start(toks, d, subs):
+    """Index just past the subcommand path starting after `toks[d]`, else None.
+
+    Both callers read this position as a fixed `d + 1`, and either of two
+    ordinary spellings moves it: a global option before the subcommand
+    (`docker -H unix:///var/run/docker.sock run …`) and the namespace form
+    (`docker container run` IS `docker run` -- docker/cli v29, and likewise for
+    exec and create; `docker image` has no run form, so nothing else is
+    generalised here). A shifted position matched no path, and the no-path
+    branch reports "nothing here" rather than "unreadable" -- so either
+    spelling took the whole option region out from under the walk and failed
+    OPEN (measured, both).
+    """
+    k = d + 1
+    while k < len(toks):
+        t = toks[k]
+        if not t.startswith('-'):
+            break
+        if _unreadable_word(t):
+            # An ATTACHED value hides the same expansion inside the option
+            # token itself -- `--host=$HOST`, `-H$HOST`, `--context=$CTX` --
+            # where neither the value-option test nor the value check below
+            # can see it: the token is not the bare option name, so it reads
+            # as a one-word flag and the walk steps over it. It is one word
+            # HERE and need not stay one, so it earns the same refusal as the
+            # separated spelling.
+            return None
+        if t in _DOCKER_GLOBAL_VALUE_OPTS and '=' not in t:
+            # ...and a DYNAMIC value is not reliably one word. Stepping over it
+            # as two tokens assumes `$HOST` stays a single word, but it can
+            # split into a host AND the whole `run -v … --entrypoint git`
+            # region behind it -- the walk then lands past the real payload and
+            # reads whatever inert literal it finds instead (measured: HEAD
+            # refuses `docker -H $HOST run --health-cmd 'curl localhost' image`
+            # and the fixed offset allowed it). Unreadable is the case to fail
+            # CLOSED on, so no offset is returned and the caller keeps the
+            # unresolved reading -- the same answer it already gives for a
+            # dynamic OPTION (`docker $OPT run …`, which still refuses). A
+            # LITERAL value stays a single word and keeps its offset, so
+            # `docker -H unix:///var/run/docker.sock run …` is unaffected.
+            #
+            # The test is `_unreadable_word`, not a dollar-and-backtick one: a
+            # BRACE list expands to many words with no `$` anywhere, and
+            # `docker -H {unix:///var/run/docker.sock,create,--health-cmd,"git
+            # branch -f main HEAD",image} run --health-cmd 'curl localhost'
+            # image` supplied a real health command that way while the scan
+            # read the later inert one. Globs split the same way. That
+            # predicate already owns this question everywhere else in the file
+            # -- openers only, for the reasons in its own docstring -- so the
+            # answer comes from there rather than from a second, narrower
+            # notion of what a single word is.
+            if _unreadable_word(toks[k + 1] if k + 1 < len(toks) else ''):
+                return None
+            k += 2
+        else:
+            k += 1
+    for path in subs:
+        if tuple(toks[k:k + len(path)]) == path:
+            return k + len(path)
+    return None
 
 
 # Docker's own flag declarations, harvested at docker/cli v29.8.0 from
@@ -4808,11 +5076,7 @@ def _docker_exec_string_payloads(seg):
         # and reporting every unbalanced-quote docker line unreadable would be
         # an over-block well outside the one this rule accepts.
         return [], bool(hits)
-    start = None
-    for path in _ZERO_OLD_DATA_CMDS['docker'][0]:
-        if tuple(toks[d + 1:d + 1 + len(path)]) == path:
-            start = d + 1 + len(path)
-            break
+    start = _zero_old_sub_start(toks, d, _ZERO_OLD_DATA_CMDS['docker'][0])
     if start is None or any(h < start for h in hits):
         # A subcommand this table does not name has no option region to walk.
         # That is only unreadable when a payload is actually in the segment --
@@ -4892,17 +5156,27 @@ def _zero_old_split_exec_opts(toks, raws=None):
     option (every other entry, and every command absent from the table) is
     returned untouched, so `curl -d --entrypoint=git` is never rewritten.
     """
-    spec = _ZERO_OLD_DATA_CMDS.get(toks[0].rsplit('/', 1)[-1]) if toks else None
+    # The command word is RESOLVED, never read at token zero. Keyed on
+    # `toks[0]`, ANY prefix -- `env docker run --entrypoint=git …`, `sudo`
+    # alike -- found no spec and returned the tokens untouched, so the attached
+    # spelling never split and no standalone `git` reached candidate selection
+    # (measured). `_docker_exec_string_payloads` already anchors by scanning,
+    # which is exactly why the payload and unreadable arms survived a wrapper
+    # while this rewrite alone did not. Ownership decides where the command
+    # word is: a prefix that owns its next word as DATA is not standing in
+    # front of a command, so it is not scanned past.
+    c = next((i for i, t in enumerate(toks)
+              if t.rsplit('/', 1)[-1] in _ZERO_OLD_DATA_CMDS
+              and not _zero_old_operand_owner(toks[:i])), None)
+    spec = (_ZERO_OLD_DATA_CMDS[toks[c].rsplit('/', 1)[-1]]
+            if c is not None else None)
     if not spec or not spec[3]:
         return toks, raws
     subs, val_opts, _n_pos, exec_opts = spec
-    start = 1
+    start = c + 1
     if subs:
-        for path in subs:
-            if tuple(toks[1:1 + len(path)]) == path:
-                start = 1 + len(path)
-                break
-        else:
+        start = _zero_old_sub_start(toks, c, subs)
+        if start is None:
             return toks, raws
     # The raw spellings ride along through the rewrite, because the walk that
     # reads them indexes the tokens this returns. `_raw_tokens` is aligned or
@@ -6227,7 +6501,7 @@ def git_zero_old_ref_op(cmd, with_untrusted_cd=False, hook_cwd=''):
                 # the shapes this one says no to (`arch -x86_64 "$G" …`) are
                 # still refused by the disjuncts that already refused them.
                 if (not _replay and _cand_i >= 0 and _sub_i > _cand_i
-                        and _zero_old_only_prefix(toks[:_cand_i])):
+                        and not _zero_old_operand_owner(toks[:_cand_i])):
                     _replay = bool(list(_zero_old_ops_from_argv(
                         ['git'] + list(toks[_cand_i + 1:]))))
                 if (_force_sub

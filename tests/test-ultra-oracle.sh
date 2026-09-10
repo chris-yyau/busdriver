@@ -406,6 +406,9 @@ unset ULTRA_ORACLE_MOCK_MODE
 if command -v zsh >/dev/null 2>&1; then
   out="$(zsh -c 'bash "$1" council 0 "$2" "$3"' _ "$WRAP" "$wp" "$tmp/wrap_zsh.md" 2>&1)"
   [[ "$out" == "NOT_ATTEMPTED" ]] || { echo "FAIL wrapper under zsh caller got '$out'"; FAIL=1; }
+elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  # CI installs zsh (tests.yml, #821); absence there is a coverage regression, not a skip.
+  echo "FAIL zsh not installed in CI — wrapper zsh-caller row would silently skip (#821)"; FAIL=1
 fi
 rm -f "$wp"
 
@@ -619,6 +622,9 @@ if command -v zsh >/dev/null 2>&1; then
   out="$(zsh -c 'bash "$1" --surface brainstorming --mode blocking --prompt-file "$2" --out "$3"' \
         _ "$CWRAP" "$cwp" "$tmp/cr_zsh.md" 2>&1)"
   [[ "$out" == "ok" ]] || { echo "FAIL consult-run under zsh caller got '$out'"; FAIL=1; }
+elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  # CI installs zsh (tests.yml, #821); absence there is a coverage regression, not a skip.
+  echo "FAIL zsh not installed in CI — consult-run zsh-caller row would silently skip (#821)"; FAIL=1
 fi
 unset ULTRA_ORACLE_MOCK_MODE
 rm -f "$cwp" "$tmp/.claude/busdriver.json"

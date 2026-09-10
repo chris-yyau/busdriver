@@ -144,6 +144,10 @@ if command -v zsh >/dev/null 2>&1; then
   eq "$(_zsh_cn 07)"   7   "council 07 under zsh (leading zero, never octal)"
   eq "$(_zsh_cn 3600)" 900 "council 3600 under zsh (clamped)"
   eq "$(_zsh_cn abc)"  900 "council abc under zsh (non-numeric -> default)"
+elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  # CI installs zsh (tests.yml, #821). A mid-file SKIP is invisible to the runner's
+  # skip-masking guard, so absence there is a coverage regression, not a skip.
+  fail "zsh not installed in CI — zsh-portability rows would silently skip (#821)"
 else
   echo "SKIP: zsh not installed — zsh-portability rows not exercised"
 fi

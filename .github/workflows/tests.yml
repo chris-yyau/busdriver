@@ -405,7 +405,8 @@ jobs:
         # exist to catch shipped with CI green. `zsh --version` makes a failed
         # install fail the job instead of silently re-skipping the rows.
         run: |
-          sudo apt-get install -y zsh
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zsh
           zsh --version
       - name: Full shell gate-test suite
         # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes

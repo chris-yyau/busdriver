@@ -623,6 +623,7 @@ if command -v zsh >/dev/null 2>&1; then
         _ "$CWRAP" "$cwp" "$tmp/cr_zsh.md" 2>&1)"
   [[ "$out" == "ok" ]] || { echo "FAIL consult-run under zsh caller got '$out'"; FAIL=1; }
 elif [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  # CI installs zsh (tests.yml, #821); absence there is a coverage regression, not a skip.
   echo "FAIL zsh not installed in CI — consult-run zsh-caller row would silently skip (#821)"; FAIL=1
 fi
 unset ULTRA_ORACLE_MOCK_MODE

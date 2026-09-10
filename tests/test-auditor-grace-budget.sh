@@ -126,8 +126,8 @@ eq "$(cn_norm 0012345678)" 900 "council 0012345678 (padded, >7 significant digit
 
 # ...and the SAME extracted lines under ZSH, which is what the executor actually runs on a
 # macOS default shell. This file is bash, so every case above proves only the bash half; a
-# zsh-only regression (the BASH_REMATCH shape) would pass all of them. Skipped, not failed,
-# where zsh is absent — the assertion is about portability, not about having zsh installed.
+# zsh-only regression (the BASH_REMATCH shape) would pass all of them. Skipped where zsh is
+# absent locally; FAILED under GITHUB_ACTIONS, where tests.yml installs zsh (#821).
 if command -v zsh >/dev/null 2>&1; then
   _zsh_cn() {  # <COUNCIL_AUDITOR_TIMEOUT value> -> normalized _AUD_TO, under zsh
     # Through a FILE, never `zsh -c "$code"`: the double quotes would let THIS bash expand

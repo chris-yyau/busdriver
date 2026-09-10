@@ -1,3 +1,10 @@
+## [2.1.17](https://github.com/chris-yyau/busdriver/compare/v2.1.16...v2.1.17) (2026-09-10)
+
+
+### Bug Fixes
+
+* **blueprint-review:** portable reviewer timeout test and budget docs ([#848](https://github.com/chris-yyau/busdriver/issues/848)) ([#849](https://github.com/chris-yyau/busdriver/issues/849)) ([f4ec419](https://github.com/chris-yyau/busdriver/commit/f4ec4195085a750e81100e530694081e20713616))
+
 ## [2.1.16](https://github.com/chris-yyau/busdriver/compare/v2.1.15...v2.1.16) (2026-09-08)
 
 

@@ -396,6 +396,18 @@ jobs:
         with:
           node-version: 20
       - run: npm ci --ignore-scripts
+      - name: Install zsh (#821)
+        # The ubuntu runner image ships no zsh. The zsh-portability rows in
+        # tests/test-auditor-grace-budget.sh and tests/test-ultra-oracle.sh are
+        # guarded by `command -v zsh` and print a MID-FILE `SKIP:` when it is
+        # absent, which the runner's skip-masking guard cannot see (it only
+        # classifies the LAST line) — so the #813 BASH_REMATCH regression they
+        # exist to catch shipped with CI green. `zsh --version` makes a failed
+        # install fail the job instead of silently re-skipping the rows.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zsh
+          zsh --version
       - name: Full shell gate-test suite
         # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes
         # PASS/SKIP/FAIL, enforces that the gate suites never SKIP (skip-masking guard),

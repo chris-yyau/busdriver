@@ -19,7 +19,11 @@ test was never wired in.
 - **PASS** — exit 0, last non-empty output line is not a `SKIP:` marker.
 - **SKIP** — exit 0 and the last non-empty line matches `^SKIP:` (the repo's
   established `echo "SKIP: …"; exit 0` self-skip convention). Mid-test sub-case
-  SKIP prints don't count — those suites still end on a pass/fail summary.
+  SKIP prints don't count — those suites still end on a pass/fail summary, so a
+  mid-file `SKIP:` is invisible to the guard below (#821: the zsh-portability rows
+  skipped silently for as long as the runner had no zsh). A suite whose dependency
+  CI installs (zsh via `tests.yml`) must FAIL under `GITHUB_ACTIONS` when it is
+  missing, not skip.
 - **FAIL** — any non-zero exit (incl. 124 = per-test timeout).
 
 ## Skip-masking guard (fail-closed allowlist)

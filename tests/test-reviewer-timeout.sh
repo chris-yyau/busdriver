@@ -62,7 +62,7 @@ eq "$(rv_norm 3600)" 1800 "reviewer 3600 (upper clamp)"
 eq "$(rv_norm 12345678)" 1800 "reviewer 12345678 (length clamp)"
 eq "$(rv_norm 999999999999999999999)" 1800 "reviewer overflow-sized input (ceiling)"
 
-reviewer_calls="$(grep -E '^\s*execute_review "\$REVIEWER_[123]_CLI"' "$LOOP" || true)"
+reviewer_calls="$(grep -E '^[[:space:]]*execute_review "\$REVIEWER_[123]_CLI"' "$LOOP" || true)"
 reviewer_count="$(printf '%s\n' "$reviewer_calls" | sed '/^$/d' | wc -l | awk '{print $1}')"
 eq "$reviewer_count" 3 "reviewer execute_review reach control"
 missing_timeout=0

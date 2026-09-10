@@ -915,6 +915,23 @@ $DESIGN_CONTENT
   # authored design doc and agy stays --sandbox-contained (writes/network blocked).
   export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-1}"
 
+  # Per-reviewer single-invocation budget (#848). Default 1200 keeps the unset
+  # case byte-identical to execute_review's own positional default; the clamp
+  # exists because the env var is repo-injectable (#325 / ADR 0016) and this
+  # phase is the critical path: 1800 = the same bound BLUEPRINT_AUDITOR_TIMEOUT
+  # already accepts, so the override grants no time a branch could not get by
+  # simply making the reviewer slow. Same sanitize-then-clamp shape as
+  # _AUD_TIMEOUT below: non-numeric → default, leading zeros stripped, length
+  # capped BEFORE `$((10#…))` so an oversized digit string never wraps 64-bit.
+  _REV_TIMEOUT="${BLUEPRINT_REVIEWER_TIMEOUT:-1200}"
+  case "$_REV_TIMEOUT" in ''|*[!0-9]*) _REV_TIMEOUT=1200 ;; esac      # non-numeric → default
+  _REV_TIMEOUT="${_REV_TIMEOUT#"${_REV_TIMEOUT%%[!0]*}"}"
+  [[ -z "$_REV_TIMEOUT" ]] && _REV_TIMEOUT=0                          # all-zeros → 0 (→ default below)
+  [[ "${#_REV_TIMEOUT}" -ge 8 ]] && _REV_TIMEOUT=1800                 # >7 sig digits → clamp to max
+  _REV_TIMEOUT=$((10#$_REV_TIMEOUT))
+  [[ "$_REV_TIMEOUT" -lt 1 ]] && _REV_TIMEOUT=1200
+  [[ "$_REV_TIMEOUT" -gt 1800 ]] && _REV_TIMEOUT=1800
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then
@@ -923,7 +940,7 @@ $DESIGN_CONTENT
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         AGY_END=$(millis)
@@ -995,7 +1012,7 @@ with open(pending, "w") as f:
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         CODEX_END=$(millis)
@@ -1069,7 +1086,7 @@ with open(pending, "w") as f:
       GROK_START=$(millis)
 
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" "$_REV_TIMEOUT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         GROK_END=$(millis)

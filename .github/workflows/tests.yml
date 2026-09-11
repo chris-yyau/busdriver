@@ -179,7 +179,19 @@ jobs:
   commitlint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Job-level wall-clock ceiling, not a lint budget: the actual commitlint
+    # invocation still runs and still has to pass. Raised 5 -> 10 to match
+    # `validate` in this same file — both jobs share harden-runner, checkout,
+    # setup-node, and dependency install against the same registry, and the
+    # install alone measured 2m34s against a 5-minute budget SHARED with the
+    # preamble. On PR #818 HEAD f0c2f8ed the install step was CANCELLED at
+    # 5m17s and the commitlint step skipped, so a required check reported a
+    # commit-message lint failure that never linted a commit message. Same
+    # "headroom over the measurement rather than tuned to it" as validate.
+    # (Comment avoids naming the install command literally: validate-workflow-
+    # security.js scans this file for that token and requires the hardening
+    # flag beside it; the bare name in a COMMENT trips the check.)
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

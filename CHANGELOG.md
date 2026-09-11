@@ -1,3 +1,10 @@
+## [2.1.18](https://github.com/chris-yyau/busdriver/compare/v2.1.17...v2.1.18) (2026-09-11)
+
+
+### Bug Fixes
+
+* **ci:** raise commitlint job timeout to match validate ([#853](https://github.com/chris-yyau/busdriver/issues/853)) ([1a917f6](https://github.com/chris-yyau/busdriver/commit/1a917f659dc42f410accbf3b5d153487d4a68a80)), closes [#829](https://github.com/chris-yyau/busdriver/issues/829)
+
 ## [2.1.17](https://github.com/chris-yyau/busdriver/compare/v2.1.16...v2.1.17) (2026-09-10)
 
 

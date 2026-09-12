@@ -493,6 +493,58 @@ _gate1_commit_is_docs_only() {
 # Anchor on the cwd-resolved target repo; all linked worktrees share one marker
 # dir. Pure-shell fast reject first, then the authoritative classifier only for
 # the maybe-pending case. Readers NEVER mutate (ADR-C removes the whole-file rm).
+#
+# #852 — after the #685 docs-only carve-out, a still-pending design review may
+# spend ONE use of the native authorized design lease (skip-design-review.local /
+# lease_slot.py / _skip_lease_consume). Grant skips Gate 1 ONLY and falls through
+# to Gate 2; Litmus of this commit's own diff stays mandatory. Stale / unbound
+# leases keep Gate 1 blocking. This path must NOT exit 0, must NOT consume
+# skip-litmus.local, and must NOT reset .gate-block-count.local.
+# #852 — ONE definition of the canonical staged-diff hash, shared by the Gate 1 pin and
+# by Gate 2's marker binding below. Two independent computations would be a silent
+# fail-open: a pin bound to a different byte-stream than the review validates would
+# authorize committing a diff nobody reviewed. Prints the hash on stdout; a non-zero
+# return means "could not compute", and EVERY caller must fail CLOSED on it.
+#
+# The hash utility is resolved to an absolute path inside a trusted system directory for
+# the reason spelled out at the Gate 2 call site: `command -v` walks PATH, on macOS
+# sha256sum lives in /sbin, and a planted one earlier in PATH could return a single
+# constant digest for every diff, defeating binding outright. `pipefail` (set at the top
+# of this file) is load-bearing here: without it a failing `git` yields an empty stream
+# and this would return the hash of nothing — a valid-looking digest for an empty diff.
+_bd852_canonical_staged_hash() {
+    local _d
+    HASH_CMD=()
+    for _d in /usr/bin /bin /sbin /usr/sbin; do
+        if [ -x "$_d/sha256sum" ]; then HASH_CMD=("$_d/sha256sum"); break; fi
+        if [ -x "$_d/shasum" ]; then HASH_CMD=("$_d/shasum" -a 256); break; fi
+    done
+    if [ ${#HASH_CMD[@]} -eq 0 ]; then return 1; fi
+    git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false \
+        diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none \
+        2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1
+}
+
+_GATE_LIBDIR="${_GATE_LIBDIR:-$_GATE_LIB}"
+# #852 pin — pre-commit ONLY. pre-implementation-gate.sh leaves this unset, so its
+# content-free lease (#519 / ADR 0031) keeps working exactly as before. This is
+# deliberately not a universal policy change.
+# shellcheck disable=SC2034
+_LEASE_BINDING_REQUIRED=1
+# Consumed by sourced skip_lease_consume.sh (shellcheck cannot see cross-file use).
+# shellcheck disable=SC2034
+LEASE_MAX_USES=20
+# shellcheck disable=SC2034
+LEASE_MAX_AGE=3600
+# shellcheck disable=SC2034
+_SKIP_FILE="$STATE_DIR/skip-design-review.local"
+# shellcheck disable=SC2034
+_LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
+_LEASE_REFUSAL=""
+_LEASE_HELPER_UNAVAILABLE=0
+# shellcheck source=lib/skip_lease_consume.sh disable=SC1091
+source "$_GATE_LIBDIR/skip_lease_consume.sh"
+
 if ! gate_marker_pending_pureshell "$REPO_DIR"; then
     _MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
     _MK_CODE=0
@@ -517,6 +569,35 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
         printf 'NOTE: design review is pending, but this commit carries only design documents — Gate 1 skipped (#685). Implementation writes stay blocked until the review completes.\n' >&2
         _MK_CODE=0
     fi
+    # #852 — native design lease: only when still pending (=1). Enumeration
+    # failure (=2) stays fail-CLOSED (same as docs-only). Lease paths are
+    # CWD-relative (match pre-implementation); commit target may differ from
+    # hook CWD, so consume under REPO_DIR and restore.
+    if [[ "$_MK_CODE" = "1" ]]; then
+        _LEASE_REFUSAL=""
+        _LEASE_HELPER_UNAVAILABLE=0
+        _LEASE_RC=1
+        _GATE1_SAVE_PWD=$PWD
+        if cd "$REPO_DIR" 2>/dev/null; then
+            _LEASE_RC=0
+            # SC2310: non-zero is a normal lease outcome, not a trap-worthy error.
+            # shellcheck disable=SC2310
+            _skip_lease_consume || _LEASE_RC=$?
+            cd "$_GATE1_SAVE_PWD" 2>/dev/null || true
+        fi
+        case "$_LEASE_RC" in
+            0)
+                printf 'NOTE: design-review skip lease granted one use — Gate 1 skipped (#852). Litmus (Gate 2) of this commit'\''s own diff is still required.\n' >&2
+                _MK_CODE=0
+                ;;
+            2)
+                # too-new / expired / exhausted — block already on stdout.
+                rm -f "$_MK_RECS"
+                exit 0
+                ;;
+            # 1 = unbound / unrecordable → fall through to the normal Gate 1 block
+        esac
+    fi
     if [[ "$_MK_CODE" != "0" ]]; then
         UNREVIEWED=""
         if [[ "$_MK_CODE" = "2" ]] || [[ -z "$_MK_RECS" ]]; then
@@ -528,9 +609,14 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
             UNREVIEWED="$(gate_render_pending_records "$_MK_RECS" "$REPO_DIR")"
         fi
         rm -f "$_MK_RECS"
-        # §6: a COMMIT is bypassed with skip-litmus.local (pre-commit consumes only
-        # that, above, before this gate — NOT skip-design-review.local).
-        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf this commit carries ONLY design documents, it does not need the review to finish (#685) — but the gate has to be able to see the whole file set, so stage and commit in SEPARATE calls:\n  1. git add <the docs>\n  2. git commit -m \"...\"       (on its own: no chained add, no -a, no pathspec)\nA docs-only staged commit then passes Gate 1 through to the normal litmus review.\n\nIf the user wants to bypass the commit: touch %s/%s/skip-litmus.local (pre-commit consumes skip-litmus.local, not skip-design-review.local). Do NOT create it yourself." "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR")
+        # Gate 1 hatch: operator skip-design-review.local (lease; Gate 1 only, then
+        # Litmus). Whole-hook hatch remains skip-litmus.local (above; exits 0).
+        # Do not confuse the two — a design-token block must not consume skip-litmus.
+        _LEASE_LEAD=""
+        if [[ -n "${_LEASE_REFUSAL:-}" ]]; then
+            _LEASE_LEAD=$(printf '%s\n\n' "$_LEASE_REFUSAL")
+        fi
+        REASON=$(printf "%sDesign review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf this commit carries ONLY design documents, it does not need the review to finish (#685) — but the gate has to be able to see the whole file set, so stage and commit in SEPARATE calls:\n  1. git add <the docs>\n  2. git commit -m \"...\"       (on its own: no chained add, no -a, no pathspec)\nA docs-only staged commit then passes Gate 1 through to the normal litmus review.\n\nTo skip Gate 1 only (Litmus still required): the user can create %s/%s/skip-design-review.local in their terminal (≥30s old, not expired, uses remaining) — Gate 1 consumes that native design lease (#852).\n\nTo bypass the whole pre-commit hook (including Litmus): touch %s/%s/skip-litmus.local. Do NOT create either file yourself." "$_LEASE_LEAD" "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR" "$REPO_DIR" "$STATE_DIR")
         block_emit "$REASON"
         exit 0
     fi
@@ -846,23 +932,19 @@ if [ -f "$MARKER" ]; then
     # it has PROVEN the marker wrong (mismatched hash, expired epoch,
     # unrecognized shape); this arm has proven nothing. Blocking without
     # deleting is the fail-closed outcome either way.
-    # `command` is not decoration. An EXPORTED SHELL FUNCTION named sha256sum/shasum/od/tr
-    # is inherited through the environment — the same repo-injectable channel #325/ADR 0016
-    # closed for env vars — and would be found by `command -v` and then run in preference to
-    # the real binary. A forged hash utility emits one constant digest for every diff and
-    # defeats marker binding outright; a forged `od` makes the exclusion pin challenge
-    # predictable. The `command` builtin bypasses functions and aliases and runs the PATH
-    # executable. (PATH itself is out of scope here: the gates already launch under a fixed
-    # PATH, and a PATH that can forge `git` defeats every check in this file regardless.)
-    # Absolute path inside a trusted system directory. `command -v` walks PATH, and on
-    # macOS sha256sum lives in /sbin — a planted one earlier in PATH would otherwise win
-    # and could return a single constant digest for every diff.
-    HASH_CMD=()
-    for _hash_dir in /usr/bin /bin /sbin /usr/sbin; do
-        if [ -x "$_hash_dir/sha256sum" ]; then HASH_CMD=("$_hash_dir/sha256sum"); break; fi
-        if [ -x "$_hash_dir/shasum" ]; then HASH_CMD=("$_hash_dir/shasum" -a 256); break; fi
-    done
-    if [ ${#HASH_CMD[@]} -eq 0 ] || ! STAGED_HASH=$(git -C "$REPO_DIR" --no-replace-objects -c color.ui=never -c core.quotePath=false diff --cached --no-ext-diff --no-textconv --full-index --ignore-submodules=none 2>/dev/null | "${HASH_CMD[@]}" | cut -d' ' -f1); then
+    # An EXPORTED SHELL FUNCTION named sha256sum/shasum is inherited through the
+    # environment — the same repo-injectable channel #325/ADR 0016 closed for env vars —
+    # and would be found by a PATH search and run in preference to the real binary. A
+    # forged hash utility emits one constant digest for every diff and defeats marker
+    # binding outright. That is why _bd852_canonical_staged_hash resolves an absolute
+    # path inside a trusted system directory rather than searching PATH. (PATH itself is
+    # out of scope: the gates launch under a fixed PATH, and a PATH that can forge `git`
+    # defeats every check in this file regardless.)
+    #
+    # #852 — ONE definition, shared with the Gate 1 pin above. A second inline
+    # computation here would let the pin and the marker bind to different bytes, which
+    # is exactly the silent fail-open the shared function exists to prevent.
+    if ! STAGED_HASH=$(_bd852_canonical_staged_hash); then
         REASON="Could not compute the staged-diff hash (external diff driver or hashing tool failed, or no hash utility is installed). Blocking rather than assuming a pass; the review marker is preserved so a retry can validate it once the environment is repaired. Run /litmus, or create $STATE_DIR/skip-litmus.local to bypass."
         gate_record_block_and_emit "$REASON"
         exit 0

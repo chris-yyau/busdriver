@@ -4237,14 +4237,14 @@ _agy_stream_input_supported() {
       && -f "$_bd_lib_dir/agy-review-guard/hooks.json" && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]] || return 1
     # A helper or guard the reviewed tree could have written is never used (fail-closed: exit 0 = inside).
     _trusted_cli_dir_in_checkout "$_bd_lib_dir" && return 1
-    # Same interpreter probe as validate_opencode_home_config: absolute operator-owned paths, -I isolated.
+    # /usr/bin/python3 only: the staged guard's hooks.json runs exactly that interpreter, and a guard
+    # that cannot start returns no decision, which agy treats as allow. No working /usr/bin/python3
+    # means no stream rung. Probed isolated (-I, scrubbed env) like validate_opencode_home_config.
     _AGY_STREAM_PY=""
-    for _ASIS_C in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-      if [[ -z "$_AGY_STREAM_PY" && -x "$_ASIS_C" ]] \
-        && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp "$_ASIS_C" -I -c 'import sys' >/dev/null 2>&1; then
-        _AGY_STREAM_PY="$_ASIS_C"
-      fi
-    done
+    if [[ -x /usr/bin/python3 ]] \
+      && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      _AGY_STREAM_PY=/usr/bin/python3
+    fi
     [[ -n "$_AGY_STREAM_PY" ]]
 }
 
@@ -4267,6 +4267,7 @@ _agy_stream_review() {
     _ASR_RC=0
     _ASR_WS=""
     _ASR_RAW=""
+    _ASR_OUT=""
     _ASR_PAYLOAD=""
     if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$2" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
       _ASR_RC=1
@@ -4292,7 +4293,14 @@ _agy_stream_review() {
       _ASR_RAW="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
         --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
-      _bd_emit_chunked "$_ASR_RAW" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC" || _ASR_RC=$?
+      _ASR_OUT="$(_bd_emit_chunked "$_ASR_RAW" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
+      # The retry loop saw the JSON envelope, not the response, so re-apply its bare-notice rule here:
+      # a rate-limit/5xx notice returned as a SUCCESS response is never a review.
+      if [[ "$_ASR_RC" -eq 0 ]] && _is_bare_transient_notice "$_ASR_OUT"; then
+        _ASR_OUT="agy stream review rejected: response is a bare transient notice"$'\n'"$_ASR_OUT"
+        _ASR_RC=1
+      fi
+      _bd_emit_chunked "$_ASR_OUT"
     fi
     if [[ -n "$_ASR_WS" ]]; then
       /bin/rm -rf -- "$_ASR_WS"

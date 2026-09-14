@@ -75,6 +75,7 @@ case "$3" in
   denied) printf '%s\n%s\n' "\$INIT" '{"event":"result","result":{"status":"SUCCESS","response":"","num_turns":1,"denied_actions":[{"action":"write_file"}]}}' ;;
   error) printf '%s\n%s\n' "\$INIT" '{"event":"result","result":{"status":"ERROR","error":"stream input rejected","num_turns":0}}'; exit 1 ;;
   truncated) printf '%s\n' "\$INIT" ;;
+  transient) printf '%s\n%s\n' "\$INIT" '{"event":"result","result":{"status":"SUCCESS","response":"Error: 429 Too Many Requests - rate limit exceeded","num_turns":1}}' ;;
 esac
 STUB
     chmod +x "$1/agy"
@@ -128,7 +129,7 @@ PYCHK
 rm -rf "$E2E_DIR"
 
 # e2-e5: rejected streams → non-zero, no response text as a review, workspace still cleaned up.
-for scen in warn denied error truncated; do
+for scen in warn denied error truncated transient; do
     _e2e 1.2.2 "$scen" 2000 outside
     [[ "$E2E_RC" != 0 ]] || fail "e-$scen: rejected stream returned rc 0 [${E2E_OUT:0:200}]"
     [[ "$E2E_OUT" == *"agy stream review rejected"* ]] || fail "e-$scen: expected a rejection reason, got [${E2E_OUT:0:200}]"

@@ -1374,10 +1374,19 @@ _bd_emit_chunked() {
   _BEC_RC=0
   _BEC_N=${#_BEC_S}
   while [[ "$_BEC_I" -lt "$_BEC_N" && "$_BEC_RC" -eq 0 ]]; do
-    /usr/bin/printf '%s' "${_BEC_S:_BEC_I:30000}" || _BEC_RC=1
+    _bd_run_clean /usr/bin/printf '%s' "${_BEC_S:_BEC_I:30000}" || _BEC_RC=1
     _BEC_I=$((_BEC_I + 30000))
   done
   _bd_exit_as "$_BEC_RC"
+}
+
+# Run an absolute command with the dynamic-loader variables blanked and an otherwise empty environment
+# (PATH=/usr/bin:/bin only) — the same sanitization the protected review launches use. The blanking
+# precedes env because env is itself dynamically loaded. For the agy stream rung's helper and setup
+# executables, which start before `_portable_timeout --review` applies its own allowlist (#840).
+_bd_run_clean() {
+  LD_PRELOAD='' LD_AUDIT='' LD_LIBRARY_PATH='' DYLD_INSERT_LIBRARIES='' DYLD_LIBRARY_PATH='' DYLD_FRAMEWORK_PATH='' DYLD_FALLBACK_LIBRARY_PATH='' DYLD_FALLBACK_FRAMEWORK_PATH='' DYLD_VERSIONED_LIBRARY_PATH='' DYLD_VERSIONED_FRAMEWORK_PATH='' \
+    /usr/bin/env -i PATH=/usr/bin:/bin "$@"
 }
 
 _bd_exit_as() {
@@ -3517,7 +3526,7 @@ _run_review_with_retries() {
     # the JSON envelope around it — a large envelope would otherwise read as a substantive review and
     # skip the retry. A non-zero exit keeps its raw text and is classified exactly as before.
     if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
-      _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
+      _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
@@ -4259,7 +4268,7 @@ _agy_stream_input_supported() {
     # that cannot start returns no decision, which agy treats as allow. No working /usr/bin/python3
     # means no stream rung. Probed isolated (-I, scrubbed env) like validate_opencode_home_config.
     elif [[ -x /usr/bin/python3 ]] \
-      && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+      && _bd_run_clean HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
       _AGY_STREAM_PY=/usr/bin/python3
       /usr/bin/true
     else
@@ -4287,18 +4296,20 @@ _agy_stream_review() {
     _ASR_WS=""
     _ASR_OUT=""
     _ASR_PAYLOAD=""
-    if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$2" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
+    # Helper and setup executables run through _bd_run_clean: they start before the review dispatch
+    # scrubs its environment, so caller loader variables must not reach them.
+    if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$2" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
       _ASR_RC=1
-    elif ! _ASR_WS="$(/usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_ASR_WS" != /tmp/agy-review-guard.* ]]; then
+    elif ! _ASR_WS="$(_bd_run_clean /usr/bin/mktemp -d /tmp/agy-review-guard.XXXXXX)" || [[ "$_ASR_WS" != /tmp/agy-review-guard.* ]]; then
       /usr/bin/printf '%s\n' "agy: cannot create the review guard workspace — refusing." >&2
       _ASR_WS=""
       _ASR_RC=1
-    elif ! /bin/mkdir "$_ASR_WS/.agents" \
-      || ! /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_WS/.agents/"; then
+    elif ! _bd_run_clean /bin/mkdir "$_ASR_WS/.agents" \
+      || ! _bd_run_clean /bin/cp "$_bd_lib_dir/agy-review-guard/hooks.json" "$_bd_lib_dir/agy-review-guard/guard.py" "$_ASR_WS/.agents/"; then
       /usr/bin/printf '%s\n' "agy: cannot stage the review guard — refusing." >&2
       _ASR_RC=1
     elif ! _bd_resolve_git \
-      || ! /usr/bin/env -i PATH="/usr/bin:/bin" "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
+      || ! _bd_run_clean "$_bd_git" -C "$_ASR_WS" init -q >/dev/null 2>&1 \
       || [[ ! -d "$_ASR_WS/.git" ]]; then
       # Same as the opencode lane's neutral cwd: the workspace must be its own checkout root, so
       # agy's customization walk stops there and the #803 trusted-CLI checks (which need a checkout
@@ -4315,12 +4326,12 @@ _agy_stream_review() {
         --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
       # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
       if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
-        _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
+        _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | _bd_run_clean "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
       fi
       _bd_emit_chunked "$_ASR_OUT"
     fi
     if [[ -n "$_ASR_WS" ]]; then
-      /bin/rm -rf -- "$_ASR_WS"
+      _bd_run_clean /bin/rm -rf -- "$_ASR_WS"
     fi
     _bd_exit_as "$_ASR_RC"
 }

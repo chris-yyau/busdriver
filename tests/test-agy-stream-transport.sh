@@ -115,7 +115,8 @@ STUB
 }
 
 # $1 version, $2 scenario, $3 prompt bytes, $4 cwd mode (outside|checkout), $5 retries,
-# $6 "shadow-return" to define a no-op `return` function first (#803); sets E2E_RC E2E_OUT E2E_DIR
+# $6 "shadow-return" to define a no-op `return` function first (#803), $7 lib dir (default $LIB),
+# $8 "loader-sentinel" to export a caller loader variable after sourcing; sets E2E_RC E2E_OUT E2E_DIR
 _e2e() {
     E2E_DIR=$(mktemp -d)
     _make_fake "$E2E_DIR" "$1" "$2"
@@ -124,10 +125,12 @@ _e2e() {
     git -C "$E2E_DIR/cwd" init -q >/dev/null 2>&1 || fail "git init failed for the e2e cwd"
     local run_cwd="$E2E_DIR/cwd"
     [[ "$4" == checkout ]] && run_cwd="$REPO_ROOT"
-    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES="${5:-0}" BUSDRIVER_CLI_RETRY_DELAY=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" SHADOW_RETURN="${6:-}" bash -c '
+    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES="${5:-0}" BUSDRIVER_CLI_RETRY_DELAY=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" SHADOW_RETURN="${6:-}" E2E_LIB="${7:-$LIB}" LOADER_SENTINEL="${8:-}" bash -c '
         set -uo pipefail
-        . "'"$LIB"'/resolve-cli.sh" 2>/dev/null
+        . "$E2E_LIB/resolve-cli.sh" 2>/dev/null
         [[ "$SHADOW_RETURN" == shadow-return ]] && eval "function return { :; }"
+        # Silent on every loader (a search path, not a preload) and not stripped by macOS SIP like DYLD_*.
+        [[ "$LOADER_SENTINEL" == loader-sentinel ]] && export LD_LIBRARY_PATH=/nonexistent/bd840-loader-sentinel
         # Multibyte, quotes, backslashes and newlines, then ASCII padding to the requested size.
         p=$(printf "é\"\\\\\n\t審查 %.0s" 1 2 3 4 5 6 7 8 9 10)
         pad=$(( PROMPT_BYTES - $(printf "%s" "$p" | wc -c) ))
@@ -198,5 +201,33 @@ _e2e 1.2.2 ok 2000 checkout 0 shadow-return
 [[ "$E2E_OUT" != *"agy stream review rejected"* && "$(cat "$E2E_DIR/log/argv" 2>/dev/null)" != *"stream-json"* ]] \
     || fail "e9: a shadowed return must not admit the in-checkout stream helper, out=[$E2E_OUT]"
 rm -rf "$E2E_DIR"
+
+# e10: a caller loader variable must not reach the stream helper, which starts before the review dispatch
+# scrubs its environment. A lib copy outside the checkout wraps the helper to record any non-empty
+# LD_*/DYLD_* it inherits; ok covers encode + the in-loop reduce, error covers the rung's normalization reduce.
+STREAM_LIB=$(mktemp -d)
+cp -R "$LIB/." "$STREAM_LIB/"
+mv "$STREAM_LIB/agy-stream-review.py" "$STREAM_LIB/agy-stream-review-real.py"
+cat > "$STREAM_LIB/agy-stream-review.py" <<'PYWRAP'
+import os, runpy, sys
+here = os.path.dirname(os.path.abspath(__file__))
+leaked = sorted(k for k, v in os.environ.items() if v and k.startswith(("LD_", "DYLD_")))
+with open(os.path.join(here, "helper-env.log"), "a") as log:
+    log.write("%s:%s\n" % (sys.argv[1] if len(sys.argv) > 1 else "", ",".join(leaked)))
+sys.argv[0] = os.path.join(here, "agy-stream-review-real.py")
+runpy.run_path(sys.argv[0], run_name="__main__")
+PYWRAP
+for scen in ok error; do
+    : > "$STREAM_LIB/helper-env.log"
+    _e2e 1.2.2 "$scen" 2000 outside 0 "" "$STREAM_LIB" loader-sentinel
+    envlog=$(tr '\n' ' ' < "$STREAM_LIB/helper-env.log")
+    [[ "$envlog" == *"encode:"* && "$envlog" == *"reduce:"* ]] || fail "e10-$scen: stream helper encode/reduce did not both run, log=[$envlog] out=[${E2E_OUT:0:200}]"
+    grep -q ':.' "$STREAM_LIB/helper-env.log" && fail "e10-$scen: caller loader variables reached the stream helper, log=[$envlog]"
+    rm -rf "$E2E_DIR"
+done
+rm -rf "$STREAM_LIB"
+# u17: _bd_run_clean hands the command no caller loader variable and nothing but PATH.
+got=$(LD_LIBRARY_PATH=/nonexistent/bd840-loader-sentinel bash -c '. "$1/resolve-cli.sh" 2>/dev/null; _bd_run_clean /usr/bin/env' _ "$LIB")
+[[ "$got" == "PATH=/usr/bin:/bin" ]] || fail "u17: _bd_run_clean must leave only PATH, got [$got]"
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-stream-transport"; else exit 1; fi

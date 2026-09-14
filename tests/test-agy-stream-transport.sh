@@ -51,6 +51,12 @@ got=$(printf '%s\n%s\n' "$INIT" "$OK_RESULT" | "$PY" -I "$HELPER" reduce 0)
     | "$PY" -I "$HELPER" reduce 0 \
     | "$PY" -I -c 'import sys; sys.exit(sys.stdin.buffer.read() != b"a\xe2\x80\xa8b\xe2\x80\xa9c")' \
     || fail "u13: raw U+2028/U+2029 inside a JSON string must not split the event"
+# u14: the rejection reason must precede the raw tail (one byte stream, no text-wrapper buffering).
+got=$(printf '%s\n' "$INIT" | "$PY" -I "$HELPER" reduce 0 | head -n 1)
+[[ "$got" == "agy stream review rejected:"* ]] || fail "u14: rejection reason must be the first output line, got [$got]"
+# u15: the guard hook must run isolated (-I) so user site-packages cannot run code before it.
+grep -q '"/usr/bin/python3 -I ./guard.py"' "$LIB/agy-review-guard/hooks.json" \
+    || fail "u15: guard hook command must be /usr/bin/python3 -I ./guard.py"
 printf '\377\376 not utf8' | "$PY" -I "$HELPER" encode >/dev/null 2>&1 \
     && fail "u12: invalid UTF-8 prompt must be refused, not replaced"
 

@@ -75,8 +75,9 @@ def main(argv):
         if ok:
             sys.stdout.write(response)
             return 0
-        sys.stdout.write("agy stream review rejected: %s\n" % reason)
-        sys.stdout.buffer.write(raw[-2000:])
+        sys.stdout.buffer.write(
+            ("agy stream review rejected: %s\n" % reason).encode("utf-8") + raw[-2000:]
+        )
         return rc if rc != 0 else 1
     sys.stderr.write("usage: agy-stream-review.py encode | reduce <rc>\n")
     return 2

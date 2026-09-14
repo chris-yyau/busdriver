@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 ./guard.py",
+            "command": "/usr/bin/python3 -I ./guard.py",
             "timeout": 10
           }
         ]

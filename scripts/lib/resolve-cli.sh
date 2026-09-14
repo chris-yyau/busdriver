@@ -1371,11 +1371,13 @@ _bd_valid_username() {
 _bd_emit_chunked() {
   _BEC_S=${1-}
   _BEC_I=0
+  _BEC_RC=0
   _BEC_N=${#_BEC_S}
-  while [[ "$_BEC_I" -lt "$_BEC_N" ]]; do
-    /usr/bin/printf '%s' "${_BEC_S:_BEC_I:30000}" || return 1
+  while [[ "$_BEC_I" -lt "$_BEC_N" && "$_BEC_RC" -eq 0 ]]; do
+    /usr/bin/printf '%s' "${_BEC_S:_BEC_I:30000}" || _BEC_RC=1
     _BEC_I=$((_BEC_I + 30000))
   done
+  _bd_exit_as "$_BEC_RC"
 }
 
 _bd_exit_as() {
@@ -4238,23 +4240,31 @@ _agy_model_flag_supported() {
 # argv (1.1.x, oversize refusal) or /dev/stdin (1.0.x) rung exactly as before.
 _AGY_STREAM_PY=""
 _agy_stream_input_supported() {
-    # #803: no shadowable local.
-    _agy_wants_argv_prompt "${1-}" || return 1
-    [[ "$_AGY_PROBE_CONCLUSIVE" == 1 ]] || return 1
-    [[ "$_AWAP_MAJ" -gt 1 ]] || [[ "$_AWAP_MAJ" -eq 1 && "$_AWAP_MIN" -ge 2 ]] || return 1
-    [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-stream-review.py" \
-      && -f "$_bd_lib_dir/agy-review-guard/hooks.json" && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]] || return 1
+    # #803: no shadowable local/return — one if/elif chain, status from absolute utilities only, so an
+    # imported BASH_FUNC_return%% can never turn an early rejection into a fall-through admission.
+    _AGY_STREAM_PY=""
+    if ! _agy_wants_argv_prompt "${1-}"; then
+      /usr/bin/false
+    elif [[ "$_AGY_PROBE_CONCLUSIVE" != 1 ]]; then
+      /usr/bin/false
+    elif ! { [[ "$_AWAP_MAJ" -gt 1 ]] || [[ "$_AWAP_MAJ" -eq 1 && "$_AWAP_MIN" -ge 2 ]]; }; then
+      /usr/bin/false
+    elif ! [[ -n "$_bd_lib_dir" && -f "$_bd_lib_dir/agy-stream-review.py" \
+      && -f "$_bd_lib_dir/agy-review-guard/hooks.json" && -f "$_bd_lib_dir/agy-review-guard/guard.py" ]]; then
+      /usr/bin/false
     # A helper or guard the reviewed tree could have written is never used (fail-closed: exit 0 = inside).
-    _trusted_cli_dir_in_checkout "$_bd_lib_dir" && return 1
+    elif _trusted_cli_dir_in_checkout "$_bd_lib_dir"; then
+      /usr/bin/false
     # /usr/bin/python3 only: the staged guard's hooks.json runs exactly that interpreter, and a guard
     # that cannot start returns no decision, which agy treats as allow. No working /usr/bin/python3
     # means no stream rung. Probed isolated (-I, scrubbed env) like validate_opencode_home_config.
-    _AGY_STREAM_PY=""
-    if [[ -x /usr/bin/python3 ]] \
+    elif [[ -x /usr/bin/python3 ]] \
       && /usr/bin/env -i PATH="/usr/bin:/bin" HOME=/tmp /usr/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
       _AGY_STREAM_PY=/usr/bin/python3
+      /usr/bin/true
+    else
+      /usr/bin/false
     fi
-    [[ -n "$_AGY_STREAM_PY" ]]
 }
 
 # agy >=1.2 review over stream-json stdin (#840): no argv ceiling, so a large review prompt keeps the

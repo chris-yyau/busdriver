@@ -57,6 +57,10 @@ got=$(printf '%s\n' "$INIT" | "$PY" -I "$HELPER" reduce 0 | head -n 1)
 # u15: the guard hook must run isolated (-I) so user site-packages cannot run code before it.
 grep -q '"/usr/bin/python3 -I ./guard.py"' "$LIB/agy-review-guard/hooks.json" \
     || fail "u15: guard hook command must be /usr/bin/python3 -I ./guard.py"
+# u16: a write failure (reader closed early) must fail _bd_emit_chunked even with `return` shadowed (#803).
+got=$(bash -c '. "$1/resolve-cli.sh" 2>/dev/null; function return { :; }
+    s=$(head -c 600000 /dev/zero | tr "\0" "a"); _bd_emit_chunked "$s" | head -c 1 >/dev/null; echo "${PIPESTATUS[0]}"' _ "$LIB")
+[[ -n "$got" && "$got" != 0 ]] || fail "u16: emit into a closed pipe must return non-zero with a shadowed return, got [$got]"
 printf '\377\376 not utf8' | "$PY" -I "$HELPER" encode >/dev/null 2>&1 \
     && fail "u12: invalid UTF-8 prompt must be refused, not replaced"
 
@@ -110,7 +114,8 @@ STUB
     chmod +x "$1/agy"
 }
 
-# $1 version, $2 scenario, $3 prompt bytes, $4 cwd mode (outside|checkout); sets E2E_RC E2E_OUT E2E_DIR
+# $1 version, $2 scenario, $3 prompt bytes, $4 cwd mode (outside|checkout), $5 retries,
+# $6 "shadow-return" to define a no-op `return` function first (#803); sets E2E_RC E2E_OUT E2E_DIR
 _e2e() {
     E2E_DIR=$(mktemp -d)
     _make_fake "$E2E_DIR" "$1" "$2"
@@ -119,9 +124,10 @@ _e2e() {
     git -C "$E2E_DIR/cwd" init -q >/dev/null 2>&1 || fail "git init failed for the e2e cwd"
     local run_cwd="$E2E_DIR/cwd"
     [[ "$4" == checkout ]] && run_cwd="$REPO_ROOT"
-    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES="${5:-0}" BUSDRIVER_CLI_RETRY_DELAY=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" bash -c '
+    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES="${5:-0}" BUSDRIVER_CLI_RETRY_DELAY=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" SHADOW_RETURN="${6:-}" bash -c '
         set -uo pipefail
         . "'"$LIB"'/resolve-cli.sh" 2>/dev/null
+        [[ "$SHADOW_RETURN" == shadow-return ]] && eval "function return { :; }"
         # Multibyte, quotes, backslashes and newlines, then ASCII padding to the requested size.
         p=$(printf "é\"\\\\\n\t審查 %.0s" 1 2 3 4 5 6 7 8 9 10)
         pad=$(( PROMPT_BYTES - $(printf "%s" "$p" | wc -c) ))
@@ -183,6 +189,14 @@ rm -rf "$E2E_DIR"
 # e7: from INSIDE the reviewed checkout the lib (and its guard) is checkout-controlled → no stream rung.
 _e2e 1.2.2 ok 2000 checkout
 [[ "$E2E_OUT" == "ARGV_MODE" ]] || fail "e7: stream rung must not use a helper inside the reviewed checkout, out=[$E2E_OUT]"
+rm -rf "$E2E_DIR"
+
+# e9: a shadowed `return` (an imported BASH_FUNC_return%%) must not turn e7's refusal into an admission (#803).
+# (A shadowed return also makes the later timed dispatch refuse fail-closed, so the pin is "stream rung not
+# selected", not ARGV_MODE.)
+_e2e 1.2.2 ok 2000 checkout 0 shadow-return
+[[ "$E2E_OUT" != *"agy stream review rejected"* && "$(cat "$E2E_DIR/log/argv" 2>/dev/null)" != *"stream-json"* ]] \
+    || fail "e9: a shadowed return must not admit the in-checkout stream helper, out=[$E2E_OUT]"
 rm -rf "$E2E_DIR"
 
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-stream-transport"; else exit 1; fi

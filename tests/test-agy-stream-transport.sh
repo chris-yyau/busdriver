@@ -54,6 +54,18 @@ got=$(printf '%s\n%s\n' "$INIT" "$OK_RESULT" | "$PY" -I "$HELPER" reduce 0)
 printf '\377\376 not utf8' | "$PY" -I "$HELPER" encode >/dev/null 2>&1 \
     && fail "u12: invalid UTF-8 prompt must be refused, not replaced"
 
+# ── guard: a decision is always printed (agy treats an empty hook reply as allow) ─────────────
+GUARD_DIR=$(mktemp -d)
+cp "$LIB/agy-review-guard/guard.py" "$GUARD_DIR/"
+mkdir "$GUARD_DIR/guard.log"   # the audit log cannot be opened → must not suppress the decision
+_guard() { printf '%s' "$1" | "$PY" -I "$GUARD_DIR/guard.py" 2>/dev/null; }
+[[ "$(_guard '{"toolCall":{"name":"write_file"}}')" == *'"decision": "deny"'* ]] || fail "g1: write_file must be denied even when the log cannot be written"
+[[ "$(_guard '{"toolCall":{"name":"view_file"}}')" == *'"decision": "allow"'* ]] || fail "g2: view_file must be allowed"
+for bad in 'not json' '[1]' '{"toolCall":"x"}' '{"toolCall":{"name":["view_file"]}}'; do
+    [[ "$(_guard "$bad")" == *'"decision": "deny"'* ]] || fail "g3: malformed input [$bad] must be denied, not crash"
+done
+rm -rf "$GUARD_DIR"
+
 # ── end-to-end through execute_review with fake agy binaries ─────────────────────────────────
 # Each fake is baked per scenario (the --review dispatch scrubs the environment, so no FAKE_* vars).
 _make_fake() {  # $1 dir, $2 version, $3 scenario; records argv, cwd, guard presence and stdin in $1/log

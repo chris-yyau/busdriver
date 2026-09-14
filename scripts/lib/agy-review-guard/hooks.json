@@ -1,0 +1,16 @@
+{
+  "readonly-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 ./guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

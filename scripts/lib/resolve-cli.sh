@@ -3398,10 +3398,12 @@ _run_review_with_retries() {
   _RRWR_DURATION=$3
   _RRWR_STDIN_MODE=${4:-pipe}
   _RRWR_REVIEW=0
+  _RRWR_AGY_STREAM=0
   case "$_RRWR_STDIN_MODE" in
     pipe) ;;
     none) ;;
     pipe-review) _RRWR_STDIN_MODE=pipe; _RRWR_REVIEW=1 ;;
+    pipe-agy-stream-review) _RRWR_STDIN_MODE=pipe; _RRWR_REVIEW=1; _RRWR_AGY_STREAM=1 ;;
     none-review) _RRWR_STDIN_MODE=none; _RRWR_REVIEW=1 ;;
     *) _RRWR_STDIN_MODE=pipe ;;
   esac
@@ -3507,6 +3509,13 @@ _run_review_with_retries() {
     # arm (fallback copy of the predicate lives there too).
     if [[ "$_RRWR_LABEL" == "opencode" ]] && _bd_emit_chunked "$_RRWR_OUTPUT" | _oc_output_is_banner_only; then
       _RRWR_OUTPUT=""
+    fi
+    # #840: an agy stream-json attempt that exited 0 is reduced HERE, so the classification below
+    # judges the response (a bare 429 notice) or the rejection (an ERROR result carrying a 5xx), not
+    # the JSON envelope around it — a large envelope would otherwise read as a substantive review and
+    # skip the retry. A non-zero exit keeps its raw text and is classified exactly as before.
+    if [[ "$_RRWR_AGY_STREAM" -eq 1 && "$_RRWR_EXIT_CODE" -eq 0 && -n "$_RRWR_OUTPUT" ]]; then
+      _RRWR_OUTPUT="$(_bd_emit_chunked "$_RRWR_OUTPUT" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce 0)" || _RRWR_EXIT_CODE=$?
     fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     if [[ "$_RRWR_EXIT_CODE" -eq 124 ]]; then
@@ -4266,7 +4275,6 @@ _agy_stream_review() {
     _ASR_BIN=${1-}
     _ASR_RC=0
     _ASR_WS=""
-    _ASR_RAW=""
     _ASR_OUT=""
     _ASR_PAYLOAD=""
     if ! _ASR_PAYLOAD="$(_bd_emit_chunked "$2" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" encode)"; then
@@ -4290,15 +4298,14 @@ _agy_stream_review() {
     else
       # The dispatch PATH is resolved against the real checkout, before moving into the workspace.
       _ASR_DISP="$(_review_dispatch_path "$_ASR_BIN" agy)"
-      _ASR_RAW="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-review \
+      # The retry loop reduces each clean-exit attempt itself (pipe-agy-stream-review), so exit 0 here
+      # is already a complete response that is not a bare transient notice.
+      _ASR_OUT="$(cd "$_ASR_WS" && PATH="$_ASR_DISP" _run_review_with_retries agy "${_ASR_PAYLOAD}"$'\n' "$3" pipe-agy-stream-review \
         "$_ASR_BIN" --input-format stream-json --output-format stream-json --mode plan --sandbox \
         --add-dir "$_ASR_WS" --print-timeout "${3}s")" || _ASR_RC=$?
-      _ASR_OUT="$(_bd_emit_chunked "$_ASR_RAW" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
-      # The retry loop saw the JSON envelope, not the response, so re-apply its bare-notice rule here:
-      # a rate-limit/5xx notice returned as a SUCCESS response is never a review.
-      if [[ "$_ASR_RC" -eq 0 ]] && _is_bare_transient_notice "$_ASR_OUT"; then
-        _ASR_OUT="agy stream review rejected: response is a bare transient notice"$'\n'"$_ASR_OUT"
-        _ASR_RC=1
+      # Anything else (a non-zero agy exit, spent retries on a notice or empty output) gets one rejection form.
+      if [[ "$_ASR_RC" -ne 0 && "$_ASR_OUT" != "agy stream review rejected:"* ]]; then
+        _ASR_OUT="$(_bd_emit_chunked "$_ASR_OUT" | "$_AGY_STREAM_PY" -I "$_bd_lib_dir/agy-stream-review.py" reduce "$_ASR_RC")" || _ASR_RC=$?
       fi
       _bd_emit_chunked "$_ASR_OUT"
     fi

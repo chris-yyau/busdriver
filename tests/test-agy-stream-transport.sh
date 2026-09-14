@@ -94,6 +94,17 @@ case "$3" in
   error) printf '%s\n%s\n' "\$INIT" '{"event":"result","result":{"status":"ERROR","error":"stream input rejected","num_turns":0}}'; exit 1 ;;
   truncated) printf '%s\n' "\$INIT" ;;
   transient) printf '%s\n%s\n' "\$INIT" '{"event":"result","result":{"status":"SUCCESS","response":"Error: 429 Too Many Requests - rate limit exceeded","num_turns":1}}' ;;
+  # First attempt transient (inside a normal-sized envelope), second attempt a real review.
+  flaky-notice|flaky-error)
+    if [ -f "$1/log/tried" ]; then printf '%s\n%s\n' "\$INIT" '$OK_RESULT'; exit 0; fi
+    : > "$1/log/tried"
+    pad=\$(printf '%0600d' 0)
+    printf '{"event":"step_update","step_update":{"note":"%s"}}\n' "\$pad"
+    if [ "$3" = flaky-notice ]; then
+      printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"Error: 429 Too Many Requests - rate limit exceeded","num_turns":1}}'
+    else
+      printf '%s\n' '{"event":"result","result":{"status":"ERROR","error":"HTTP 503 Service Unavailable","num_turns":0}}'
+    fi ;;
 esac
 STUB
     chmod +x "$1/agy"
@@ -108,7 +119,7 @@ _e2e() {
     git -C "$E2E_DIR/cwd" init -q >/dev/null 2>&1 || fail "git init failed for the e2e cwd"
     local run_cwd="$E2E_DIR/cwd"
     [[ "$4" == checkout ]] && run_cwd="$REPO_ROOT"
-    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" bash -c '
+    E2E_OUT=$(cd "$run_cwd" && PATH="$E2E_DIR:$PATH" BUSDRIVER_CLI_RETRIES="${5:-0}" BUSDRIVER_CLI_RETRY_DELAY=0 PROMPT_BYTES="$3" OUTFILE="$E2E_DIR/prompt" bash -c '
         set -uo pipefail
         . "'"$LIB"'/resolve-cli.sh" 2>/dev/null
         # Multibyte, quotes, backslashes and newlines, then ASCII padding to the requested size.
@@ -153,6 +164,14 @@ for scen in warn denied error truncated transient; do
     [[ "$E2E_OUT" == *"agy stream review rejected"* ]] || fail "e-$scen: expected a rejection reason, got [${E2E_OUT:0:200}]"
     ws=$(sed -n 's/.*--add-dir \([^ ]*\).*/\1/p' "$E2E_DIR/log/argv" 2>/dev/null)
     [[ -n "$ws" && ! -e "$ws" ]] || fail "e-$scen: guard workspace [$ws] not removed"
+    rm -rf "$E2E_DIR"
+done
+
+# e8: a transient first attempt inside a >CLI_BARE_ERROR_MAX_CHARS envelope is RETRIED (the retry loop
+# must judge the reduced response/rejection, not the JSON envelope), then the real review is returned.
+for scen in flaky-notice flaky-error; do
+    _e2e 1.2.2 "$scen" 2000 outside 1
+    [[ "$E2E_RC" == 0 && "$E2E_OUT" == "REVIEW_OK" ]] || fail "e8-$scen: transient first attempt must be retried, rc=$E2E_RC out=[${E2E_OUT:0:200}]"
     rm -rf "$E2E_DIR"
 done
 

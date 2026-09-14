@@ -1,3 +1,10 @@
+## [2.1.19](https://github.com/chris-yyau/busdriver/compare/v2.1.18...v2.1.19) (2026-09-14)
+
+
+### Bug Fixes
+
+* **agy:** deliver oversized review prompts over agy stream-json stdin ([#840](https://github.com/chris-yyau/busdriver/issues/840)) ([#855](https://github.com/chris-yyau/busdriver/issues/855)) ([3bb1614](https://github.com/chris-yyau/busdriver/commit/3bb16144679f61ab9090ab00751f31739891fbc9)), closes [#803](https://github.com/chris-yyau/busdriver/issues/803) [#823](https://github.com/chris-yyau/busdriver/issues/823) [#803](https://github.com/chris-yyau/busdriver/issues/803)
+
 ## [2.1.18](https://github.com/chris-yyau/busdriver/compare/v2.1.17...v2.1.18) (2026-09-11)
 
 

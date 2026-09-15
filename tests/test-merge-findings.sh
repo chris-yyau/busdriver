@@ -116,6 +116,78 @@ assert_merge_status "deterministic SAST blocker → FAIL" "FAIL" \
 assert_merge_status "all-garbage stdin → fail-closed FAIL" "FAIL" \
     "$(printf 'not json\nstill not json\n')"
 
+# 8. #844 — similar medium SAST + high low-confidence LLM must not let
+#    severity-only dedup evict the SAST blocker (both ingest orders).
+assert_sast_retained_fail() {
+    local name="$1" input="$2"
+    TOTAL=$((TOTAL + 1))
+    local result status has_sast
+    result=$(printf '%s' "$input" | python3 "$MERGER")
+    status=$(printf '%s' "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','MISSING'))")
+    has_sast=$(printf '%s' "$result" | python3 -c "
+import sys, json
+issues = json.load(sys.stdin).get('issues', [])
+print('yes' if any(str(i.get('source','')).startswith('sast:') for i in issues) else 'no')
+")
+    if [ "$status" = "FAIL" ] && [ "$has_sast" = "yes" ]; then
+        printf "  PASS  %s\n" "$name"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  %s (expected FAIL+sast retained; status=%s has_sast=%s)\n    result=%s\n" \
+            "$name" "$status" "$has_sast" "$result"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+SAST_844='[{"file":"app.py","line":10,"severity":"medium","category":"security","description":"SQL injection via unsanitized user input in query builder","source":"sast:semgrep"}]'
+LLM_844='{"status":"PASS","issues":[{"file":"app.py","line":12,"severity":"high","category":"security","description":"SQL injection through unsanitized user input in the query builder","confidence":0.6}]}'
+
+assert_sast_retained_fail "844 SAST-then-LLM → FAIL+sast retained (stdin)" \
+    "$(printf '%s\n[]\n%s\n' "$SAST_844" "$LLM_844")"
+assert_sast_retained_fail "844 LLM-then-SAST → FAIL+sast retained (stdin)" \
+    "$(printf '[]\n[]\n%s\n%s\n' "$LLM_844" "$SAST_844")"
+
+# argv interface, reverse peer order (LLM argv before SAST argv).
+TOTAL=$((TOTAL + 1))
+ARGV_RESULT=$(python3 "$MERGER" "$LLM_844" "$SAST_844")
+ARGV_STATUS=$(printf '%s' "$ARGV_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','MISSING'))")
+ARGV_SAST=$(printf '%s' "$ARGV_RESULT" | python3 -c "
+import sys, json
+issues = json.load(sys.stdin).get('issues', [])
+print('yes' if any(str(i.get('source','')).startswith('sast:') for i in issues) else 'no')
+")
+if [ "$ARGV_STATUS" = "FAIL" ] && [ "$ARGV_SAST" = "yes" ]; then
+    printf "  PASS  %s\n" "844 LLM-then-SAST → FAIL+sast retained (argv)"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  %s (expected FAIL+sast; status=%s has_sast=%s)\n    result=%s\n" \
+        "844 LLM-then-SAST → FAIL+sast retained (argv)" "$ARGV_STATUS" "$ARGV_SAST" "$ARGV_RESULT"
+    FAIL=$((FAIL + 1))
+fi
+
+# Negative controls: ordinary same-class duplicates still collapse.
+DUP_LLM_A='{"status":"FAIL","issues":[{"file":"z.py","line":5,"severity":"high","category":"bug","description":"null deref on missing config key","confidence":0.9}]}'
+DUP_LLM_B='{"status":"FAIL","issues":[{"file":"z.py","line":6,"severity":"medium","category":"bug","description":"null deref on missing config key","confidence":0.9}]}'
+assert_merge_issue_count "ordinary LLM duplicates still collapse → 1 issue" "1" \
+    "$(printf '[]\n[]\n%s\n%s\n' "$DUP_LLM_A" "$DUP_LLM_B")"
+
+DUP_SAST_A='[{"file":"z.sh","line":3,"severity":"medium","category":"bug","description":"unquoted variable expansion","source":"sast:shellcheck"}]'
+DUP_SAST_B='[{"file":"z.sh","line":4,"severity":"high","category":"bug","description":"unquoted variable expansion","source":"sast:shellcheck"}]'
+assert_merge_status "ordinary SAST duplicates still collapse → FAIL" "FAIL" \
+    "$(printf '%s\n%s\n[]\n' "$DUP_SAST_A" "$DUP_SAST_B")"
+assert_merge_issue_count "ordinary SAST duplicates still collapse → 1 issue" "1" \
+    "$(printf '%s\n%s\n[]\n' "$DUP_SAST_A" "$DUP_SAST_B")"
+
+# Cross-class must not let a non-blocking low SAST evict a blocking LLM.
+LOW_SAST='[{"file":"app.py","line":10,"severity":"low","category":"style","description":"SQL injection via unsanitized user input in query builder","source":"sast:semgrep"}]'
+LLM_BLOCK='{"status":"FAIL","issues":[{"file":"app.py","line":12,"severity":"high","category":"security","description":"SQL injection through unsanitized user input in the query builder","confidence":0.9}]}'
+assert_merge_status "low SAST must not evict blocking LLM (SAST first)" "FAIL" \
+    "$(printf '%s\n[]\n%s\n' "$LOW_SAST" "$LLM_BLOCK")"
+assert_merge_status "low SAST must not evict blocking LLM (LLM first)" "FAIL" \
+    "$(printf '[]\n[]\n%s\n%s\n' "$LLM_BLOCK" "$LOW_SAST")"
+assert_merge_issue_count "cross-class low SAST + LLM → both retained" "2" \
+    "$(printf '%s\n[]\n%s\n' "$LOW_SAST" "$LLM_BLOCK")"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [ "$FAIL" -gt 0 ]; then

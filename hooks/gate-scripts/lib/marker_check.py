@@ -2117,96 +2117,57 @@ def _requote(tok):
     return "".join(c if c in _REQUOTE_SAFE else chr(92) + c for c in tok)
 
 
+def _mechanical_join(s):
+    """Remove `\\<newline>` EVERYWHERE; return (joined, j2r, r2j) index maps.
+
+    No quote tracking: the walker's literal-content spans (`'...'`, `$'...'`,
+    quoted heredoc bodies) emit their RAW slice via the maps, so joining inside
+    them is harmless -- and a body apostrophe can no longer poison a later
+    continuation (#802 M3). j2r maps joined->raw, r2j raw->joined; consumed
+    chars map to the next emit point. Maps are None when nothing was joined.
+    """
+    if chr(92) + '\n' not in s:
+        return s, None, None
+    out = []
+    j2r = []
+    r2j = [0] * (len(s) + 1)
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == chr(92) and s[i + 1:i + 2] == chr(92):
+            # `\\` is an escaped backslash: both bytes are literal, and a
+            # newline after them is real -- parity, not a continuation (#802).
+            j2r.append(i); r2j[i] = len(out)
+            out.append(s[i])
+            j2r.append(i + 1); r2j[i + 1] = len(out)
+            out.append(s[i + 1])
+            i += 2
+            continue
+        if s[i] == chr(92) and s[i + 1:i + 2] == '\n':
+            r2j[i] = r2j[i + 1] = len(out)
+            i += 2
+            continue
+        j2r.append(i)
+        r2j[i] = len(out)
+        out.append(s[i])
+        i += 1
+    r2j[n] = len(out)
+    j2r.append(n)
+    return "".join(out), j2r, r2j
+
+
 def _join_continuations(s):
     """Remove `\\<newline>` outside single quotes -- the shell joins the token first.
 
     Without it a keyword split across the join (`ca\\<newline>se`) reads as an ordinary
-    word, so its pattern `)` is mistaken for the `$()` closer.
+    word, so its pattern `)` is mistaken for the `$()` closer. The join is the same
+    syntax-aware walk as `_strip_cmd_subst` in join mode: arithmetic `<<` is a shift,
+    a nested `$()` owns its own newline, a quoted heredoc body stays raw, and an
+    unquoted body joins before the terminator compare (#802 M3).
     """
     if chr(92) + '\n' not in s:
         return s
-    out = []
-    i, n, q = 0, len(s), ''
-    pend = []                    # bodies whose delimiter was QUOTED: literal data
-    _ln = None                   # the current line, joined once (see the `<<` branch)
-    while i < n:
-        c = s[i]
-        if c == '\n':
-            _ln = None
-        if q == "'":
-            if c == "'":
-                q = ''
-            out.append(c)
-            i += 1
-            continue
-        # A QUOTED delimiter makes its body literal, so the `\<newline>` in there is two
-        # characters the shell keeps. Joining them forged the terminator out of
-        # `E\<newline>OF` and handed the rest of the body to the parser (#802). A double
-        # quote is not a barrier to either half of this: `"$(cat <<'E'` is a command.
-        if pend and c == '\n':
-            _e = _heredoc_body_end(s, i + 1, pend)
-            out.append(s[i:_e])
-            i = _e
-            pend = []
-            continue
-        if s.startswith('<<<', i):
-            # Consume all THREE, as the walker in `_strip_cmd_subst` does. Stepping over
-            # the first `<` alone left `<<'X'` starting one character later, read as a
-            # QUOTED delimiter whose terminator line never comes -- so the body swallowed
-            # the rest of the command and none of its continuations were joined (#802).
-            out.append('<<<')
-            i += 3
-            continue
-        if s.startswith('<<', i) and not s.startswith('<<<', i):
-            # Read the delimiter from the JOINED line, because the shell joins first:
-            # `<<E\<newline>OF` delimits on EOF. Reading it raw took `E` and the body
-            # then ran to the end of the command (#802).
-            # Scan that line ONCE and reuse it for every `<<` on it. Rebuilding it per
-            # operator is quadratic: 16K of them in a 64K command spent 21s in here,
-            # four times the whole hook budget -- and a hook killed on the budget emits
-            # nothing, which reads as ALLOW. That is #802's own bug, so the fix for it
-            # does not get to reintroduce it.
-            if _ln is None:
-                _buf, _raw, _at = [], [], {}
-                _k = i
-                while _k < n:
-                    if s[_k] == chr(92) and s[_k + 1:_k + 2] == '\n':
-                        _k += 2
-                        continue
-                    if s[_k] == '\n':
-                        break
-                    _at[_k] = len(_raw)
-                    _buf.append(s[_k])
-                    _raw.append(_k)
-                    _k += 1
-                _ln = ("".join(_buf), _raw, _at, _k)
-            _line, _raw, _at, _k = _ln
-            _p = _at[i]
-            _hd = _heredoc_delim(_line, _p)
-            if _hd:
-                _w0 = _p + 2 + (1 if _line[_p + 2:_p + 3] == '-' else 0)
-                while _w0 < len(_line) and _line[_w0] in ' \t':
-                    _w0 += 1
-                if _line[_w0:_hd[1]] != _hd[0][0]:   # quoting was removed to get it
-                    pend.append(_hd[0])
-                    out.append(_line[_p:_hd[1]])
-                    i = _raw[_hd[1]] if _hd[1] < len(_raw) else _k
-                    continue
-        if c == chr(92) and i + 1 < n:
-            if s[i + 1] == '\n':
-                i += 2
-                continue
-            out.append(c)
-            out.append(s[i + 1])
-            i += 2
-            continue
-        if not q and c in ("'", chr(34)):
-            q = c
-        elif q == chr(34) and c == chr(34):
-            q = ''
-        out.append(c)
-        i += 1
-    return "".join(out)
+    r = _strip_cmd_subst(s, join_only=True)
+    return r if r is not None else _mechanical_join(s)[0]
 
 
 def _subst_ambiguous(s, i, ws):
@@ -2372,33 +2333,79 @@ def _heredoc_delim(s, i):
             break
         d.append(c)
         j += 1
-    return (("".join(d), strip), j) if (d or j > w0) else None
+    _quoted = s[w0:j] != "".join(d)   # any quote/escape syntax was removed
+    return (("".join(d), strip, _quoted), j) if (d or j > w0) else None
 
 
-def _heredoc_body_end(s, nl, delims):
-    """Index just past the bodies for `delims`, the first of which starts at `nl`.
+def _heredoc_body_end(s, nl, delims, raw=None, j2r=None, r2j=None):
+    """(emit_text, end_index) for the bodies of `delims`, the first starting at `nl`.
 
-    A body does not start at the introducer -- the rest of THAT line is still command
-    text, and several bodies queue on one line -- so the skip happens at the newline,
-    in introducer order. Only `<<-` strips leading tabs from the terminator: under a
-    plain `<<` a tab-indented delimiter is body DATA, and ending the body there hands
-    a later body `)` back as shell text.
+    `nl` and the return are JOINED indices into `s` (the post-`_mechanical_join`
+    text). A body does not start at the introducer -- the rest of THAT line is
+    still command text, and several bodies queue on one line -- so the skip
+    happens at the newline, in introducer order. Only `<<-` strips leading tabs
+    from the terminator: under a plain `<<` a tab-indented delimiter is body
+    DATA, and ending the body there hands a later body `)` back as shell text.
+
+    An UNQUOTED body compares joined lines -- the shell removes `\\<newline>`
+    before the terminator compare, so `E\\<newline>OF` IS the terminator and
+    `X\\\\<newline>` is not. A QUOTED body is literal: its raw lines are
+    compared and its raw bytes emitted, so `Q\\<newline>RAW` keeps both
+    characters (#802 M3). `raw`/`j2r`/`r2j` carry the pre-join text and maps;
+    absent (no continuation anywhere) they default to `s` itself.
     """
+    if raw is None:
+        raw = s
     k = nl
-    for d, strip in delims:
-        while k < len(s):
-            e = s.find('\n', k)
-            line = s[k:len(s) if e == -1 else e]
-            k = len(s) if e == -1 else e + 1
-            if (line.lstrip('\t') if strip else line) == d:
-                break
-    return k
+    # Quoted bodies start at the RAW byte after the introducer newline.
+    # `j2r[nl]` points at the next *emitted* joined character, so it skips
+    # `\<newline>` pairs removed from the joined stream — and a quoted
+    # terminator that is itself a lone backslash is exactly such a pair,
+    # so the raw scan would begin after the terminator and miss it (#802).
+    if j2r is not None and nl > 0:
+        _rk = j2r[nl - 1] + 1
+    else:
+        _rk = nl
+    out = []
+    for d, strip, quoted in delims:
+        if quoted:
+            _start = _rk
+            while _rk < len(raw):
+                e = raw.find('\n', _rk)
+                line = raw[_rk:len(raw) if e == -1 else e]
+                _rk = len(raw) if e == -1 else e + 1
+                if (line.lstrip('\t') if strip else line) == d:
+                    break
+            out.append(raw[_start:_rk])
+            k = r2j[_rk] if r2j is not None else _rk
+        else:
+            _start = k
+            while k < len(s):
+                e = s.find('\n', k)
+                line = s[k:len(s) if e == -1 else e]
+                k = len(s) if e == -1 else e + 1
+                if (line.lstrip('\t') if strip else line) == d:
+                    break
+            out.append(s[_start:k])
+            # Next body's raw start is after THIS terminator newline in raw,
+            # not j2r[k] (which skips joined-away `\<newline>` pairs that may
+            # be the next quoted terminator) (#802).
+            if j2r is not None and k > 0:
+                _rk = j2r[k - 1] + 1
+            else:
+                _rk = k
+    return "".join(out), k
 
 
-def _strip_cmd_subst(s):
+def _strip_cmd_subst(s, join_only=False):
     """Strip command substitutions, nesting-/quote-aware; None if one is unclosed,
-    which makes the caller fail CLOSED (#802)."""
-    s = _join_continuations(s)
+    which makes the caller fail CLOSED (#802). In join_only mode nothing is
+    stripped: the same walk emits the shell-joined text -- literal spans
+    (`'...'`, `$'...'`, quoted heredoc bodies) emit their RAW slice, everything
+    else the joined bytes -- which is what `_join_continuations` returns (#802).
+    """
+    raw = s
+    s, _j2r, _r2j = _mechanical_join(s)
     out = []
     i, n = 0, len(s)
     oq = ''
@@ -2409,8 +2416,10 @@ def _strip_cmd_subst(s):
         ch = s[i]
         # Heredoc bodies are DATA: kept verbatim, never read as shell text.
         if not oq and heredocs and ch == '\n':
-            _k = _heredoc_body_end(s, i + 1, heredocs)
-            out.append(s[i:_k])
+            _t, _k = _heredoc_body_end(s, i + 1, heredocs,
+                                       raw=raw, j2r=_j2r, r2j=_r2j)
+            out.append(s[i])
+            out.append(_t)
             i = _k
             heredocs = []
             ws = True
@@ -2463,6 +2472,14 @@ def _strip_cmd_subst(s):
         if oq == "'":
             if ch == "'":
                 oq = ''
+                if _j2r is not None:
+                    # `'...'` is literal: the mechanical join wrongly removed a
+                    # `\<newline>` inside it -- emit the raw span instead (#802).
+                    del out[_omark:]
+                    out.append(raw[_j2r[_oqs]:_j2r[i] + 1])
+                    i += 1
+                    ws = False
+                    continue
             out.append(ch)
             i += 1
             ws = False
@@ -2483,12 +2500,14 @@ def _strip_cmd_subst(s):
         if not oq:
             _ac = _ansi_c_span(s, i)
             if _ac:
-                out.append(s[i:_ac])
+                out.append(raw[_j2r[i]:_j2r[_ac]] if _j2r is not None else s[i:_ac])
                 i = _ac
                 ws = False
                 continue
         if not oq and ch in ("'", chr(34)):
             oq = ch
+            _oqs = i
+            _omark = len(out)
             out.append(ch)
             i += 1
             ws = False
@@ -2509,6 +2528,8 @@ def _strip_cmd_subst(s):
             q = ''
             closed = False
             inner_heredocs = []
+            _jout = [] if join_only else None   # join mode: normalized inner text
+            _jpos = i
             _span = []               # (closer, depth) of `${`/`$[`: not command text
             ws = True                # at a shell WORD start -- see _subst_ambiguous
             _qstack = []                    # (depth, quote) suspended by a nested `$()`
@@ -2518,6 +2539,9 @@ def _strip_cmd_subst(s):
             # classifier died with a TypeError. A crash is not a verdict (#802).
             while i < n:
                 ch = s[i]
+                if _jout is not None:
+                    _jout.append(s[_jpos:i])
+                    _jpos = i
                 if not q and inner_heredocs and ch == '\n':
                     # A newline ends the line of the command at THIS depth, and a nested
                     # `$()` is its own command: both its newline and any heredoc queued
@@ -2525,7 +2549,13 @@ def _strip_cmd_subst(s):
                     # the inner newline, and the body then ate the closer (#802).
                     _pend = [t for t, _hd_d in inner_heredocs if _hd_d == depth]
                     if _pend:
-                        i = _heredoc_body_end(s, i + 1, _pend)
+                        _t, _re = _heredoc_body_end(s, i + 1, _pend,
+                                                    raw=raw, j2r=_j2r, r2j=_r2j)
+                        if _jout is not None:
+                            _jout.append(s[i])
+                            _jout.append(_t)
+                            _jpos = _re
+                        i = _re
                         inner_heredocs = [p for p in inner_heredocs if p[1] != depth]
                         ws = True
                         continue
@@ -2568,6 +2598,8 @@ def _strip_cmd_subst(s):
                         # `$()`, which closed `$(echo "${X:-`echo )`}")` early (#802).
                         _bt = _backtick_span(s, i)
                         if _bt is None:
+                            if _jout is not None:
+                                break
                             return None
                         i = _bt
                         continue
@@ -2575,16 +2607,26 @@ def _strip_cmd_subst(s):
                         i += 2
                         continue
                     if ch == q:
+                        if q == "'" and _jout is not None:
+                            del _jout[_imark:]
+                            _jout.append(raw[_j2r[_iqs]:_j2r[i] + 1])
+                            _jpos = i + 1
                         q = ''
                     i += 1
                     continue
                 _ac = _ansi_c_span(s, i)
                 if _ac:
+                    if _jout is not None:
+                        _jout.append(raw[_j2r[i]:_j2r[_ac]])
+                        _jpos = _ac
                     i = _ac
                     ws = False
                     continue
                 if ch in ("'", '"'):
                     q = ch
+                    if ch == "'" and _jout is not None:
+                        _iqs = i
+                        _imark = len(_jout)
                     ws = False
                     i += 1
                     continue
@@ -2592,6 +2634,8 @@ def _strip_cmd_subst(s):
                 # so an escaped `)` is not a substitution closer (#802 litmus HIGH).
                 if ch == '\\':
                     if i + 1 >= n:
+                        if _jout is not None:
+                            break
                         return None  # dangling backslash — no real closing delimiter
                     ws = False
                     i += 2
@@ -2599,6 +2643,8 @@ def _strip_cmd_subst(s):
                 if not tick and ch == '`':
                     _bt = _backtick_span(s, i)
                     if _bt is None:
+                        if _jout is not None:
+                            break
                         return None
                     i = _bt
                     ws = False
@@ -2613,7 +2659,7 @@ def _strip_cmd_subst(s):
                     i += 2
                     ws = False
                     continue
-                if _span and ch == _span[-1][0]:
+                if _span and depth == _span[-1][1] and ch == _span[-1][0]:
                     _span.pop()
                     i += 1
                     ws = False
@@ -2628,6 +2674,8 @@ def _strip_cmd_subst(s):
                     continue
                 if not tick and not _inner_arith and not _span \
                         and _subst_ambiguous(s, i, ws):
+                    if _jout is not None:
+                        break
                     return None
                 if s.startswith('$((', i):   # ABOVE the tick branch: inside a backtick
                     depth += 2               # body this seeds the arith stack too, and
@@ -2673,7 +2721,22 @@ def _strip_cmd_subst(s):
                 ws = ch in " \t\n;&|"
                 i += 1
             if not closed:
-                return None
+                if _jout is not None:
+                    # Fallback remainder already covers everything from `_jpos`;
+                    # advance past it so the outer loop does not rescan and
+                    # duplicate case bodies / suffixes (#802 litmus).
+                    _jout.append(raw[_j2r[_jpos]:])
+                    i = n
+                else:
+                    return None
+            if _jout is not None:
+                _opl = 3 if _ar0 else (1 if tick else 2)
+                out.append(s[_sub_start:_sub_start + _opl])
+                out.append("".join(_jout))
+                if closed:
+                    out.append(s[i - 1:i])
+                ws = False
+                continue
             # Its output is UNKNOWN text, still glob-expanded when unquoted, so deleting
             # the span asserted the one expansion the shell rarely gives -- the empty
             # string -- and `[l]$(printf e)[a][s][e]...` really does name the helper.
@@ -2724,8 +2787,13 @@ def _strip_cmd_subst(s):
             _bspan = []
             _nhd = []            # introducers queued on THIS line, in order
             closed = False
+            _jout = [] if join_only else None   # join mode: normalized inner text
+            _jpos = i
             while i < n:
                 ch = s[i]
+                if _jout is not None:
+                    _jout.append(s[_jpos:i])
+                    _jpos = i
                 if q:
                     if ch == '\\' and q == '"' and i + 1 < n:
                         i += 2
@@ -2746,10 +2814,16 @@ def _strip_cmd_subst(s):
                     if q == '"' and ch == '`':   # quotes for itself, here too (#802)
                         _bt = _backtick_span(s, i)
                         if _bt is None:
+                            if _jout is not None:
+                                break
                             return None
                         i = _bt
                         continue
                     if ch == q:
+                        if q == "'" and _jout is not None:
+                            del _jout[_imark:]
+                            _jout.append(raw[_j2r[_iqs]:_j2r[i] + 1])
+                            _jpos = i + 1
                         q = ''
                     i += 1
                     continue
@@ -2758,6 +2832,9 @@ def _strip_cmd_subst(s):
                     continue
                 _sp = _ansi_c_span(s, i) or (_backtick_span(s, i) if ch == '`' else None)
                 if _sp:
+                    if _jout is not None and ch == '$':
+                        _jout.append(raw[_j2r[i]:_j2r[_sp]])
+                        _jpos = _sp
                     i = _sp
                     continue
                 # A HEREDOC BODY is data, here as everywhere else. `${X:-$(cat <<EOF
@@ -2787,7 +2864,7 @@ def _strip_cmd_subst(s):
                 if _val_text and not _narith and ch in '()':
                     i += 1
                     continue
-                if s.startswith('$((', i) or s.startswith('((', i):
+                if s.startswith('$((', i) or (_nsub and s.startswith('((', i)):
                     _narith += 1
                     i += 3 if s.startswith('$((', i) else 2
                     continue
@@ -2824,7 +2901,13 @@ def _strip_cmd_subst(s):
                     # walker above already states for its own queue (#802).
                     _pend = [t for t, _d in _nhd if _d == len(_pstack)]
                     if _pend:
-                        i = _heredoc_body_end(s, i + 1, _pend)
+                        _t, _re = _heredoc_body_end(s, i + 1, _pend,
+                                                    raw=raw, j2r=_j2r, r2j=_r2j)
+                        if _jout is not None:
+                            _jout.append(s[i])
+                            _jout.append(_t)
+                            _jpos = _re
+                        i = _re
                         _nhd = [p for p in _nhd if p[1] != len(_pstack)]
                         continue
                 if _nsub and not _narith and not _val_text:
@@ -2838,6 +2921,9 @@ def _strip_cmd_subst(s):
                         continue
                 if ch in ("'", '"'):
                     q = ch
+                    if ch == "'" and _jout is not None:
+                        _iqs = i
+                        _imark = len(_jout)
                     i += 1
                     continue
                 # Nested parameter expansion only — a bare `{` is literal (#802),
@@ -2858,7 +2944,19 @@ def _strip_cmd_subst(s):
                     continue
                 i += 1
             if not closed:
-                return None
+                if _jout is not None:
+                    # Same join-only remainder rule as the `$()` walker above (#802).
+                    _jout.append(raw[_j2r[_jpos]:])
+                    i = n
+                else:
+                    return None
+            if _jout is not None:
+                out.append(s[_sub_start:_sub_start + 2])
+                out.append("".join(_jout))
+                if closed:
+                    out.append(s[i - 1:i])
+                ws = False
+                continue
             # `${X:-e}` is the same unknown text as `$(printf e)` above, and was
             # deleted the same way: `[l]${X:-e}[a][s][e]...` names the helper.
             # Double-quoted, it projects `"*"` for the reason above.

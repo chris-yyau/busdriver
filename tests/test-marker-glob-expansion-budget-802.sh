@@ -275,7 +275,7 @@ else
 
   cs_runs() {
     local _out
-    _out=$(cd "$CS_DIR" && bash -c "$1" 2>/dev/null) || true
+    _out=$(cd "$CS_DIR" && env -u X bash -c "$1" 2>/dev/null) || true
     [[ "$_out" == *STUB_RAN* ]]
   }
 
@@ -866,6 +866,7 @@ fi
 # quote that swallowed the closing `}`. Bash runs both. Each is pinned in BOTH directions
 # -- a walker that simply stopped tracking either construct would satisfy the allow half
 # by itself, so the block half is what keeps the fix honest (#802).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _qnest='echo "${X:-"$(printf '"'"'"'"'"')"}" "["'
 if ! bash -n <<<"$_qnest" 2>/dev/null; then
   no "#802 a nested \$() inside double quotes quotes for itself" "bash rejected it"
@@ -878,6 +879,7 @@ else
   fi
 fi
 
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 got=$(verdict 'echo "${X:-"$('"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600)"}" "["')
 if is_real_block "$got"; then
   ok "#802 a helper inside that nested \$() still blocks"
@@ -885,6 +887,7 @@ else
   no "#802 a helper inside that nested \$() still blocks" "got=${got:-<empty>}"
 fi
 
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _shd='echo "${X:-$( (true); cat <<EOF
 it'"'"'s data
 EOF
@@ -900,6 +903,7 @@ else
   fi
 fi
 
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 got=$(verdict 'echo "${X:-$( (true); '"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600 )}" "["')
 if is_real_block "$got"; then
   ok "#802 a helper inside that subshell still blocks"
@@ -912,6 +916,7 @@ fi
 # subshell -- so pairing it added a frame the substitution's own closer then popped, and
 # the quote suspended at that `$(` was never restored. Only the span's OWN level is
 # exempt, because a `$()` opened inside it is a real command (#802).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _ptext='echo "${X:-"$(echo ${Y//a/(})"}" "["'
 if ! bash -n <<<"$_ptext" 2>/dev/null; then
   no "#802 a paren inside a nested \${} is text, not a subshell" "bash rejected it"
@@ -924,6 +929,7 @@ else
   fi
 fi
 
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 got=$(verdict 'echo "${X:-"$(echo ${Y//a/(}; '"python3 -I $LIB/"'[l]ease_slo?.py .claude 20 0 3600)"}" "["')
 if is_real_block "$got"; then
   ok "#802 a helper beside that literal paren still blocks"
@@ -940,6 +946,7 @@ fi
 # command bash runs must not be refused, and with the helper spliced into the same
 # substitution it must block. Written as a generator, not a list, so a new span or
 # suffix covers the whole cross-product (#802).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _spans=(
   '${Y//a/(}' '${Y//a/((}' '${Y//a/(((}' '${Y//a/)}' '${Y//a/))}'
   '${Y:-<<EOF}' '${Y:-<<<x}' '${Y:-$((1+2))}' '${Y:-$(( (1) ))}' '${Y:-$(true)}'
@@ -952,6 +959,7 @@ _spans=(
 _suffixes=( '' $'; cat <<EOF\nit\'s data\nEOF\n'
             '; (true)' "; printf '\"'"
             $'; cat <<A <<B\na\nA\nb\nB\n' )
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _wraps=(
   'echo "${X:-$(echo %s%s)}" "["'
   'echo "${X:-"$(echo %s%s)"}" "["'
@@ -959,16 +967,17 @@ _wraps=(
 )
 _n=0; _fb=0; _mb=0
 for _w in "${_wraps[@]}"; do
+  _wpre=${_w%%'%s%s'*}; _wsuf=${_w#*'%s%s'}
   for _s in "${_spans[@]}"; do
     for _f in "${_suffixes[@]}"; do
-      printf -v _cmd "$_w" "$_s" "$_f"
+      printf -v _cmd '%s%s%s%s' "$_wpre" "$_s" "$_f" "$_wsuf"
       bash -n <<<"$_cmd" 2>/dev/null || continue
       _n=$((_n + 1))
       got=$(verdict "$_cmd")
       [[ "$got" == "OK|" ]] || { _fb=$((_fb + 1)); [[ $_fb -le 3 ]] && \
         printf '    false block: %q -> %s\n' "$_cmd" "${got:-<empty>}"; }
       _hf="${_f}; python3 -I $LIB/[l]ease_slo?.py .claude 20 0 3600"
-      printf -v _hcmd "$_w" "$_s" "$_hf"
+      printf -v _hcmd '%s%s%s%s' "$_wpre" "$_s" "$_hf" "$_wsuf"
       bash -n <<<"$_hcmd" 2>/dev/null || continue
       got=$(verdict "$_hcmd")
       is_real_block "$got" || { _mb=$((_mb + 1)); [[ $_mb -le 3 ]] && \
@@ -1169,6 +1178,7 @@ fi
 # in opened an expansion with no closer and refused the whole command; bash runs it.
 # The parity question already had an answer in this file -- the raw-word scan and the
 # segment splitter both ask it -- so the walker asks it the same way (#802 / #553).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pid_brace='echo $${foo "["'
 if ! bash -n <<<"$_pid_brace" 2>/dev/null; then
   no "#802 a PID beside a literal brace is not a parameter expansion" "bash rejected it"
@@ -1185,13 +1195,17 @@ fi
 # literal brace INSIDE a substitution too, and the fictitious span swallowed the real
 # closing paren. Not the `$(`/`$((` branches -- bash REJECTS `$$(` and `$$((`, so
 # refusing those is already right.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pid_inner='echo "$(printf %s $${foo)" "["'
 # Only an UNESCAPED separator starts a command: `\;` is an argument, so the `case`
 # after it is one too, and reading the escape as a separator refused a command bash
 # runs (#802).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _esc_sep='echo "$(printf %s \; case x)" "["'
 # The whole separator set, not just the one the review named.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _esc_amp='echo "$(printf %s \& case x)" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _esc_par='echo "$(printf %s \( case x)" "["'
 for _c in "$_pid_inner" "$_esc_sep" "$_esc_amp" "$_esc_par"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
@@ -1210,6 +1224,7 @@ done
 # Keeping the `$` hunted for `$EOF`, ran off the end of the body, and ate the enclosing
 # substitution's `)` -- refusing a command bash runs. Both directions are asserted,
 # because a walker that simply stopped reading heredocs would satisfy the first alone.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _dq_hd='echo "$(cat <<$"EOF"
 data
 EOF
@@ -1240,10 +1255,12 @@ fi
 # apostrophe in prose open a quote that swallowed the closing brace, refusing a command
 # bash runs. The walker does not need to walk the nested `$()` to get this right -- it
 # needs to stop reading the one span that is not shell text.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_hd='echo "${X:-$(cat <<EOF
 it'"'"'s data
 EOF
 )}" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_hd_block='echo "${X:-$(cat <<EOF
 python3 '"$LIB"'/lease_slot.py
 EOF
@@ -1251,20 +1268,27 @@ EOF
 # `$(..)` in ARGUMENT position does not start a new command: what follows it belongs to
 # the command the substitution sits in. `echo "$(true)" <helper>` prints a filename.
 # Both spellings, because a glob spelling must never be more permissive than the literal.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _f1_lit='echo "$(true)" '"$LIB"'/lease_slot.py'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _f1_glob='echo "$(true)" '"$LIB"'/[l]ease_slo?.py'
 # ...and the paired fail-CLOSED half: in COMMAND position the next word really is the
 # command, so `$(true) python3 <helper>` RUNS the helper and must still block.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _f1_cmdpos='$(true) python3 '"$LIB"'/lease_slot.py'
 # `<<` is a heredoc introducer only in COMMAND text. In a default VALUE it is ordinary
 # characters, inside arithmetic it is a shift, and `<<<` is a herestring -- none of the
 # three is a body to skip. Asking about a heredoc anywhere in the brace body refused all
 # three; the walker now asks only inside the nested `$()` a command actually lives in.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_lit='echo "${X:-<<EOF}" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_shift='echo "${X:-$(echo $((1 << 2)))}" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_herestr='echo "${X:-$(cat <<< foo)}" "["'
 # Several bodies queue on ONE line -- `cat <<A <<B` reads A's then B's -- so jumping at
 # the first introducer left the second body read as shell text.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_two_hd='echo "${X:-$(cat <<A <<B
 first
 A
@@ -1277,16 +1301,86 @@ B
 # A nested `$()` is its OWN command, so the delimiter queued OUTSIDE it is not pending
 # at the inner command's newline. One flat queue took the outer `A` there, and its body
 # then ate the closing `)}` -- bash prints `hello [docs]` for this, HEAD allowed it.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_nest_hd='echo "${X:-$(cat <<A $(printf "" <<B
 B
 )
 it'"'"'s data
 A
 )}" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _sub_shell_lit='echo "$( (true) )" '"$LIB"'/lease_slot.py'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _sub_shell_glob='echo "$( (true) )" '"$LIB"'/[l]ease_slo?.py'
+# A bare `((` in an outer `${...:-}` default word is literal text, not arithmetic --
+# only `$((` and a `((` inside a real `$()` command are arithmetic. Counting it
+# suppressed the real heredoc and its apostrophe read as an unmatched quote.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_pe_arith_lit='echo "${X:-(( $(cat <<EOF
+it'"'"'s data
+EOF
+)}" "["'
+# A `}` inside a nested `$()` command is that substitution's text, not the `${`
+# closer -- the span pops only at the depth that opened it.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_pe_span_depth='echo "$(echo ${X:-$(printf %s }) (})" "["'
+# Mixed quoted/unquoted heredocs on one line (M3): an unquoted body's
+# `\<newline>` is joined BEFORE the terminator compare, so `E\`+newline+`OF`
+# IS the EOF terminator; a quoted body stays raw. Asserted as exact
+# `_join_continuations` output below, in both orders.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_uq='echo "$(cat <<EOF <<'"'"'B'"'"'
+E\
+OF
+it'"'"'s data
+B
+)" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_qu='echo "$(cat <<'"'"'B'"'"' <<EOF
+it'"'"'s data\
+still raw
+B
+E\
+OF
+)" "["'
+# Backslash parity: `X\\`+newline is an escaped backslash, NOT a continuation --
+# the body does not join there and the real `EOF` line still terminates.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_parity='echo "$(cat <<EOF <<'"'"'B'"'"'
+X\\
+EOF
+it'"'"'s data
+B
+)" "["'
+# Continued unquoted DELIMITER: `<<E\`+newline+`OF` joins to `<<EOF`, so the
+# delimiter is EOF and its body is the first one.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_contd='echo "$(cat <<E\
+OF <<'"'"'B'"'"'
+it'"'"'s data
+EOF
+B
+)" "["'
+# Arithmetic `<<` inside `$(( ))` is a SHIFT, never an introducer: a same-line
+# quoted heredoc must not let a "body" scan for the shift's fake delimiter eat
+# the closer, and the quoted body stays byte-exact.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_arith='echo "$((1 << 2)) $(cat <<'"'"'B'"'"'
+Q\
+RAW
+B
+)" "["'
+# `<<-` strips leading tabs from the terminator; its unquoted body still joins.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_tab='echo "$(cat <<-EOF
+x\
+y
+	EOF
+)" "["'
 for _c in "$_pe_hd" "$_f1_lit" "$_f1_glob" "$_pe_lit" "$_pe_shift" "$_pe_herestr" \
-          "$_pe_two_hd" "$_pe_nest_hd" "$_sub_shell_lit" "$_sub_shell_glob"; do
+          "$_pe_two_hd" "$_pe_nest_hd" "$_sub_shell_lit" "$_sub_shell_glob" \
+          "$_pe_arith_lit" "$_pe_span_depth" "$_m3_uq" "$_m3_qu" "$_m3_parity" \
+          "$_m3_contd" "$_m3_arith" "$_m3_tab"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 a span that is not shell text is read as bash reads it" "bash rejected: $_c"
   else
@@ -1298,6 +1392,100 @@ for _c in "$_pe_hd" "$_f1_lit" "$_f1_glob" "$_pe_lit" "$_pe_shift" "$_pe_herestr
     fi
   fi
 done
+# Exact `_join_continuations` output for the mixed shapes, BOTH orders plus
+# parity and the continued delimiter: a quoted delimiter's body stays raw
+# (bash does not join inside it); an unquoted body -- including one sharing a
+# line with a quoted delimiter, and a `<<-` body -- joins `\<newline>` exactly
+# as the shell does. Pure-unquoted input still joins globally.
+_join_out() {
+  # marker_check.py reads a hook payload on stdin and prints a verdict at import;
+  # feed it `{}` and swallow that stdout so only the repr reaches _got.
+  python3 -c 'import importlib.util,sys,io,contextlib
+sys.stdin = io.StringIO("{}")
+_s = importlib.util.spec_from_file_location("mc", sys.argv[1])
+_m = importlib.util.module_from_spec(_s)
+with contextlib.redirect_stdout(io.StringIO()):
+    _s.loader.exec_module(_m)
+sys.stdout.write(repr(_m._join_continuations(sys.argv[2])))' \
+    "$CLASSIFIER" "$1"
+}
+_m3_uq_want=$'echo "$(cat <<EOF <<\'B\'\nEOF\nit\'s data\nB\n)" "["'
+_m3_qu_want=$'echo "$(cat <<\'B\' <<EOF\nit\'s data\\\nstill raw\nB\nEOF\n)" "["'
+_m3_parity_want=$'echo "$(cat <<EOF <<\'B\'\nX\\\\\nEOF\nit\'s data\nB\n)" "["'
+_m3_contd_want=$'echo "$(cat <<EOF <<\'B\'\nit\'s data\nEOF\nB\n)" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_pure='echo "$(cat <<EOF
+E\
+OF
+)" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_pure_want='echo "$(cat <<EOF
+EOF
+)" "["'
+_m3_arith_want=$'echo "$((1 << 2)) $(cat <<\'B\'\nQ\\\nRAW\nB\n)" "["'
+_m3_tab_want=$'echo "$(cat <<-EOF\nxy\n\tEOF\n)" "["'
+for _pair in "$_m3_uq|$_m3_uq_want" "$_m3_qu|$_m3_qu_want" \
+             "$_m3_parity|$_m3_parity_want" "$_m3_contd|$_m3_contd_want" \
+             "$_m3_pure|$_m3_pure_want" "$_m3_arith|$_m3_arith_want" \
+             "$_m3_tab|$_m3_tab_want"; do
+  _in="${_pair%%|*}"; _want="${_pair#*|}"
+  _got=$(_join_out "$_in")
+  # shellcheck disable=SC2312  # intentional: compare joiner repr to a fixed want (#802)
+  _want_repr=$(python3 -c 'import sys;print(repr(sys.argv[1]))' "$_want")
+  if [[ "$_got" == "$_want_repr" ]]; then
+    ok "#802 joiner emits the shell-joined text: ${_in//$'"'"'\n'"'"'/ }"
+  else
+    no "#802 joiner emits the shell-joined text: ${_in//$'"'"'\n'"'"'/ }" "got=${_got}"
+  fi
+done
+# Quoted delimiter that is a lone backslash, with the body starting as
+# `\<newline>` — bash treats that first raw line as the terminator. The joiner
+# must not skip it via j2r[body_start] (#802 commit-mode HIGH).
+# shellcheck disable=SC2016,SC1003  # literal <<'\' payload for classifier (#802)
+_m3_bs_delim='echo "$(cat <<'"'"'\'"'"'
+\
+echo hi
+)" "["'
+if ! bash -n <<<"$_m3_bs_delim" 2>/dev/null; then
+  no "#802 quoted backslash delimiter body start" "bash rejected"
+else
+  got=$(verdict "$_m3_bs_delim")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 quoted backslash delimiter body start"
+  else
+    no "#802 quoted backslash delimiter body start" "got=${got:-<empty>}"
+  fi
+fi
+# Unquoted body then quoted backslash-delimiter body: raw handoff after the
+# first terminator must not use j2r[k] (#802 commit-mode HIGH follow-up).
+# shellcheck disable=SC2016,SC1003  # literal <<EOF <<'\' payload (#802)
+_m3_bs_second='echo "$(cat <<EOF <<'"'"'\'"'"'
+EOF
+\
+echo hi
+)" "["'
+if ! bash -n <<<"$_m3_bs_second" 2>/dev/null; then
+  no "#802 quoted backslash delimiter after unquoted body" "bash rejected"
+else
+  got=$(verdict "$_m3_bs_second")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 quoted backslash delimiter after unquoted body"
+  else
+    no "#802 quoted backslash delimiter after unquoted body" "got=${got:-<empty>}"
+  fi
+fi
+# join-only fallback on unsupported case syntax must not duplicate the remainder
+# shellcheck disable=SC2016,SC1003  # trailing \ + newline fixture for joiner (#802)
+_m3_case_join='echo $(case x in x) echo hi;; esac) \'
+_m3_case_join+=$'\nmore'
+_got=$(_join_out "$_m3_case_join")
+# After fix: duplication would contain 'echo hi' twice.
+_hi_count=$(python3 -c 'import sys;print(sys.argv[1].count("echo hi"))' "$_got")
+if [[ "$_hi_count" -le 1 ]]; then
+  ok "#802 join-only case fallback does not duplicate remainder"
+else
+  no "#802 join-only case fallback does not duplicate remainder" "got=${_got}"
+fi
 # ...and the paired fail-CLOSED half for each: a helper in the SECOND heredoc body, and
 # a helper the subshell actually runs.
 #
@@ -1309,22 +1497,61 @@ done
 # why the block half is here: a walker that simply stopped reading heredocs would
 # satisfy the allow half above on its own. Pinning the unchanged direction is what
 # makes the changed one mean something.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_two_hd_block='echo "${X:-$(cat <<A <<B
 first
 A
 python3 '"$LIB"'/lease_slot.py
 B
 )}"'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _sub_shell_block='echo "$( (python3 '"$LIB"'/lease_slot.py) )"'
 # ...and the OUTER body of the nested-heredoc shape above, which is still data.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 _pe_nest_hd_block='echo "${X:-$(cat <<A $(printf "" <<B
 B
 )
 python3 '"$LIB"'/lease_slot.py
 A
 )}"'
+# ...paired fail-CLOSED halves in the EXACT trigger shapes: the M1 helper sits
+# in a second $(...) right after the heredoc $(...) closes inside the same
+# default word (heredoc body, apostrophe, and bare `((` all preserved), and
+# the M2 helper runs after the literal `(}` inside the outer $(...). Both
+# helpers really execute -- proven by the premise loop below, not assumed.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_pe_arith_lit_block='echo "${X:-(( $(cat <<EOF
+it'"'"'s data
+EOF
+)$(python3 '"$LIB"'/lease_slot.py))}" "["'
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_pe_span_depth_block='echo "$(echo ${X:-$(printf %s }) (}; python3 '"$LIB"'/lease_slot.py)"'
+# M3's fail-CLOSED half: same mixed shape, but a real helper command sits after
+# B's terminator inside the outer $(...) -- it must actually RUN (premise loop)
+# and still block.
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
+_m3_block='echo "$(cat <<EOF <<'"'"'B'"'"'
+E\
+OF
+it'"'"'s data
+B
+python3 '"$LIB"'/lease_slot.py
+)" "["'
+# Premise for the three new BLOCK fixtures: the helper must actually RUN -- a
+# classifier BLOCK on a command whose helper is literal text asserts nothing (an
+# earlier `(python3 …)` shape passed BLOCK while printing the name). Prove bash
+# syntax and stub reachability before trusting the verdict.
+for _c in "$_pe_arith_lit_block" "$_pe_span_depth_block" "$_m3_block"; do
+  if ! bash -n <<<"$_c" 2>/dev/null; then
+    no "#802 block-fixture premise" "bash rejected: $_c"
+  elif ! cs_runs "$_c"; then
+    no "#802 block-fixture premise" "helper never runs: ${_c//$'"'"'\n'"'"'/ }"
+  else
+    ok "#802 block-fixture premise: helper really runs"
+  fi
+done
 for _c in "$_pe_hd_block" "$_f1_cmdpos" "$_pe_two_hd_block" "$_pe_nest_hd_block" \
-          "$_sub_shell_block"; do
+          "$_sub_shell_block" "$_pe_arith_lit_block" "$_pe_span_depth_block" "$_m3_block"; do
   got=$(verdict "$_c")
   if is_real_block "$got"; then
     ok "#802 ...and the invocation it hides still blocks: ${_c//$'"'"'\n'"'"'/ }"
@@ -1339,6 +1566,7 @@ done
 # late: HEAD already blocks the LITERAL one by the same reasoning, and only the glob
 # spelling changed. Pinned in BOTH spellings so a later "fix" for one has to face the
 # other (#802).
+# shellcheck disable=SC2016  # literal payload fed to the classifier (#802)
 for _c in 'echo $(true) '"$LIB"'/lease_slot.py' 'echo $(true) '"$LIB"'/lease_slo?.py'; do
   got=$(verdict "$_c")
   if is_real_block "$got"; then

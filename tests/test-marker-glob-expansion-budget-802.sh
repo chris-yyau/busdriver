@@ -1501,11 +1501,22 @@ EOF
 # shellcheck disable=SC2016  # literal payloads for classifier (#802)
 _pr_legacy_br='echo "${X:-$(echo $[1 << 2]
 )}" "["'
-# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+# shellcheck disable=SC2016,SC1003  # literal payloads for classifier (#802)
 _pr_esc_q='echo "${X:-\'"'"'}" "["'
 # shellcheck disable=SC2016  # literal payloads for classifier (#802)
 _pr_bt_brace='echo "${X:-`echo }`}" "["'
-for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" "$_pr_bt_brace"; do
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_nested_paren='echo "$( (( $( (true); cat <<EOF >/dev/null
+it'"'"'s data
+EOF
+printf 1) + 1 )); printf OK)" "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_arith='echo "${X:-$( (( $(cat <<EOF >/dev/null
+it'"'"'s data
+EOF
+printf 1) + 1 )); printf OK)}" "["'
+for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
+          "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

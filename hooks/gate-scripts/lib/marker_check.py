@@ -2537,9 +2537,10 @@ def _strip_cmd_subst(s, join_only=False):
             # NAMED APART from the outer counter deliberately: spelled `arith` too, it
             # rebound that int to a list, so the next `((` ran `list += 1` and the
             # classifier died with a TypeError. A crash is not a verdict (#802).
-            # 'cmd' sentinels suspend arith while a nested `$()`/backtick runs — a
-            # heredoc inside that nested command is real command text, not a shift
-            # (#802 PR HIGH: `$(( $(cat <<EOF ...)`).
+            # 'cmd' sentinels suspend arith while a nested `$()` runs — a heredoc
+            # inside that nested command is real command text, not a shift (#802).
+            # `_opstack` pairs each depth unit so bare `(true)` cannot pop 'cmd'.
+            _opstack = (['A', 'A'] if _ar0 else [])
             while i < n:
                 ch = s[i]
                 if _jout is not None:
@@ -2592,6 +2593,7 @@ def _strip_cmd_subst(s, join_only=False):
                         q = ''
                         if _inner_arith:
                             _inner_arith.append('cmd')
+                        _opstack.append('S')
                         depth += 1
                         i += 2
                         continue
@@ -2677,6 +2679,7 @@ def _strip_cmd_subst(s, join_only=False):
                 if s.startswith('$((', i):   # ABOVE the tick branch: inside a backtick
                     depth += 2               # body this seeds the arith stack too, and
                     _inner_arith.append(depth)   # without it the `<<` of
+                    _opstack.extend(('A', 'A'))
                     i += 3                       # `\`echo $(( 1 << 2\n))\`` read as a
                     ws = True                    # heredoc and ate the closer (#802).
                     continue
@@ -2691,6 +2694,7 @@ def _strip_cmd_subst(s, join_only=False):
                 if s.startswith('$(', i):
                     if _inner_arith:
                         _inner_arith.append('cmd')
+                    _opstack.append('S')
                     depth += 1
                     i += 2
                     ws = True
@@ -2698,9 +2702,11 @@ def _strip_cmd_subst(s, join_only=False):
                 if ws and s.startswith('((', i):
                     depth += 2
                     _inner_arith.append(depth)
+                    _opstack.extend(('A', 'A'))
                     i += 2
                     continue
                 if ch == '(':
+                    _opstack.append('P')
                     depth += 1
                     i += 1
                     ws = True
@@ -2710,9 +2716,12 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     if _qstack and depth == _qstack[-1][0]:
                         q = _qstack.pop()[1]
-                    if _inner_arith and _inner_arith[-1] == 'cmd':
+                    _kind = _opstack.pop() if _opstack else 'P'
+                    # Only a `$()` closer releases the arith 'cmd' hold — not `(true)` (#802).
+                    if _kind == 'S' and _inner_arith and _inner_arith[-1] == 'cmd':
                         _inner_arith.pop()
-                    elif _inner_arith and isinstance(_inner_arith[-1], int) \
+                    elif _kind == 'A' and _inner_arith \
+                            and isinstance(_inner_arith[-1], int) \
                             and depth < _inner_arith[-1]:
                         _inner_arith.pop()
                     if depth == 0 and not tick:
@@ -2771,6 +2780,10 @@ def _strip_cmd_subst(s, join_only=False):
             # expansion around it.
             _nsub = 0
             _narith = 0
+            # When `$()` opens under live arith, record the arith depth at entry.
+            # Heredoc is suppressed only while `_narith` exceeds that floor, so a
+            # fresh inner `$((` still treats `<<` as a shift (#802).
+            _narith_floor = []
             # 'S' for a `$(`, 'P' for a bare subshell paren opened inside one. A plain
             # `_nsub` counted only `$(` but decremented on EVERY `)`, so the subshell
             # closer in `${X:-$( (true); cat <<EOF ... EOF )}` zeroed it and the heredoc
@@ -2815,6 +2828,8 @@ def _strip_cmd_subst(s, join_only=False):
                         # rule and same `_qstack` the `$()` walker states (#802).
                         _qstack.append((len(_pstack), q))
                         q = ''
+                        if _narith:
+                            _narith_floor.append(_narith)
                         _pstack.append('S')
                         _nsub += 1
                         i += 2
@@ -2889,9 +2904,13 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 3 if s.startswith('$((', i) else 2
                     continue
                 if _narith and s.startswith('))', i):
-                    _narith -= 1
-                    i += 2
-                    continue
+                    # Only close arith when deeper than the `$()`-suspend floor.
+                    # Otherwise `$(echo 1))` is two command closers, not `))` (#802).
+                    _floor = _narith_floor[-1] if _narith_floor else 0
+                    if _narith > _floor:
+                        _narith -= 1
+                        i += 2
+                        continue
                 # Legacy `$[1 << 2]`: shift, not heredoc — same rule as `$()` `_span` (#802).
                 if s.startswith('$[', i) and _dollar_run_is_even(s, i):
                     _dbrack.append(len(_pstack))
@@ -2902,6 +2921,8 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     continue
                 if s.startswith('$(', i):
+                    if _narith:
+                        _narith_floor.append(_narith)
                     _pstack.append('S')
                     _nsub += 1
                     i += 2
@@ -2913,6 +2934,8 @@ def _strip_cmd_subst(s, join_only=False):
                 if ch == ')' and _pstack:
                     if _pstack.pop() == 'S':
                         _nsub -= 1
+                        if _narith_floor:
+                            _narith_floor.pop()
                     i += 1
                     if _qstack and len(_pstack) == _qstack[-1][0]:
                         q = _qstack.pop()[1]
@@ -2940,7 +2963,11 @@ def _strip_cmd_subst(s, join_only=False):
                         _nhd = [p for p in _nhd if p[1] != len(_pstack)]
                         continue
                 _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
-                if _nsub and not _narith and not _val_text and not _dbrack_here:
+                # Suppress heredoc only while arith is deeper than the floor recorded
+                # when the current `$()` nest suspended it (#802).
+                _floor = _narith_floor[-1] if _narith_floor else 0
+                _arith_here = _narith > _floor
+                if _nsub and not _arith_here and not _val_text and not _dbrack_here:
                     if s.startswith('<<<', i):   # a herestring is a WORD, not a body
                         i += 3
                         continue

@@ -2000,6 +2000,49 @@ def _is_c_option(tok):
             and 'c' in tok[1:])
 
 
+# env(1) options that take a value (next token, or attached remainder). Shared
+# by `_env_split_string_payloads` and `_env_argv_may_ifs_split`. Without this
+# the walk mistook that value for the utility / stopped the assignment scan
+# early (`env -u FOO -S …`, `env -iu X GIT_DIR=$D …`). -P is macOS search-path.
+# -S is split-string: first value-taking letter owns the rest of the cluster
+# (`-S"git merge topicu"` must not scan trailing `u` as `-u`; `-u"S…"` must
+# not treat owned data as `-S`).
+_ENV_VALUE_LONG = frozenset(('--unset', '--chdir', '--argv0'))
+_ENV_VALUE_SHORT = frozenset(('-u', '-C', '-P', '-a', '-S'))
+
+
+def _env_first_value_opt_index(tok):
+    """Body index of the first value-taking short letter in `tok`, or None.
+
+    Shared ownership walk for `_env_opt_takes_separate_value` and
+    `_env_S_payload`: the first match owns every later character as its
+    attached payload (or, when last, the next argv word)."""
+    if not tok.startswith('-') or tok.startswith('--') or len(tok) < 2:
+        return None
+    for idx, ch in enumerate(tok[1:]):
+        if '-' + ch in _ENV_VALUE_SHORT:
+            return idx
+    return None
+
+
+def _env_opt_takes_separate_value(tok):
+    """True when an env(1) option token consumes the NEXT argv word as its value.
+
+    Left-to-right, same as `_takes_separate_value`: the first value-taking
+    letter owns the rest. Last in the cluster → next token (`-iu NAME`,
+    `-iS cmd`). Else the remainder is attached payload (`-uNAME`, `-Scmd`)
+    and must not be scanned as further option letters. Long `--opt=val`
+    never consumes separately."""
+    if tok.startswith('--'):
+        if '=' in tok:
+            return False
+        return tok in _ENV_VALUE_LONG
+    idx = _env_first_value_opt_index(tok)
+    if idx is None:
+        return False
+    return idx == len(tok) - 2
+
+
 def _env_split_string_payloads(seg):
     r"""Commands packed into an `env -S` / `env --split-string=` argument.
 
@@ -2008,6 +2051,11 @@ def _env_split_string_payloads(seg):
     wrapper walk in `_command_argv` strips `env`, then consumes the packed string
     as an ordinary option-argument, so the command word inside was never seen at
     all — the argv came back empty and the segment was skipped (fail-OPEN).
+
+    Nested `-S` is real (`env -S '-Sprintf ok'` → ok): the -S string is re-split
+    and walked as env argv again, and after -S the remaining words are the
+    utility's arguments (`env -Sgit merge topic` → `git merge topic`). The same
+    ownership walk drives both the outer scan and that insertion.
     """
     toks = _tokenize(seg)
     # `env` need not be token zero: `command env -S …`, `X=1 env -S …`,
@@ -2018,49 +2066,95 @@ def _env_split_string_payloads(seg):
                   if t.rsplit('/', 1)[-1] == 'env'), None)
     if start is None:
         return []
+    return _env_commands_from_opt_argv(toks[start + 1:], _depth=0)
+
+
+def _env_commands_from_opt_argv(toks, _depth=0):
+    """Walk tokens as env(1) options; return command strings produced by -S.
+
+    Depth-bounded to match `_all_chunks`. After a -S value is consumed, env
+    treats the rest of argv as that command's arguments (verified), so this
+    walk returns rather than continuing to scan later tokens as env options.
+    Non-S options (`-u`, `-i`, …) are skipped with the shared ownership walk;
+    a trailing utility after those options is still the -S-inserted command
+    (`env -S '-u X git merge topic'`).
+    """
+    if _depth >= 6 or not toks:
+        return []
     out = []
-    # env options that take a SEPARATE value. Without this the walk mistook that
-    # value for the utility and stopped early, so `env -u FOO -S '<cmd>'` never
-    # reached the -S and the packed command went uncounted (fail-OPEN).
-    # -P is the macOS utility-search-path option; omitting it stopped the walk
-    # on its value and the -S payload was never reached (fail-OPEN).
-    value_opts = {'-u', '--unset', '-C', '--chdir', '-P', '-a', '--argv0'}
     skip_value = False
-    for k, a in enumerate(toks[start + 1:], start=start + 1):
+    k = 0
+    while k < len(toks):
+        a = toks[k]
         if skip_value:
             skip_value = False
+            k += 1
             continue
-        # env's own options END at `--` or at the first non-option word (the
-        # utility). Scanning past that read the UTILITY's arguments as env
-        # options, so `env -- printf '%s' -S '<cmd>'` — which only prints prose
-        # — was extracted as an executable payload and blocked.
-        if a == '--' or not a.startswith('-'):
+        if a == '--':
+            k += 1
             break
-        if a in value_opts:
-            skip_value = True
-            continue
+        if not a.startswith('-') or a == '-':
+            break
+        # Attached / separate / long -S all share one insertion path: extract the
+        # payload string via `_env_S_payload`, then split-string tokenize it the
+        # same way env(1) does before walking nested options (`-S"-u X git …"`
+        # must match `-S "-u X git …"`). Never insert the raw attached blob as a
+        # single argv word — that skipped ownership and missed the utility.
         payload = _env_S_payload(a, toks, k)
         if payload is not None:
-            out.append(payload)
+            if a == '--split-string' or _env_opt_takes_separate_value(a):
+                rest = toks[k + 2:]
+            else:
+                rest = toks[k + 1:]
+            out.extend(_env_commands_from_S_insertion(
+                _tokenize(payload) + list(rest), _depth))
+            return out
+        if a == '--split-string':
+            # Operand missing: nothing to insert.
+            return out
+        if _env_opt_takes_separate_value(a):
+            skip_value = True
+            k += 1
+            continue
+        k += 1
+    # Trailing utility belongs to an -S insertion (`env -S '-u X git merge'`),
+    # not to the outer `env` argv (`env git merge` must stay a non-S miss).
+    if _depth > 0 and k < len(toks):
+        # shlex.join keeps quote boundaries (`bash -c 'git merge …'`); a bare
+        # space-join would flatten the -c script into separate argv words.
+        out.append(shlex.join(toks[k:]))
     return out
+
+
+def _env_commands_from_S_insertion(toks, _depth):
+    """Process argv inserted by env -S (may begin with further env options)."""
+    if not toks:
+        return []
+    if toks[0].startswith('-') and toks[0] not in ('-', '--'):
+        return _env_commands_from_opt_argv(toks, _depth + 1)
+    # Re-quote via shlex.join so a tokenized payload round-trips. A bare
+    # space-join drops quotes (`bash -c 'git merge topic'` → `bash -c git
+    # merge topic`) and later scans miss the merge inside -c (#838 cycle-E).
+    return [shlex.join(toks)]
 
 
 def _env_S_payload(a, toks, k):
     """The command string packed into an `env` split-string option `a` at index
     `k`, or None when `a` is not such an option (or its payload is absent). Forms:
-    `--split-string=<cmd>`, a short-option cluster containing S (`-S<cmd>` /
-    `-iS<cmd>` attached, or `-S` with the payload in the NEXT token), and
-    `--split-string <cmd>`. Split out of _env_split_string_payloads purely to
-    reduce its complexity; behavior unchanged."""
+    `--split-string=<cmd>`, a short cluster whose first value-taking letter is S
+    (`-S<cmd>` / `-iS<cmd>` attached, or `-S` / `-iS` with the next token), and
+    `--split-string <cmd>`. Uses the same ownership walk as
+    `_env_opt_takes_separate_value` — an earlier `-u`/`-C`/… owns later letters
+    as data, so `-u"S…"` is not split-string.
+
+    Callers that need full env -S argv insertion (nested -S, trailing utility
+    args) must use `_env_commands_from_opt_argv` / `_env_split_string_payloads`.
+    """
     if a.startswith('--split-string='):
         return a.split('=', 1)[1]
-    if a.startswith('-') and not a.startswith('--') and 'S' in a[1:]:
-        # Short-option cluster containing S. The payload is either ATTACHED
-        # (everything after the S — `env -S"cmd"` tokenizes to `-Scmd`, and
-        # `env -iS"cmd"` to `-iScmd`, so S need not be first) or the NEXT
-        # token when the cluster ends at the S. Reading only the next token
-        # for an attached form skipped the payload entirely (fail-OPEN).
-        attached = a[a.index('S', 1) + 1:]
+    idx = _env_first_value_opt_index(a)
+    if idx is not None and a[1 + idx] == 'S':
+        attached = a[2 + idx:]
         if attached:
             return attached
         return toks[k + 1] if k + 1 < len(toks) else None
@@ -3392,19 +3486,155 @@ def _c_operand_may_ifs_split(raw):
     return _brace_expands(active) or _glob_expands(active)
 
 
+def _assignment_value_may_ifs_split(raw):
+    """True iff an env-utility `NAME=val` ARG may IFS-split into >1 argv words.
+
+    Analyze the COMPLETE raw assignment token so quote context spans '=' —
+    `"GIT_DIR=$D"` is one word, but `"GIT_DIR=$@"` / `"GIT_DIR=${a[@]}"` still
+    multi-word inside double quotes (#858 Codex). Bare shell assignment
+    prefixes are NOT checked here — bash does not word-split those values."""
+    if raw is None or '=' not in raw:
+        return True
+    return _c_operand_may_ifs_split(raw)
+
+
+def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
+    """True when env(1) option/assignment argv may IFS-split an assignment value.
+
+    Same ownership walk as `_env_commands_from_opt_argv`: `-S` / `--split-string`
+    payloads are split-string tokenized and scanned (attached `-SGIT_DIR=$D …`
+    must not be mistaken for an `ENV_ASSIGN` name), nested `-S` recurses, and
+    non-S value options (`-u`, `-iu`, …) skip their operand so a following
+    `GIT_DIR=$D` is still seen."""
+    if _depth >= 6 or not toks:
+        return False
+    skip_value = False
+    k = 0
+    while k < len(toks):
+        a = toks[k]
+        if skip_value:
+            skip_value = False
+            k += 1
+            continue
+        if a == '--':
+            k += 1
+            continue
+        if a.startswith('-') and a not in ('-', '--'):
+            # Before ENV_ASSIGN: `-SGIT_DIR=$D…` matches ^[^=]+= but is -S.
+            payload = _env_S_payload(a, toks, k)
+            if payload is not None:
+                if a == '--split-string' or _env_opt_takes_separate_value(a):
+                    rest = list(toks[k + 2:])
+                    rest_raws = (list(raws[k + 2:])
+                                 if raws is not None else None)
+                else:
+                    rest = list(toks[k + 1:])
+                    rest_raws = (list(raws[k + 1:])
+                                 if raws is not None else None)
+                inserted = _tokenize(payload) + rest
+                ins_raws = _raw_tokens(payload)
+                if ins_raws is not None and rest_raws is not None:
+                    combined_raws = list(ins_raws) + rest_raws
+                elif ins_raws is not None and not rest:
+                    combined_raws = list(ins_raws)
+                else:
+                    combined_raws = None
+                return _env_argv_may_ifs_split(
+                    inserted, combined_raws, _depth + 1)
+            if a.startswith('--') or not (
+                    _ASSIGN_TOK_RE.match(a) or _ENV_ASSIGN_TOK_RE.match(a)):
+                # Shared with `_env_split_string_payloads`: clustered `-iu X`
+                # consumes X so the following GIT_DIR=$D assignment is still
+                # scanned (#858 / #838 combined-option bypass).
+                if _env_opt_takes_separate_value(a):
+                    skip_value = True
+                k += 1
+                continue
+        if _ASSIGN_TOK_RE.match(a) or _ENV_ASSIGN_TOK_RE.match(a):
+            # ANY env assignment can inject words — not only GIT_* scope.
+            raw = raws[k] if raws is not None and k < len(raws) else a
+            if _assignment_value_may_ifs_split(raw):
+                return True
+            k += 1
+            continue
+        break
+    return False
+
+
+def _scope_env_may_ifs_split(seg):
+    """True when an `env` utility assignment ARG may IFS-split a merge in.
+
+    Bare `GIT_DIR=$D git …` is a shell assignment prefix — no word-split — so
+    it is out of scope. `env GIT_DIR=$D git branch`, `env -u X GIT_DIR=$D git
+    branch`, `env -- GIT_DIR=$D git branch`, nested `env env …`, ordinary
+    `env X=$D git branch`, and packed `env -S …` / `env -S"…"` insertions ARE
+    argv words — an unquoted value with IFS whitespace injects merge
+    (#858 Codex / #838).
+
+    Only an `env` that appears BEFORE any non-assignment git-shaped token
+    counts: `git log -- env GIT_DIR=$D` places `env` after the executable as a
+    path operand. Assignment values ending in `/git` (`X=/git`) are not
+    executables. `_any_git_c_may_ifs_split` still requires the segment to run
+    git (directly or via `-S` packing) before treating this as a refuse."""
+    toks = toks_once(seg)
+    raws = _raw_tokens(seg)
+
+    def _nonassign_git_before(idx):
+        for t in toks[:idx]:
+            if _ASSIGN_TOK_RE.match(t) or _ENV_ASSIGN_TOK_RE.match(t):
+                continue
+            if _is_exe(t, 'git'):
+                return True
+        return False
+
+    for start, tok in enumerate(toks):
+        # Same assignment-first order as `_env_assignment_toks`: basename of
+        # `X=/env` is `env`, but a shell assignment is not the env(1) wrapper
+        # (#858 Codex false-positive over-block on `X=/env GIT_DIR=$D git log`).
+        if _ASSIGN_TOK_RE.match(tok) or _ENV_ASSIGN_TOK_RE.match(tok):
+            continue
+        if _bn_tok(tok) != 'env':
+            continue
+        if _nonassign_git_before(start):
+            continue
+        sub_raws = raws[start + 1:] if raws is not None else None
+        if _env_argv_may_ifs_split(toks[start + 1:], sub_raws, _depth=0):
+            return True
+    return False
+
+
+def _env_split_packs_git(seg):
+    """True when an `env -S` insertion resolves to a git utility argv."""
+    for packed in _env_split_string_payloads(seg):
+        argv, _raw = _command_argv(packed, 'git', with_raw=True,
+                                   wrapper_operands=True)
+        if argv and _is_exe(argv[0], 'git'):
+            return True
+    return False
+
+
 def _any_git_c_may_ifs_split(cmd):
     """True when any pre-subcommand valued git-global may IFS-split.
 
     Name kept for the gate's import. Covers every `_GIT_VALUE_OPTS` spelling
     (`-C`/`-c`/`--git-dir`/…, attached `-c<val>`, attached `--git-dir=$D`):
     unquoted `--git-dir=$D` with D='.git merge' becomes `--git-dir=.git merge`
-    the same way unquoted `-c $CFG` injects merge (#858 Codex)."""
+    the same way unquoted `-c $CFG` injects merge (#858 Codex). Also covers
+    outer `env -S` packing where `_command_argv` is empty but the insertion
+    runs git with an IFS-splitting assignment (#838)."""
     for chunk in _all_chunks(cmd):
         for _op, seg in split_segments(chunk):
             argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
                                            wrapper_operands=True)
-            if not argv or not _is_exe(argv[0], 'git'):
+            runs_git = bool(argv) and _is_exe(argv[0], 'git')
+            if not runs_git:
+                # Packed `env -S "GIT_DIR=$D git …"`: utility is inside -S.
+                if (_scope_env_may_ifs_split(seg)
+                        and _env_split_packs_git(seg)):
+                    return True
                 continue
+            if _scope_env_may_ifs_split(seg):
+                return True
             _sub, sub_idx = _git_subcommand(argv)
             if sub_idx is None:
                 sub_idx = len(argv)

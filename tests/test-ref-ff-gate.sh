@@ -1818,6 +1818,93 @@ run_gate "...and an unquoted --work-tree with only a read-safe word fails closed
     block 'git --work-tree=$W log' "cannot be resolved"
 run_gate "...while a quoted --work-tree with only a read-safe word allows" \
     allow 'git --work-tree="$W" log'
+run_gate "...and an unquoted env GIT_DIR value likewise fails closed" \
+    block 'env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while a quoted env GIT_DIR with only builtins allows" \
+    allow 'env GIT_DIR="$D" git branch'
+# Packed env -S must use the same IFS path as plain env (#838 cycle-D HIGH).
+# Fail-closed git_ref_op alone is not acceptance — refuse text is the IFS arm.
+run_gate "...and separate env -S with unquoted GIT_DIR likewise fails closed" \
+    block 'env -S "GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and attached env -S with unquoted GIT_DIR likewise fails closed" \
+    block 'env -S"GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and env -S inserting -u before unquoted GIT_DIR fails closed" \
+    block 'env -S "-u X GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...and attached env -S inserting -iu before unquoted GIT_DIR fails closed" \
+    block 'env -S"-iu X GIT_DIR=$D git branch"' "cannot be resolved"
+run_gate "...while separate env -S with quoted GIT_DIR allows" \
+    allow 'env -S '\''GIT_DIR="$D" git branch'\'''
+run_gate "...and env -u before an unquoted GIT_DIR likewise fails closed" \
+    block 'env -u X GIT_DIR=$D git branch' "cannot be resolved"
+# Clustered short options: env reads `-iu X` as `-i -u X` (#858 Codex HIGH).
+run_gate "...and clustered env -iu before an unquoted GIT_DIR fails closed" \
+    block 'env -iu X GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while clustered env -iu before a quoted GIT_DIR allows" \
+    allow 'env -iu X GIT_DIR="$D" git branch'
+# Attached -S payload is owned by S: trailing `u` is not `-u` (#858 Codex HIGH).
+# Packed `env -S` + merge is the alongside-merge arm (not the IFS-split text).
+run_gate "...and attached env -S packing merge is still a merge refuse" \
+    block 'env -S"git merge topicu"' "ALONGSIDE a merge/pull"
+# First value-taking letter owns the rest: attached `-u"S…"` is unset data, not `-S`.
+run_gate "...while attached env -u data that looks like -S is not a merge refuse" \
+    allow 'env -u"Sgit merge topicu" printf ok'
+run_gate "...and separate env -u data likewise allows" \
+    allow 'env -u "Sgit merge topicu" printf ok'
+# Nested -S insertion: env re-splits the string and walks options again (macOS/BSD).
+run_gate "...and nested env -S packing merge is still a merge refuse" \
+    block 'env -S "-Sgit merge --ff-only topic"' "ALONGSIDE a merge/pull"
+# Attached -S payload is split-string tokenized before option walk (same as separate).
+run_gate "...and attached env -S inserting -u before merge is still a merge refuse" \
+    block 'env -S"-u X git merge topicu"' "ALONGSIDE a merge/pull"
+run_gate "...and attached env -S inserting -iu before merge is still a merge refuse" \
+    block 'env -S"-iu X git merge topicu"' "ALONGSIDE a merge/pull"
+run_gate "...and separate env -S inserting -u before merge likewise refuses" \
+    block 'env -S "-u X git merge topicu"' "ALONGSIDE a merge/pull"
+# Quote boundaries must survive -S tokenize/rejoin (#838 cycle-E HIGH).
+run_gate "...and env -S packing bash -c quoted merge is still a merge refuse" \
+    block 'env -S "bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+run_gate "...and attached env -S packing bash -c quoted merge is still a merge refuse" \
+    block 'env -S"bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+run_gate "...and env -S inserting -u before bash -c quoted merge refuses" \
+    block 'env -S "-u X bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+run_gate "...and env -- before an unquoted GIT_DIR likewise fails closed" \
+    block 'env -- GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...and nested env with an unquoted GIT_DIR likewise fails closed" \
+    block 'env env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...while a wholly quoted env assignment with only builtins allows" \
+    allow 'env "GIT_DIR=$D" git branch'
+# "$@" / "${a[@]}" stay multi-word inside double quotes — not a one-word shortcut.
+run_gate "...while a wholly quoted env assignment with \$@ fails closed" \
+    block 'env "GIT_DIR=$@" git branch' "cannot be resolved"
+run_gate "...and a wholly quoted env assignment with \${a[@]} fails closed" \
+    block 'env "GIT_DIR=${a[@]}" git branch' "cannot be resolved"
+# `env` after git's `--` is a path operand, not a wrapper (#858 Codex).
+run_gate "...while env after git path-separator is not a wrapper refuse" \
+    allow 'git log -- env GIT_DIR=$D'
+# Assignment values ending in /git must not be mistaken for the executable.
+run_gate "...and env X=/git before an unquoted GIT_DIR still fails closed" \
+    block 'env X=/git GIT_DIR=$D git branch' "cannot be resolved"
+# `command -p` must not swallow a nested env as an option operand.
+run_gate "...and command -p env with unquoted GIT_DIR still fails closed" \
+    block 'command -p env GIT_DIR=$D git branch' "cannot be resolved"
+# timeout wrappers must still see nested env (no arity miss on --signal= / -v).
+run_gate "...and timeout --signal=TERM env with unquoted GIT_DIR fails closed" \
+    block 'timeout --signal=TERM 5 env GIT_DIR=$D git branch' "cannot be resolved"
+run_gate "...and timeout -v env with unquoted GIT_DIR fails closed" \
+    block 'timeout -v 5 env GIT_DIR=$D git branch' "cannot be resolved"
+# Ordinary env assignments (not only GIT_*) can inject merge via IFS-split.
+run_gate "...and env X=\$D with only builtins fails closed" \
+    block 'env X=$D git branch' "cannot be resolved"
+run_gate "...while env X=\"\$D\" with only builtins allows" \
+    allow 'env X="$D" git branch'
+# Bare shell assignment prefixes do NOT word-split (bash assignment grammar).
+run_gate "...and a bare unquoted GIT_DIR prefix with only builtins allows" \
+    allow 'GIT_DIR=$D git log'
+run_gate "...and a bare quoted GIT_DIR prefix with only builtins allows" \
+    allow 'GIT_DIR="$D" git log'
+# Assignment values ending in /env are still assignments — not env(1) (#858 FP).
+run_gate "...and a bare X=/env assignment before GIT_DIR is not env-wrapper refuse" \
+    allow 'X=/env GIT_DIR=$D git log'
 run_gate "...and a relative one with only builtins likewise allows" \
     allow "git -C sub worktree list"
 run_gate "...and a chained -C with only builtins likewise allows" \

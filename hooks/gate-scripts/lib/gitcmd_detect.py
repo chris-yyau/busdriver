@@ -2087,6 +2087,87 @@ _ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n;|&<>"\'\\*?[]{}')
 _ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
 
 
+def _raw_has_expandable_dollar(raw):
+    """True when bash expands `$` / `` ` `` in `raw` (unquoted or double-quoted).
+
+    Distinct from `_active_spelling`'s `active` string, which only emits unquoted
+    characters — so `"$CFG"` looks inert there while the shell still expands it.
+    Single-quoted / ANSI-C / escaped dollars stay False (#838 PR outer-quote).
+    """
+    if raw is None:
+        return True
+    i, n, quote = 0, len(raw), None
+    while i < n:
+        c = raw[i]
+        if quote != "'" and c == '\\':
+            i += 2
+            continue
+        if quote is None and c == '$' and i + 1 < n and raw[i + 1] in '\'"':
+            quote = "$'" if raw[i + 1] == "'" else '"'
+            i += 2
+            continue
+        if quote is None and c in '\'"':
+            quote = c
+            i += 1
+            continue
+        if quote is not None and c == quote[-1]:
+            quote = None
+            i += 1
+            continue
+        if quote not in ("'", "$'") and c in '`$':
+            return True
+        i += 1
+    return False
+
+
+def _env_S_operand_raw(a, k, raws):
+    """Outer-shell raw spelling of the -S / --split-string operand at index `k`."""
+    if raws is None:
+        return None
+    if a.startswith('--split-string='):
+        return raws[k] if k < len(raws) else None
+    if a == '--split-string' or _env_opt_takes_separate_value(a):
+        return raws[k + 1] if k + 1 < len(raws) else None
+    return raws[k] if k < len(raws) else None
+
+
+def _env_S_ins_raws(payload, outer_raw=None):
+    """Per-token raws for a -S-inserted argv, preserving outer-shell expansions.
+
+    Re-lexing only the decoded `payload` drops enclosing double quotes, so
+    `env -S "git -c 'x.y=$CFG' branch"` looks single-quote-literal while the
+    outer shell still expands `$CFG` into the string env -S parses (#838 PR
+    outer-quote HIGH). Double-quoted payload tokens (`\"x.y=$CFG\"`) still have
+    expandable `$` in their local raw, but `_active_spelling` omits
+    double-quoted dollars from `active`, so rejoin would re-hide them — expose
+    those bare too (#838 dq-S HIGH). Single-quoted local `$` stays quoted when
+    the outer spelling is proven inert (or unavailable and not double-quoted).
+    """
+    local = _raw_tokens(payload)
+    if local is None:
+        return None
+    toks = _tokenize(payload)
+    if len(toks) != len(local):
+        return None
+    # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local.
+    if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
+        return local
+    live_outer = (outer_raw is not None
+                  and _raw_has_expandable_dollar(outer_raw))
+    out = []
+    for t, r in zip(toks, local):
+        if '$' not in t and '`' not in t:
+            out.append(r)
+            continue
+        # Live outer, or local double-quoted `$` / backtick (expandable in the
+        # payload-local raw while `_active_spelling` would still hide it).
+        if live_outer or _raw_has_expandable_dollar(r):
+            out.append(t)
+        else:
+            out.append(r)
+    return out
+
+
 def _env_S_token_needs_quote(tok, raw=None):
     """True when a tokenized -S argv word must be re-quoted on rejoin.
 
@@ -2175,9 +2256,9 @@ def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
                 rest_raws = (list(raws[k + 1:])
                              if raws is not None else None)
             inserted = _tokenize(payload) + rest
-            # Provenance for the -S string itself (quoted `$` inside the
-            # payload must survive rejoin; #838 quoted-dollar).
-            ins_raws = _raw_tokens(payload)
+            # Outer-shell spelling of the -S operand carries quote context that
+            # `_raw_tokens(payload)` alone drops (#838 PR outer-quote HIGH).
+            ins_raws = _env_S_ins_raws(payload, _env_S_operand_raw(a, k, raws))
             if ins_raws is not None and rest_raws is not None:
                 combined_raws = list(ins_raws) + rest_raws
             elif ins_raws is not None and not rest:
@@ -3612,7 +3693,8 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
                     rest_raws = (list(raws[k + 1:])
                                  if raws is not None else None)
                 inserted = _tokenize(payload) + rest
-                ins_raws = _raw_tokens(payload)
+                ins_raws = _env_S_ins_raws(
+                    payload, _env_S_operand_raw(a, k, raws))
                 if ins_raws is not None and rest_raws is not None:
                     combined_raws = list(ins_raws) + rest_raws
                 elif ins_raws is not None and not rest:
@@ -3678,11 +3760,51 @@ def _scope_env_may_ifs_split(seg):
     raws = _raw_tokens(seg)
 
     def _nonassign_git_before(idx):
-        for t in toks[:idx]:
+        """True if a real git executable appears before toks[idx].
+
+        Value-taking env option operands (`env -u git …`) are not executables
+        (#838 PR unset-git HIGH).
+        """
+        skip_value = False
+        i = 0
+        while i < idx:
+            t = toks[i]
+            if skip_value:
+                skip_value = False
+                i += 1
+                continue
             if _ASSIGN_TOK_RE.match(t) or _ENV_ASSIGN_TOK_RE.match(t):
+                i += 1
                 continue
             if _is_exe(t, 'git'):
                 return True
+            if _bn_tok(t) == 'env':
+                # Walk this env's options so `-u git` is not a git command.
+                i += 1
+                while i < idx:
+                    a = toks[i]
+                    if skip_value:
+                        skip_value = False
+                        i += 1
+                        continue
+                    if a == '--':
+                        i += 1
+                        break
+                    if a.startswith('-') and a not in ('-', '--'):
+                        if _env_S_payload(a, toks, i) is not None:
+                            if (a == '--split-string'
+                                    or _env_opt_takes_separate_value(a)):
+                                i += 2
+                            else:
+                                i += 1
+                            break
+                        if _env_opt_takes_separate_value(a):
+                            skip_value = True
+                        i += 1
+                        continue
+                    break
+                continue
+            i += 1
         return False
 
     for start, tok in enumerate(toks):

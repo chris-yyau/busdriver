@@ -1889,6 +1889,12 @@ run_gate "...and env -S packing a literal -c brace value does not IFS-refuse" \
 # Quoted literal $ in -S argv must stay quoted on rejoin (#838 quoted-dollar).
 run_gate "...and env -S packing a quoted literal -c dollar value does not IFS-refuse" \
     allow 'env -S '\''git -c '\''\''\'\'''\''x.y=$CFG'\''\''\'\'''\'' branch'\'''
+# Outer double quotes make $CFG live even with inner single quotes (#838 PR outer-quote).
+run_gate "...and env -S with outer-double-quoted -c dollar still fails closed" \
+    block 'env -S "git -c '\''x.y=$CFG'\'' branch"' "cannot be resolved"
+# Inner double quotes likewise — local dq raw must not re-hide $CFG (#838 dq-S).
+run_gate "...and env -S with inner-double-quoted -c dollar still fails closed" \
+    block 'env -S "git -c \"x.y=$CFG\" branch"' "cannot be resolved"
 # Value-taking env operands are checked, not only skipped (#838 PR HIGH).
 run_gate "...and env -C \$D before a builtin still fails closed" \
     block 'env -C $D git branch' "cannot be resolved"
@@ -1909,6 +1915,9 @@ run_gate "...and env -- before an unquoted GIT_DIR likewise fails closed" \
     block 'env -- GIT_DIR=$D git branch' "cannot be resolved"
 run_gate "...and nested env with an unquoted GIT_DIR likewise fails closed" \
     block 'env env GIT_DIR=$D git branch' "cannot be resolved"
+# Unset operand named git is not the git command (#838 PR unset-git).
+run_gate "...and env -u git before nested env GIT_DIR=\$D still fails closed" \
+    block 'env -u git env GIT_DIR=$D git branch' "cannot be resolved"
 run_gate "...while a wholly quoted env assignment with only builtins allows" \
     allow 'env "GIT_DIR=$D" git branch'
 # "$@" / "${a[@]}" stay multi-word inside double quotes — not a one-word shortcut.

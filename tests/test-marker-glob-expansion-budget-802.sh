@@ -1576,6 +1576,29 @@ printf ok)"}" "["'
 # Suspended arith floor keeps PE value-text `(` literal (#802).
 # shellcheck disable=SC2016  # literal payloads for classifier (#802)
 _pr_arith_floor_paren='echo "${X:-$( (( $(printf %s ${Y:-(} >/dev/null; printf 1) + 1 )); printf OK)}" "["'
+# Arith closer then `#` in `$()` walker (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_arith_adj='echo "$(printf %s $((1))#)" "["'
+# Heredoc body then comment under PE (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_comment='echo "${X:-$(cat<<EOF
+hello
+EOF
+#'"'"'
+printf ok
+)}" "["'
+# Expansion-shaped heredoc delimiters (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_dollar='echo "$(cat <<$(x)
+hello
+$(x)
+)" "["'
+# Bare `{` inside `${...}` delimiter is literal (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_brace='echo "$(cat <<${X:-{}
+hello
+${X:-{}
+)" "["'
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
           "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
@@ -1584,7 +1607,9 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_nested_pe_hash" "$_pr_esc_space_hash" \
           "$_pr_adj_hash" "$_pr_ansic_hash" \
           "$_pr_arith_hash" "$_pr_dbrack_hash" \
-          "$_pr_dollar_adj_hash" "$_pr_dq_comment" "$_pr_arith_floor_paren"; do
+          "$_pr_dollar_adj_hash" "$_pr_dq_comment" "$_pr_arith_floor_paren" \
+          "$_pr_arith_adj" "$_pr_hd_comment" "$_pr_hd_delim_dollar" \
+          "$_pr_hd_delim_brace"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

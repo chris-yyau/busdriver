@@ -2329,6 +2329,40 @@ def _heredoc_delim(s, i):
             d.append(s[j])
             j += 1
             continue
+        # Expansion-shaped delimiter words keep their internal punctuation —
+        # `<<$(x)` / `<<${X:-a b}` delimit on the literal spelling (#802).
+        # Inside `${...}`, bare `{` is literal — only `${` nests (#802).
+        # `$${` is PID + literal brace — `_dollar_run_is_even` gates real `${` (#802).
+        if c == '$' and j + 1 < len(s) and s[j + 1] in '({[' \
+                and _dollar_run_is_even(s, j):
+            _op = s[j + 1]
+            d.append(c)
+            d.append(_op)
+            j += 2
+            _depth = 1
+            if _op == '{':
+                while j < len(s) and _depth:
+                    if s.startswith('${', j) and _dollar_run_is_even(s, j):
+                        d.append('${')
+                        j += 2
+                        _depth += 1
+                        continue
+                    _c = s[j]
+                    d.append(_c)
+                    j += 1
+                    if _c == '}':
+                        _depth -= 1
+            else:
+                _cl = ')' if _op == '(' else ']'
+                while j < len(s) and _depth:
+                    _c = s[j]
+                    d.append(_c)
+                    j += 1
+                    if _c == _op:
+                        _depth += 1
+                    elif _c == _cl:
+                        _depth -= 1
+            continue
         if c in ' \t\n;&|<>()':
             break
         d.append(c)
@@ -2725,7 +2759,7 @@ def _strip_cmd_subst(s, join_only=False):
                 if s.startswith('$((', i):   # ABOVE the tick branch: inside a backtick
                     depth += 2               # body this seeds the arith stack too, and
                     _inner_arith.append(depth)   # without it the `<<` of
-                    _opstack.extend(('A', 'A'))
+                    _opstack.extend(('AE', 'AE'))  # expansion — adjacent `#` continues word
                     i += 3                       # `\`echo $(( 1 << 2\n))\`` read as a
                     ws = True                    # heredoc and ate the closer (#802).
                     continue
@@ -2756,7 +2790,7 @@ def _strip_cmd_subst(s, join_only=False):
                     if s.startswith('$((', i):
                         depth += 2
                         _inner_arith.append(depth)
-                        _opstack.extend(('A', 'A'))
+                        _opstack.extend(('AE', 'AE'))
                         i += 3
                         ws = True
                         continue
@@ -2812,16 +2846,16 @@ def _strip_cmd_subst(s, join_only=False):
                     # Only a `$()` closer releases the arith 'cmd' hold — not `(true)` (#802).
                     if _kind == 'S' and _inner_arith and _inner_arith[-1] == 'cmd':
                         _inner_arith.pop()
-                    elif _kind == 'A' and _inner_arith \
+                    elif _kind in ('A', 'AE') and _inner_arith \
                             and isinstance(_inner_arith[-1], int) \
                             and depth < _inner_arith[-1]:
                         _inner_arith.pop()
                     if depth == 0 and not tick:
                         closed = True
                         break
-                    # `$()` / process-subst closers continue the current word —
-                    # `$(true)#` is not a comment. Bare subshell `)` is (#802).
-                    ws = _kind not in ('S', 'PS')
+                    # `$()` / process-subst / arith-EXPANSION closers continue the word.
+                    # Bare arith-command `((1))` leaves word-start so `#` is a comment (#802).
+                    ws = _kind not in ('S', 'PS', 'AE')
                     continue
                 ws = ch in " \t\n;&|"
                 i += 1
@@ -3095,6 +3129,7 @@ def _strip_cmd_subst(s, join_only=False):
                             _jpos = _re
                         i = _re
                         _nhd = [p for p in _nhd if p[1] != _cmd_d]
+                        _ws = True
                         continue
                 _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
                 # Suppress heredoc only while arith is deeper than the floor recorded

@@ -2551,7 +2551,14 @@ def _strip_cmd_subst(s, join_only=False):
                     # `$()` is its own command: both its newline and any heredoc queued
                     # inside it are its own. One shared queue took the OUTER delimiter at
                     # the inner newline, and the body then ate the closer (#802).
-                    _pend = [t for t, _hd_d in inner_heredocs if _hd_d == depth]
+                    # Key by command contexts (`$()` / process-subst frames), not total
+                    # paren depth — a bare subshell `(...)` shares the enclosing
+                    # command's pending heredocs (#802 PR HIGH: `cat <<EOF | (`).
+                    # Process substitutions get their own key so their newlines do not
+                    # drain an outer pending heredoc, while heredocs opened inside the
+                    # process substitution still drain on their own newlines (#802).
+                    _cmd_d = 1 + sum(1 for x in _opstack if x in ('S', 'PS'))
+                    _pend = [t for t, _hd_d in inner_heredocs if _hd_d == _cmd_d]
                     if _pend:
                         _t, _re = _heredoc_body_end(s, i + 1, _pend,
                                                     raw=raw, j2r=_j2r, r2j=_r2j)
@@ -2560,7 +2567,7 @@ def _strip_cmd_subst(s, join_only=False):
                             _jout.append(_t)
                             _jpos = _re
                         i = _re
-                        inner_heredocs = [p for p in inner_heredocs if p[1] != depth]
+                        inner_heredocs = [p for p in inner_heredocs if p[1] != _cmd_d]
                         ws = True
                         continue
                 # Only the span's OWN level is exempt, exactly as the bare-paren branch
@@ -2577,7 +2584,8 @@ def _strip_cmd_subst(s, join_only=False):
                         continue
                     _hd = _heredoc_delim(s, i)
                     if _hd:
-                        inner_heredocs.append((_hd[0], depth))
+                        _cmd_d = 1 + sum(1 for x in _opstack if x in ('S', 'PS'))
+                        inner_heredocs.append((_hd[0], _cmd_d))
                         i = _hd[1]
                         ws = True
                         continue
@@ -2671,6 +2679,19 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     ws = False
                     continue
+                # Comments run to end of line inside nested `$()` (including those
+                # entered from backticks / PE nests). At a PE span's OWN depth the
+                # body is not command text — only that level is exempt. A `$()` that
+                # raised depth above the span runs real shell comments (#802).
+                # At the backtick body's own depth, bash finds the closing backtick
+                # before parsing comments — do not skip past that closer (#802).
+                _in_span_text = bool(_span) and depth == _span[-1][1]
+                if depth > 0 and not _arith_active and not _in_span_text \
+                        and ws and ch == '#':
+                    _nl = s.find('\n', i)
+                    i = n if _nl < 0 else _nl
+                    ws = True
+                    continue
                 if not tick and not _arith_active and not _span \
                         and _subst_ambiguous(s, i, ws):
                     if _jout is not None:
@@ -2684,6 +2705,44 @@ def _strip_cmd_subst(s, join_only=False):
                     ws = True                    # heredoc and ate the closer (#802).
                     continue
                 if tick and depth == 0:   # a nested `$()` is paren-counted while open
+                    # Bash finds the closing backtick before parsing an own-level
+                    # comment — leave the closer for the branch below (#802).
+                    if ws and ch == '#':
+                        # Skip to the real closer — `\`` inside the comment is
+                        # escaped, not a delimiter (#802).
+                        _bt = -1
+                        _j = i + 1
+                        while _j < n:
+                            if s[_j] == '\\' and _j + 1 < n:
+                                _j += 2
+                                continue
+                            if s[_j] == '`':
+                                _bt = _j
+                                break
+                            _j += 1
+                        if _bt < 0:
+                            if _jout is not None:
+                                break
+                            return None
+                        i = _bt
+                        continue
+                    # Recognize nested `$(` before treating remaining text as opaque —
+                    # otherwise a heredoc inside the nest is queued at depth 0 (#802).
+                    if s.startswith('$((', i):
+                        depth += 2
+                        _inner_arith.append(depth)
+                        _opstack.extend(('A', 'A'))
+                        i += 3
+                        ws = True
+                        continue
+                    if s.startswith('$(', i):
+                        if _inner_arith:
+                            _inner_arith.append('cmd')
+                        _opstack.append('S')
+                        depth += 1
+                        i += 2
+                        ws = True
+                        continue
                     if ch == '`':
                         i += 1
                         closed = True
@@ -2695,6 +2754,14 @@ def _strip_cmd_subst(s, join_only=False):
                     if _inner_arith:
                         _inner_arith.append('cmd')
                     _opstack.append('S')
+                    depth += 1
+                    i += 2
+                    ws = True
+                    continue
+                # Process substitution `<(...)` / `>(...)`: its newlines are its own,
+                # unlike a bare subshell after `|` (#802).
+                if (s.startswith('<(', i) or s.startswith('>(', i)):
+                    _opstack.append('PS')
                     depth += 1
                     i += 2
                     ws = True
@@ -2927,12 +2994,17 @@ def _strip_cmd_subst(s, join_only=False):
                     _nsub += 1
                     i += 2
                     continue
+                if (s.startswith('<(', i) or s.startswith('>(', i)) and _nsub:
+                    _pstack.append('PS')
+                    i += 2
+                    continue
                 if ch == '(' and _nsub:
                     _pstack.append('P')
                     i += 1
                     continue
                 if ch == ')' and _pstack:
-                    if _pstack.pop() == 'S':
+                    _kind = _pstack.pop()
+                    if _kind == 'S':
                         _nsub -= 1
                         if _narith_floor:
                             _narith_floor.pop()
@@ -2951,7 +3023,13 @@ def _strip_cmd_subst(s, join_only=False):
                     # OUTER delimiter at the inner newline and its body then ate the
                     # closing `)}` -- the same rule, and the same shape, the `$()`
                     # walker above already states for its own queue (#802).
-                    _pend = [t for t, _d in _nhd if _d == len(_pstack)]
+                    # Key by command contexts (`$()` / process-subst frames), not total
+                    # paren depth — bare subshells share the enclosing command's pending
+                    # heredocs (#802). Process substitutions get their own key so their
+                    # newlines do not drain an outer pending heredoc, while heredocs
+                    # opened inside the process substitution still drain (#802).
+                    _cmd_d = sum(1 for x in _pstack if x in ('S', 'PS'))
+                    _pend = [t for t, _d in _nhd if _d == _cmd_d]
                     if _pend:
                         _t, _re = _heredoc_body_end(s, i + 1, _pend,
                                                     raw=raw, j2r=_j2r, r2j=_r2j)
@@ -2960,7 +3038,7 @@ def _strip_cmd_subst(s, join_only=False):
                             _jout.append(_t)
                             _jpos = _re
                         i = _re
-                        _nhd = [p for p in _nhd if p[1] != len(_pstack)]
+                        _nhd = [p for p in _nhd if p[1] != _cmd_d]
                         continue
                 _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
                 # Suppress heredoc only while arith is deeper than the floor recorded
@@ -2973,7 +3051,8 @@ def _strip_cmd_subst(s, join_only=False):
                         continue
                     _hd = _heredoc_delim(s, i)
                     if _hd:
-                        _nhd.append((_hd[0], len(_pstack)))
+                        _cmd_d = sum(1 for x in _pstack if x in ('S', 'PS'))
+                        _nhd.append((_hd[0], _cmd_d))
                         i = _hd[1]
                         continue
                 if ch in ("'", '"'):

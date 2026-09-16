@@ -1515,8 +1515,33 @@ _pr_pe_arith='echo "${X:-$( (( $(cat <<EOF >/dev/null
 it'"'"'s data
 EOF
 printf 1) + 1 )); printf OK)}" "["'
+# Tick-body own-level comment must not open `$(` or eat the closer (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_bt_hash_dollar='python3 `echo script.py # $(`'
+# Escaped backtick inside that comment is not the closer (#802).
+# shellcheck disable=SC2016,SC1003  # literal payloads for classifier (#802)
+_pr_bt_hash_esc='python3 `echo script.py # \` $(`'
+# Comment inside `$()` nested in `${...}` under backticks (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_bt_pe_hash='python3 `echo ${X:-$(printf script.py # (
+)}`'
+# Process substitution newlines must not drain an outer pending heredoc (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_proc_sub_hd='python3 ${X:-$(cat <<EOF <(printf x
+)
+data
+EOF
+)}'
+# Heredocs opened inside a process substitution must still drain (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_proc_sub_inner_hd='python3 ${X:-$(cat <(cat <<EOF
+it'"'"'s data
+EOF
+))}'
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
-          "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith"; do
+          "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
+          "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
+          "$_pr_proc_sub_hd" "$_pr_proc_sub_inner_hd"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

@@ -1538,10 +1538,42 @@ _pr_proc_sub_inner_hd='python3 ${X:-$(cat <(cat <<EOF
 it'"'"'s data
 EOF
 ))}'
+# Comment line-continuation must not swallow the `$()` closer (#802).
+# shellcheck disable=SC2016,SC1003  # literal payloads for classifier (#802)
+_pr_join_comment='echo "$(printf ok # note \
+)" "["'
+# Quote inside a nested `$()` comment under `${...}` (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_comment_q='echo "${X:-$(printf ok # '"'"'
+)}" "["'
+# Backtick closer wins over an open quote after `\\` (#802).
+# shellcheck disable=SC2016,SC1003  # literal payloads for classifier (#802)
+_pr_tick_esc_q='echo `printf %s \\'"'"'` "["'
+# Nested PE value `#` is not a command comment (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_nested_pe_hash='echo ${X:-$(printf %s ${Y:- #})} "["'
+# Escaped-space before `#` keeps `#` in the same word (#802).
+# shellcheck disable=SC2016,SC1003  # literal payloads for classifier (#802)
+_pr_esc_space_hash='echo ${X:-$(printf %s \ #)} "["'
+# Adjacent `#` after `$()` continues the word (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_adj_hash='echo ${X:-$(printf %s $(true)#)} "["'
+# ANSI-C string then `#` continues the word (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_ansic_hash='echo ${X:-$(printf %s $'"'"'x'"'"'#)} "["'
+# Arithmetic closers then `#` continue the word (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_arith_hash='echo ${X:-$(printf %s $((1 ))#)} "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_dbrack_hash='echo ${X:-$(printf %s $[ 1 ]#)} "["'
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
           "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
-          "$_pr_proc_sub_hd" "$_pr_proc_sub_inner_hd"; do
+          "$_pr_proc_sub_hd" "$_pr_proc_sub_inner_hd" \
+          "$_pr_join_comment" "$_pr_pe_comment_q" "$_pr_tick_esc_q" \
+          "$_pr_nested_pe_hash" "$_pr_esc_space_hash" \
+          "$_pr_adj_hash" "$_pr_ansic_hash" \
+          "$_pr_arith_hash" "$_pr_dbrack_hash"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

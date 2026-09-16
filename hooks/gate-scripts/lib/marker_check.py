@@ -2428,11 +2428,23 @@ def _strip_cmd_subst(s, join_only=False):
         # Read as live text, the `$(` in `git status # [docs] example $(foo` was an
         # unclosed substitution -- a refusal over a span the shell never looks at. The
         # outer walker SKIPs it, keeping the bytes the command still carries.
+        # End the comment at the RAW newline: `_mechanical_join` removes `\<newline>`
+        # everywhere, but bash does not continue a comment across that pair (#802).
         if not oq and not arith and ws and ch == '#':
-            _nl = s.find('\n', i)
-            _nl = n if _nl < 0 else _nl
-            out.append(s[i:_nl])
-            i = _nl
+            if _j2r is not None:
+                _raw_i = _j2r[i]
+                _raw_nl = raw.find('\n', _raw_i)
+                if _raw_nl < 0:
+                    out.append(raw[_raw_i:])
+                    i = n
+                else:
+                    out.append(raw[_raw_i:_raw_nl])
+                    i = _r2j[_raw_nl]
+            else:
+                _nl = s.find('\n', i)
+                _nl = n if _nl < 0 else _nl
+                out.append(s[i:_nl])
+                i = _nl
             ws = True
             continue
         # `((expr))` is arithmetic, so its `<<` is a shift, not a heredoc -- and
@@ -2590,6 +2602,12 @@ def _strip_cmd_subst(s, join_only=False):
                         ws = True
                         continue
                 if q:
+                    # Outer backtick ends at its own delimiter even inside quotes —
+                    # bash finds that closer before quote nesting does (#802).
+                    if tick and depth == 0 and ch == '`':
+                        i += 1
+                        closed = True
+                        break
                     ws = False
                     if ch == '\\' and q == '"' and i + 1 < n:
                         i += 2
@@ -2688,8 +2706,14 @@ def _strip_cmd_subst(s, join_only=False):
                 _in_span_text = bool(_span) and depth == _span[-1][1]
                 if depth > 0 and not _arith_active and not _in_span_text \
                         and ws and ch == '#':
-                    _nl = s.find('\n', i)
-                    i = n if _nl < 0 else _nl
+                    # Prefer the RAW newline — mechanical join must not glue a
+                    # `\<newline>` inside a comment onto the next line's closer (#802).
+                    if _j2r is not None:
+                        _raw_nl = raw.find('\n', _j2r[i])
+                        i = n if _raw_nl < 0 else _r2j[_raw_nl]
+                    else:
+                        _nl = s.find('\n', i)
+                        i = n if _nl < 0 else _nl
                     ws = True
                     continue
                 if not tick and not _arith_active and not _span \
@@ -2877,6 +2901,7 @@ def _strip_cmd_subst(s, join_only=False):
             closed = False
             _jout = [] if join_only else None   # join mode: normalized inner text
             _jpos = i
+            _ws = True           # word-start for `#` comments inside nested `$()` (#802)
             while i < n:
                 ch = s[i]
                 if _jout is not None:
@@ -2923,6 +2948,7 @@ def _strip_cmd_subst(s, join_only=False):
                         _jout.append(raw[_j2r[i]:_j2r[_ac]])
                         _jpos = _ac
                     i = _ac
+                    _ws = False
                     continue
                 # Value-text escapes and backticks: `\'` is a literal apostrophe, and
                 # `` `echo }` `` owns its own `}` so it must not close this PE (#802).
@@ -2932,6 +2958,7 @@ def _strip_cmd_subst(s, join_only=False):
                             break
                         return None
                     i += 2
+                    _ws = False
                     continue
                 if ch == '`':
                     _bt = _backtick_span(s, i)
@@ -2940,6 +2967,7 @@ def _strip_cmd_subst(s, join_only=False):
                             break
                         return None
                     i = _bt
+                    _ws = False
                     continue
                 # Inside a NESTED `${...}` at its own paren depth the body is a VALUE,
                 # not command text, so NONE of the three command-text readings apply: a
@@ -2958,6 +2986,19 @@ def _strip_cmd_subst(s, join_only=False):
                 # nested PE only; at the outermost PE body with no nested cmd, parens
                 # are still value text when `_pstack` is empty... handled below.
                 _val_text = bool(_bspan) and _bspan[-1] == len(_pstack)
+                # Comments inside nested `$()` command text only — not PE value
+                # spans, and only at shell word-start (so `\ #` stays one word) (#802).
+                _floor = _narith_floor[-1] if _narith_floor else 0
+                if _nsub and not (_narith > _floor) and not _val_text \
+                        and _ws and ch == '#':
+                    if _j2r is not None:
+                        _raw_nl = raw.find('\n', _j2r[i])
+                        i = n if _raw_nl < 0 else _r2j[_raw_nl]
+                    else:
+                        _nl = s.find('\n', i)
+                        i = n if _nl < 0 else _nl
+                    _ws = True
+                    continue
                 # `not _narith`: a `$((...))` in a default value is REAL arithmetic, and
                 # its own `))` is a closer, not text. Without that the exemption ate the
                 # first `)` of `${Y:-$((1+2))}`, arithmetic never closed, and the real
@@ -2969,6 +3010,7 @@ def _strip_cmd_subst(s, join_only=False):
                 if s.startswith('$((', i) or (_nsub and s.startswith('((', i)):
                     _narith += 1
                     i += 3 if s.startswith('$((', i) else 2
+                    _ws = False
                     continue
                 if _narith and s.startswith('))', i):
                     # Only close arith when deeper than the `$()`-suspend floor.
@@ -2977,15 +3019,20 @@ def _strip_cmd_subst(s, join_only=False):
                     if _narith > _floor:
                         _narith -= 1
                         i += 2
+                        # `$((1))#` continues the word — not a comment (#802).
+                        _ws = False
                         continue
                 # Legacy `$[1 << 2]`: shift, not heredoc — same rule as `$()` `_span` (#802).
                 if s.startswith('$[', i) and _dollar_run_is_even(s, i):
                     _dbrack.append(len(_pstack))
                     i += 2
+                    _ws = False
                     continue
                 if _dbrack and len(_pstack) == _dbrack[-1] and ch == ']':
                     _dbrack.pop()
                     i += 1
+                    # `$[1]#` continues the word — not a comment (#802).
+                    _ws = False
                     continue
                 if s.startswith('$(', i):
                     if _narith:
@@ -2993,14 +3040,17 @@ def _strip_cmd_subst(s, join_only=False):
                     _pstack.append('S')
                     _nsub += 1
                     i += 2
+                    _ws = True
                     continue
                 if (s.startswith('<(', i) or s.startswith('>(', i)) and _nsub:
                     _pstack.append('PS')
                     i += 2
+                    _ws = True
                     continue
                 if ch == '(' and _nsub:
                     _pstack.append('P')
                     i += 1
+                    _ws = True
                     continue
                 if ch == ')' and _pstack:
                     _kind = _pstack.pop()
@@ -3011,6 +3061,9 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     if _qstack and len(_pstack) == _qstack[-1][0]:
                         q = _qstack.pop()[1]
+                    # `$()` / process-subst closers continue the current word —
+                    # `$(true)#` is not a comment. Bare subshell `)` is (#802).
+                    _ws = _kind not in ('S', 'PS')
                     continue
                 # SEVERAL bodies can queue on one line -- `cat <<A <<B` reads A's then
                 # B's -- so the introducers are collected and the bodies skipped in
@@ -3061,6 +3114,7 @@ def _strip_cmd_subst(s, join_only=False):
                         _iqs = i
                         _imark = len(_jout)
                     i += 1
+                    _ws = False
                     continue
                 # Nested parameter expansion only — a bare `{` is literal (#802),
                 # and `$${` is a PID beside one, so the run's parity decides (#802).
@@ -3069,6 +3123,7 @@ def _strip_cmd_subst(s, join_only=False):
                     _bspan.append(len(_pstack))
                     _pe_cmd.append(len(_pstack))
                     i += 2
+                    _ws = False
                     continue
                 if ch == '}':
                     # Only a `}` at this PE frame's command depth closes it. A
@@ -3082,9 +3137,12 @@ def _strip_cmd_subst(s, join_only=False):
                         if depth == 0:
                             closed = True
                             break
+                        _ws = False
                         continue
                     i += 1
+                    _ws = False
                     continue
+                _ws = ch in ' \t\n;&|'
                 i += 1
             if not closed:
                 if _jout is not None:

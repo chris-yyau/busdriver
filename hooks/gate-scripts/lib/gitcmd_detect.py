@@ -2131,6 +2131,127 @@ def _env_S_operand_raw(a, k, raws):
     return raws[k] if k < len(raws) else None
 
 
+def _outer_value_expand_flags(raw):
+    """Decode an outer-shell argv spelling into `(value_text, expand_flags)`.
+
+    `expand_flags[i]` is True when `value_text[i]` is a `$` / backtick the outer
+    shell would still expand. Opening/closing quotes are omitted from the value
+    the same way bash builds the argv word; a `'` inside `"…"` is literal data
+    and does not protect `$`. Escaped `$` / `` ` `` stay False
+    (#838 ws-live / live-outer).
+    """
+    if raw is None:
+        return None, None
+    chars, flags = [], []
+    i, n, quote = 0, len(raw), None
+    while i < n:
+        c = raw[i]
+        # Backslash escapes the next char except inside ordinary single quotes.
+        if quote != "'" and c == '\\':
+            if i + 1 >= n:
+                break
+            chars.append(raw[i + 1])
+            flags.append(False)
+            i += 2
+            continue
+        if quote is None and c == '$' and i + 1 < n and raw[i + 1] in '\'"':
+            quote = "$'" if raw[i + 1] == "'" else '"'
+            i += 2
+            continue
+        if quote is None and c in '\'"':
+            quote = c
+            i += 1
+            continue
+        if quote == '"' and c == '"':
+            quote = None
+            i += 1
+            continue
+        if quote == "'" and c == "'":
+            quote = None
+            i += 1
+            continue
+        if quote == "$'" and c == "'":
+            quote = None
+            i += 1
+            continue
+        # Inside `"…"`, `'` is literal — `$` after it remains expandable.
+        live = quote not in ("'", "$'") and c in '`$'
+        chars.append(c)
+        flags.append(live)
+        i += 1
+    return ''.join(chars), flags
+
+
+def _outer_token_live_flags(outer_raw):
+    """Per-token live `$` / backtick flags for a decoded outer-shell argv spelling.
+
+    Decode + tokenize once so callers can reuse by index. Payload-wide
+    `live_outer` is wrong: an unrelated later `$TAIL` must not make a
+    quoted-literal `$CFG` look live (#838 live-outer HIGH). Matching by token
+    index keeps `\\$CFG` vs `$CFG` aligned. Built once per `_env_S_ins_raws`
+    so re-decode/re-tokenize is not O(n²) (#838 outer-live-quad MEDIUM).
+    """
+    if outer_raw is None:
+        return None
+    text, flags = _outer_value_expand_flags(outer_raw)
+    if not text or not flags:
+        return None
+    dec_toks = _tokenize(text)
+    if not dec_toks:
+        return None
+    dec_raws = _raw_tokens(text)
+    out = []
+    pos = 0
+    for ti, dt in enumerate(dec_toks):
+        while pos < len(text) and text[pos] in ' \t\n':
+            pos += 1
+        span = None
+        if dec_raws is not None and ti < len(dec_raws):
+            cand = dec_raws[ti]
+            if text.startswith(cand, pos):
+                span = cand
+        if span is None:
+            if text.startswith(dt, pos):
+                span = dt
+            else:
+                found = text.find(dt, pos)
+                if found < 0:
+                    # Truncate: remaining tokens treated non-live.
+                    out.extend([False] * (len(dec_toks) - ti))
+                    return out
+                pos = found
+                span = dt
+        end = pos + len(span)
+        live = False
+        for i in range(pos, min(end, len(flags))):
+            if flags[i] and text[i] in '`$':
+                live = True
+                break
+        out.append(live)
+        pos = end
+    return out
+
+
+def _env_S_token_outer_live(outer_raw, payload, tok, local_raw, index, toks, local,
+                            outer_live_flags=None):
+    """True when THIS token's `$` / backtick is live in `outer_raw` or local raw.
+
+    Prefer a precomputed `outer_live_flags` list from `_outer_token_live_flags`
+    (one decode/tokenize per -S operand). Falls back to building that list when
+    called standalone.
+    """
+    if local_raw is not None and _raw_has_expandable_dollar(local_raw):
+        return True
+    if outer_raw is None or ('$' not in tok and '`' not in tok):
+        return False
+    flags = outer_live_flags
+    if flags is None:
+        flags = _outer_token_live_flags(outer_raw)
+    if not flags or index >= len(flags):
+        return False
+    return flags[index]
+
+
 def _env_S_ins_raws(payload, outer_raw=None):
     """Per-token raws for a -S-inserted argv, preserving outer-shell expansions.
 
@@ -2140,8 +2261,10 @@ def _env_S_ins_raws(payload, outer_raw=None):
     outer-quote HIGH). Double-quoted payload tokens (`\"x.y=$CFG\"`) still have
     expandable `$` in their local raw, but `_active_spelling` omits
     double-quoted dollars from `active`, so rejoin would re-hide them — expose
-    those bare too (#838 dq-S HIGH). Single-quoted local `$` stays quoted when
-    the outer spelling is proven inert (or unavailable and not double-quoted).
+    those bare too (#838 dq-S HIGH). Track outer expandability PER TOKEN so an
+    unrelated later `$TAIL` cannot strip literal provenance from `$CFG`
+    (#838 live-outer HIGH). Outer decode/tokenize runs once for the operand
+    (#838 outer-live-quad MEDIUM).
     """
     local = _raw_tokens(payload)
     if local is None:
@@ -2152,20 +2275,45 @@ def _env_S_ins_raws(payload, outer_raw=None):
     # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local.
     if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
         return local
-    live_outer = (outer_raw is not None
-                  and _raw_has_expandable_dollar(outer_raw))
+    outer_live = (_outer_token_live_flags(outer_raw)
+                  if outer_raw is not None else None)
     out = []
-    for t, r in zip(toks, local):
+    for i, (t, r) in enumerate(zip(toks, local)):
         if '$' not in t and '`' not in t:
             out.append(r)
             continue
-        # Live outer, or local double-quoted `$` / backtick (expandable in the
-        # payload-local raw while `_active_spelling` would still hide it).
-        if live_outer or _raw_has_expandable_dollar(r):
+        if _env_S_token_outer_live(outer_raw, payload, t, r, i, toks, local,
+                                   outer_live_flags=outer_live):
             out.append(t)
         else:
             out.append(r)
     return out
+
+
+def _env_S_token_has_live_expansion(tok, raw=None):
+    """True when rejoin must keep `$` / backtick visible for the IFS refuse path."""
+    if '$' not in tok and '`' not in tok:
+        return False
+    if raw is None:
+        return True
+    if _raw_has_expandable_dollar(raw):
+        return True
+    active, _multi, _cmdsub = _active_spelling(raw)
+    if active is not None and ('$' in active or '`' in active):
+        return True
+    # Bare inserted spelling (ins_raws exposed the decoded token).
+    return raw == tok
+
+
+def _env_S_dq_keep_expand(tok):
+    """Double-quote a token for boundaries without single-quote-hiding `$` / `` ` ``.
+
+    `shlex.quote` uses single quotes and clears expansion provenance on the
+    rejoined string (#838 ws-live HIGH). Escape only `\\` and `"` so the
+    wrapper stays intact; leave `$` / backticks expandable. The IFS refuse
+    path also consults pre-rejoin raws via `_git_pre_subcmd_may_ifs_split`.
+    """
+    return '"' + tok.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
 def _env_S_token_needs_quote(tok, raw=None):
@@ -2174,11 +2322,17 @@ def _env_S_token_needs_quote(tok, raw=None):
     `raw` is the posix=False spelling aligned with `tok` when available. A
     quoted literal `$` / backtick (`'x.y=$CFG'`) must be re-quoted; a truly
     active `$CFG` / `${CFG}` must stay bare for the IFS refuse path
-    (#838 quoted-dollar HIGH).
+    (#838 quoted-dollar HIGH). Whitespace-bearing live expansions still need
+    boundary quoting — via `_env_S_dq_keep_expand`, not `shlex.quote`
+    (#838 ws-live HIGH).
     """
     if tok == '':
         return True
     if '$' in tok or '`' in tok:
+        if _env_S_token_has_live_expansion(tok, raw):
+            dangerous = (_ENV_S_REJOIN_QUOTE_CHARS
+                         - _ENV_S_REJOIN_EXPANSION_OK_CHARS)
+            return any(c in tok for c in dangerous)
         active, _multi, _cmdsub = _active_spelling(raw)
         # Quoted literal expansion chars → active spelling has none.
         # No raw → assume active (leave bare; fail toward IFS refuse).
@@ -2201,15 +2355,21 @@ def _env_S_rejoin(toks, raws=None):
     `X='"' … merge`, and literal `x.y=*` / `x.y={a,b}` keep their
     boundaries. Requote tokens whose `$` / backtick was quoted in the
     original -S payload (`'x.y=$CFG'`). Leave truly unquoted `$CFG` /
-    `${CFG}` bare so the IFS refuse still sees them. Do not use
-    `shlex.join` (quotes `$CFG`) or bare space-join (drops `-c` script
-    quotes); #838 cycle-E / PR / metachar / quote-char / glob-brace /
-    quoted-dollar.
+    `${CFG}` bare so the IFS refuse still sees them. Live expansions that
+    still need boundary quoting use double quotes so the expansion flag is
+    not cleared (#838 ws-live). Do not use `shlex.join` (quotes `$CFG`) or
+    bare space-join (drops `-c` script quotes); #838 cycle-E / PR / metachar
+    / quote-char / glob-brace / quoted-dollar / ws-live.
     """
     parts = []
     for i, t in enumerate(toks):
         raw = raws[i] if raws is not None and i < len(raws) else None
-        parts.append(shlex.quote(t) if _env_S_token_needs_quote(t, raw) else t)
+        if not _env_S_token_needs_quote(t, raw):
+            parts.append(t)
+        elif _env_S_token_has_live_expansion(t, raw):
+            parts.append(_env_S_dq_keep_expand(t))
+        else:
+            parts.append(shlex.quote(t))
     return ' '.join(parts)
 
 
@@ -3643,6 +3803,73 @@ def _c_operand_may_ifs_split(raw):
     return _brace_expands(active) or _glob_expands(active)
 
 
+def _decoded_operand_may_expand(op):
+    """True when a decoded git-global operand may still expand without raws.
+
+    Adjacent-quote debris can leave a literal `'` inside the decoded value
+    (`x.y='$CFG`), so `_c_operand_may_ifs_split` treats `$CFG` as quoted while
+    the real shell still expands it. Any `$` / backtick in the decoded operand
+    therefore fails closed when raw provenance is missing (#838 dq-raws-skip).
+    Fully literal values (`x.y=foo`) stay False so missing raws do not
+    over-block (#838 literal-align HIGH).
+    """
+    if op is None:
+        return True
+    if '$' in op or '`' in op:
+        return True
+    return _c_operand_may_ifs_split(op)
+
+
+def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
+    """True when a git argv's pre-subcommand valued globals may IFS-split.
+
+    Shared by the direct `_any_git_c_may_ifs_split` walk and by the env -S
+    insertion path, which must consult pre-rejoin raws so a whitespace-bearing
+    live `$CFG` is not cleared by boundary quoting (#838 ws-live HIGH).
+
+    When `raw_argv` is None, fail closed only if the decoded operand may still
+    expand — not for fully literal globals whose adjacent quotes merely break
+    raw alignment (#838 literal-align HIGH / dq-raws-skip).
+    """
+    if not argv or not _is_exe(argv[0], 'git'):
+        return False
+    _sub, sub_idx = _git_subcommand(argv)
+    if sub_idx is None:
+        sub_idx = len(argv)
+    k = 1
+    while k < sub_idx:
+        tok = argv[k]
+        if tok in _GIT_VALUE_OPTS:
+            if k + 1 >= sub_idx:
+                return True
+            if raw_argv is None:
+                if _decoded_operand_may_expand(argv[k + 1]):
+                    return True
+            elif _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
+                return True
+            k += 2
+            continue
+        if tok.startswith('-c') and len(tok) > 2:
+            if raw_argv is None:
+                if _decoded_operand_may_expand(tok[2:]):
+                    return True
+            elif _c_operand_may_ifs_split(_raw_spelling(raw_argv, k)):
+                return True
+            k += 1
+            continue
+        if tok.startswith('--') and '=' in tok:
+            name, _, val = tok.partition('=')
+            if name in _GIT_VALUE_OPTS:
+                if raw_argv is None:
+                    if _decoded_operand_may_expand(val):
+                        return True
+                elif _c_operand_may_ifs_split(_raw_spelling(raw_argv, k)):
+                    return True
+        k += 1
+    return False
+
+
+
 def _assignment_value_may_ifs_split(raw):
     """True iff an env-utility `NAME=val` ARG may IFS-split into >1 argv words.
 
@@ -3655,7 +3882,7 @@ def _assignment_value_may_ifs_split(raw):
     return _c_operand_may_ifs_split(raw)
 
 
-def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
+def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     """True when env(1) option/assignment argv may IFS-split an assignment value.
 
     Same ownership walk as `_env_commands_from_opt_argv`: `-S` / `--split-string`
@@ -3663,9 +3890,26 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
     must not be mistaken for an `ENV_ASSIGN` name), nested `-S` recurses, and
     non-S value options (`-u`, `-iu`, `-C`, …) still check their operand for
     expansion before skipping so `env -C $D git branch` cannot hide a merge
-    (#838 PR HIGH)."""
+    (#838 PR HIGH).
+
+    When the parent walk had aligned outer-shell raws, the utility remainder is
+    also scanned for git valued globals using pre-rejoin insertion raws so a
+    whitespace-bearing live `$CFG` cannot hide behind boundary quoting
+    (#838 ws-live HIGH). If those insertion raws cannot be aligned, still call
+    `_git_pre_subcmd_may_ifs_split` with `None` so valued globals fail closed
+    instead of skipping (#838 raws-failclosed HIGH). Untrusted walks that still
+    carry aligned raws (`trust_git_raws=False` and `raws is not None`) skip that
+    pass — tokenize debris must not false-trigger on intentional quote nesting.
+    Unaligned raws (`raws is None`) must still be scanned even when
+    `trust_git_raws=False`: `_env_S_dq_keep_expand` can hide `$` from the
+    post-rejoin operand check (#838 dq-raws-skip HIGH). That scan fails closed
+    only when the decoded operand may expand — fully literal adjacent-quote
+    debris must not over-block (#838 literal-align HIGH).
+    """
     if _depth >= 6 or not toks:
         return False
+    if trust_git_raws is None:
+        trust_git_raws = raws is not None
     skip_value = False
     k = 0
     while k < len(toks):
@@ -3701,8 +3945,13 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
                     combined_raws = list(ins_raws)
                 else:
                     combined_raws = None
+                # Only trust git-global raws from -S when THIS walk had aligned
+                # outer-shell spellings; otherwise quote-nesting debris can look
+                # like a live `$CFG` (#838 quoted-literal allow). Missing
+                # insertion raws still fail closed under that trust bit.
                 return _env_argv_may_ifs_split(
-                    inserted, combined_raws, _depth + 1)
+                    inserted, combined_raws, _depth + 1,
+                    trust_git_raws=(trust_git_raws and raws is not None))
             if a.startswith('--') or not (
                     _ASSIGN_TOK_RE.match(a) or _ENV_ASSIGN_TOK_RE.match(a)):
                 # Shared with `_env_split_string_payloads`: clustered `-iu X`
@@ -3738,6 +3987,17 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
             k += 1
             continue
         break
+    # Utility argv after env options — including -S insertions. Consult
+    # pre-rejoin raws so whitespace-bearing live `$CFG` is not cleared by
+    # boundary quoting on rejoin (#838 ws-live HIGH). When insertion raws
+    # cannot be aligned, pass None so valued globals fail closed rather than
+    # skipping (#838 raws-failclosed HIGH / commit FAIL of 790311ca).
+    # Unaligned raws also fail closed when trust_git_raws is False — dq
+    # boundary quoting must not skip this check (#838 dq-raws-skip HIGH).
+    if k < len(toks) and (trust_git_raws or raws is None):
+        util_raws = raws[k:] if raws is not None else None
+        if _git_pre_subcmd_may_ifs_split(toks[k:], util_raws):
+            return True
     return False
 
 
@@ -3855,32 +4115,8 @@ def _any_git_c_may_ifs_split(cmd):
                 continue
             if _scope_env_may_ifs_split(seg):
                 return True
-            _sub, sub_idx = _git_subcommand(argv)
-            if sub_idx is None:
-                sub_idx = len(argv)
-            k = 1
-            while k < sub_idx:
-                tok = argv[k]
-                if tok in _GIT_VALUE_OPTS:
-                    if k + 1 >= sub_idx or raw_argv is None:
-                        return True
-                    if _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
-                        return True
-                    k += 2
-                    continue
-                if tok.startswith('-c') and len(tok) > 2:
-                    if raw_argv is None or _c_operand_may_ifs_split(
-                            _raw_spelling(raw_argv, k)):
-                        return True
-                    k += 1
-                    continue
-                if tok.startswith('--') and '=' in tok:
-                    name = tok.split('=', 1)[0]
-                    if name in _GIT_VALUE_OPTS:
-                        if raw_argv is None or _c_operand_may_ifs_split(
-                                _raw_spelling(raw_argv, k)):
-                            return True
-                k += 1
+            if _git_pre_subcmd_may_ifs_split(argv, raw_argv):
+                return True
     return False
 
 

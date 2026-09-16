@@ -1895,6 +1895,40 @@ run_gate "...and env -S with outer-double-quoted -c dollar still fails closed" \
 # Inner double quotes likewise — local dq raw must not re-hide $CFG (#838 dq-S).
 run_gate "...and env -S with inner-double-quoted -c dollar still fails closed" \
     block 'env -S "git -c \"x.y=$CFG\" branch"' "cannot be resolved"
+# Whitespace-bearing live $CFG must keep expansion visible through rejoin (#838 ws-live).
+run_gate "...and env -S with whitespace-bearing live -c dollar still fails closed" \
+    block 'env -S "git -c '\''x.y=prefix $CFG'\'' branch"' "cannot be resolved"
+# Unrelated later $TAIL must not strip literal provenance from escaped $CFG (#838 live-outer).
+run_gate "...and env -S with escaped -c dollar plus live \$TAIL still allows log" \
+    allow 'env -S "git -c '\''x.y=\$CFG'\'' log $TAIL"'
+# Unaligned -S insertion raws must fail closed on valued globals (#838 raws-failclosed).
+# Mixed quotes break _raw_tokens(payload); pre-rejoin must not skip.
+run_gate "...and env -S with unaligned -c dollar raws still fails closed" \
+    block 'env -S "git -c '\''x.y='\''$CFG'\'' branch"' "cannot be resolved"
+# Escaped inner quote + live $TAIL: outer raws None, dq rejoin must not skip
+# pre-rejoin fail-closed (#838 dq-raws-skip HIGH / commit FAIL of 5a143aa6).
+run_gate "...and env -S with dq-hidden -c dollar and unaligned raws still fails closed" \
+    block 'env -S "git -c '\''x.y='\''$CFG\"'\'' branch $TAIL"' "cannot be resolved"
+# Adjacent quotes can break raw alignment on a fully literal -c value; must not
+# over-block (#838 literal-align HIGH / commit FAIL of 93b44186).
+run_gate "...and env -S with adjacent-quote literal -c value still allows log" \
+    allow 'env -S '\''git -c "x.y="foo log'\'''
+# Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys, time
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import _env_S_ins_raws
+payload = " ".join(["'$X'" for _ in range(400)])
+outer = '"' + payload + '"'
+t0 = time.perf_counter()
+raws = _env_S_ins_raws(payload, outer)
+ms = (time.perf_counter() - t0) * 1000
+assert raws is not None and len(raws) == 400, (raws and len(raws),)
+# Quadratic re-decode was multi-second at ~1k tokens; 400 must stay well under 500ms.
+assert ms < 500, ms
+PY
+assert_true "...and env -S outer-live flags stay linear for many \$ tokens" "$_rc"
 # Value-taking env operands are checked, not only skipped (#838 PR HIGH).
 run_gate "...and env -C \$D before a builtin still fails closed" \
     block 'env -C $D git branch' "cannot be resolved"

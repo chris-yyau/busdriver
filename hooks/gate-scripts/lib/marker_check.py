@@ -2537,6 +2537,9 @@ def _strip_cmd_subst(s, join_only=False):
             # NAMED APART from the outer counter deliberately: spelled `arith` too, it
             # rebound that int to a list, so the next `((` ran `list += 1` and the
             # classifier died with a TypeError. A crash is not a verdict (#802).
+            # 'cmd' sentinels suspend arith while a nested `$()`/backtick runs — a
+            # heredoc inside that nested command is real command text, not a shift
+            # (#802 PR HIGH: `$(( $(cat <<EOF ...)`).
             while i < n:
                 ch = s[i]
                 if _jout is not None:
@@ -2563,7 +2566,9 @@ def _strip_cmd_subst(s, join_only=False):
                 # below reasons: `${X:-$(cat <<EOF ...)}` runs a real command, and its
                 # heredoc is a real heredoc. Suppressing it there scanned the body as
                 # shell text, where an apostrophe in prose opened a quote (#802).
-                if not q and not _inner_arith \
+                # Active arith = top of `_inner_arith` is an int depth, not a 'cmd' hold.
+                _arith_active = bool(_inner_arith) and _inner_arith[-1] != 'cmd'
+                if not q and not _arith_active \
                         and not (_span and depth == _span[-1][1]):
                     if s.startswith('<<<', i):   # herestring, as above
                         i += 3
@@ -2577,34 +2582,26 @@ def _strip_cmd_subst(s, join_only=False):
                         continue
                 if q:
                     ws = False
-                    if q == '"' and s.startswith('$(', i):
-                        # A nested `$()` inside "..." quotes for itself, and its
-                        # quotes are not this one's closer (#802).
+                    if ch == '\\' and q == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    # Nested `$()` inside "..." quotes for ITSELF (#802).
+                    if q == '"' and s.startswith('$(', i) \
+                            and not s.startswith('$((', i):
                         _qstack.append((depth, q))
                         q = ''
-                        if s.startswith('$((', i):   # the THIRD door into a `$(`, and
-                            depth += 2               # it needs the same arith seeding
-                            _inner_arith.append(depth)   # as the other two (#802).
-                            i += 3
-                        else:
-                            depth += 1
-                            i += 2
-                        ws = True
+                        if _inner_arith:
+                            _inner_arith.append('cmd')
+                        depth += 1
+                        i += 2
                         continue
-                    if q == '"' and ch == '`' and not tick:
-                        # A backtick body is OPAQUE: it ends at its own delimiter, and
-                        # neither its quotes nor its parens are this scan's. Suspending
-                        # the quote instead left its `)` counting against the enclosing
-                        # `$()`, which closed `$(echo "${X:-`echo )`}")` early (#802).
+                    if q == '"' and ch == '`':
                         _bt = _backtick_span(s, i)
                         if _bt is None:
                             if _jout is not None:
                                 break
                             return None
                         i = _bt
-                        continue
-                    if ch == '\\' and q == '"' and i + 1 < n:
-                        i += 2
                         continue
                     if ch == q:
                         if q == "'" and _jout is not None:
@@ -2672,7 +2669,7 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     ws = False
                     continue
-                if not tick and not _inner_arith and not _span \
+                if not tick and not _arith_active and not _span \
                         and _subst_ambiguous(s, i, ws):
                     if _jout is not None:
                         break
@@ -2692,6 +2689,8 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     continue
                 if s.startswith('$(', i):
+                    if _inner_arith:
+                        _inner_arith.append('cmd')
                     depth += 1
                     i += 2
                     ws = True
@@ -2711,7 +2710,10 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     if _qstack and depth == _qstack[-1][0]:
                         q = _qstack.pop()[1]
-                    if _inner_arith and depth < _inner_arith[-1]:
+                    if _inner_arith and _inner_arith[-1] == 'cmd':
+                        _inner_arith.pop()
+                    elif _inner_arith and isinstance(_inner_arith[-1], int) \
+                            and depth < _inner_arith[-1]:
                         _inner_arith.pop()
                     if depth == 0 and not tick:
                         closed = True
@@ -2785,6 +2787,12 @@ def _strip_cmd_subst(s, join_only=False):
             # the span's OWN level is exempt: a `$()` opened inside it is real. This is
             # the `_span` half of the same rule the `$()` walker states (#802).
             _bspan = []
+            # Command-depth (`len(_pstack)`) at which each `${` opened — including the
+            # outermost. A `}` only closes that frame at the same command depth, so a
+            # brace-group closer inside nested `$()` is not a PE closer (#802 PR HIGH).
+            _pe_cmd = [0]
+            # Legacy `$[arith]` spans at a command depth: `<<` is a shift there (#802).
+            _dbrack = []
             _nhd = []            # introducers queued on THIS line, in order
             closed = False
             _jout = [] if join_only else None   # join mode: normalized inner text
@@ -2827,27 +2835,34 @@ def _strip_cmd_subst(s, join_only=False):
                         q = ''
                     i += 1
                     continue
-                if ch == '\\' and i + 1 < n:
+                _ac = _ansi_c_span(s, i)
+                if _ac:
+                    if _jout is not None:
+                        _jout.append(raw[_j2r[i]:_j2r[_ac]])
+                        _jpos = _ac
+                    i = _ac
+                    continue
+                # Value-text escapes and backticks: `\'` is a literal apostrophe, and
+                # `` `echo }` `` owns its own `}` so it must not close this PE (#802).
+                if ch == '\\':
+                    if i + 1 >= n:
+                        if _jout is not None:
+                            break
+                        return None
                     i += 2
                     continue
-                _sp = _ansi_c_span(s, i) or (_backtick_span(s, i) if ch == '`' else None)
-                if _sp:
-                    if _jout is not None and ch == '$':
-                        _jout.append(raw[_j2r[i]:_j2r[_sp]])
-                        _jpos = _sp
-                    i = _sp
+                if ch == '`':
+                    _bt = _backtick_span(s, i)
+                    if _bt is None:
+                        if _jout is not None:
+                            break
+                        return None
+                    i = _bt
                     continue
-                # A HEREDOC BODY is data, here as everywhere else. `${X:-$(cat <<EOF
-                # ... EOF)}` runs a real command whose heredoc is a real heredoc, and
-                # reading that body as shell text let an apostrophe in prose open a
-                # quote that swallowed the closing brace (#802). The walker does not
-                # need to WALK the nested `$()` to get this right -- it needs to stop
-                # reading the one span that is not shell text, with the same two shared
-                # helpers every other walker uses for it.
                 # Inside a NESTED `${...}` at its own paren depth the body is a VALUE,
                 # not command text, so NONE of the three command-text readings apply: a
                 # paren is neither subshell nor grouping (`${Y//a/(}` is replacement
-                # text), `((` opens no arithmetic (`${Y//a/((}`), and `<<` introduces no
+                # text), `((` opens no arithmetic (`${Y:-((}`), and `<<` introduces no
                 # heredoc (`${Y:-<<EOF}` is a default value). Stating it for the parens
                 # alone left the other two open and each cost a review round -- the
                 # fictitious heredoc consumed the rest of the command, and the fictitious
@@ -2855,6 +2870,11 @@ def _strip_cmd_subst(s, join_only=False):
                 # `$((` are NOT exempt: bash really does substitute and really does
                 # evaluate arithmetic in a default value, and only the span's OWN level
                 # is text. Same rule the `$()` walker states at its `_span` level (#802).
+                # Include the outermost PE value: empty `_bspan` still means value text
+                # when `_pstack` is empty — but nested `$()` pushes `_pstack`, so command
+                # text there is live. Outer-default uses `_val_text` via `_bspan` for
+                # nested PE only; at the outermost PE body with no nested cmd, parens
+                # are still value text when `_pstack` is empty... handled below.
                 _val_text = bool(_bspan) and _bspan[-1] == len(_pstack)
                 # `not _narith`: a `$((...))` in a default value is REAL arithmetic, and
                 # its own `))` is a closer, not text. Without that the exemption ate the
@@ -2871,6 +2891,15 @@ def _strip_cmd_subst(s, join_only=False):
                 if _narith and s.startswith('))', i):
                     _narith -= 1
                     i += 2
+                    continue
+                # Legacy `$[1 << 2]`: shift, not heredoc — same rule as `$()` `_span` (#802).
+                if s.startswith('$[', i) and _dollar_run_is_even(s, i):
+                    _dbrack.append(len(_pstack))
+                    i += 2
+                    continue
+                if _dbrack and len(_pstack) == _dbrack[-1] and ch == ']':
+                    _dbrack.pop()
+                    i += 1
                     continue
                 if s.startswith('$(', i):
                     _pstack.append('S')
@@ -2910,7 +2939,8 @@ def _strip_cmd_subst(s, join_only=False):
                         i = _re
                         _nhd = [p for p in _nhd if p[1] != len(_pstack)]
                         continue
-                if _nsub and not _narith and not _val_text:
+                _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
+                if _nsub and not _narith and not _val_text and not _dbrack_here:
                     if s.startswith('<<<', i):   # a herestring is a WORD, not a body
                         i += 3
                         continue
@@ -2931,16 +2961,23 @@ def _strip_cmd_subst(s, join_only=False):
                 if s.startswith('${', i) and _dollar_run_is_even(s, i):
                     depth += 1
                     _bspan.append(len(_pstack))
+                    _pe_cmd.append(len(_pstack))
                     i += 2
                     continue
                 if ch == '}':
-                    depth -= 1
-                    if _bspan:
-                        _bspan.pop()
+                    # Only a `}` at this PE frame's command depth closes it. A
+                    # brace-group `}` inside nested `$()` is not a PE closer (#802).
+                    if _pe_cmd and len(_pstack) == _pe_cmd[-1]:
+                        depth -= 1
+                        _pe_cmd.pop()
+                        if _bspan:
+                            _bspan.pop()
+                        i += 1
+                        if depth == 0:
+                            closed = True
+                            break
+                        continue
                     i += 1
-                    if depth == 0:
-                        closed = True
-                        break
                     continue
                 i += 1
             if not closed:
@@ -2968,7 +3005,6 @@ def _strip_cmd_subst(s, join_only=False):
         out.append(s[i])
         i += 1
     return ''.join(out)
-
 
 def _glob_helper(word, deep=None, structured=True, raw=None):
     """The helper FILE a GLOB operand can expand to, or None.

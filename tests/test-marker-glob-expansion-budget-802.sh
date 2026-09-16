@@ -1486,6 +1486,37 @@ if [[ "$_hi_count" -le 1 ]]; then
 else
   no "#802 join-only case fallback does not duplicate remainder" "got=${_got}"
 fi
+# PR-mode HIGH regressions: arith-nested heredoc, brace-group } vs PE closer,
+# and legacy $[<<] shift inside ${...} (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_arith_hd='echo "$( (( $(cat <<EOF >/dev/null
+it'"'"'s data
+EOF
+printf 1) + 1 )); printf OK)" "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_brace_hd='echo "${X:-$( { true; }; cat <<'"'"'EOF'"'"'
+$( $(
+EOF
+)}" "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_legacy_br='echo "${X:-$(echo $[1 << 2]
+)}" "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_esc_q='echo "${X:-\'"'"'}" "["'
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_bt_brace='echo "${X:-`echo }`}" "["'
+for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" "$_pr_bt_brace"; do
+  if ! bash -n <<<"$_c" 2>/dev/null; then
+    no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
+  else
+    got=$(verdict "$_c")
+    if [[ "$got" == "OK|" ]]; then
+      ok "#802 PR-boundary bash-faithful reading: ${_c//$'"'"'\n'"'"'/ }"
+    else
+      no "#802 PR-boundary bash-faithful reading: ${_c//$'"'"'\n'"'"'/ }" "got=${got:-<empty>}"
+    fi
+  fi
+done
 # ...and the paired fail-CLOSED half for each: a helper in the SECOND heredoc body, and
 # a helper the subshell actually runs.
 #

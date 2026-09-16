@@ -1729,6 +1729,140 @@ echo b)
 hello
 $(echo a echo b)
 )" "["'
+# Compact `|` / `&&` / redirections get Bash `$()` delimiter spaces (#802 PR9 HIGH).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_pipe='echo "$(cat <<$(echo x|cat)
+hello
+$(echo x | cat)
+)" "["'
+_pr_hd_delim_and='echo "$(cat <<$(true&&echo x)
+hello
+$(true && echo x)
+)" "["'
+_pr_hd_delim_redir='echo "$(cat <<$(echo x>/dev/null)
+hello
+$(echo x > /dev/null)
+)" "["'
+# `2>&1` keeps the fd glued in Bash `$()` delimiter spelling (#802 commit-35 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_redir_fd='echo "$(cat <<$(echo x 2>&1)
+hello
+$(echo x 2>&1)
+)" "["'
+# `>` inside command `((...))` stays unspaced (#802 commit-36 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_arith_gt='echo "$(cat <<$(:; ((a>1)))
+hello
+$(:; ((a>1)))
+)" "["'
+# `2>&-` keeps the close-fd glued (#802 commit-36 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_redir_close='echo "$(cat <<$(echo x 2>&-)
+hello
+$(echo x 2>&-)
+)" "["'
+# `<>` / `&>>` are single tokens in Bash `$()` delimiter spelling (#802 commit-37 HIGH).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_diamond='echo "$(cat <<$(echo x <> /dev/null)
+hello
+$(echo x <> /dev/null)
+)" "["'
+_pr_hd_delim_and_append='echo "$(cat <<$(echo x&>>/tmp/a)
+hello
+$(echo x &>> /tmp/a)
+)" "["'
+# Process substitution is not a redirection (`<(…)` stays glued) (#802 commit-38 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_procsubst='echo "$(cat <<$(cat <(echo x))
+hello
+$(cat <(echo x))
+)" "["'
+# `>&$fd` / `>&file` destinations stay glued (#802 commit-38 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_redir_dollar='echo "$(cat <<$(echo x 2>&$fd)
+hello
+$(echo x 2>&$fd)
+)" "["'
+# Compact `;((` still arms arithmetic so `>` stays unspaced (#802 commit-38 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_arith_gt_compact='echo "$(cat <<$(:;((a>1)))
+hello
+$(:; ((a>1)))
+)" "["'
+# `[[ =~ ]]` regex `|` must stay unspaced — pipe padding invents a
+# terminator Bash rejects (`a|b` → `a | b`) (#802 commit-39 HIGH).
+_pr_hd_delim_re_pipe='echo "$(cat <<$([[ a =~ a|b ]])
+hello
+$([[ a =~ a|b ]])
+)" "["'
+# `[[ =~ ]]` regex grouping: `>` / `&` stay unspaced (#802 commit-40 HIGH).
+_pr_hd_delim_re_gt='echo "$(cat <<$([[ a =~ x(a>b) ]])
+hello
+$([[ a =~ x(a>b) ]])
+)" "["'
+# Process-subst background `&` must not invent a gap before `)` (#802).
+_pr_hd_delim_procsubst_bg='echo "$(cat <<$(cat <(echo x &))
+hello
+$(cat <(echo x &))
+)" "["'
+# Extglob alternation `|` stays unspaced (`@(a|b)`) (#802 commit-40 HIGH).
+# Validated with `bash -O extglob` below — plain `bash -n` rejects `@(` .
+_pr_hd_delim_extglob='echo "$(cat <<$(echo @(a|b))
+hello
+$(echo @(a|b))
+)" "["'
+# Extglob interior `>` / `&` stay unspaced (`@(a>b)`, `@(a&b)`) (#802 commit-41 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_extglob_gt='echo "$(cat <<$(echo @(a>b))
+hello
+$(echo @(a>b))
+)" "["'
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_extglob_amp='echo "$(cat <<$(echo @(a&b))
+hello
+$(echo @(a&b))
+)" "["'
+# Bash `{fd}>` descriptor stays glued — spacing invents a terminator (#802).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_fd_brace='echo "$(cat <<$(echo x {fd}> /dev/null)
+hello
+$(echo x {fd}> /dev/null)
+)" "["'
+# Ordinary argument `[[foo` is not the `[[` reserved word — later subshell
+# padding must still fire (`( echo x )`) (#802 commit-42 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_arg='echo "$(cat <<$(echo [[foo; (echo x))
+hello
+$(echo [[foo; ( echo x ))
+)" "["'
+# Argument-position `[[` after a command word is not the reserved word —
+# token-separator alone is not enough (`echo [[;`) (#802 commit-43 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_cmdpos='echo "$(cat <<$(echo [[; (echo x))
+hello
+$(echo [[; ( echo x ))
+)" "["'
+# `]]` inside a regex character class is not the conditional closer —
+# `|` must stay unspaced (`[]]x|y`) (#802 commit-44 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_class='echo "$(cat <<$([[ a =~ []]x|y ]])
+hello
+$([[ a =~ []]x|y ]])
+)" "["'
+# Embedded `]]` in an ordinary regex word is not the closer either —
+# word-start token only (`x]]y|z`) (#802 commit-45 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_word='echo "$(cat <<$([[ a =~ x]]y|z ]])
+hello
+$([[ a =~ x]]y|z ]])
+)" "["'
+# `]]` inside a regex grouping paren is not the closer — keep dbrack
+# while group depth > 0 (`x(]]|a>b)`) (#802 commit-46 HIGH).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dbrack_group='echo "$(cat <<$([[ a =~ x(]]|a>b) ]])
+hello
+$([[ a =~ x(]]|a>b) ]])
+)" "["'
 # 500-deep `$()` heredoc delimiter: bash -n accepts it; normalize must return
 # unscannable before Python's stack dies (#802 commit-31 MEDIUM).
 _pr_hd_delim_nest500="$(python3 - <<'PY'
@@ -1759,7 +1893,17 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_hd_delim_lead_ifs" "$_pr_hd_delim_lead_ifs_pad" \
           "$_pr_hd_delim_lead_ifs_and" \
           "$_pr_hd_delim_bt_ws" "$_pr_hd_delim_bt_only" \
-          "$_pr_hd_delim_esc_space_sep"; do
+          "$_pr_hd_delim_esc_space_sep" \
+          "$_pr_hd_delim_pipe" "$_pr_hd_delim_and" "$_pr_hd_delim_redir" \
+          "$_pr_hd_delim_redir_fd" "$_pr_hd_delim_arith_gt" \
+          "$_pr_hd_delim_redir_close" \
+          "$_pr_hd_delim_diamond" "$_pr_hd_delim_and_append" \
+          "$_pr_hd_delim_procsubst" "$_pr_hd_delim_redir_dollar" \
+          "$_pr_hd_delim_arith_gt_compact" "$_pr_hd_delim_re_pipe" \
+          "$_pr_hd_delim_re_gt" "$_pr_hd_delim_procsubst_bg" \
+          "$_pr_hd_delim_dbrack_arg" "$_pr_hd_delim_dbrack_cmdpos" \
+          "$_pr_hd_delim_dbrack_class" "$_pr_hd_delim_dbrack_word" \
+          "$_pr_hd_delim_dbrack_group"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else
@@ -1771,6 +1915,35 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
     fi
   fi
 done
+# Extglob delimiter: requires `extglob`; `|` / `>` / `&` stay unspaced (#802).
+for _eg_name in extglob:_pr_hd_delim_extglob \
+                extglob_gt:_pr_hd_delim_extglob_gt \
+                extglob_amp:_pr_hd_delim_extglob_amp; do
+  _eg_label=${_eg_name%%:*}
+  _eg_var=${_eg_name#*:}
+  _eg_payload=${!_eg_var}
+  if ! bash -O extglob -n <<<"$_eg_payload" 2>/dev/null; then
+    no "#802 PR-boundary ${_eg_label} delimiter is valid bash" "bash rejected"
+  else
+    got=$(verdict "$_eg_payload")
+    if [[ "$got" == "OK|" ]]; then
+      ok "#802 PR-boundary ${_eg_label} delimiter stays OK|"
+    else
+      no "#802 PR-boundary ${_eg_label} delimiter stays OK|" "got=${got:-<empty>}"
+    fi
+  fi
+done
+# `{fd}>` descriptor glue (#802 commit-41 HIGH).
+if ! bash -n <<<"$_pr_hd_delim_fd_brace" 2>/dev/null; then
+  no "#802 PR-boundary {fd}> delimiter is valid bash" "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_fd_brace")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary {fd}> delimiter stays OK|"
+  else
+    no "#802 PR-boundary {fd}> delimiter stays OK|" "got=${got:-<empty>}"
+  fi
+fi
 # Invented space-collapsed terminator after newline collapse: bash rejects;
 # classifier must fail closed, not OK| (#802 commit-33 MEDIUM).
 if bash -n <<<"$_pr_hd_delim_nl_invent" 2>/dev/null; then

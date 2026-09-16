@@ -2322,13 +2322,39 @@ def _comsub_delim_normalize(inner, _nest=0):
     is dropped. Command-separating newlines are kept — Bash's `$()`
     heredoc-delimiter spelling retains them, so collapsing `\n` to a
     space would invent a terminator (`$(echo a echo b)`) that Bash
-    never recognizes (#802). Quoted/escaped text is kept, matching
-    `<<$(echo    x)` → terminator `$(echo x)` and `<<$(echo 'a  b')`
-    keeping the quotes. Escape/quote ownership is retained across the
-    final trim so `\\ ` and `\\;` are not mistaken for bare trailing
-    space/`;` (#802). Nested `${...}`, `$((...))`, `$[...]`, and
-    classic `` `...` `` substitutions keep source spelling — only
-    command text outside those spans is IFS-normalized (#802).
+    never recognizes (#802). Compact unquoted `|` / `||` / `&&` and
+    redirections get the spaces Bash prints (`echo x|cat` →
+    `echo x | cat`, `echo x>/dev/null` → `echo x > /dev/null`,
+    including `<>` and `&>>`) so the
+    heredoc terminator matches (#802). After `>&` / `<&` that take an
+    fd digit or `-` / `$fd` / file destinations, keep them glued
+    (`2>&1`, `2>&-`, `2>&$fd`, `>&file`) (#802). Inside
+    command `((...))`, `>` / `<` are arithmetic — not redirections —
+    so they stay unspaced (`((a>1))`, not `((a > 1))`); arm that
+    tracking even after compact `;` (`:;((a>1))`) (#802). Inside
+    `[[ … ]]` (reserved word only at shell command position — not
+    `echo [[;` or glued `[[foo`), `|` / `||` are not pipelines, and
+    `>` / `&` inside grouping parens are regex text — not
+    redirections/background — so they stay unspaced
+    (`[[ a =~ a|b ]]`, `[[ a =~ x(a>b) ]]`). Conditional `]]` is
+    recognized only as a standalone word-start token (same boundary
+    rule as `[[`) — not inside `x]]y|z`, a pattern character class
+    (`[[ a =~ []]x|y ]]`), or a regex grouping paren
+    (`[[ a =~ x(]]|a>b) ]]`; keep `dbrack` while group depth > 0)
+    (#802). Extglob words (`@(a|b)`, `*(…)`, …) keep interior `|`
+    / `>` / `&` / `&&` unspaced (`@(a>b)`, `@(a&b)`) (#802). After
+    background `&`, do not invent a gap before a closing `)`
+    (`<(echo x &)` stays unspaced) (#802). Process substitutions
+    `<(…)` / `>(…)` are not redirections (#802). Unquoted `{name}`
+    fd descriptors stay glued to `>` / `<` (`{fd}>file`, not
+    `{fd} > file`) (#802). Quoted/escaped text is kept,
+    matching `<<$(echo    x)` → terminator `$(echo x)` and
+    `<<$(echo 'a  b')` keeping the quotes. Escape/quote ownership is
+    retained across the final trim so `\\ ` and `\\;` are not mistaken
+    for bare trailing space/`;` (#802). Nested `${...}`, `$((...))`,
+    `$[...]`, and classic `` `...` `` substitutions keep source
+    spelling — only command text outside those spans is
+    IFS-normalized (#802).
 
     Leading unquoted IFS is dropped before ordinary words (`echo`), but
     kept as one space when the body starts with `(` so joining onto the
@@ -2348,6 +2374,24 @@ def _comsub_delim_normalize(inner, _nest=0):
     space = True
     had_leading_ifs = False
     subshell_depth = 0
+    # Paren count inside command `((...))` (2 at open). While > 0, `>`/`<`
+    # are arithmetic comparisons/shifts, not redirections (#802).
+    arith_paren = 0
+    # Depth of open `[[ … ]]`. While > 0, `|` / `||` are regex/extglob or
+    # conditional glue — not pipelines — so they must not be padded (#802).
+    dbrack = 0
+    # Grouping `(` depth inside `[[ … ]]`. While > 0, `>` / `<` / `&` are
+    # regex text, not redirections/background (#802).
+    dbrack_paren = 0
+    # Pattern character class inside `[[ … ]]`. While set, `]` closes the
+    # class (first `]` after `[`/`[!`/`[^` is literal) and `]]` is not the
+    # conditional closer (#802).
+    dbrack_class = False
+    dbrack_class_lit = False
+    # Paren depth inside an extglob word (`@(…)`, `*(…)`, `+(…)`, `?(…)`,
+    # `!(…)`). While > 0, `|` / `>` / `&` are pattern text — not
+    # pipelines/redirections/background (#802).
+    extglob_depth = 0
     force_gap = False  # invent one space before next non-IFS (`;` / subshell)
     i = 0
     n = len(inner)
@@ -2358,8 +2402,49 @@ def _comsub_delim_normalize(inner, _nest=0):
             out.append((' ', False))
         force_gap = False
 
+    def _pad_before_op():
+        """Space before a compact operator unless already separated (#802)."""
+        nonlocal force_gap
+        force_gap = False
+        if out and out[-1][0] not in ' \t\n':
+            out.append((' ', False))
+
+    def _redir_fd_glued():
+        """True when `out` ends with a standalone fd before `>`/`<`.
+
+        Covers numeric `2>` and Bash `{identifier}` descriptors (`{fd}>`)
+        so the operator stays glued (#802).
+        """
+        j = len(out) - 1
+        if j < 0:
+            return False
+        # Unquoted `{name}` descriptor prefix (#802).
+        if out[j][0] == '}':
+            j -= 1
+            if j < 0 or not (out[j][0].isalnum() or out[j][0] == '_'):
+                return False
+            while j >= 0 and (out[j][0].isalnum() or out[j][0] == '_'):
+                j -= 1
+            if j < 0 or out[j][0] != '{':
+                return False
+            j -= 1
+            if j < 0:
+                return True
+            return out[j][0] in ' \t\n|&;<>()'
+        if not out[j][0].isdigit():
+            return False
+        while j >= 0 and out[j][0].isdigit():
+            j -= 1
+        if j < 0:
+            return True
+        return out[j][0] in ' \t\n|&;<>()'
+
     while i < n:
         c = inner[i]
+        # After `[` / `[!` / `[^`, only an immediate `]` is literal; any
+        # other glyph means a later `]` closes the class (#802).
+        if dbrack_class and dbrack_class_lit and c != ']':
+            dbrack_class_lit = False
         if q:
             _gap_before_content()
             out.append((c, True))
@@ -2463,6 +2548,23 @@ def _comsub_delim_normalize(inner, _nest=0):
             force_gap = False
             i += 1
             continue
+        # Inside command `((...))`: track grouping/close; never treat
+        # `>`/`<` as redirections (arithmetic compare/shift) (#802).
+        if arith_paren:
+            if c == '(':
+                _gap_before_content()
+                out.append(('(', False))
+                arith_paren += 1
+                space = False
+                i += 1
+                continue
+            if c == ')':
+                force_gap = False
+                out.append((')', False))
+                arith_paren -= 1
+                space = False
+                i += 1
+                continue
         # Subshell closer: drop a trailing `;` inside `(...)`, pad, emit `)`.
         if c == ')' and subshell_depth:
             force_gap = False
@@ -2476,18 +2578,26 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             i += 1
             continue
-        # Command-position `(`: keep leading IFS only before `(`, pad
-        # subshell interiors; leave `((` arithmetic unpadded (#802).
-        if space and c == '(':
+        # Command `((...))` arithmetic — arm even when `space` is false
+        # (e.g. after compact `;`: `:;((a>1))`) so `>` stays compare (#802).
+        # Not inside `[[ … ]]` — those parens are conditional/regex groups (#802).
+        if (c == '(' and i + 1 < n and inner[i + 1] == '('
+                and not arith_paren and not dbrack):
             if not out and had_leading_ifs:
                 out.append((' ', False))
-            if i + 1 < n and inner[i + 1] == '(':
-                out.append(('(', False))
-                out.append(('(', False))
-                i += 2
-                space = False
-                force_gap = False
-                continue
+            _gap_before_content()
+            out.append(('(', False))
+            out.append(('(', False))
+            i += 2
+            space = False
+            force_gap = False
+            arith_paren += 2
+            continue
+        # Command-position single `(`: keep leading IFS only before `(`,
+        # pad subshell interiors. Not inside `[[ … ]]` (#802).
+        if space and c == '(' and not dbrack:
+            if not out and had_leading_ifs:
+                out.append((' ', False))
             out.append(('(', False))
             subshell_depth += 1
             space = True
@@ -2500,6 +2610,192 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             force_gap = True
             i += 1
+            continue
+        # `[[ … ]]` — reserved word only at shell command position
+        # (`_cmd_position`), and not glued to a following word char
+        # (`echo [[;` / `[[foo` are ordinary arguments) (#802).
+        if (c == '[' and i + 1 < n and inner[i + 1] == '['
+                and (i + 2 >= n or inner[i + 2] in ' \t\n|&;<>()')
+                and _cmd_position(inner, i)):
+            _gap_before_content()
+            out.append(('[', False))
+            out.append(('[', False))
+            i += 2
+            space = False
+            force_gap = False
+            dbrack += 1
+            continue
+        # Pattern character class inside `[[ … ]]` — before `]]` closer
+        # and before treating `(` as a regex group (#802).
+        if dbrack and not dbrack_class and c == '[':
+            _gap_before_content()
+            out.append(('[', False))
+            i += 1
+            dbrack_class = True
+            # `]` right after `[` / `[!` / `[^` is a literal member.
+            dbrack_class_lit = True
+            if i < n and inner[i] in '!^':
+                out.append((inner[i], False))
+                i += 1
+            space = False
+            force_gap = False
+            continue
+        if dbrack and dbrack_class and c == ']':
+            force_gap = False
+            out.append((']', False))
+            i += 1
+            if dbrack_class_lit:
+                dbrack_class_lit = False
+            else:
+                dbrack_class = False
+            space = False
+            continue
+        # Conditional `]]` closer — standalone word-start token only
+        # (same boundary rule as `[[`): not glued to a preceding word
+        # char (`x]]y|z`), not while inside a character class
+        # (`[]]x|y` is class text), and not while inside a regex
+        # grouping paren (`x(]]|a>b)` — `(`/`|` look like boundaries)
+        # (#802).
+        if (dbrack and not dbrack_class and not dbrack_paren and c == ']'
+                and i + 1 < n and inner[i + 1] == ']'
+                and (i + 2 >= n or inner[i + 2] in ' \t\n|&;<>()')
+                and (i == 0 or inner[i - 1] in ' \t\n|&;<>()')):
+            force_gap = False
+            out.append((']', False))
+            out.append((']', False))
+            i += 2
+            space = False
+            dbrack -= 1
+            dbrack_paren = 0
+            dbrack_class = False
+            dbrack_class_lit = False
+            continue
+        # Grouping `(` / `)` inside `[[ … ]]` (regex groups) (#802).
+        # Not inside a character class — `[`…`]` members are literal (#802).
+        if dbrack and not dbrack_class and c == '(':
+            _gap_before_content()
+            out.append(('(', False))
+            dbrack_paren += 1
+            space = False
+            force_gap = False
+            i += 1
+            continue
+        if dbrack and dbrack_paren and not dbrack_class and c == ')':
+            force_gap = False
+            out.append((')', False))
+            dbrack_paren -= 1
+            space = False
+            i += 1
+            continue
+        # Extglob word openers: `@(…)`, `*(…)`, `+(…)`, `?(…)`, `!(…)` (#802).
+        if (not arith_paren and c in '@!*?+' and i + 1 < n
+                and inner[i + 1] == '('):
+            _gap_before_content()
+            out.append((c, False))
+            out.append(('(', False))
+            i += 2
+            space = False
+            force_gap = False
+            extglob_depth += 1
+            continue
+        if extglob_depth:
+            if c == '(':
+                _gap_before_content()
+                out.append(('(', False))
+                extglob_depth += 1
+                space = False
+                force_gap = False
+                i += 1
+                continue
+            if c == ')':
+                force_gap = False
+                out.append((')', False))
+                extglob_depth -= 1
+                space = False
+                i += 1
+                continue
+        # Compact `|` / `||` / `&&` / redirections: Bash inserts spaces in
+        # `$()` heredoc-delimiter spelling (`x|cat` → `x | cat`) (#802).
+        # Skip while inside `((...))` — those glyphs are arithmetic (#802).
+        # Skip `|` / `||` while inside `[[ … ]]` or extglob — regex (#802).
+        # Skip `>` / `<` / `&` / `&&` while inside `[[` grouping parens
+        # or extglob words (`@(a>b)`, `@(a&b)`) (#802).
+        if (not arith_paren and not (dbrack and dbrack_paren)
+                and not extglob_depth
+                and c == '&' and i + 1 < n and inner[i + 1] == '&'):
+            _pad_before_op()
+            out.append(('&', False))
+            out.append(('&', False))
+            i += 2
+            space = False
+            force_gap = True
+            continue
+        if (not arith_paren and not dbrack and not extglob_depth
+                and c == '|' and i + 1 < n and inner[i + 1] == '|'):
+            _pad_before_op()
+            out.append(('|', False))
+            out.append(('|', False))
+            i += 2
+            space = False
+            force_gap = True
+            continue
+        if (not arith_paren and not dbrack and not extglob_depth
+                and c == '|'):
+            _pad_before_op()
+            out.append(('|', False))
+            i += 1
+            space = False
+            force_gap = True
+            continue
+        # Longest-first redirection tokens (before bare `>` / `<`).
+        _redir = None
+        if (not arith_paren and not (dbrack and dbrack_paren)
+                and not extglob_depth):
+            # Longest-first: `&>>` before `&>`/`>>`; `<>` before `<`/`>` (#802).
+            for _tok in ('<<-', '<<<', '&>>', '>>', '>|', '>&', '<&', '<>',
+                         '&>', '<<', '>', '<'):
+                if not inner.startswith(_tok, i):
+                    continue
+                # `<(…)` / `>(…)` are process substitution, not redirections (#802).
+                if _tok in ('<', '>') and i + 1 < n and inner[i + 1] == '(':
+                    continue
+                _redir = _tok
+                break
+        if _redir is not None:
+            # Standalone fd digits / `{name}` stay glued
+            # (`2>/dev/null` → `2> /dev/null`, `{fd}>` stays `{fd}>`);
+            # a digit that is part of a word still needs a gap (`x2>` → `x2 >`).
+            if _redir[0] in '<>' and _redir_fd_glued():
+                force_gap = False
+            else:
+                _pad_before_op()
+            for _ch in _redir:
+                out.append((_ch, False))
+            i += len(_redir)
+            space = False
+            # `>&` / `<&` destinations stay glued: N, `-`, `$fd`, file (#802).
+            if (_redir in ('>&', '<&') and i < n
+                    and inner[i] not in ' \t\n'):
+                force_gap = False
+            else:
+                force_gap = True
+            continue
+        # Trailing/background `&` (not `&&` / `&>` / `<&` — handled above).
+        # Inside `[[ … ]]` or extglob, `&` is pattern text, not background (#802).
+        if not arith_paren and not dbrack and not extglob_depth and c == '&':
+            _pad_before_op()
+            out.append(('&', False))
+            i += 1
+            space = False
+            # Do not invent a gap before a closing `)` — process-subst
+            # (`<(echo x &)`) and similar keep `&)` glued (#802).
+            _j = i
+            while _j < n and inner[_j] in ' \t':
+                _j += 1
+            if _j < n and inner[_j] == ')':
+                force_gap = False
+            else:
+                force_gap = True
             continue
         _gap_before_content()
         out.append((c, False))

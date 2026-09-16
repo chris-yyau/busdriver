@@ -2288,57 +2288,295 @@ def _cmd_nl_drains_hd(q, arith_active, value_span=False):
     return (not q) and (not arith_active) and (not value_span)
 
 
-def _copy_delim_expansion(s, j, op, d):
+def _grouping_pending(stack, narith=None, ap_depths=None):
+    """Whether the next `)` closes arithmetic grouping, not `))` (#802).
+
+    Command `P` below an open `$ ((` must not steal the arith closer — the
+    `$()` walker keeps `A`/`AE` on top of that `P`; PE uses `AP` for the
+    same inner grouping (`(1+(2))` inside `$ ((`).
+
+    Only an AP belonging to the *current* arith depth suppresses `))`.
+    An outer `(…)` must not steal the closer of nested `$((…))` (#802).
+    """
+    if not (stack and stack[-1] == 'AP'):
+        return False
+    if narith is None or ap_depths is None:
+        return True
+    return bool(ap_depths) and ap_depths[-1] == narith
+
+
+# Mutual recursion between `_copy_delim_expansion` and `_comsub_delim_normalize`
+# for nested `$()` delimiter spelling. Cap before Python's stack dies — a
+# 500-deep `<<$($(echo …` that `bash -n` accepts must become unscannable,
+# not `BLOCK_CLASSIFIER_ERROR|RecursionError` (#802 commit-31 MEDIUM).
+_DELIM_NEST_BUDGET = 64
+# Distinct from `_heredoc_delim`'s `None` ("not a heredoc here"): budget
+# exhaustion must fail the whole command closed as unscannable.
+_DELIM_UNSCANNABLE = object()
+
+
+def _comsub_delim_normalize(inner, _nest=0):
+    """Bash `$()` heredoc-delimiter spelling without executing (#802).
+
+    Unquoted space/tab runs collapse to one space; a trailing unquoted `;`
+    is dropped. Command-separating newlines are kept — Bash's `$()`
+    heredoc-delimiter spelling retains them, so collapsing `\n` to a
+    space would invent a terminator (`$(echo a echo b)`) that Bash
+    never recognizes (#802). Quoted/escaped text is kept, matching
+    `<<$(echo    x)` → terminator `$(echo x)` and `<<$(echo 'a  b')`
+    keeping the quotes. Escape/quote ownership is retained across the
+    final trim so `\\ ` and `\\;` are not mistaken for bare trailing
+    space/`;` (#802). Nested `${...}`, `$((...))`, `$[...]`, and
+    classic `` `...` `` substitutions keep source spelling — only
+    command text outside those spans is IFS-normalized (#802).
+
+    Leading unquoted IFS is dropped before ordinary words (`echo`), but
+    kept as one space when the body starts with `(` so joining onto the
+    caller's `$ (` does not forge `$((...))` — Bash wants
+    `<<$( (echo x) )` → terminator `$( ( echo x ))` (#802). Subshell
+    `(` opened at command position gets the same interior pad Bash
+    prints (`( echo x )`); `((` arithmetic does not.
+
+    Nested command `$()` charges `_nest` against `_DELIM_NEST_BUDGET`;
+    exceeding it returns None so the caller fails closed (#802).
+    """
+    # (char, owned): owned chars came from quote, `\`, backtick body,
+    # or a nested expansion span and must not be trimmed by the
+    # trailing unquoted space/`;` rule (#802).
+    out = []
+    q = ''
+    space = True
+    had_leading_ifs = False
+    subshell_depth = 0
+    force_gap = False  # invent one space before next non-IFS (`;` / subshell)
+    i = 0
+    n = len(inner)
+
+    def _gap_before_content():
+        nonlocal force_gap, space
+        if force_gap and out and out[-1][0] != ' ':
+            out.append((' ', False))
+        force_gap = False
+
+    while i < n:
+        c = inner[i]
+        if q:
+            _gap_before_content()
+            out.append((c, True))
+            if q == chr(34) and c == chr(92) and i + 1 < n \
+                    and inner[i + 1] in (chr(34), chr(92), '$', chr(96)):
+                out.append((inner[i + 1], True))
+                i += 2
+                space = False
+                continue
+            if c == q:
+                q = ''
+            i += 1
+            space = False
+            continue
+        if c in ("'", chr(34)):
+            if not out and had_leading_ifs:
+                # quoted word: leading IFS still drops (Bash `$('x')` → `$('x')`)
+                pass
+            _gap_before_content()
+            q = c
+            out.append((c, True))
+            i += 1
+            space = False
+            continue
+        if c == chr(92) and i + 1 < n:
+            if not out and had_leading_ifs:
+                pass
+            _gap_before_content()
+            out.append((c, True))
+            out.append((inner[i + 1], True))
+            i += 2
+            space = False
+            continue
+        # Nested expansions: reuse the delimiter balancer; PE/arith/`$[`
+        # stay verbatim, nested `$()` still get command spelling (#802).
+        if c == '$' and i + 1 < n and inner[i + 1] in '({[' \
+                and _dollar_run_is_even(inner, i):
+            if not out and had_leading_ifs:
+                pass
+            _gap_before_content()
+            _op = inner[i + 1]
+            # Only command `$()` re-enters normalize; charge the nest
+            # budget before that mutual recursion (#802).
+            _cmd_nest = (_op == '(' and not (i + 2 < n and inner[i + 2] == '('))
+            if _cmd_nest and _nest >= _DELIM_NEST_BUDGET:
+                return None
+            _tmp = [c, _op]
+            i = _copy_delim_expansion(
+                inner, i + 2, _op, _tmp,
+                _nest=(_nest + 1) if _cmd_nest else _nest)
+            if i is None:
+                return None
+            for _ch in _tmp:
+                out.append((_ch, True))
+            space = False
+            continue
+        # Classic `` `...` ``: Bash keeps the source spelling inside the
+        # ticks for heredoc delimiters (escaped `\`` does not close) (#802).
+        if c == chr(96):
+            if not out and had_leading_ifs:
+                pass
+            _gap_before_content()
+            out.append((c, True))
+            i += 1
+            while i < n:
+                _ch = inner[i]
+                if _ch == chr(92) and i + 1 < n:
+                    out.append((_ch, True))
+                    out.append((inner[i + 1], True))
+                    i += 2
+                    continue
+                out.append((_ch, True))
+                i += 1
+                if _ch == chr(96):
+                    break
+            space = False
+            continue
+        if c in ' \t\n':
+            if not out:
+                had_leading_ifs = True
+                space = True
+                i += 1
+                continue
+            # Newlines separate commands in `$()` spelling; keep them so
+            # `$(echo a\necho b)` is not forged into `$(echo a echo b)` (#802).
+            if c == '\n':
+                out.append(('\n', False))
+                space = True
+                force_gap = False
+                i += 1
+                continue
+            # After subshell `(` we set space=True+force_gap; source IFS must
+            # still realize that gap so `( (echo` does not glue to `((` (#802).
+            # An owned space (`\ `, quoted) is word text, not the unquoted
+            # separator — keep a following unquoted IFS run as one space so
+            # `echo x\  y` stays `echo x\  y`, matching Bash (#802).
+            if force_gap or not space:
+                if out[-1][0] != ' ' or out[-1][1]:
+                    out.append((' ', False))
+            space = True
+            force_gap = False
+            i += 1
+            continue
+        # Subshell closer: drop a trailing `;` inside `(...)`, pad, emit `)`.
+        if c == ')' and subshell_depth:
+            force_gap = False
+            while out and not out[-1][1] and out[-1][0] in ' ;':
+                out.pop()
+            if out and out[-1][0] not in '(':
+                if out[-1][0] != ' ':
+                    out.append((' ', False))
+            out.append((')', False))
+            subshell_depth -= 1
+            space = False
+            i += 1
+            continue
+        # Command-position `(`: keep leading IFS only before `(`, pad
+        # subshell interiors; leave `((` arithmetic unpadded (#802).
+        if space and c == '(':
+            if not out and had_leading_ifs:
+                out.append((' ', False))
+            if i + 1 < n and inner[i + 1] == '(':
+                out.append(('(', False))
+                out.append(('(', False))
+                i += 2
+                space = False
+                force_gap = False
+                continue
+            out.append(('(', False))
+            subshell_depth += 1
+            space = True
+            force_gap = True
+            i += 1
+            continue
+        if c == ';':
+            _gap_before_content()
+            out.append((';', False))
+            space = False
+            force_gap = True
+            i += 1
+            continue
+        _gap_before_content()
+        out.append((c, False))
+        space = False
+        i += 1
+    while out and not out[-1][1] and out[-1][0] in ' ;':
+        out.pop()
+    return [c for c, _owned in out]
+
+
+def _copy_delim_expansion(s, j, op, d, _nest=0):
     """Copy an expansion-shaped delimiter from `s[j]` until `op` balances.
 
-    Every source character is kept — the terminator is the literal spelling.
-    Quotes and escapes still govern nesting, using the same classification
-    `_heredoc_delim` already applies to the outer word (#802).
+    Nesting follows quotes/escapes the same way `_heredoc_delim` classifies
+    the outer word. `$()` delimiters use Bash's command spelling (collapsed
+    unquoted space, no trailing `;`) without executing (#802). `${`/`$[`
+    keep source characters. Returns None when nested `$()` spelling would
+    exceed `_DELIM_NEST_BUDGET` (#802).
     """
     cl = '}' if op == '{' else (')' if op == '(' else ']')
     depth = 1
     dq = ''
+    chunk = []
     while j < len(s) and depth:
         c = s[j]
         if dq:
             if dq == chr(34) and c == chr(92) and j + 1 < len(s) \
                     and s[j + 1] in (chr(34), chr(92), '$', chr(96)):
-                d.append(c)
-                d.append(s[j + 1])
+                chunk.append(c)
+                chunk.append(s[j + 1])
                 j += 2
                 continue
-            d.append(c)
+            chunk.append(c)
             if c == dq:
                 dq = ''
             j += 1
             continue
         if c in ("'", chr(34)):
             dq = c
-            d.append(c)
+            chunk.append(c)
             j += 1
             continue
         if c == chr(92) and j + 1 < len(s):
-            d.append(c)
-            d.append(s[j + 1])
+            chunk.append(c)
+            chunk.append(s[j + 1])
             j += 2
             continue
         if op == '{':
             if s.startswith('${', j) and _dollar_run_is_even(s, j):
-                d.append('${')
+                chunk.append('${')
                 j += 2
                 depth += 1
                 continue
-            d.append(c)
+            chunk.append(c)
             j += 1
             if c == '}':
                 depth -= 1
             continue
-        d.append(c)
+        chunk.append(c)
         j += 1
         if c == op:
             depth += 1
         elif c == cl:
             depth -= 1
+    if op == '(' and chunk and chunk[-1] == ')':
+        # `$ ((...))` arithmetic body starts with `(` — keep source spelling.
+        # A command `$()` body does not; apply Bash command spelling (#802).
+        if chunk[0] == '(':
+            d.extend(chunk)
+        else:
+            _norm = _comsub_delim_normalize(''.join(chunk[:-1]), _nest=_nest)
+            if _norm is None:
+                return None
+            d.extend(_norm)
+            d.append(')')
+    else:
+        d.extend(chunk)
     return j
 
 
@@ -2363,6 +2601,9 @@ def _heredoc_delim(s, i):
         j += 1
     d = []
     dq = ''
+    # Outer quote/escape removal, not `$()` spelling normalize, marks a quoted
+    # body. `<<$(echo    x)` must stay unquoted after collapsing space (#802).
+    _had_quote = False
     # `<<''` delimits on the EMPTY line: the quotes are removed to get the terminator,
     # and removing them can leave NOTHING -- which is a delimiter, not the absence of
     # one, and reading it as absence scanned the body as live shell text (#802).
@@ -2385,26 +2626,31 @@ def _heredoc_delim(s, i):
             # delimiter is the quoted text -- exactly as `$'...'` is handled just below.
             # Keeping the `$` looked for `$EOF`, never closed the body, and the scan ate
             # the enclosing substitution's `)` (#802).
+            _had_quote = True
             j += 1
             continue
         if c == '$' and s[j + 1:j + 2] == chr(39):
             _e = _ansi_c_span(s, j)
             if _e is None:
                 return None
+            _had_quote = True
             d.append(_decode_escapes(s[j + 2:_e - 1]))
             j = _e
             continue
         if c in ("'", chr(34)):
+            _had_quote = True
             dq = c
             j += 1
             continue
         if c == chr(92) and j + 1 < len(s):
+            _had_quote = True
             j += 1
             d.append(s[j])
             j += 1
             continue
-        # Expansion-shaped delimiter words keep their internal punctuation —
-        # `<<$(x)` / `<<${X:-a b}` delimit on the literal spelling (#802).
+        # Expansion-shaped delimiter words keep their punctuation.
+        # `<<$(echo    x)` matches Bash's `$()` spelling (`$(echo x)`);
+        # `<<${X:-a b}` stays the source characters (#802).
         # Inside `${...}`, bare `{` is literal — only `${` nests (#802).
         # `$${` is PID + literal brace — `_dollar_run_is_even` gates real `${` (#802).
         if c == '$' and j + 1 < len(s) and s[j + 1] in '({[' \
@@ -2413,13 +2659,14 @@ def _heredoc_delim(s, i):
             d.append(c)
             d.append(_op)
             j = _copy_delim_expansion(s, j + 2, _op, d)
+            if j is None:
+                return _DELIM_UNSCANNABLE
             continue
         if c in ' \t\n;&|<>()':
             break
         d.append(c)
         j += 1
-    _quoted = s[w0:j] != "".join(d)   # any quote/escape syntax was removed
-    return (("".join(d), strip, _quoted), j) if (d or j > w0) else None
+    return (("".join(d), strip, _had_quote), j) if (d or j > w0) else None
 
 
 def _heredoc_body_end(s, nl, delims, raw=None, j2r=None, r2j=None):
@@ -2555,6 +2802,8 @@ def _strip_cmd_subst(s, join_only=False):
                 ws = True
                 continue
             _hd = _heredoc_delim(s, i)
+            if _hd is _DELIM_UNSCANNABLE:
+                return None
             if _hd:
                 heredocs.append(_hd[0])
                 out.append(s[i:_hd[1]])
@@ -2682,6 +2931,8 @@ def _strip_cmd_subst(s, join_only=False):
                         ws = True
                         continue
                     _hd = _heredoc_delim(s, i)
+                    if _hd is _DELIM_UNSCANNABLE:
+                        return None
                     if _hd:
                         _cmd_d = 1 + sum(1 for x in _opstack if x in ('S', 'PS'))
                         inner_heredocs.append((_hd[0], _cmd_d))
@@ -2974,6 +3225,9 @@ def _strip_cmd_subst(s, join_only=False):
             # closing `}`. The `$()` walker above pairs its parens for the same reason
             # (#802).
             _pstack = []
+            # Arith depth that pushed each AP — outer grouping must not suppress
+            # nested `$((…))` closers (#802 commit-32 HIGH).
+            _ap_depth = []
             _qstack = []         # (depth, quote) suspended by a nested `$()`, as above
             # Paren depth at which each NESTED `${...}` opened. A paren inside one is
             # literal text -- `$(echo ${Y//a/(})` is a replacement, not a subshell -- and
@@ -3105,9 +3359,12 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 3 if _ak == 'AE' else 2
                     _ws = False
                     continue
-                if _narith and s.startswith('))', i):
+                if _narith and s.startswith('))', i) \
+                        and not _grouping_pending(_pstack, _narith, _ap_depth):
                     # Only close arith when deeper than the `$()`-suspend floor.
                     # Otherwise `$(echo 1))` is two command closers, not `))` (#802).
+                    # Grouping `)` must pair first — `$(((1+(2))` is not arith close
+                    # (same `_opstack` invariant as the `$()` walker) (#802).
                     _floor = _narith_floor[-1] if _narith_floor else 0
                     if _narith > _floor:
                         _narith -= 1
@@ -3141,6 +3398,12 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 2
                     _ws = True
                     continue
+                if ch == '(' and _narith > _floor:
+                    _pstack.append('AP')
+                    _ap_depth.append(_narith)
+                    i += 1
+                    _ws = True
+                    continue
                 if ch == '(' and _nsub:
                     _pstack.append('P')
                     i += 1
@@ -3148,6 +3411,8 @@ def _strip_cmd_subst(s, join_only=False):
                     continue
                 if ch == ')' and _pstack:
                     _kind = _pstack.pop()
+                    if _kind == 'AP' and _ap_depth:
+                        _ap_depth.pop()
                     if _kind == 'S':
                         _nsub -= 1
                         if _narith_floor:
@@ -3200,6 +3465,8 @@ def _strip_cmd_subst(s, join_only=False):
                         i += 3
                         continue
                     _hd = _heredoc_delim(s, i)
+                    if _hd is _DELIM_UNSCANNABLE:
+                        return None
                     if _hd:
                         _cmd_d = sum(1 for x in _pstack if x in ('S', 'PS'))
                         _nhd.append((_hd[0], _cmd_d))

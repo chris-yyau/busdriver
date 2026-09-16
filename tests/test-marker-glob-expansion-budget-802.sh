@@ -1627,6 +1627,117 @@ _pr_pe_hd_arith_nl='echo "${X:-$(: <<EOF $((1
 it'"'"'s data
 EOF
 printf ok)}" "["'
+# PE walker: grouping `)` pairs before arithmetic `))` (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_hd_arith_group='echo "${X:-$(: <<EOF $(((1+(2))
++3))
+it'"'"'s data
+EOF
+printf ok)}" "["'
+# `$()` walker control: same nested grouping (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_arith_group='echo "$(: <<EOF $(((1+(2))
++3))
+it'"'"'s data
+EOF
+printf ok)" "["'
+# Nested `$((…))` inside outer arith grouping: outer AP must not steal the
+# inner closer (#802 commit-32 HIGH).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_hd_arith_nested='echo "${X:-$(: <<EOF $((1+(2+$((3))+4)))
+it'"'"'s data
+EOF
+printf ok)}" "["'
+# Bash normalizes unquoted space in a `$()` heredoc delimiter (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_ws='echo "$(cat <<$(echo    x)
+hello
+$(echo x)
+)" "["'
+# Bash drops a trailing unquoted `;` in that delimiter (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_semi='echo "$(cat <<$(echo x;)
+hello
+$(echo x)
+)" "["'
+# Quoted spaces in a `$()` delimiter are not collapsed (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_qspace='echo "$(cat <<$(echo '"'"'a  b'"'"')
+hello
+$(echo '"'"'a  b'"'"')
+)" "["'
+# Escaped trailing space stays in the `$()` delimiter spelling (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_esc_space='echo "$(cat <<$(echo x\ )
+hello
+$(echo x\ )
+)" "["'
+# Escaped trailing semicolon stays in the `$()` delimiter spelling (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_esc_semi='echo "$(cat <<$(echo x\;)
+hello
+$(echo x\;)
+)" "["'
+# Nested PE source spaces are not collapsed inside a `$()` delimiter (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_pe_ws='echo "$(cat <<$(echo ${X:-a  b})
+hello
+$(echo ${X:-a  b})
+)" "["'
+# Nested arithmetic source spaces are not collapsed inside a `$()` delimiter (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_arith_ws='echo "$(cat <<$(echo $((1 +  2)))
+hello
+$(echo $((1 +  2)))
+)" "["'
+# Leading IFS after `$(` before a subshell: Bash terminator is
+# `$( ( echo x ))`, not glued `$((echo x))` (#802 commit-28 HIGH).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_lead_ifs='echo "$(cat <<$( (echo x) )
+hello
+$( ( echo x ))
+)" "["'
+_pr_hd_delim_lead_ifs_pad='echo "$(cat <<$( ( echo x ) )
+hello
+$( ( echo x ))
+)" "["'
+_pr_hd_delim_lead_ifs_and='echo "$(cat <<$( true && (echo x) )
+hello
+$(true && ( echo x ))
+)" "["'
+# Backtick interiors keep source IFS in Bash heredoc delimiters
+# (#802 commit-29 HIGH).
+_pr_hd_delim_bt_ws='echo "$(cat <<$(echo `echo    x`)
+hello
+$(echo `echo    x`)
+)" "["'
+_pr_hd_delim_bt_only='echo "$(cat <<$(`echo    x`)
+hello
+$(`echo    x`)
+)" "["'
+# Escaped space is owned word text; a following unquoted IFS separator
+# must still appear (#802 commit-30 HIGH).
+_pr_hd_delim_esc_space_sep='echo "$(cat <<$(echo x\  y)
+hello
+$(echo x\  y)
+)" "["'
+# Command-separating newline in `$()` delim must not collapse to a space;
+# inventing `$(echo a echo b)` as terminator is a false OK (#802 commit-33 MEDIUM).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_nl_invent='echo "$(cat <<$(echo a
+echo b)
+hello
+$(echo a echo b)
+)" "["'
+# 500-deep `$()` heredoc delimiter: bash -n accepts it; normalize must return
+# unscannable before Python's stack dies (#802 commit-31 MEDIUM).
+_pr_hd_delim_nest500="$(python3 - <<'PY'
+op = '$(echo '
+cl = ')'
+inner = op * 500 + 'x' + cl * 500
+print('echo "$(cat <<' + inner + '\nhello\n' + inner + '\n)" "["')
+PY
+)"
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
           "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
@@ -1639,7 +1750,16 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_arith_adj" "$_pr_hd_comment" "$_pr_hd_delim_dollar" \
           "$_pr_hd_delim_brace" \
           "$_pr_pe_arith_cmd_hash" "$_pr_arith_cmd_hash" \
-          "$_pr_hd_delim_qparen" "$_pr_hd_arith_nl" "$_pr_pe_hd_arith_nl"; do
+          "$_pr_hd_delim_qparen" "$_pr_hd_arith_nl" "$_pr_pe_hd_arith_nl" \
+          "$_pr_pe_hd_arith_group" "$_pr_hd_arith_group" \
+          "$_pr_pe_hd_arith_nested" \
+          "$_pr_hd_delim_ws" "$_pr_hd_delim_semi" "$_pr_hd_delim_qspace" \
+          "$_pr_hd_delim_esc_space" "$_pr_hd_delim_esc_semi" \
+          "$_pr_hd_delim_pe_ws" "$_pr_hd_delim_arith_ws" \
+          "$_pr_hd_delim_lead_ifs" "$_pr_hd_delim_lead_ifs_pad" \
+          "$_pr_hd_delim_lead_ifs_and" \
+          "$_pr_hd_delim_bt_ws" "$_pr_hd_delim_bt_only" \
+          "$_pr_hd_delim_esc_space_sep"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else
@@ -1651,6 +1771,34 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
     fi
   fi
 done
+# Invented space-collapsed terminator after newline collapse: bash rejects;
+# classifier must fail closed, not OK| (#802 commit-33 MEDIUM).
+if bash -n <<<"$_pr_hd_delim_nl_invent" 2>/dev/null; then
+  no "#802 newline-invented heredoc terminator is invalid bash" "bash accepted"
+else
+  got=$(verdict "$_pr_hd_delim_nl_invent")
+  if [[ "$got" == "OK|" ]]; then
+    no "#802 newline-invented heredoc terminator is not OK" "got=OK|"
+  elif is_real_block "$got"; then
+    ok "#802 newline-invented heredoc terminator fails closed: $got"
+  else
+    no "#802 newline-invented heredoc terminator fails closed" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# 500-deep `$()` delimiter nest: bash accepts it; classifier must fail closed as
+# unscannable, not crash with RecursionError (#802 commit-31 MEDIUM).
+if ! bash -n <<<"$_pr_hd_delim_nest500" 2>/dev/null; then
+  no "#802 500-deep heredoc-delim nest is valid bash" "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_nest500")
+  if [[ "$got" == "BLOCK_UNSCANNABLE|" ]]; then
+    ok "#802 500-deep heredoc-delim nest is unscannable (no RecursionError)"
+  else
+    no "#802 500-deep heredoc-delim nest is unscannable (no RecursionError)" \
+      "got=${got:-<empty>}"
+  fi
+fi
 # ...and the paired fail-CLOSED half for each: a helper in the SECOND heredoc body, and
 # a helper the subshell actually runs.
 #

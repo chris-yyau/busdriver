@@ -3393,11 +3393,12 @@ def _c_operand_may_ifs_split(raw):
 
 
 def _any_git_c_may_ifs_split(cmd):
-    """True when any pre-subcommand `git -C`/`-c` value may IFS-split.
+    """True when any pre-subcommand valued git-global may IFS-split.
 
-    Name kept for the gate's import; covers `-C`, `-c <val>`, and attached
-    `-c<val>` — an unquoted `-c $CFG` with CFG='k=1 merge' injects merge the
-    same way an unquoted `-C` path does (#858 Codex follow-up)."""
+    Name kept for the gate's import. Covers every `_GIT_VALUE_OPTS` spelling
+    (`-C`/`-c`/`--git-dir`/…, attached `-c<val>`, attached `--git-dir=$D`):
+    unquoted `--git-dir=$D` with D='.git merge' becomes `--git-dir=.git merge`
+    the same way unquoted `-c $CFG` injects merge (#858 Codex)."""
     for chunk in _all_chunks(cmd):
         for _op, seg in split_segments(chunk):
             argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
@@ -3410,7 +3411,7 @@ def _any_git_c_may_ifs_split(cmd):
             k = 1
             while k < sub_idx:
                 tok = argv[k]
-                if tok in ('-C', '-c'):
+                if tok in _GIT_VALUE_OPTS:
                     if k + 1 >= sub_idx or raw_argv is None:
                         return True
                     if _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
@@ -3423,6 +3424,12 @@ def _any_git_c_may_ifs_split(cmd):
                         return True
                     k += 1
                     continue
+                if tok.startswith('--') and '=' in tok:
+                    name = tok.split('=', 1)[0]
+                    if name in _GIT_VALUE_OPTS:
+                        if raw_argv is None or _c_operand_may_ifs_split(
+                                _raw_spelling(raw_argv, k)):
+                            return True
                 k += 1
     return False
 

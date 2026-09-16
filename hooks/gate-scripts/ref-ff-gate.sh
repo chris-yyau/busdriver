@@ -601,10 +601,10 @@ fi
 # hole exists for unquoted -c \$CFG with CFG='k=1 merge' (#858 Codex).
 # Quoted "\$DIR" / "\$(pwd)" / "-c \"\$CFG\"" and relative literals cannot
 # change word count and still clear when only builtins remain.
-# IFS-split is independent of UNRESOLVABLE: `git -c $CFG log` has only a
-# read-safe word (no alias candidate, no opaque `-C`), but CFG='k=1 merge'
-# still becomes `git -c k=1 merge log`. Requiring UNRESOLVABLE here left that
-# shape fail-open. Opaque-scope + unknown word stays the other conjunct.
+# IFS-split is independent of UNRESOLVABLE: `git -c $CFG log` and
+# `git --git-dir=$D log` have only a read-safe word, but an unquoted value
+# still injects merge. Requiring UNRESOLVABLE left those fail-open.
+# Opaque-scope + unknown word stays the other conjunct.
 if [ -z "$KIND" ] && { [ "$C_MAY_IFS_SPLIT" = "1" ] \
         || { [ "$UNRESOLVABLE" = "1" ] && [ -n "$UNKNOWN_CANDIDATES" ]; }; }; then
     block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, or an unquoted git -C/-c operand that may word-split). Use a literal absolute \`git -C /repo …\`, quoted \`-C \"\$DIR\"\` / \`-c \"\$CFG\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."

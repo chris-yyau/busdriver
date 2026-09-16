@@ -1810,6 +1810,14 @@ run_gate "...and an unquoted -c with only a read-safe word likewise fails closed
     block 'git -c $CFG log' "cannot be resolved"
 run_gate "...while a quoted -c with only a read-safe word allows" \
     allow 'git -c "$CFG" log'
+run_gate "...and an unquoted --git-dir value likewise fails closed" \
+    block 'git --git-dir=$D branch' "cannot be resolved"
+run_gate "...while a quoted --git-dir with only builtins allows" \
+    allow 'git --git-dir="$D" branch'
+run_gate "...and an unquoted --work-tree with only a read-safe word fails closed" \
+    block 'git --work-tree=$W log' "cannot be resolved"
+run_gate "...while a quoted --work-tree with only a read-safe word allows" \
+    allow 'git --work-tree="$W" log'
 run_gate "...and a relative one with only builtins likewise allows" \
     allow "git -C sub worktree list"
 run_gate "...and a chained -C with only builtins likewise allows" \

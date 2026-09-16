@@ -3443,11 +3443,13 @@ def _static_alias_scope(chunks, cd_poisons=True):
     same token on the merge path for the same reason (#812). Returned as the
     target_dir, which `gate_resolve_repo_dir` already anchors on.
 
-    Refused: a `cd` anywhere, a `-C` in a NESTED chunk (`_apply_global_c` does not
+    Refused: a relative or mid-command `cd`, a `-C` in a NESTED chunk (`_apply_global_c` does not
     honour that one for scoping either), an operand `_literal_c_target` will not
     vouch for, and — as much as opacity — invocations that DISAGREE about the
     target. `git -C /other worktree list && git m feature` runs `m` in the cwd
     repo, so anchoring on /other would hide the cwd's own `alias.m = merge`.
+    A leading absolute `cd /repo &&` is NOT refused when `cd_poisons` is False:
+    `_lead_cd_target` already accounts for that one shape (#838).
 
     `cd_poisons` is False on the LITERAL-merge path, where the caller already has
     its own cd handling: the scan folds a trusted `&&`-joined `cd` into the
@@ -4041,16 +4043,30 @@ def git_ref_op(cmd, with_untrusted_cd=False):
     # spending the cwd repo's consent while `zz` resolves, and possibly acts, in
     # /x. The alias question is about the whole command, so it is asked of the
     # whole command.
-    scope = _static_alias_scope(chunks, cd_poisons=not r[0]) if aliases else ''
+    # cd_poisons=False on BOTH paths: a leading absolute `cd /repo &&` is the
+    # same statically-known directory `_lead_cd_target` already accounts for on
+    # the literal-merge path, and poisoning it here for alias-only commands was
+    # what made `cd /repo && git worktree list` fabricate a merge (#838). Mid-
+    # command and relative cds still return None — the lead helper rejects them.
+    scope = _static_alias_scope(chunks, cd_poisons=False) if aliases else ''
     if scope is None:
         # The gate resolves alias names against ONE repository, and this command
-        # moves it somewhere the parser cannot follow.
-        return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
+        # moves it somewhere the parser cannot follow. Keep refusing — but when
+        # there is no literal merge/pull, do NOT fabricate kind=merge with an
+        # unresolvable operand: that misroutes the gate onto the merge-operand
+        # message for a command that has neither (#838 / #812 wrong-explanation
+        # class). Empty kind + the sentinel is what the gate's alias-scope arm
+        # keys on; a real merge/pull keeps the merge-shaped refusal so existing
+        # companion/mid-cd pins stay put.
+        if r[0]:
+            return ('merge', '', [REF_OP_UNRESOLVABLE], '', 1, False, aliases)
+        return ('', '', [REF_OP_UNRESOLVABLE], '', 0, False, aliases)
     if not r[0]:
         if scope:
-            # A literal absolute `git -C`: the repository git will use is known,
-            # so hand it over as the target_dir and let the gate resolve the
-            # aliases THERE rather than refuse a read-only command (#812).
+            # A literal absolute `git -C` or leading `cd /repo &&`: the repository
+            # git will use is known, so hand it over as the target_dir and let
+            # the gate resolve the aliases THERE rather than refuse a read-only
+            # command (#812 / #838).
             return ('', scope, [], '', 0,
                     _has_companion_command(chunks), aliases)
         # The companion fact matters even with no literal merge/pull: `git config

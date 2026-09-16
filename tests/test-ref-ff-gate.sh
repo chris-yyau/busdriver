@@ -537,10 +537,13 @@ run_gate "a bare wrapper is not by itself a scope change" \
 # like an assignment survives being wrapped.
 run_gate "a ref named like an assignment survives an env wrapper" \
     block "env git merge PATH=reviewed" "cannot resolve the merge target"
-# Alias candidates carry no scope, so a scoped command cannot be resolved against
-# one repository — a repo-local alias.m would be invisible.
-run_gate "an alias candidate in a cd-scoped command is unresolvable" \
-    block "cd /other && git m feature" "cannot be resolved"
+# Alias candidates carry a scope. A leading absolute `cd /other &&` is the same
+# statically-known directory as `git -C /other` (#838), so the gate resolves the
+# word THERE — and `/other` is not a work tree, which is the honest refusal
+# (same arm as `git -C <non-repo> zz`). It must NOT claim an unresolvable merge
+# operand: there is no merge in the command.
+run_gate "an alias candidate in a cd-scoped command resolves in the cd repo" \
+    block "cd /other && git m feature" "not a work tree"
 # CDPATH changes where a RELATIVE cd lands, and the cd is what scopes the gate.
 run_gate "CDPATH on the scoping cd is not an exempt cd" \
     block "CDPATH=/other cd repo && git merge topic" "cd target cannot be resolved statically"
@@ -1759,6 +1762,13 @@ run_gate "git -C <literal> worktree list is not a merge" \
     allow "git -C $SCOPED_REPO worktree list"
 run_gate "...nor is git -C <literal> branch -a" \
     allow "git -C $SCOPED_REPO branch -a"
+# Same exemption for a leading absolute `cd /repo &&` (#838): `_lead_cd_target`
+# already vouches for that one shape on the literal-merge path, and poisoning it
+# on the alias-only path was what fabricated a merge for `git worktree list`.
+run_gate "...and a leading absolute cd && worktree list is the same shape" \
+    allow "cd $SCOPED_REPO && git worktree list"
+run_gate "...and so is cd && branch -a (also an alias candidate, not a merge)" \
+    allow "cd $SCOPED_REPO && git branch -a"
 
 # THE proof that the scope is actually used: `zz` is an alias for merge in the
 # `-C` repo and does not exist in the session repo. Resolving it against the
@@ -1769,6 +1779,10 @@ run_gate "an alias is resolved in the -C repo, not the session repo" \
     block "git -C $SCOPED_REPO zz feature" "is a git alias reaching"
 run_gate "...and the same name in the SESSION repo resolves to nothing" \
     block "git zz feature" "resolves to neither a git command nor a git alias"
+# Leading absolute cd must resolve aliases in THAT repo too — not wave a merge
+# alias through, and not fall onto the merge-operand message (#838).
+run_gate "...and a leading absolute cd resolves the alias in the cd repo" \
+    block "cd $SCOPED_REPO && git zz feature" "is a git alias reaching"
 
 # Everything the parser cannot pin to one directory still fails closed.
 run_gate "a substituted -C target is still unresolvable" \
@@ -1779,8 +1793,13 @@ run_gate "...and a relative one (CDPATH can send it elsewhere)" \
     block "git -C sub worktree list" "cannot be resolved"
 run_gate "...and a chained -C, whose later operand may be relative" \
     block "git -C $SCOPED_REPO -C sub worktree list" "cannot be resolved"
-run_gate "...and a cd, which the exemption never covered" \
-    block "cd $SCOPED_REPO && git worktree list" "cannot be resolved"
+# Relative cd: still refused, but on the alias-scope arm — never the
+# merge-operand text (no merge/pull is present). The reason substring is unique
+# to that arm; the old fabricated-merge path said "operand of this git merge/pull".
+run_gate "...and a relative cd keeps the alias-scope refusal, not merge-operand" \
+    block "cd sub && git worktree list" "possible merge/pull alias"
+run_gate "...and a substituted cd is the same alias-scope refusal" \
+    block 'cd "$(pwd)" && git worktree list' "possible merge/pull alias"
 run_gate "...and a -C inside a nested payload" \
     block "bash -c 'git -C $SCOPED_REPO zz feature'" "cannot be resolved"
 # Two invocations DISAGREEING about the directory is as unresolvable as an opaque

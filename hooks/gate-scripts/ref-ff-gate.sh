@@ -521,6 +521,15 @@ case "$REF_WRITER" in
     *) block_emit "Ref fast-forward gate: unreadable ref-writer flag from the command parser. Blocking as precaution (fail-closed)."; exit 0 ;;
 esac
 if [ "$UNRESOLVABLE" = "1" ]; then
+    # Empty KIND means the detector found no merge/pull — only an alias-candidate
+    # word whose repository scope it could not pin (a relative/opaque `cd`, a
+    # mid-command `cd`, disagreeing `-C`s, …). Fabricating kind=merge for that
+    # used to dump operators onto the merge-operand text below for commands like
+    # `cd sub && git worktree list` (#838). Keep the refuse; say the true reason.
+    if [ -z "$KIND" ]; then
+        block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, or git -C scopes that disagree). Use a literal absolute \`git -C /repo …\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+        exit 0
+    fi
     block_emit "Ref fast-forward gate: an operand of this git merge/pull cannot be resolved statically (it uses a substitution or variable), so the gate cannot tell what content the protected branch would move to. Resolve it first (git rev-parse it, then name the ref or oid literally). Blocking as precaution (fail-closed)."
     exit 0
 fi

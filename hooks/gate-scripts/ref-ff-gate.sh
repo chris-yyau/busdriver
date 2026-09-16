@@ -520,16 +520,13 @@ case "$REF_WRITER" in
     0|1) ;;
     *) block_emit "Ref fast-forward gate: unreadable ref-writer flag from the command parser. Blocking as precaution (fail-closed)."; exit 0 ;;
 esac
-if [ "$UNRESOLVABLE" = "1" ]; then
-    # Empty KIND means the detector found no merge/pull — only an alias-candidate
-    # word whose repository scope it could not pin (a relative/opaque `cd`, a
-    # mid-command `cd`, disagreeing `-C`s, …). Fabricating kind=merge for that
-    # used to dump operators onto the merge-operand text below for commands like
-    # `cd sub && git worktree list` (#838). Keep the refuse; say the true reason.
-    if [ -z "$KIND" ]; then
-        block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, or git -C scopes that disagree). Use a literal absolute \`git -C /repo …\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
-        exit 0
-    fi
+if [ "$UNRESOLVABLE" = "1" ] && [ -n "$KIND" ]; then
+    # Real merge/pull with an unresolvable operand — refuse before repo resolution.
+    # Empty-KIND unresolvable (alias-candidate scope the parser cannot pin) is
+    # deferred until AFTER the built-in filter below: ALIAS_CANDIDATES still holds
+    # words like `add`/`worktree`, and refusing here blocked disagreeing `-C`
+    # builtins (`git -C /r1 status && git -C /r2 add -A`) as "possible aliases"
+    # before UNKNOWN_CANDIDATES could clear them (#838 cubic P2).
     block_emit "Ref fast-forward gate: an operand of this git merge/pull cannot be resolved statically (it uses a substitution or variable), so the gate cannot tell what content the protected branch would move to. Resolve it first (git rev-parse it, then name the ref or oid literally). Blocking as precaution (fail-closed)."
     exit 0
 fi
@@ -581,6 +578,15 @@ if [ -n "$ALIAS_CANDIDATES" ]; then
         fi
         UNKNOWN_CANDIDATES="$UNKNOWN_CANDIDATES $_cand"
     done
+fi
+# Empty KIND + UNRESOLVABLE: detector found alias-candidate word(s) whose repo
+# scope it could not pin (relative/opaque/mid-command cd, disagreeing `-C`s, …).
+# Fabricating kind=merge for that used to dump operators onto the merge-operand
+# text (#838). Refuse only when a post-filter UNKNOWN remains — a built-in cannot
+# be a merge/pull alias (git ignores alias shadows of builtins).
+if [ "$UNRESOLVABLE" = "1" ] && [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
+    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, or git -C scopes that disagree). Use a literal absolute \`git -C /repo …\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+    exit 0
 fi
 # Everything below keys off whether the anchor was chosen by the COMMAND, which
 # is what $TARGET_DIR being non-empty means: the parser fills it from a literal

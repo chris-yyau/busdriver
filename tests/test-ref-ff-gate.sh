@@ -537,13 +537,15 @@ run_gate "a bare wrapper is not by itself a scope change" \
 # like an assignment survives being wrapped.
 run_gate "a ref named like an assignment survives an env wrapper" \
     block "env git merge PATH=reviewed" "cannot resolve the merge target"
-# Alias candidates carry a scope. A leading absolute `cd /other &&` is the same
-# statically-known directory as `git -C /other` (#838), so the gate resolves the
-# word THERE — and `/other` is not a work tree, which is the honest refusal
-# (same arm as `git -C <non-repo> zz`). It must NOT claim an unresolvable merge
-# operand: there is no merge in the command.
+# Alias candidates carry a scope. A leading absolute `cd <dir> &&` is the same
+# statically-known directory as `git -C <dir>` (#838), so the gate resolves the
+# word THERE — and a temp non-repo dir is not a work tree, which is the honest
+# refusal (same arm as `git -C <non-repo> zz`). Do not hard-code `/other`: a
+# machine with a repo mounted there would fail this spuriously. It must NOT
+# claim an unresolvable merge operand: there is no merge in the command.
+mkdir -p "$TMPROOT/not-a-repo"
 run_gate "an alias candidate in a cd-scoped command resolves in the cd repo" \
-    block "cd /other && git m feature" "not a work tree"
+    block "cd $TMPROOT/not-a-repo && git m feature" "not a work tree"
 # CDPATH changes where a RELATIVE cd lands, and the cd is what scopes the gate.
 run_gate "CDPATH on the scoping cd is not an exempt cd" \
     block "CDPATH=/other cd repo && git merge topic" "cd target cannot be resolved statically"
@@ -1784,29 +1786,40 @@ run_gate "...and the same name in the SESSION repo resolves to nothing" \
 run_gate "...and a leading absolute cd resolves the alias in the cd repo" \
     block "cd $SCOPED_REPO && git zz feature" "is a git alias reaching"
 
-# Everything the parser cannot pin to one directory still fails closed.
-run_gate "a substituted -C target is still unresolvable" \
-    block 'git -C "$(pwd)" worktree list' "cannot be resolved"
-run_gate "...and a variable one" \
-    block 'git -C $SOMEDIR worktree list' "cannot be resolved"
-run_gate "...and a relative one (CDPATH can send it elsewhere)" \
-    block "git -C sub worktree list" "cannot be resolved"
-run_gate "...and a chained -C, whose later operand may be relative" \
-    block "git -C $SCOPED_REPO -C sub worktree list" "cannot be resolved"
-# Relative cd: still refused, but on the alias-scope arm — never the
-# merge-operand text (no merge/pull is present). The reason substring is unique
-# to that arm; the old fabricated-merge path said "operand of this git merge/pull".
-run_gate "...and a relative cd keeps the alias-scope refusal, not merge-operand" \
-    block "cd sub && git worktree list" "possible merge/pull alias"
-run_gate "...and a substituted cd is the same alias-scope refusal" \
-    block 'cd "$(pwd)" && git worktree list' "possible merge/pull alias"
+# Opaque/relative `-C` with ONLY built-in words: same post-filter rule as
+# relative cd (cubic P2) — nothing left that could be a merge/pull alias, so
+# allow. An UNKNOWN word on these shapes still fails closed (pin below).
+run_gate "a substituted -C target with only builtins is not alias-scope refuse" \
+    allow 'git -C "$(pwd)" worktree list'
+run_gate "...and a variable one with only builtins likewise allows" \
+    allow 'git -C $SOMEDIR worktree list'
+run_gate "...and a relative one with only builtins likewise allows" \
+    allow "git -C sub worktree list"
+run_gate "...and a chained -C with only builtins likewise allows" \
+    allow "git -C $SCOPED_REPO -C sub worktree list"
+run_gate "...while a substituted -C with an unknown word still fails closed" \
+    block 'git -C "$(pwd)" zz feature' "cannot be resolved"
+# Relative/opaque cd with ONLY built-in words: after the UNKNOWN_CANDIDATES
+# filter nothing remains that could be a merge/pull alias, so allow (cubic P2).
+# A non-builtin word on the same shape still hits the alias-scope arm — never
+# the merge-operand text.
+run_gate "...and a relative cd with only builtins is not an alias-scope refuse" \
+    allow "cd sub && git worktree list"
+run_gate "...and a substituted cd with only builtins likewise allows" \
+    allow 'cd "$(pwd)" && git worktree list'
+run_gate "...while a relative cd with an unknown word keeps the alias-scope refuse" \
+    block "cd sub && git zz feature" "possible merge/pull alias"
 run_gate "...and a -C inside a nested payload" \
     block "bash -c 'git -C $SCOPED_REPO zz feature'" "cannot be resolved"
 # Two invocations DISAGREEING about the directory is as unresolvable as an opaque
-# target: `zz` here runs in the session repo, so anchoring on the -C repo would
-# hide the session repo's own alias.
+# target when an UNKNOWN word remains: `zz` here runs in the session repo, so
+# anchoring on the -C repo would hide the session repo's own alias.
 run_gate "...and invocations that disagree about the directory" \
     block "git -C $SCOPED_REPO worktree list && git zz feature" "cannot be resolved"
+# Disagreeing `-C` scopes with only built-ins must not block: `add`/`status`
+# survive ALIAS_CANDIDATES but clear in UNKNOWN_CANDIDATES.
+run_gate "...while disagreeing -C builtins alone are not alias-scope refuse" \
+    allow "git -C $SCOPED_REPO status && git -C $REPO add -A"
 
 # The anchor is now a directory the COMMAND names, which makes the "not in a git
 # repo → git fails on its own" shortcut reachable on an agent-picked target. It

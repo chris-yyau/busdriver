@@ -1921,6 +1921,17 @@ run_gate "...and env with wholly-quoted attached -S leading-space -c dollar stil
 # (#838 S-ws-nested / nested env HIGH).
 run_gate "...and env -S packing nested env GIT_DIR dollar still fails closed" \
     block 'env -S "env GIT_DIR='\''$D '\'' git branch"' "cannot be resolved"
+# Non-env wrappers inside -S must peel before Git globals
+# (#838 timeout-bs / timeout wrapper HIGH).
+run_gate "...and env -S packing timeout before -c dollar still fails closed" \
+    block 'env -S "timeout 5 git -c '\''x.y=$CFG '\'' branch"' "cannot be resolved"
+# Ordinary backslash inside dq attached -S must keep payload alignment
+# (#838 timeout-bs / dq-backslash HIGH).
+run_gate "...and env with wholly-quoted attached -S backslash-a -c dollar still fails closed" \
+    block 'env "-S git -c '\''x.y=\a$CFG '\'' branch"' "cannot be resolved"
+# Git path operands named env are not launchers (#838 env-operand HIGH).
+run_gate "...and env timeout git log with env path operand still allows" \
+    allow 'env timeout 5 git log -- env X=$D'
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1

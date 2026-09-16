@@ -2139,6 +2139,12 @@ def _outer_value_expand_flags(raw):
     the same way bash builds the argv word; a `'` inside `"…"` is literal data
     and does not protect `$`. Escaped `$` / `` ` `` stay False
     (#838 ws-live / live-outer).
+
+    Inside double quotes bash only consumes `\\` before `$` `` ` `` `"` `\\` or
+    newline; a backslash before an ordinary character is preserved (`\\a` stays
+    `\\a`). Dropping those ordinary backslashes breaks attached `-S` payload
+    alignment (`text.endswith(payload)`), shifting live flags off `$CFG`
+    (#838 timeout-bs / dq-backslash HIGH).
     """
     if raw is None:
         return None, None
@@ -2146,11 +2152,23 @@ def _outer_value_expand_flags(raw):
     i, n, quote = 0, len(raw), None
     while i < n:
         c = raw[i]
-        # Backslash escapes the next char except inside ordinary single quotes.
-        if quote != "'" and c == '\\':
+        if c == '\\' and quote != "'":
             if i + 1 >= n:
                 break
-            chars.append(raw[i + 1])
+            nxt = raw[i + 1]
+            # Double-quoted: only $ ` " \ newline are special escapes.
+            if quote == '"' and nxt not in '$`"\\\n':
+                chars.append('\\')
+                flags.append(False)
+                chars.append(nxt)
+                flags.append(False)
+                i += 2
+                continue
+            if quote == '"' and nxt == '\n':
+                # Line continuation — both characters disappear.
+                i += 2
+                continue
+            chars.append(nxt)
             flags.append(False)
             i += 2
             continue
@@ -3915,6 +3933,9 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     whitespace-bearing live `$CFG` cannot hide behind boundary quoting
     (#838 ws-live HIGH). Nested `env` utilities recurse with those same
     pre-rejoin tokens/raws before the Git-global check (#838 S-ws-nested HIGH).
+    Non-env wrappers (`timeout`, …) peel to `git` via `_command_argv`, then
+    scan for a nested `env` only in the wrapper prefix before that command
+    word — never Git operands after `log --` (#838 timeout-bs / env-operand).
     If those insertion raws cannot be aligned, still call
     `_git_pre_subcmd_may_ifs_split` with `None` so valued globals fail closed
     instead of skipping (#838 raws-failclosed HIGH). Untrusted walks that still
@@ -4010,13 +4031,21 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     # Utility argv after env options — including -S insertions. Nested env
     # wrappers must recurse with pre-rejoin tokens/raws before the Git-global
     # check, or `env -S "env GIT_DIR='$D ' git branch"` stops at `env` and
-    # drops expansion provenance (#838 S-ws-nested HIGH). Then consult
-    # pre-rejoin raws so whitespace-bearing live `$CFG` is not cleared by
-    # boundary quoting on rejoin (#838 ws-live HIGH). When insertion raws
-    # cannot be aligned, pass None so valued globals fail closed rather than
-    # skipping (#838 raws-failclosed HIGH / commit FAIL of 790311ca).
-    # Unaligned raws also fail closed when trust_git_raws is False — dq
-    # boundary quoting must not skip this check (#838 dq-raws-skip HIGH).
+    # drops expansion provenance (#838 S-ws-nested HIGH). Non-env wrappers
+    # (`timeout`, `nice`, …) must reach those same checks: peel to `git` via
+    # `_command_argv` first so `env -S "timeout 5 git -c 'x.y=$CFG ' branch"`
+    # no longer stops at `timeout` (#838 timeout-bs HIGH), then scan for a
+    # nested `env` only in the wrapper PREFIX before that git command word.
+    # A full-util scan would treat `git log -- env X=$D` as a launcher and
+    # false-block a read-only command (#838 env-operand HIGH). Cannot use
+    # `_command_argv(..., 'env')` for the nested-env stop — `env` is itself a
+    # `_WRAPPERS` member and an outer operand-wrap latch would consume the git
+    # words. Then consult pre-rejoin raws so whitespace-bearing live `$CFG` is
+    # not cleared by boundary quoting on rejoin (#838 ws-live HIGH). When
+    # insertion raws cannot be aligned, pass None so valued globals fail closed
+    # rather than skipping (#838 raws-failclosed HIGH / commit FAIL of
+    # 790311ca). Unaligned raws also fail closed when trust_git_raws is False
+    # — dq boundary quoting must not skip this check (#838 dq-raws-skip HIGH).
     if k < len(toks):
         util = toks[k:]
         util_raws = raws[k:] if raws is not None else None
@@ -4026,6 +4055,40 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                     util[1:], nested_raws, _depth + 1,
                     trust_git_raws=trust_git_raws):
                 return True
+        else:
+            base0 = util[0].rsplit('/', 1)[-1]
+            if ((base0 in _WRAPPERS and base0 != 'env')
+                    or base0 in _OPERAND_WRAPPERS
+                    or base0 in _SCOPED_WRAPPERS):
+                peel_seg = (' '.join(util_raws) if util_raws is not None
+                            else ' '.join(util))
+                to_git = _command_argv(
+                    peel_seg, 'git', with_raw=True, wrapper_operands=True)
+                # Nested env only in the peel prefix — never Git operands after
+                # the command word (`git log -- env X=$D`; #838 env-operand).
+                git_idx = None
+                if to_git[0]:
+                    for i, t in enumerate(util):
+                        if (_is_exe(t, 'git')
+                                and _is_exe(to_git[0][0], 'git')):
+                            git_idx = i
+                            break
+                prefix = util if git_idx is None else util[:git_idx]
+                for i, t in enumerate(prefix):
+                    if _is_exe(t, 'env'):
+                        nested_raws = (util_raws[i + 1:]
+                                       if util_raws is not None else None)
+                        if _env_argv_may_ifs_split(
+                                util[i + 1:], nested_raws, _depth + 1,
+                                trust_git_raws=trust_git_raws):
+                            return True
+                        break
+                if to_git[0]:
+                    util = to_git[0]
+                    # Keep fail-closed None when the parent walk had no raws;
+                    # re-lexed peel raws are only trusted from real util_raws.
+                    util_raws = (to_git[1] if util_raws is not None
+                                 else None)
         if trust_git_raws or raws is None:
             if _git_pre_subcmd_may_ifs_split(util, util_raws):
                 return True

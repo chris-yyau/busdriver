@@ -1799,6 +1799,17 @@ run_gate "...while an unquoted variable -C that may word-split fails closed" \
     block 'git -C $SOMEDIR worktree list' "cannot be resolved"
 run_gate "...including when the split would inject merge before a builtin candidate" \
     block 'git -C $SOMEDIR branch' "cannot be resolved"
+# Same argv-count hole via unquoted -c even when -C itself is quoted.
+run_gate "...and an unquoted -c value with a quoted -C likewise fails closed" \
+    block 'git -C "$SOMEDIR" -c $CFG branch' "cannot be resolved"
+run_gate "...while a quoted -c value with a quoted -C and only builtins allows" \
+    allow 'git -C "$SOMEDIR" -c "$CFG" branch'
+# REF_SAFE-only + unquoted -c: no alias candidate and no opaque `-C`, so
+# UNRESOLVABLE stays 0 — IFS-split must still refuse on its own.
+run_gate "...and an unquoted -c with only a read-safe word likewise fails closed" \
+    block 'git -c $CFG log' "cannot be resolved"
+run_gate "...while a quoted -c with only a read-safe word allows" \
+    allow 'git -c "$CFG" log'
 run_gate "...and a relative one with only builtins likewise allows" \
     allow "git -C sub worktree list"
 run_gate "...and a chained -C with only builtins likewise allows" \

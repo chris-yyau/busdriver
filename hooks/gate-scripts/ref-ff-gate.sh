@@ -595,14 +595,19 @@ fi
 # Fabricating kind=merge for that used to dump operators onto the merge-operand
 # text (#838). Refuse when a post-filter UNKNOWN remains — a built-in cannot
 # be a merge/pull alias (git ignores alias shadows of builtins) — OR when any
-# `git -C` operand may IFS-split: unquoted `$SOMEDIR='/repo merge'` turns
-# `git -C $SOMEDIR branch` into `git -C /repo merge branch` while the parser
-# still sees candidate `branch` (a builtin), so UNKNOWN stays empty (#858).
-# Quoted `"$DIR"` / `"$(pwd)"` and relative literals cannot change word count
-# and still clear when only builtins remain.
-if [ "$UNRESOLVABLE" = "1" ] && [ -z "$KIND" ] \
-        && { [ -n "$UNKNOWN_CANDIDATES" ] || [ "$C_MAY_IFS_SPLIT" = "1" ]; }; then
-    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, or an unquoted git -C operand that may word-split). Use a literal absolute \`git -C /repo …\`, a quoted \`-C \"\$DIR\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+# git -C/-c value may IFS-split: unquoted \$SOMEDIR='/repo merge' turns
+# git -C \$SOMEDIR branch into git -C /repo merge branch while the parser
+# still sees candidate branch (a builtin), so UNKNOWN stays empty; the same
+# hole exists for unquoted -c \$CFG with CFG='k=1 merge' (#858 Codex).
+# Quoted "\$DIR" / "\$(pwd)" / "-c \"\$CFG\"" and relative literals cannot
+# change word count and still clear when only builtins remain.
+# IFS-split is independent of UNRESOLVABLE: `git -c $CFG log` has only a
+# read-safe word (no alias candidate, no opaque `-C`), but CFG='k=1 merge'
+# still becomes `git -c k=1 merge log`. Requiring UNRESOLVABLE here left that
+# shape fail-open. Opaque-scope + unknown word stays the other conjunct.
+if [ -z "$KIND" ] && { [ "$C_MAY_IFS_SPLIT" = "1" ] \
+        || { [ "$UNRESOLVABLE" = "1" ] && [ -n "$UNKNOWN_CANDIDATES" ]; }; }; then
+    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, or an unquoted git -C/-c operand that may word-split). Use a literal absolute \`git -C /repo …\`, quoted \`-C \"\$DIR\"\` / \`-c \"\$CFG\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
     exit 0
 fi
 # Everything below keys off whether the anchor was chosen by the COMMAND, which

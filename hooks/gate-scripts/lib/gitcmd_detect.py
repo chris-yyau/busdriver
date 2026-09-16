@@ -3369,14 +3369,14 @@ def _seg_env_scope(seg):
 
 
 def _c_operand_may_ifs_split(raw):
-    """True iff a `git -C` operand's raw spelling can expand to multiple argv words.
+    """True iff a valued git-global operand's raw spelling may expand to >1 argv word.
 
     Distinct from `_word_may_split`: that treats every command substitution as
     unstable (value uncertainty for merge operands). A double-quoted
     `"$(pwd)"` / `"$DIR"` is always one word after expansion, so it cannot
-    smuggle a `merge` subcommand into git's `-C <path> <command>` grammar the
-    way an unquoted `$SOMEDIR='/repo merge'` can (`git -C $SOMEDIR branch` →
-    `git -C /repo merge branch`). Scope opacity is already reported via
+    smuggle a `merge` subcommand into git's `-C <path> <command>` / `-c key=val
+    <command>` grammar the way an unquoted `$SOMEDIR='/repo merge'` or
+    `$CFG='k=1 merge'` can. Scope opacity is already reported via
     REF_OP_UNRESOLVABLE; this predicate is only about argv-count injection."""
     if raw is None:
         return True
@@ -3393,7 +3393,11 @@ def _c_operand_may_ifs_split(raw):
 
 
 def _any_git_c_may_ifs_split(cmd):
-    """True when any pre-subcommand `git -C` operand in `cmd` may IFS-split."""
+    """True when any pre-subcommand `git -C`/`-c` value may IFS-split.
+
+    Name kept for the gate's import; covers `-C`, `-c <val>`, and attached
+    `-c<val>` — an unquoted `-c $CFG` with CFG='k=1 merge' injects merge the
+    same way an unquoted `-C` path does (#858 Codex follow-up)."""
     for chunk in _all_chunks(cmd):
         for _op, seg in split_segments(chunk):
             argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
@@ -3405,14 +3409,21 @@ def _any_git_c_may_ifs_split(cmd):
                 sub_idx = len(argv)
             k = 1
             while k < sub_idx:
-                if argv[k] != '-C':
+                tok = argv[k]
+                if tok in ('-C', '-c'):
+                    if k + 1 >= sub_idx or raw_argv is None:
+                        return True
+                    if _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
+                        return True
+                    k += 2
+                    continue
+                if tok.startswith('-c') and len(tok) > 2:
+                    if raw_argv is None or _c_operand_may_ifs_split(
+                            _raw_spelling(raw_argv, k)):
+                        return True
                     k += 1
                     continue
-                if k + 1 >= sub_idx or raw_argv is None:
-                    return True
-                if _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
-                    return True
-                k += 2
+                k += 1
     return False
 
 
@@ -3930,19 +3941,12 @@ def _iter_ref_op(chunk, allow_cd):
             continue
         sub, sub_idx = _git_subcommand(argv)
         if sub not in _REF_OP_SUBS:
-            # A config override ON THIS COMMAND LINE can spell a merge or a pull
-            # under any name, so an unrecognized subcommand there is unresolvable
-            # rather than absent. The test is the SAME scope-option set used for
-            # recognized subcommands, not an `alias.`-key match: `-c
-            # include.path=/tmp/aliases` defines the alias INDIRECTLY, and so does
-            # any --git-dir/--config-env pointing at a config that does. The kind
-            # is nominal: the gate refuses on the unresolvable operand before it
-            # ever branches on kind.
-            if sub is not None and sub not in _REF_SAFE_SUBS and (
-                    _has_unaccounted_global(argv, sub_idx)
-                    or _wrapper_chdir_in_prefix(seg, argv)
-                    or _seg_env_scope(seg)):
-                yield ('merge', '', [REF_OP_UNRESOLVABLE], '', False)
+            # Do NOT fabricate kind=merge here. `-c` / `--git-dir` on a
+            # non-merge/pull word used to yield merge+UNRESOLVABLE so the gate
+            # took the merge-operand arm for `git -c "$CFG" branch` — a builtin
+            # git will not alias-shadow (#838 / #858). Unknown words still fail
+            # via empty kind + alias-scope; unquoted `-C`/`-c` via argv IFS-split.
+            # A real merge/pull carrying those globals is handled below.
             pending_cd = None
             continue
         ops, in_scope = _ref_op_operands(argv, raw_argv, sub_idx, sub)

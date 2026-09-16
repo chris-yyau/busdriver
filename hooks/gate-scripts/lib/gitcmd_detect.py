@@ -2058,6 +2058,7 @@ def _env_split_string_payloads(seg):
     ownership walk drives both the outer scan and that insertion.
     """
     toks = _tokenize(seg)
+    raws = _raw_tokens(seg)
     # `env` need not be token zero: `command env -S …`, `X=1 env -S …`,
     # `/usr/bin/env -S …` all reach it behind launcher prefixes, and anchoring on
     # token zero missed every one of them (fail-OPEN, verified). Scan from the
@@ -2066,10 +2067,72 @@ def _env_split_string_payloads(seg):
                   if t.rsplit('/', 1)[-1] == 'env'), None)
     if start is None:
         return []
-    return _env_commands_from_opt_argv(toks[start + 1:], _depth=0)
+    sub_raws = raws[start + 1:] if raws is not None else None
+    return _env_commands_from_opt_argv(
+        toks[start + 1:], _depth=0, raws=sub_raws)
 
 
-def _env_commands_from_opt_argv(toks, _depth=0):
+# Chars that would re-split / re-parse a rejoined -S argv word. Empty and
+# IFS whitespace keep multi-word `-c` scripts as one token; `;|&<>` keep
+# separator-bearing values intact; `"\'\\` keep literal quotes/backslashes
+# from becoming shell syntax on the next parse (#838 quote-char HIGH);
+# `*?[]{}` keep literal glob/brace values from looking like expansions on
+# the next parse (#838 glob-brace HIGH). `$` / `` ` `` are intentionally
+# absent — those expansions must stay visible for the IFS refuse path
+# (#838 PR / metachar HIGH); `${` / `$(` / `$*` may contain `{}`/`*` from
+# this set, so `_env_S_token_needs_quote` carves those out.
+_ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n;|&<>"\'\\*?[]{}')
+# When a token already carries `$` / backtick, glob/brace chars may be part
+# of the expansion spelling (`${CFG}`, `$*`) and must stay bare.
+_ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
+
+
+def _env_S_token_needs_quote(tok, raw=None):
+    """True when a tokenized -S argv word must be re-quoted on rejoin.
+
+    `raw` is the posix=False spelling aligned with `tok` when available. A
+    quoted literal `$` / backtick (`'x.y=$CFG'`) must be re-quoted; a truly
+    active `$CFG` / `${CFG}` must stay bare for the IFS refuse path
+    (#838 quoted-dollar HIGH).
+    """
+    if tok == '':
+        return True
+    if '$' in tok or '`' in tok:
+        active, _multi, _cmdsub = _active_spelling(raw)
+        # Quoted literal expansion chars → active spelling has none.
+        # No raw → assume active (leave bare; fail toward IFS refuse).
+        if (active is not None
+                and '$' not in active
+                and '`' not in active):
+            return True
+        dangerous = _ENV_S_REJOIN_QUOTE_CHARS - _ENV_S_REJOIN_EXPANSION_OK_CHARS
+        return any(c in tok for c in dangerous)
+    if not any(c in tok for c in _ENV_S_REJOIN_QUOTE_CHARS):
+        return False
+    return True
+
+
+def _env_S_rejoin(toks, raws=None):
+    """Rejoin tokenized env -S argv for downstream scans.
+
+    Quote empty / IFS-whitespace / separator / quote / backslash / glob /
+    brace tokens so `bash -c 'git merge topic'`, `git -c 'x.y=;' merge`,
+    `X='"' … merge`, and literal `x.y=*` / `x.y={a,b}` keep their
+    boundaries. Requote tokens whose `$` / backtick was quoted in the
+    original -S payload (`'x.y=$CFG'`). Leave truly unquoted `$CFG` /
+    `${CFG}` bare so the IFS refuse still sees them. Do not use
+    `shlex.join` (quotes `$CFG`) or bare space-join (drops `-c` script
+    quotes); #838 cycle-E / PR / metachar / quote-char / glob-brace /
+    quoted-dollar.
+    """
+    parts = []
+    for i, t in enumerate(toks):
+        raw = raws[i] if raws is not None and i < len(raws) else None
+        parts.append(shlex.quote(t) if _env_S_token_needs_quote(t, raw) else t)
+    return ' '.join(parts)
+
+
+def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
     """Walk tokens as env(1) options; return command strings produced by -S.
 
     Depth-bounded to match `_all_chunks`. After a -S value is consumed, env
@@ -2077,7 +2140,8 @@ def _env_commands_from_opt_argv(toks, _depth=0):
     walk returns rather than continuing to scan later tokens as env options.
     Non-S options (`-u`, `-i`, …) are skipped with the shared ownership walk;
     a trailing utility after those options is still the -S-inserted command
-    (`env -S '-u X git merge topic'`).
+    (`env -S '-u X git merge topic'`). `raws` carries quote provenance for
+    `_env_S_rejoin` when aligned with `toks`.
     """
     if _depth >= 6 or not toks:
         return []
@@ -2103,11 +2167,25 @@ def _env_commands_from_opt_argv(toks, _depth=0):
         payload = _env_S_payload(a, toks, k)
         if payload is not None:
             if a == '--split-string' or _env_opt_takes_separate_value(a):
-                rest = toks[k + 2:]
+                rest = list(toks[k + 2:])
+                rest_raws = (list(raws[k + 2:])
+                             if raws is not None else None)
             else:
-                rest = toks[k + 1:]
+                rest = list(toks[k + 1:])
+                rest_raws = (list(raws[k + 1:])
+                             if raws is not None else None)
+            inserted = _tokenize(payload) + rest
+            # Provenance for the -S string itself (quoted `$` inside the
+            # payload must survive rejoin; #838 quoted-dollar).
+            ins_raws = _raw_tokens(payload)
+            if ins_raws is not None and rest_raws is not None:
+                combined_raws = list(ins_raws) + rest_raws
+            elif ins_raws is not None and not rest:
+                combined_raws = list(ins_raws)
+            else:
+                combined_raws = None
             out.extend(_env_commands_from_S_insertion(
-                _tokenize(payload) + list(rest), _depth))
+                inserted, _depth, raws=combined_raws))
             return out
         if a == '--split-string':
             # Operand missing: nothing to insert.
@@ -2120,22 +2198,20 @@ def _env_commands_from_opt_argv(toks, _depth=0):
     # Trailing utility belongs to an -S insertion (`env -S '-u X git merge'`),
     # not to the outer `env` argv (`env git merge` must stay a non-S miss).
     if _depth > 0 and k < len(toks):
-        # shlex.join keeps quote boundaries (`bash -c 'git merge …'`); a bare
-        # space-join would flatten the -c script into separate argv words.
-        out.append(shlex.join(toks[k:]))
+        sub_raws = raws[k:] if raws is not None else None
+        out.append(_env_S_rejoin(toks[k:], sub_raws))
     return out
 
 
-def _env_commands_from_S_insertion(toks, _depth):
+def _env_commands_from_S_insertion(toks, _depth, raws=None):
     """Process argv inserted by env -S (may begin with further env options)."""
     if not toks:
         return []
     if toks[0].startswith('-') and toks[0] not in ('-', '--'):
-        return _env_commands_from_opt_argv(toks, _depth + 1)
-    # Re-quote via shlex.join so a tokenized payload round-trips. A bare
-    # space-join drops quotes (`bash -c 'git merge topic'` → `bash -c git
-    # merge topic`) and later scans miss the merge inside -c (#838 cycle-E).
-    return [shlex.join(toks)]
+        return _env_commands_from_opt_argv(toks, _depth + 1, raws=raws)
+    # Shared `_env_S_rejoin`: keep multi-word `-c` scripts quoted, leave
+    # unquoted `$CFG` visible for the expansion/IFS refuse (#838 cycle-E/PR).
+    return [_env_S_rejoin(toks, raws)]
 
 
 def _env_S_payload(a, toks, k):
@@ -3504,8 +3580,9 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
     Same ownership walk as `_env_commands_from_opt_argv`: `-S` / `--split-string`
     payloads are split-string tokenized and scanned (attached `-SGIT_DIR=$D …`
     must not be mistaken for an `ENV_ASSIGN` name), nested `-S` recurses, and
-    non-S value options (`-u`, `-iu`, …) skip their operand so a following
-    `GIT_DIR=$D` is still seen."""
+    non-S value options (`-u`, `-iu`, `-C`, …) still check their operand for
+    expansion before skipping so `env -C $D git branch` cannot hide a merge
+    (#838 PR HIGH)."""
     if _depth >= 6 or not toks:
         return False
     skip_value = False
@@ -3513,6 +3590,9 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
     while k < len(toks):
         a = toks[k]
         if skip_value:
+            raw = raws[k] if raws is not None and k < len(raws) else a
+            if _c_operand_may_ifs_split(raw):
+                return True
             skip_value = False
             k += 1
             continue
@@ -3548,6 +3628,24 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0):
                 # scanned (#858 / #838 combined-option bypass).
                 if _env_opt_takes_separate_value(a):
                     skip_value = True
+                else:
+                    # Attached value (`-C$D`, `--chdir=$D`) is not skip_value,
+                    # but the operand still needs the expansion check. Pass the
+                    # complete raw token — slicing by decoded offsets corrupts
+                    # quote context (`-"C"$D` vs `"-C$D"`; #838 raw-token HIGH).
+                    raw = (raws[k] if raws is not None and k < len(raws)
+                           else a)
+                    has_attached = False
+                    if a.startswith('--') and '=' in a:
+                        name, _, _val = a.partition('=')
+                        if name in _ENV_VALUE_LONG:
+                            has_attached = True
+                    else:
+                        idx = _env_first_value_opt_index(a)
+                        if idx is not None and idx < len(a) - 2:
+                            has_attached = True
+                    if has_attached and _c_operand_may_ifs_split(raw):
+                        return True
                 k += 1
                 continue
         if _ASSIGN_TOK_RE.match(a) or _ENV_ASSIGN_TOK_RE.match(a):

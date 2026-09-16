@@ -1867,6 +1867,44 @@ run_gate "...and attached env -S packing bash -c quoted merge is still a merge r
     block 'env -S"bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
 run_gate "...and env -S inserting -u before bash -c quoted merge refuses" \
     block 'env -S "-u X bash -c '\''git merge topic'\''"' "ALONGSIDE a merge/pull"
+# -S rejoin must leave unquoted $CFG visible (#838 PR HIGH vs shlex.join).
+run_gate "...and env -S packing git -c \$CFG still fails closed" \
+    block 'env -S "git -c $CFG branch"' "cannot be resolved"
+run_gate "...and attached env -S packing git -c \$CFG likewise fails closed" \
+    block 'env -S"git -c $CFG branch"' "cannot be resolved"
+# Separator-bearing -c values must stay one argv word on rejoin (#838 metachar).
+# Merge is detected; the `;`/`|` value makes the operand arm fail-closed.
+run_gate "...and env -S packing git -c with semicolon value still detects merge" \
+    block 'env -S '\''git -c "x.y=;" merge topic'\''' "merge/pull cannot be resolved"
+run_gate "...and env -S packing git -c with pipe value still detects merge" \
+    block 'env -S '\''git -c "x.y=|" merge topic'\''' "merge/pull cannot be resolved"
+# Literal quotes/backslashes in -S argv must stay quoted on rejoin (#838 quote-char).
+run_gate "...and env -S packing assignment with embedded quote still detects merge" \
+    block "env -S \"X='\\\"' git merge topic -m '\\\"'\"" "ALONGSIDE a merge/pull"
+# Literal glob/brace in -S argv must stay quoted on rejoin (#838 glob-brace).
+run_gate "...and env -S packing a literal -c star value does not IFS-refuse" \
+    allow 'env -S '\''git -c "x.y=*" branch'\'''
+run_gate "...and env -S packing a literal -c brace value does not IFS-refuse" \
+    allow 'env -S '\''git -c "x.y={a,b}" branch'\'''
+# Quoted literal $ in -S argv must stay quoted on rejoin (#838 quoted-dollar).
+run_gate "...and env -S packing a quoted literal -c dollar value does not IFS-refuse" \
+    allow 'env -S '\''git -c '\''\''\'\'''\''x.y=$CFG'\''\''\'\'''\'' branch'\'''
+# Value-taking env operands are checked, not only skipped (#838 PR HIGH).
+run_gate "...and env -C \$D before a builtin still fails closed" \
+    block 'env -C $D git branch' "cannot be resolved"
+run_gate "...and attached env -C\$D before a builtin likewise fails closed" \
+    block 'env -C$D git branch' "cannot be resolved"
+run_gate "...while env -C with a quoted path before a builtin allows IFS-wise" \
+    allow 'env -C "$D" git branch'
+# Complete raw token for attached values — not a decoded-offset slice (#838 raw-token).
+run_gate "...and env -\"C\"\$D split-quote attached still fails closed" \
+    block 'env -"C"$D git branch' "cannot be resolved"
+run_gate "...and env --chdir\"=\"\$D split-quote long likewise fails closed" \
+    block 'env --chdir"="$D git branch' "cannot be resolved"
+run_gate "...while wholly quoted attached -C\$D allows IFS-wise" \
+    allow 'env "-C$D" git branch'
+run_gate "...and wholly quoted --chdir=\$D allows IFS-wise" \
+    allow 'env "--chdir=$D" git branch'
 run_gate "...and env -- before an unquoted GIT_DIR likewise fails closed" \
     block 'env -- GIT_DIR=$D git branch' "cannot be resolved"
 run_gate "...and nested env with an unquoted GIT_DIR likewise fails closed" \

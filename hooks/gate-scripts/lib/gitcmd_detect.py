@@ -3368,6 +3368,54 @@ def _seg_env_scope(seg):
     return any(_GIT_SCOPE_ENV_RE.match(t) for t in _env_assignment_toks(seg))
 
 
+def _c_operand_may_ifs_split(raw):
+    """True iff a `git -C` operand's raw spelling can expand to multiple argv words.
+
+    Distinct from `_word_may_split`: that treats every command substitution as
+    unstable (value uncertainty for merge operands). A double-quoted
+    `"$(pwd)"` / `"$DIR"` is always one word after expansion, so it cannot
+    smuggle a `merge` subcommand into git's `-C <path> <command>` grammar the
+    way an unquoted `$SOMEDIR='/repo merge'` can (`git -C $SOMEDIR branch` →
+    `git -C /repo merge branch`). Scope opacity is already reported via
+    REF_OP_UNRESOLVABLE; this predicate is only about argv-count injection."""
+    if raw is None:
+        return True
+    active, multi, _cmdsub = _active_spelling(raw)
+    if multi:
+        return True
+    if active is None:
+        return True
+    if not active:
+        return False
+    if '$' in active or '`' in active:
+        return True
+    return _brace_expands(active) or _glob_expands(active)
+
+
+def _any_git_c_may_ifs_split(cmd):
+    """True when any pre-subcommand `git -C` operand in `cmd` may IFS-split."""
+    for chunk in _all_chunks(cmd):
+        for _op, seg in split_segments(chunk):
+            argv, raw_argv = _command_argv(seg, 'git', with_raw=True,
+                                           wrapper_operands=True)
+            if not argv or not _is_exe(argv[0], 'git'):
+                continue
+            _sub, sub_idx = _git_subcommand(argv)
+            if sub_idx is None:
+                sub_idx = len(argv)
+            k = 1
+            while k < sub_idx:
+                if argv[k] != '-C':
+                    k += 1
+                    continue
+                if k + 1 >= sub_idx or raw_argv is None:
+                    return True
+                if _c_operand_may_ifs_split(_raw_spelling(raw_argv, k + 1)):
+                    return True
+                k += 2
+    return False
+
+
 def _literal_c_target(argv, raw_argv, sub_idx):
     """The pre-subcommand `git -C` operand when it is an absolute plain literal,
     '' when the invocation has none, or None when it cannot be trusted.

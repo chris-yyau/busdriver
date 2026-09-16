@@ -409,7 +409,7 @@ sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
     import json
     from gitcmd_detect import (git_ref_op, REF_OP_UNRESOLVABLE,
-                               REF_OP_FF_PREFIX)
+                               REF_OP_FF_PREFIX, _any_git_c_may_ifs_split)
     d = json.load(sys.stdin)
     def noop():
         # kind, target_dir, cwd, untrusted_cd, then a REAL operand count.
@@ -423,6 +423,7 @@ try:
         print('0')
         print('')
         print('')
+        print('0')  # C_MAY_IFS_SPLIT
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         noop()
@@ -462,8 +463,12 @@ try:
     print('1' if ref_writer else '0')
     print(' '.join(aliases))
     print(ff_mode)
+    # 13th: unquoted git -C \$DIR can IFS-split into -C path + subcommand
+    # and hide a merge behind a later builtin candidate (#858 Codex P1).
+    # Dollars escaped: this body is a double-quoted shell -c string under set -u.
+    print('1' if _any_git_c_may_ifs_split(cmd) else '0')
 except Exception:
-    for _ in range(12):
+    for _ in range(13):
         print('error' if _ == 0 else '')
 " 2>/dev/null) || PARSE_RESULT=""
 
@@ -479,6 +484,12 @@ NOPERATIONS=$(echo "$PARSE_RESULT" | sed -n '9p')
 REF_WRITER=$(echo "$PARSE_RESULT" | sed -n '10p')
 ALIAS_CANDIDATES=$(echo "$PARSE_RESULT" | sed -n '11p')
 FF_MODE=$(echo "$PARSE_RESULT" | sed -n '12p')
+C_MAY_IFS_SPLIT=$(echo "$PARSE_RESULT" | sed -n '13p')
+# Fail-closed when the 13th field is missing/unreadable on a live parse.
+case "$C_MAY_IFS_SPLIT" in
+    0|1) ;;
+    *) C_MAY_IFS_SPLIT=1 ;;
+esac
 
 if [ "$KIND" = "error" ]; then
     block_emit "Ref fast-forward gate: failed to parse tool input for a command matching the git merge/pull pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
@@ -582,10 +593,16 @@ fi
 # Empty KIND + UNRESOLVABLE: detector found alias-candidate word(s) whose repo
 # scope it could not pin (relative/opaque/mid-command cd, disagreeing `-C`s, …).
 # Fabricating kind=merge for that used to dump operators onto the merge-operand
-# text (#838). Refuse only when a post-filter UNKNOWN remains — a built-in cannot
-# be a merge/pull alias (git ignores alias shadows of builtins).
-if [ "$UNRESOLVABLE" = "1" ] && [ -z "$KIND" ] && [ -n "$UNKNOWN_CANDIDATES" ]; then
-    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, or git -C scopes that disagree). Use a literal absolute \`git -C /repo …\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
+# text (#838). Refuse when a post-filter UNKNOWN remains — a built-in cannot
+# be a merge/pull alias (git ignores alias shadows of builtins) — OR when any
+# `git -C` operand may IFS-split: unquoted `$SOMEDIR='/repo merge'` turns
+# `git -C $SOMEDIR branch` into `git -C /repo merge branch` while the parser
+# still sees candidate `branch` (a builtin), so UNKNOWN stays empty (#858).
+# Quoted `"$DIR"` / `"$(pwd)"` and relative literals cannot change word count
+# and still clear when only builtins remain.
+if [ "$UNRESOLVABLE" = "1" ] && [ -z "$KIND" ] \
+        && { [ -n "$UNKNOWN_CANDIDATES" ] || [ "$C_MAY_IFS_SPLIT" = "1" ]; }; then
+    block_emit "Ref fast-forward gate: this command names a git word the gate must resolve as a possible merge/pull alias, but the repository that word would run in cannot be resolved statically (a relative or opaque cd, a cd that is not the leading '&&'-joined absolute one, git -C scopes that disagree, or an unquoted git -C operand that may word-split). Use a literal absolute \`git -C /repo …\`, a quoted \`-C \"\$DIR\"\`, or run it from that repository without a leading cd. Blocking as precaution (fail-closed)."
     exit 0
 fi
 # Everything below keys off whether the anchor was chosen by the COMMAND, which

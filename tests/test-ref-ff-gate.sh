@@ -1788,11 +1788,17 @@ run_gate "...and a leading absolute cd resolves the alias in the cd repo" \
 
 # Opaque/relative `-C` with ONLY built-in words: same post-filter rule as
 # relative cd (cubic P2) — nothing left that could be a merge/pull alias, so
-# allow. An UNKNOWN word on these shapes still fails closed (pin below).
-run_gate "a substituted -C target with only builtins is not alias-scope refuse" \
+# allow — EXCEPT when an unquoted `-C` operand may IFS-split and inject a
+# subcommand (`$SOMEDIR='/repo merge'; git -C $SOMEDIR branch` → merge).
+# Quoted substitutions / vars and relative literals cannot change word count.
+run_gate "a quoted substituted -C target with only builtins is not alias-scope refuse" \
     allow 'git -C "$(pwd)" worktree list'
-run_gate "...and a variable one with only builtins likewise allows" \
-    allow 'git -C $SOMEDIR worktree list'
+run_gate "...and a quoted variable -C with only builtins likewise allows" \
+    allow 'git -C "$SOMEDIR" worktree list'
+run_gate "...while an unquoted variable -C that may word-split fails closed" \
+    block 'git -C $SOMEDIR worktree list' "cannot be resolved"
+run_gate "...including when the split would inject merge before a builtin candidate" \
+    block 'git -C $SOMEDIR branch' "cannot be resolved"
 run_gate "...and a relative one with only builtins likewise allows" \
     allow "git -C sub worktree list"
 run_gate "...and a chained -C with only builtins likewise allows" \

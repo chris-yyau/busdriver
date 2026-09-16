@@ -2268,6 +2268,80 @@ def _backtick_span(s, i):
     return None
 
 
+# Closers that continue the current word: `$()` / process-subst / arith EXPANSION
+# glue to the next character (`$(true)#` is one word). Arithmetic COMMAND and
+# grouping `)` restore word-start (`((1)) #` is a comment) (#802).
+_WORD_CONTINUE_CLOSE = frozenset(('S', 'PS', 'AE'))
+
+
+def _ws_after_close(kind):
+    """Whether closing this frame starts a new shell word."""
+    return kind not in _WORD_CONTINUE_CLOSE
+
+
+def _cmd_nl_drains_hd(q, arith_active, value_span=False):
+    """Pending heredocs drain only at a command-syntax newline (#802).
+
+    Newlines inside quotes, arithmetic, or parameter-value text are not
+    command-line terminators, so they must not consume a queued body.
+    """
+    return (not q) and (not arith_active) and (not value_span)
+
+
+def _copy_delim_expansion(s, j, op, d):
+    """Copy an expansion-shaped delimiter from `s[j]` until `op` balances.
+
+    Every source character is kept — the terminator is the literal spelling.
+    Quotes and escapes still govern nesting, using the same classification
+    `_heredoc_delim` already applies to the outer word (#802).
+    """
+    cl = '}' if op == '{' else (')' if op == '(' else ']')
+    depth = 1
+    dq = ''
+    while j < len(s) and depth:
+        c = s[j]
+        if dq:
+            if dq == chr(34) and c == chr(92) and j + 1 < len(s) \
+                    and s[j + 1] in (chr(34), chr(92), '$', chr(96)):
+                d.append(c)
+                d.append(s[j + 1])
+                j += 2
+                continue
+            d.append(c)
+            if c == dq:
+                dq = ''
+            j += 1
+            continue
+        if c in ("'", chr(34)):
+            dq = c
+            d.append(c)
+            j += 1
+            continue
+        if c == chr(92) and j + 1 < len(s):
+            d.append(c)
+            d.append(s[j + 1])
+            j += 2
+            continue
+        if op == '{':
+            if s.startswith('${', j) and _dollar_run_is_even(s, j):
+                d.append('${')
+                j += 2
+                depth += 1
+                continue
+            d.append(c)
+            j += 1
+            if c == '}':
+                depth -= 1
+            continue
+        d.append(c)
+        j += 1
+        if c == op:
+            depth += 1
+        elif c == cl:
+            depth -= 1
+    return j
+
+
 def _heredoc_delim(s, i):
     """The heredoc delimiter at `s[i]` and the index past its introducer, or None.
 
@@ -2338,30 +2412,7 @@ def _heredoc_delim(s, i):
             _op = s[j + 1]
             d.append(c)
             d.append(_op)
-            j += 2
-            _depth = 1
-            if _op == '{':
-                while j < len(s) and _depth:
-                    if s.startswith('${', j) and _dollar_run_is_even(s, j):
-                        d.append('${')
-                        j += 2
-                        _depth += 1
-                        continue
-                    _c = s[j]
-                    d.append(_c)
-                    j += 1
-                    if _c == '}':
-                        _depth -= 1
-            else:
-                _cl = ')' if _op == '(' else ']'
-                while j < len(s) and _depth:
-                    _c = s[j]
-                    d.append(_c)
-                    j += 1
-                    if _c == _op:
-                        _depth += 1
-                    elif _c == _cl:
-                        _depth -= 1
+            j = _copy_delim_expansion(s, j + 2, _op, d)
             continue
         if c in ' \t\n;&|<>()':
             break
@@ -2449,7 +2500,7 @@ def _strip_cmd_subst(s, join_only=False):
     while i < n:
         ch = s[i]
         # Heredoc bodies are DATA: kept verbatim, never read as shell text.
-        if not oq and heredocs and ch == '\n':
+        if heredocs and ch == '\n' and _cmd_nl_drains_hd(oq, arith):
             _t, _k = _heredoc_body_end(s, i + 1, heredocs,
                                        raw=raw, j2r=_j2r, r2j=_r2j)
             out.append(s[i])
@@ -2592,7 +2643,11 @@ def _strip_cmd_subst(s, join_only=False):
                 if _jout is not None:
                     _jout.append(s[_jpos:i])
                     _jpos = i
-                if not q and inner_heredocs and ch == '\n':
+                # Active arith = top of `_inner_arith` is an int depth, not a 'cmd' hold.
+                _arith_active = bool(_inner_arith) and _inner_arith[-1] != 'cmd'
+                _in_span_text = bool(_span) and depth == _span[-1][1]
+                if inner_heredocs and ch == '\n' \
+                        and _cmd_nl_drains_hd(q, _arith_active, _in_span_text):
                     # A newline ends the line of the command at THIS depth, and a nested
                     # `$()` is its own command: both its newline and any heredoc queued
                     # inside it are its own. One shared queue took the OUTER delimiter at
@@ -2620,10 +2675,8 @@ def _strip_cmd_subst(s, join_only=False):
                 # below reasons: `${X:-$(cat <<EOF ...)}` runs a real command, and its
                 # heredoc is a real heredoc. Suppressing it there scanned the body as
                 # shell text, where an apostrophe in prose opened a quote (#802).
-                # Active arith = top of `_inner_arith` is an int depth, not a 'cmd' hold.
-                _arith_active = bool(_inner_arith) and _inner_arith[-1] != 'cmd'
                 if not q and not _arith_active \
-                        and not (_span and depth == _span[-1][1]):
+                        and not _in_span_text:
                     if s.startswith('<<<', i):   # herestring, as above
                         i += 3
                         ws = True
@@ -2855,7 +2908,7 @@ def _strip_cmd_subst(s, join_only=False):
                         break
                     # `$()` / process-subst / arith-EXPANSION closers continue the word.
                     # Bare arith-command `((1))` leaves word-start so `#` is a comment (#802).
-                    ws = _kind not in ('S', 'PS', 'AE')
+                    ws = _ws_after_close(_kind)
                     continue
                 ws = ch in " \t\n;&|"
                 i += 1
@@ -2908,6 +2961,7 @@ def _strip_cmd_subst(s, join_only=False):
             # expansion around it.
             _nsub = 0
             _narith = 0
+            _astack = []         # 'A' command vs 'AE' expansion; same kinds as `_opstack`
             # When `$()` opens under live arith, record the arith depth at entry.
             # Heredoc is suppressed only while `_narith` exceeds that floor, so a
             # fresh inner `$((` still treats `<<` as a shift (#802).
@@ -3045,8 +3099,10 @@ def _strip_cmd_subst(s, join_only=False):
                     i += 1
                     continue
                 if s.startswith('$((', i) or (_nsub and s.startswith('((', i)):
+                    _ak = 'AE' if s.startswith('$((', i) else 'A'
+                    _astack.append(_ak)
                     _narith += 1
-                    i += 3 if s.startswith('$((', i) else 2
+                    i += 3 if _ak == 'AE' else 2
                     _ws = False
                     continue
                 if _narith and s.startswith('))', i):
@@ -3055,9 +3111,10 @@ def _strip_cmd_subst(s, join_only=False):
                     _floor = _narith_floor[-1] if _narith_floor else 0
                     if _narith > _floor:
                         _narith -= 1
+                        _ak = _astack.pop() if _astack else 'AE'
                         i += 2
-                        # `$((1))#` continues the word — not a comment (#802).
-                        _ws = False
+                        # `$((1))#` continues the word; `((1))#` is a comment (#802).
+                        _ws = _ws_after_close(_ak)
                         continue
                 # Legacy `$[1 << 2]`: shift, not heredoc — same rule as `$()` `_span` (#802).
                 if s.startswith('$[', i) and _dollar_run_is_even(s, i):
@@ -3100,14 +3157,21 @@ def _strip_cmd_subst(s, join_only=False):
                         q = _qstack.pop()[1]
                     # `$()` / process-subst closers continue the current word —
                     # `$(true)#` is not a comment. Bare subshell `)` is (#802).
-                    _ws = _kind not in ('S', 'PS')
+                    _ws = _ws_after_close(_kind)
                     continue
                 # SEVERAL bodies can queue on one line -- `cat <<A <<B` reads A's then
                 # B's -- so the introducers are collected and the bodies skipped in
                 # order at the newline, exactly as _strip_cmd_subst does it. Jumping
                 # at the first introducer left the second body being read as shell
                 # text, where an apostrophe in prose opened a quote (#802).
-                if _nhd and ch == chr(10):
+                _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
+                # Suppress heredoc only while arith is deeper than the floor recorded
+                # when the current `$()` nest suspended it (#802).
+                _floor = _narith_floor[-1] if _narith_floor else 0
+                _arith_here = _narith > _floor
+                if _nhd and ch == chr(10) \
+                        and _cmd_nl_drains_hd(q, _arith_here,
+                                              _val_text or _dbrack_here):
                     # A nested `$()` is its OWN command, so only the introducers queued
                     # at THIS depth are pending at this newline. One flat queue took the
                     # OUTER delimiter at the inner newline and its body then ate the
@@ -3131,11 +3195,6 @@ def _strip_cmd_subst(s, join_only=False):
                         _nhd = [p for p in _nhd if p[1] != _cmd_d]
                         _ws = True
                         continue
-                _dbrack_here = bool(_dbrack) and _dbrack[-1] == len(_pstack)
-                # Suppress heredoc only while arith is deeper than the floor recorded
-                # when the current `$()` nest suspended it (#802).
-                _floor = _narith_floor[-1] if _narith_floor else 0
-                _arith_here = _narith > _floor
                 if _nsub and not _arith_here and not _val_text and not _dbrack_here:
                     if s.startswith('<<<', i):   # a herestring is a WORD, not a body
                         i += 3

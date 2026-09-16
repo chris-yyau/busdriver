@@ -1599,6 +1599,34 @@ _pr_hd_delim_brace='echo "$(cat <<${X:-{}
 hello
 ${X:-{}
 )" "["'
+# PE walker: arith COMMAND closer restores word-start so `#` is a comment (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_arith_cmd_hash='echo "${X:-$( ((1))#'"'"'
+printf ok)}" "["'
+# `$()` walker control: same arith-command comment (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_arith_cmd_hash='echo "$( ((1))#'"'"'
+printf ok)" "["'
+# Quoted `(` inside an expansion-shaped heredoc delimiter is not nesting (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_delim_qparen='echo "$(cat <<$(echo '"'"'('"'"')
+hello
+$(echo '"'"'('"'"')
+)" "["'
+# Pending heredoc must not drain at an arithmetic-expression newline (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_hd_arith_nl='echo "$(: <<EOF $((1
++2))
+it'"'"'s data
+EOF
+printf ok)" "["'
+# PE-nested sibling of the same command-newline drain rule (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_pe_hd_arith_nl='echo "${X:-$(: <<EOF $((1
++2))
+it'"'"'s data
+EOF
+printf ok)}" "["'
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
           "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
@@ -1609,7 +1637,9 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_arith_hash" "$_pr_dbrack_hash" \
           "$_pr_dollar_adj_hash" "$_pr_dq_comment" "$_pr_arith_floor_paren" \
           "$_pr_arith_adj" "$_pr_hd_comment" "$_pr_hd_delim_dollar" \
-          "$_pr_hd_delim_brace"; do
+          "$_pr_hd_delim_brace" \
+          "$_pr_pe_arith_cmd_hash" "$_pr_arith_cmd_hash" \
+          "$_pr_hd_delim_qparen" "$_pr_hd_arith_nl" "$_pr_pe_hd_arith_nl"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

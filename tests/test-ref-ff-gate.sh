@@ -1913,6 +1913,14 @@ run_gate "...and env -S with dq-hidden -c dollar and unaligned raws still fails 
 # over-block (#838 literal-align HIGH / commit FAIL of 93b44186).
 run_gate "...and env -S with adjacent-quote literal -c value still allows log" \
     allow 'env -S '\''git -c "x.y="foo log'\'''
+# Attached -S with leading-whitespace payload must align outer live flags
+# (#838 S-ws-nested / attached whitespace HIGH).
+run_gate "...and env with wholly-quoted attached -S leading-space -c dollar still fails closed" \
+    block 'env "-S git -c '\''x.y=$CFG'\'' branch"' "cannot be resolved"
+# Nested env inside -S must recurse pre-rejoin before Git globals
+# (#838 S-ws-nested / nested env HIGH).
+run_gate "...and env -S packing nested env GIT_DIR dollar still fails closed" \
+    block 'env -S "env GIT_DIR='\''$D '\'' git branch"' "cannot be resolved"
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1
@@ -1922,6 +1930,7 @@ from gitcmd_detect import _env_S_ins_raws
 payload = " ".join(["'$X'" for _ in range(400)])
 outer = '"' + payload + '"'
 t0 = time.perf_counter()
+
 raws = _env_S_ins_raws(payload, outer)
 ms = (time.perf_counter() - t0) * 1000
 assert raws is not None and len(raws) == 400, (raws and len(raws),)

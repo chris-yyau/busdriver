@@ -2182,7 +2182,7 @@ def _outer_value_expand_flags(raw):
     return ''.join(chars), flags
 
 
-def _outer_token_live_flags(outer_raw):
+def _outer_token_live_flags(outer_raw, payload=None):
     """Per-token live `$` / backtick flags for a decoded outer-shell argv spelling.
 
     Decode + tokenize once so callers can reuse by index. Payload-wide
@@ -2190,12 +2190,23 @@ def _outer_token_live_flags(outer_raw):
     quoted-literal `$CFG` look live (#838 live-outer HIGH). Matching by token
     index keeps `\\$CFG` vs `$CFG` aligned. Built once per `_env_S_ins_raws`
     so re-decode/re-tokenize is not O(n²) (#838 outer-live-quad MEDIUM).
+
+    When `payload` is the extracted -S / --split-string body (including a
+    leading-whitespace attached form like `-S git …`), strip the attached
+    option prefix from decoded text+flags first so flag indices match the
+    insertion argv — not an outer tokenisation that still contains `-S`
+    (#838 S-ws-nested / attached whitespace HIGH).
     """
     if outer_raw is None:
         return None
     text, flags = _outer_value_expand_flags(outer_raw)
     if not text or not flags:
         return None
+    if payload is not None and text.endswith(payload):
+        start = len(text) - len(payload)
+        if start:
+            text = text[start:]
+            flags = flags[start:]
     dec_toks = _tokenize(text)
     if not dec_toks:
         return None
@@ -2246,7 +2257,7 @@ def _env_S_token_outer_live(outer_raw, payload, tok, local_raw, index, toks, loc
         return False
     flags = outer_live_flags
     if flags is None:
-        flags = _outer_token_live_flags(outer_raw)
+        flags = _outer_token_live_flags(outer_raw, payload)
     if not flags or index >= len(flags):
         return False
     return flags[index]
@@ -2264,18 +2275,25 @@ def _env_S_ins_raws(payload, outer_raw=None):
     those bare too (#838 dq-S HIGH). Track outer expandability PER TOKEN so an
     unrelated later `$TAIL` cannot strip literal provenance from `$CFG`
     (#838 live-outer HIGH). Outer decode/tokenize runs once for the operand
-    (#838 outer-live-quad MEDIUM).
+    (#838 outer-live-quad MEDIUM), aligned to the extracted payload so an
+    attached `-S …` prefix (including leading whitespace) cannot shift flag
+    indices (#838 S-ws-nested HIGH).
     """
+    toks = _tokenize(payload)
     local = _raw_tokens(payload)
+    if local is not None and len(toks) != len(local):
+        local = None
+    # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local
+    # when aligned; if payload raws cannot be rebuilt (space-in-quotes debris),
+    # synthesize quoted spellings so nested assignment `$` stays literal
+    # (#838 S-ws-nested nested-env allow).
+    if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
+        if local is not None:
+            return local
+        return [shlex.quote(t) for t in toks] if toks else None
     if local is None:
         return None
-    toks = _tokenize(payload)
-    if len(toks) != len(local):
-        return None
-    # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local.
-    if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
-        return local
-    outer_live = (_outer_token_live_flags(outer_raw)
+    outer_live = (_outer_token_live_flags(outer_raw, payload)
                   if outer_raw is not None else None)
     out = []
     for i, (t, r) in enumerate(zip(toks, local)):
@@ -3895,7 +3913,9 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     When the parent walk had aligned outer-shell raws, the utility remainder is
     also scanned for git valued globals using pre-rejoin insertion raws so a
     whitespace-bearing live `$CFG` cannot hide behind boundary quoting
-    (#838 ws-live HIGH). If those insertion raws cannot be aligned, still call
+    (#838 ws-live HIGH). Nested `env` utilities recurse with those same
+    pre-rejoin tokens/raws before the Git-global check (#838 S-ws-nested HIGH).
+    If those insertion raws cannot be aligned, still call
     `_git_pre_subcmd_may_ifs_split` with `None` so valued globals fail closed
     instead of skipping (#838 raws-failclosed HIGH). Untrusted walks that still
     carry aligned raws (`trust_git_raws=False` and `raws is not None`) skip that
@@ -3987,17 +4007,28 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
             k += 1
             continue
         break
-    # Utility argv after env options — including -S insertions. Consult
+    # Utility argv after env options — including -S insertions. Nested env
+    # wrappers must recurse with pre-rejoin tokens/raws before the Git-global
+    # check, or `env -S "env GIT_DIR='$D ' git branch"` stops at `env` and
+    # drops expansion provenance (#838 S-ws-nested HIGH). Then consult
     # pre-rejoin raws so whitespace-bearing live `$CFG` is not cleared by
     # boundary quoting on rejoin (#838 ws-live HIGH). When insertion raws
     # cannot be aligned, pass None so valued globals fail closed rather than
     # skipping (#838 raws-failclosed HIGH / commit FAIL of 790311ca).
     # Unaligned raws also fail closed when trust_git_raws is False — dq
     # boundary quoting must not skip this check (#838 dq-raws-skip HIGH).
-    if k < len(toks) and (trust_git_raws or raws is None):
+    if k < len(toks):
+        util = toks[k:]
         util_raws = raws[k:] if raws is not None else None
-        if _git_pre_subcmd_may_ifs_split(toks[k:], util_raws):
-            return True
+        if _is_exe(util[0], 'env'):
+            nested_raws = (util_raws[1:] if util_raws is not None else None)
+            if _env_argv_may_ifs_split(
+                    util[1:], nested_raws, _depth + 1,
+                    trust_git_raws=trust_git_raws):
+                return True
+        if trust_git_raws or raws is None:
+            if _git_pre_subcmd_may_ifs_split(util, util_raws):
+                return True
     return False
 
 

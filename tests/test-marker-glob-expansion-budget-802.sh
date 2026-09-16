@@ -1566,6 +1566,16 @@ _pr_ansic_hash='echo ${X:-$(printf %s $'"'"'x'"'"'#)} "["'
 _pr_arith_hash='echo ${X:-$(printf %s $((1 ))#)} "["'
 # shellcheck disable=SC2016  # literal payloads for classifier (#802)
 _pr_dbrack_hash='echo ${X:-$(printf %s $[ 1 ]#)} "["'
+# `$()` walker adjacent-`#` parity with PE walker (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_dollar_adj_hash='echo "$(printf %s $(true)#)" "["'
+# Quote-suspended `$()` starts at word-start for comments (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_dq_comment='echo "${X:-"$(#'"'"'
+printf ok)"}" "["'
+# Suspended arith floor keeps PE value-text `(` literal (#802).
+# shellcheck disable=SC2016  # literal payloads for classifier (#802)
+_pr_arith_floor_paren='echo "${X:-$( (( $(printf %s ${Y:-(} >/dev/null; printf 1) + 1 )); printf OK)}" "["'
 for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_bt_brace" "$_pr_nested_paren" "$_pr_pe_arith" \
           "$_pr_bt_hash_dollar" "$_pr_bt_hash_esc" "$_pr_bt_pe_hash" \
@@ -1573,7 +1583,8 @@ for _c in "$_pr_arith_hd" "$_pr_brace_hd" "$_pr_legacy_br" "$_pr_esc_q" \
           "$_pr_join_comment" "$_pr_pe_comment_q" "$_pr_tick_esc_q" \
           "$_pr_nested_pe_hash" "$_pr_esc_space_hash" \
           "$_pr_adj_hash" "$_pr_ansic_hash" \
-          "$_pr_arith_hash" "$_pr_dbrack_hash"; do
+          "$_pr_arith_hash" "$_pr_dbrack_hash" \
+          "$_pr_dollar_adj_hash" "$_pr_dq_comment" "$_pr_arith_floor_paren"; do
   if ! bash -n <<<"$_c" 2>/dev/null; then
     no "#802 PR-boundary bash-faithful reading" "bash rejected: $_c"
   else

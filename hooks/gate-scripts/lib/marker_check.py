@@ -2622,6 +2622,7 @@ def _strip_cmd_subst(s, join_only=False):
                         _opstack.append('S')
                         depth += 1
                         i += 2
+                        ws = True
                         continue
                     if q == '"' and ch == '`':
                         _bt = _backtick_span(s, i)
@@ -2818,7 +2819,9 @@ def _strip_cmd_subst(s, join_only=False):
                     if depth == 0 and not tick:
                         closed = True
                         break
-                    ws = True
+                    # `$()` / process-subst closers continue the current word —
+                    # `$(true)#` is not a comment. Bare subshell `)` is (#802).
+                    ws = _kind not in ('S', 'PS')
                     continue
                 ws = ch in " \t\n;&|"
                 i += 1
@@ -2925,6 +2928,7 @@ def _strip_cmd_subst(s, join_only=False):
                         _pstack.append('S')
                         _nsub += 1
                         i += 2
+                        _ws = True
                         continue
                     if q == '"' and ch == '`':   # quotes for itself, here too (#802)
                         _bt = _backtick_span(s, i)
@@ -2999,12 +3003,11 @@ def _strip_cmd_subst(s, join_only=False):
                         i = n if _nl < 0 else _nl
                     _ws = True
                     continue
-                # `not _narith`: a `$((...))` in a default value is REAL arithmetic, and
-                # its own `))` is a closer, not text. Without that the exemption ate the
-                # first `)` of `${Y:-$((1+2))}`, arithmetic never closed, and the real
-                # heredoc after it went unrecognised -- the same fictitious-arithmetic
-                # failure this rule exists to prevent, reintroduced by the rule itself.
-                if _val_text and not _narith and ch in '()':
+                # `not (_narith > floor)`: a `$((...))` in a default value is REAL
+                # arithmetic, and its own `))` is a closer, not text. When a nested
+                # `$()` suspends arith, `_narith` may still be nonzero at the floor —
+                # treat that as inactive so PE value-text `(` stays literal (#802).
+                if _val_text and not (_narith > _floor) and ch in '()':
                     i += 1
                     continue
                 if s.startswith('$((', i) or (_nsub and s.startswith('((', i)):

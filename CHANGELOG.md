@@ -1,3 +1,10 @@
+## [2.1.20](https://github.com/chris-yyau/busdriver/compare/v2.1.19...v2.1.20) (2026-09-15)
+
+
+### Bug Fixes
+
+* **litmus:** retain cross-class findings through merger dedup ([#844](https://github.com/chris-yyau/busdriver/issues/844)) ([#856](https://github.com/chris-yyau/busdriver/issues/856)) ([d4d3afe](https://github.com/chris-yyau/busdriver/commit/d4d3afece07ef2d40134138c607f4431a755561a))
+
 ## [2.1.19](https://github.com/chris-yyau/busdriver/compare/v2.1.18...v2.1.19) (2026-09-14)
 
 

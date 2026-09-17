@@ -196,7 +196,14 @@ function isSuggestCompactPreToolUseRegistered(rootDir) {
   }
 
   const config = safeParseJson(safeRead(rootDir, 'hooks/hooks.json'));
-  const entries = config && Array.isArray(config.PreToolUse) ? config.PreToolUse : [];
+  // Claude Code plugin/user hooks.json nest events under `hooks` (see
+  // hooks/hooks.json `$schema`). Accept a top-level PreToolUse only as a
+  // defensive fallback for atypical fixtures.
+  const preToolUse =
+    (config && config.hooks && Array.isArray(config.hooks.PreToolUse) && config.hooks.PreToolUse) ||
+    (config && Array.isArray(config.PreToolUse) && config.PreToolUse) ||
+    [];
+  const entries = preToolUse;
 
   for (const entry of entries) {
     const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];

@@ -8,16 +8,24 @@
 /** Relative plugin path that must appear for Context Efficiency credit. */
 const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
 
-/** Path-bounded match; rejects suggest-compact.js.bak and similar suffixes. */
+/** Path-bounded mention in shell text; rejects suggest-compact.js.bak. */
 const SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE =
   /(?:^|\/|["'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
-const RUN_WITH_FLAGS_PLUGIN_ROOT_RE =
-  /^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/run-with-flags\.js$/;
+
 /** Wrapper scriptRelativePath slot: exact relative path only. */
 const SUGGEST_COMPACT_RELATIVE_RE = /^scripts\/hooks\/suggest-compact\.js$/;
-/** Direct node argv: must be plugin-root qualified. */
-const SUGGEST_COMPACT_PLUGIN_ROOT_RE =
-  /^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/suggest-compact\.js$/;
+
+/** Exec-form plugin-root paths: braced placeholder only (no shell expansion). */
+const SUGGEST_COMPACT_PLUGIN_ROOT_BRACED_RE =
+  /^\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/hooks\/suggest-compact\.js$/;
+const RUN_WITH_FLAGS_PLUGIN_ROOT_BRACED_RE =
+  /^\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/hooks\/run-with-flags\.js$/;
+
+/** Shell-form may also use bare $CLAUDE_PLUGIN_ROOT (shell expands it). */
+const SUGGEST_COMPACT_PLUGIN_ROOT_BARE_RE =
+  /^\$CLAUDE_PLUGIN_ROOT\/scripts\/hooks\/suggest-compact\.js$/;
+const RUN_WITH_FLAGS_PLUGIN_ROOT_BARE_RE =
+  /^\$CLAUDE_PLUGIN_ROOT\/scripts\/hooks\/run-with-flags\.js$/;
 
 /**
  * Claude Code plugin/user hooks.json nest events under `hooks` (see
@@ -45,8 +53,26 @@ function isSuggestCompactRelativeToken(value) {
   return typeof value === 'string' && SUGGEST_COMPACT_RELATIVE_RE.test(stripWrappingQuotes(value));
 }
 
-function isSuggestCompactPluginRootToken(value) {
-  return typeof value === 'string' && SUGGEST_COMPACT_PLUGIN_ROOT_RE.test(stripWrappingQuotes(value));
+function isSuggestCompactPluginRootToken(value, allowBare) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = stripWrappingQuotes(value);
+  if (SUGGEST_COMPACT_PLUGIN_ROOT_BRACED_RE.test(trimmed)) {
+    return true;
+  }
+  return Boolean(allowBare) && SUGGEST_COMPACT_PLUGIN_ROOT_BARE_RE.test(trimmed);
+}
+
+function isRunWithFlagsToken(value, allowBare) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = stripWrappingQuotes(value);
+  if (RUN_WITH_FLAGS_PLUGIN_ROOT_BRACED_RE.test(trimmed)) {
+    return true;
+  }
+  return Boolean(allowBare) && RUN_WITH_FLAGS_PLUGIN_ROOT_BARE_RE.test(trimmed);
 }
 
 function textMentionsSuggestCompactScript(value) {
@@ -55,10 +81,6 @@ function textMentionsSuggestCompactScript(value) {
 
 function isNodeToken(value) {
   return typeof value === 'string' && /(?:^|\/)node(?:\.exe)?$/.test(stripWrappingQuotes(value));
-}
-
-function isRunWithFlagsToken(value) {
-  return typeof value === 'string' && RUN_WITH_FLAGS_PLUGIN_ROOT_RE.test(stripWrappingQuotes(value));
 }
 
 /** Strip leading FOO=bar assignments so the statement command word is visible. */
@@ -89,38 +111,33 @@ function tokenizeShellArgs(rest) {
   return tokens;
 }
 
-/** Direct form: command is node; argv[1] is ${CLAUDE_PLUGIN_ROOT}/…/suggest-compact.js. */
-function isDirectNodeScriptInvocation(tokens, scriptIndex) {
-  return scriptIndex === 1 && isNodeToken(tokens[0]) && isSuggestCompactPluginRootToken(tokens[1]);
+/** Direct form: command is node; argv[1] is plugin-root suggest-compact.js. */
+function isDirectNodeScriptInvocation(tokens, allowBare) {
+  return isNodeToken(tokens[0]) && isSuggestCompactPluginRootToken(tokens[1], allowBare);
 }
 
 /**
  * run-with-flags.js <hookId> <scriptRelativePath> [profilesCsv]
- * Requires node as argv[0], wrapper at [1], exact relative script at [3].
+ * Requires node as argv[0], plugin-root wrapper at [1], exact relative script at [3].
  */
-function scriptIsRunWithFlagsScriptArg(tokens, scriptIndex) {
-  if (scriptIndex !== 3) {
-    return false;
-  }
+function scriptIsRunWithFlagsScriptArg(tokens, allowBare) {
   return isNodeToken(tokens[0])
-    && isRunWithFlagsToken(tokens[1])
+    && isRunWithFlagsToken(tokens[1], allowBare)
     && isSuggestCompactRelativeToken(tokens[3]);
 }
 
 /**
  * Exec-form argv: command (tokens[0]) must be node. Rejects /bin/echo … node script.
+ * @param {boolean} allowBarePluginRoot - true for shell-expanded command strings.
  */
-function execArgvInvokesSuggestCompact(tokens) {
+function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot) {
   if (!isNodeToken(tokens[0])) {
     return false;
   }
-  if (isDirectNodeScriptInvocation(tokens, 1)) {
+  if (isDirectNodeScriptInvocation(tokens, allowBarePluginRoot)) {
     return true;
   }
-  if (scriptIsRunWithFlagsScriptArg(tokens, 3)) {
-    return true;
-  }
-  return false;
+  return scriptIsRunWithFlagsScriptArg(tokens, allowBarePluginRoot);
 }
 
 function shellStatementInvokesSuggestCompact(statement) {
@@ -133,15 +150,17 @@ function shellStatementInvokesSuggestCompact(statement) {
   if (!parts || !isNodeToken(parts.word)) {
     return false;
   }
-  return execArgvInvokesSuggestCompact([parts.word, ...tokenizeShellArgs(parts.rest)]);
+  return execArgvInvokesSuggestCompact(
+    [parts.word, ...tokenizeShellArgs(parts.rest)],
+    true
+  );
 }
 
 function shellCommandInvokesSuggestCompact(command) {
   if (!textMentionsSuggestCompactScript(command)) {
     return false;
   }
-  // Only the first `;`/`newline` statement is reachable for scoring — tails after
-  // `exit 0; …` must not count. Keep `&&`/`||`/`|` intact inside that statement.
+  // Only the first `;`/`newline` statement is reachable for scoring.
   const firstStatement = command.split(/[;\n]/)[0];
   return shellStatementInvokesSuggestCompact(firstStatement);
 }
@@ -161,23 +180,50 @@ function hookArgvTokens(hook) {
   return tokens;
 }
 
+function isSynchronousCommandHook(hook) {
+  if (!hook || typeof hook !== 'object') {
+    return false;
+  }
+  if (hook.type !== 'command') {
+    return false;
+  }
+  if (hook.async === true) {
+    return false;
+  }
+  return true;
+}
+
+/** Matcher must cover Edit/Write (documented surface) or be empty (all tools). */
+function matcherCoversEditOrWrite(matcher) {
+  if (matcher === undefined || matcher === null || matcher === '') {
+    return true;
+  }
+  if (typeof matcher !== 'string') {
+    return false;
+  }
+  return /\bEdit\b/.test(matcher) || /\bWrite\b/.test(matcher);
+}
+
 /**
  * True when a PreToolUse hook actually invokes suggest-compact.js (direct node
  * or run-with-flags scriptRelativePath), including exec-form command+args.
- * Only `type: "command"` hooks execute `command`/`args` (see validate-hooks.js).
+ * Only synchronous `type: "command"` hooks execute command/args usefully.
  */
 function hookRegistersSuggestCompact(hook) {
-  if (!hook || typeof hook !== 'object' || hook.type !== 'command') {
+  if (!isSynchronousCommandHook(hook)) {
     return false;
   }
   if (shellCommandInvokesSuggestCompact(hook.command)) {
     return true;
   }
-  return execArgvInvokesSuggestCompact(hookArgvTokens(hook));
+  return execArgvInvokesSuggestCompact(hookArgvTokens(hook), false);
 }
 
 function preToolUseRegistersSuggestCompact(entries) {
   for (const entry of entries) {
+    if (!matcherCoversEditOrWrite(entry && entry.matcher)) {
+      continue;
+    }
     const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
     for (const hook of hooks) {
       if (hookRegistersSuggestCompact(hook)) {

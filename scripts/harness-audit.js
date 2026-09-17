@@ -206,27 +206,86 @@ function getPreToolUseEntries(config) {
 /** Relative plugin path that must appear for Context Efficiency credit. */
 const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
 
-function mentionsSuggestCompactScript(value) {
+function isSuggestCompactScriptToken(value) {
   return typeof value === 'string' && value.includes(SUGGEST_COMPACT_SCRIPT);
 }
 
+function isNodeToken(value) {
+  return typeof value === 'string' && /(?:^|\/)node(?:\.exe)?$/.test(value);
+}
+
+function isRunWithFlagsToken(value) {
+  return typeof value === 'string' && value.includes('run-with-flags.js');
+}
+
 /**
- * Exec-form PreToolUse entries put the launcher in `command` and the script
- * path in `args` (see contained-launch.sh registrations in hooks/hooks.json).
- * Inspect both, and require the real script path — not a bare "suggest-compact"
- * substring (hook IDs, echo placeholders, or a run-with-flags id alone).
+ * Shell-form `command` strings: require a real launcher shape, not an echo of
+ * the path (Codex: `echo scripts/hooks/suggest-compact.js disabled`).
+ */
+function shellCommandInvokesSuggestCompact(command) {
+  if (typeof command !== 'string' || !command.includes(SUGGEST_COMPACT_SCRIPT)) {
+    return false;
+  }
+  // Direct: node …/scripts/hooks/suggest-compact.js
+  if (/\bnode(?:\.exe)?\b[\s"']+(?:[^"'\s;|&]*\/)?scripts\/hooks\/suggest-compact\.js\b/.test(command)) {
+    return true;
+  }
+  // Flagged wrapper: run-with-flags.js … scripts/hooks/suggest-compact.js …
+  if (/\brun-with-flags\.js\b[\s"'][\s\S]*?scripts\/hooks\/suggest-compact\.js\b/.test(command)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Exec-form argv (`command` launcher + `args`): script must be a node argv or
+ * a run-with-flags script argument — not merely present in any token.
+ */
+function execArgvInvokesSuggestCompact(tokens) {
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (!isSuggestCompactScriptToken(tokens[i])) {
+      continue;
+    }
+    if (i > 0 && isNodeToken(tokens[i - 1])) {
+      return true;
+    }
+    for (let j = 0; j < i; j += 1) {
+      if (isRunWithFlagsToken(tokens[j])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hookArgvTokens(hook) {
+  const tokens = [];
+  if (typeof hook.command === 'string' && hook.command.length > 0) {
+    tokens.push(hook.command);
+  }
+  if (Array.isArray(hook.args)) {
+    for (const arg of hook.args) {
+      if (typeof arg === 'string') {
+        tokens.push(arg);
+      }
+    }
+  }
+  return tokens;
+}
+
+/**
+ * True when a PreToolUse hook actually invokes suggest-compact.js (direct node
+ * or run-with-flags), including exec-form command+args. Substring / echo-only
+ * mentions do not count.
  */
 function hookRegistersSuggestCompact(hook) {
   if (!hook || typeof hook !== 'object') {
     return false;
   }
-  if (mentionsSuggestCompactScript(hook.command)) {
+  if (shellCommandInvokesSuggestCompact(hook.command)) {
     return true;
   }
-  if (!Array.isArray(hook.args)) {
-    return false;
-  }
-  return hook.args.some((arg) => mentionsSuggestCompactScript(arg));
+  return execArgvInvokesSuggestCompact(hookArgvTokens(hook));
 }
 
 function preToolUseRegistersSuggestCompact(entries) {

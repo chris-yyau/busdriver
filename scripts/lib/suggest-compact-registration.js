@@ -210,38 +210,71 @@ function shellStatementInvokesSuggestCompact(statement, rootDir) {
   );
 }
 
-/**
- * Peel trailing silent handlers (`|| exit 1`, `&& true`, `; :`) so only the
- * hook invocation remains. Any other chained statement can write stdout and
- * corrupt the single structured JSON payload — reject those shapes entirely.
- */
-function coreShellInvocation(command) {
-  let remaining = typeof command === 'string' ? command.trim() : '';
-  if (!remaining) {
+/** Match one trailing silent handler: `|| exit 1`, `&& true`, or `; :`. */
+const SILENT_TRAILER_RE =
+  /^(.*?)(?:\s*(?:\|\||&&|;)\s*)(exit\s+\d+|true|:)\s*$/;
+
+/** Peel one silent trailer; return null if the peel emptied the command. */
+function peelOneSilentTrailer(command) {
+  const match = command.match(SILENT_TRAILER_RE);
+  if (!match) {
+    return command;
+  }
+  const head = match[1].trim();
+  if (!head) {
     return null;
   }
-  for (;;) {
-    const match = remaining.match(
-      /^(.*?)(?:\s*(?:\|\||&&|;)\s*)(exit\s+\d+|true|:)\s*$/
-    );
-    if (!match) {
-      break;
-    }
-    const head = match[1].trim();
-    if (!head) {
+  return head;
+}
+
+/** Keep peeling silent trailers until none remain (or the command empties). */
+function peelSilentTrailers(command) {
+  let remaining = command;
+  let next = peelOneSilentTrailer(remaining);
+  while (next !== remaining) {
+    if (next === null) {
       return null;
     }
-    remaining = head;
-  }
-  // Leftover separators ⇒ non-silent trailer (e.g. `; echo disabled`).
-  if (/[;\n]/.test(remaining) || /&&/.test(remaining) || /\|\|/.test(remaining)) {
-    return null;
-  }
-  // Background `&` is not a single clean stdout payload either.
-  if (/(?:^|[^&])&(?:[^&>]|$)/.test(remaining)) {
-    return null;
+    remaining = next;
+    next = peelOneSilentTrailer(remaining);
   }
   return remaining;
+}
+
+/** Leftover `;` / `&&` / `||` / `&` ⇒ non-silent trailer or compound command. */
+function hasUnsafeShellTrailer(statement) {
+  if (/[;\n]/.test(statement)) {
+    return true;
+  }
+  if (/&&/.test(statement)) {
+    return true;
+  }
+  if (/\|\|/.test(statement)) {
+    return true;
+  }
+  return /(?:^|[^&])&(?:[^&>]|$)/.test(statement);
+}
+
+/**
+ * Reduce a shell command to a single hook invocation, or null if trailers
+ * could write stdout and corrupt the structured JSON payload.
+ */
+function coreShellInvocation(command) {
+  if (typeof command !== 'string') {
+    return null;
+  }
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const peeled = peelSilentTrailers(trimmed);
+  if (!peeled) {
+    return null;
+  }
+  if (hasUnsafeShellTrailer(peeled)) {
+    return null;
+  }
+  return peeled;
 }
 
 function shellCommandInvokesSuggestCompact(command, rootDir) {

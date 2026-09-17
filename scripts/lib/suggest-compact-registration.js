@@ -72,21 +72,14 @@ function precedingTokenIsNode(tokens, scriptIndex) {
 
 /**
  * run-with-flags.js <hookId> <scriptRelativePath> [profilesCsv]
- * Only counts when node launches the wrapper and the script is in argv slot +2.
+ * Script must sit exactly two argv slots after a node-launched wrapper.
  */
 function scriptIsRunWithFlagsScriptArg(tokens, scriptIndex) {
-  for (let j = 0; j < scriptIndex; j += 1) {
-    if (!isRunWithFlagsToken(tokens[j])) {
-      continue;
-    }
-    if (j === 0 || !isNodeToken(tokens[j - 1])) {
-      continue;
-    }
-    if (scriptIndex === j + 2) {
-      return true;
-    }
+  const wrapperIndex = scriptIndex - 2;
+  if (wrapperIndex < 1) {
+    return false;
   }
-  return false;
+  return isRunWithFlagsToken(tokens[wrapperIndex]) && isNodeToken(tokens[wrapperIndex - 1]);
 }
 
 /**

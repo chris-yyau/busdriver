@@ -1999,6 +1999,93 @@ sub, _scope, ops = git_ref_op(cmd)
 assert sub == 'merge' or ops, (sub, ops)
 PY
 assert_true "...and env -S exhausted BMP-PUA placeholders still fail closed on merge" "$_rc"
+# Unquoted empty ${DIR} on -C can vanish; adjacent ${DIR}${OTHER} too;
+# empty quotes keep the -C operand; CR-bearing -c values must stay quoted
+# on rejoin (#838 empty-DIR / adjacent-vanishing / empty-quote / CR-rejoin).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import shlex, sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _ENV_S_REJOIN_QUOTE_CHARS, _any_git_c_may_ifs_split, _env_S_rejoin,
+    _env_S_tokenize, _env_expansion_may_vanish, git_ref_op,
+)
+# HIGH1: unset/empty DIR removes unquoted ${DIR}; detector must fail closed.
+# Quoted-empty remains one -C operand (control).
+cmd_empty = "env -S 'git -C ${DIR} branch merge feature'"
+cmd_qempty = "env -S 'git -C \"${DIR}\" branch'"
+assert _any_git_c_may_ifs_split(cmd_empty), cmd_empty
+sub_e, _sc, ops_e = git_ref_op(cmd_empty)
+assert sub_e == 'merge' or ops_e or _any_git_c_may_ifs_split(cmd_empty), (
+    sub_e, ops_e)
+assert not _any_git_c_may_ifs_split(cmd_qempty), cmd_qempty
+sub_q, _scq, ops_q = git_ref_op(cmd_qempty)
+assert sub_q == '' and not ops_q, (sub_q, ops_q)
+# Adjacent unquoted expansions also vanish when every piece is empty.
+assert _env_expansion_may_vanish('${DIR}${OTHER}')
+assert not _env_expansion_may_vanish('x${DIR}')
+assert not _env_expansion_may_vanish('${DIR}x')
+cmd_adj = "env -S 'git -C ${DIR}${OTHER} branch merge feature'"
+assert _any_git_c_may_ifs_split(cmd_adj), cmd_adj
+sub_a, _sca, ops_a = git_ref_op(cmd_adj)
+assert sub_a == 'merge' or ops_a or _any_git_c_may_ifs_split(cmd_adj), (
+    sub_a, ops_a)
+# Literal prefix keeps the -C operand even if DIR is empty (control).
+cmd_lit = "env -S 'git -C x${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_lit), cmd_lit
+# Empty quotes keep the -C operand when DIR is unset (both placements).
+assert not _env_expansion_may_vanish('${DIR}', '${DIR}""')
+assert not _env_expansion_may_vanish('${DIR}', '""${DIR}')
+cmd_eq1 = "env -S 'git -C ${DIR}\"\" branch'"
+cmd_eq2 = "env -S 'git -C \"\"${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_eq1), cmd_eq1
+assert not _any_git_c_may_ifs_split(cmd_eq2), cmd_eq2
+sub1, _s1, ops1 = git_ref_op(cmd_eq1)
+sub2, _s2, ops2 = git_ref_op(cmd_eq2)
+assert sub1 == '' and not ops1, (sub1, ops1)
+assert sub2 == '' and not ops2, (sub2, ops2)
+# HIGH2: restored CR must be in the rejoin quote set so shlex cannot
+# retokenize x.y=1<CR>branch into a fake builtin.
+assert '\r' in _ENV_S_REJOIN_QUOTE_CHARS
+toks = _env_S_tokenize(r'git -c x.y=1\rbranch merge feature')
+assert toks is not None and any('\r' in t for t in toks), toks
+rejoined = _env_S_rejoin(toks)
+assert shlex.split(rejoined)[2].count('\r') == 1, shlex.split(rejoined)
+cmd_cr = r"env -S 'git -c x.y=1\rbranch merge feature'"
+sub_c, _scc, ops_c = git_ref_op(cmd_cr)
+assert sub_c == 'merge' or ops_c, (sub_c, ops_c)
+PY
+assert_true "...and env -S empty/adjacent/empty-quote \${DIR} / CR-rejoin still fail closed on merge" "$_rc"
+# _env_S_local_raws must fail closed in linear time when env-S and posix=False
+# cannot align (no re-tokenize of a growing accumulator; #838 quadratic-raws).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys, time
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _any_git_c_may_ifs_split, _env_S_local_raws, _env_S_tokenize,
+)
+times = []
+for n in (1000, 2000, 4000):
+    payload = r'git\_-C\_${DIR} branch ' + 'x ' * n
+    t0 = time.perf_counter()
+    toks = _env_S_tokenize(payload)
+    local = _env_S_local_raws(payload, toks)
+    dt = time.perf_counter() - t0
+    times.append(dt)
+    assert local is None, (n, local)
+    # Linear budget: well under prior quadratic (~1.5s at n=4000).
+    assert dt < 0.25, (n, dt)
+# Growth must stay near-linear (not ~4x when n doubles).
+assert times[2] < 0.25 and times[1] < 0.15 and times[0] < 0.10, times
+assert times[2] / max(times[0], 1e-6) < 8.0, times
+# Empty-quote alignment still works after the linear rewrite.
+cmd_eq1 = "env -S 'git -C ${DIR}\"\" branch'"
+cmd_eq2 = "env -S 'git -C \"\"${DIR} branch'"
+assert not _any_git_c_may_ifs_split(cmd_eq1), cmd_eq1
+assert not _any_git_c_may_ifs_split(cmd_eq2), cmd_eq2
+PY
+assert_true "...and env -S local-raws misalignment stays linear (n=1000/2000/4000)" "$_rc"
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1

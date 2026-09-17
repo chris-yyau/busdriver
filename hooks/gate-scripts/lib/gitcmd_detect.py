@@ -2073,15 +2073,17 @@ def _env_split_string_payloads(seg):
 
 
 # Chars that would re-split / re-parse a rejoined -S argv word. Empty and
-# IFS whitespace keep multi-word `-c` scripts as one token; `;|&<>` keep
-# separator-bearing values intact; `"\'\\` keep literal quotes/backslashes
-# from becoming shell syntax on the next parse (#838 quote-char HIGH);
-# `*?[]{}` keep literal glob/brace values from looking like expansions on
-# the next parse (#838 glob-brace HIGH). `$` / `` ` `` are intentionally
-# absent — those expansions must stay visible for the IFS refuse path
-# (#838 PR / metachar HIGH); `${` / `$(` / `$*` may contain `{}`/`*` from
-# this set, so `_env_S_token_needs_quote` carves those out.
-_ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n;|&<>"\'\\*?[]{}')
+# IFS whitespace (SP/TAB/LF plus CR/FF/VT from env -S escapes) keep
+# multi-word `-c` scripts and escape-restored operands as one token
+# (#838 CR-rejoin HIGH); `;|&<>` keep separator-bearing values intact;
+# `"\'\\` keep literal quotes/backslashes from becoming shell syntax on
+# the next parse (#838 quote-char HIGH); `*?[]{}` keep literal glob/brace
+# values from looking like expansions on the next parse (#838 glob-brace
+# HIGH). `$` / `` ` `` are intentionally absent — those expansions must
+# stay visible for the IFS refuse path (#838 PR / metachar HIGH);
+# `${` / `$(` / `$*` may contain `{}`/`*` from this set, so
+# `_env_S_token_needs_quote` carves those out.
+_ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n\r\f\v;|&<>"\'\\*?[]{}')
 # When a token already carries `$` / backtick, glob/brace chars may be part
 # of the expansion spelling (`${CFG}`, `$*`) and must stay bare.
 _ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
@@ -2468,6 +2470,160 @@ def _env_S_token_outer_live(outer_raw, payload, tok, local_raw, index, toks, loc
     return flags[index]
 
 
+def _env_tok_is_pure_expansion_seq(tok):
+    """True when decoded `tok` is only `$` / `${}` / `$(` / backtick expansions."""
+    if not tok:
+        return True
+    n = len(tok)
+    i = 0
+    while i < n:
+        c = tok[i]
+        if c == '`':
+            j = i + 1
+            while j < n and tok[j] != '`':
+                j += 1
+            if j >= n or '`' in tok[i + 1:j]:
+                return False
+            i = j + 1
+            continue
+        if c != '$' or i + 1 >= n:
+            return False
+        # ${...}
+        if tok[i + 1] == '{':
+            depth, j = 1, i + 2
+            while j < n and depth:
+                ch = tok[j]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                return False
+            i = j
+            continue
+        # $(...)
+        if tok[i + 1] == '(':
+            depth, j = 1, i + 2
+            while j < n and depth:
+                ch = tok[j]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                return False
+            i = j
+            continue
+        # $Name / $1 / $*, $@, $#, ...
+        if tok[i + 1].isalpha() or tok[i + 1] == '_':
+            j = i + 2
+            while j < n and (tok[j].isalnum() or tok[j] == '_'):
+                j += 1
+            i = j
+            continue
+        if tok[i + 1] in '*@#?$!0-9-':
+            i += 2
+            continue
+        return False
+    return True
+
+
+def _env_raw_keeps_word_if_expansions_empty(raw):
+    """True when quote/literal residue keeps an argv word after expansions empty.
+
+    Bare `${DIR}` is removed from argv; `${DIR}""` / `""${DIR}` leave an empty
+    directory operand because the empty quotes keep the word (#838 empty-quote
+    provenance MEDIUM). Any quote character or unquoted literal has the same
+    keep effect as a non-empty prefix/suffix.
+    """
+    if not raw:
+        return False
+    if '"' in raw or "'" in raw:
+        return True
+    # No quotes — any non-expansion literal keeps the word (x${DIR}, ${DIR}x).
+    return not _env_tok_is_pure_expansion_seq(raw)
+
+
+def _env_expansion_may_vanish(tok, raw=None):
+    """True when `tok` is solely expansion(s) env may delete if empty/unset.
+
+    Bare `${DIR}` / `$DIR` disappears from argv; adjacent `${DIR}${OTHER}`
+    (or `$DIR$OTHER`) also vanishes when every piece is empty/unset.
+    `x.y=${CFG}` / `x${DIR}` keep a literal and stay one word under env -S
+    (#838 empty-DIR / adjacent-vanishing vs env-expand). Empty quotes in the
+    raw spelling (`${DIR}""`, `""${DIR}`) also keep the word — consult `raw`
+    so decoded-token collapse does not lose that provenance (#838 empty-quote).
+    """
+    if not _env_tok_is_pure_expansion_seq(tok):
+        return False
+    if raw is not None and _env_raw_keeps_word_if_expansions_empty(raw):
+        return False
+    return True
+
+
+def _env_S_decode_raw_piece(piece):
+    """Decode one posix=False piece to a single word (possibly ''); None if not."""
+    dec = _tokenize(piece)
+    if dec is None or len(dec) != 1:
+        return None
+    return dec[0]
+
+
+def _env_S_local_raws(payload, toks):
+    """posix=False spellings aligned 1:1 with `toks`, merging empty-quote joins.
+
+    Leading `\"\"${DIR}` is two posix=False tokens but one posix word; merge
+    adjacent raw pieces until each matches a decoded tok so empty-quote
+    provenance reaches the vanishing check (#838 empty-quote MEDIUM).
+
+    Alignment walks each raw piece at most once and never re-tokenizes a
+    growing accumulator — mismatch fails closed in linear time (#838
+    quadratic-raws MEDIUM).
+    """
+    if toks is None:
+        return None
+    local = _raw_tokens(payload)
+    if local is not None and len(local) == len(toks):
+        return local
+    try:
+        raw = shlex.split(payload, posix=False)
+    except ValueError:
+        return None
+    if not toks:
+        return [] if not raw else None
+    out = []
+    ri = 0
+    nr = len(raw)
+    for t in toks:
+        if ri >= nr:
+            return None
+        acc_raw = raw[ri]
+        acc_dec = _env_S_decode_raw_piece(raw[ri])
+        if acc_dec is None:
+            return None
+        ri += 1
+        # Merge while the decoded join is a proper prefix of `t` (empty
+        # quotes contribute ''). Any non-prefix mismatch fails immediately
+        # — do not keep appending/re-tokenizing the rest of `raw`.
+        while acc_dec != t:
+            if not t.startswith(acc_dec):
+                return None
+            if ri >= nr:
+                return None
+            nxt = _env_S_decode_raw_piece(raw[ri])
+            if nxt is None:
+                return None
+            acc_raw += raw[ri]
+            acc_dec += nxt
+            ri += 1
+        out.append(acc_raw)
+    if ri != nr:
+        return None
+    return out
+
+
 def _env_S_live_ifs_raw(tok, local_raw=None):
     """Spelling that keeps a live -S `$` / backtick visible to IFS refuse.
 
@@ -2619,28 +2775,35 @@ def _env_S_ins_raws(payload, outer_raw=None):
     (#838 live-outer HIGH). Outer decode/tokenize runs once for the operand
     (#838 outer-live-quad MEDIUM), aligned to the extracted payload so an
     attached `-S …` prefix (including leading whitespace) cannot shift flag
-    indices (#838 S-ws-nested HIGH). Proven-inert outer (wholly single-quoted)
-    means env itself expands `${VAR}` atomically at the *final* argv boundary
-    — quote those tokens so the shell-IFS refuse does not false-block
-    (#838 env-quote-dash / env-expand). Tokens that are themselves a nested
-    `-S` payload are re-parsed after that expansion, so keep `$` visible
-    through the nested walk (#838 nested-S HIGH). Shell `-c` script indexes
-    are marked the same way (#838 shell-c HIGH). Split-string tokenization
-    uses `_env_S_tokenize` so unquoted `\\_` remains a separator (#838 env-sep).
+    indices (#838 S-ws-nested HIGH).     Proven-inert outer (wholly single-quoted)
+    means env itself expands `${VAR}` at the *final* argv boundary — keep
+    double-quoted expansions quote-protected (one word, including empty) so
+    shell-IFS refuse does not false-block (#838 env-expand / quoted-empty),
+    but leave unquoted expansions live so a vanishing empty `${DIR}` on a
+    Git-global operand cannot hide a merge (#838 empty-DIR HIGH). Tokens that
+    are themselves a nested `-S` payload are re-parsed after that expansion,
+    so keep `$` visible through the nested walk (#838 nested-S HIGH). Shell
+    `-c` script indexes are marked the same way (#838 shell-c HIGH).
+    Split-string tokenization uses `_env_S_tokenize` so unquoted `\\_` remains
+    a separator (#838 env-sep).
     """
     toks = _env_S_tokenize(payload)
     if toks is None:
         return None
-    local = _raw_tokens(payload)
-    if local is not None and len(toks) != len(local):
-        local = None
+    local = _env_S_local_raws(payload, toks)
     # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local
     # when aligned; if payload raws cannot be rebuilt (space-in-quotes debris),
     # synthesize quoted spellings so nested assignment `$` stays literal
-    # (#838 S-ws-nested nested-env allow). Env-internal `$` / `${}` at the
-    # final argv boundary must also be quoted: env preserves them as one argv
-    # word (#838 env-expand HIGH). Nested `-S` payload words are not final —
-    # leave their expansions visible (#838 nested-S HIGH).
+    # (#838 S-ws-nested nested-env allow). Double-quoted env expansions at the
+    # final argv boundary stay one word (including empty) — preserve that
+    # quoting so shell-IFS refuse does not false-block (#838 env-expand /
+    # quoted-empty). Unquoted `$` / `${}` on a final Git-global or wrapper
+    # operand can vanish when unset/empty (`env -S 'git -C ${DIR} …'` →
+    # `git -C branch …`); leave those live so the operand scan fails closed
+    # (#838 empty-DIR HIGH). Empty quotes adjacent to that expansion
+    # (`${DIR}""`, `""${DIR}`) keep the word — vanishing consults raw
+    # provenance (#838 empty-quote MEDIUM). Nested `-S` payload words are
+    # not final — leave their expansions visible (#838 nested-S HIGH).
     if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
         reparse = _env_S_reparse_payload_indexes(toks)
         if local is not None:
@@ -2648,9 +2811,16 @@ def _env_S_ins_raws(payload, outer_raw=None):
             for i, (t, r) in enumerate(zip(toks, local)):
                 if ('$' in t or '`' in t) and (
                         _raw_has_expandable_dollar(r) or r == t):
-                    if i in reparse:
+                    if i in reparse or (
+                            _c_operand_may_ifs_split(r)
+                            and _env_expansion_may_vanish(t, r)):
+                        # Nested reparse, or unquoted whole-word expansion
+                        # that may vanish as a valued operand (#838 empty-DIR).
                         out.append(_env_S_live_ifs_raw(t, r))
                     else:
+                        # Double-quoted / mixed literal+expand / empty-quote
+                        # keepers — quote so rejoin keeps one argv word
+                        # (#838 env-expand / quoted-empty / empty-quote).
                         out.append(shlex.quote(t))
                 else:
                     out.append(r)
@@ -2659,7 +2829,10 @@ def _env_S_ins_raws(payload, outer_raw=None):
             return None
         out = []
         for i, t in enumerate(toks):
-            if i in reparse and ('$' in t or '`' in t):
+            if ('$' in t or '`' in t) and (
+                    i in reparse or _env_expansion_may_vanish(t)):
+                # No aligned local raws — cannot prove quote protection for
+                # a vanishing whole-word expansion; fail closed.
                 out.append(_env_S_live_ifs_raw(t))
             else:
                 out.append(shlex.quote(t))

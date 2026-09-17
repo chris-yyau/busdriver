@@ -1932,6 +1932,29 @@ run_gate "...and env with wholly-quoted attached -S backslash-a -c dollar still 
 # Git path operands named env are not launchers (#838 env-operand HIGH).
 run_gate "...and env timeout git log with env path operand still allows" \
     allow 'env timeout 5 git log -- env X=$D'
+# Live outer $CFG inside dq -S must not regain quote protection
+# (#838 env-quote-dash / quote-protection HIGH).
+run_gate "...and env -S with dq -c x.y='\$CFG' still fails closed" \
+    block 'env -S "git -c \"x.y='\''$CFG'\''\" branch"' "cannot be resolved"
+# Standalone env - clears the environment; still scan assignments
+# (#838 env-quote-dash / bare-dash HIGH).
+run_gate "...and env - with unquoted GIT_DIR still fails closed" \
+    block 'env - GIT_DIR=$D git branch' "cannot be resolved"
+# env -S ${CFG} expansion is atomic — not shell IFS (#838 env-expand HIGH).
+run_gate "...and env -S with env-expanded \${CFG} -c value still allows log" \
+    allow 'env -S '\''git -c x.y=${CFG} log'\'''
+# Nested env -S re-splits an env-expanded ${CFG}; not atomic yet
+# (#838 nested-S / env-expand HIGH).
+run_gate "...and nested env -S with env-expanded \${CFG} still fails closed" \
+    block 'env -S '\''env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# Wrapper options before nested env -S still keep expansion provenance
+# (#838 timeout-wrapper-S HIGH).
+run_gate "...and timeout -s before nested env -S with \${CFG} still fails closed" \
+    block 'env -S '\''timeout -s TERM 5 env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# env -u git is unset of variable git, not a git command word
+# (#838 env-u-git-operand HIGH).
+run_gate "...and env -u git before nested env -S with \${CFG} still fails closed" \
+    block 'env -S '\''env -u git env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1

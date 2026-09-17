@@ -2281,6 +2281,129 @@ def _env_S_token_outer_live(outer_raw, payload, tok, local_raw, index, toks, loc
     return flags[index]
 
 
+def _env_S_live_ifs_raw(tok, local_raw=None):
+    """Spelling that keeps a live -S `$` / backtick visible to IFS refuse.
+
+    Decoded tokens from `"x.y='$CFG'"` still contain quote characters that were
+    literal data inside a double-quoted region; `_c_operand_may_ifs_split` then
+    treats the dollar as protected while outer/env still expands it into the
+    -S string (#838 env-quote-dash / quote-protection HIGH).
+    """
+    if _c_operand_may_ifs_split(tok):
+        return tok
+    if local_raw is not None and _c_operand_may_ifs_split(local_raw):
+        return local_raw
+    if '$' in tok or '`' in tok:
+        return tok.replace("'", '').replace('"', '')
+    return tok
+
+
+def _env_S_reparse_payload_indexes(toks):
+    """Indexes of argv words another env -S will re-tokenize (not final argv).
+
+    Env expands `${VAR}` atomically only at the final utility argv boundary.
+    A payload string consumed by a nested `-S` is re-split after that expansion
+    (`CFG='ok merge'` → `env -S 'env -S "git -c x.y=${CFG} branch"'`; #838
+    nested-S / env-expand HIGH). Wrappers between outer and inner `-S` may take
+    several options/operands (`timeout -s TERM 5`); find nested `env` in the
+    prefix before any git *command* word — same before-git rule as
+    `_env_argv_may_ifs_split` / env-operand / `_nonassign_git_before` — rather
+    than skipping one token (#838 timeout-wrapper-S HIGH). A git-shaped value
+    of `-u`/`-C`/… is an operand, not the command (`env -u git …`; #838
+    env-u-git-operand HIGH). Reuses `_env_S_payload` ownership.
+    """
+    idxs = set()
+    if not toks:
+        return idxs
+
+    def scan_env_opts(start):
+        k = start
+        skip_value = False
+        while k < len(toks):
+            a = toks[k]
+            if skip_value:
+                skip_value = False
+                k += 1
+                continue
+            if a == '--':
+                return k + 1
+            if a == '-':
+                k += 1
+                continue
+            if not a.startswith('-'):
+                return k
+            payload = _env_S_payload(a, toks, k)
+            if payload is not None:
+                if a == '--split-string' or _env_opt_takes_separate_value(a):
+                    if k + 1 < len(toks):
+                        idxs.add(k + 1)
+                    k += 2
+                else:
+                    # Attached `-S…` / `--split-string=…` — payload in token k.
+                    idxs.add(k)
+                    k += 1
+                continue
+            if _env_opt_takes_separate_value(a):
+                skip_value = True
+            k += 1
+        return len(toks)
+
+    k = 0
+    if toks[0].startswith('-') and toks[0] not in ('-', '--'):
+        k = scan_env_opts(0)
+    # Nested env may sit behind wrapper options/operands (`timeout -s TERM 5
+    # env -S …`) or env value operands (`env -u git env -S …`). Scan every env
+    # launcher before a real git command word; skip env option values so
+    # `-u git` does not truncate the scan (#838 env-u-git-operand); do not
+    # treat `git … -- env …` path operands as launchers (#838 env-operand).
+    i = k
+    skip_value = False
+    while i < len(toks):
+        t = toks[i]
+        if skip_value:
+            skip_value = False
+            i += 1
+            continue
+        if _ASSIGN_TOK_RE.match(t) or _ENV_ASSIGN_TOK_RE.match(t):
+            i += 1
+            continue
+        if _is_exe(t, 'git'):
+            break
+        if _is_exe(t, 'env'):
+            scan_env_opts(i + 1)
+            # Advance past this env's options (same ownership as
+            # `_nonassign_git_before`) so `-u git` is not a command word.
+            i += 1
+            while i < len(toks):
+                a = toks[i]
+                if skip_value:
+                    skip_value = False
+                    i += 1
+                    continue
+                if a == '--':
+                    i += 1
+                    break
+                if a == '-':
+                    i += 1
+                    continue
+                if a.startswith('-') and a not in ('-', '--'):
+                    if _env_S_payload(a, toks, i) is not None:
+                        if (a == '--split-string'
+                                or _env_opt_takes_separate_value(a)):
+                            i += 2
+                        else:
+                            i += 1
+                        break
+                    if _env_opt_takes_separate_value(a):
+                        skip_value = True
+                    i += 1
+                    continue
+                break
+            continue
+        i += 1
+    return idxs
+
+
 def _env_S_ins_raws(payload, outer_raw=None):
     """Per-token raws for a -S-inserted argv, preserving outer-shell expansions.
 
@@ -2295,7 +2418,12 @@ def _env_S_ins_raws(payload, outer_raw=None):
     (#838 live-outer HIGH). Outer decode/tokenize runs once for the operand
     (#838 outer-live-quad MEDIUM), aligned to the extracted payload so an
     attached `-S …` prefix (including leading whitespace) cannot shift flag
-    indices (#838 S-ws-nested HIGH).
+    indices (#838 S-ws-nested HIGH). Proven-inert outer (wholly single-quoted)
+    means env itself expands `${VAR}` atomically at the *final* argv boundary
+    — quote those tokens so the shell-IFS refuse does not false-block
+    (#838 env-quote-dash / env-expand). Tokens that are themselves a nested
+    `-S` payload are re-parsed after that expansion, so keep `$` visible
+    through the nested walk (#838 nested-S HIGH).
     """
     toks = _tokenize(payload)
     local = _raw_tokens(payload)
@@ -2304,11 +2432,33 @@ def _env_S_ins_raws(payload, outer_raw=None):
     # Proven inert outer (e.g. wholly single-quoted -S operand) → keep local
     # when aligned; if payload raws cannot be rebuilt (space-in-quotes debris),
     # synthesize quoted spellings so nested assignment `$` stays literal
-    # (#838 S-ws-nested nested-env allow).
+    # (#838 S-ws-nested nested-env allow). Env-internal `$` / `${}` at the
+    # final argv boundary must also be quoted: env preserves them as one argv
+    # word (#838 env-expand HIGH). Nested `-S` payload words are not final —
+    # leave their expansions visible (#838 nested-S HIGH).
     if outer_raw is not None and not _raw_has_expandable_dollar(outer_raw):
+        reparse = _env_S_reparse_payload_indexes(toks)
         if local is not None:
-            return local
-        return [shlex.quote(t) for t in toks] if toks else None
+            out = []
+            for i, (t, r) in enumerate(zip(toks, local)):
+                if ('$' in t or '`' in t) and (
+                        _raw_has_expandable_dollar(r) or r == t):
+                    if i in reparse:
+                        out.append(_env_S_live_ifs_raw(t, r))
+                    else:
+                        out.append(shlex.quote(t))
+                else:
+                    out.append(r)
+            return out
+        if not toks:
+            return None
+        out = []
+        for i, t in enumerate(toks):
+            if i in reparse and ('$' in t or '`' in t):
+                out.append(_env_S_live_ifs_raw(t))
+            else:
+                out.append(shlex.quote(t))
+        return out
     if local is None:
         return None
     outer_live = (_outer_token_live_flags(outer_raw, payload)
@@ -2320,7 +2470,7 @@ def _env_S_ins_raws(payload, outer_raw=None):
             continue
         if _env_S_token_outer_live(outer_raw, payload, t, r, i, toks, local,
                                    outer_live_flags=outer_live):
-            out.append(t)
+            out.append(_env_S_live_ifs_raw(t, r))
         else:
             out.append(r)
     return out
@@ -2434,7 +2584,12 @@ def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
         if a == '--':
             k += 1
             break
-        if not a.startswith('-') or a == '-':
+        # Standalone `-` clears the environment; keep scanning options /
+        # assignments after it (`env -S '- GIT_DIR=$D git …'`; #838 env-dash).
+        if a == '-':
+            k += 1
+            continue
+        if not a.startswith('-'):
             break
         # Attached / separate / long -S all share one insertion path: extract the
         # payload string via `_env_S_payload`, then split-string tokenize it the
@@ -3940,12 +4095,15 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
     `_git_pre_subcmd_may_ifs_split` with `None` so valued globals fail closed
     instead of skipping (#838 raws-failclosed HIGH). Untrusted walks that still
     carry aligned raws (`trust_git_raws=False` and `raws is not None`) skip that
-    pass — tokenize debris must not false-trigger on intentional quote nesting.
-    Unaligned raws (`raws is None`) must still be scanned even when
-    `trust_git_raws=False`: `_env_S_dq_keep_expand` can hide `$` from the
-    post-rejoin operand check (#838 dq-raws-skip HIGH). That scan fails closed
-    only when the decoded operand may expand — fully literal adjacent-quote
-    debris must not over-block (#838 literal-align HIGH).
+    pass — tokenize debris must not false-trigger on intentional quote nesting
+    — except when payload-local raws show a real shell-quoted live `$` that
+    `_env_S_live_ifs_raw` exposes (#838 env-quote-dash HIGH). Unaligned raws
+    (`raws is None`) must still be scanned even when `trust_git_raws=False`:
+    `_env_S_dq_keep_expand` can hide `$` from the post-rejoin operand check
+    (#838 dq-raws-skip HIGH). That scan fails closed only when the decoded
+    operand may expand — fully literal adjacent-quote debris must not
+    over-block (#838 literal-align HIGH). Standalone env `-` (clear-environ)
+    is skipped so following assignments are still scanned (#838 env-dash HIGH).
     """
     if _depth >= 6 or not toks:
         return False
@@ -3963,6 +4121,11 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
             k += 1
             continue
         if a == '--':
+            k += 1
+            continue
+        # Standalone `-` is env(1) clear-environ, not the utility — keep
+        # scanning assignments (`env - GIT_DIR=$D git branch`; #838 env-dash).
+        if a == '-':
             k += 1
             continue
         if a.startswith('-') and a not in ('-', '--'):
@@ -3990,9 +4153,24 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                 # outer-shell spellings; otherwise quote-nesting debris can look
                 # like a live `$CFG` (#838 quoted-literal allow). Missing
                 # insertion raws still fail closed under that trust bit.
+                # Promote trust when payload-local raws are a real shell-quoted
+                # spelling with a live `$` that `_env_S_live_ifs_raw` exposes —
+                # parent outer alignment may be absent for nested dq while the
+                # dollar is still live (#838 env-quote-dash / quote-protection).
+                child_trust = bool(trust_git_raws and raws is not None)
+                if (not child_trust and ins_raws is not None):
+                    local = _raw_tokens(payload)
+                    if (local is not None
+                            and len(local) == len(ins_raws)):
+                        for lr, ir in zip(local, ins_raws):
+                            if (lr and lr[0] in '"\''
+                                    and _raw_has_expandable_dollar(lr)
+                                    and _c_operand_may_ifs_split(ir)):
+                                child_trust = True
+                                break
                 return _env_argv_may_ifs_split(
                     inserted, combined_raws, _depth + 1,
-                    trust_git_raws=(trust_git_raws and raws is not None))
+                    trust_git_raws=child_trust)
             if a.startswith('--') or not (
                     _ASSIGN_TOK_RE.match(a) or _ENV_ASSIGN_TOK_RE.match(a)):
                 # Shared with `_env_split_string_payloads`: clustered `-iu X`
@@ -4144,6 +4322,9 @@ def _scope_env_may_ifs_split(seg):
                     if a == '--':
                         i += 1
                         break
+                    if a == '-':
+                        i += 1
+                        continue
                     if a.startswith('-') and a not in ('-', '--'):
                         if _env_S_payload(a, toks, i) is not None:
                             if (a == '--split-string'

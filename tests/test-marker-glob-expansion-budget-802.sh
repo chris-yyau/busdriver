@@ -2418,11 +2418,164 @@ else
   no "#802 arith-PE nested \$() collapses IFS (normalize)" \
     "spaces retained or unscannable"
 fi
-# Extglob delimiter: requires `extglob`; `|` / `>` / `&` stay unspaced (#802).
+# `$[…]` must propagate enclosing-command boundary like `${…}` —
+# 22× `echo $[${a:-$(…)}]` stays linear; with protected-marker suffix
+# the classifier still verdicts under the 5s gate (#802 PR HIGH :3517).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys, time
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+inner = "echo x"
+for _ in range(22):
+    inner = "echo $[${a:-$(" + inner + ")}]"
+t0 = time.perf_counter()
+r = mc._comsub_delim_normalize(inner)
+dt = time.perf_counter() - t0
+if r is None:
+    print("ERROR")
+    raise SystemExit
+print("%.3f" % dt)
+PYEOF
+)
+if [[ "$got" == ERROR ]]; then
+  no "#802 \$[ PE-nested \$() wrap22 stays linear" \
+    "harness error or unscannable"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${got:-9}" 2>/dev/null; then
+  no "#802 \$[ PE-nested \$() wrap22 stays linear" \
+    "22× echo \$[\${a:-\$(…)}] took ${got}s — \$[ still double-normalizes"
+else
+  ok "#802 \$[ PE-nested \$() wrap22 stays linear (${got}s)"
+fi
+_pr_dollar_br_wrap22_marker="$(python3 - <<'PY'
+inner = "echo x"
+for _ in range(22):
+    inner = "echo $[${a:-$(" + inner + ")}]"
+print(
+    'echo "$(cat <<' + inner + '\nhello\n' + inner
+    + '\n)"\ntouch .claude/skip-litmus.local'
+)
+PY
+)"
+got=$(python3 - "$CLASSIFIER" "$_pr_dollar_br_wrap22_marker" <<'PYEOF' 2>/dev/null || echo TIMEOUT_OR_ERROR
+import json, subprocess, sys, time
+
+PROD_TIMEOUT_S = 5
+SOFT_MAX_S = 2.0
+try:
+    t0 = time.perf_counter()
+    p = subprocess.run(
+        [sys.executable, "-I", sys.argv[1]],
+        input=json.dumps({"tool_name": "Bash",
+                          "tool_input": {"command": sys.argv[2]}}),
+        capture_output=True, text=True, timeout=PROD_TIMEOUT_S,
+    )
+    dt = time.perf_counter() - t0
+except subprocess.TimeoutExpired:
+    print("TIMEOUT_OR_ERROR")
+else:
+    if p.returncode != 0:
+        print("TIMEOUT_OR_ERROR")
+    else:
+        out = (p.stdout or "").strip() or "TIMEOUT_OR_ERROR"
+        print(f"{out}|DT={dt:.3f}")
+PYEOF
+)
+verdict_line="${got%%|DT=*}"
+dt_field="${got##*|DT=}"
+if [[ "$got" == TIMEOUT_OR_ERROR ]]; then
+  no "#802 \$[ wrap22+marker verdicts under 5s gate" "timed out or errored"
+elif [[ "$verdict_line" != BLOCK_* && "$verdict_line" != "OK|" && "$verdict_line" != "OK" ]]; then
+  no "#802 \$[ wrap22+marker verdicts under 5s gate" \
+    "got=${verdict_line:-<empty>}"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${dt_field:-9}" 2>/dev/null; then
+  no "#802 \$[ wrap22+marker stays under 2s soft bound" \
+    "dt=${dt_field:-?}s got=${verdict_line}"
+else
+  ok "#802 \$[ wrap22+marker timely verdict under soft bound (${dt_field}s ${verdict_line})"
+fi
+# Unwrapped protected-marker write still blocks (#802 :3517).
+got=$(verdict 'touch .claude/skip-litmus.local')
+if [[ "$got" == "BLOCK_MARKER|skip-litmus.local" ]]; then
+  ok "#802 unwrapped skip-litmus write still BLOCK_MARKER"
+else
+  no "#802 unwrapped skip-litmus write still BLOCK_MARKER" \
+    "got=${got:-<empty>}"
+fi
+# Word-start comment in `$()` delim: omit text; ignore comment `)` (#802 :3534).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_comsub_comment='echo "$(cat <<$(echo x # note
+)
+hello
+$(echo x)
+)" "["'
+_pr_hd_delim_comsub_comment_paren='echo "$(cat <<$(echo x # )
+)
+hello
+$(echo x)
+)" "["'
+# Extglob pattern semicolon stays compact (#802 PR HIGH :2947).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_extglob_semi='echo "$(cat <<$(echo @(a;b))
+hello
+$(echo @(a;b))
+)" "["'
+# Extglob pattern `#` is literal — not a word-start comment (#802 :3572).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_extglob_hash='echo "$(cat <<$(echo @(#a|b))
+hello
+$(echo @(#a|b))
+)" "["'
+_pr_hd_delim_extglob_hash_alt='echo "$(cat <<$(echo @(a|#b))
+hello
+$(echo @(a|#b))
+)" "["'
+# Nested `#` under extglob / arith ownership stays literal (#802 :3588).
+# One fixture covers both: extglob-wrapped `$(echo #x)` and `$((a[ #x ]))`.
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_nested_hash_ctx='echo "$(cat <<$(echo @(a|$(echo #x)) $((a[ #x ])))
+hello
+$(echo @(a|$(echo #x)) $((a[ #x ])))
+)" "["'
+# Command-position `((...))` inside `$()`: `#` is arith text (#802 :3621).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_cmdpos_arith_hash='echo "$(cat <<$(echo x; (( a[ #x ] )))
+hello
+$(echo x; (( a[ #x ] )))
+)" "["'
+# Nested normalize must inherit `_hash_comment=False` under extglob
+# (`@(a|$(echo $(echo #x)))`) (#802 :2831).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_nested_norm_hash='echo "$(cat <<$(echo @(a|$(echo $(echo #x))))
+hello
+$(echo @(a|$(echo $(echo #x))))
+)" "["'
+# Extglob / process-subst closer continues the word — `#suffix` literal
+# (#802 :3666). One fixture covers both shapes.
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_word_cont_hash_suffix='echo "$(cat <<$(echo <(echo x)#suffix @(a|b)#suffix)
+hello
+$(echo <(echo x)#suffix @(a|b)#suffix)
+)" "["'
 # Also dbrack+extglob operand / pattern-`&&` / closer regressions (#802).
 for _eg_name in extglob:_pr_hd_delim_extglob \
                 extglob_gt:_pr_hd_delim_extglob_gt \
                 extglob_amp:_pr_hd_delim_extglob_amp \
+                extglob_semi:_pr_hd_delim_extglob_semi \
+                extglob_hash:_pr_hd_delim_extglob_hash \
+                extglob_hash_alt:_pr_hd_delim_extglob_hash_alt \
+                nested_hash_ctx:_pr_hd_delim_nested_hash_ctx \
+                cmdpos_arith_hash:_pr_hd_delim_cmdpos_arith_hash \
+                nested_norm_hash:_pr_hd_delim_nested_norm_hash \
+                word_cont_hash_suffix:_pr_hd_delim_word_cont_hash_suffix \
                 dbrack_extglob_word:_pr_hd_delim_dbrack_extglob_word \
                 dbrack_extglob_and:_pr_hd_delim_dbrack_extglob_and \
                 dbrack_extglob_close:_pr_hd_delim_dbrack_extglob_close \
@@ -2722,6 +2875,24 @@ else
       "got=${got:-<empty>}"
   fi
 fi
+# `$()` word-start comments omitted from delim spelling (#802 :3534).
+for _c_name in note:_pr_hd_delim_comsub_comment \
+               paren:_pr_hd_delim_comsub_comment_paren; do
+  _c_label=${_c_name%%:*}
+  _c_var=${_c_name#*:}
+  _c_payload=${!_c_var}
+  if ! bash -n <<<"$_c_payload" 2>/dev/null; then
+    no "#802 comsub-comment ${_c_label} delimiter is valid bash" "bash rejected"
+  else
+    got=$(verdict "$_c_payload")
+    if [[ "$got" == "OK|" ]]; then
+      ok "#802 comsub-comment ${_c_label} omits comment / keeps closer OK|"
+    else
+      no "#802 comsub-comment ${_c_label} omits comment / keeps closer OK|" \
+        "got=${got:-<empty>}"
+    fi
+  fi
+done
 # `{fd}>` descriptor glue (#802 commit-41 HIGH).
 if ! bash -n <<<"$_pr_hd_delim_fd_brace" 2>/dev/null; then
   no "#802 PR-boundary {fd}> delimiter is valid bash" "bash rejected"

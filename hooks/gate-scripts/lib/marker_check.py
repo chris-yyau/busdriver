@@ -2327,7 +2327,7 @@ _DBRACK_BIN_OPS = frozenset((
 ))
 
 
-def _comsub_delim_normalize(inner, _nest=0):
+def _comsub_delim_normalize(inner, _nest=0, _hash_comment=True):
     """Bash `$()` heredoc-delimiter spelling without executing (#802).
 
     Unquoted space/tab runs collapse to one space; trailing unquoted
@@ -2768,7 +2768,11 @@ def _comsub_delim_normalize(inner, _nest=0):
                 _tmp = [c, _op]
                 i = _copy_delim_expansion(
                     inner, i + 2, _op, _tmp,
-                    _nest=(_nest + 1) if _cmd_nest else _nest)
+                    _nest=(_nest + 1) if _cmd_nest else _nest,
+                    # Inherit outer ownership — do not reset `_hash_comment`
+                    # when nesting under extglob-owned `$()` (#802 :2831).
+                    _hash_comment=(_hash_comment and not extglob_depth
+                                   and not arith_paren))
                 if i is None:
                     return None
                 for _ch in _tmp:
@@ -2821,9 +2825,15 @@ def _comsub_delim_normalize(inner, _nest=0):
             if _cmd_nest and _nest >= _DELIM_NEST_BUDGET:
                 return None
             _tmp = [c, _op]
+            # Extglob/arith own nested text — do not strip `#` as a
+            # command comment inside pattern/arith ownership (#802 :3588).
+            # Inherit outer `_hash_comment=False` through nested normalize
+            # (`@(a|$(echo $(echo #x)))`) (#802 :2831).
             i = _copy_delim_expansion(
                 inner, i + 2, _op, _tmp,
-                _nest=(_nest + 1) if _cmd_nest else _nest)
+                _nest=(_nest + 1) if _cmd_nest else _nest,
+                _hash_comment=(_hash_comment and not extglob_depth
+                               and not arith_paren))
             if i is None:
                 return None
             for _ch in _tmp:
@@ -2888,6 +2898,16 @@ def _comsub_delim_normalize(inner, _nest=0):
             force_gap = False
             i += 1
             continue
+        # Word-start `#` opens a comment — omit from Bash `$()` delimiter
+        # spelling (`echo x # note` → `echo x`) (#802 :3534). Nested under
+        # extglob/arith ownership keeps `#` (`_hash_comment`) (#802 :3588).
+        if ((space or force_gap or not out) and c == '#'
+                and _hash_comment and not arith_paren and not extglob_depth):
+            _nl = inner.find('\n', i)
+            i = n if _nl < 0 else _nl
+            space = True
+            force_gap = False
+            continue
         # Inside command `((...))`: track grouping/close; never treat
         # `>`/`<` as redirections (arithmetic compare/shift) (#802).
         if arith_paren:
@@ -2945,6 +2965,15 @@ def _comsub_delim_normalize(inner, _nest=0):
             i += 1
             continue
         if c == ';':
+            # Command-separator `;` gets Bash padding; inside an extglob
+            # pattern it is literal (`@(a;b)` stays compact) (#802 :2947).
+            # Process-subst command text still uses separator spacing.
+            if extglob_depth and not _in_procsubst_command():
+                _gap_before_content()
+                out.append((';', False))
+                space = False
+                i += 1
+                continue
             _gap_before_content()
             out.append((';', False))
             space = False
@@ -3358,7 +3387,8 @@ def _comsub_delim_normalize(inner, _nest=0):
     return [c for c, _owned in out]
 
 
-def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
+def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False,
+                          _hash_comment=True):
     """Copy an expansion-shaped delimiter from `s[j]` until `op` balances.
 
     Nesting follows quotes/escapes the same way `_heredoc_delim` classifies
@@ -3379,12 +3409,25 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
     exponential (#802). Returns None when nested spelling would
     exceed that budget (#802). `_boundary=True` scans to the matching
     closer without normalizing nested `$()` bodies — for operand peek
-    that discards the span (#802).
+    that discards the span (#802). `_hash_comment=False` keeps `#`
+    literal — extglob/arith ownership of nested text (#802 :3588).
     """
     cl = '}' if op == '{' else (')' if op == '(' else ']')
     depth = 1
     dq = ''
     chunk = []
+    _copy_ws = True  # word-start for `#` comments in command `$()` (#802)
+    # Extglob pattern depth inside command `$()` — `#` is literal there
+    # (`@(#a|b)`, `@(a|#b)`). Nested `$()` under extglob/arith must
+    # inherit `_hash_comment=False` so delimiter spelling keeps `#`
+    # (`@(a|$(echo #x))`, `$((a[ #x ]))`) (#802 :3572 / :3588).
+    _eg_depth = 0
+    # Command-position `((...))` inside `$()` — `#` is arithmetic text
+    # (`echo x; (( a[ #x ] ))`), not a command comment (#802 :3621).
+    _arith_paren = 0
+    # Process-subst depth (`<(…)`, `>(…)`) — closer continues the word
+    # so `#suffix` stays literal (#802 :3666).
+    _ps_depth = 0
     while j < len(s) and depth:
         c = s[j]
         if dq:
@@ -3393,6 +3436,7 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 chunk.append(c)
                 chunk.append(s[j + 1])
                 j += 2
+                _copy_ws = False
                 continue
             # Backticks stay active inside `"…"` — body stays verbatim
             # (do not normalize nested `$()` inside the ticks) (#802).
@@ -3404,6 +3448,7 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 else:
                     chunk.extend(s[j:end])
                     j = end
+                _copy_ws = False
                 continue
             # Nested `$()` / `${…}` / `$[…]` inside double quotes still
             # take Bash delimiter spelling — PE operands must collapse
@@ -3431,30 +3476,36 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 j = _copy_delim_expansion(
                     s, j + 2, _op, chunk,
                     _nest=_nest + 1,
-                    _boundary=_nested_boundary)
+                    _boundary=_nested_boundary,
+                    _hash_comment=_hash_comment and not _eg_depth)
                 if j is None:
                     return None
+                _copy_ws = False
                 continue
             chunk.append(c)
             if c == dq:
                 dq = ''
             j += 1
+            _copy_ws = False
             continue
         if c in ("'", chr(34)):
             dq = c
             chunk.append(c)
             j += 1
+            _copy_ws = False
             continue
         if c == chr(92) and j + 1 < len(s):
             chunk.append(c)
             chunk.append(s[j + 1])
             j += 2
+            _copy_ws = False
             continue
         if op == '{':
             if s.startswith('${', j) and _dollar_run_is_even(s, j):
                 chunk.append('${')
                 j += 2
                 depth += 1
+                _copy_ws = False
                 continue
             # Unquoted backticks inside PE: body stays verbatim — do
             # not normalize nested `$()` inside the ticks (#802 :3456).
@@ -3466,6 +3517,7 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 else:
                     chunk.extend(s[j:end])
                     j = end
+                _copy_ws = False
                 continue
             # Unquoted nested `$()` / `$[…]` inside PE: Bash spelling
             # unless `_boundary` (propagated from an enclosing `$()`
@@ -3479,14 +3531,17 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 chunk.append(_op)
                 j = _copy_delim_expansion(
                     s, j + 2, _op, chunk,
-                    _nest=_nest + 1, _boundary=_boundary)
+                    _nest=_nest + 1, _boundary=_boundary,
+                    _hash_comment=_hash_comment)
                 if j is None:
                     return None
+                _copy_ws = False
                 continue
             chunk.append(c)
             j += 1
             if c == '}':
                 depth -= 1
+            _copy_ws = False
             continue
         # Inside `$()` / `$[…]`: nested PE and backticks own their
         # interior parens/brackets — do not charge enclosing depth (#802).
@@ -3501,38 +3556,143 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                           and not (chunk and chunk[0] == '('))
             j = _copy_delim_expansion(
                 s, j + 2, '{', chunk, _nest=_nest,
-                _boundary=_boundary or _cmd_paren)
+                _boundary=_boundary or _cmd_paren,
+                _hash_comment=_hash_comment and not _eg_depth)
             if j is None:
                 return None
+            _copy_ws = False
             continue
         if op in '([' and s.startswith('$[', j) and _dollar_run_is_even(s, j):
             # Nested `$[…]` recurses — charge the same nest budget as
             # command `$()` so deep trees exhaust closed, not via
-            # RecursionError (#802).
+            # RecursionError (#802). Propagate enclosing-command
+            # boundary the same way as `${…}` so
+            # `echo $[${a:-$(…)}]` does not double-normalize (#802 :3517).
             if _nest >= _DELIM_NEST_BUDGET:
                 return None
             chunk.append('$')
             chunk.append('[')
+            _cmd_paren = (op == '('
+                          and not (chunk and chunk[0] == '('))
             j = _copy_delim_expansion(
-                s, j + 2, '[', chunk, _nest=_nest + 1, _boundary=_boundary)
+                s, j + 2, '[', chunk, _nest=_nest + 1,
+                _boundary=_boundary or _cmd_paren,
+                _hash_comment=_hash_comment and not _eg_depth)
             if j is None:
                 return None
+            _copy_ws = False
             continue
         if op in '([' and c == chr(96):
             end = _backtick_span(s, j)
             if end is None:
                 chunk.append(c)
                 j += 1
-                continue
-            chunk.extend(s[j:end])
-            j = end
+            else:
+                chunk.extend(s[j:end])
+                j = end
+            _copy_ws = False
+            continue
+        # Nested `$()` / `$((…))` inside `$()` / `$[…]`: recurse so
+        # arithmetic owns `#` (`$((a[ #x ]))`) and extglob ownership
+        # can suppress command-comment omit on nested `$()` (#802 :3588).
+        if (op in '([' and s.startswith('$(', j)
+                and _dollar_run_is_even(s, j)):
+            if _nest >= _DELIM_NEST_BUDGET:
+                return None
+            _arith = s.startswith('$((', j)
+            chunk.append('$')
+            chunk.append('(')
+            _cmd_paren = (op == '('
+                          and not (chunk and chunk[0] == '('))
+            j = _copy_delim_expansion(
+                s, j + 2, '(', chunk, _nest=_nest + 1,
+                _boundary=_boundary or _cmd_paren,
+                _hash_comment=(_hash_comment and not _eg_depth
+                               and not _arith))
+            if j is None:
+                return None
+            _copy_ws = False
+            continue
+        # Process-subst openers in command `$()`: `<(…)`, `>(…)`.
+        # Extglob owns nested parens when `_eg_depth` — leave those to
+        # the eg counter. Closer continues the word (#802 :3666).
+        if (op == '(' and not (chunk and chunk[0] == '(')
+                and not _arith_paren and not _eg_depth
+                and c in '<>' and j + 1 < len(s) and s[j + 1] == '('):
+            chunk.append(c)
+            chunk.append('(')
+            j += 2
+            depth += 1
+            _ps_depth += 1
+            _copy_ws = True
+            continue
+        # Extglob openers in command `$()`: track pattern depth so
+        # word-start `#` stays literal (`@(#a|b)`) (#802 :3572).
+        if (op == '(' and not (chunk and chunk[0] == '(')
+                and not _arith_paren
+                and c in '@!*?+' and j + 1 < len(s) and s[j + 1] == '('):
+            chunk.append(c)
+            chunk.append('(')
+            j += 2
+            depth += 1
+            _eg_depth += 1
+            _copy_ws = True
+            continue
+        # Command-position `((...))` arithmetic — arm like normalize so
+        # `#` inside stays literal (`(( a[ #x ] ))`) (#802 :3621).
+        # Not when the `$()` body is already `$((…))` (`chunk[0]=='('`).
+        if (op == '(' and not (chunk and chunk[0] == '(')
+                and not _arith_paren and not _eg_depth and not _ps_depth
+                and c == '(' and j + 1 < len(s) and s[j + 1] == '('):
+            chunk.append('(')
+            chunk.append('(')
+            j += 2
+            depth += 2
+            _arith_paren += 2
+            _copy_ws = False
+            continue
+        # Command `$()` only: word-start `#` opens a comment — omit it
+        # from Bash delimiter spelling and do not let comment `)` / `(`
+        # change depth (`$(echo x # )` closer is the next real `)`)
+        # (#802 :3534). Not inside extglob pattern text (#802 :3572).
+        # Nested under extglob/arith keeps `#` (`_hash_comment`) (#802 :3588).
+        # Command-position `((...))` keeps `#` (#802 :3621).
+        # Arithmetic `$((…))` / `$[…]` keep `#` (base).
+        if (op == '(' and not (chunk and chunk[0] == '(')
+                and _hash_comment and not _eg_depth and not _arith_paren
+                and c == '#' and _copy_ws):
+            _nl = s.find('\n', j)
+            j = len(s) if _nl < 0 else _nl
+            _copy_ws = True
             continue
         chunk.append(c)
         j += 1
+        _word_cont_close = False
         if c == op:
             depth += 1
+            if _eg_depth:
+                _eg_depth += 1
+            elif _ps_depth:
+                _ps_depth += 1
+            if _arith_paren:
+                _arith_paren += 1
         elif c == cl:
             depth -= 1
+            # Innermost owner: extglob first, else process-subst.
+            # Those closers continue the word (`#suffix` literal);
+            # bare subshell `)` stays a command boundary (#802 :3666).
+            if _eg_depth:
+                _eg_depth -= 1
+                _word_cont_close = True
+            elif _ps_depth:
+                _ps_depth -= 1
+                _word_cont_close = True
+            if _arith_paren:
+                _arith_paren -= 1
+        if _word_cont_close:
+            _copy_ws = False
+        else:
+            _copy_ws = c in ' \t\n;&|()'
     if op == '(' and chunk and chunk[-1] == ')':
         # `$ ((...))` arithmetic body starts with `(` — keep source spelling.
         # A command `$()` body does not; apply Bash command spelling (#802).
@@ -3540,7 +3700,9 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
         if chunk[0] == '(' or _boundary:
             d.extend(chunk)
         else:
-            _norm = _comsub_delim_normalize(''.join(chunk[:-1]), _nest=_nest)
+            _norm = _comsub_delim_normalize(
+                ''.join(chunk[:-1]), _nest=_nest,
+                _hash_comment=_hash_comment)
             if _norm is None:
                 return None
             d.extend(_norm)

@@ -11,7 +11,8 @@ const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
 /** Path-bounded match; rejects suggest-compact.js.bak and similar suffixes. */
 const SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE =
   /(?:^|\/|["'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
-const RUN_WITH_FLAGS_TOKEN_RE = /(?:^|\/)run-with-flags\.js$/;
+const RUN_WITH_FLAGS_PLUGIN_ROOT_RE =
+  /^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/run-with-flags\.js$/;
 /** Wrapper scriptRelativePath slot: exact relative path only. */
 const SUGGEST_COMPACT_RELATIVE_RE = /^scripts\/hooks\/suggest-compact\.js$/;
 /** Direct node argv: must be plugin-root qualified. */
@@ -57,7 +58,7 @@ function isNodeToken(value) {
 }
 
 function isRunWithFlagsToken(value) {
-  return typeof value === 'string' && RUN_WITH_FLAGS_TOKEN_RE.test(stripWrappingQuotes(value));
+  return typeof value === 'string' && RUN_WITH_FLAGS_PLUGIN_ROOT_RE.test(stripWrappingQuotes(value));
 }
 
 /** Strip leading FOO=bar assignments so the statement command word is visible. */
@@ -163,9 +164,10 @@ function hookArgvTokens(hook) {
 /**
  * True when a PreToolUse hook actually invokes suggest-compact.js (direct node
  * or run-with-flags scriptRelativePath), including exec-form command+args.
+ * Only `type: "command"` hooks execute `command`/`args` (see validate-hooks.js).
  */
 function hookRegistersSuggestCompact(hook) {
-  if (!hook || typeof hook !== 'object') {
+  if (!hook || typeof hook !== 'object' || hook.type !== 'command') {
     return false;
   }
   if (shellCommandInvokesSuggestCompact(hook.command)) {

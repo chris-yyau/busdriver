@@ -123,7 +123,8 @@ function isNodeToken(value, stripQuotes) {
 
 /** Any stdout redirect or pipe hides additionalContext (stderr-only 2> is fine). */
 function discardsStdout(statement) {
-  if (/\|/.test(statement)) {
+  // Pipe only — not logical OR (||). Cubic: `|| exit 1` must still score.
+  if (/(^|[^|])\|([^|]|$)/.test(statement)) {
     return true;
   }
   if (/&>/.test(statement)) {
@@ -169,6 +170,10 @@ function isDirectNodeScriptInvocation(tokens, allowBare, stripQuotes, rootDir) {
 }
 
 function scriptIsRunWithFlagsScriptArg(tokens, allowBare, stripQuotes, rootDir) {
+  const hookId = tokens[2];
+  if (typeof hookId !== 'string' || hookId.length === 0) {
+    return false;
+  }
   return isNodeToken(tokens[0], stripQuotes)
     && isRunWithFlagsToken(tokens[1], allowBare, stripQuotes, rootDir)
     && isSuggestCompactRelativeToken(tokens[3], stripQuotes);
@@ -262,10 +267,15 @@ function matcherCoversEditOrWrite(matcher) {
   if (matcher === '*') {
     return true;
   }
-  if (/\bEdit\b/.test(matcher)) {
-    return true;
+  try {
+    const re = new RegExp(matcher);
+    if (re.test('Edit')) {
+      return true;
+    }
+    return re.test('Write');
+  } catch (_error) {
+    return false;
   }
-  return /\bWrite\b/.test(matcher);
 }
 
 function hookRegistersSuggestCompact(hook, rootDir) {

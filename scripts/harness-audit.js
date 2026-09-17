@@ -203,26 +203,30 @@ function getPreToolUseEntries(config) {
   return [];
 }
 
-function commandMentionsSuggestCompact(command) {
-  return typeof command === 'string' && command.includes('suggest-compact');
+/** Relative plugin path that must appear for Context Efficiency credit. */
+const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
+
+function mentionsSuggestCompactScript(value) {
+  return typeof value === 'string' && value.includes(SUGGEST_COMPACT_SCRIPT);
 }
 
 /**
  * Exec-form PreToolUse entries put the launcher in `command` and the script
  * path in `args` (see contained-launch.sh registrations in hooks/hooks.json).
- * Inspect both so a registered suggest-compact is not scored as absent.
+ * Inspect both, and require the real script path — not a bare "suggest-compact"
+ * substring (hook IDs, echo placeholders, or a run-with-flags id alone).
  */
 function hookRegistersSuggestCompact(hook) {
   if (!hook || typeof hook !== 'object') {
     return false;
   }
-  if (commandMentionsSuggestCompact(hook.command)) {
+  if (mentionsSuggestCompactScript(hook.command)) {
     return true;
   }
   if (!Array.isArray(hook.args)) {
     return false;
   }
-  return hook.args.some((arg) => commandMentionsSuggestCompact(arg));
+  return hook.args.some((arg) => mentionsSuggestCompactScript(arg));
 }
 
 function preToolUseRegistersSuggestCompact(entries) {

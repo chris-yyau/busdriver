@@ -186,6 +186,40 @@ function safeParseJson(text) {
 }
 
 /**
+ * Claude Code plugin/user hooks.json nest events under `hooks` (see
+ * hooks/hooks.json `$schema`). Accept a top-level PreToolUse only as a
+ * defensive fallback for atypical fixtures.
+ */
+function getPreToolUseEntries(config) {
+  if (!config || typeof config !== 'object') {
+    return [];
+  }
+  if (config.hooks && Array.isArray(config.hooks.PreToolUse)) {
+    return config.hooks.PreToolUse;
+  }
+  if (Array.isArray(config.PreToolUse)) {
+    return config.PreToolUse;
+  }
+  return [];
+}
+
+function commandMentionsSuggestCompact(command) {
+  return typeof command === 'string' && command.includes('suggest-compact');
+}
+
+function preToolUseRegistersSuggestCompact(entries) {
+  for (const entry of entries) {
+    const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
+    for (const hook of hooks) {
+      if (commandMentionsSuggestCompact(hook && hook.command)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * True when hooks/hooks.json wires suggest-compact under PreToolUse (not merely
  * mentions the name in prose or under another event). Used by the Context
  * Efficiency scorecard so an unregistered optional script does not award points.
@@ -194,28 +228,8 @@ function isSuggestCompactPreToolUseRegistered(rootDir) {
   if (!fileExists(rootDir, 'scripts/hooks/suggest-compact.js')) {
     return false;
   }
-
   const config = safeParseJson(safeRead(rootDir, 'hooks/hooks.json'));
-  // Claude Code plugin/user hooks.json nest events under `hooks` (see
-  // hooks/hooks.json `$schema`). Accept a top-level PreToolUse only as a
-  // defensive fallback for atypical fixtures.
-  const preToolUse =
-    (config && config.hooks && Array.isArray(config.hooks.PreToolUse) && config.hooks.PreToolUse) ||
-    (config && Array.isArray(config.PreToolUse) && config.PreToolUse) ||
-    [];
-  const entries = preToolUse;
-
-  for (const entry of entries) {
-    const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
-    for (const hook of hooks) {
-      const command = hook && typeof hook.command === 'string' ? hook.command : '';
-      if (command.includes('suggest-compact')) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  return preToolUseRegistersSuggestCompact(getPreToolUseEntries(config));
 }
 
 function hasFileWithExtension(rootDir, relativeDir, extensions) {

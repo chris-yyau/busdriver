@@ -42,7 +42,7 @@ Tool count alone is a weak proxy for window pressure: a few large file reads or 
 
 ## Hook Setup
 
-Busdriver leaves this hook **unregistered**. To opt back in, restore a PreToolUse entry in the plugin's `hooks/hooks.json` (not `~/.claude/settings.json` — user-level settings do not set `CLAUDE_PLUGIN_ROOT`, so plugin-relative paths fail there). Example matcher block:
+Busdriver leaves this hook **unregistered**. To opt back in, append a matcher under `hooks.PreToolUse` in the plugin's `hooks/hooks.json` (not `~/.claude/settings.json` — user-level settings do not set `CLAUDE_PLUGIN_ROOT`, so plugin-relative paths fail there). Example entry:
 
 ```json
 {

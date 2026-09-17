@@ -282,10 +282,11 @@ function hookRegistersSuggestCompact(hook, rootDir) {
   if (!isSynchronousCommandHook(hook)) {
     return false;
   }
-  if (shellCommandInvokesSuggestCompact(hook.command, rootDir)) {
-    return true;
+  // args present => exec-form spawn; never shell-parse command (ADR 0049).
+  if (Array.isArray(hook.args)) {
+    return execArgvInvokesSuggestCompact(hookArgvTokens(hook), false, false, rootDir);
   }
-  return execArgvInvokesSuggestCompact(hookArgvTokens(hook), false, false, rootDir);
+  return shellCommandInvokesSuggestCompact(hook.command, rootDir);
 }
 
 function entryRegistersSuggestCompact(entry, rootDir) {

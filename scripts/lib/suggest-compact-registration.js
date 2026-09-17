@@ -64,7 +64,13 @@ function normalizeToken(value, stripQuotes) {
 
 /** Absolute path equal to rootDir/scriptRelative (installer-resolved hooks.json). */
 function isAuditedRootScriptPath(token, rootDir, scriptRelative) {
-  if (!rootDir || typeof token !== 'string' || !token.startsWith('/')) {
+  if (!rootDir) {
+    return false;
+  }
+  if (typeof token !== 'string') {
+    return false;
+  }
+  if (!path.isAbsolute(token)) {
     return false;
   }
   return path.resolve(token) === path.resolve(rootDir, scriptRelative);
@@ -107,12 +113,26 @@ function textMentionsSuggestCompactScript(value) {
 }
 
 function isNodeToken(value, stripQuotes) {
-  return /(?:^|\/)node(?:\.exe)?$/.test(normalizeToken(value, stripQuotes));
+  const trimmed = normalizeToken(value, stripQuotes);
+  if (/(?:^|\/)node(?:\.exe)?$/.test(trimmed)) {
+    return true;
+  }
+  // Windows absolute launchers: C:\...\node.exe
+  return /(?:^|[\\/])node(?:\.exe)?$/i.test(trimmed);
 }
 
-/** Stdout redirected to /dev/null discards additionalContext advisory output. */
+/** Any stdout redirect or pipe hides additionalContext (stderr-only 2> is fine). */
 function discardsStdout(statement) {
-  return /(?:^|[^0-9])>\s*\/dev\/null\b/.test(statement);
+  if (/\|/.test(statement)) {
+    return true;
+  }
+  if (/&>/.test(statement)) {
+    return true;
+  }
+  if (/\b1>>?\s*\S+/.test(statement)) {
+    return true;
+  }
+  return /(?:^|[^0-9&])>>?\s*\S+/.test(statement);
 }
 
 /** Strip leading FOO=bar assignments so the statement command word is visible. */

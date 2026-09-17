@@ -218,21 +218,59 @@ function isRunWithFlagsToken(value) {
   return typeof value === 'string' && value.includes('run-with-flags.js');
 }
 
+/** Strip leading FOO=bar assignments so the statement command word is visible. */
+function stripLeadingEnvAssignments(statement) {
+  return statement.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*/, '');
+}
+
+function shellStatementInvokesSuggestCompact(statement) {
+  const trimmed = typeof statement === 'string' ? statement.trim() : '';
+  if (!trimmed.includes(SUGGEST_COMPACT_SCRIPT)) {
+    return false;
+  }
+  const withoutEnv = stripLeadingEnvAssignments(trimmed);
+  // echo/printf of the path (or of a fake node cmdline) is not an invocation.
+  if (/^(?:echo|printf)\b/.test(withoutEnv)) {
+    return false;
+  }
+  // Direct: node …/scripts/hooks/suggest-compact.js
+  if (/^node(?:\.exe)?\b[\s"']+(?:[^"'\s]*\/)?scripts\/hooks\/suggest-compact\.js\b/.test(withoutEnv)) {
+    return true;
+  }
+  // Flagged wrapper: node … run-with-flags.js … scripts/hooks/suggest-compact.js
+  if (/^node(?:\.exe)?\b[\s"'][\s\S]*\brun-with-flags\.js\b[\s"'][\s\S]*\bscripts\/hooks\/suggest-compact\.js\b/.test(withoutEnv)) {
+    return true;
+  }
+  return false;
+}
+
 /**
- * Shell-form `command` strings: require a real launcher shape, not an echo of
- * the path (Codex: `echo scripts/hooks/suggest-compact.js disabled`).
+ * Shell-form `command`: require node/run-with-flags as the statement command
+ * word. Anchors against echo payloads like
+ * `echo node scripts/hooks/suggest-compact.js disabled`.
  */
 function shellCommandInvokesSuggestCompact(command) {
   if (typeof command !== 'string' || !command.includes(SUGGEST_COMPACT_SCRIPT)) {
     return false;
   }
-  // Direct: node …/scripts/hooks/suggest-compact.js
-  if (/\bnode(?:\.exe)?\b[\s"']+(?:[^"'\s;|&]*\/)?scripts\/hooks\/suggest-compact\.js\b/.test(command)) {
-    return true;
+  const statements = command.split(/[;|&\n]/);
+  for (const statement of statements) {
+    if (shellStatementInvokesSuggestCompact(statement)) {
+      return true;
+    }
   }
-  // Flagged wrapper: run-with-flags.js … scripts/hooks/suggest-compact.js …
-  if (/\brun-with-flags\.js\b[\s"'][\s\S]*?scripts\/hooks\/suggest-compact\.js\b/.test(command)) {
-    return true;
+  return false;
+}
+
+function precedingTokenIsNode(tokens, scriptIndex) {
+  return scriptIndex > 0 && isNodeToken(tokens[scriptIndex - 1]);
+}
+
+function precedingTokensIncludeRunWithFlags(tokens, scriptIndex) {
+  for (let j = 0; j < scriptIndex; j += 1) {
+    if (isRunWithFlagsToken(tokens[j])) {
+      return true;
+    }
   }
   return false;
 }
@@ -246,13 +284,11 @@ function execArgvInvokesSuggestCompact(tokens) {
     if (!isSuggestCompactScriptToken(tokens[i])) {
       continue;
     }
-    if (i > 0 && isNodeToken(tokens[i - 1])) {
+    if (precedingTokenIsNode(tokens, i)) {
       return true;
     }
-    for (let j = 0; j < i; j += 1) {
-      if (isRunWithFlagsToken(tokens[j])) {
-        return true;
-      }
+    if (precedingTokensIncludeRunWithFlags(tokens, i)) {
+      return true;
     }
   }
   return false;

@@ -185,6 +185,32 @@ function safeParseJson(text) {
   }
 }
 
+/**
+ * True when hooks/hooks.json wires suggest-compact under PreToolUse (not merely
+ * mentions the name in prose or under another event). Used by the Context
+ * Efficiency scorecard so an unregistered optional script does not award points.
+ */
+function isSuggestCompactPreToolUseRegistered(rootDir) {
+  if (!fileExists(rootDir, 'scripts/hooks/suggest-compact.js')) {
+    return false;
+  }
+
+  const config = safeParseJson(safeRead(rootDir, 'hooks/hooks.json'));
+  const entries = config && Array.isArray(config.PreToolUse) ? config.PreToolUse : [];
+
+  for (const entry of entries) {
+    const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
+    for (const hook of hooks) {
+      const command = hook && typeof hook.command === 'string' ? hook.command : '';
+      if (command.includes('suggest-compact')) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function hasFileWithExtension(rootDir, relativeDir, extensions) {
   const dirPath = path.join(rootDir, relativeDir);
   if (!fs.existsSync(dirPath)) {
@@ -450,9 +476,7 @@ function getRepoChecks(rootDir) {
       // unregistered (optional manual re-enable via hooks/hooks.json).
       path: 'hooks/hooks.json',
       description: 'Suggest-compact PreToolUse hook is registered',
-      pass:
-        hooksJson.includes('suggest-compact') &&
-        fileExists(rootDir, 'scripts/hooks/suggest-compact.js'),
+      pass: isSuggestCompactPreToolUseRegistered(rootDir),
       fix: 'Register suggest-compact under PreToolUse in hooks/hooks.json (script at scripts/hooks/suggest-compact.js).',
     },
     {

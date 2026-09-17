@@ -207,11 +207,29 @@ function commandMentionsSuggestCompact(command) {
   return typeof command === 'string' && command.includes('suggest-compact');
 }
 
+/**
+ * Exec-form PreToolUse entries put the launcher in `command` and the script
+ * path in `args` (see contained-launch.sh registrations in hooks/hooks.json).
+ * Inspect both so a registered suggest-compact is not scored as absent.
+ */
+function hookRegistersSuggestCompact(hook) {
+  if (!hook || typeof hook !== 'object') {
+    return false;
+  }
+  if (commandMentionsSuggestCompact(hook.command)) {
+    return true;
+  }
+  if (!Array.isArray(hook.args)) {
+    return false;
+  }
+  return hook.args.some((arg) => commandMentionsSuggestCompact(arg));
+}
+
 function preToolUseRegistersSuggestCompact(entries) {
   for (const entry of entries) {
     const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
     for (const hook of hooks) {
-      if (commandMentionsSuggestCompact(hook && hook.command)) {
+      if (hookRegistersSuggestCompact(hook)) {
         return true;
       }
     }

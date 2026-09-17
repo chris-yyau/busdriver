@@ -445,10 +445,15 @@ function getRepoChecks(rootDir) {
       category: 'Context Efficiency',
       points: 3,
       scopes: ['repo', 'hooks'],
-      path: 'scripts/hooks/suggest-compact.js',
-      description: 'Suggest-compact automation hook exists',
-      pass: fileExists(rootDir, 'scripts/hooks/suggest-compact.js'),
-      fix: 'Implement scripts/hooks/suggest-compact.js for context pressure hints.',
+      // Score only when PreToolUse actually wires the hook. File presence alone
+      // overstates Context Efficiency after busdriver left suggest-compact
+      // unregistered (optional manual re-enable via hooks/hooks.json).
+      path: 'hooks/hooks.json',
+      description: 'Suggest-compact PreToolUse hook is registered',
+      pass:
+        hooksJson.includes('suggest-compact') &&
+        fileExists(rootDir, 'scripts/hooks/suggest-compact.js'),
+      fix: 'Register suggest-compact under PreToolUse in hooks/hooks.json (script at scripts/hooks/suggest-compact.js).',
     },
     {
       id: 'context-model-route',

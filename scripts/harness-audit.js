@@ -223,31 +223,49 @@ function stripLeadingEnvAssignments(statement) {
   return statement.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*/, '');
 }
 
+/** First argv word (supports quoted absolute paths like "/usr/bin/node"). */
+function commandWordAndRest(statement) {
+  const match = statement.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))([\s\S]*)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    word: match[1] || match[2] || match[3],
+    rest: (match[4] || '').trim(),
+  };
+}
+
+function tokenizeShellArgs(rest) {
+  const tokens = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match = re.exec(rest);
+  while (match !== null) {
+    tokens.push(match[1] !== undefined ? match[1] : match[2] !== undefined ? match[2] : match[3]);
+    match = re.exec(rest);
+  }
+  return tokens;
+}
+
+/**
+ * Shell statement → argv, then reuse exec-form rules. Accepts path-qualified /
+ * quoted Node (`"/usr/bin/node"`); rejects echo/printf command words.
+ */
 function shellStatementInvokesSuggestCompact(statement) {
   const trimmed = typeof statement === 'string' ? statement.trim() : '';
   if (!trimmed.includes(SUGGEST_COMPACT_SCRIPT)) {
     return false;
   }
   const withoutEnv = stripLeadingEnvAssignments(trimmed);
-  // echo/printf of the path (or of a fake node cmdline) is not an invocation.
-  if (/^(?:echo|printf)\b/.test(withoutEnv)) {
+  const parts = commandWordAndRest(withoutEnv);
+  if (!parts || !isNodeToken(parts.word)) {
     return false;
   }
-  // Direct: node …/scripts/hooks/suggest-compact.js
-  if (/^node(?:\.exe)?\b[\s"']+(?:[^"'\s]*\/)?scripts\/hooks\/suggest-compact\.js\b/.test(withoutEnv)) {
-    return true;
-  }
-  // Flagged wrapper: node … run-with-flags.js … scripts/hooks/suggest-compact.js
-  if (/^node(?:\.exe)?\b[\s"'][\s\S]*\brun-with-flags\.js\b[\s"'][\s\S]*\bscripts\/hooks\/suggest-compact\.js\b/.test(withoutEnv)) {
-    return true;
-  }
-  return false;
+  return execArgvInvokesSuggestCompact([parts.word, ...tokenizeShellArgs(parts.rest)]);
 }
 
 /**
- * Shell-form `command`: require node/run-with-flags as the statement command
- * word. Anchors against echo payloads like
- * `echo node scripts/hooks/suggest-compact.js disabled`.
+ * Shell-form `command`: require node as the statement command word (path-qualified
+ * OK). Anchors against echo payloads like `echo node … suggest-compact.js`.
  */
 function shellCommandInvokesSuggestCompact(command) {
   if (typeof command !== 'string' || !command.includes(SUGGEST_COMPACT_SCRIPT)) {
@@ -266,9 +284,13 @@ function precedingTokenIsNode(tokens, scriptIndex) {
   return scriptIndex > 0 && isNodeToken(tokens[scriptIndex - 1]);
 }
 
-function precedingTokensIncludeRunWithFlags(tokens, scriptIndex) {
+/** run-with-flags.js counts only when node launches it (not echo's argv). */
+function precedingNodeLaunchedRunWithFlags(tokens, scriptIndex) {
   for (let j = 0; j < scriptIndex; j += 1) {
-    if (isRunWithFlagsToken(tokens[j])) {
+    if (!isRunWithFlagsToken(tokens[j])) {
+      continue;
+    }
+    if (j > 0 && isNodeToken(tokens[j - 1])) {
       return true;
     }
   }
@@ -277,7 +299,7 @@ function precedingTokensIncludeRunWithFlags(tokens, scriptIndex) {
 
 /**
  * Exec-form argv (`command` launcher + `args`): script must be a node argv or
- * a run-with-flags script argument — not merely present in any token.
+ * a run-with-flags script argument where node launched that wrapper.
  */
 function execArgvInvokesSuggestCompact(tokens) {
   for (let i = 0; i < tokens.length; i += 1) {
@@ -287,7 +309,7 @@ function execArgvInvokesSuggestCompact(tokens) {
     if (precedingTokenIsNode(tokens, i)) {
       return true;
     }
-    if (precedingTokensIncludeRunWithFlags(tokens, i)) {
+    if (precedingNodeLaunchedRunWithFlags(tokens, i)) {
       return true;
     }
   }

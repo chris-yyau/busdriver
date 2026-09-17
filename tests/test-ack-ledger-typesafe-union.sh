@@ -79,6 +79,18 @@ write_curl_stub() {
       # path: without it the ledger reads 0.01 out of an error envelope.
       body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
       code=500; fail_exits=yes ;;
+    multidoc)
+      # A 200 whose body is a CONCATENATION: an empty object followed by a valid
+      # low-noul answer. Streaming jq discards the first and emits the second, so
+      # the ledger would act on an answer it never asked one request for.
+      body='{} {"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
+    multidoc-two-answers)
+      # Two VALID documents. Streaming jq emits TWO newline-separated numbers;
+      # the awk comparison cannot evaluate that, and treating its error as
+      # "below threshold" was an ack.
+      body='{"answers":{"review_did_not_run":{"type":"noul","noul":0.99}}} {"answers":{"review_did_not_run":{"type":"noul","noul":0.01}}}'
+      code=200 ;;
     redirect)
       # A 3xx with the same body. `--fail` does NOT cover this range and curl
       # exits 0 with the body on stdout, so only an explicit status check
@@ -192,6 +204,17 @@ check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_led
 write_curl_stub redirect
 check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_ACKS")" \
   "enabled + HTTP 302 carrying a parseable low noul => demote (status is checked, not just --fail)"
+
+# A 200 whose body holds MORE THAN ONE JSON document. Both shapes were acks
+# before --slurp + the three-way awk status: the first because streaming jq
+# discards the junk document and emits the real one, the second because two
+# numbers make awk error and the error was read as "below threshold".
+write_curl_stub multidoc
+check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_ACKS")" \
+  "enabled + body with {} then a valid answer => demote (exactly one document)"
+write_curl_stub multidoc-two-answers
+check stale "$(HOME="$TMP/home" TYPESAFE_API_KEY=k PATH="$TMP/bin:$PATH" run_ledger "$REGEX_ACKS")" \
+  "enabled + body with two valid answers => demote (unevaluable comparison is not an ack)"
 
 # A probability outside [0,1] is a malformed judgment, not a low score. Both
 # values compare FALSE against any threshold in (0,1], so a type-only check

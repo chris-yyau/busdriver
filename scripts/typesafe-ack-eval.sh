@@ -32,6 +32,19 @@ URL='https://api.typesafe.ai/v1/systemone'
 
 [[ -n "${TYPESAFE_API_KEY:-}" ]] || { echo "TYPESAFE_API_KEY unset" >&2; exit 2; }
 [[ -f "$ACK_SCRIPT" ]] || { echo "missing $ACK_SCRIPT" >&2; exit 2; }
+# The cache is APPENDED to, and `>>` follows a symlink — a checkout carrying
+# .typesafe-eval-cache.jsonl as a link to something operator-writable would have
+# that file grown with JSON on every cache miss. `.gitignore` is not a boundary
+# (`git add -f`), and the `-f` test below follows links too, so check first and
+# refuse. ponytail: a structural refuse-and-stop, not O_NOFOLLOW plumbing — the
+# shape that actually occurs is a link committed into a checkout, and this closes
+# it. A TOCTOU window between the test and the open remains; this is a dev
+# harness on an operator's own machine, not a gate. Upgrade if that stops being
+# true.
+if [[ -L "$CACHE" || ( -e "$CACHE" && ! -f "$CACHE" ) ]]; then
+  echo "refusing to use $CACHE: it is a symlink or not a regular file" >&2
+  exit 6
+fi
 [[ "${1:-}" == "--refresh" ]] && rm -f "$CACHE"
 # NO writability probe. The obvious one — `: > "$CACHE".tmp && rm -f "$CACHE".tmp`
 # — truncates a PREDICTABLE path before deleting it, so a symlink parked at
@@ -165,10 +178,14 @@ baseline_terminal() {  # $1 = description -> "demote" | "ack" | "other:<raw>"
 # review because the regex contract already identifies those three as the
 # canonical foreign-subject traps — NOT because of anything in G4. Tuning this
 # question against G4 would be fitting the measurement to the answer.
+# $1 = description, $2 = model id (default: the alias — for the resolve probe only).
+# Every SCORING call passes the RESOLVED concrete id. Sending the alias on each
+# request left the run unbound to a model: the alias could move mid-calibration
+# and those later scores would still be cached under the id resolved at startup.
 question_body() {
-  jq -nc --arg d "$1" '{
+  jq -nc --arg d "$1" --arg m "${2:-jev-latest}" '{
     state: { status_description: $d },
-    model: "jev-latest",
+    model: $m,
     questions: { review_did_not_run: {
       type: "noul",
       instructions: "Does this CI status description report that the code review itself did not actually run to completion?",
@@ -184,15 +201,24 @@ question_body() {
 # the new one — calibration for a classifier nobody runs. One throwaway call
 # resolves the alias to a concrete id, which then goes into every key.
 resolve_model() {
-  curl -sS --fail --max-time 15 -X POST "$URL" \
+  local resp
+  # Status-checked and exit-checked, exactly like the scoring call and like
+  # production. Piping curl straight into jq masks curl's status entirely, so a
+  # failed transfer whose stdout still held a complete model object resolved
+  # "successfully" — and a 3xx did too, because --fail does not cover it.
+  resp=$(curl -sS --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
-    --data-binary "$(question_body 'Review completed')" 2>/dev/null \
-    | jq -er '.model | select(type == "string" and length > 0)' 2>/dev/null
+    -w '\n%{http_code}' \
+    --data-binary "$(question_body 'Review completed')" 2>/dev/null) || return 1
+  [[ "${resp##*$'\n'}" == "200" ]] || return 1
+  printf '%s' "${resp%$'\n'*}" \
+    | jq -er --slurp 'if length != 1 then empty else .[0] end
+                      | .model | select(type == "string" and length > 0)' 2>/dev/null
 }
 
 noul_for() {  # $1 = description -> float, or "ERR"
   local desc="$1" key hit body resp v
-  body=$(question_body "$desc")
+  body=$(question_body "$desc" "$RESOLVED_MODEL")
   # The cache key is the WHOLE request body, not the description. Keying on the
   # description alone meant an edited instruction or criteria pair silently
   # reused scores measured against the OLD question, so a re-run would report a
@@ -214,10 +240,23 @@ noul_for() {  # $1 = description -> float, or "ERR"
   # rather than pricing the threshold against a transport artefact.
   resp=$(curl -sS --fail --max-time 15 -X POST "$URL" \
     -H "Authorization: Bearer $TYPESAFE_API_KEY" -H 'Content-Type: application/json' \
+    -w '\n%{http_code}' \
     --data-binary "$body" 2>/dev/null) || { echo ERR; return 0; }
+  # The harness must accept exactly what production accepts, or it calibrates a
+  # threshold for a classifier with different inputs: status 200 only (--fail
+  # misses 3xx), and exactly one JSON document in the body.
+  [[ "${resp##*$'\n'}" == "200" ]] || { echo ERR; return 0; }
+  resp="${resp%$'\n'*}"
+  # `select(.model == $m)` is the second half of pinning the model: the request
+  # names the resolved id, and the RESPONSE has to confirm it served that id.
+  # Without the confirmation the pin is a request-side hope, and a score served
+  # by a different model would still be cached under the resolved one.
   v=$(printf '%s' "$resp" \
-    | jq -er '.answers.review_did_not_run.noul
-              | select(type=="number" and . >= 0 and . <= 1)' 2>/dev/null) \
+    | jq -er --slurp --arg m "$RESOLVED_MODEL" \
+        'if length != 1 then empty else .[0] end
+         | select(.model == $m)
+         | .answers.review_did_not_run.noul
+         | select(type=="number" and . >= 0 and . <= 1)' 2>/dev/null) \
     || { echo ERR; return 0; }
   jq -nc --arg k "$key" --arg d "$desc" --arg m "$RESOLVED_MODEL" --argjson n "$v" \
     '{k:$k,d:$d,m:$m,n:$n}' >> "$CACHE"
@@ -226,6 +265,7 @@ noul_for() {  # $1 = description -> float, or "ERR"
 
 THRESHOLDS=(0.5 0.6 0.7 0.8 0.9)
 declare -A FLIP ACKED   # per-threshold counters
+declare -A ERRS BADBASE # per-group integrity counters (see run_group)
 ROWS=()
 
 run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtures
@@ -237,6 +277,15 @@ run_group() {  # $1 = group name, $2 = expected-today (demote|ack), rest = fixtu
     # short-circuits on it), so do not spend a call on one.
     if [[ -z "${desc// /}" ]]; then n="-"; else n=$(noul_for "$desc"); fi
     ROWS+=("$(printf '%-6s|%-7s|%-7s|%-6s|%s' "$name" "$today" "$base" "$n" "$desc")")
+    # Incompleteness is COUNTED, not silently skipped. A fixture whose call
+    # failed contributes to no threshold's cost, so a run where every G2/G3 call
+    # errored and every G4 call succeeded would print the ideal table — three
+    # residuals closed, zero cost — on no evidence at all about the fixtures
+    # that must keep acking. Same for a baseline terminal outside demote/ack:
+    # the whole comparison is defined against those two.
+    [[ "$base" == "demote" || "$base" == "ack" ]] \
+      || BADBASE[$name]=$(( ${BADBASE[$name]:-0} + 1 ))
+    [[ "$n" == "ERR" ]] && ERRS[$name]=$(( ${ERRS[$name]:-0} + 1 ))
     [[ "$n" == "-" || "$n" == "ERR" ]] && continue
     for t in "${THRESHOLDS[@]}"; do
       if awk -v n="$n" -v t="$t" 'BEGIN{exit !(n>=t)}'; then
@@ -284,6 +333,26 @@ for g in G1 G2 G3 G4 G5; do
   for t in "${THRESHOLDS[@]}"; do printf '%-7s' "${FLIP[$g:$t]:-0}"; done
   printf '\n'
 done
+# Integrity gate — the table above is only a measurement if every fixture was
+# actually measured. Refuse to print a recommendation otherwise.
+_incomplete=0
+for g in G1 G2 G3 G4 G5; do
+  if [[ -n "${ERRS[$g]:-}" || -n "${BADBASE[$g]:-}" ]]; then
+    printf 'INCOMPLETE %s: %s API error(s), %s unexpected baseline terminal(s)\n' \
+      "$g" "${ERRS[$g]:-0}" "${BADBASE[$g]:-0}" >&2
+    _incomplete=1
+  fi
+done
+if [[ "$_incomplete" -eq 1 ]]; then
+  cat >&2 <<'BAD'
+
+NO RECOMMENDATION. Unmeasured fixtures contribute to no threshold's cost, so a
+run that lost the ack-side groups and kept the demote-side one would print a
+perfect table on no evidence. Re-run (the cache keeps the successful calls, so a
+re-run only retries what failed) and read the numbers only once this is clean.
+BAD
+  exit 5
+fi
 cat <<'NOTE'
 
 Reading this table

@@ -670,12 +670,28 @@ _noul_says_non_review() {
   # would have silently preserved the ack — a fail-OPEN on exactly the malformed
   # input this branch exists to catch. Out of range now fails the select, jq -er
   # exits non-zero, and the failure demotes.
+  # --slurp, and EXACTLY ONE document. Without it jq happily streams a
+  # concatenation: a body of `{}` followed by a valid low-noul object passes,
+  # because the select discards the first document and emits the second — an
+  # answer the caller never sent one request for. Two VALID documents were worse
+  # still: jq emitted two newline-separated numbers, the awk comparison below
+  # errored on them, and the error fell through to the ack. Both are fail-OPENs
+  # on an enabled lane. `length != 1 -> empty` makes jq -er exit non-zero, which
+  # demotes like every other malformed response.
   noul=$(printf '%s' "$resp" \
-    | jq -er '.answers.review_did_not_run.noul
-              | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 0
-  # awk, not bash arithmetic: both operands are floats.
-  awk -v n="$noul" -v t="$threshold" 'BEGIN { exit !(n >= t) }' && return 0
-  return 1
+    | jq -er --slurp 'if length != 1 then empty else .[0] end
+                      | .answers.review_did_not_run.noul
+                      | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 0
+  # awk, not bash arithmetic: both operands are floats. Its exit status is read
+  # as THREE outcomes, not two — `awk … && return 0; return 1` treated "awk could
+  # not evaluate this" as "below threshold", i.e. as an ack. An unevaluable
+  # comparison has not shown the status is a verdict, so it demotes.
+  awk -v n="$noul" -v t="$threshold" 'BEGIN { exit !(n >= t) }'
+  case $? in
+    0) return 0 ;;  # at or above threshold -> demote
+    1) return 1 ;;  # below threshold       -> the regex ack stands
+    *) return 0 ;;  # awk could not decide  -> demote (fail-closed)
+  esac
 }
 
 _status_desc_is_non_review() {

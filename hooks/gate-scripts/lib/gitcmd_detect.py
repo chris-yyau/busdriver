@@ -2087,6 +2087,73 @@ _ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n;|&<>"\'\\*?[]{}')
 _ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
 
 
+def _env_S_expand_underscore_seps(payload):
+    """Apply env(1) -S `\\_` before shell tokenization.
+
+    Unquoted `\\_` is a word separator; inside double quotes it is a blank.
+    Single-quoted `\\_` is literal. An odd run of backslashes ending in `_`
+    consumes one `\\_` as the separator/blank and leaves the remaining
+    backslashes for `_tokenize` — do not pre-halve pairs (that double-decodes
+    with shlex: `\\\\\\_` must stay `\\\\` + sep, not one `\\` then tokenize
+    again). An even run leaves every `\\` and the literal `_` for tokenize.
+    A non-`_` backslash outside single quotes consumes the next character as
+    a pair so `\\'` cannot open single-quote state and hide a later `\\_`
+    (#838 env-sep commit FAIL).
+    """
+    out = []
+    i, n = 0, len(payload)
+    quote = None
+    while i < n:
+        c = payload[i]
+        if quote == "'":
+            out.append(c)
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if quote is None and c == "'":
+            quote = "'"
+            out.append(c)
+            i += 1
+            continue
+        if c == '"':
+            quote = None if quote == '"' else '"'
+            out.append(c)
+            i += 1
+            continue
+        if c == '\\':
+            j = i
+            while j < n and payload[j] == '\\':
+                j += 1
+            if j < n and payload[j] == '_':
+                bs = j - i
+                if bs % 2 == 1:
+                    out.append('\\' * (bs - 1))
+                    out.append(' ')
+                else:
+                    out.append('\\' * bs)
+                    out.append('_')
+                i = j + 1
+                continue
+            # Non-_ escape: keep `\` + follower for tokenize; advance as a
+            # pair so the follower is not re-read as quote punctuation.
+            out.append('\\')
+            if i + 1 < n:
+                out.append(payload[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+def _env_S_tokenize(payload):
+    """Tokenize an `env -S` payload the way env(1) splits it (#838 env-sep)."""
+    return _tokenize(_env_S_expand_underscore_seps(payload))
+
+
 def _raw_has_expandable_dollar(raw):
     """True when bash expands `$` / `` ` `` in `raw` (unquoted or double-quoted).
 
@@ -2310,7 +2377,10 @@ def _env_S_reparse_payload_indexes(toks):
     `_env_argv_may_ifs_split` / env-operand / `_nonassign_git_before` — rather
     than skipping one token (#838 timeout-wrapper-S HIGH). A git-shaped value
     of `-u`/`-C`/… is an operand, not the command (`env -u git …`; #838
-    env-u-git-operand HIGH). Reuses `_env_S_payload` ownership.
+    env-u-git-operand HIGH). Shell `-c` / `bash -c` script bodies are also
+    re-parsed after env expands into them — mark those indexes too so
+    quoting does not hide the inner git command (#838 shell-c / PR HIGH).
+    Reuses `_env_S_payload` / `_interpreter_name` / `_is_c_option`.
     """
     idxs = set()
     if not toks:
@@ -2401,6 +2471,17 @@ def _env_S_reparse_payload_indexes(toks):
                 break
             continue
         i += 1
+    # `bash -c '<script>'` / `sh -c …`: the script argv is re-parsed by the
+    # interpreter after env's `${VAR}` substitution into that word (#838
+    # shell-c HIGH). Same non-final boundary as nested `-S`.
+    for i, t in enumerate(toks):
+        if _interpreter_name(t) is None:
+            continue
+        for j in range(i + 1, len(toks)):
+            if _is_c_option(toks[j]):
+                for p in range(j + 1, len(toks)):
+                    idxs.add(p)
+                break
     return idxs
 
 
@@ -2423,9 +2504,11 @@ def _env_S_ins_raws(payload, outer_raw=None):
     — quote those tokens so the shell-IFS refuse does not false-block
     (#838 env-quote-dash / env-expand). Tokens that are themselves a nested
     `-S` payload are re-parsed after that expansion, so keep `$` visible
-    through the nested walk (#838 nested-S HIGH).
+    through the nested walk (#838 nested-S HIGH). Shell `-c` script indexes
+    are marked the same way (#838 shell-c HIGH). Split-string tokenization
+    uses `_env_S_tokenize` so unquoted `\\_` remains a separator (#838 env-sep).
     """
-    toks = _tokenize(payload)
+    toks = _env_S_tokenize(payload)
     local = _raw_tokens(payload)
     if local is not None and len(toks) != len(local):
         local = None
@@ -2553,7 +2636,15 @@ def _env_S_rejoin(toks, raws=None):
         if not _env_S_token_needs_quote(t, raw):
             parts.append(t)
         elif _env_S_token_has_live_expansion(t, raw):
-            parts.append(_env_S_dq_keep_expand(t))
+            # Prefer expansion-visible raw when `_env_S_ins_raws` stripped
+            # quotes that env already pierced inside a -S word (shell `-c`
+            # script bodies / nested `-S`; #838 shell-c HIGH).
+            body = t
+            if (raw is not None
+                    and ('$' in raw or '`' in raw)
+                    and _env_S_token_has_live_expansion(raw)):
+                body = raw
+            parts.append(_env_S_dq_keep_expand(body))
         else:
             parts.append(shlex.quote(t))
     return ' '.join(parts)
@@ -2606,7 +2697,7 @@ def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
                 rest = list(toks[k + 1:])
                 rest_raws = (list(raws[k + 1:])
                              if raws is not None else None)
-            inserted = _tokenize(payload) + rest
+            inserted = _env_S_tokenize(payload) + rest
             # Outer-shell spelling of the -S operand carries quote context that
             # `_raw_tokens(payload)` alone drops (#838 PR outer-quote HIGH).
             ins_raws = _env_S_ins_raws(payload, _env_S_operand_raw(a, k, raws))
@@ -4140,7 +4231,7 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                     rest = list(toks[k + 1:])
                     rest_raws = (list(raws[k + 1:])
                                  if raws is not None else None)
-                inserted = _tokenize(payload) + rest
+                inserted = _env_S_tokenize(payload) + rest
                 ins_raws = _env_S_ins_raws(
                     payload, _env_S_operand_raw(a, k, raws))
                 if ins_raws is not None and rest_raws is not None:
@@ -4267,6 +4358,22 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                     # re-lexed peel raws are only trusted from real util_raws.
                     util_raws = (to_git[1] if util_raws is not None
                                  else None)
+        # `bash -c '<script>'`: scan the script body, not the atomic argv word.
+        # Env may expand `${VAR}` into that word before the interpreter re-parses
+        # it; treating the script as opaque missed quote-breaking CFG (#838
+        # shell-c / PR HIGH). Prefer pre-rejoin raws when present.
+        if util and _interpreter_name(util[0]) is not None:
+            for j in range(1, len(util)):
+                if not _is_c_option(util[j]):
+                    continue
+                for pi in range(j + 1, len(util)):
+                    script = util[pi]
+                    if (util_raws is not None and pi < len(util_raws)
+                            and util_raws[pi] is not None):
+                        script = util_raws[pi]
+                    if _any_git_c_may_ifs_split(script):
+                        return True
+                break
         if trust_git_raws or raws is None:
             if _git_pre_subcmd_may_ifs_split(util, util_raws):
                 return True

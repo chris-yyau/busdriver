@@ -1955,6 +1955,18 @@ run_gate "...and timeout -s before nested env -S with \${CFG} still fails closed
 # (#838 env-u-git-operand HIGH).
 run_gate "...and env -u git before nested env -S with \${CFG} still fails closed" \
     block 'env -S '\''env -u git env -S "git -c x.y=${CFG} branch"'\''' "cannot be resolved"
+# Shell -c script bodies are re-parsed after env expands into them; unquoted
+# env -S \_ is a word separator (#838 shell-c / env-sep PR HIGHs).
+run_gate "...and env -S bash -c with quote-breaking \${CFG} still fails closed" \
+    block 'env -S '\''bash -c "git -c '\''\''\''x.y=${CFG}'\''\''\'' branch"'\''' "cannot be resolved"
+run_gate "...and env -S unquoted \\_ before merge still blocks the merge" \
+    block 'env -S '\''git -c x.y=1\_merge branch'\''' ""
+# Even-run \\_ is a literal underscore (not a separator); \\' must not hide \\_
+# (#838 env-sep expand_underscore_seps commit FAIL).
+run_gate "...and env -S even-run \\\\_ keeps literal underscore (no false merge)" \
+    allow 'env -S '\''git -c x.y=1\\_merge branch'\'''
+run_gate "...and env -S \\' before \\_ still exposes the merge separator" \
+    block "env -S \"git -c x.y=\\'a\\_merge branch\"" ""
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1

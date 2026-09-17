@@ -216,13 +216,16 @@ function isEmptyMatcher(matcher) {
   return matcher === '';
 }
 
-/** Matcher must cover Edit/Write (documented surface) or be empty (all tools). */
+/** Matcher must cover Edit/Write (documented surface), be empty (all tools), or `*`. */
 function matcherCoversEditOrWrite(matcher) {
   if (isEmptyMatcher(matcher)) {
     return true;
   }
   if (typeof matcher !== 'string') {
     return false;
+  }
+  if (matcher === '*') {
+    return true;
   }
   if (/\bEdit\b/.test(matcher)) {
     return true;

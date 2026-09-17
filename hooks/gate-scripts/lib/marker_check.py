@@ -2371,8 +2371,16 @@ def _comsub_delim_normalize(inner, _nest=0):
     `<(…)` / `>(…)` are not redirections (#802). Unquoted `{name}`
     fd descriptors stay glued to `>` / `<` (`{fd}>file`, not
     `{fd} > file`) (#802). Quoted/escaped text is kept,
-    matching `<<$(echo    x)` → terminator `$(echo x)` and
-    `<<$(echo 'a  b')` keeping the quotes. Escape/quote ownership is
+    `<<(echo    x)` → terminator `$(echo x)` and
+    `<<$(echo 'a  b')` keeping the quotes — and nested `$()` inside
+    double quotes still collapse IFS (`echo "$(echo    x)"` →
+    `echo "$(echo x)"`), except `$()` nested in backticks under
+    those quotes stays verbatim (`echo "`echo $(echo    x)`"` keeps
+    the spaces) (#802). Process-subst bodies keep command
+    pipeline spacing even under an outer `[[`
+    (`[[ <(echo x|cat) == x ]]` → `[[ <(echo x | cat) == x ]]`) (#802).
+    Bash `|`&` becomes `2>&1 |` (`echo x |& cat` →
+    `echo x 2>&1 | cat`) (#802). Escape/quote ownership is
     retained across the final trim so `\\ ` and `\\;` are not mistaken
     for bare trailing space/`;` (#802). Nested `${...}`, `$((...))`,
     `$[...]`, and classic `` `...` `` substitutions keep source
@@ -2650,6 +2658,22 @@ def _comsub_delim_normalize(inner, _nest=0):
             return True
         return False
 
+    def _in_procsubst_command():
+        """True in a process-subst body parsed as command text (#802).
+
+        Innermost `ps` frame at the enclosing `dbrack` level — `|` / `||` /
+        `|&` are pipelines even when an outer `[[` is open
+        (`[[ <(echo x|cat) == x ]]` → spaces around `|`). Not when the
+        process-subst sits inside a `=~` regex group (`dbrack_paren > 0`):
+        Bash keeps compact `|` / `||` / `|&` there
+        (`[[ a =~ x(<(echo x|cat)|b) ]]`). Nested `[[` inside the
+        process-subst (deeper `dbrack`) and nested extglob frames are
+        not command text here.
+        """
+        return (procsubst_depth and ps_ext_stack and ps_ext_stack[-1] == 'ps'
+                and dbrack == procsubst_dbrack_at[-1]
+                and not dbrack_paren)
+
     def _dbrack_at_word_start():
         """New `[[` word: clear stale binop-expect, then maybe `-n` (#802).
 
@@ -2703,14 +2727,56 @@ def _comsub_delim_normalize(inner, _nest=0):
         if dbrack_class and dbrack_class_lit and c != ']':
             dbrack_class_lit = False
         if q:
-            _gap_before_content()
-            out.append((c, True))
+            # Double-quote escapes first so `\$()` stays literal (#802).
             if q == chr(34) and c == chr(92) and i + 1 < n \
                     and inner[i + 1] in (chr(34), chr(92), '$', chr(96)):
+                _gap_before_content()
+                out.append((c, True))
                 out.append((inner[i + 1], True))
                 i += 2
                 space = False
                 continue
+            # Backticks stay active inside `"…"`. Bash keeps the backtick
+            # body verbatim for heredoc delimiters — do not normalize
+            # nested `$()` inside the ticks
+            # (`"`echo $(echo    x)`"` keeps the four spaces) (#802).
+            if q == chr(34) and c == chr(96):
+                _gap_before_content()
+                end = _backtick_span(inner, i)
+                if end is None:
+                    out.append((c, True))
+                    i += 1
+                else:
+                    for _ch in inner[i:end]:
+                        out.append((_ch, True))
+                    i = end
+                space = False
+                continue
+            # Inside `"…"`, nested `$()` still gets Bash command spelling
+            # (IFS collapse); `${…}` / `$[…]` keep PE/arith source via the
+            # same copier, which still collapses nested `$()` inside PE
+            # operands. Single-quoted text stays verbatim (#802).
+            if (q == chr(34) and c == '$' and i + 1 < n
+                    and inner[i + 1] in '({['
+                    and _dollar_run_is_even(inner, i)):
+                _gap_before_content()
+                _op = inner[i + 1]
+                _cmd_nest = (_op == '('
+                             and not (i + 2 < n and inner[i + 2] == '('))
+                if _cmd_nest and _nest >= _DELIM_NEST_BUDGET:
+                    return None
+                _tmp = [c, _op]
+                i = _copy_delim_expansion(
+                    inner, i + 2, _op, _tmp,
+                    _nest=(_nest + 1) if _cmd_nest else _nest)
+                if i is None:
+                    return None
+                for _ch in _tmp:
+                    out.append((_ch, True))
+                space = False
+                continue
+            _gap_before_content()
+            out.append((c, True))
             if c == q:
                 q = ''
             i += 1
@@ -3197,7 +3263,11 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             force_gap = True
             continue
-        if (not arith_paren and not dbrack and not extglob_depth
+        # `|` / `||` / `|&` are pipelines in ordinary command text and
+        # inside process-subst bodies — even when an outer `[[` is open.
+        # Extglob / nested `[[` keep `|` as pattern/regex (#802).
+        _pipe_cmd = (not dbrack) or _in_procsubst_command()
+        if (not arith_paren and _pipe_cmd and not extglob_depth
                 and c == '|' and i + 1 < n and inner[i + 1] == '|'):
             _pad_before_op()
             out.append(('|', False))
@@ -3206,7 +3276,19 @@ def _comsub_delim_normalize(inner, _nest=0):
             space = False
             force_gap = True
             continue
-        if (not arith_paren and not dbrack and not extglob_depth
+        # Bash `|`&` → `2>&1 |` in `$()` delimiter spelling (#802).
+        if (not arith_paren and _pipe_cmd and not extglob_depth
+                and c == '|' and i + 1 < n and inner[i + 1] == '&'):
+            _pad_before_op()
+            for _ch in '2>&1':
+                out.append((_ch, False))
+            out.append((' ', False))
+            out.append(('|', False))
+            i += 2
+            space = False
+            force_gap = True
+            continue
+        if (not arith_paren and _pipe_cmd and not extglob_depth
                 and c == '|'):
             _pad_before_op()
             out.append(('|', False))
@@ -3282,13 +3364,22 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
     Nesting follows quotes/escapes the same way `_heredoc_delim` classifies
     the outer word. `$()` delimiters use Bash's command spelling (collapsed
     unquoted space, no trailing `;` / newline) without executing (#802).
-    `${`/`$[` keep source characters. Nested `${…}` and backticks inside
-    `$()` are consumed before paren depth so a literal `(` in `${X:-(}`
-    does not unbalance the enclosing delimiter (#802). Nested `$[…]`
-    charges `_nest` against `_DELIM_NEST_BUDGET`. Returns None when
-    nested `$()` / `$[…]` spelling would exceed that budget (#802).
-    `_boundary=True` scans to the matching closer without normalizing
-    nested `$()` bodies — for operand peek that discards the span (#802).
+    `${`/`$[` keep source characters, but nested `$()` inside a PE
+    (including under double quotes in the operand) still get Bash
+    command spelling (`${a:-"$(echo    x)"}` → `${a:-"$(echo x)"}`)
+    — except `$()` nested in backticks under that PE stays verbatim
+    (`${a:-`echo $(echo    x)`}` keeps the spaces) (#802). Nested
+    `${…}` and backticks inside `$()` are consumed before paren depth
+    so a literal `(` in `${X:-(}` does not unbalance the enclosing
+    delimiter (#802). Quoted nested `$()` / `${…}` / `$[…]` charge
+    `_nest` against `_DELIM_NEST_BUDGET`; inside a `$()` copy, nested
+    bodies (including PE interiors) are boundary-copied so the
+    closer-side normalize spells them once — otherwise unquoted
+    `${a:-$(…)}` re-normalizes on the closer and 22× wraps go
+    exponential (#802). Returns None when nested spelling would
+    exceed that budget (#802). `_boundary=True` scans to the matching
+    closer without normalizing nested `$()` bodies — for operand peek
+    that discards the span (#802).
     """
     cl = '}' if op == '{' else (')' if op == '(' else ']')
     depth = 1
@@ -3302,6 +3393,47 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 chunk.append(c)
                 chunk.append(s[j + 1])
                 j += 2
+                continue
+            # Backticks stay active inside `"…"` — body stays verbatim
+            # (do not normalize nested `$()` inside the ticks) (#802).
+            if dq == chr(34) and c == chr(96):
+                end = _backtick_span(s, j)
+                if end is None:
+                    chunk.append(c)
+                    j += 1
+                else:
+                    chunk.extend(s[j:end])
+                    j = end
+                continue
+            # Nested `$()` / `${…}` / `$[…]` inside double quotes still
+            # take Bash delimiter spelling — PE operands must collapse
+            # IFS in nested `$()` (`${a:-"$(echo    x)"}` →
+            # `${a:-"$(echo x)"}`) (#802). Charge `_nest` for all three
+            # so deep quoted `${…}` returns None, not RecursionError
+            # (#802). Inside a `$()` copy, defer nested spelling to the
+            # single closer-side normalize — re-normalizing here makes
+            # 20× `echo "$(…)"` wraps exponential (#802).
+            if (dq == chr(34) and c == '$' and j + 1 < len(s)
+                    and s[j + 1] in '({['
+                    and _dollar_run_is_even(s, j)):
+                _op = s[j + 1]
+                if _nest >= _DELIM_NEST_BUDGET:
+                    return None
+                # Command `$()` closer normalizes once; arithmetic
+                # `$((…))` (body starts with `(`) skips that closer, so
+                # must still spell nested `$()` here. PE / `$[` also
+                # spell so `${a:-"$(echo    x)"}` collapses (#802).
+                _cmd_paren = (op == '('
+                              and not (chunk and chunk[0] == '('))
+                _nested_boundary = _boundary or _cmd_paren
+                chunk.append(c)
+                chunk.append(_op)
+                j = _copy_delim_expansion(
+                    s, j + 2, _op, chunk,
+                    _nest=_nest + 1,
+                    _boundary=_nested_boundary)
+                if j is None:
+                    return None
                 continue
             chunk.append(c)
             if c == dq:
@@ -3324,6 +3456,33 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
                 j += 2
                 depth += 1
                 continue
+            # Unquoted backticks inside PE: body stays verbatim — do
+            # not normalize nested `$()` inside the ticks (#802 :3456).
+            if c == chr(96):
+                end = _backtick_span(s, j)
+                if end is None:
+                    chunk.append(c)
+                    j += 1
+                else:
+                    chunk.extend(s[j:end])
+                    j = end
+                continue
+            # Unquoted nested `$()` / `$[…]` inside PE: Bash spelling
+            # unless `_boundary` (propagated from an enclosing `$()`
+            # copy — closer-side normalize spells once) (#802).
+            if (c == '$' and j + 1 < len(s) and s[j + 1] in '(['
+                    and _dollar_run_is_even(s, j)):
+                _op = s[j + 1]
+                if _nest >= _DELIM_NEST_BUDGET:
+                    return None
+                chunk.append(c)
+                chunk.append(_op)
+                j = _copy_delim_expansion(
+                    s, j + 2, _op, chunk,
+                    _nest=_nest + 1, _boundary=_boundary)
+                if j is None:
+                    return None
+                continue
             chunk.append(c)
             j += 1
             if c == '}':
@@ -3334,8 +3493,15 @@ def _copy_delim_expansion(s, j, op, d, _nest=0, _boundary=False):
         if op in '([' and s.startswith('${', j) and _dollar_run_is_even(s, j):
             chunk.append('$')
             chunk.append('{')
+            # Command `$()` closer normalizes once — PE interiors must
+            # not pre-normalize nested `$()` / `$[…]`. Arithmetic
+            # `$((…))` skips that closer (`chunk[0] == '('`), so do not
+            # force boundary there (#802 :3496).
+            _cmd_paren = (op == '('
+                          and not (chunk and chunk[0] == '('))
             j = _copy_delim_expansion(
-                s, j + 2, '{', chunk, _nest=_nest, _boundary=_boundary)
+                s, j + 2, '{', chunk, _nest=_nest,
+                _boundary=_boundary or _cmd_paren)
             if j is None:
                 return None
             continue

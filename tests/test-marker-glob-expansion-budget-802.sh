@@ -2076,6 +2076,71 @@ _pr_hd_delim_dbrack_re_procsubst_lit='echo "$(cat <<$([[ a =~ x(<([[ x ]])|b) ]]
 hello
 $([[ a =~ x(<([[ x ]])|b) ]])
 )" "["'
+# PR FAIL 3 HIGH shared Bash spelling: (1) procsubst under [[ spaces `|`,
+# (2) quoted nested `$()` collapses IFS, (3) `|&` → `2>&1 |` (#802).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_ps_pipe_dbrack='echo "$(cat <<$([[ <(echo x|cat) == x ]])
+hello
+$([[ <(echo x | cat) == x ]])
+)" "["'
+_pr_hd_delim_dq_nested_ifs='echo "$(cat <<$(echo "$(echo    x)")
+hello
+$(echo "$(echo x)")
+)" "["'
+_pr_hd_delim_pipe_amp='echo "$(cat <<$(echo x |& cat)
+hello
+$(echo x 2>&1 | cat)
+)" "["'
+# `<(…)` inside a `=~` regex group is pattern text — keep compact `|` /
+# `||` / `|&` (not command pipelines) (#802 commit FAIL HIGH :3246).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_re_group_ps_pipe='echo "$(cat <<$([[ a =~ x(<(echo x|cat)|b) ]])
+hello
+$([[ a =~ x(<(echo x|cat)|b) ]])
+)" "["'
+_pr_hd_delim_re_group_ps_or='echo "$(cat <<$([[ a =~ x(<(echo x||cat)|b) ]])
+hello
+$([[ a =~ x(<(echo x||cat)|b) ]])
+)" "["'
+_pr_hd_delim_re_group_ps_amp='echo "$(cat <<$([[ a =~ x(<(echo x|&cat)|b) ]])
+hello
+$([[ a =~ x(<(echo x|&cat)|b) ]])
+)" "["'
+# `$()` inside backticks under `"` stays verbatim — Bash does not
+# collapse IFS in the backtick body (#802 commit FAIL HIGH :2740).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dq_bt_nested_ifs='echo "$(cat <<$(echo "`echo $(echo    x)`")
+hello
+$(echo "`echo $(echo    x)`")
+)" "["'
+# Nested `$()` inside double-quoted PE operand still collapses IFS
+# (`${a:-"$(echo    x)"}` → `${a:-"$(echo x)"}`) (#802 commit FAIL HIGH :2770).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_dq_pe_nested_ifs='echo "$(cat <<$(echo "${a:-"$(echo    x)"}")
+hello
+$(echo "${a:-"$(echo x)"}")
+)" "["'
+# `$()` inside unquoted backticks under PE stays verbatim — Bash keeps
+# the spaces (quoted PE operand) (#802 commit FAIL HIGH :3456).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_pe_bt_quoted='echo "$(cat <<$(echo "${a:-`echo $(echo    x)`}")
+hello
+$(echo "${a:-`echo $(echo    x)`}")
+)" "["'
+# Same PE-backtick verbatim rule for an unquoted PE operand (#802).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_pe_bt_unquoted='echo "$(cat <<$(echo ${a:-`echo $(echo    x)`})
+hello
+$(echo ${a:-`echo $(echo    x)`})
+)" "["'
+# Quoted arith `$((…))` wrapping PE default `$()` must still collapse
+# IFS — arith closer skips normalize, so boundary must not defer
+# (#802 commit FAIL HIGH :3496).
+# shellcheck disable=SC2016  # literal payload for classifier (#802)
+_pr_hd_delim_arith_pe_nested_ifs='echo "$(cat <<$(echo "$((${a:-"$(echo    x)"}))")
+hello
+$(echo "$((${a:-"$(echo x)"}))")
+)" "["'
 # Nested `[[ $(...) ]]` operand peek must not re-normalize discarded
 # `$()` spans (exponential below nest budget) (#802 commit-50 MEDIUM :2477).
 # Asserted on `_comsub_delim_normalize` — a heredoc wrapper with nested
@@ -2181,6 +2246,177 @@ elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" 
     "depth-20 nested [[ \$(...) ]] took ${got}s — peek still re-normalizes"
 else
   ok "#802 dbrack peek-nest20 normalize stays linear (${got}s)"
+fi
+# Quoted copy/normalize join (#802 commit FAIL MEDIUM :3417/:3419):
+# (1) 20× `echo "$(…)"` wrap must stay under the soft bound (pre-fix
+#     double-normalize took ~15s); (2) 1100-deep quoted `${…}` must
+#     return None, not RecursionError.
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys, time
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+inner = "echo x"
+for _ in range(20):
+    inner = 'echo "$(' + inner + ')"'
+t0 = time.perf_counter()
+r = mc._comsub_delim_normalize(inner)
+dt = time.perf_counter() - t0
+if r is None:
+    print("ERROR")
+    raise SystemExit
+want = 'echo "$(echo x)"'
+for _ in range(19):
+    want = 'echo "$(' + want + ')"'
+if "".join(r) != want:
+    print("ERROR")
+    raise SystemExit
+# 1100-deep quoted PE: helper contract is None, never RecursionError.
+deep = '${a:-"' * 1100 + "x" + '"}' * 1100
+buf = []
+try:
+    j = mc._copy_delim_expansion(deep, 2, "{", buf)
+except RecursionError:
+    print("ERROR")
+    raise SystemExit
+if j is not None:
+    print("ERROR")
+    raise SystemExit
+print("%.3f" % dt)
+PYEOF
+)
+if [[ "$got" == ERROR ]]; then
+  no "#802 quoted copy/normalize join (wrap20 + pe1100)" \
+    "harness error, wrong spelling, RecursionError, or pe1100 not None"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${got:-9}" 2>/dev/null; then
+  no "#802 quoted copy/normalize join (wrap20 + pe1100)" \
+    "20× echo \"\$(…)\" took ${got}s — still double-normalizes"
+else
+  ok "#802 quoted copy/normalize join (wrap20 ${got}s + pe1100 None)"
+fi
+# Unquoted PE nested `$()` inside enclosing `$()` — boundary-copy through
+# PE so closer-side normalize spells once. 22× `echo ${a:-$(…)}` wrap
+# timed out (>6s) pre-fix; HEAD ~0.06s (#802 commit FAIL MEDIUM :3462).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys, time
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+inner = "echo x"
+for _ in range(22):
+    inner = "echo ${a:-$(" + inner + ")}"
+t0 = time.perf_counter()
+r = mc._comsub_delim_normalize(inner)
+dt = time.perf_counter() - t0
+if r is None:
+    print("ERROR")
+    raise SystemExit
+want = "echo ${a:-$(echo x)}"
+for _ in range(21):
+    want = "echo ${a:-$(" + want + ")}"
+if "".join(r) != want:
+    print("ERROR")
+    raise SystemExit
+# IFS still collapses in a shallow PE nested `$()` (#802).
+shallow = mc._comsub_delim_normalize('echo ${a:-$(echo    x)}')
+if shallow is None or "".join(shallow) != "echo ${a:-$(echo x)}":
+    print("ERROR")
+    raise SystemExit
+print("%.3f" % dt)
+PYEOF
+)
+if [[ "$got" == ERROR ]]; then
+  no "#802 PE-unquoted nested \$() wrap22 stays linear" \
+    "harness error, wrong spelling, or unscannable"
+elif ! python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 2.0 else 1)" "${got:-9}" 2>/dev/null; then
+  no "#802 PE-unquoted nested \$() wrap22 stays linear" \
+    "22× echo \${a:-\$(…)} took ${got}s — PE still double-normalizes"
+else
+  ok "#802 PE-unquoted nested \$() wrap22 stays linear (${got}s)"
+fi
+# PE branch must copy backtick spans verbatim before nested `$()` —
+# quoted and unquoted PE operands both keep spaces (#802 :3456).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+cases = (
+    'echo "${a:-`echo $(echo    x)`}"',
+    'echo ${a:-`echo $(echo    x)`}',
+)
+for s in cases:
+    r = mc._comsub_delim_normalize(s)
+    if r is None or "".join(r) != s:
+        print("ERROR")
+        raise SystemExit
+# Bare nested `$()` in PE still collapses (#802).
+shallow = mc._comsub_delim_normalize('echo ${a:-$(echo    x)}')
+if shallow is None or "".join(shallow) != "echo ${a:-$(echo x)}":
+    print("ERROR")
+    raise SystemExit
+print("OK")
+PYEOF
+)
+if [[ "$got" == OK ]]; then
+  ok "#802 PE-backtick nested \$() stays verbatim (quoted+unquoted)"
+else
+  no "#802 PE-backtick nested \$() stays verbatim (quoted+unquoted)" \
+    "normalize collapsed spaces or unscannable"
+fi
+# Arith `$((…))` must not inherit command-`$()` boundary deferral —
+# PE nested `$()` inside arith still collapses (#802 :3496).
+got=$(python3 - "$CLASSIFIER" <<'PYEOF' 2>/dev/null || echo ERROR
+import importlib.util, io, sys
+
+sys.stdin = io.StringIO("{}")
+spec = importlib.util.spec_from_file_location("mc", sys.argv[1])
+mc = importlib.util.module_from_spec(spec)
+_real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    spec.loader.exec_module(mc)
+except SystemExit:
+    pass
+finally:
+    sys.stdout = _real
+s = 'echo "$((${a:-"$(echo    x)"}))"'
+want = 'echo "$((${a:-"$(echo x)"}))"'
+r = mc._comsub_delim_normalize(s)
+if r is None or "".join(r) != want:
+    print("ERROR")
+    raise SystemExit
+print("OK")
+PYEOF
+)
+if [[ "$got" == OK ]]; then
+  ok "#802 arith-PE nested \$() collapses IFS (normalize)"
+else
+  no "#802 arith-PE nested \$() collapses IFS (normalize)" \
+    "spaces retained or unscannable"
 fi
 # Extglob delimiter: requires `extglob`; `|` / `>` / `&` stay unspaced (#802).
 # Also dbrack+extglob operand / pattern-`&&` / closer regressions (#802).
@@ -2378,6 +2614,111 @@ else
     ok "#802 PR-boundary =~ x(<([[ x ]])|b) literal [[ stays OK|"
   else
     no "#802 PR-boundary =~ x(<([[ x ]])|b) literal [[ stays OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# Procsubst `|` / quoted nested `$()` IFS / `|&` → `2>&1 |` (#802 PR FAIL).
+_spell_fail=0
+for _c in "$_pr_hd_delim_ps_pipe_dbrack" "$_pr_hd_delim_dq_nested_ifs" \
+          "$_pr_hd_delim_pipe_amp"; do
+  if ! bash -n <<<"$_c" 2>/dev/null; then
+    no "#802 PR-boundary bash-spell delimiter is valid bash" \
+      "bash rejected: ${_c//$'\n'/ }"
+    _spell_fail=1
+  else
+    got=$(verdict "$_c")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary bash-spell (ps-pipe / dq-ifs / |&) stays OK|" \
+        "got=${got:-<empty>} cmd=${_c//$'\n'/ }"
+      _spell_fail=1
+    fi
+  fi
+done
+if [[ "$_spell_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary bash-spell (ps-pipe / dq-ifs / |&) stays OK|"
+fi
+# Regex-group `<(…)` keeps compact `|` / `||` / `|&` (#802 :3246).
+_re_ps_fail=0
+for _c in "$_pr_hd_delim_re_group_ps_pipe" "$_pr_hd_delim_re_group_ps_or" \
+          "$_pr_hd_delim_re_group_ps_amp"; do
+  if ! bash -n <<<"$_c" 2>/dev/null; then
+    no "#802 PR-boundary re-group ps-pipe delimiter is valid bash" \
+      "bash rejected: ${_c//$'\n'/ }"
+    _re_ps_fail=1
+  else
+    got=$(verdict "$_c")
+    if [[ "$got" != "OK|" ]]; then
+      no "#802 PR-boundary =~ x(<(echo x|…)|b) compact |/||/|& stays OK|" \
+        "got=${got:-<empty>} cmd=${_c//$'\n'/ }"
+      _re_ps_fail=1
+    fi
+  fi
+done
+if [[ "$_re_ps_fail" -eq 0 ]]; then
+  ok "#802 PR-boundary =~ x(<(echo x|…)|b) compact |/||/|& stays OK|"
+fi
+# `$()` inside backticks under `"` keeps IFS verbatim (#802 :2740).
+if ! bash -n <<<"$_pr_hd_delim_dq_bt_nested_ifs" 2>/dev/null; then
+  no "#802 PR-boundary dq-bt nested $() delimiter is valid bash" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dq_bt_nested_ifs")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary dq-bt nested $() keeps spaces OK|"
+  else
+    no "#802 PR-boundary dq-bt nested $() keeps spaces OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# Nested `$()` inside PE under `"` collapses IFS (#802 :2770).
+if ! bash -n <<<"$_pr_hd_delim_dq_pe_nested_ifs" 2>/dev/null; then
+  no "#802 PR-boundary dq-pe nested $() delimiter is valid bash" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_dq_pe_nested_ifs")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PR-boundary dq-pe nested $() collapses IFS OK|"
+  else
+    no "#802 PR-boundary dq-pe nested $() collapses IFS OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# PE + unquoted backticks: nested `$()` keeps IFS (quoted PE) (#802 :3456).
+if ! bash -n <<<"$_pr_hd_delim_pe_bt_quoted" 2>/dev/null; then
+  no "#802 PE-bt quoted operand keeps backtick $() spaces OK|" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_pe_bt_quoted")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PE-bt quoted operand keeps backtick $() spaces OK|"
+  else
+    no "#802 PE-bt quoted operand keeps backtick $() spaces OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# PE + unquoted backticks: nested `$()` keeps IFS (unquoted PE) (#802 :3456).
+if ! bash -n <<<"$_pr_hd_delim_pe_bt_unquoted" 2>/dev/null; then
+  no "#802 PE-bt unquoted operand keeps backtick $() spaces OK|" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_pe_bt_unquoted")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 PE-bt unquoted operand keeps backtick $() spaces OK|"
+  else
+    no "#802 PE-bt unquoted operand keeps backtick $() spaces OK|" \
+      "got=${got:-<empty>}"
+  fi
+fi
+# Quoted arith + PE nested `$()` collapses IFS (#802 :3496).
+if ! bash -n <<<"$_pr_hd_delim_arith_pe_nested_ifs" 2>/dev/null; then
+  no "#802 arith-PE nested $() collapses IFS OK|" \
+    "bash rejected"
+else
+  got=$(verdict "$_pr_hd_delim_arith_pe_nested_ifs")
+  if [[ "$got" == "OK|" ]]; then
+    ok "#802 arith-PE nested $() collapses IFS OK|"
+  else
+    no "#802 arith-PE nested $() collapses IFS OK|" \
       "got=${got:-<empty>}"
   fi
 fi

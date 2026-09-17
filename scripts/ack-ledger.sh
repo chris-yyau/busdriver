@@ -557,6 +557,127 @@ _STATUS_NONREVIEW_RE='^no review( was| is| were| has| had| have| been| being| be
 
 _STATUS_NONREVIEW_LEAD_RE='([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(not|never)( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)*[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*yet to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*(unable|not able) to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])|([[:space:]]*(was|is|were|has|had|have|been|being|be|got|get|yet|did|does|do|can|could|will|would|shall))*[[:space:]]*failed to( be)?[[:space:]]*(start(ed)?|complet(e|ed)|finish(ed)?)(([[:space:][:punct:]]|—|–)*$|( *[:;,.!?]| *—| *–| - )|([[:space:][:punct:]]|—|–)+(due|because|owing|after|since|within|for|on|at|by|from|while|per|as|when|until)[^[:alnum:]_])'
 
+# ── TypeSafe / Jev union classifier (operator opt-in, OFF by default) ────────
+# WHY: the contract above says it outright — "A status description is free
+# English; a regex over it has no fixed point." #709 was a live fail-open, and
+# three of the follow-up fixes were implemented and then REVERTED because each
+# closed one grammatical form and opened its mirror image. This asks the SAME
+# question as one typed judgment (a Noul — the probability that the review
+# itself did not run) instead of as a grammar.
+#
+# UNION, NEVER REPLACEMENT. It is consulted at exactly ONE point: after all
+# three regex passes have already concluded "this is a real verdict" (the ack
+# default). It can therefore only ADD demotes, never lift one the regex found,
+# so the blocking set stays strictly >= the regex-only script's. Turning it on
+# creates no new bypass. The regex STAYS; retiring it is a separate decision
+# that needs more evidence than the current fixture set supports.
+#
+# FAILS CLOSED ONCE ENABLED, mirroring this file's own `grep rc>=2 -> return 0`
+# branch: a transport error, a non-200, an unparseable body, or a missing `curl`
+# all DEMOTE — an errored matcher has not proven the status is a verdict any
+# more than an unreadable one has. An over-block stalls a merge visibly and the
+# operator can act; under-blocking is the #709 fail-open itself. (`curl` is a
+# NEW dependency for this script — jq was already hard-required, curl was not —
+# and it is reached only on the opted-in path, where its absence demotes.)
+#
+# DISABLED IS TODAY'S BEHAVIOUR, NOT A DEMOTE. Off (the default) returns the
+# regex's own answer untouched and costs no network call. "Off" and "on but
+# broken" are deliberately DIFFERENT terminals: collapsing them would make every
+# un-opted-in repo start demoting the moment this function existed.
+#
+# CONSENT IS AUTHENTICATED BY LOCATION, never by a repo-writable value (ADR 0012
+# / #325): the enable switch is read ONLY from $HOME/.claude/busdriver.json. A
+# committed .claude/busdriver.json, a settings.json `env` block, or any other
+# in-repo file cannot turn this lane on — a repo must not be able to make this
+# checkout talk to a third party. The env var below is a KILL switch ONLY: it
+# can turn the lane OFF (restoring regex-only behaviour, which grants nothing),
+# and there is deliberately no env spelling that turns it ON.
+#
+# THE ENDPOINT IS PINNED HERE. An attacker-settable base URL plus a live key is
+# an exfiltration primitive, so the URL is never read from config or the
+# environment.
+#
+# NOT routed through scripts/lib/resolve-cli.sh: this script is a standalone
+# `bash` subprocess with a documented env contract (see the header), and sourcing
+# a 1900-line resolver to read one boolean would put a merge-path dependency on
+# it for no gain.
+_TYPESAFE_URL='https://api.typesafe.ai/v1/systemone'
+_TYPESAFE_MAX_TIME=8
+
+# Prints the threshold and returns 0 when the lane is ON; returns 1 when OFF.
+_typesafe_optin() {
+  [[ "${ACK_LEDGER_TYPESAFE:-1}" != "0" ]] || return 1
+  [[ -n "${TYPESAFE_API_KEY:-}" ]] || return 1
+  [[ -f "$HOME/.claude/busdriver.json" ]] || return 1
+  # A threshold outside (0,1] is rejected rather than clamped: a bad value means
+  # the operator's intent is unknown, and the lane declines instead of guessing.
+  #
+  # 0.8 is MEASURED, not picked. scripts/typesafe-ack-eval.sh replays the 137
+  # fixtures tests/test-ack-ledger-status-description.sh already pins and reports,
+  # on jev-1.13.0: the highest score among descriptions that must ACK is 0.77
+  # ("The reviewer started, failed to complete") and the lowest among the three
+  # documented under-block residuals that should DEMOTE is 0.86. 0.8 sits in that
+  # band — it closes all three residuals at zero cost to the 127 fixtures that
+  # must keep acking. Re-run the eval before changing it; a default the
+  # measurement rejects is a trap, and 0.7 (the first value tried here) cost four
+  # false demotes.
+  jq -er '
+    select(.typesafe.ack_ledger.enabled == true)
+    | (.typesafe.ack_ledger.threshold // 0.8)
+    | select(type == "number" and . > 0 and . <= 1)
+  ' "$HOME/.claude/busdriver.json" 2>/dev/null
+}
+
+# 0 = the judgment says this status reports a review that did not run (demote).
+# 1 = it does not — or the lane is off, in which case the regex's ack stands.
+_noul_says_non_review() {
+  local threshold body resp noul
+  threshold=$(_typesafe_optin) || return 1   # lane OFF -> today's behaviour
+  # The RAW description, not the contraction-normalized `desc`: that
+  # normalization exists to serve the regex's spelled-out alternatives, and
+  # handing a judgment "can not" where the bot wrote "can't" only removes signal.
+  body=$(jq -nc --arg d "$1" '{
+    state: { status_description: $d },
+    model: "jev-latest",
+    questions: {
+      review_did_not_run: {
+        type: "noul",
+        instructions: "Does this CI status description report that the code review itself did not actually run to completion?",
+        criteria: {
+          true: "The review was skipped, rate-limited, cancelled, timed out, or never started or finished",
+          false: "The review ran to completion, or the failure named belongs to something other than the review itself — a preview build, generated files, a profile update, the review summary, the reviewer, the author of the review, a reply, or a tool whose name merely contains the word review"
+        }
+      }
+    }
+  }') || return 0
+  # The contract says NON-200 demotes, so the status is read and compared —
+  # `--fail` alone does not implement it. Plain `curl -sS` exits 0 on any HTTP
+  # status, and `--fail` only covers >= 400: a 3xx carrying a valid low-noul body
+  # still exits 0 with that body on stdout, and the ack would stand. `--fail` is
+  # kept as the fast path for 4xx/5xx; `%{http_code}` is the actual check.
+  # The code is appended on its own LAST line, so a body containing newlines
+  # cannot displace it.
+  resp=$(curl -sS --fail --max-time "$_TYPESAFE_MAX_TIME" -X POST "$_TYPESAFE_URL" \
+    -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -w '\n%{http_code}' \
+    --data-binary "$body" 2>/dev/null) || return 0
+  [ "${resp##*$'\n'}" = "200" ] || return 0
+  resp="${resp%$'\n'*}"
+  # RANGE-checked, not merely type-checked: a probability outside [0,1] is a
+  # malformed judgment, and `select(type == "number")` alone accepted -1 and 5.
+  # Both compare FALSE against any threshold in (0,1], so an unchecked negative
+  # would have silently preserved the ack — a fail-OPEN on exactly the malformed
+  # input this branch exists to catch. Out of range now fails the select, jq -er
+  # exits non-zero, and the failure demotes.
+  noul=$(printf '%s' "$resp" \
+    | jq -er '.answers.review_did_not_run.noul
+              | select(type == "number" and . >= 0 and . <= 1)' 2>/dev/null) || return 0
+  # awk, not bash arithmetic: both operands are floats.
+  awk -v n="$noul" -v t="$threshold" 'BEGIN { exit !(n >= t) }' && return 0
+  return 1
+}
+
 _status_desc_is_non_review() {
   local rc desc clauses
   [[ -n "$1" ]] || return 1
@@ -665,7 +786,10 @@ _status_desc_is_non_review() {
   # branches, e.g. `| *—| *–`); this pass's bracket class was the one holdout.
   printf '%s' "$desc" | grep -qiE "^(the |a |an |this |that |code |pr )?review(( was| is| were| has| had| have| been| being| be| got| get| yet| did| does| do| can| could| will| would| shall)|(( [a-z]+ly)?( start(ed|ing)?| complet(e|ed|ing)| finish(ed|ing)?| running| queued| pending| in progress)( [a-z]+ly)?))* *(-|:|,|—|–) *($_STATUS_NONREVIEW_LEAD_RE)"; rc=$?
   [[ "$rc" -eq 0 ]] && return 0
-  [[ "$rc" -eq 1 ]] && return 1
+  # Every regex pass says "real verdict". That is the ack default — and the side
+  # the #709 fail-open lives on — so it is the ONLY point the union classifier is
+  # consulted. With the lane off (the default) this returns 1 exactly as before.
+  [[ "$rc" -eq 1 ]] && { _noul_says_non_review "$1"; return $?; }
   return 0
 }
 

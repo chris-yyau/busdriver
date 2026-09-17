@@ -42,24 +42,22 @@ Tool count alone is a weak proxy for window pressure: a few large file reads or 
 
 ## Hook Setup
 
-Add to your `~/.claude/settings.json`:
+Busdriver leaves this hook **unregistered**. To opt back in, restore a PreToolUse entry in the plugin's `hooks/hooks.json` (not `~/.claude/settings.json` — user-level settings do not set `CLAUDE_PLUGIN_ROOT`, so plugin-relative paths fail there). Example matcher block:
 
 ```json
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/scripts/hooks/suggest-compact.js" }]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/scripts/hooks/suggest-compact.js" }]
-      }
-    ]
-  }
+  "matcher": "Edit|Write",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:edit-write:suggest-compact\" \"scripts/hooks/suggest-compact.js\" \"standard,strict\""
+    }
+  ],
+  "description": "Suggest manual compaction at logical intervals"
 }
 ```
+
+Do not copy `suggest-compact.js` alone — it imports sibling `scripts/lib/` modules from the installed plugin tree.
 
 ## Configuration
 

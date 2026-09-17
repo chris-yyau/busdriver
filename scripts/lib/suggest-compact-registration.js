@@ -49,38 +49,48 @@ function stripWrappingQuotes(value) {
   return value.trim().replace(/^["']|["']$/g, '');
 }
 
-function isSuggestCompactRelativeToken(value) {
-  return typeof value === 'string' && SUGGEST_COMPACT_RELATIVE_RE.test(stripWrappingQuotes(value));
+function normalizeToken(value, stripQuotes) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  if (stripQuotes) {
+    return stripWrappingQuotes(value);
+  }
+  return value.trim();
 }
 
-function isSuggestCompactPluginRootToken(value, allowBare) {
-  if (typeof value !== 'string') {
-    return false;
-  }
-  const trimmed = stripWrappingQuotes(value);
+function isSuggestCompactRelativeToken(value, stripQuotes) {
+  return SUGGEST_COMPACT_RELATIVE_RE.test(normalizeToken(value, stripQuotes));
+}
+
+function isSuggestCompactPluginRootToken(value, allowBare, stripQuotes) {
+  const trimmed = normalizeToken(value, stripQuotes);
   if (SUGGEST_COMPACT_PLUGIN_ROOT_BRACED_RE.test(trimmed)) {
     return true;
   }
-  return Boolean(allowBare) && SUGGEST_COMPACT_PLUGIN_ROOT_BARE_RE.test(trimmed);
-}
-
-function isRunWithFlagsToken(value, allowBare) {
-  if (typeof value !== 'string') {
+  if (!allowBare) {
     return false;
   }
-  const trimmed = stripWrappingQuotes(value);
+  return SUGGEST_COMPACT_PLUGIN_ROOT_BARE_RE.test(trimmed);
+}
+
+function isRunWithFlagsToken(value, allowBare, stripQuotes) {
+  const trimmed = normalizeToken(value, stripQuotes);
   if (RUN_WITH_FLAGS_PLUGIN_ROOT_BRACED_RE.test(trimmed)) {
     return true;
   }
-  return Boolean(allowBare) && RUN_WITH_FLAGS_PLUGIN_ROOT_BARE_RE.test(trimmed);
+  if (!allowBare) {
+    return false;
+  }
+  return RUN_WITH_FLAGS_PLUGIN_ROOT_BARE_RE.test(trimmed);
 }
 
 function textMentionsSuggestCompactScript(value) {
   return typeof value === 'string' && SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE.test(value);
 }
 
-function isNodeToken(value) {
-  return typeof value === 'string' && /(?:^|\/)node(?:\.exe)?$/.test(stripWrappingQuotes(value));
+function isNodeToken(value, stripQuotes) {
+  return /(?:^|\/)node(?:\.exe)?$/.test(normalizeToken(value, stripQuotes));
 }
 
 /** Strip leading FOO=bar assignments so the statement command word is visible. */
@@ -112,32 +122,34 @@ function tokenizeShellArgs(rest) {
 }
 
 /** Direct form: command is node; argv[1] is plugin-root suggest-compact.js. */
-function isDirectNodeScriptInvocation(tokens, allowBare) {
-  return isNodeToken(tokens[0]) && isSuggestCompactPluginRootToken(tokens[1], allowBare);
+function isDirectNodeScriptInvocation(tokens, allowBare, stripQuotes) {
+  return isNodeToken(tokens[0], stripQuotes)
+    && isSuggestCompactPluginRootToken(tokens[1], allowBare, stripQuotes);
 }
 
 /**
  * run-with-flags.js <hookId> <scriptRelativePath> [profilesCsv]
  * Requires node as argv[0], plugin-root wrapper at [1], exact relative script at [3].
  */
-function scriptIsRunWithFlagsScriptArg(tokens, allowBare) {
-  return isNodeToken(tokens[0])
-    && isRunWithFlagsToken(tokens[1], allowBare)
-    && isSuggestCompactRelativeToken(tokens[3]);
+function scriptIsRunWithFlagsScriptArg(tokens, allowBare, stripQuotes) {
+  return isNodeToken(tokens[0], stripQuotes)
+    && isRunWithFlagsToken(tokens[1], allowBare, stripQuotes)
+    && isSuggestCompactRelativeToken(tokens[3], stripQuotes);
 }
 
 /**
  * Exec-form argv: command (tokens[0]) must be node. Rejects /bin/echo … node script.
  * @param {boolean} allowBarePluginRoot - true for shell-expanded command strings.
+ * @param {boolean} stripQuotes - true after shell tokenization; false for raw exec argv.
  */
-function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot) {
-  if (!isNodeToken(tokens[0])) {
+function execArgvInvokesSuggestCompact(tokens, allowBarePluginRoot, stripQuotes) {
+  if (!isNodeToken(tokens[0], stripQuotes)) {
     return false;
   }
-  if (isDirectNodeScriptInvocation(tokens, allowBarePluginRoot)) {
+  if (isDirectNodeScriptInvocation(tokens, allowBarePluginRoot, stripQuotes)) {
     return true;
   }
-  return scriptIsRunWithFlagsScriptArg(tokens, allowBarePluginRoot);
+  return scriptIsRunWithFlagsScriptArg(tokens, allowBarePluginRoot, stripQuotes);
 }
 
 function shellStatementInvokesSuggestCompact(statement) {
@@ -147,11 +159,12 @@ function shellStatementInvokesSuggestCompact(statement) {
   }
   const withoutEnv = stripLeadingEnvAssignments(trimmed);
   const parts = commandWordAndRest(withoutEnv);
-  if (!parts || !isNodeToken(parts.word)) {
+  if (!parts || !isNodeToken(parts.word, true)) {
     return false;
   }
   return execArgvInvokesSuggestCompact(
     [parts.word, ...tokenizeShellArgs(parts.rest)],
+    true,
     true
   );
 }
@@ -193,15 +206,28 @@ function isSynchronousCommandHook(hook) {
   return true;
 }
 
+function isEmptyMatcher(matcher) {
+  if (matcher === undefined) {
+    return true;
+  }
+  if (matcher === null) {
+    return true;
+  }
+  return matcher === '';
+}
+
 /** Matcher must cover Edit/Write (documented surface) or be empty (all tools). */
 function matcherCoversEditOrWrite(matcher) {
-  if (matcher === undefined || matcher === null || matcher === '') {
+  if (isEmptyMatcher(matcher)) {
     return true;
   }
   if (typeof matcher !== 'string') {
     return false;
   }
-  return /\bEdit\b/.test(matcher) || /\bWrite\b/.test(matcher);
+  if (/\bEdit\b/.test(matcher)) {
+    return true;
+  }
+  return /\bWrite\b/.test(matcher);
 }
 
 /**
@@ -216,22 +242,20 @@ function hookRegistersSuggestCompact(hook) {
   if (shellCommandInvokesSuggestCompact(hook.command)) {
     return true;
   }
-  return execArgvInvokesSuggestCompact(hookArgvTokens(hook), false);
+  // Exec-form argv is not shell-parsed — do not strip literal quotes.
+  return execArgvInvokesSuggestCompact(hookArgvTokens(hook), false, false);
+}
+
+function entryRegistersSuggestCompact(entry) {
+  if (!matcherCoversEditOrWrite(entry && entry.matcher)) {
+    return false;
+  }
+  const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
+  return hooks.some((hook) => hookRegistersSuggestCompact(hook));
 }
 
 function preToolUseRegistersSuggestCompact(entries) {
-  for (const entry of entries) {
-    if (!matcherCoversEditOrWrite(entry && entry.matcher)) {
-      continue;
-    }
-    const hooks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
-    for (const hook of hooks) {
-      if (hookRegistersSuggestCompact(hook)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return entries.some((entry) => entryRegistersSuggestCompact(entry));
 }
 
 module.exports = {

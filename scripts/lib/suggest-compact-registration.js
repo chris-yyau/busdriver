@@ -8,6 +8,12 @@
 /** Relative plugin path that must appear for Context Efficiency credit. */
 const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
 
+/** Path-bounded match; rejects suggest-compact.js.bak and similar suffixes. */
+const SUGGEST_COMPACT_SCRIPT_TOKEN_RE = /(?:^|\/)scripts\/hooks\/suggest-compact\.js$/;
+const SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE =
+  /(?:^|\/|["'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
+const RUN_WITH_FLAGS_TOKEN_RE = /(?:^|\/)run-with-flags\.js$/;
+
 /**
  * Claude Code plugin/user hooks.json nest events under `hooks` (see
  * hooks/hooks.json `$schema`). Accept a top-level PreToolUse only as a
@@ -26,16 +32,24 @@ function getPreToolUseEntries(config) {
   return [];
 }
 
+function stripWrappingQuotes(value) {
+  return value.trim().replace(/^["']|["']$/g, '');
+}
+
 function isSuggestCompactScriptToken(value) {
-  return typeof value === 'string' && value.includes(SUGGEST_COMPACT_SCRIPT);
+  return typeof value === 'string' && SUGGEST_COMPACT_SCRIPT_TOKEN_RE.test(stripWrappingQuotes(value));
+}
+
+function textMentionsSuggestCompactScript(value) {
+  return typeof value === 'string' && SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE.test(value);
 }
 
 function isNodeToken(value) {
-  return typeof value === 'string' && /(?:^|\/)node(?:\.exe)?$/.test(value);
+  return typeof value === 'string' && /(?:^|\/)node(?:\.exe)?$/.test(stripWrappingQuotes(value));
 }
 
 function isRunWithFlagsToken(value) {
-  return typeof value === 'string' && value.includes('run-with-flags.js');
+  return typeof value === 'string' && RUN_WITH_FLAGS_TOKEN_RE.test(stripWrappingQuotes(value));
 }
 
 /** Strip leading FOO=bar assignments so the statement command word is visible. */
@@ -66,32 +80,34 @@ function tokenizeShellArgs(rest) {
   return tokens;
 }
 
-function precedingTokenIsNode(tokens, scriptIndex) {
-  return scriptIndex > 0 && isNodeToken(tokens[scriptIndex - 1]);
+/** Direct form: command is node and argv[1] is the script (not node buried in args). */
+function isDirectNodeScriptInvocation(tokens, scriptIndex) {
+  return scriptIndex === 1 && isNodeToken(tokens[0]);
 }
 
 /**
  * run-with-flags.js <hookId> <scriptRelativePath> [profilesCsv]
- * Script must sit exactly two argv slots after a node-launched wrapper.
+ * Requires node as argv[0] (the exec command), wrapper at [1], script at [3].
  */
 function scriptIsRunWithFlagsScriptArg(tokens, scriptIndex) {
-  const wrapperIndex = scriptIndex - 2;
-  if (wrapperIndex < 1) {
+  if (scriptIndex !== 3) {
     return false;
   }
-  return isRunWithFlagsToken(tokens[wrapperIndex]) && isNodeToken(tokens[wrapperIndex - 1]);
+  return isNodeToken(tokens[0]) && isRunWithFlagsToken(tokens[1]);
 }
 
 /**
- * Exec-form argv (`command` launcher + `args`): script must be a node argv or
- * the run-with-flags scriptRelativePath where node launched that wrapper.
+ * Exec-form argv: command (tokens[0]) must be node. Rejects /bin/echo … node script.
  */
 function execArgvInvokesSuggestCompact(tokens) {
+  if (!isNodeToken(tokens[0])) {
+    return false;
+  }
   for (let i = 0; i < tokens.length; i += 1) {
     if (!isSuggestCompactScriptToken(tokens[i])) {
       continue;
     }
-    if (precedingTokenIsNode(tokens, i)) {
+    if (isDirectNodeScriptInvocation(tokens, i)) {
       return true;
     }
     if (scriptIsRunWithFlagsScriptArg(tokens, i)) {
@@ -103,7 +119,7 @@ function execArgvInvokesSuggestCompact(tokens) {
 
 function shellStatementInvokesSuggestCompact(statement) {
   const trimmed = typeof statement === 'string' ? statement.trim() : '';
-  if (!trimmed.includes(SUGGEST_COMPACT_SCRIPT)) {
+  if (!textMentionsSuggestCompactScript(trimmed)) {
     return false;
   }
   const withoutEnv = stripLeadingEnvAssignments(trimmed);
@@ -115,7 +131,7 @@ function shellStatementInvokesSuggestCompact(statement) {
 }
 
 function shellCommandInvokesSuggestCompact(command) {
-  if (typeof command !== 'string' || !command.includes(SUGGEST_COMPACT_SCRIPT)) {
+  if (!textMentionsSuggestCompactScript(command)) {
     return false;
   }
   const statements = command.split(/[;|&\n]/);

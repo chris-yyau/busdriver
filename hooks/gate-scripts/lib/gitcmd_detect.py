@@ -2087,19 +2087,105 @@ _ENV_S_REJOIN_QUOTE_CHARS = frozenset(' \t\n;|&<>"\'\\*?[]{}')
 _ENV_S_REJOIN_EXPANSION_OK_CHARS = frozenset('*?[]{}')
 
 
+# env(1) -S IFS whitespace escapes (man env). Other escapes stay as `\` +
+# follower pairs for `_tokenize` so `\'` cannot open quote state (#838).
+_ENV_S_IFS_ESC = {
+    'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v',
+}
+# Unquoted escape-produced IFS whitespace must stay inside the argv word
+# (env embeds the character; only literal input whitespace splits). shlex
+# would re-split a real tab, so map through PUA placeholders absent from the
+# payload and restore only those inserted this pass (#838 env-S tab / PUA).
+_ENV_S_EMBED_ESC = {
+    'f': '\uf000', 'n': '\uf001', 'r': '\uf002', 't': '\uf003', 'v': '\uf004',
+}
+
+
+def _env_S_embed_placeholder_map(payload):
+    """Map each IFS-escape letter to a placeholder absent from `payload`.
+
+    Preferred U+F000–U+F004 are used when free; otherwise the next free code
+    point from BMP Private Use (U+E000–U+F8FF) then a Supplementary Private
+    Use Area-A window. Never reuse an occupied preferred — that would rewrite
+    literal user PUAs on restore (#838 exhausted-PUA HIGH). Returns ``None``
+    when no free placeholder remains (callers fail closed).
+    """
+    occupied = set(payload)
+    embed = {}
+    # Overflow scan after preferred miss: full BMP PUA, then SPUA-A sample.
+    overflow = (
+        (0xE000, 0xF8FF),
+        (0xF0000, 0xF00FF),
+    )
+    range_i = 0
+    next_cp = overflow[0][0]
+
+    def _take_free(preferred):
+        nonlocal range_i, next_cp
+        if preferred not in occupied:
+            return preferred
+        while range_i < len(overflow):
+            lo, hi = overflow[range_i]
+            if next_cp < lo:
+                next_cp = lo
+            while next_cp <= hi:
+                ch = chr(next_cp)
+                next_cp += 1
+                if ch not in occupied:
+                    return ch
+            range_i += 1
+            if range_i < len(overflow):
+                next_cp = overflow[range_i][0]
+        return None
+
+    for esc in ('f', 'n', 'r', 't', 'v'):
+        ph = _take_free(_ENV_S_EMBED_ESC[esc])
+        if ph is None:
+            return None
+        embed[esc] = ph
+        occupied.add(ph)
+    return embed
+
+
+def _env_S_restore_embedded_ws(tok, inserted_restore):
+    """Restore only placeholders this expand pass inserted — never literal PUAs."""
+    for ph, ch in inserted_restore.items():
+        if ph in tok:
+            tok = tok.replace(ph, ch)
+    return tok
+
+
 def _env_S_expand_underscore_seps(payload):
-    """Apply env(1) -S `\\_` before shell tokenization.
+    """Apply env(1) -S backslash escapes before shell tokenization.
 
     Unquoted `\\_` is a word separator; inside double quotes it is a blank.
-    Single-quoted `\\_` is literal. An odd run of backslashes ending in `_`
-    consumes one `\\_` as the separator/blank and leaves the remaining
-    backslashes for `_tokenize` — do not pre-halve pairs (that double-decodes
-    with shlex: `\\\\\\_` must stay `\\\\` + sep, not one `\\` then tokenize
-    again). An even run leaves every `\\` and the literal `_` for tokenize.
-    A non-`_` backslash outside single quotes consumes the next character as
-    a pair so `\\'` cannot open single-quote state and hide a later `\\_`
-    (#838 env-sep commit FAIL).
+    Single-quoted escapes stay literal (only `\\'` / `\\\\` are special to
+    env, and the single-quoted branch copies bytes unchanged). An odd run of
+    backslashes ending in `_` consumes one `\\_` as the separator/blank and
+    leaves the remaining backslashes for `_tokenize` — do not pre-halve pairs
+    (that double-decodes with shlex). An even run leaves every `\\` and the
+    literal `_` for tokenize.
+
+    IFS whitespace escapes (`\\t`, `\\n`, …) decode the same odd/even way.
+    Inside double quotes the real character is emitted (quotes keep it in the
+    word). Unquoted IFS whitespace escapes use placeholders so tokenize does
+    not treat them as separators — env embeds them (#838 env-S tab HIGH).
+    Placeholders are chosen absent from `payload`; only those inserted this
+    pass are restored (#838 literal PUA HIGH). Exhaustion never reuses an
+    occupied preferred — callers see ``(None, None)`` and fail closed
+    (#838 exhausted-PUA HIGH).
+    A non-IFS backslash outside single quotes still consumes the next
+    character as a pair so `\\'` cannot open single-quote state and hide a
+    later `\\_` (#838 env-sep commit FAIL).
+
+    Returns ``(expanded, inserted_restore)`` where ``inserted_restore`` maps
+    each placeholder character actually appended to its real IFS character,
+    or ``(None, None)`` when no collision-free placeholder map exists.
     """
+    embed_esc = _env_S_embed_placeholder_map(payload)
+    if embed_esc is None:
+        return None, None
+    inserted_restore = {}
     out = []
     i, n = 0, len(payload)
     quote = None
@@ -2135,7 +2221,33 @@ def _env_S_expand_underscore_seps(payload):
                     out.append('_')
                 i = j + 1
                 continue
-            # Non-_ escape: keep `\` + follower for tokenize; advance as a
+            if j < n and payload[j] == 'c' and quote is None:
+                # `\c` — ignore the rest of the string (not valid inside dq).
+                bs = j - i
+                if bs % 2 == 1:
+                    out.append('\\' * (bs - 1))
+                    break
+                out.append('\\' * bs)
+                out.append('c')
+                i = j + 1
+                continue
+            if j < n and payload[j] in _ENV_S_IFS_ESC:
+                bs = j - i
+                esc = payload[j]
+                if bs % 2 == 1:
+                    out.append('\\' * (bs - 1))
+                    if quote is None:
+                        ph = embed_esc[esc]
+                        out.append(ph)
+                        inserted_restore[ph] = _ENV_S_IFS_ESC[esc]
+                    else:
+                        out.append(_ENV_S_IFS_ESC[esc])
+                else:
+                    out.append('\\' * bs)
+                    out.append(esc)
+                i = j + 1
+                continue
+            # Non-IFS escape: keep `\` + follower for tokenize; advance as a
             # pair so the follower is not re-read as quote punctuation.
             out.append('\\')
             if i + 1 < n:
@@ -2146,12 +2258,20 @@ def _env_S_expand_underscore_seps(payload):
             continue
         out.append(c)
         i += 1
-    return ''.join(out)
+    return ''.join(out), inserted_restore
 
 
 def _env_S_tokenize(payload):
-    """Tokenize an `env -S` payload the way env(1) splits it (#838 env-sep)."""
-    return _tokenize(_env_S_expand_underscore_seps(payload))
+    """Tokenize an `env -S` payload the way env(1) splits it (#838 env-sep).
+
+    Returns ``None`` when placeholders cannot be allocated without colliding
+    with the payload — callers must fail closed (#838 exhausted-PUA HIGH).
+    """
+    expanded, inserted = _env_S_expand_underscore_seps(payload)
+    if expanded is None:
+        return None
+    toks = _tokenize(expanded)
+    return [_env_S_restore_embedded_ws(t, inserted) for t in toks]
 
 
 def _raw_has_expandable_dollar(raw):
@@ -2509,6 +2629,8 @@ def _env_S_ins_raws(payload, outer_raw=None):
     uses `_env_S_tokenize` so unquoted `\\_` remains a separator (#838 env-sep).
     """
     toks = _env_S_tokenize(payload)
+    if toks is None:
+        return None
     local = _raw_tokens(payload)
     if local is not None and len(toks) != len(local):
         local = None
@@ -2697,7 +2819,14 @@ def _env_commands_from_opt_argv(toks, _depth=0, raws=None):
                 rest = list(toks[k + 1:])
                 rest_raws = (list(raws[k + 1:])
                              if raws is not None else None)
-            inserted = _env_S_tokenize(payload) + rest
+            inserted_base = _env_S_tokenize(payload)
+            if inserted_base is None:
+                # No collision-free embed placeholders — refuse rather than
+                # rewrite literal PUAs (#838 exhausted-PUA HIGH).
+                out.extend(_env_commands_from_S_insertion(
+                    ['git', 'merge', REF_OP_UNRESOLVABLE], _depth))
+                return out
+            inserted = inserted_base + rest
             # Outer-shell spelling of the -S operand carries quote context that
             # `_raw_tokens(payload)` alone drops (#838 PR outer-quote HIGH).
             ins_raws = _env_S_ins_raws(payload, _env_S_operand_raw(a, k, raws))
@@ -4131,7 +4260,9 @@ def _git_pre_subcmd_may_ifs_split(argv, raw_argv):
                 return True
             k += 2
             continue
-        if tok.startswith('-c') and len(tok) > 2:
+        # Attached short valued globals: -cVAL and -CVAL alike (#838 attached -C).
+        if (len(tok) > 2 and tok[0] == '-' and not tok.startswith('--')
+                and tok[:2] in _GIT_VALUE_OPTS):
             if raw_argv is None:
                 if _decoded_operand_may_expand(tok[2:]):
                     return True
@@ -4231,7 +4362,12 @@ def _env_argv_may_ifs_split(toks, raws=None, _depth=0, trust_git_raws=None):
                     rest = list(toks[k + 1:])
                     rest_raws = (list(raws[k + 1:])
                                  if raws is not None else None)
-                inserted = _env_S_tokenize(payload) + rest
+                inserted_base = _env_S_tokenize(payload)
+                if inserted_base is None:
+                    # Cannot embed without colliding — fail closed
+                    # (#838 exhausted-PUA HIGH).
+                    return True
+                inserted = inserted_base + rest
                 ins_raws = _env_S_ins_raws(
                     payload, _env_S_operand_raw(a, k, raws))
                 if ins_raws is not None and rest_raws is not None:
@@ -4479,7 +4615,7 @@ def _any_git_c_may_ifs_split(cmd):
     """True when any pre-subcommand valued git-global may IFS-split.
 
     Name kept for the gate's import. Covers every `_GIT_VALUE_OPTS` spelling
-    (`-C`/`-c`/`--git-dir`/…, attached `-c<val>`, attached `--git-dir=$D`):
+    (`-C`/`-c`/`--git-dir`/…, attached `-c<val>`/`-C<val>`, attached `--git-dir=$D`):
     unquoted `--git-dir=$D` with D='.git merge' becomes `--git-dir=.git merge`
     the same way unquoted `-c $CFG` injects merge (#858 Codex). Also covers
     outer `env -S` packing where `_command_argv` is empty but the insertion

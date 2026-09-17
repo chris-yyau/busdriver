@@ -1967,6 +1967,38 @@ run_gate "...and env -S even-run \\\\_ keeps literal underscore (no false merge)
     allow 'env -S '\''git -c x.y=1\\_merge branch'\'''
 run_gate "...and env -S \\' before \\_ still exposes the merge separator" \
     block "env -S \"git -c x.y=\\'a\\_merge branch\"" ""
+# Attached git -C$D is scanned like -c; env -S \\t is IFS whitespace in
+# bash -c scripts (#838 PR attached -C / env-S tab HIGHs).
+run_gate "...and attached git -C\$D before a builtin still fails closed" \
+    block 'git -C$D branch' "cannot be resolved"
+run_gate "...and env -S bash -c with \\\\t-split merge still fails closed" \
+    block 'env -S '\''bash -c "git -c x.y=1\tmerge branch"'\''' "cannot be resolved"
+# Literal U+F001 must stay literal — restore only placeholders this pass
+# inserted, not user-supplied PUA (#838 commit FAIL restore HIGH).
+run_gate "...and env -S bash -c with literal U+F001 still fails closed" \
+    block $'env -S \'bash -c "git -c x.y=\uF001 merge branch"\'' "cannot be resolved"
+# Exhausted U+F000–U+F8FF must not reuse preferred placeholders — literal
+# U+F003 stays literal while unquoted \t still embeds (#838 exhausted-PUA HIGH).
+_rc=0
+python3 - "$REPO_ROOT" <<'PY' || _rc=1
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+from gitcmd_detect import (
+    _env_S_embed_placeholder_map, _env_S_tokenize, git_ref_op,
+)
+pua = ''.join(chr(c) for c in range(0xF000, 0xF8FF + 1))
+payload = 'bash -c "git -c x.y=1\uf003branch merge branch" \\t ' + pua
+m = _env_S_embed_placeholder_map(payload)
+assert m is not None and m['t'] not in pua and m['t'] != '\uf003', m
+toks = _env_S_tokenize(payload)
+assert toks is not None
+assert any('\uf003' in t for t in toks), toks[:6]
+assert not any('\tbranch' in t for t in toks), toks[:6]
+cmd = "env -S '" + payload.replace("'", "'\\''") + "'"
+sub, _scope, ops = git_ref_op(cmd)
+assert sub == 'merge' or ops, (sub, ops)
+PY
+assert_true "...and env -S exhausted BMP-PUA placeholders still fail closed on merge" "$_rc"
 # Outer live flags decode/tokenize once — not per expansion token (#838 outer-live-quad).
 _rc=0
 python3 - "$REPO_ROOT" <<'PY' || _rc=1

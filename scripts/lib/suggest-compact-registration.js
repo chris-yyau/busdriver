@@ -9,10 +9,14 @@
 const SUGGEST_COMPACT_SCRIPT = 'scripts/hooks/suggest-compact.js';
 
 /** Path-bounded match; rejects suggest-compact.js.bak and similar suffixes. */
-const SUGGEST_COMPACT_SCRIPT_TOKEN_RE = /(?:^|\/)scripts\/hooks\/suggest-compact\.js$/;
 const SUGGEST_COMPACT_SCRIPT_IN_TEXT_RE =
   /(?:^|\/|["'])scripts\/hooks\/suggest-compact\.js(?:["']|$|[\s;|&])/;
 const RUN_WITH_FLAGS_TOKEN_RE = /(?:^|\/)run-with-flags\.js$/;
+/** Wrapper scriptRelativePath slot: exact relative path only. */
+const SUGGEST_COMPACT_RELATIVE_RE = /^scripts\/hooks\/suggest-compact\.js$/;
+/** Direct node argv: must be plugin-root qualified. */
+const SUGGEST_COMPACT_PLUGIN_ROOT_RE =
+  /^(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT)\/scripts\/hooks\/suggest-compact\.js$/;
 
 /**
  * Claude Code plugin/user hooks.json nest events under `hooks` (see
@@ -36,8 +40,12 @@ function stripWrappingQuotes(value) {
   return value.trim().replace(/^["']|["']$/g, '');
 }
 
-function isSuggestCompactScriptToken(value) {
-  return typeof value === 'string' && SUGGEST_COMPACT_SCRIPT_TOKEN_RE.test(stripWrappingQuotes(value));
+function isSuggestCompactRelativeToken(value) {
+  return typeof value === 'string' && SUGGEST_COMPACT_RELATIVE_RE.test(stripWrappingQuotes(value));
+}
+
+function isSuggestCompactPluginRootToken(value) {
+  return typeof value === 'string' && SUGGEST_COMPACT_PLUGIN_ROOT_RE.test(stripWrappingQuotes(value));
 }
 
 function textMentionsSuggestCompactScript(value) {
@@ -80,20 +88,22 @@ function tokenizeShellArgs(rest) {
   return tokens;
 }
 
-/** Direct form: command is node and argv[1] is the script (not node buried in args). */
+/** Direct form: command is node; argv[1] is ${CLAUDE_PLUGIN_ROOT}/…/suggest-compact.js. */
 function isDirectNodeScriptInvocation(tokens, scriptIndex) {
-  return scriptIndex === 1 && isNodeToken(tokens[0]);
+  return scriptIndex === 1 && isNodeToken(tokens[0]) && isSuggestCompactPluginRootToken(tokens[1]);
 }
 
 /**
  * run-with-flags.js <hookId> <scriptRelativePath> [profilesCsv]
- * Requires node as argv[0] (the exec command), wrapper at [1], script at [3].
+ * Requires node as argv[0], wrapper at [1], exact relative script at [3].
  */
 function scriptIsRunWithFlagsScriptArg(tokens, scriptIndex) {
   if (scriptIndex !== 3) {
     return false;
   }
-  return isNodeToken(tokens[0]) && isRunWithFlagsToken(tokens[1]);
+  return isNodeToken(tokens[0])
+    && isRunWithFlagsToken(tokens[1])
+    && isSuggestCompactRelativeToken(tokens[3]);
 }
 
 /**
@@ -103,16 +113,11 @@ function execArgvInvokesSuggestCompact(tokens) {
   if (!isNodeToken(tokens[0])) {
     return false;
   }
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (!isSuggestCompactScriptToken(tokens[i])) {
-      continue;
-    }
-    if (isDirectNodeScriptInvocation(tokens, i)) {
-      return true;
-    }
-    if (scriptIsRunWithFlagsScriptArg(tokens, i)) {
-      return true;
-    }
+  if (isDirectNodeScriptInvocation(tokens, 1)) {
+    return true;
+  }
+  if (scriptIsRunWithFlagsScriptArg(tokens, 3)) {
+    return true;
   }
   return false;
 }
@@ -134,13 +139,10 @@ function shellCommandInvokesSuggestCompact(command) {
   if (!textMentionsSuggestCompactScript(command)) {
     return false;
   }
-  const statements = command.split(/[;|&\n]/);
-  for (const statement of statements) {
-    if (shellStatementInvokesSuggestCompact(statement)) {
-      return true;
-    }
-  }
-  return false;
+  // Only the first `;`/`newline` statement is reachable for scoring — tails after
+  // `exit 0; …` must not count. Keep `&&`/`||`/`|` intact inside that statement.
+  const firstStatement = command.split(/[;\n]/)[0];
+  return shellStatementInvokesSuggestCompact(firstStatement);
 }
 
 function hookArgvTokens(hook) {
